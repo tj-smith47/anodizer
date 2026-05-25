@@ -180,4 +180,160 @@ mod tests {
         let order: Vec<&str> = headers.keys().map(String::as_str).collect();
         assert_eq!(order, vec!["Authorization", "Content-Type", "X-Zulu"]);
     }
+
+    use anodizer_core::test_helpers::responder::{
+        spawn_oneshot_http_responder, spawn_request_capturing_responder,
+    };
+    use std::time::Duration;
+
+    fn fast_policy() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(10),
+        }
+    }
+
+    fn no_retry_policy() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(10),
+        }
+    }
+
+    #[test]
+    fn happy_path_default_content_type_when_empty() {
+        let (addr, captured) =
+            spawn_request_capturing_responder("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        let url = format!("http://{addr}/hook");
+        let headers = BTreeMap::new();
+        send_webhook(
+            &url,
+            "{\"k\":\"v\"}",
+            &headers,
+            "",
+            false,
+            &default_expected_status_codes(),
+            &no_retry_policy(),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let req = captured.lock().unwrap().clone();
+        assert!(
+            req.to_ascii_lowercase()
+                .contains("content-type: application/json; charset=utf-8"),
+            "default CT applied: {req}"
+        );
+        assert!(req.contains("{\"k\":\"v\"}"), "body sent: {req}");
+    }
+
+    #[test]
+    fn explicit_content_type_overrides_default() {
+        let (addr, captured) =
+            spawn_request_capturing_responder("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        let url = format!("http://{addr}/hook");
+        let headers = BTreeMap::new();
+        send_webhook(
+            &url,
+            "k=v",
+            &headers,
+            "application/x-www-form-urlencoded",
+            false,
+            &default_expected_status_codes(),
+            &no_retry_policy(),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let req = captured.lock().unwrap().clone();
+        assert!(
+            req.to_ascii_lowercase()
+                .contains("content-type: application/x-www-form-urlencoded"),
+            "explicit CT honored: {req}"
+        );
+    }
+
+    #[test]
+    fn user_supplied_headers_sent_in_alpha_order() {
+        let (addr, captured) =
+            spawn_request_capturing_responder("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        let url = format!("http://{addr}/hook");
+        let mut headers: BTreeMap<String, String> = BTreeMap::new();
+        headers.insert("X-Custom".into(), "marker-value".into());
+        headers.insert("Authorization".into(), "Bearer secret-xyz".into());
+        send_webhook(
+            &url,
+            "{}",
+            &headers,
+            "application/json",
+            false,
+            &[200],
+            &no_retry_policy(),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let req = captured.lock().unwrap().clone();
+        let lower = req.to_ascii_lowercase();
+        assert!(lower.contains("authorization: bearer secret-xyz"), "{req}");
+        assert!(lower.contains("x-custom: marker-value"), "{req}");
+    }
+
+    #[test]
+    fn unexpected_status_includes_body_in_error() {
+        let (addr, _) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 418 I'm a teapot\r\nContent-Length: 11\r\n\r\nbrew coffee",
+        ]);
+        let url = format!("http://{addr}/hook");
+        let err = send_webhook(
+            &url,
+            "{}",
+            &BTreeMap::new(),
+            "",
+            false,
+            &[200, 201, 204],
+            &fast_policy(),
+        )
+        .unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(chain.contains("418"), "status in err chain: {chain}");
+        assert!(chain.contains("brew coffee"), "body in err chain: {chain}");
+    }
+
+    #[test]
+    fn retries_5xx_then_succeeds() {
+        let (addr, counter) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let url = format!("http://{addr}/hook");
+        send_webhook(
+            &url,
+            "{}",
+            &BTreeMap::new(),
+            "",
+            false,
+            &[200],
+            &fast_policy(),
+        )
+        .unwrap();
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn custom_expected_status_204_accepts_204() {
+        let (addr, _) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let url = format!("http://{addr}/hook");
+        send_webhook(
+            &url,
+            "",
+            &BTreeMap::new(),
+            "",
+            false,
+            &[204],
+            &no_retry_policy(),
+        )
+        .unwrap();
+    }
 }

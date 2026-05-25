@@ -999,4 +999,147 @@ mod tests {
              record succeeded); got {outcome:?}"
         );
     }
+
+    /// 4xx (e.g. 401 Unauthorized) that is NOT the 422 already-exists
+    /// pattern maps to Failed — the API rejected the request and the
+    /// PR was not created. Pins the bucket-failures-as-Failed contract
+    /// for the catch-all branch in `create_pr_via_api`.
+    #[test]
+    fn create_pr_via_api_returns_failed_on_401() {
+        let body = "{\"message\":\"Bad credentials\"}";
+        let len = body.len();
+        let resp = format!("HTTP/1.1 401 Unauthorized\r\nContent-Length: {len}\r\n\r\n{body}");
+        let resp_static: &'static str = Box::leak(resp.into_boxed_str());
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp_static]);
+        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let log = quiet_log();
+        let upstream = Upstream {
+            owner: "o",
+            name: "n",
+        };
+        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        match outcome {
+            Some(PublisherOutcome::Failed(msg)) => {
+                assert!(msg.contains("401"), "Failed msg must cite status: {msg}");
+                assert!(msg.contains("Bad credentials"), "must include body: {msg}");
+            }
+            other => panic!("expected Failed on 401, got {other:?}"),
+        }
+    }
+
+    /// 403 Forbidden also maps to Failed (rate-limited tokens hit this
+    /// frequently). Confirms the catch-all branch is not 5xx-only.
+    #[test]
+    fn create_pr_via_api_returns_failed_on_403() {
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let log = quiet_log();
+        let upstream = Upstream {
+            owner: "o",
+            name: "n",
+        };
+        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        assert!(matches!(outcome, Some(PublisherOutcome::Failed(_))));
+    }
+
+    /// 200 OK is treated as success by `is_success()` (GitHub returns
+    /// 201 in practice, but the function's contract is "any 2xx").
+    #[test]
+    fn create_pr_via_api_returns_none_on_200_ok() {
+        let (addr, _calls) =
+            spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"]);
+        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let log = quiet_log();
+        let upstream = Upstream {
+            owner: "o",
+            name: "n",
+        };
+        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        assert!(outcome.is_none(), "any 2xx is success path");
+    }
+
+    /// 422 with a body that does NOT mention "already exists" must NOT
+    /// be reclassified as PendingValidation — it stays a Failed. Pins
+    /// the body-text discriminator that separates the legitimate
+    /// "validation error" case (e.g. invalid base ref) from the
+    /// "PR already exists" duplicate case.
+    #[test]
+    fn create_pr_via_api_422_without_already_exists_phrase_is_failed() {
+        let body =
+            "{\"message\":\"Validation Failed\",\"errors\":[{\"message\":\"Invalid base ref\"}]}";
+        let len = body.len();
+        let resp =
+            format!("HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: {len}\r\n\r\n{body}");
+        let resp_static: &'static str = Box::leak(resp.into_boxed_str());
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp_static]);
+        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let log = quiet_log();
+        let upstream = Upstream {
+            owner: "o",
+            name: "n",
+        };
+        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        assert!(
+            matches!(outcome, Some(PublisherOutcome::Failed(_))),
+            "422 without 'already exists' phrase is Failed; got {outcome:?}"
+        );
+    }
+
+    /// Transport-layer failure: no responder is listening on the address
+    /// the override points at. The function must return Failed (not panic
+    /// and not silently return None) so dispatch records the real outcome.
+    #[test]
+    fn create_pr_via_api_transport_failure_returns_failed() {
+        // Pick a fixed address that's almost certainly unbound. Any
+        // unreachable destination triggers the `Err(e)` arm.
+        let _ov = BaseOverride::set("http://127.0.0.1:1");
+        let log = quiet_log();
+        let upstream = Upstream {
+            owner: "o",
+            name: "n",
+        };
+        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        assert!(
+            matches!(outcome, Some(PublisherOutcome::Failed(_))),
+            "transport failure must map to Failed; got {outcome:?}"
+        );
+    }
+
+    /// `pr_exists_skip_warn_message` is empty-label-safe — the label is
+    /// the publisher name (homebrew, winget, ...) and never an attacker-
+    /// controlled string, but a future refactor must not surprise-skip
+    /// formatting when the label is "".
+    #[test]
+    fn pr_exists_skip_warn_message_handles_empty_label() {
+        let msg = super::pr_exists_skip_warn_message("", "owner:branch");
+        assert!(msg.contains("already exists"));
+        assert!(msg.contains("owner:branch"));
+    }
+
+    /// `maybe_submit_pr` short-circuits when origin's `update_existing_pr`
+    /// is set but `pull_request` config is None — the flag has no effect
+    /// without the gating block. Defends "knob without container does
+    /// nothing" expectation.
+    #[test]
+    fn maybe_submit_pr_update_existing_pr_alone_does_not_open_pr() {
+        let log = quiet_log();
+        let origin = PrOrigin {
+            repo_owner: "fork-owner",
+            repo_name: "fork-repo",
+            branch_name: "release/v1.2.3",
+            update_existing_pr: true,
+        };
+        let outcome = maybe_submit_pr(
+            Path::new("/nonexistent/should-never-be-touched"),
+            None,
+            &origin,
+            "title",
+            "body",
+            "label",
+            &log,
+        );
+        assert!(outcome.is_none());
+    }
 }

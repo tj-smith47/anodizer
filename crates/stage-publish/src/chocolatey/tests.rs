@@ -706,3 +706,231 @@ fn test_parse_xml_element_returns_none_when_absent() {
     assert!(parse_xml_element(body, "PackageStatus").is_none());
     assert!(parse_xml_element(body, "IsApproved").is_none());
 }
+
+// ---------------------------------------------------------------------------
+// publish_to_chocolatey: additional branches.
+// ---------------------------------------------------------------------------
+
+use super::package::{FeedHashResult, classify_moderation, compute_nupkg_hash, package_feed_hash};
+use anodizer_core::retry::RetryPolicy;
+use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+fn fast_retry() -> RetryPolicy {
+    RetryPolicy {
+        max_attempts: 1,
+        base_delay: std::time::Duration::from_millis(0),
+        max_delay: std::time::Duration::from_millis(0),
+    }
+}
+
+/// `skip: true` causes an immediate Ok(false) skip and no push attempt.
+#[test]
+fn publish_to_chocolatey_skip_true_returns_false() {
+    use anodizer_core::config::{
+        ChocolateyConfig, Config, CrateConfig, PublishConfig, StringOrBool,
+    };
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    let mut config = Config::default();
+    config.crates = vec![CrateConfig {
+        name: "mytool".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        publish: Some(PublishConfig {
+            chocolatey: Some(ChocolateyConfig {
+                skip: Some(StringOrBool::Bool(true)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }];
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let log = StageLogger::new("publish", Verbosity::Quiet);
+    let res = super::publish::publish_to_chocolatey(&mut ctx, "mytool", &log).unwrap();
+    assert!(!res, "skip=true must short-circuit to Ok(false)");
+}
+
+/// `classify_moderation` returns "approved" / not-in-moderation for
+/// `Approved` status; conservative not-in-moderation when neither field
+/// is exposed.
+#[test]
+fn classify_moderation_approved_and_unknown() {
+    let (label, in_mod) = classify_moderation(Some("Approved"), Some(true));
+    assert!(!in_mod);
+    assert!(label.contains("approved"));
+
+    let (label, in_mod) = classify_moderation(None, None);
+    assert!(!in_mod);
+    assert!(label.contains("on feed"));
+}
+
+/// `classify_moderation` flags Submitted / Rejected / Exempted / Unknown
+/// as in-moderation (a blocker for unattended publish).
+#[test]
+fn classify_moderation_in_queue_variants() {
+    for s in ["Submitted", "Rejected", "Exempted", "Unknown"] {
+        let (label, in_mod) = classify_moderation(Some(s), None);
+        assert!(in_mod, "{s} must be flagged in-moderation; label={label}");
+    }
+}
+
+/// `classify_moderation` matches Rejected case-insensitively (the OData
+/// feed has been observed emitting `rejected` in legacy fixtures).
+#[test]
+fn classify_moderation_status_is_case_insensitive() {
+    let (label, in_mod) = classify_moderation(Some("rejected"), None);
+    assert!(in_mod);
+    assert!(label.contains("rejected"));
+}
+
+/// `classify_moderation` falls back to IsApproved when PackageStatus is
+/// missing — `IsApproved=false` => in moderation, `true` => approved.
+#[test]
+fn classify_moderation_falls_back_to_is_approved() {
+    let (_, in_mod) = classify_moderation(None, Some(false));
+    assert!(in_mod, "is_approved=false => in moderation");
+    let (_, in_mod) = classify_moderation(None, Some(true));
+    assert!(!in_mod, "is_approved=true => not in moderation");
+}
+
+/// `compute_nupkg_hash` produces a base64 digest whose length is the
+/// canonical SHA512 / SHA256 / MD5 length. Pins the algorithm dispatch.
+#[test]
+fn compute_nupkg_hash_dispatches_algorithm_correctly() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("pkg.nupkg");
+    std::fs::write(&p, b"abc").unwrap();
+    let sha512 = compute_nupkg_hash(&p, "SHA512").unwrap();
+    let sha256 = compute_nupkg_hash(&p, "SHA256").unwrap();
+    let md5 = compute_nupkg_hash(&p, "MD5").unwrap();
+    // base64(SHA512=64 bytes) = ceil(64/3)*4 = 88 chars.
+    assert_eq!(sha512.len(), 88, "sha512 base64 len");
+    // base64(SHA256=32 bytes) = 44 chars (with `=` padding).
+    assert_eq!(sha256.len(), 44, "sha256 base64 len");
+    // base64(MD5=16 bytes) = 24 chars.
+    assert_eq!(md5.len(), 24, "md5 base64 len");
+}
+
+/// Unsupported algorithm => actionable error naming the bad input.
+#[test]
+fn compute_nupkg_hash_unsupported_algorithm_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("pkg.nupkg");
+    std::fs::write(&p, b"abc").unwrap();
+    let err = compute_nupkg_hash(&p, "BLAKE2").unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("BLAKE2"));
+    assert!(msg.contains("unsupported"));
+}
+
+/// `compute_nupkg_hash` is case-insensitive on the algorithm name (the
+/// OData feed sometimes emits "sha512" rather than "SHA512").
+#[test]
+fn compute_nupkg_hash_algorithm_case_insensitive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("pkg.nupkg");
+    std::fs::write(&p, b"abc").unwrap();
+    let upper = compute_nupkg_hash(&p, "SHA256").unwrap();
+    let lower = compute_nupkg_hash(&p, "sha256").unwrap();
+    let mixed = compute_nupkg_hash(&p, "Sha256").unwrap();
+    assert_eq!(upper, lower);
+    assert_eq!(upper, mixed);
+}
+
+/// `package_feed_hash` handles a 404 / connection failure path by
+/// returning `Absent`. Pins the "couldn't reach feed => proceed to push"
+/// degrade contract; transport failures must not block legitimate
+/// re-pushes of new versions.
+#[test]
+fn package_feed_hash_absent_when_responder_returns_404() {
+    let (addr, _calls) =
+        spawn_oneshot_http_responder(vec!["HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"]);
+    let url = format!("http://{addr}");
+    let got = package_feed_hash(&url, "mytool", "1.0.0", &fast_retry());
+    assert_eq!(got, FeedHashResult::Absent);
+}
+
+/// `package_feed_hash` returns Absent when the feed body indicates the
+/// version is not present (no `<entry>` / version marker).
+#[test]
+fn package_feed_hash_absent_when_body_lacks_version_marker() {
+    let body = "<?xml version=\"1.0\"?><feed></feed>";
+    let len = body.len();
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {len}\r\n\r\n{body}"
+    );
+    let resp_static: &'static str = Box::leak(resp.into_boxed_str());
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![resp_static]);
+    let url = format!("http://{addr}");
+    let got = package_feed_hash(&url, "mytool", "1.0.0", &fast_retry());
+    assert_eq!(got, FeedHashResult::Absent);
+}
+
+/// `package_feed_hash` returns `Present { hash, algorithm, ... }` when
+/// the OData entry includes both `<d:PackageHash>` and
+/// `<d:PackageHashAlgorithm>` populated.
+#[test]
+fn package_feed_hash_present_with_hash_and_algorithm() {
+    let body = "<entry><id>https://example.com/api/v2/Packages(Id='mytool',Version='1.0.0')</id>\
+        <m:properties>\
+        <d:PackageHash>SOMEHASH</d:PackageHash>\
+        <d:PackageHashAlgorithm>SHA512</d:PackageHashAlgorithm>\
+        <d:PackageStatus>Approved</d:PackageStatus>\
+        <d:IsApproved>true</d:IsApproved>\
+        </m:properties></entry>";
+    let len = body.len();
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {len}\r\n\r\n{body}"
+    );
+    let resp_static: &'static str = Box::leak(resp.into_boxed_str());
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![resp_static]);
+    let url = format!("http://{addr}");
+    let got = package_feed_hash(&url, "mytool", "1.0.0", &fast_retry());
+    match got {
+        FeedHashResult::Present {
+            hash,
+            algorithm,
+            status,
+            is_approved,
+            ..
+        } => {
+            assert_eq!(hash, "SOMEHASH");
+            assert_eq!(algorithm, "SHA512");
+            assert_eq!(status.as_deref(), Some("Approved"));
+            assert_eq!(is_approved, Some(true));
+        }
+        other => panic!("expected Present, got {other:?}"),
+    }
+}
+
+/// `package_feed_hash` returns `PresentNoHash` when the OData entry is
+/// present but lacks both PackageHash / PackageHashAlgorithm — drift
+/// detection cannot run, so the caller logs and falls through to push.
+#[test]
+fn package_feed_hash_present_no_hash() {
+    let body = "<entry><id>https://example.com/api/v2/Packages(Id='mytool',Version='1.0.0')</id>\
+        <m:properties>\
+        <d:PackageStatus>Approved</d:PackageStatus>\
+        </m:properties></entry>";
+    let len = body.len();
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {len}\r\n\r\n{body}"
+    );
+    let resp_static: &'static str = Box::leak(resp.into_boxed_str());
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![resp_static]);
+    let url = format!("http://{addr}");
+    let got = package_feed_hash(&url, "mytool", "1.0.0", &fast_retry());
+    assert_eq!(got, FeedHashResult::PresentNoHash);
+}
+
+/// `parse_xml_element` returns the inner text of a single-element body
+/// and strips whitespace around the value (matches `body.trim()`).
+#[test]
+fn parse_xml_element_trims_whitespace() {
+    let body = "<d:PackageHash>  spaced-hash  </d:PackageHash>";
+    assert_eq!(
+        parse_xml_element(body, "PackageHash").as_deref(),
+        Some("spaced-hash")
+    );
+}

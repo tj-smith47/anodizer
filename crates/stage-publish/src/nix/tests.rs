@@ -1,5 +1,6 @@
 //! Tests for the Nix publisher submodules.
 
+use super::binary::is_dynamically_linked;
 use super::generate::{NixParams, generate_nix_expression, nix_system};
 use super::hashing::{hex_sha256_to_nix_base32, hex_sha256_to_sri};
 use super::publish::publish_to_nix;
@@ -530,4 +531,347 @@ fn test_publish_to_nix_dry_run() {
     );
     let log = StageLogger::new("publish", Verbosity::Normal);
     assert!(publish_to_nix(&mut ctx, "mytool", &log).is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// `publish_to_nix` early-exit branches — every guard returns Ok(false)
+// (no push happened) so the caller's rollback bookkeeping stays clean.
+// ---------------------------------------------------------------------------
+
+/// Helper: build a minimal Context with a `nix:` publish config.
+fn nix_ctx(
+    nix_cfg: anodizer_core::config::NixConfig,
+    dry_run: bool,
+) -> anodizer_core::context::Context {
+    use anodizer_core::config::{Config, CrateConfig, PublishConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                nix: Some(nix_cfg),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    Context::new(
+        config,
+        ContextOptions {
+            dry_run,
+            ..Default::default()
+        },
+    )
+}
+
+fn nix_log() -> anodizer_core::log::StageLogger {
+    use anodizer_core::log::{StageLogger, Verbosity};
+    StageLogger::new("publish", Verbosity::Quiet)
+}
+
+/// `nix:` config absent => actionable error citing the crate name.
+#[test]
+fn test_publish_to_nix_missing_config_errors() {
+    use anodizer_core::config::{Config, CrateConfig, PublishConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig::default()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let err = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("no nix config"), "unexpected: {msg}");
+    assert!(msg.contains("mytool"), "must name crate: {msg}");
+}
+
+/// `skip: true` bypasses everything and returns Ok(false).
+#[test]
+fn test_publish_to_nix_skip_true_returns_false() {
+    use anodizer_core::config::{NixConfig, RepositoryConfig, StringOrBool};
+    let cfg = NixConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("nixpkgs-overlay".to_string()),
+            ..Default::default()
+        }),
+        skip: Some(StringOrBool::Bool(true)),
+        ..Default::default()
+    };
+    let mut ctx = nix_ctx(cfg, false);
+    let got = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap();
+    assert!(!got, "skip=true must short-circuit before any push");
+}
+
+/// `skip_upload: true` bypasses the push and returns Ok(false).
+#[test]
+fn test_publish_to_nix_skip_upload_true_returns_false() {
+    use anodizer_core::config::{NixConfig, RepositoryConfig, StringOrBool};
+    let cfg = NixConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("nixpkgs-overlay".to_string()),
+            ..Default::default()
+        }),
+        skip_upload: Some(StringOrBool::Bool(true)),
+        ..Default::default()
+    };
+    let mut ctx = nix_ctx(cfg, false);
+    let got = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap();
+    assert!(!got);
+}
+
+/// No `repository:` (and no top-level fallback) => error citing crate name.
+#[test]
+fn test_publish_to_nix_missing_repository_errors() {
+    use anodizer_core::config::NixConfig;
+    let cfg = NixConfig {
+        repository: None,
+        ..Default::default()
+    };
+    let mut ctx = nix_ctx(cfg, false);
+    let err = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("no repository"), "unexpected: {msg}");
+    assert!(msg.contains("mytool"), "{msg}");
+}
+
+/// Dry-run bypasses git work AND returns Ok(false) — push didn't happen.
+#[test]
+fn test_publish_to_nix_dry_run_returns_false() {
+    use anodizer_core::config::{NixConfig, RepositoryConfig};
+    let cfg = NixConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("nixpkgs-overlay".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = nix_ctx(cfg, true);
+    let got = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap();
+    assert!(!got, "dry-run must return Ok(false): no push happened");
+}
+
+/// Bad license identifier => validate_nix_license bails with a parseable
+/// error. Pin the validator wiring (config-must-wire).
+#[test]
+fn test_publish_to_nix_invalid_license_errors() {
+    use anodizer_core::config::{NixConfig, RepositoryConfig};
+    let cfg = NixConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("nixpkgs-overlay".to_string()),
+            ..Default::default()
+        }),
+        license: Some("not-a-real-spdx-id".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = nix_ctx(cfg, false);
+    let err = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap_err();
+    assert!(format!("{err}").contains("not-a-real-spdx-id"));
+}
+
+/// No artifacts at all => `no Linux/Darwin archive artifacts found` bail
+/// rather than a broken Nix expression with empty url/sha256.
+#[test]
+fn test_publish_to_nix_no_artifacts_errors() {
+    use anodizer_core::config::{NixConfig, RepositoryConfig};
+    let cfg = NixConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("nixpkgs-overlay".to_string()),
+            ..Default::default()
+        }),
+        license: Some("mit".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = nix_ctx(cfg, false);
+    let err = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("no Linux/Darwin archive artifacts"),
+        "unexpected: {msg}"
+    );
+    assert!(msg.contains("mytool"));
+}
+
+// ---------------------------------------------------------------------------
+// `is_dynamically_linked` — ELF PT_INTERP detection.
+// ---------------------------------------------------------------------------
+
+/// Non-existent path returns false (open() error). Pin the silent-degrade
+/// contract used by the publish path's metadata-fallback inspection.
+#[test]
+fn is_dynamically_linked_missing_file_returns_false() {
+    assert!(!is_dynamically_linked(std::path::Path::new(
+        "/nonexistent/path/to/binary/that/cannot/exist"
+    )));
+}
+
+/// File smaller than ELF header (52 bytes) returns false.
+#[test]
+fn is_dynamically_linked_short_file_returns_false() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("tiny");
+    std::fs::write(&p, b"abc").unwrap();
+    assert!(!is_dynamically_linked(&p));
+}
+
+/// File without ELF magic bytes (e.g. Mach-O / PE / random) returns false.
+#[test]
+fn is_dynamically_linked_non_elf_returns_false() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("not-elf");
+    // 64 bytes of nonzero non-ELF data.
+    let bytes: Vec<u8> = (0..64u8).collect();
+    std::fs::write(&p, bytes).unwrap();
+    assert!(!is_dynamically_linked(&p));
+}
+
+/// Hand-rolled minimal 64-bit ELF with a single PT_INTERP program header
+/// returns true. Pins the "dynamically linked => emit autoPatchelfHook"
+/// signal that the publish path uses to set `dynamically_linked`.
+#[test]
+fn is_dynamically_linked_elf64_with_pt_interp_returns_true() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("elf64-dyn");
+    // 64-byte ELF header followed by one 56-byte program header with p_type=3.
+    let phoff: u64 = 64;
+    let phentsize: u16 = 56;
+    let phnum: u16 = 1;
+    let mut bytes = Vec::with_capacity(64 + phentsize as usize);
+    bytes.extend_from_slice(b"\x7fELF"); // magic
+    bytes.push(2); // 64-bit
+    bytes.push(1); // little-endian
+    bytes.push(1); // EI_VERSION
+    bytes.extend_from_slice(&[0u8; 9]); // OSABI + padding
+    bytes.extend_from_slice(&[0u8; 2]); // e_type
+    bytes.extend_from_slice(&[0u8; 2]); // e_machine
+    bytes.extend_from_slice(&[0u8; 4]); // e_version
+    bytes.extend_from_slice(&[0u8; 8]); // e_entry
+    bytes.extend_from_slice(&phoff.to_le_bytes()); // e_phoff (32..40)
+    bytes.extend_from_slice(&[0u8; 8]); // e_shoff
+    bytes.extend_from_slice(&[0u8; 4]); // e_flags
+    bytes.extend_from_slice(&[0u8; 2]); // e_ehsize
+    bytes.extend_from_slice(&phentsize.to_le_bytes()); // e_phentsize (54..56)
+    bytes.extend_from_slice(&phnum.to_le_bytes()); // e_phnum (56..58)
+    bytes.extend_from_slice(&[0u8; 6]); // remaining e_shentsize/e_shnum/e_shstrndx (pad to 64)
+    debug_assert_eq!(bytes.len(), 64);
+    // Program header: p_type=3 (PT_INTERP), 4-byte LE.
+    bytes.extend_from_slice(&3u32.to_le_bytes());
+    bytes.extend_from_slice(&vec![0u8; phentsize as usize - 4]);
+    std::fs::write(&p, &bytes).unwrap();
+    assert!(is_dynamically_linked(&p), "PT_INTERP must be detected");
+}
+
+/// 64-bit ELF whose only program header is PT_LOAD (1) returns false —
+/// the file is statically linked.
+#[test]
+fn is_dynamically_linked_elf64_without_pt_interp_returns_false() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("elf64-static");
+    let phoff: u64 = 64;
+    let phentsize: u16 = 56;
+    let phnum: u16 = 1;
+    let mut bytes = Vec::with_capacity(64 + phentsize as usize);
+    bytes.extend_from_slice(b"\x7fELF");
+    bytes.push(2);
+    bytes.push(1);
+    bytes.push(1);
+    bytes.extend_from_slice(&[0u8; 9]);
+    bytes.extend_from_slice(&[0u8; 2]);
+    bytes.extend_from_slice(&[0u8; 2]);
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(&[0u8; 8]);
+    bytes.extend_from_slice(&phoff.to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 8]);
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(&[0u8; 2]);
+    bytes.extend_from_slice(&phentsize.to_le_bytes());
+    bytes.extend_from_slice(&phnum.to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 6]);
+    debug_assert_eq!(bytes.len(), 64);
+    // p_type = 1 (PT_LOAD), not 3.
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&vec![0u8; phentsize as usize - 4]);
+    std::fs::write(&p, &bytes).unwrap();
+    assert!(!is_dynamically_linked(&p));
+}
+
+/// 32-bit ELF with PT_INTERP returns true — pins the `is_64bit=false`
+/// branch in the header parser (phoff/phnum read from 32-bit offsets).
+#[test]
+fn is_dynamically_linked_elf32_with_pt_interp_returns_true() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("elf32-dyn");
+    // For 32-bit ELF: e_entry is 4 bytes (offset 24..28), e_phoff is 4 bytes
+    // at offset 28..32, e_phentsize at 42..44, e_phnum at 44..46.
+    let phoff: u32 = 52;
+    let phentsize: u16 = 32;
+    let phnum: u16 = 1;
+    let mut bytes = Vec::with_capacity(52 + phentsize as usize);
+    bytes.extend_from_slice(b"\x7fELF"); // 0..4
+    bytes.push(1); // 32-bit class (4)
+    bytes.push(1); // little-endian (5)
+    bytes.push(1); // EI_VERSION (6)
+    bytes.extend_from_slice(&[0u8; 9]); // osabi + padding (7..16)
+    bytes.extend_from_slice(&[0u8; 2]); // e_type (16..18)
+    bytes.extend_from_slice(&[0u8; 2]); // e_machine (18..20)
+    bytes.extend_from_slice(&[0u8; 4]); // e_version (20..24)
+    bytes.extend_from_slice(&[0u8; 4]); // e_entry — 32-bit is 4 bytes (24..28)
+    bytes.extend_from_slice(&phoff.to_le_bytes()); // e_phoff (28..32)
+    bytes.extend_from_slice(&[0u8; 4]); // e_shoff (32..36)
+    bytes.extend_from_slice(&[0u8; 4]); // e_flags (36..40)
+    bytes.extend_from_slice(&[0u8; 2]); // e_ehsize (40..42)
+    bytes.extend_from_slice(&phentsize.to_le_bytes()); // e_phentsize (42..44)
+    bytes.extend_from_slice(&phnum.to_le_bytes()); // e_phnum (44..46)
+    bytes.extend_from_slice(&[0u8; 6]); // pad to 52
+    debug_assert_eq!(bytes.len(), 52);
+    bytes.extend_from_slice(&3u32.to_le_bytes()); // PT_INTERP
+    bytes.extend_from_slice(&vec![0u8; phentsize as usize - 4]);
+    std::fs::write(&p, &bytes).unwrap();
+    assert!(is_dynamically_linked(&p));
+}
+
+/// Big-endian ELF with PT_INTERP returns true — exercises the `little=false`
+/// branches of read_u16/read_u32/read_u64.
+#[test]
+fn is_dynamically_linked_elf64_big_endian_with_pt_interp_returns_true() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("elf64-be-dyn");
+    let phoff: u64 = 64;
+    let phentsize: u16 = 56;
+    let phnum: u16 = 1;
+    let mut bytes = Vec::with_capacity(64 + phentsize as usize);
+    bytes.extend_from_slice(b"\x7fELF");
+    bytes.push(2);
+    bytes.push(2); // big-endian
+    bytes.push(1);
+    bytes.extend_from_slice(&[0u8; 9]);
+    bytes.extend_from_slice(&[0u8; 2]);
+    bytes.extend_from_slice(&[0u8; 2]);
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(&[0u8; 8]);
+    bytes.extend_from_slice(&phoff.to_be_bytes());
+    bytes.extend_from_slice(&[0u8; 8]);
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(&[0u8; 2]);
+    bytes.extend_from_slice(&phentsize.to_be_bytes());
+    bytes.extend_from_slice(&phnum.to_be_bytes());
+    bytes.extend_from_slice(&[0u8; 6]);
+    debug_assert_eq!(bytes.len(), 64);
+    bytes.extend_from_slice(&3u32.to_be_bytes());
+    bytes.extend_from_slice(&vec![0u8; phentsize as usize - 4]);
+    std::fs::write(&p, &bytes).unwrap();
+    assert!(is_dynamically_linked(&p));
 }

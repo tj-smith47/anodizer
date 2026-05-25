@@ -946,4 +946,253 @@ crates:
             "should require script field"
         );
     }
+
+    // ---- additional coverage ----
+
+    #[test]
+    fn test_lsm_render_skips_empty_fields() {
+        let lsm = Lsm {
+            title: "X".into(),
+            version: "0.1.0".into(),
+            description: String::new(),
+            keywords: vec![],
+            maintained_by: String::new(),
+            primary_site: String::new(),
+            platform: "linux_amd64".into(),
+            copying_policy: String::new(),
+        };
+        let r = lsm.render();
+        assert!(r.contains("Title: X"));
+        assert!(!r.contains("Description:"), "empty Description omitted");
+        assert!(!r.contains("Keywords:"), "empty Keywords omitted");
+        assert!(!r.contains("Author:"), "empty maintainer omits Author");
+    }
+
+    #[test]
+    fn test_make_args_bzip2_compression() {
+        let args = make_args("App", "app.run", Some("bzip2"), "./s.sh", &[], None);
+        assert!(args.contains(&"--bzip2".to_string()));
+    }
+
+    #[test]
+    fn test_make_args_lzo_compression() {
+        let args = make_args("App", "app.run", Some("lzo"), "./s.sh", &[], None);
+        assert!(args.contains(&"--lzo".to_string()));
+    }
+
+    #[test]
+    fn test_make_args_compress_compression() {
+        let args = make_args("App", "app.run", Some("compress"), "./s.sh", &[], None);
+        assert!(args.contains(&"--compress".to_string()));
+    }
+
+    #[test]
+    fn test_make_args_unknown_compression_does_not_set_flag() {
+        // Unknown values should pass through to makeself's default (no flag
+        // appended). Specifically, no compression-related flag should be
+        // added when the user passes something unrecognised.
+        let args = make_args("App", "app.run", Some("zstd"), "./s.sh", &[], None);
+        for flag in [
+            "--xz",
+            "--gzip",
+            "--bzip2",
+            "--lzo",
+            "--compress",
+            "--nocomp",
+        ] {
+            assert!(
+                !args.iter().any(|a| a == flag),
+                "unknown compression must not pick a known flag, got {flag} in {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_make_args_script_appears_last_after_extras() {
+        let extra = vec!["--noprogress".to_string()];
+        let args = make_args("App", "app.run", None, "./setup.sh", &extra, None);
+        // Final 4 positionals: archive_dir, output_file, label, startup_script.
+        assert_eq!(
+            &args[args.len() - 4..],
+            &[
+                ".".to_string(),
+                "app.run".to_string(),
+                "App".to_string(),
+                "./setup.sh".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_group_by_platform_unknown_target() {
+        let a = Artifact {
+            kind: ArtifactKind::Binary,
+            name: "no-target".to_string(),
+            path: PathBuf::from("/dist/no-target"),
+            target: None,
+            crate_name: "x".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        };
+        let inputs = [a];
+        let groups = group_by_platform(&inputs);
+        assert!(groups.contains_key("unknown"));
+    }
+
+    #[test]
+    fn test_group_by_platform_preserves_iteration_order() {
+        // BTreeMap iteration is alphabetical by key — pin that contract
+        // so artifacts.json doesn't drift between runs.
+        let a1 = Artifact {
+            kind: ArtifactKind::Binary,
+            name: "app".into(),
+            path: PathBuf::from("/dist/app-1"),
+            target: Some("aarch64-apple-darwin".into()),
+            crate_name: "app".into(),
+            metadata: HashMap::new(),
+            size: None,
+        };
+        let a2 = Artifact {
+            kind: ArtifactKind::Binary,
+            name: "app".into(),
+            path: PathBuf::from("/dist/app-2"),
+            target: Some("x86_64-unknown-linux-gnu".into()),
+            crate_name: "app".into(),
+            metadata: HashMap::new(),
+            size: None,
+        };
+        let inputs = [a1, a2];
+        let groups = group_by_platform(&inputs);
+        let keys: Vec<_> = groups.keys().cloned().collect();
+        assert_eq!(keys, vec!["darwin_arm64".to_string(), "linux_amd64".into()]);
+    }
+
+    #[test]
+    fn test_makeself_stage_dry_run_does_not_invoke_makeself() {
+        // Dry-run must not shell out and must not produce an artifact.
+        let tmp = tempfile::tempdir().unwrap();
+        let binary_path = tmp.path().join("bin");
+        std::fs::write(&binary_path, b"x").unwrap();
+        let mut ctx = Context::new(
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.config.project_name = "proj".to_string();
+        ctx.config.dist = tmp.path().to_path_buf();
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("d".into()),
+            script: Some("install.sh".into()),
+            ..Default::default()
+        }];
+        ctx.template_vars_mut().set("ProjectName", "proj");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "bin".into(),
+            path: binary_path,
+            target: Some("x86_64-unknown-linux-gnu".into()),
+            crate_name: "proj".into(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        let stage = MakeselfStage;
+        stage.run(&mut ctx).expect("dry-run should succeed");
+        assert!(
+            ctx.artifacts
+                .all()
+                .iter()
+                .all(|a| a.kind != ArtifactKind::Makeself),
+            "dry-run must not register a Makeself artifact"
+        );
+    }
+
+    #[test]
+    fn test_makeself_skip_template_skips_config() {
+        // `skip: true` short-circuits before any binary lookup; the
+        // missing-script error must NOT fire.
+        let mut ctx = Context::new(
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions::default(),
+        );
+        ctx.config.project_name = "proj".into();
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("skipme".into()),
+            // No script -> would normally bail. skip=true must short-circuit first.
+            skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
+            ..Default::default()
+        }];
+        ctx.template_vars_mut().set("ProjectName", "proj");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        let stage = MakeselfStage;
+        stage.run(&mut ctx).expect("skip:true must succeed");
+    }
+
+    #[test]
+    fn test_makeself_duplicate_ids_rejected() {
+        let mut ctx = Context::new(
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions::default(),
+        );
+        ctx.config.makeselfs = vec![
+            MakeselfConfig {
+                id: Some("dup".into()),
+                script: Some("a.sh".into()),
+                ..Default::default()
+            },
+            MakeselfConfig {
+                id: Some("dup".into()),
+                script: Some("b.sh".into()),
+                ..Default::default()
+            },
+        ];
+        let err = MakeselfStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("duplicate id"), "{err}");
+    }
+
+    #[test]
+    fn test_makeself_no_matching_binaries_bails() {
+        // Configured for linux/darwin but only a windows artifact exists.
+        let mut ctx = Context::new(
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions::default(),
+        );
+        ctx.config.project_name = "proj".into();
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("d".into()),
+            script: Some("install.sh".into()),
+            ..Default::default()
+        }];
+        ctx.template_vars_mut().set("ProjectName", "proj");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "bin.exe".into(),
+            path: PathBuf::from("/dist/bin.exe"),
+            target: Some("x86_64-pc-windows-msvc".into()),
+            crate_name: "proj".into(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        let err = MakeselfStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("no binaries found"), "{err}");
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn test_resolve_packaging_date_format_matches_lc_all_c_date() {
+        // The format string is `%a %b %e %H:%M:%S UTC %Y` — assert the
+        // structure of a known epoch matches that exactly.
+        // SAFETY: serialized via the `env` serial group used by
+        // anodizer-core's sde::tests.
+        unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1577836800") };
+        let date = resolve_packaging_date().expect("epoch set");
+        // 1577836800 = 2020-01-01 00:00:00 UTC
+        assert!(date.contains("2020"), "{date}");
+        assert!(date.contains("Jan"), "{date}");
+        assert!(date.contains("UTC"), "{date}");
+        unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
+    }
 }

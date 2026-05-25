@@ -142,6 +142,63 @@ re-runs publish-only against existing GitHub assets.
 
 ---
 
+## T2 — Virtual-time-friendly rate_limit sleep
+
+`crates/stage-release/src/github/rate_limit.rs::check_github_rate_limit`'s
+sleep-until-reset and the past-reset 5 s floor cannot be unit-tested
+under `tokio::test(start_paused = true)` because the production
+function performs real HTTPS I/O via reqwest. Tokio's auto-advance
+only fires when the runtime is fully idle (no pending I/O), so the
+runtime waits indefinitely for the responder while the virtual timer
+never ticks.
+
+**Fix candidates:**
+
+1. Inject the sleep helper: change `check_github_rate_limit` to take
+   `&dyn AsyncSleep` (or a `Sleep` callback) so tests pass a controlled
+   sleeper that records duration without actually sleeping.
+2. Add an in-runtime tokio-driven responder helper (alongside the
+   std::thread `spawn_oneshot_https_responder`) so all socket I/O runs
+   on the same runtime and `start_paused` auto-advance interleaves
+   correctly.
+
+Either unblocks pinning the two uncovered branches. Track here so the
+next coverage pass doesn't re-add the flaky virtual-time tests.
+
+---
+
+## T1 — cwd+PATH-injectable git/gh APIs for testability
+
+Two functions in `crates/core/src/git/github_api.rs` cannot be unit-tested
+without process-wide env mutation that races every other parallel test:
+
+1. `create_tag_via_github_api` reads `std::env::current_dir()`
+   internally for the remote-detection step. The "errs outside a git
+   repo" branch is uncoverable without `set_current_dir`, which races
+   every other test that subprocess-spawns `git`.
+2. `gh_api_get` / `gh_api_get_paginated` / the third `gh`-spawning fn
+   in this file all do `Command::new("gh")` and inherit `PATH`. The
+   "gh missing from PATH" branch is uncoverable without mutating
+   global `PATH`, which races every other test that spawns `git`,
+   `rustc`, etc. (Both failure modes were observed once
+   in this session — 3 git tests and 8 core tests went red intermittently
+   until the PATH/CWD-mutating tests were removed.)
+
+**Fix**: add injectable overloads:
+
+- `create_tag_via_github_api_in(cwd: &Path, ...)` (current fn becomes
+  a thin wrapper passing `std::env::current_dir()?`).
+- `gh_api_get_with_binary(gh_binary: &Path, endpoint, token)` plus
+  paginated sibling. Existing wrappers default to `Path::new("gh")`.
+
+Tests then point at a real tempdir cwd / a non-existent binary path
+without ever touching process-wide state. Apply the same pattern to any
+other `core::git::*` function that reads `current_dir()` or hardcodes a
+binary name — grep for `current_dir()` and `Command::new(` in
+`crates/core/src/git/`.
+
+---
+
 ## V2 — Silent-default-empty sweep (BLOCKER for next release)
 
 The v0.4.0 winget bug was a `unwrap_or_default()` on missing required

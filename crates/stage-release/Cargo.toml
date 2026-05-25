@@ -33,3 +33,4 @@ anodizer-core = { workspace = true, features = ["test-helpers"] }
 serde_yaml_ng.workspace = true
 serial_test.workspace = true
 tempfile = "3"
+tokio = { workspace = true, features = ["signal", "test-util"] }

@@ -135,13 +135,40 @@ struct RouteEntry {
 pub fn spawn_scripted_responder(
     routes: Vec<ScriptedRoute>,
 ) -> (SocketAddr, Arc<Mutex<Vec<RequestLog>>>) {
+    spawn_scripted_responder_with(|_| routes)
+}
+
+/// Variant that lets callers build the route table after the responder
+/// has bound its ephemeral port, so response bodies can reference the
+/// bound `addr` (e.g., embedding `upload_url: http://<addr>/upload/{id}`
+/// in a GitHub release JSON). Avoids the bind-drop-rebind race that
+/// would arise if the test pre-bound a port, dropped it, and hoped the
+/// responder claimed the same one back.
+pub fn spawn_scripted_responder_with<F>(routes_fn: F) -> (SocketAddr, Arc<Mutex<Vec<RequestLog>>>)
+where
+    F: FnOnce(SocketAddr) -> Vec<ScriptedRoute>,
+{
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    spawn_scripted_responder_on(listener, routes_fn)
+}
+
+/// Variant that consumes a pre-bound `TcpListener`. Callers that need
+/// the bound `addr` *before* constructing routes (e.g., to bake it into
+/// response bodies) can bind first, read `local_addr()`, build routes,
+/// then hand the listener off — no port-reuse race.
+pub fn spawn_scripted_responder_on<F>(
+    listener: TcpListener,
+    routes_fn: F,
+) -> (SocketAddr, Arc<Mutex<Vec<RequestLog>>>)
+where
+    F: FnOnce(SocketAddr) -> Vec<ScriptedRoute>,
+{
     let addr = listener.local_addr().expect("local_addr");
     let log = Arc::new(Mutex::new(Vec::<RequestLog>::new()));
     let log_inner = log.clone();
 
     let entries: Arc<Vec<RouteEntry>> = Arc::new(
-        routes
+        routes_fn(addr)
             .into_iter()
             .map(|r| RouteEntry {
                 route: r,

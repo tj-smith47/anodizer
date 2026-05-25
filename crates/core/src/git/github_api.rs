@@ -222,3 +222,52 @@ pub fn create_tag_via_github_api(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `dry_run=true` must short-circuit before any subprocess spawn.
+    #[test]
+    fn create_tag_dry_run_short_circuits() {
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        // Even with no git repo / no gh CLI, dry-run must succeed.
+        let result = create_tag_via_github_api("v1.0.0", "msg", true, &log, false);
+        assert!(result.is_ok(), "dry-run must succeed: {result:?}");
+    }
+
+    /// Redact: the token must be replaced with the literal `$GITHUB_TOKEN`
+    /// placeholder when it appears verbatim in the stderr output. Catches
+    /// the case where `gh` echoes the auth header in a verbose error.
+    #[test]
+    fn redact_gh_stderr_replaces_token_value() {
+        let secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let stderr = format!("HTTP 401: token {secret} is invalid");
+        let redacted = redact_gh_stderr(&stderr, Some(secret));
+        assert!(
+            !redacted.contains(secret),
+            "token leaked into redacted output: {redacted}"
+        );
+    }
+
+    #[test]
+    fn redact_gh_stderr_with_no_token_still_strips_url_creds() {
+        // Inline URL credentials must be redacted even with no explicit
+        // token argument.
+        let stderr = "auth failed: https://user:secret-pw@github.com/o/r.git rejected";
+        let redacted = redact_gh_stderr(stderr, None);
+        assert!(
+            !redacted.contains("secret-pw"),
+            "URL credential leaked: {redacted}"
+        );
+    }
+
+    #[test]
+    fn redact_gh_stderr_empty_token_is_noop_on_token_field() {
+        // An empty Some("") token must not pollute the env vector with a
+        // zero-length value (that would match every position in the string).
+        let stderr = "plain error message without credentials";
+        let redacted = redact_gh_stderr(stderr, Some(""));
+        assert_eq!(redacted, stderr);
+    }
+}

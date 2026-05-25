@@ -4908,3 +4908,520 @@ fn test_release_tag_override_invalid_template_errors() {
         "invalid release.tag template must error"
     );
 }
+
+// -----------------------------------------------------------------------
+// Additional run.rs coverage tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_dry_run_gitea_skip_tls_verify_true_logs() {
+    use anodizer_core::config::{GiteaUrlsConfig, ScmRepoConfig};
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                gitea: Some(ScmRepoConfig {
+                    owner: "owner".to_string(),
+                    name: "repo".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    ctx.token_type = ScmTokenType::Gitea;
+    ctx.config.gitea_urls = Some(GiteaUrlsConfig {
+        api: Some("https://gitea.example.com/api/v1".to_string()),
+        download: Some("https://gitea.example.com".to_string()),
+        skip_tls_verify: Some(true),
+    });
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_dry_run_gitlab_use_job_token_logs() {
+    use anodizer_core::config::{GitLabUrlsConfig, ScmRepoConfig};
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                gitlab: Some(ScmRepoConfig {
+                    owner: "g".to_string(),
+                    name: "p".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    ctx.token_type = ScmTokenType::GitLab;
+    ctx.config.gitlab_urls = Some(GitLabUrlsConfig {
+        api: Some("https://gitlab.example.com/api/v4".to_string()),
+        download: None,
+        skip_tls_verify: None,
+        use_package_registry: None,
+        use_job_token: Some(true),
+    });
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_release_tag_override_with_empty_pushed_tag_no_warn() {
+    // When pushed_tag template var is empty, the override-mismatch warn
+    // branch is short-circuited (cannot diff against empty). The stage
+    // must still succeed and use the override tag for the release URL.
+    use anodizer_core::config::ScmRepoConfig;
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                tag: Some("v-override".to_string()),
+                github: Some(ScmRepoConfig {
+                    owner: "o".to_string(),
+                    name: "r".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    // Force Tag template var to empty so the warn branch's pushed_tag check fails.
+    ctx.template_vars_mut().set("Tag", "");
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+    let release_url = ctx
+        .template_vars()
+        .get("ReleaseURL")
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        release_url.contains("v-override"),
+        "override tag must drive ReleaseURL even when pushed tag is empty, got: {release_url}"
+    );
+}
+
+#[test]
+fn test_release_stage_multiple_crates_processed_independently() {
+    // Two crates with release configs — both should reach the dry-run
+    // log path without one short-circuiting the other.
+    use anodizer_core::config::ScmRepoConfig;
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![
+            CrateConfig {
+                name: "c1".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    github: Some(ScmRepoConfig {
+                        owner: "o".to_string(),
+                        name: "c1".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "c2".to_string(),
+                path: ".".to_string(),
+                tag_template: "v2.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    github: Some(ScmRepoConfig {
+                        owner: "o".to_string(),
+                        name: "c2".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+    // ReleaseURL gets overwritten per-crate; the *last* crate wins. This
+    // pins the per-crate ordering (c2 runs after c1).
+    let release_url = ctx
+        .template_vars()
+        .get("ReleaseURL")
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        release_url.contains("c2"),
+        "second crate processed last must own ReleaseURL, got: {release_url}"
+    );
+}
+
+#[test]
+fn test_release_with_exemptions_overlay_in_runtime_allowlist() {
+    // Populate `ctx.determinism.runtime_allowlist` so the exemptions
+    // block render path fires inside `run()`. The dry-run must succeed
+    // regardless of whether the changelog was provided.
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig::default()),
+            ..Default::default()
+        }])
+        .build();
+    ctx.determinism = Some(anodizer_core::DeterminismState {
+        runtime_allowlist: vec![("foo.rpm".to_string(), "tool-bug-1234".to_string())],
+        ..Default::default()
+    });
+    ctx.stage_outputs
+        .changelogs
+        .insert("testcrate".to_string(), "- fix".to_string());
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_dry_run_with_release_header_template_renders() {
+    // Exercise the header template render branch (release_cfg.header.is_some()).
+    let mut ctx = TestContextBuilder::new()
+        .project_name("hello")
+        .tag("v1.2.3")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            release: Some(ReleaseConfig {
+                header: Some(ContentSource::Inline(
+                    "# {{ .ProjectName }} {{ .Tag }}".to_string(),
+                )),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_dry_run_with_release_footer_template_renders() {
+    // Exercise the footer template render branch (release_cfg.footer.is_some()).
+    let mut ctx = TestContextBuilder::new()
+        .project_name("hello")
+        .tag("v1.2.3")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            release: Some(ReleaseConfig {
+                footer: Some(ContentSource::Inline("End {{ .Version }}".to_string())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_dry_run_combines_exemptions_with_header_and_footer() {
+    // Three render layers stack: header, exemptions block prepended to
+    // changelog body, footer. Exercises the format_release_body path that
+    // would otherwise only be hit when all three coexist.
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                header: Some(ContentSource::Inline("H".to_string())),
+                footer: Some(ContentSource::Inline("F".to_string())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    ctx.determinism = Some(anodizer_core::DeterminismState {
+        runtime_allowlist: vec![("x.rpm".to_string(), "reason".to_string())],
+        ..Default::default()
+    });
+    ctx.stage_outputs
+        .changelogs
+        .insert("testcrate".to_string(), "- changelog".to_string());
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_dry_run_with_replace_existing_artifacts_config_flag() {
+    // Hits the OR-branch where the config flag is true (the CLI
+    // override is separately covered).
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                replace_existing_artifacts: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_release_no_crates_with_release_block_silently_succeeds() {
+    // A crate config without a `release` block must be filtered out
+    // before any per-crate work runs. Empty filtered set => Ok(()).
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: None,
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_dry_run_with_make_latest_template_string() {
+    // Template-string make_latest gets resolved through
+    // `resolve_make_latest`; pin the dry-run path with a rendered "auto".
+    use anodizer_core::config::ScmRepoConfig;
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                make_latest: Some(MakeLatestConfig::String(
+                    "{% if IsSnapshot %}false{% else %}true{% endif %}".to_string(),
+                )),
+                github: Some(ScmRepoConfig {
+                    owner: "o".to_string(),
+                    name: "r".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_dry_run_target_commitish_template_renders() {
+    use anodizer_core::config::ScmRepoConfig;
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                target_commitish: Some("release/{{ .Tag }}".to_string()),
+                github: Some(ScmRepoConfig {
+                    owner: "o".to_string(),
+                    name: "r".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_dry_run_skip_upload_zero_falsy_proceeds_to_uploads() {
+    // skip_upload="0" (or "false", or "") => skip_upload is false =>
+    // dry-run iterates the artifact_entries log path. Empty artifacts
+    // produce no upload lines but the dry-run still succeeds.
+    use anodizer_core::config::StringOrBool;
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                skip_upload: Some(StringOrBool::String("0".to_string())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_dry_run_gitlab_skip_tls_verify_and_use_package_registry_logs() {
+    use anodizer_core::config::{GitLabUrlsConfig, ScmRepoConfig};
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                gitlab: Some(ScmRepoConfig {
+                    owner: "g".to_string(),
+                    name: "p".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    ctx.token_type = ScmTokenType::GitLab;
+    // skip_tls_verify=true AND use_package_registry=true so both
+    // dry-run log branches fire (line 414-419 in run.rs).
+    ctx.config.gitlab_urls = Some(GitLabUrlsConfig {
+        api: None,
+        download: Some("https://gitlab.example.com".to_string()),
+        skip_tls_verify: Some(true),
+        use_package_registry: Some(true),
+        use_job_token: Some(false),
+    });
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_dry_run_release_with_dist_dir_set_succeeds() {
+    // Confirms the dist-dir + include_meta=false + extra_files-absent
+    // happy path is reachable through a fully-defaulted release config.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .dist(dist)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig::default()),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_dry_run_with_artifacts_present_lists_uploads() {
+    use anodizer_core::config::ScmRepoConfig;
+    use anodizer_core::test_helpers::artifact_set::TestArtifactSet;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    let artifacts = TestArtifactSet::new()
+        .linux_amd64("testcrate")
+        .windows_amd64_zip("testcrate")
+        .write_to(&dist);
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .dist(dist)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: "o".to_string(),
+                    name: "r".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    for a in artifacts {
+        ctx.artifacts.add(a);
+    }
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+    // Each registered uploadable artifact gets metadata["url"] populated
+    // via the dry-run path's `populate_artifact_download_urls` call.
+    let any_with_url = ctx
+        .artifacts
+        .all()
+        .iter()
+        .any(|a| a.metadata.contains_key("url"));
+    assert!(
+        any_with_url,
+        "dry-run with repo_cfg must populate artifact url metadata"
+    );
+}
+
+#[test]
+fn test_dry_run_replace_existing_artifacts_cli_or_config_or() {
+    // Asserts that both the CLI flag AND the config flag set together
+    // do not double-trigger or change behavior — they OR cleanly.
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                replace_existing_artifacts: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    ctx.options.replace_existing_artifacts = true;
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}

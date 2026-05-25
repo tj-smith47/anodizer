@@ -47,3 +47,81 @@ pub fn run(opts: AnnounceOpts) -> Result<()> {
     let p = pipeline::build_announce_pipeline();
     p.run(&mut ctx, &log)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::fs;
+
+    fn write_minimal_config(dir: &std::path::Path) {
+        fs::write(
+            dir.join(".anodizer.yaml"),
+            r#"project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn missing_config_bails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = run(AnnounceOpts {
+            dry_run: true,
+            dist: None,
+            token: None,
+            skip: vec![],
+            config_override: Some(tmp.path().join("nope.yaml")),
+            verbose: false,
+            debug: false,
+            quiet: true,
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("config file not found"), "{err}");
+    }
+
+    /// `init_publish_stage_ctx` calls `setup_context` (git resolution)
+    /// before `load_artifacts_from_dist`; either failure mode is
+    /// acceptable — both pin the prelude wiring.
+    #[test]
+    #[serial]
+    fn missing_dist_or_git_bails() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_minimal_config(tmp.path());
+        let dist = tmp.path().join("dist-empty");
+        fs::create_dir_all(&dist).unwrap();
+        let result = run(AnnounceOpts {
+            dry_run: true,
+            dist: Some(dist),
+            token: None,
+            skip: vec![],
+            config_override: Some(tmp.path().join(".anodizer.yaml")),
+            verbose: false,
+            debug: false,
+            quiet: true,
+        });
+        assert!(result.is_err(), "must fail with no manifest / no git");
+    }
+
+    #[test]
+    fn announce_opts_skip_stages_wires_through() {
+        let opts = AnnounceOpts {
+            dry_run: true,
+            dist: None,
+            token: None,
+            skip: vec!["twitter".into(), "discord".into()],
+            config_override: None,
+            verbose: false,
+            debug: false,
+            quiet: true,
+        };
+        assert_eq!(opts.skip.len(), 2);
+        assert_eq!(opts.skip[0], "twitter");
+    }
+}

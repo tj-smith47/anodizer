@@ -245,4 +245,69 @@ mod tests {
         let err = validate_subreddit("has space").unwrap_err().to_string();
         assert!(err.contains("invalid characters"), "{err}");
     }
+
+    #[test]
+    fn accepts_min_length_three() {
+        validate_subreddit("aaa").unwrap();
+    }
+
+    #[test]
+    fn accepts_max_length_twenty_one() {
+        validate_subreddit(&"a".repeat(21)).unwrap();
+    }
+
+    #[test]
+    fn accepts_digits_only() {
+        validate_subreddit("12345").unwrap();
+    }
+
+    #[test]
+    fn rejects_unicode_chars() {
+        // Unicode letters are not ASCII alphanumerics and must be rejected
+        // before burning an OAuth round-trip.
+        let err = validate_subreddit("café_x").unwrap_err().to_string();
+        assert!(err.contains("invalid characters"), "{err}");
+    }
+
+    #[test]
+    fn rejects_dot_or_slash() {
+        // Reddit subreddit names disallow path-like chars; rejecting these
+        // prevents an OAuth round-trip from being wasted on an invalid post.
+        assert!(validate_subreddit("foo.bar").is_err());
+        assert!(validate_subreddit("foo/bar").is_err());
+    }
+
+    /// `header_str` returns `None` for absent headers and `Some(value)` for
+    /// present ones; used by `log_rate_limit` to short-circuit when no
+    /// rate-limit headers exist.
+    #[test]
+    fn header_str_returns_value_when_present() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut h = HeaderMap::new();
+        h.insert("x-ratelimit-used", HeaderValue::from_static("42"));
+        assert_eq!(super::header_str(&h, "x-ratelimit-used"), Some("42".into()));
+        assert_eq!(super::header_str(&h, "x-ratelimit-remaining"), None);
+    }
+
+    /// `log_rate_limit` must NOT panic when only some rate-limit headers
+    /// are present — Reddit emits the trio together in production but
+    /// future API changes (or partial responses) shouldn't crash us.
+    #[test]
+    fn log_rate_limit_handles_partial_headers() {
+        use anodizer_core::log::{StageLogger, Verbosity};
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut h = HeaderMap::new();
+        h.insert("x-ratelimit-remaining", HeaderValue::from_static("3"));
+        let log = StageLogger::new("reddit-test", Verbosity::Quiet);
+        super::log_rate_limit(&h, &log);
+    }
+
+    #[test]
+    fn log_rate_limit_noop_when_no_headers_present() {
+        use anodizer_core::log::{StageLogger, Verbosity};
+        use reqwest::header::HeaderMap;
+        let h = HeaderMap::new();
+        let log = StageLogger::new("reddit-test", Verbosity::Quiet);
+        super::log_rate_limit(&h, &log);
+    }
 }

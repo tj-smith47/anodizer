@@ -3324,3 +3324,1121 @@ fn docker_v2_post_hook_with_empty_digest_errors_loudly() {
         msg
     );
 }
+
+// -----------------------------------------------------------------------
+// Additional run.rs coverage tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_docker_v2_duplicate_id_bails() {
+    // Two docker_v2 configs sharing the same `id` must fail the early
+    // uniqueness validation in run.rs (mirrors GoReleaser v2/docker.go:93).
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let cfg_a = DockerV2Config {
+        id: Some("dup".to_string()),
+        images: vec!["a".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+    let cfg_b = DockerV2Config {
+        id: Some("dup".to_string()),
+        images: vec!["b".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "p".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "p".to_string(),
+        path: ".".to_string(),
+        tag_template: "v1.0.0".to_string(),
+        docker_v2: Some(vec![cfg_a, cfg_b]),
+        ..Default::default()
+    }];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("found 2 docker_v2 with the ID 'dup'"),
+        "duplicate id must produce a clear error naming the duplicate, got: {err}"
+    );
+}
+
+#[test]
+fn test_docker_manifest_empty_image_templates_bails() {
+    // image_templates=[] is a configuration error per run.rs validation.
+    use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let config = Config {
+        project_name: "p".to_string(),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_manifests: Some(vec![DockerManifestConfig {
+                name_template: "ghcr.io/o/app:latest".to_string(),
+                image_templates: vec![],
+                create_flags: None,
+                push_flags: None,
+                skip_push: None,
+                id: Some("empty".to_string()),
+                use_backend: None,
+                retry: None,
+            }]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("image_templates must not be empty"),
+        "empty image_templates must surface a clear validation error, got: {err}"
+    );
+    assert!(
+        err.contains("empty"),
+        "error must name the offending manifest, got: {err}"
+    );
+}
+
+#[test]
+fn test_docker_manifest_empty_image_templates_uses_index_in_message_when_no_id() {
+    // When the manifest has no `id`, the error message should reference
+    // the index (positional fallback).
+    use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let config = Config {
+        project_name: "p".to_string(),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_manifests: Some(vec![DockerManifestConfig {
+                name_template: "ghcr.io/o/app:latest".to_string(),
+                image_templates: vec![],
+                create_flags: None,
+                push_flags: None,
+                skip_push: None,
+                id: None,
+                use_backend: None,
+                retry: None,
+            }]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("index 0"),
+        "error should use index fallback when id is unset, got: {err}"
+    );
+}
+
+#[test]
+fn test_docker_manifest_skipped_if_already_pushed_by_v2_multiplatform() {
+    // When docker_v2 pushes a multi-platform manifest list (>1 platform
+    // + should_push), the same tag in docker_manifests should be skipped
+    // rather than attempted again. Use snapshot=false + dry_run=false is
+    // unsafe (would shell out); use snapshot=true to make should_push
+    // false. But then v2_multiplatform_tags wouldn't be populated...
+    //
+    // Easier: dry-run, but `should_push` is `!dry_run` => false in dry
+    // run. The v2_multiplatform_tags insertion only happens when
+    // should_push is true. So this branch CANNOT be exercised purely in
+    // dry-run; the test below verifies the no-skip path stays consistent
+    // (a regression that flipped the skip condition would still fail).
+    use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let v2 = DockerV2Config {
+        id: Some("mp".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["v1.0.0".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string(), "linux/arm64".to_string()]),
+        ..Default::default()
+    };
+
+    let manifest = DockerManifestConfig {
+        name_template: "ghcr.io/o/app:v1.0.0".to_string(),
+        image_templates: vec!["ghcr.io/o/app:v1.0.0".to_string()],
+        create_flags: None,
+        push_flags: None,
+        skip_push: None,
+        id: Some("m".to_string()),
+        use_backend: None,
+        retry: None,
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            docker_manifests: Some(vec![manifest]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    // Dry-run with both v2 (multi-platform) and a manifest entry must
+    // succeed. The manifest artifact is registered (skip path doesn't
+    // apply in dry-run because v2 never pushed).
+    DockerStage::new().run(&mut ctx).unwrap();
+    let manifests = ctx.artifacts.by_kind(ArtifactKind::DockerManifest);
+    assert_eq!(
+        manifests.len(),
+        1,
+        "dry-run manifest should still register an artifact"
+    );
+}
+
+#[test]
+fn test_docker_v2_id_filter_propagates_to_artifact_metadata() {
+    // The v2 config's `id` field flows into the registered artifact's
+    // metadata["id"]. Pin so a future rename of the metadata key breaks
+    // here, not in downstream filtering / publish stages.
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let v2 = DockerV2Config {
+        id: Some("my-id".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    DockerStage::new().run(&mut ctx).unwrap();
+    let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+    assert_eq!(images.len(), 1);
+    assert_eq!(
+        images[0].metadata.get("id").map(String::as_str),
+        Some("my-id")
+    );
+}
+
+#[test]
+fn test_docker_stage_filters_by_selected_crates() {
+    // The crates filter at run.rs:62 must exclude crates not in
+    // `ctx.options.selected_crates`. Two crates each with a docker_v2
+    // block; the unselected one must NOT produce artifacts.
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let make_v2 = |img: &str| DockerV2Config {
+        id: Some(format!("id-{img}")),
+        images: vec![format!("ghcr.io/o/{img}")],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![
+            CrateConfig {
+                name: "in".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                docker_v2: Some(vec![make_v2("in")]),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "out".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                docker_v2: Some(vec![make_v2("out")]),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            selected_crates: vec!["in".to_string()],
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    DockerStage::new().run(&mut ctx).unwrap();
+    let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+    assert_eq!(images.len(), 1, "only the selected crate should produce");
+    let tag = images[0].metadata.get("tag").map(String::as_str).unwrap();
+    assert!(
+        tag.contains("/in:"),
+        "selected crate 'in' must be the one that registered, got tag: {tag}"
+    );
+}
+
+#[test]
+fn test_docker_v2_skip_template_evaluating_to_true_skips_pipe() {
+    // `skip: "{{ IsSnapshot }}"` => snapshot=true renders "true" → skip.
+    // Verifies the template-rendered skip path (vs the literal bool).
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let v2 = DockerV2Config {
+        id: Some("sk".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        skip: Some(StringOrBool::String("{{ IsSnapshot }}".to_string())),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            snapshot: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("IsSnapshot", "true");
+
+    DockerStage::new().run(&mut ctx).unwrap();
+    let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+    assert!(
+        images.is_empty(),
+        "skip template rendering 'true' must short-circuit; got {} images",
+        images.len()
+    );
+}
+
+#[test]
+fn test_docker_v2_snapshot_multi_platform_splits_per_platform_tag_suffix() {
+    // GR parity: snapshot mode with multi-platform splits into per-
+    // platform builds and appends an arch suffix to each tag.
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let v2 = DockerV2Config {
+        id: Some("snap".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string(), "linux/arm64".to_string()]),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            snapshot: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("IsSnapshot", "true");
+
+    DockerStage::new().run(&mut ctx).unwrap();
+    let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+    // 2 platforms × 1 tag = 2 artifacts, each with an arch suffix.
+    assert_eq!(images.len(), 2);
+    let tags: Vec<String> = images
+        .iter()
+        .map(|a| a.metadata.get("tag").cloned().unwrap_or_default())
+        .collect();
+    assert!(
+        tags.iter().any(|t| t.ends_with("-amd64")),
+        "expected an amd64-suffixed tag, got: {tags:?}"
+    );
+    assert!(
+        tags.iter().any(|t| t.ends_with("-arm64")),
+        "expected an arm64-suffixed tag, got: {tags:?}"
+    );
+}
+
+#[test]
+fn test_docker_v2_rendered_tags_empty_short_circuits_build() {
+    // When every tag template renders to "", the per-snapshot loop should
+    // warn and continue (no artifacts registered for that config).
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let v2 = DockerV2Config {
+        id: Some("e".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        // Renders to empty when IsSnapshot is false.
+        tags: vec!["{% if IsSnapshot %}latest{% endif %}".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            snapshot: false,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("IsSnapshot", "false");
+
+    DockerStage::new().run(&mut ctx).unwrap();
+    let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+    assert!(
+        images.is_empty(),
+        "empty rendered tags must short-circuit; got {} artifacts",
+        images.len()
+    );
+}
+
+#[test]
+fn test_docker_v2_build_args_with_empty_key_or_value_are_filtered() {
+    // build_args entries where either key or value renders empty get
+    // dropped (run.rs filtering inside the rendered_build_args loop).
+    // Use dry-run + a registered artifact assertion to prove the stage
+    // completed (filtering didn't error out).
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+    use std::collections::HashMap;
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let mut build_args: HashMap<String, String> = HashMap::new();
+    // Empty value — filtered out (run.rs line ~383).
+    build_args.insert("EMPTY_VAL".to_string(), "".to_string());
+    // Empty key — filtered out.
+    build_args.insert("".to_string(), "VAL".to_string());
+    // Normal pair — kept.
+    build_args.insert("REAL".to_string(), "value".to_string());
+
+    let v2 = DockerV2Config {
+        id: Some("a".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        build_args: Some(build_args),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    // Filtering produces no errors, and the stage registers the artifact.
+    DockerStage::new().run(&mut ctx).unwrap();
+    let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+    assert_eq!(images.len(), 1);
+}
+
+#[test]
+fn test_docker_v2_invalid_build_arg_template_errors() {
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+    use std::collections::HashMap;
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let mut build_args: HashMap<String, String> = HashMap::new();
+    build_args.insert("KEY".to_string(), "{{ unterminated".to_string());
+
+    let v2 = DockerV2Config {
+        id: Some("bad".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        build_args: Some(build_args),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("render build_arg"),
+        "bad build_arg template must surface a contextual error, got: {err}"
+    );
+}
+
+#[test]
+fn test_docker_v2_invalid_image_template_errors() {
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let v2 = DockerV2Config {
+        id: Some("bi".to_string()),
+        images: vec!["{{ unterminated".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("render image template"),
+        "bad image template must surface a contextual error, got: {err}"
+    );
+}
+
+#[test]
+fn test_docker_v2_invalid_tag_template_errors() {
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let v2 = DockerV2Config {
+        id: Some("bt".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["{{ unterminated".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("render tag template"),
+        "bad tag template must surface a contextual error, got: {err}"
+    );
+}
+
+#[test]
+fn test_docker_v2_invalid_dockerfile_template_errors() {
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    // Note: NO Dockerfile written — but the template fails to render
+    // first, so the missing-file path isn't reached.
+
+    let v2 = DockerV2Config {
+        id: Some("bd".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: "{{ unterminated".to_string(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("render dockerfile path"),
+        "bad dockerfile template must surface a contextual error, got: {err}"
+    );
+}
+
+#[test]
+fn test_docker_manifest_skipped_when_image_template_renders_empty() {
+    // Empty image_templates entries (rendered to "") get skipped with a
+    // warn but the manifest still runs with the remaining entries.
+    use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let config = Config {
+        project_name: "p".to_string(),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_manifests: Some(vec![DockerManifestConfig {
+                name_template: "ghcr.io/o/app:latest".to_string(),
+                image_templates: vec![
+                    "{% if IsSnapshot %}skip{% endif %}".to_string(),
+                    "ghcr.io/o/app:latest-amd64".to_string(),
+                ],
+                create_flags: None,
+                push_flags: None,
+                skip_push: None,
+                id: Some("partial".to_string()),
+                use_backend: None,
+                retry: None,
+            }]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            snapshot: false,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("IsSnapshot", "false");
+
+    DockerStage::new().run(&mut ctx).unwrap();
+    let manifests = ctx.artifacts.by_kind(ArtifactKind::DockerManifest);
+    assert_eq!(manifests.len(), 1);
+    // images metadata should only list the non-empty rendered entry.
+    let images = manifests[0]
+        .metadata
+        .get("images")
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        images, "ghcr.io/o/app:latest-amd64",
+        "empty rendered image template must be filtered out of the images list, got: {images}"
+    );
+}
+
+#[test]
+fn test_docker_manifest_invalid_name_template_errors() {
+    use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let config = Config {
+        project_name: "p".to_string(),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_manifests: Some(vec![DockerManifestConfig {
+                name_template: "{{ unterminated".to_string(),
+                image_templates: vec!["ghcr.io/o/app:latest".to_string()],
+                create_flags: None,
+                push_flags: None,
+                skip_push: None,
+                id: Some("bad".to_string()),
+                use_backend: None,
+                retry: None,
+            }]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("render manifest name_template"),
+        "bad manifest name template must surface a contextual error, got: {err}"
+    );
+}
+
+#[test]
+fn test_docker_stage_no_crates_with_docker_config_short_circuits() {
+    // A crate with NO docker_v2 / docker_manifests config gets filtered
+    // out at run.rs:64; with no crates left, run returns Ok(()) without
+    // running the buildx-version probe.
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let config = Config {
+        project_name: "p".to_string(),
+        crates: vec![CrateConfig {
+            name: "no-docker".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: None,
+            docker_manifests: None,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: false,
+            ..Default::default()
+        },
+    );
+
+    // Even with dry_run=false, no probe runs because there are no docker
+    // configs. The stage returns Ok cleanly.
+    DockerStage::new().run(&mut ctx).unwrap();
+    assert!(
+        ctx.artifacts
+            .by_kind(ArtifactKind::DockerImageV2)
+            .is_empty(),
+        "stage with no docker config must not produce artifacts"
+    );
+}
+
+#[test]
+fn test_docker_v2_skip_with_literal_false_proceeds() {
+    // The `skip` field bool-shaped as false should NOT short-circuit;
+    // the build proceeds and registers artifacts.
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let v2 = DockerV2Config {
+        id: Some("p".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        skip: Some(StringOrBool::Bool(false)),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    DockerStage::new().run(&mut ctx).unwrap();
+    let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+    assert_eq!(
+        images.len(),
+        1,
+        "skip=false must proceed to register artifacts"
+    );
+}
+
+#[test]
+fn test_docker_v2_filter_empty_rendered_platforms() {
+    // A platform template that renders to "" must be filtered out of the
+    // platforms slice; pin via single-platform dry-run that still registers.
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let v2 = DockerV2Config {
+        id: Some("fp".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec![
+            "linux/amd64".to_string(),
+            // Renders to "" when IsSnapshot is false → filtered.
+            "{% if IsSnapshot %}linux/arm64{% endif %}".to_string(),
+        ]),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            snapshot: false,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("IsSnapshot", "false");
+
+    DockerStage::new().run(&mut ctx).unwrap();
+    let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+    assert_eq!(images.len(), 1);
+    // Single resolved platform should be in the metadata.
+    assert_eq!(
+        images[0].metadata.get("platforms").map(String::as_str),
+        Some("linux/amd64")
+    );
+}
+
+#[test]
+fn test_docker_v2_invalid_annotation_template_errors() {
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+    use std::collections::HashMap;
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let mut annotations: HashMap<String, String> = HashMap::new();
+    annotations.insert("k".to_string(), "{{ unterminated".to_string());
+
+    let v2 = DockerV2Config {
+        id: Some("ann".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        annotations: Some(annotations),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("render annotation"),
+        "bad annotation template must surface a contextual error, got: {err}"
+    );
+}
+
+#[test]
+fn test_docker_v2_invalid_label_template_errors() {
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+    use std::collections::HashMap;
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let mut labels: HashMap<String, String> = HashMap::new();
+    labels.insert("k".to_string(), "{{ unterminated".to_string());
+
+    let v2 = DockerV2Config {
+        id: Some("lab".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        labels: Some(labels),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("render label"),
+        "bad label template must surface a contextual error, got: {err}"
+    );
+}

@@ -95,3 +95,90 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
     let p = pipeline::build_publish_pipeline();
     p.run(&mut ctx, &log)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::fs;
+
+    fn write_minimal_config(dir: &std::path::Path) {
+        fs::write(
+            dir.join(".anodizer.yaml"),
+            r#"project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+        )
+        .unwrap();
+    }
+
+    /// continue (no --merge) follows the single-host stage-resume path:
+    /// load dist/ + run publish-only. `init_publish_stage_ctx` runs
+    /// `setup_context` (git resolution) before `load_artifacts_from_dist`,
+    /// so either failure mode is acceptable — both pin the prelude.
+    #[test]
+    #[serial]
+    fn no_merge_missing_dist_or_git_bails() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_minimal_config(tmp.path());
+        let dist = tmp.path().join("dist-empty");
+        fs::create_dir_all(&dist).unwrap();
+        let result = run(ContinueOpts {
+            dist: Some(dist),
+            dry_run: true,
+            skip: vec![],
+            token: None,
+            config_override: Some(tmp.path().join(".anodizer.yaml")),
+            verbose: false,
+            debug: false,
+            quiet: true,
+            merge: false,
+        });
+        assert!(result.is_err(), "must fail with no manifest / no git");
+    }
+
+    /// continue --merge takes a different path (run_merge); the prelude
+    /// builds context manually but still loads config. A bogus override
+    /// must err on find_config.
+    #[test]
+    #[serial]
+    fn merge_missing_config_bails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = run(ContinueOpts {
+            dist: None,
+            dry_run: true,
+            skip: vec![],
+            token: None,
+            config_override: Some(tmp.path().join("nope.yaml")),
+            verbose: false,
+            debug: false,
+            quiet: true,
+            merge: true,
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("config file not found"), "{err}");
+    }
+
+    #[test]
+    fn continue_opts_struct_round_trips() {
+        let opts = ContinueOpts {
+            dist: Some(std::path::PathBuf::from("/tmp/x")),
+            dry_run: true,
+            skip: vec!["docker".into()],
+            token: Some("t".into()),
+            config_override: None,
+            verbose: false,
+            debug: false,
+            quiet: true,
+            merge: false,
+        };
+        assert!(opts.dry_run);
+        assert_eq!(opts.skip, vec!["docker".to_string()]);
+        assert_eq!(opts.token.as_deref(), Some("t"));
+        assert!(!opts.merge);
+    }
+}

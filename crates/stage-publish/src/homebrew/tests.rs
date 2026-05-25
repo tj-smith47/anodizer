@@ -1794,3 +1794,808 @@ fn test_disambiguate_homebrew_archives_logs_dropped_via_sink() {
         "warn line should name the dropped archive: {line}"
     );
 }
+
+// ===========================================================================
+// publish_to_homebrew / publish_cask / publish_top_level_homebrew_casks
+// early-exit tests.
+//
+// These pin the silent-skip contract — each guard that prevents a real push
+// MUST return Ok(false) (or Ok(()) for publish_cask), and the upstream
+// callers use the boolean to decide whether to record rollback evidence.
+// A regression that returned `Ok(true)` would cause the rollback orchestrator
+// to attempt `git revert HEAD` in a temp clone that has nothing this run
+// actually changed.
+// ===========================================================================
+
+use anodizer_core::config::{
+    Config, CrateConfig, HomebrewCaskConfig, HomebrewConfig, PublishConfig, RepositoryConfig,
+    StringOrBool,
+};
+use anodizer_core::context::{Context, ContextOptions};
+
+fn quiet_log() -> StageLogger {
+    StageLogger::new("publish", Verbosity::Quiet)
+}
+
+fn hb_ctx(hb_cfg: HomebrewConfig, dry_run: bool) -> Context {
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                homebrew: Some(hb_cfg),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    Context::new(
+        config,
+        ContextOptions {
+            dry_run,
+            ..Default::default()
+        },
+    )
+}
+
+/// publish_to_homebrew: missing `publish.homebrew` block => actionable error.
+#[test]
+fn publish_to_homebrew_missing_config_errors() {
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig::default()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let err = super::publish_to_homebrew(&mut ctx, "mytool", &quiet_log()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("no homebrew config"), "got: {msg}");
+    assert!(msg.contains("mytool"));
+}
+
+/// publish_to_homebrew: `skip_upload: true` returns Ok(false) before any work.
+#[test]
+fn publish_to_homebrew_skip_upload_true_returns_false() {
+    let cfg = HomebrewConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("homebrew-tap".to_string()),
+            ..Default::default()
+        }),
+        skip_upload: Some(StringOrBool::Bool(true)),
+        ..Default::default()
+    };
+    let mut ctx = hb_ctx(cfg, false);
+    let got = super::publish_to_homebrew(&mut ctx, "mytool", &quiet_log()).unwrap();
+    assert!(!got, "skip_upload=true must short-circuit Ok(false)");
+}
+
+/// publish_to_homebrew: missing repository => actionable error citing crate.
+#[test]
+fn publish_to_homebrew_missing_repository_errors() {
+    let cfg = HomebrewConfig {
+        repository: None,
+        ..Default::default()
+    };
+    let mut ctx = hb_ctx(cfg, false);
+    let err = super::publish_to_homebrew(&mut ctx, "mytool", &quiet_log()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("no repository config"), "{msg}");
+    assert!(msg.contains("mytool"));
+}
+
+/// publish_to_homebrew: dry-run returns Ok(false) (no push).
+#[test]
+fn publish_to_homebrew_dry_run_returns_false() {
+    let cfg = HomebrewConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("homebrew-tap".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = hb_ctx(cfg, true);
+    let got = super::publish_to_homebrew(&mut ctx, "mytool", &quiet_log()).unwrap();
+    assert!(!got, "dry-run must return Ok(false)");
+}
+
+/// publish_to_homebrew: no archive artifacts => bail with actionable error
+/// mentioning the filter knobs (ids / amd64_variant / arm_variant).
+/// Prevents a broken formula with empty url/sha256 from being written.
+#[test]
+fn publish_to_homebrew_no_archives_errors() {
+    let cfg = HomebrewConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("homebrew-tap".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = hb_ctx(cfg, false);
+    let err = super::publish_to_homebrew(&mut ctx, "mytool", &quiet_log()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("no archives matched filters"), "{msg}");
+    assert!(msg.contains("mytool"));
+    assert!(msg.contains("amd64_variant"));
+}
+
+/// publish_cask: missing `publish.homebrew` => error.
+#[test]
+fn publish_cask_missing_homebrew_config_errors() {
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig::default()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let err = super::publish_cask(&mut ctx, "mytool", &quiet_log()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("no homebrew config"), "{msg}");
+}
+
+/// publish_cask: homebrew set but `cask:` block absent => error.
+#[test]
+fn publish_cask_missing_cask_config_errors() {
+    let cfg = HomebrewConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("homebrew-tap".to_string()),
+            ..Default::default()
+        }),
+        cask: None,
+        ..Default::default()
+    };
+    let mut ctx = hb_ctx(cfg, false);
+    let err = super::publish_cask(&mut ctx, "mytool", &quiet_log()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("no cask config"), "{msg}");
+}
+
+/// publish_cask: cask-level `skip_upload: true` takes precedence over the
+/// formula's skip_upload and skips before any git work.
+#[test]
+fn publish_cask_cask_skip_upload_returns_ok() {
+    let cfg = HomebrewConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("homebrew-tap".to_string()),
+            ..Default::default()
+        }),
+        cask: Some(HomebrewCaskConfig {
+            skip_upload: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = hb_ctx(cfg, false);
+    super::publish_cask(&mut ctx, "mytool", &quiet_log())
+        .expect("skip_upload=true must succeed without pushing");
+}
+
+/// publish_cask: missing repository => error citing crate name.
+#[test]
+fn publish_cask_missing_repository_errors() {
+    let cfg = HomebrewConfig {
+        repository: None,
+        cask: Some(HomebrewCaskConfig::default()),
+        ..Default::default()
+    };
+    let mut ctx = hb_ctx(cfg, false);
+    let err = super::publish_cask(&mut ctx, "mytool", &quiet_log()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("no repository config"), "{msg}");
+    assert!(msg.contains("mytool"));
+}
+
+/// publish_cask: dry-run short-circuits to Ok(()).
+#[test]
+fn publish_cask_dry_run_returns_ok() {
+    let cfg = HomebrewConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("homebrew-tap".to_string()),
+            ..Default::default()
+        }),
+        cask: Some(HomebrewCaskConfig {
+            name: Some("mytool".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = hb_ctx(cfg, true);
+    super::publish_cask(&mut ctx, "mytool", &quiet_log()).expect("dry-run must succeed");
+}
+
+/// publish_top_level_homebrew_casks: empty list returns Ok(false).
+#[test]
+fn publish_top_level_homebrew_casks_empty_returns_false() {
+    let config = Config {
+        homebrew_casks: None,
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap();
+    assert!(!got, "no entries => Ok(false)");
+}
+
+/// publish_top_level_homebrew_casks: list present but empty vec returns Ok(false).
+#[test]
+fn publish_top_level_homebrew_casks_empty_vec_returns_false() {
+    let config = Config {
+        homebrew_casks: Some(vec![]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap();
+    assert!(!got);
+}
+
+/// publish_top_level_homebrew_casks: missing repository on an entry => error
+/// citing the cask name (operators need to know which entry is mis-configured).
+#[test]
+fn publish_top_level_homebrew_casks_missing_repository_errors() {
+    let config = Config {
+        homebrew_casks: Some(vec![HomebrewCaskConfig {
+            name: Some("mycask".to_string()),
+            repository: None,
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let err = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("no repository config"), "{msg}");
+    assert!(msg.contains("mycask"));
+}
+
+/// publish_top_level_homebrew_casks: dry-run returns Ok(false) for every
+/// entry (no actual push).
+#[test]
+fn publish_top_level_homebrew_casks_dry_run_returns_false() {
+    let config = Config {
+        homebrew_casks: Some(vec![HomebrewCaskConfig {
+            name: Some("mycask".to_string()),
+            repository: Some(RepositoryConfig {
+                owner: Some("myorg".to_string()),
+                name: Some("homebrew-cask-tap".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap();
+    assert!(!got, "dry-run must return Ok(false)");
+}
+
+/// publish_top_level_homebrew_casks: `skip_upload: true` on the entry
+/// short-circuits to a continue (no push, no error) and the function
+/// reports Ok(false) when every entry skipped.
+#[test]
+fn publish_top_level_homebrew_casks_skip_upload_returns_false() {
+    let config = Config {
+        homebrew_casks: Some(vec![HomebrewCaskConfig {
+            name: Some("mycask".to_string()),
+            repository: Some(RepositoryConfig {
+                owner: Some("myorg".to_string()),
+                name: Some("homebrew-cask-tap".to_string()),
+                ..Default::default()
+            }),
+            skip_upload: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap();
+    assert!(!got, "every entry skipped => Ok(false)");
+}
+
+// ===========================================================================
+// generate_cask_from_context — exercise the multi-platform / fallback paths
+// in cask.rs that aren't reachable through the bare `generate_cask` API.
+// ===========================================================================
+
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+fn art_with_url_sha(
+    kind: ArtifactKind,
+    name: &str,
+    target: &str,
+    url: &str,
+    sha: &str,
+) -> Artifact {
+    let mut metadata = HashMap::new();
+    metadata.insert("url".to_string(), url.to_string());
+    metadata.insert("sha256".to_string(), sha.to_string());
+    Artifact {
+        kind,
+        path: std::path::PathBuf::from(format!("/tmp/{name}")),
+        name: name.to_string(),
+        target: Some(target.to_string()),
+        crate_name: "mytool".to_string(),
+        metadata,
+        size: None,
+    }
+}
+
+/// `find_top_level_cask_artifact` prefers DiskImage over Archive when both
+/// are available for darwin. Pins the GR-parity selection order.
+#[test]
+fn find_top_level_cask_artifact_prefers_disk_image_over_archive() {
+    let config = Config::default();
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin.tar.gz",
+        "aarch64-apple-darwin",
+        "https://e.com/mytool.tar.gz",
+        "archsha",
+    ));
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::DiskImage,
+        "mytool.dmg",
+        "aarch64-apple-darwin",
+        "https://e.com/mytool.dmg",
+        "dmgsha",
+    ));
+    let got = super::cask::find_top_level_cask_artifact(&ctx, None).expect("artifact found");
+    assert_eq!(got.kind, ArtifactKind::DiskImage, "DiskImage preferred");
+}
+
+/// `find_top_level_cask_artifact` falls back to Archive when no DiskImage
+/// is present.
+#[test]
+fn find_top_level_cask_artifact_falls_back_to_archive() {
+    let config = Config::default();
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin.tar.gz",
+        "aarch64-apple-darwin",
+        "https://e.com/mytool.tar.gz",
+        "archsha",
+    ));
+    let got = super::cask::find_top_level_cask_artifact(&ctx, None).expect("artifact found");
+    assert_eq!(got.kind, ArtifactKind::Archive);
+}
+
+/// `find_top_level_cask_artifact` returns None when nothing matches darwin/macos.
+#[test]
+fn find_top_level_cask_artifact_returns_none_for_no_macos() {
+    let config = Config::default();
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-linux.tar.gz",
+        "x86_64-unknown-linux-gnu",
+        "https://e.com/mytool.tar.gz",
+        "linuxsha",
+    ));
+    assert!(super::cask::find_top_level_cask_artifact(&ctx, None).is_none());
+}
+
+/// `find_top_level_cask_artifact` with an IDs filter excludes non-matching
+/// artifacts. Pins the GR-parity ids filter behaviour.
+#[test]
+fn find_top_level_cask_artifact_filters_by_id() {
+    let config = Config::default();
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let mut a = art_with_url_sha(
+        ArtifactKind::DiskImage,
+        "mytool.dmg",
+        "aarch64-apple-darwin",
+        "https://e.com/mytool.dmg",
+        "dmgsha",
+    );
+    a.metadata.insert("id".to_string(), "stable".to_string());
+    ctx.artifacts.add(a);
+    // Only `nightly` IDs are wanted => returns None.
+    assert!(
+        super::cask::find_top_level_cask_artifact(&ctx, Some(&["nightly".to_string()])).is_none()
+    );
+    // `stable` IDs requested => the artifact is returned.
+    let got = super::cask::find_top_level_cask_artifact(&ctx, Some(&["stable".to_string()]))
+        .expect("artifact must match");
+    assert_eq!(got.kind, ArtifactKind::DiskImage);
+}
+
+/// `generate_cask` with a multi-platform `platforms` payload uses the
+/// per-arch on_intel / on_arm blocks INSIDE on_macos / on_linux, with
+/// the top-level url/sha256 elided.
+#[test]
+fn generate_cask_multi_platform_emits_per_arch_blocks_without_top_level_url() {
+    use super::cask::{CaskArchEntry, CaskParams, CaskPlatformBlock};
+    let params = CaskParams {
+        name: "mytool",
+        display_name: "mytool",
+        alternative_names: &[],
+        version: "1.0.0",
+        sha256: "ignored-when-platforms-present",
+        url: "https://ignored.example/x.tar.gz",
+        url_extras: "",
+        url_extras_indented: "",
+        homepage: None,
+        description: None,
+        app: None,
+        binaries: &[],
+        caveats: None,
+        zap_block: "",
+        uninstall_block: "",
+        custom_block: None,
+        service: None,
+        manpages: &[],
+        completions_bash: None,
+        completions_zsh: None,
+        completions_fish: None,
+        depends_on: &[],
+        conflicts_with: &[],
+        preflight: None,
+        postflight: None,
+        uninstall_preflight: None,
+        uninstall_postflight: None,
+        platforms: vec![
+            CaskPlatformBlock {
+                os_block: "macos".to_string(),
+                arches: vec![
+                    CaskArchEntry {
+                        arch_block: "intel".to_string(),
+                        url: "https://example.com/intel.tar.gz".to_string(),
+                        sha256: "intelsha".to_string(),
+                    },
+                    CaskArchEntry {
+                        arch_block: "arm".to_string(),
+                        url: "https://example.com/arm.tar.gz".to_string(),
+                        sha256: "armsha".to_string(),
+                    },
+                ],
+            },
+            CaskPlatformBlock {
+                os_block: "linux".to_string(),
+                arches: vec![CaskArchEntry {
+                    arch_block: "intel".to_string(),
+                    url: "https://example.com/linux.tar.gz".to_string(),
+                    sha256: "linuxsha".to_string(),
+                }],
+            },
+        ],
+        generate_completions: None,
+    };
+    let cask = super::cask::generate_cask(&params).unwrap();
+    // on_macos / on_linux scaffolding present.
+    assert!(cask.contains("on_macos do"));
+    assert!(cask.contains("on_linux do"));
+    assert!(cask.contains("on_intel do"));
+    assert!(cask.contains("on_arm do"));
+    // All three shas appear inside the per-arch blocks.
+    assert!(cask.contains("intelsha"));
+    assert!(cask.contains("armsha"));
+    assert!(cask.contains("linuxsha"));
+    // The top-level url/sha256 must NOT be rendered when `has_platforms` is true.
+    assert!(
+        !cask.contains("ignored-when-platforms-present"),
+        "top-level sha256 must be elided when platforms are set"
+    );
+    assert!(!cask.contains("https://ignored.example/x.tar.gz"));
+}
+
+/// `generate_cask` with alternative_names emits multiple `name` lines.
+#[test]
+fn generate_cask_emits_alternative_names() {
+    use super::cask::CaskParams;
+    let alts = vec!["alt-1".to_string(), "alt-2".to_string()];
+    let params = CaskParams {
+        name: "mytool",
+        display_name: "MyTool",
+        alternative_names: &alts,
+        version: "1.0.0",
+        sha256: "deadbeef",
+        url: "https://e.com/x.tar.gz",
+        url_extras: "",
+        url_extras_indented: "",
+        homepage: None,
+        description: None,
+        app: None,
+        binaries: &[],
+        caveats: None,
+        zap_block: "",
+        uninstall_block: "",
+        custom_block: None,
+        service: None,
+        manpages: &[],
+        completions_bash: None,
+        completions_zsh: None,
+        completions_fish: None,
+        depends_on: &[],
+        conflicts_with: &[],
+        preflight: None,
+        postflight: None,
+        uninstall_preflight: None,
+        uninstall_postflight: None,
+        platforms: Vec::new(),
+        generate_completions: None,
+    };
+    let cask = super::cask::generate_cask(&params).unwrap();
+    assert!(cask.contains("name \"MyTool\""));
+    assert!(cask.contains("name \"alt-1\""));
+    assert!(cask.contains("name \"alt-2\""));
+}
+
+/// `generate_cask` with manpages emits a `manpage` line per entry.
+#[test]
+fn generate_cask_emits_manpages() {
+    use super::cask::CaskParams;
+    let pages = vec![
+        "share/man/man1/x.1".to_string(),
+        "share/man/man1/y.1".to_string(),
+    ];
+    let params = CaskParams {
+        name: "mytool",
+        display_name: "mytool",
+        alternative_names: &[],
+        version: "1.0.0",
+        sha256: "deadbeef",
+        url: "https://e.com/x.tar.gz",
+        url_extras: "",
+        url_extras_indented: "",
+        homepage: None,
+        description: None,
+        app: None,
+        binaries: &[],
+        caveats: None,
+        zap_block: "",
+        uninstall_block: "",
+        custom_block: None,
+        service: None,
+        manpages: &pages,
+        completions_bash: None,
+        completions_zsh: None,
+        completions_fish: None,
+        depends_on: &[],
+        conflicts_with: &[],
+        preflight: None,
+        postflight: None,
+        uninstall_preflight: None,
+        uninstall_postflight: None,
+        platforms: Vec::new(),
+        generate_completions: None,
+    };
+    let cask = super::cask::generate_cask(&params).unwrap();
+    assert!(cask.contains("manpage \"share/man/man1/x.1\""));
+    assert!(cask.contains("manpage \"share/man/man1/y.1\""));
+}
+
+/// `generate_cask` with completions emits `bash_completion` / `zsh_completion`
+/// / `fish_completion` lines only when configured.
+#[test]
+fn generate_cask_emits_completion_lines_only_for_set_shells() {
+    use super::cask::CaskParams;
+    let params = CaskParams {
+        name: "mytool",
+        display_name: "mytool",
+        alternative_names: &[],
+        version: "1.0.0",
+        sha256: "deadbeef",
+        url: "https://e.com/x.tar.gz",
+        url_extras: "",
+        url_extras_indented: "",
+        homepage: None,
+        description: None,
+        app: None,
+        binaries: &[],
+        caveats: None,
+        zap_block: "",
+        uninstall_block: "",
+        custom_block: None,
+        service: None,
+        manpages: &[],
+        completions_bash: Some("share/bash-completion/mytool"),
+        completions_zsh: Some("share/zsh/site-functions/_mytool"),
+        completions_fish: None,
+        depends_on: &[],
+        conflicts_with: &[],
+        preflight: None,
+        postflight: None,
+        uninstall_preflight: None,
+        uninstall_postflight: None,
+        platforms: Vec::new(),
+        generate_completions: None,
+    };
+    let cask = super::cask::generate_cask(&params).unwrap();
+    assert!(cask.contains("bash_completion \"share/bash-completion/mytool\""));
+    assert!(cask.contains("zsh_completion \"share/zsh/site-functions/_mytool\""));
+    assert!(
+        !cask.contains("fish_completion"),
+        "fish completion must NOT render when None"
+    );
+}
+
+/// `generate_cask` with all hooks renders preflight/postflight/uninstall_preflight/postflight.
+#[test]
+fn generate_cask_emits_all_hooks() {
+    use super::cask::CaskParams;
+    let params = CaskParams {
+        name: "mytool",
+        display_name: "mytool",
+        alternative_names: &[],
+        version: "1.0.0",
+        sha256: "deadbeef",
+        url: "https://e.com/x.tar.gz",
+        url_extras: "",
+        url_extras_indented: "",
+        homepage: None,
+        description: None,
+        app: None,
+        binaries: &[],
+        caveats: None,
+        zap_block: "",
+        uninstall_block: "",
+        custom_block: None,
+        service: None,
+        manpages: &[],
+        completions_bash: None,
+        completions_zsh: None,
+        completions_fish: None,
+        depends_on: &[],
+        conflicts_with: &[],
+        preflight: Some("    puts 'pre'"),
+        postflight: Some("    puts 'post'"),
+        uninstall_preflight: Some("    puts 'unpre'"),
+        uninstall_postflight: Some("    puts 'unpost'"),
+        platforms: Vec::new(),
+        generate_completions: None,
+    };
+    let cask = super::cask::generate_cask(&params).unwrap();
+    assert!(cask.contains("preflight do"));
+    assert!(cask.contains("postflight do"));
+    assert!(cask.contains("uninstall_preflight do"));
+    assert!(cask.contains("uninstall_postflight do"));
+    assert!(cask.contains("'pre'"));
+    assert!(cask.contains("'post'"));
+    assert!(cask.contains("'unpre'"));
+    assert!(cask.contains("'unpost'"));
+}
+
+/// `generate_cask` with `service` field emits the service block.
+#[test]
+fn generate_cask_emits_service_block() {
+    use super::cask::CaskParams;
+    let params = CaskParams {
+        name: "mytool",
+        display_name: "mytool",
+        alternative_names: &[],
+        version: "1.0.0",
+        sha256: "deadbeef",
+        url: "https://e.com/x.tar.gz",
+        url_extras: "",
+        url_extras_indented: "",
+        homepage: None,
+        description: None,
+        app: None,
+        binaries: &[],
+        caveats: None,
+        zap_block: "",
+        uninstall_block: "",
+        custom_block: None,
+        service: Some("    run [opt_bin/\"mytool\", \"--daemon\"]"),
+        manpages: &[],
+        completions_bash: None,
+        completions_zsh: None,
+        completions_fish: None,
+        depends_on: &[],
+        conflicts_with: &[],
+        preflight: None,
+        postflight: None,
+        uninstall_preflight: None,
+        uninstall_postflight: None,
+        platforms: Vec::new(),
+        generate_completions: None,
+    };
+    let cask = super::cask::generate_cask(&params).unwrap();
+    assert!(cask.contains("service do"));
+    assert!(cask.contains("--daemon"));
+}
+
+/// `generate_cask` emits `depends_on` and `conflicts_with` directives
+/// when set.
+#[test]
+fn generate_cask_emits_depends_and_conflicts() {
+    use super::cask::CaskParams;
+    let deps = vec!["cask: \"other-app\"".to_string()];
+    let cfs = vec!["cask: \"old-app\"".to_string()];
+    let params = CaskParams {
+        name: "mytool",
+        display_name: "mytool",
+        alternative_names: &[],
+        version: "1.0.0",
+        sha256: "deadbeef",
+        url: "https://e.com/x.tar.gz",
+        url_extras: "",
+        url_extras_indented: "",
+        homepage: None,
+        description: None,
+        app: None,
+        binaries: &[],
+        caveats: None,
+        zap_block: "",
+        uninstall_block: "",
+        custom_block: None,
+        service: None,
+        manpages: &[],
+        completions_bash: None,
+        completions_zsh: None,
+        completions_fish: None,
+        depends_on: &deps,
+        conflicts_with: &cfs,
+        preflight: None,
+        postflight: None,
+        uninstall_preflight: None,
+        uninstall_postflight: None,
+        platforms: Vec::new(),
+        generate_completions: None,
+    };
+    let cask = super::cask::generate_cask(&params).unwrap();
+    assert!(cask.contains("depends_on cask: \"other-app\""));
+    assert!(cask.contains("conflicts_with cask: \"old-app\""));
+}
+
+/// `generate_cask` with `custom_block` injects raw Ruby into the cask.
+#[test]
+fn generate_cask_emits_custom_block() {
+    use super::cask::CaskParams;
+    let params = CaskParams {
+        name: "mytool",
+        display_name: "mytool",
+        alternative_names: &[],
+        version: "1.0.0",
+        sha256: "deadbeef",
+        url: "https://e.com/x.tar.gz",
+        url_extras: "",
+        url_extras_indented: "",
+        homepage: None,
+        description: None,
+        app: None,
+        binaries: &[],
+        caveats: None,
+        zap_block: "",
+        uninstall_block: "",
+        custom_block: Some("  auto_updates true"),
+        service: None,
+        manpages: &[],
+        completions_bash: None,
+        completions_zsh: None,
+        completions_fish: None,
+        depends_on: &[],
+        conflicts_with: &[],
+        preflight: None,
+        postflight: None,
+        uninstall_preflight: None,
+        uninstall_postflight: None,
+        platforms: Vec::new(),
+        generate_completions: None,
+    };
+    let cask = super::cask::generate_cask(&params).unwrap();
+    assert!(cask.contains("auto_updates true"));
+}

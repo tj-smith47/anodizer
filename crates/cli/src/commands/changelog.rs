@@ -56,3 +56,53 @@ pub fn run(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn missing_config_returns_err() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bogus = tmp.path().join("missing.yaml");
+        let err = run(None, Some(&bogus), false, false, true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("config file not found"), "{err}");
+    }
+
+    /// With a crate filter, the selected_crates list is populated; verify
+    /// the missing-config bail still fires through that branch (i.e. the
+    /// crate selection happens after find_config).
+    #[test]
+    #[serial]
+    fn missing_config_with_crate_filter_bails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bogus = tmp.path().join("missing.yaml");
+        let err = run(
+            Some("some-crate".to_string()),
+            Some(&bogus),
+            false,
+            false,
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("config file not found"), "{err}");
+    }
+
+    /// Verify the crate_name = None branch (Vec::new() selected_crates path)
+    /// compiles and propagates through to the same find_config check.
+    #[test]
+    #[serial]
+    fn crate_name_none_branch_compiles_and_bails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bogus = tmp.path().join("missing.yaml");
+        let err = run(None, Some(&bogus), true, true, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("config file not found"), "{err}");
+    }
+}

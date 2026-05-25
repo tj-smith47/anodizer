@@ -1788,3 +1788,998 @@ mod spec_struct_surface_tests {
         assert!(!opts.resume_release);
     }
 }
+
+#[cfg(test)]
+mod orchestrator_tests {
+    //! End-to-end coverage for [`run_github_backend`] dispatch paths.
+    //!
+    //! These tests drive the orchestrator against a scripted in-process
+    //! HTTP responder so the create-vs-update-vs-replace branching,
+    //! upload-asset happy path, and 422 `already_exists` recovery arms
+    //! are pinned against the production wiring — not just the helper
+    //! classifiers (which have their own unit tests).
+    //!
+    //! ## Fixture wiring
+    //!
+    //! Every test points two URL surfaces at the loopback responder:
+    //!
+    //! - `ctx.config.github_urls.api` / `.upload` — consumed by
+    //!   [`build_octocrab_client`] so every octocrab call (list / create /
+    //!   PATCH / asset list / asset delete) routes through `http://addr/`.
+    //!   The release JSON returned by POST /releases carries
+    //!   `upload_url: http://addr/...` so `octo.upload_asset(...).send()`
+    //!   POSTs to the same loopback.
+    //! - `ANODIZER_GITHUB_API_BASE` — consumed by
+    //!   [`check_github_rate_limit`]. Pointing it at the same loopback
+    //!   means the proactive `/rate_limit` poll either matches a scripted
+    //!   route or silently degrades on 404, never delaying the test.
+    //!
+    //! The env-var mutation is serialised via the shared
+    //! [`env_mutex`](anodizer_core::test_helpers::env::env_mutex) so
+    //! parallel tests cannot race on `ANODIZER_GITHUB_API_BASE`.
+
+    use super::*;
+    use anodizer_core::config::{CrateConfig, GitHubUrlsConfig, ReleaseConfig, ScmRepoConfig};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_core::test_helpers::env::env_mutex;
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder_on,
+    };
+    use octocrab::repos::releases::MakeLatest;
+    use std::net::SocketAddr;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    const API_BASE_VAR: &str = "ANODIZER_GITHUB_API_BASE";
+
+    /// RAII guard that sets `ANODIZER_GITHUB_API_BASE` on construction and
+    /// removes it on drop. Pairs with the global env-mutex so a panic in
+    /// the test body still restores the env for subsequent tests in the
+    /// same process.
+    struct ApiBaseEnvGuard;
+    impl ApiBaseEnvGuard {
+        fn set(value: &str) -> Self {
+            // SAFETY: callers hold `env_mutex().lock()` for the lifetime
+            // of this guard, so no other test thread mutates env vars.
+            unsafe { std::env::set_var(API_BASE_VAR, value) };
+            Self
+        }
+    }
+    impl Drop for ApiBaseEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: see `Self::set`.
+            unsafe { std::env::remove_var(API_BASE_VAR) };
+        }
+    }
+
+    /// Wrap a JSON body in a `200 OK` HTTP response with the correct
+    /// `Content-Length`. Leaks the formatted string because the responder
+    /// requires `&'static str`; harmless in tests.
+    fn http_ok(body: String) -> &'static str {
+        let len = body.len();
+        Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n\r\n{body}"
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    /// Same as [`http_ok`] but emits `201 Created`. GitHub returns 201 for
+    /// release create + asset upload; the orchestrator does not distinguish
+    /// 200 vs 201, but using the realistic status keeps the fixture honest.
+    fn http_201(body: String) -> &'static str {
+        let len = body.len();
+        Box::leak(
+            format!(
+                "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n\r\n{body}"
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    /// `204 No Content` for successful DELETE.
+    const HTTP_204: &str = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
+
+    /// Build a minimal Release JSON octocrab can deserialize into
+    /// `models::repos::Release`. The `upload_url` field is the load-bearing
+    /// one: `upload_asset(...).send()` does a GET on the release and reads
+    /// `upload_url` to determine where to POST the asset bytes.
+    fn release_json(addr: SocketAddr, id: u64, draft: bool, name: &str) -> String {
+        serde_json::json!({
+            "id": id,
+            "node_id": format!("RL_{id}"),
+            "tag_name": "v1.2.3",
+            "target_commitish": "main",
+            "name": name,
+            "draft": draft,
+            "prerelease": false,
+            "created_at": "2026-01-01T00:00:00Z",
+            "published_at": null,
+            "author": null,
+            "assets": [],
+            "tarball_url": null,
+            "zipball_url": null,
+            "body": null,
+            "url": format!("http://{addr}/repos/o/r/releases/{id}"),
+            "html_url": format!("http://{addr}/o/r/releases/{id}"),
+            "assets_url": format!("http://{addr}/repos/o/r/releases/{id}/assets"),
+            // upload_url MUST carry the `{?name,label}` template that
+            // octocrab strips before appending `?name=<file>`. Without the
+            // template, octocrab leaves the URL malformed and the upload
+            // POSTs to the wrong path.
+            "upload_url": format!("http://{addr}/upload/{id}{{?name,label}}"),
+        })
+        .to_string()
+    }
+
+    /// Minimal Asset JSON for the 201 response of an asset-upload POST.
+    fn asset_json(id: u64, name: &str, size: u64) -> String {
+        serde_json::json!({
+            "url": format!("http://example.test/asset/{id}"),
+            "browser_download_url": format!("http://example.test/dl/{name}"),
+            "id": id,
+            "node_id": format!("RA_{id}"),
+            "name": name,
+            "label": null,
+            "state": "uploaded",
+            "content_type": "application/octet-stream",
+            "size": size,
+            "download_count": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "uploader": null,
+        })
+        .to_string()
+    }
+
+    /// 422 already_exists body. Pairs with HTTP status 422; the upload
+    /// classifier matches `errors[].code == "already_exists"`.
+    fn http_422_already_exists() -> &'static str {
+        let body = r#"{"message":"Validation Failed","errors":[{"resource":"ReleaseAsset","code":"already_exists","field":"name"}]}"#;
+        let len = body.len();
+        Box::leak(
+            format!("HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n\r\n{body}")
+                .into_boxed_str(),
+        )
+    }
+
+    /// Build a [`Context`] with `github_urls` pointing at `addr` so every
+    /// production octocrab call routes through the loopback responder, and
+    /// a fast retry policy (millisecond delays) so the upload retry loop
+    /// in [`run_github_backend`] doesn't pad test runs with the production
+    /// 10-second default backoff.
+    fn build_ctx(addr: SocketAddr) -> Context {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("demo")
+            .tag("v1.2.3")
+            .token(Some("test-token".to_string()))
+            .build();
+        ctx.config.github_urls = Some(GitHubUrlsConfig {
+            api: Some(format!("http://{addr}")),
+            upload: Some(format!("http://{addr}")),
+            download: Some(format!("http://{addr}")),
+            skip_tls_verify: None,
+        });
+        ctx.config.retry = Some(anodizer_core::config::RetryConfig {
+            attempts: 5,
+            delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(1)),
+            max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(2)),
+        });
+        ctx
+    }
+
+    /// Build a `CrateConfig` whose `release.github` points at owner=o, name=r.
+    fn build_crate_cfg() -> CrateConfig {
+        let mut crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            ..Default::default()
+        };
+        crate_cfg.release = Some(ReleaseConfig {
+            github: Some(ScmRepoConfig {
+                owner: "o".to_string(),
+                name: "r".to_string(),
+            }),
+            mode: Some("replace".to_string()),
+            ..Default::default()
+        });
+        crate_cfg
+    }
+
+    /// Write a small artifact file and return its path. The `run_github_backend`
+    /// upload loop calls `std::fs::read` and uses the file's bytes (and
+    /// length) for the upload POST + 422 size-compare branch.
+    fn write_artifact(dir: &std::path::Path, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).expect("write artifact");
+        path
+    }
+
+    /// Owned ancillary fields that [`GithubReleaseSpec`] borrows. Bind in
+    /// the test scope then pass into [`make_spec`] so the borrows outlive
+    /// the spec struct.
+    struct SpecAncillary {
+        make_latest: Option<MakeLatest>,
+        target_commitish: Option<String>,
+        discussion_category: Option<String>,
+    }
+
+    fn spec_ancillary_default() -> SpecAncillary {
+        SpecAncillary {
+            make_latest: None,
+            target_commitish: None,
+            discussion_category: None,
+        }
+    }
+
+    /// Common spec: tag=v1.2.3, draft=true (so `user_wants_draft` short-circuits
+    /// the publish PATCH), mode=replace (so `get_by_tag` lookup is skipped).
+    fn make_spec(anc: &SpecAncillary) -> GithubReleaseSpec<'_> {
+        GithubReleaseSpec {
+            tag: "v1.2.3",
+            name: "v1.2.3",
+            body: "release body",
+            mode: "replace",
+            draft: true,
+            prerelease: false,
+            make_latest: &anc.make_latest,
+            target_commitish: &anc.target_commitish,
+            discussion_category: &anc.discussion_category,
+        }
+    }
+
+    /// Default upload opts: every flag off.
+    fn base_opts() -> UploadOpts {
+        UploadOpts {
+            skip_upload: false,
+            replace_existing_draft: false,
+            replace_existing_artifacts: false,
+            use_existing_draft: false,
+            resume_release: false,
+        }
+    }
+
+    /// Build the four ambient handles `run_github_backend` consumes.
+    fn run_backend(
+        rt: &tokio::runtime::Runtime,
+        ctx: &Context,
+        token: &Option<String>,
+        crate_cfg: &CrateConfig,
+        spec: &GithubReleaseSpec<'_>,
+        opts: &UploadOpts,
+        artifacts: &[(PathBuf, Option<String>)],
+    ) -> Result<Option<(String, String, String, String)>> {
+        let log = StageLogger::new("release", Verbosity::Normal);
+        let env = BackendEnv {
+            rt,
+            ctx,
+            log: &log,
+            token,
+        };
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg present");
+        run_github_backend(&env, crate_cfg, release_cfg, spec, opts, artifacts)
+    }
+
+    // ---------------------------------------------------------------------
+    // 1. Happy path — create new release, upload one asset.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn create_release_and_upload_one_asset_succeeds() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().expect("tempdir");
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"hello world");
+        let artifact_len = std::fs::metadata(&artifact_path).expect("meta").len();
+
+        // Reserve an ephemeral port then drop the listener so the scripted
+        // responder can claim the same port — the release_json fixture
+        // needs to embed the bound addr into `upload_url`, which the
+        // upload_asset() flow reads back to route its POST.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let release = release_json(addr, 42, true, "v1.2.3");
+
+        let routes = vec![
+            // (1) Create-release POST.
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/o/r/releases",
+                response: http_201(release.clone()),
+                times: Some(1),
+            },
+            // (2) upload_asset() first GETs the release to read upload_url.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42",
+                response: http_ok(release),
+                times: None,
+            },
+            // (3) The asset POST itself.
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/42?name=demo.tar.gz",
+                response: http_201(asset_json(7, "demo.tar.gz", artifact_len)),
+                times: Some(1),
+            },
+        ];
+        let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+        let anc = spec_ancillary_default();
+
+        let result = run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &base_opts(),
+            &artifacts,
+        )
+        .expect("run_github_backend succeeds");
+        let (html_url, dl_base, owner, repo) = result.expect("returns Some on success");
+        assert_eq!(owner, "o");
+        assert_eq!(repo, "r");
+        // gh_download_base comes from github_urls.download which we set to
+        // the loopback. The html_url is composed deterministically from it.
+        assert!(
+            html_url.contains("/o/r/releases/tag/v1.2.3"),
+            "got: {html_url}"
+        );
+        assert!(dl_base.starts_with("http://"), "got: {dl_base}");
+
+        let entries = log.lock().expect("log mutex");
+        let post_create = entries
+            .iter()
+            .find(|e| e.method == "POST" && e.path == "/repos/o/r/releases")
+            .expect("must POST /repos/o/r/releases to create the release");
+        assert!(
+            post_create.body.contains("\"name\":\"v1.2.3\""),
+            "create body must include the release name: {}",
+            post_create.body
+        );
+        assert!(
+            post_create.body.contains("\"draft\":true"),
+            "create body must request draft=true (draft-then-publish): {}",
+            post_create.body
+        );
+        let upload_call = entries
+            .iter()
+            .find(|e| e.method == "POST" && e.path == "/upload/42?name=demo.tar.gz")
+            .expect("must POST the asset to the upload_url returned in the release JSON");
+        assert_eq!(
+            upload_call.body, "hello world",
+            "upload body must equal the file bytes"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // 2. replace_existing_draft = true — find existing draft, delete it,
+    // then create a new release.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn replace_existing_draft_deletes_then_creates() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().expect("tempdir");
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"payload");
+        let artifact_len = std::fs::metadata(&artifact_path).expect("meta").len();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        // Existing draft (id=99) returned by list-releases.
+        let list_body = format!("[{}]", release_json(addr, 99, true, "v1.2.3"));
+        // New draft (id=42) created after the delete.
+        let new_release = release_json(addr, 42, true, "v1.2.3");
+
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases?per_page=100&page=1",
+                response: http_ok(list_body),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/repos/o/r/releases/99",
+                response: HTTP_204,
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/o/r/releases",
+                response: http_201(new_release.clone()),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42",
+                response: http_ok(new_release),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/42?name=demo.tar.gz",
+                response: http_201(asset_json(7, "demo.tar.gz", artifact_len)),
+                times: Some(1),
+            },
+        ];
+        let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+
+        let mut opts = base_opts();
+        opts.replace_existing_draft = true;
+        let anc = spec_ancillary_default();
+        run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &opts,
+            &artifacts,
+        )
+        .expect("backend succeeds")
+        .expect("returns Some");
+
+        let entries = log.lock().expect("log mutex");
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "DELETE" && e.path == "/repos/o/r/releases/99"),
+            "must DELETE the existing draft (id=99); calls: {entries:?}",
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path == "/repos/o/r/releases"),
+            "must POST a fresh release after the delete; calls: {entries:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // 3. use_existing_draft = true — find existing draft, PATCH it (no POST).
+    // ---------------------------------------------------------------------
+    #[test]
+    fn use_existing_draft_patches_instead_of_posting() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().expect("tempdir");
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"data");
+        let artifact_len = std::fs::metadata(&artifact_path).expect("meta").len();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let existing = release_json(addr, 55, true, "v1.2.3");
+        let list_body = format!("[{}]", existing.clone());
+
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases?per_page=100&page=1",
+                response: http_ok(list_body),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/repos/o/r/releases/55",
+                response: http_ok(existing.clone()),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/55",
+                response: http_ok(existing),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/55?name=demo.tar.gz",
+                response: http_201(asset_json(7, "demo.tar.gz", artifact_len)),
+                times: Some(1),
+            },
+        ];
+        let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+
+        let mut opts = base_opts();
+        opts.use_existing_draft = true;
+        let anc = spec_ancillary_default();
+        run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &opts,
+            &artifacts,
+        )
+        .expect("backend succeeds")
+        .expect("returns Some");
+
+        let entries = log.lock().expect("log mutex");
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "PATCH" && e.path == "/repos/o/r/releases/55"),
+            "use_existing_draft must PATCH the existing release; calls: {entries:?}",
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path == "/repos/o/r/releases"),
+            "use_existing_draft must NOT POST a new release (would 422 on duplicate tag); calls: {entries:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // 4. No artifacts — release is created but upload loop runs zero times.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn empty_artifacts_creates_release_but_uploads_nothing() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let routes = vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/o/r/releases",
+            response: http_201(release_json(addr, 42, true, "v1.2.3")),
+            times: Some(1),
+        }];
+        let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts: Vec<(PathBuf, Option<String>)> = Vec::new();
+        let anc = spec_ancillary_default();
+
+        run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &base_opts(),
+            &artifacts,
+        )
+        .expect("backend succeeds")
+        .expect("returns Some");
+
+        let entries = log.lock().expect("log mutex");
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path == "/repos/o/r/releases"),
+            "must still POST create-release even with no artifacts; calls: {entries:?}",
+        );
+        assert!(
+            !entries.iter().any(|e| e.path.starts_with("/upload/")),
+            "empty artifact list must skip every upload POST; calls: {entries:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // 5. 422 already_exists + matching remote size → SkipIdempotent (no
+    // delete, no error, success).
+    // ---------------------------------------------------------------------
+    #[test]
+    fn upload_422_with_matching_remote_size_is_idempotent_skip() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().expect("tempdir");
+        let bytes = b"identical bytes";
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", bytes);
+        let artifact_len = bytes.len() as u64;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let release = release_json(addr, 42, true, "v1.2.3");
+
+        let assets_page = format!("[{}]", asset_json(9, "demo.tar.gz", artifact_len));
+
+        let routes = vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/o/r/releases",
+                response: http_201(release.clone()),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42",
+                response: http_ok(release),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/42?name=demo.tar.gz",
+                response: http_422_already_exists(),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42/assets?per_page=100&page=1",
+                response: http_ok(assets_page),
+                times: None,
+            },
+        ];
+        let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+        let anc = spec_ancillary_default();
+
+        run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &base_opts(),
+            &artifacts,
+        )
+        .expect("422 + size match must succeed as SkipIdempotent")
+        .expect("returns Some");
+
+        let entries = log.lock().expect("log mutex");
+        assert!(
+            !entries.iter().any(|e| e.method == "DELETE"),
+            "SkipIdempotent must NOT issue a DELETE; calls: {entries:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // 6. 422 already_exists + size mismatch + replace_existing_artifacts=false
+    // → BailReplaceForbidden surfaces an error.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn upload_422_size_mismatch_without_replace_forbidden_bails() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().expect("tempdir");
+        let bytes = b"local content";
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", bytes);
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let release = release_json(addr, 42, true, "v1.2.3");
+
+        // Remote asset reports a DIFFERENT size (9999 vs local len).
+        let assets_page = format!("[{}]", asset_json(9, "demo.tar.gz", 9999));
+
+        let routes = vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/o/r/releases",
+                response: http_201(release.clone()),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42",
+                response: http_ok(release),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/42?name=demo.tar.gz",
+                response: http_422_already_exists(),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42/assets?per_page=100&page=1",
+                response: http_ok(assets_page),
+                times: None,
+            },
+        ];
+        let (_addr2, _log) = spawn_scripted_responder_on(listener, |_| routes);
+        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+        let anc = spec_ancillary_default();
+
+        // replace_existing_artifacts left false (default base_opts).
+        let err = run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &base_opts(),
+            &artifacts,
+        )
+        .expect_err("size-mismatch with replace=false must Err");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("replace_existing_artifacts: false")
+                || msg.contains("already exists")
+                || msg.contains("upload artifact"),
+            "error must explain the conflict: {msg}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // 7. 422 already_exists + size mismatch + replace_existing_artifacts=true
+    // → DeleteAndRetry succeeds on the second attempt.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn upload_422_size_mismatch_with_replace_allowed_deletes_and_retries() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().expect("tempdir");
+        let bytes = b"new content";
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", bytes);
+        let artifact_len = bytes.len() as u64;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let release = release_json(addr, 42, true, "v1.2.3");
+
+        // First pre-emptive delete-list: returns the stale asset so it gets
+        // deleted before the first upload attempt. After that, the upload
+        // still hits 422 (simulating the eventual-consistency window or a
+        // racing reappear), the size-probe assets list returns a different
+        // size, the asset is deleted again, and the second upload succeeds.
+        //
+        // The orchestrator's `replace_existing_artifacts: true` arm calls
+        // `delete_release_asset_by_name` BEFORE the first upload attempt,
+        // so the first list-assets needs to return the stale asset; the
+        // pre-emptive delete then runs against the matching asset_id.
+        let stale_asset = asset_json(9, "demo.tar.gz", 9999);
+        let stale_list = format!("[{stale_asset}]");
+
+        let routes = vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/o/r/releases",
+                response: http_201(release.clone()),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42",
+                response: http_ok(release),
+                times: None,
+            },
+            // Pre-emptive delete: list + DELETE (asset_id=9).
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42/assets?per_page=100&page=1",
+                response: http_ok(stale_list),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/repos/o/r/releases/assets/9",
+                response: HTTP_204,
+                times: None,
+            },
+            // First upload attempt: 422.
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/42?name=demo.tar.gz",
+                response: http_422_already_exists(),
+                times: Some(1),
+            },
+            // Second upload attempt (after recovery delete): success.
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/42?name=demo.tar.gz",
+                response: http_201(asset_json(11, "demo.tar.gz", artifact_len)),
+                times: Some(1),
+            },
+        ];
+        let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+
+        let mut opts = base_opts();
+        opts.replace_existing_artifacts = true;
+        let anc = spec_ancillary_default();
+        run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &opts,
+            &artifacts,
+        )
+        .expect("delete+retry must recover and succeed")
+        .expect("returns Some");
+
+        let entries = log.lock().expect("log mutex");
+        let delete_count = entries
+            .iter()
+            .filter(|e| e.method == "DELETE" && e.path == "/repos/o/r/releases/assets/9")
+            .count();
+        assert!(
+            delete_count >= 1,
+            "replace_existing_artifacts=true must DELETE the stale asset at least once; calls: {entries:?}",
+        );
+        let upload_count = entries
+            .iter()
+            .filter(|e| e.method == "POST" && e.path == "/upload/42?name=demo.tar.gz")
+            .count();
+        assert_eq!(
+            upload_count, 2,
+            "expected exactly 2 upload POSTs (first 422, second 201); calls: {entries:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // 8. Missing token surfaces a clear error without any HTTP traffic.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn missing_token_errs_before_any_http_call() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        // Spawn the responder with no routes; ANY HTTP call lands in the
+        // request log and fails the test.
+        let (_addr2, log) = spawn_scripted_responder_on(listener, |_| Vec::new());
+        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token: Option<String> = None;
+        let artifacts: Vec<(PathBuf, Option<String>)> = Vec::new();
+        let anc = spec_ancillary_default();
+
+        let err = run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &base_opts(),
+            &artifacts,
+        )
+        .expect_err("missing token must Err");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("GITHUB_TOKEN") || msg.contains("token"),
+            "error must mention the missing token: {msg}",
+        );
+        let entries = log.lock().expect("log mutex");
+        assert!(
+            entries.is_empty(),
+            "token check must short-circuit BEFORE any HTTP call; calls: {entries:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // 9. Missing artifact file surfaces a clear error after release create.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn missing_artifact_file_errs_with_path_in_message() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let routes = vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/o/r/releases",
+            response: http_201(release_json(addr, 42, true, "v1.2.3")),
+            times: Some(1),
+        }];
+        let (_addr2, _log) = spawn_scripted_responder_on(listener, |_| routes);
+        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        // Point at a path that does not exist.
+        let missing = PathBuf::from("/nonexistent/anodizer-test/does-not-exist.tar.gz");
+        let artifacts = vec![(missing.clone(), Some("does-not-exist.tar.gz".to_string()))];
+        let anc = spec_ancillary_default();
+
+        let err = run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &base_opts(),
+            &artifacts,
+        )
+        .expect_err("missing-on-disk artifact must Err");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("missing") && msg.contains("does-not-exist.tar.gz"),
+            "missing-file error must name the offending path: {msg}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // 10. skip_upload = true creates the release but skips every upload POST.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn skip_upload_creates_release_but_skips_uploads() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().expect("tempdir");
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"unused");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let routes = vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/o/r/releases",
+            response: http_201(release_json(addr, 42, true, "v1.2.3")),
+            times: Some(1),
+        }];
+        let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+
+        let mut opts = base_opts();
+        opts.skip_upload = true;
+        let anc = spec_ancillary_default();
+        run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &opts,
+            &artifacts,
+        )
+        .expect("backend succeeds")
+        .expect("returns Some");
+
+        let entries = log.lock().expect("log mutex");
+        assert!(
+            !entries.iter().any(|e| e.path.starts_with("/upload/")),
+            "skip_upload=true must NOT POST any asset; calls: {entries:?}",
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path == "/repos/o/r/releases"),
+            "skip_upload=true must still create the release; calls: {entries:?}",
+        );
+    }
+}

@@ -151,4 +151,142 @@ mod tests {
         // longer prefix is more specific. Let's verify both match:
         assert!(matched.is_some());
     }
+
+    use super::{ResolveTagOpts, run};
+    use serial_test::serial;
+    use std::fs;
+
+    fn write_simple_config(dir: &std::path::Path) -> std::path::PathBuf {
+        let p = dir.join(".anodizer.yaml");
+        fs::write(
+            &p,
+            r#"project_name: app
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+        )
+        .unwrap();
+        p
+    }
+
+    fn write_workspace_config(dir: &std::path::Path) -> std::path::PathBuf {
+        let p = dir.join(".anodizer.yaml");
+        fs::write(
+            &p,
+            r#"project_name: app
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+workspaces:
+  - name: core
+    crates:
+      - name: app-core
+        path: "core"
+        tag_template: "core-v{{ .Version }}"
+"#,
+        )
+        .unwrap();
+        p
+    }
+
+    /// When the override doesn't exist and find_config falls back to the
+    /// running test workspace, run() may either bail with no-crate-matches
+    /// (because Config::default() has no crates) or with no-anodizer-config
+    /// (when neither anodizer.yaml nor Cargo.toml is reachable). Both
+    /// outcomes are valid "missing config" failure modes — pin the family
+    /// rather than the exact message.
+    #[test]
+    #[serial]
+    fn missing_config_bails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = run(ResolveTagOpts {
+            tag: "v1.0.0".into(),
+            json: false,
+            config_override: Some(tmp.path().join("nope.yaml")),
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("no anodizer config found")
+                || err.contains("config file not found")
+                || err.contains("no crate matches"),
+            "expected a missing-config-family error: {err}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn unmatched_tag_bails_with_named_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = write_simple_config(tmp.path());
+        let err = run(ResolveTagOpts {
+            tag: "abc-not-a-tag".into(),
+            json: false,
+            config_override: Some(cfg),
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("no crate matches"), "{err}");
+        assert!(err.contains("abc-not-a-tag"), "{err}");
+    }
+
+    #[test]
+    #[serial]
+    fn simple_tag_resolves_to_root_crate_text_form() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = write_simple_config(tmp.path());
+        run(ResolveTagOpts {
+            tag: "v0.4.2".into(),
+            json: false,
+            config_override: Some(cfg),
+        })
+        .expect("simple v-tag must resolve");
+    }
+
+    #[test]
+    #[serial]
+    fn longer_prefix_wins_for_workspace_crate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = write_workspace_config(tmp.path());
+        // "core-v" is more specific than "v" — must select the workspace crate.
+        run(ResolveTagOpts {
+            tag: "core-v2.0.1".into(),
+            json: false,
+            config_override: Some(cfg),
+        })
+        .expect("longer prefix must win on workspace crate");
+    }
+
+    #[test]
+    #[serial]
+    fn json_output_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = write_simple_config(tmp.path());
+        run(ResolveTagOpts {
+            tag: "v1.0.0".into(),
+            json: true,
+            config_override: Some(cfg),
+        })
+        .expect("json output should serialize successfully");
+    }
+
+    /// Tag prefix matches but remainder is non-numeric (e.g. "v-foo") —
+    /// the version-shape gate must reject and bail with no-crate-matches.
+    #[test]
+    #[serial]
+    fn non_version_remainder_does_not_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = write_simple_config(tmp.path());
+        let err = run(ResolveTagOpts {
+            tag: "v-not-a-version".into(),
+            json: false,
+            config_override: Some(cfg),
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("no crate matches"), "{err}");
+    }
 }

@@ -18,6 +18,19 @@
 
 use crate::release_log;
 
+/// Resolve the GitHub REST API base URL. Honors the undocumented
+/// `ANODIZER_GITHUB_API_BASE` env override so unit tests can redirect
+/// `/rate_limit` polls to an in-process responder; defaults to the
+/// canonical `https://api.github.com` in production where the var is
+/// unset. Trailing `/` is stripped so the caller can append a
+/// `/`-prefixed suffix without producing a double slash. Mirrors the
+/// sibling helper in `stage-publish/src/util/branch.rs`.
+fn github_api_base() -> String {
+    let raw = std::env::var("ANODIZER_GITHUB_API_BASE")
+        .unwrap_or_else(|_| "https://api.github.com".to_string());
+    raw.trim_end_matches('/').to_string()
+}
+
 /// Proactively check the GitHub core rate limit before issuing a request.
 ///
 /// If `remaining > threshold` returns immediately. Otherwise sleeps until the
@@ -29,9 +42,9 @@ use crate::release_log;
 /// behaviour where `rateLimitChecker` logs and returns without aborting the
 /// outer release flow.
 pub(crate) async fn check_github_rate_limit(client: &reqwest::Client, token: &str, threshold: u64) {
-    let url = "https://api.github.com/rate_limit";
+    let url = format!("{}/rate_limit", github_api_base());
     let resp = match client
-        .get(url)
+        .get(&url)
         .header("Authorization", format!("Bearer {}", token))
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", anodizer_core::http::USER_AGENT)
@@ -130,7 +143,7 @@ pub(crate) async fn check_github_rate_limit(client: &reqwest::Client, token: &st
 }
 
 #[cfg(all(test, unix))]
-mod tests {
+mod sigterm_tests {
     //! Verify the SIGTERM-aware select arm actually fires when the process
     //! receives SIGTERM. We can't easily call `check_github_rate_limit`
     //! end-to-end without a fake GitHub server, but the load-bearing piece
@@ -207,9 +220,10 @@ mod tests {
         drop(listener);
 
         // Build a reqwest client whose DNS resolution maps
-        // `api.github.com` to the now-closed loopback port. The hardcoded
-        // `https://api.github.com/rate_limit` URL inside the function
-        // then resolves to a TCP connect that fails immediately.
+        // `api.github.com` to the now-closed loopback port. The default
+        // base URL (`https://api.github.com`) the function builds when
+        // `ANODIZER_GITHUB_API_BASE` is unset then resolves to a TCP
+        // connect that fails immediately.
         let client = reqwest::Client::builder()
             .resolve("api.github.com", addr)
             .build()
@@ -224,5 +238,235 @@ mod tests {
             res.is_ok(),
             "check_github_rate_limit must silently degrade on transport failure, not hang"
         );
+    }
+}
+
+#[cfg(test)]
+mod http_tests {
+    //! End-to-end coverage of the `/rate_limit` HTTP path.
+    //!
+    //! Each test points `ANODIZER_GITHUB_API_BASE` at an in-process
+    //! HTTPS responder so the production code's call to
+    //! `https://api.github.com/rate_limit` is intercepted without
+    //! touching the real GitHub API. The env var is serialised under
+    //! the workspace `env_mutex()` because `cargo test` parallelises
+    //! within a single binary and sibling tests in this module read
+    //! the same key.
+    //!
+    //! The `start_paused` virtual-time runtime is only used for the
+    //! sleep-until-reset test: it lets us assert "the function sleeps
+    //! through the configured reset window" without paying a real
+    //! wall-clock minute per test run. All other tests use the default
+    //! runtime since they exercise return-fast paths.
+    use super::*;
+    use anodizer_core::test_helpers::env::env_mutex;
+    use anodizer_core::test_helpers::https_responder::{
+        https_test_client, spawn_oneshot_https_responder,
+    };
+    use std::sync::atomic::Ordering;
+
+    /// RAII guard: acquire the workspace env mutex, set
+    /// `ANODIZER_GITHUB_API_BASE` to `base`, restore the prior value on
+    /// drop. The mutex prevents a sibling test in this binary from
+    /// observing a half-swapped env. Unwinding through a panicking test
+    /// body restores the env (Drop runs on stack unwind) so a regression
+    /// doesn't leak the override into the next test.
+    struct BaseOverride {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        previous: Option<String>,
+    }
+
+    impl BaseOverride {
+        fn set(base: &str) -> Self {
+            let guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+            let previous = std::env::var("ANODIZER_GITHUB_API_BASE").ok();
+            // SAFETY: serialised by the env mutex held in `_guard`.
+            unsafe { std::env::set_var("ANODIZER_GITHUB_API_BASE", base) };
+            Self {
+                _guard: guard,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for BaseOverride {
+        fn drop(&mut self) {
+            // SAFETY: still under the env mutex (held by `_guard`).
+            unsafe {
+                match &self.previous {
+                    Some(prev) => std::env::set_var("ANODIZER_GITHUB_API_BASE", prev),
+                    None => std::env::remove_var("ANODIZER_GITHUB_API_BASE"),
+                }
+            }
+        }
+    }
+
+    /// Build a canned `200 OK` HTTPS response carrying the given JSON
+    /// body. `Content-Length` is auto-derived so callers can't drift
+    /// header and body out of sync (an early flake in retry-call tests
+    /// before the helper landed).
+    ///
+    /// Returns `&'static str` because `spawn_oneshot_https_responder`
+    /// requires `'static` lifetimes; `Box::leak` is the established
+    /// idiom across this codebase (see
+    /// `crates/stage-release/src/github/retry_call.rs::secondary_rate_limit_403_retries_with_delay`)
+    /// and the per-test leak is bounded by test-binary lifetime.
+    fn canned_json_200(body: &str) -> &'static str {
+        let raw = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        Box::leak(raw.into_boxed_str())
+    }
+
+    /// Happy path: `remaining > threshold` means we have quota to spare,
+    /// so the function must return without sleeping and after exactly
+    /// one HTTP round-trip. A regression that flipped the comparison
+    /// operator (e.g. `>=` to `<=`) would sleep for ~3600 s on every
+    /// release and the bounded `timeout` here would fire instead of
+    /// completing in ms.
+    #[tokio::test]
+    async fn remaining_above_threshold_returns_without_sleep() {
+        let body = r#"{"resources":{"core":{"remaining":5000,"reset":9999999999,"limit":5000}}}"#;
+        let (addr, calls) = spawn_oneshot_https_responder(vec![canned_json_200(body)]);
+        let _ov = BaseOverride::set(&format!("https://{addr}"));
+
+        let client = https_test_client();
+        let fut = check_github_rate_limit(&client, "fake-token", 100);
+        // 5 s upper bound — happy path is sub-second. Hitting this
+        // means the function sleeps when it shouldn't.
+        let res = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
+        assert!(
+            res.is_ok(),
+            "must return promptly when remaining > threshold"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "exactly one /rate_limit request should be issued"
+        );
+    }
+
+    /// Non-2xx response (401 Unauthorized) must silently degrade — the
+    /// production contract is "can't check, continue and hope for the
+    /// best" since aborting a release on a transient `/rate_limit` 401
+    /// would be worse than the rare overrun. A regression that
+    /// propagated the error or panicked on `.json()` parsing of an
+    /// error-page body would fail the bounded timeout.
+    #[tokio::test]
+    async fn non_success_status_silently_degrades() {
+        let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n";
+        let (addr, calls) = spawn_oneshot_https_responder(vec![resp]);
+        let _ov = BaseOverride::set(&format!("https://{addr}"));
+
+        let client = https_test_client();
+        let fut = check_github_rate_limit(&client, "fake-token", 100);
+        let res = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
+        assert!(res.is_ok(), "401 must silently degrade, not hang or panic");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// 500 Internal Server Error walks the same `!is_success()` branch
+    /// as 401 — separate case because the GitHub API can return either
+    /// on a transient outage and we want both pinned. A regression that
+    /// retried on 5xx (no retry logic lives in this function) would
+    /// inflate the call count above 1.
+    #[tokio::test]
+    async fn server_error_status_silently_degrades() {
+        let resp = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
+        let (addr, calls) = spawn_oneshot_https_responder(vec![resp]);
+        let _ov = BaseOverride::set(&format!("https://{addr}"));
+
+        let client = https_test_client();
+        let fut = check_github_rate_limit(&client, "fake-token", 100);
+        let res = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
+        assert!(res.is_ok(), "500 must silently degrade");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Malformed JSON in a 200 response must silently degrade — common
+    /// in the wild when an auth proxy intercepts the request and
+    /// returns an HTML error page with `200`. A regression that
+    /// unwrapped the parse Result would panic the calling task and
+    /// abort the release. We deliberately send a single `{` so
+    /// `serde_json` rejects it at the first token.
+    #[tokio::test]
+    async fn malformed_json_body_silently_degrades() {
+        let body = "{";
+        let raw = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let resp: &'static str = Box::leak(raw.into_boxed_str());
+        let (addr, calls) = spawn_oneshot_https_responder(vec![resp]);
+        let _ov = BaseOverride::set(&format!("https://{addr}"));
+
+        let client = https_test_client();
+        let fut = check_github_rate_limit(&client, "fake-token", 100);
+        let res = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
+        assert!(
+            res.is_ok(),
+            "malformed JSON must silently degrade, not panic"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Missing JSON pointers (`/resources/core/remaining`) must
+    /// `unwrap_or(u64::MAX)` — i.e. treat the response as "infinite
+    /// quota" and skip the sleep. This pins the defensive default; a
+    /// regression to `unwrap_or(0)` would force every release to sleep
+    /// on a schema drift.
+    #[tokio::test]
+    async fn missing_pointer_fields_skip_sleep() {
+        let body = r#"{"resources":{"other":{"remaining":1}}}"#;
+        let (addr, calls) = spawn_oneshot_https_responder(vec![canned_json_200(body)]);
+        let _ov = BaseOverride::set(&format!("https://{addr}"));
+
+        let client = https_test_client();
+        let fut = check_github_rate_limit(&client, "fake-token", 100);
+        let res = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
+        assert!(
+            res.is_ok(),
+            "missing JSON pointer must fall back to u64::MAX (no sleep)"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// `github_api_base()` strips a trailing slash so callers can
+    /// unconditionally append `/rate_limit` without producing
+    /// `//rate_limit` (which 404s on GitHub). Mirror of the contract
+    /// pinned in `stage-publish/src/util/branch.rs`; tested via the
+    /// public override path because the helper itself is module-private.
+    #[test]
+    fn base_url_strips_trailing_slash() {
+        let _ov = BaseOverride::set("https://example.com/api/");
+        assert_eq!(github_api_base(), "https://example.com/api");
+    }
+
+    /// Default base URL when the env var is unset is the canonical
+    /// `https://api.github.com` — pins the production default so a
+    /// regression to a typo'd host doesn't ship silently (it would
+    /// fail to find the responder under the override too, but the
+    /// blast radius matters: prod calls would be misdirected for every
+    /// user who doesn't set the override).
+    #[test]
+    fn base_url_defaults_to_api_github_com() {
+        // Acquire the env mutex and clear the var to assert the
+        // unset-default branch.
+        let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var("ANODIZER_GITHUB_API_BASE").ok();
+        // SAFETY: serialised by the env mutex above; restore below.
+        unsafe { std::env::remove_var("ANODIZER_GITHUB_API_BASE") };
+        let got = github_api_base();
+        // SAFETY: still under the env mutex.
+        unsafe {
+            match previous {
+                Some(prev) => std::env::set_var("ANODIZER_GITHUB_API_BASE", prev),
+                None => std::env::remove_var("ANODIZER_GITHUB_API_BASE"),
+            }
+        }
+        assert_eq!(got, "https://api.github.com");
     }
 }

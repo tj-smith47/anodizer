@@ -367,4 +367,51 @@ mod tests {
             .to_string();
         assert!(err.contains("segment"), "{err}");
     }
+
+    #[test]
+    fn token_shape_rejects_jwt_with_non_base64url_segment() {
+        // Segment 2 contains a '@' which is not in the base64url alphabet
+        // (A-Z, a-z, 0-9, '-', '_', '='). Catching this early beats a
+        // server-side 401 with no actionable signal.
+        let bad = "eyJhbGciOiJIUzI1NiJ9.bad@segment.signature_blob_padded";
+        let err = validate_token_shape(bad).unwrap_err().to_string();
+        assert!(err.contains("non-base64url"), "{err}");
+    }
+
+    #[test]
+    fn token_shape_rejects_jwt_with_more_than_three_segments() {
+        let err = validate_token_shape("aaaaaaaaaaaaaaaaaa.b.c.d.e")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("5"), "{err}");
+        assert!(err.contains("dot-separated"), "{err}");
+    }
+
+    #[test]
+    fn http_error_handles_empty_body() {
+        let msg =
+            format_linkedin_http_error("share", reqwest::StatusCode::INTERNAL_SERVER_ERROR, "");
+        assert!(msg.contains("share"), "{msg}");
+        assert!(msg.contains("500"), "{msg}");
+    }
+
+    /// Pin the share-payload structure — `distribution.linkedInDistributionTarget`
+    /// (camelCase, empty object) is the wire shape LinkedIn requires, and
+    /// the typo `linkedinDistributionTarget` was a 4xx-class bug in a
+    /// previous session. The structural assert pins us against that drift.
+    #[test]
+    fn share_payload_distribution_field_is_camel_case() {
+        let owner = "urn:li:person:abc";
+        let payload = json!({
+            "owner": owner,
+            "text": { "text": "hello" },
+            "distribution": { "linkedInDistributionTarget": {} }
+        });
+        let s = payload.to_string();
+        assert!(
+            s.contains("linkedInDistributionTarget"),
+            "camelCase field: {s}"
+        );
+        assert!(!s.contains("linkedinDistributionTarget"), "wrong case: {s}");
+    }
 }
