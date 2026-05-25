@@ -1,6 +1,8 @@
 //! `publish_to_chocolatey` orchestrator — assembles the nuspec + install
 //! script, packs a nupkg natively, and pushes via the NuGet V2 API.
 
+use std::path::{Path, PathBuf};
+
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
@@ -12,6 +14,51 @@ use super::nuspec::{NuspecParams, generate_nuspec};
 use super::package::{
     FeedHashResult, compute_nupkg_hash, create_nupkg, package_feed_hash, push_nupkg,
 };
+
+/// Per-crate metadata required by both the nuspec generator and the
+/// install-script renderer. Values are pre-resolved (template-rendered and
+/// fallback-applied) so the orchestrator stays linear.
+struct ChocoMetadata {
+    description: String,
+    license: String,
+    authors: String,
+    project_url: String,
+    icon_url: String,
+    tags: Vec<String>,
+}
+
+/// Optional, template-rendered text fields that flow into `<title>`,
+/// `<copyright>`, `<summary>`, and `<releaseNotes>` of the generated nuspec.
+struct ChocoTextFields {
+    title: Option<String>,
+    copyright: Option<String>,
+    summary: Option<String>,
+    release_notes: Option<String>,
+}
+
+/// Install-script shape. `Dual` carries 32- and 64-bit URL/hash pairs;
+/// `Single` carries one URL/hash plus the bitness selector used by the
+/// per-architecture template branch.
+enum InstallMode {
+    Dual {
+        url32: String,
+        hash32: String,
+        url64: String,
+        hash64: String,
+    },
+    Single {
+        url: String,
+        hash: String,
+        is_32bit: bool,
+    },
+}
+
+/// Paths produced by staging the package on disk: the rendered `.nuspec`
+/// and the packed `.nupkg` ready for push.
+struct StagedPackage {
+    _tmp_dir: tempfile::TempDir,
+    nupkg_path: PathBuf,
+}
 
 /// Returns `Ok(true)` when an actual `push_nupkg` happened against the
 /// feed, `Ok(false)` for every skip path (skip=true template, dry-run,
@@ -25,12 +72,17 @@ pub fn publish_to_chocolatey(
     crate_name: &str,
     log: &StageLogger,
 ) -> Result<bool> {
-    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "chocolatey")?;
-
-    let choco_cfg = publish
-        .chocolatey
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("chocolatey: no chocolatey config for '{}'", crate_name))?;
+    let choco_cfg = {
+        let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "chocolatey")?;
+        publish
+            .chocolatey
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow::anyhow!("chocolatey: no chocolatey config for '{}'", crate_name)
+            })?
+            .clone()
+    };
+    let choco_cfg = &choco_cfg;
 
     // F4: GR's Chocolatey config has no Repository field
     // (`pkg/config/config.go:1501-1526`); choco is a feed-push publisher,
@@ -50,18 +102,8 @@ pub fn publish_to_chocolatey(
         None => ("", ""),
     };
 
-    // GoReleaser checks SkipPublish early in Publish(), before any work.
-    if let Some(d) = choco_cfg.skip.as_ref() {
-        let off = d
-            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-            .with_context(|| format!("chocolatey: render skip template for '{}'", crate_name))?;
-        if off {
-            log.status(&format!(
-                "chocolatey: skipping publish for '{}' (skip=true)",
-                crate_name
-            ));
-            return Ok(false);
-        }
+    if check_skip_publish(ctx, choco_cfg, crate_name, log)? {
+        return Ok(false);
     }
 
     if ctx.is_dry_run() {
@@ -78,6 +120,108 @@ pub fn publish_to_chocolatey(
     }
 
     let version = ctx.version();
+    let pkg_name = choco_cfg.name.as_deref().unwrap_or(crate_name);
+    let metadata = resolve_metadata(ctx, choco_cfg, crate_name, repo_owner, repo_name)?;
+
+    let (artifact_32, artifact_64) = select_windows_artifacts(ctx, choco_cfg, crate_name, log);
+    let install_mode = build_install_mode(
+        ctx,
+        choco_cfg,
+        pkg_name,
+        &version,
+        artifact_32,
+        artifact_64,
+        crate_name,
+    )?;
+
+    let text_fields = render_text_fields(ctx, choco_cfg);
+    let nuspec = build_nuspec(choco_cfg, crate_name, &version, &metadata, &text_fields)?;
+    let install_script = build_install_script(pkg_name, &install_mode)?;
+
+    let staged = stage_package(pkg_name, &version, &nuspec, &install_script, log)?;
+
+    let api_key = resolve_api_key(ctx, choco_cfg);
+    if api_key.is_empty() {
+        log.warn(&format!(
+            "chocolatey: no API key for '{}', skipping push",
+            crate_name
+        ));
+        return Ok(false);
+    }
+
+    let source = choco_cfg
+        .source_repo
+        .as_deref()
+        .unwrap_or("https://push.chocolatey.org/");
+
+    // Idempotency with drift detection: Chocolatey package versions are
+    // immutable once submitted, so re-pushing returns 403. We treat a
+    // version-already-on-feed as a skip ONLY when the feed's recorded package
+    // hash matches our local nupkg hash. If they differ, our local nupkg has
+    // diverged from what the feed has — typically because the same git tag
+    // was re-released with different artifact bytes — and silently skipping
+    // would publish an install script that points at an archive whose sha
+    // no longer matches (Chocolatey's verifier then rejects the package).
+    // In that case we fail loudly and tell the user to bump the version.
+    // Single retry policy resolved from the top-level `retry:` block; reused
+    // for the feed-hash GET and the push PUT.
+    let policy = ctx.retry_policy();
+
+    if let Some(early_exit) = handle_feed_state(
+        ctx,
+        choco_cfg,
+        source,
+        pkg_name,
+        &version,
+        &staged.nupkg_path,
+        &policy,
+        log,
+    )? {
+        return Ok(early_exit);
+    }
+
+    // Push via NuGet V2 API — same protocol as `choco push`.
+    push_nupkg(&staged.nupkg_path, source, &api_key, log, &policy)?;
+
+    log.status(&format!("Chocolatey package pushed for '{}'", crate_name));
+    Ok(true)
+}
+
+/// Evaluates `skip:` (literal bool or template) and returns `Ok(true)`
+/// when the publisher should be bypassed for this crate.
+fn check_skip_publish(
+    ctx: &mut Context,
+    choco_cfg: &anodizer_core::config::ChocolateyConfig,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<bool> {
+    // GoReleaser checks SkipPublish early in Publish(), before any work.
+    if let Some(d) = choco_cfg.skip.as_ref() {
+        let off = d
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| format!("chocolatey: render skip template for '{}'", crate_name))?;
+        if off {
+            log.status(&format!(
+                "chocolatey: skipping publish for '{}' (skip=true)",
+                crate_name
+            ));
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Resolves the required nuspec metadata (description, license, authors,
+/// project/icon URLs, tags) by walking `choco.*` → `metadata.*` fallbacks
+/// and template-rendering where applicable. Fails when `license` is
+/// unresolvable, because the Chocolatey gallery rejects empty licenses.
+fn resolve_metadata(
+    ctx: &Context,
+    choco_cfg: &anodizer_core::config::ChocolateyConfig,
+    crate_name: &str,
+    repo_owner: &str,
+    repo_name: &str,
+) -> Result<ChocoMetadata> {
     // GoReleaser Pro parity: fall back to project `metadata.*` when choco config unset.
     let description_raw = choco_cfg
         .description
@@ -123,11 +267,34 @@ pub fn publish_to_chocolatey(
     // <tags> is optional per nuspec.xsd; when no tags are configured the
     // generator falls back to the package name (nuspec.rs line ~93).
     let tags = choco_cfg.tags.clone().unwrap_or_default();
+    Ok(ChocoMetadata {
+        description,
+        license,
+        authors,
+        project_url,
+        icon_url,
+        tags,
+    })
+}
 
+/// Filters the crate's artifacts down to Windows targets (matching by
+/// triple substring or path fallback), applies the `ids:` allow-list and
+/// the `amd64_variant` microarchitecture selector, and partitions the
+/// survivors into the first `386` and first `amd64` artifact. Artifacts
+/// for other architectures (arm64, etc.) are logged and dropped because
+/// Chocolatey's install script only dispatches on bitness.
+fn select_windows_artifacts<'a>(
+    ctx: &'a Context,
+    choco_cfg: &anodizer_core::config::ChocolateyConfig,
+    crate_name: &str,
+    log: &StageLogger,
+) -> (
+    Option<&'a anodizer_core::artifact::Artifact>,
+    Option<&'a anodizer_core::artifact::Artifact>,
+) {
     // Find both 32-bit and 64-bit Windows artifacts (GoReleaser parity).
     // Apply IDs + amd64_variant filter.
     let ids_filter = choco_cfg.ids.as_deref();
-    let url_template = choco_cfg.url_template.as_deref();
     let amd64_variant = choco_cfg.amd64_variant.as_deref().or(Some("v1"));
     let artifact_kind = util::resolve_artifact_kind(choco_cfg.use_artifact.as_deref());
     let all_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
@@ -165,8 +332,6 @@ pub fn publish_to_chocolatey(
         })
         .collect();
 
-    let pkg_name = choco_cfg.name.as_deref().unwrap_or(crate_name);
-
     // Chocolatey only ships amd64 + 386 install scripts; arm64 (and any
     // other architecture) MUST be filtered out before the per-architecture
     // dispatcher runs. Otherwise the `is_32bit` boolean below routes
@@ -174,12 +339,12 @@ pub fn publish_to_chocolatey(
     // install script that downloads an arm64 archive on x64 systems
     // (broken install — what trips moderator rejection).
     //
-    // We classify by the canonical arch token (`amd64` / `386`) from
+    // Classify by the canonical arch token (`amd64` / `386`) from
     // `map_target`, not by string-substring on the triple, so future
     // triple variations can't slip through.
     let mut artifact_32 = None;
     let mut artifact_64 = None;
-    for a in &win_artifacts {
+    for a in win_artifacts {
         let target = a.target.as_deref().unwrap_or("");
         let (_, raw_arch) = anodizer_core::target::map_target(target);
         match raw_arch.as_str() {
@@ -208,89 +373,104 @@ pub fn publish_to_chocolatey(
             }
         }
     }
+    (artifact_32, artifact_64)
+}
 
-    let resolve_artifact = |a: &anodizer_core::artifact::Artifact| -> Result<(String, String)> {
-        let target = a.target.as_deref().unwrap_or("");
-        let (_, raw_arch) = anodizer_core::target::map_target(target);
-        let resolved_url = if let Some(tmpl) = url_template {
-            util::render_url_template_with_ctx(ctx, tmpl, pkg_name, &version, &raw_arch, "windows")
-        } else {
-            a.metadata
-                .get("url")
-                .cloned()
-                .unwrap_or_else(|| a.path.to_string_lossy().into_owned())
-        };
-        let sha256 = a
-            .metadata
-            .get("sha256")
+/// Resolves the download URL and sha256 for a single artifact. The URL
+/// honors the optional `url_template`; the sha256 is required and a
+/// missing value produces a hard error (an empty `$checksum` would ship
+/// a broken install script that Chocolatey moderators reject).
+fn resolve_artifact_url_and_hash(
+    ctx: &Context,
+    url_template: Option<&str>,
+    pkg_name: &str,
+    version: &str,
+    crate_name: &str,
+    a: &anodizer_core::artifact::Artifact,
+) -> Result<(String, String)> {
+    let target = a.target.as_deref().unwrap_or("");
+    let (_, raw_arch) = anodizer_core::target::map_target(target);
+    let resolved_url = if let Some(tmpl) = url_template {
+        util::render_url_template_with_ctx(ctx, tmpl, pkg_name, version, &raw_arch, "windows")
+    } else {
+        a.metadata
+            .get("url")
             .cloned()
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "chocolatey: artifact '{}' for crate '{}' is missing required \
-                         sha256 metadata. The generated chocolateyinstall.ps1 would \
-                         embed an empty `$checksum`, which Chocolatey moderators \
-                         reject (the install script can't verify the download). \
-                         This indicates the artifacts.json catalog dropped the \
-                         entry's sha256 before the publish stage. Re-run with \
-                         `task release` from a clean dist/ and verify \
-                         dist/artifacts.json carries metadata.sha256 for every \
-                         Windows artifact.",
-                    a.name(),
-                    crate_name,
-                )
-            })?;
-        Ok((resolved_url, sha256))
+            .unwrap_or_else(|| a.path.to_string_lossy().into_owned())
     };
+    let sha256 = a
+        .metadata
+        .get("sha256")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "chocolatey: artifact '{}' for crate '{}' is missing required \
+                     sha256 metadata. The generated chocolateyinstall.ps1 would \
+                     embed an empty `$checksum`, which Chocolatey moderators \
+                     reject (the install script can't verify the download). \
+                     This indicates the artifacts.json catalog dropped the \
+                     entry's sha256 before the publish stage. Re-run with \
+                     `task release` from a clean dist/ and verify \
+                     dist/artifacts.json carries metadata.sha256 for every \
+                     Windows artifact.",
+                a.name(),
+                crate_name,
+            )
+        })?;
+    Ok((resolved_url, sha256))
+}
 
-    enum InstallMode {
-        Dual {
-            url32: String,
-            hash32: String,
-            url64: String,
-            hash64: String,
-        },
-        Single {
-            url: String,
-            hash: String,
-            is_32bit: bool,
-        },
-    }
-
-    let install_mode = match (artifact_32, artifact_64) {
+/// Combines the selected 32/64-bit artifacts into the `InstallMode`
+/// shape consumed by the install-script renderer. Errors when neither
+/// architecture has a usable Windows artifact (no install script could
+/// then be constructed).
+fn build_install_mode(
+    ctx: &Context,
+    choco_cfg: &anodizer_core::config::ChocolateyConfig,
+    pkg_name: &str,
+    version: &str,
+    artifact_32: Option<&anodizer_core::artifact::Artifact>,
+    artifact_64: Option<&anodizer_core::artifact::Artifact>,
+    crate_name: &str,
+) -> Result<InstallMode> {
+    let url_template = choco_cfg.url_template.as_deref();
+    let resolve = |a: &anodizer_core::artifact::Artifact| {
+        resolve_artifact_url_and_hash(ctx, url_template, pkg_name, version, crate_name, a)
+    };
+    match (artifact_32, artifact_64) {
         (Some(a32), Some(a64)) => {
-            let (url32, hash32) = resolve_artifact(a32)?;
-            let (url64, hash64) = resolve_artifact(a64)?;
-            InstallMode::Dual {
+            let (url32, hash32) = resolve(a32)?;
+            let (url64, hash64) = resolve(a64)?;
+            Ok(InstallMode::Dual {
                 url32,
                 hash32,
                 url64,
                 hash64,
-            }
+            })
         }
         (Some(a32), None) => {
-            let (url, hash) = resolve_artifact(a32)?;
-            InstallMode::Single {
+            let (url, hash) = resolve(a32)?;
+            Ok(InstallMode::Single {
                 url,
                 hash,
                 is_32bit: true,
-            }
+            })
         }
         (None, Some(a64)) => {
-            let (url, hash) = resolve_artifact(a64)?;
-            InstallMode::Single {
+            let (url, hash) = resolve(a64)?;
+            Ok(InstallMode::Single {
                 url,
                 hash,
                 is_32bit: false,
-            }
+            })
         }
         (None, None) => {
             // No Windows artifact = no install script that can possibly
             // verify or download the binary. Pushing a nupkg with an empty
             // checksum and a fabricated GitHub URL is what trips moderator
             // rejection (broken install script). GoReleaser fails this case
-            // loudly (errNoWindowsArchive at chocolatey.go:21,120); we now
-            // match that behavior.
+            // loudly (errNoWindowsArchive at chocolatey.go:21,120).
             anyhow::bail!(
                 "chocolatey: no windows artifact found for '{}'. Chocolatey \
                  requires a Windows archive (or msi/nsis when configured via \
@@ -300,9 +480,19 @@ pub fn publish_to_chocolatey(
                 crate_name
             );
         }
-    };
+    }
+}
 
-    let title_rendered = choco_cfg
+/// Template-renders the optional `<title>`, `<copyright>`, `<summary>`,
+/// and `<releaseNotes>` fields. `summary` falls back to project
+/// `metadata.description` and `release_notes` to
+/// `metadata.full_description` (typically a README) so the gallery
+/// always sees populated tags.
+fn render_text_fields(
+    ctx: &Context,
+    choco_cfg: &anodizer_core::config::ChocolateyConfig,
+) -> ChocoTextFields {
+    let title = choco_cfg
         .title
         .as_deref()
         .map(|t| ctx.render_template(t).unwrap_or_else(|_| t.to_string()));
@@ -327,14 +517,14 @@ pub fn publish_to_chocolatey(
             anodizer_core::template::render(v, &vars).unwrap_or_else(|_| v.to_string())
         })
     };
-    let copyright_rendered = render(choco_cfg.copyright.as_deref());
+    let copyright = render(choco_cfg.copyright.as_deref());
     // GoReleaser Pro parity: summary falls back to project-level
     // `metadata.description` (the 1-line summary), same source the
     // `description` field already falls back to. The Chocolatey gallery
     // requires `<summary>`; without this fallback an unset `summary:` in
     // the choco block emitted an empty tag, which gallery moderators
     // flag as incomplete metadata.
-    let summary_rendered = render(choco_cfg.summary.as_deref()).or_else(|| {
+    let summary = render(choco_cfg.summary.as_deref()).or_else(|| {
         ctx.config.meta_description().map(|s| {
             anodizer_core::template::render(s, ctx.template_vars())
                 .unwrap_or_else(|_| s.to_string())
@@ -347,7 +537,7 @@ pub fn publish_to_chocolatey(
     // `<releaseNotes>` empty even when the project carried a
     // README. `render_template` walks the structured `Metadata` map
     // populated at context bootstrap.
-    let release_notes_rendered = render(choco_cfg.release_notes.as_deref()).or_else(|| {
+    let release_notes = render(choco_cfg.release_notes.as_deref()).or_else(|| {
         let resolved = ctx.render_template("{{ Metadata.FullDescription }}").ok()?;
         if resolved.is_empty() {
             None
@@ -355,30 +545,49 @@ pub fn publish_to_chocolatey(
             Some(resolved)
         }
     });
+    ChocoTextFields {
+        title,
+        copyright,
+        summary,
+        release_notes,
+    }
+}
 
-    let nuspec = generate_nuspec(&NuspecParams {
+/// Renders the `.nuspec` XML body from the resolved metadata + text fields.
+fn build_nuspec(
+    choco_cfg: &anodizer_core::config::ChocolateyConfig,
+    crate_name: &str,
+    version: &str,
+    metadata: &ChocoMetadata,
+    text: &ChocoTextFields,
+) -> Result<String> {
+    generate_nuspec(&NuspecParams {
         name: choco_cfg.name.as_deref().unwrap_or(crate_name),
-        version: &version,
-        description: &description,
-        license: &license,
+        version,
+        description: &metadata.description,
+        license: &metadata.license,
         license_url: choco_cfg.license_url.as_deref(),
-        authors: &authors,
-        project_url: &project_url,
-        icon_url: &icon_url,
-        tags: &tags,
+        authors: &metadata.authors,
+        project_url: &metadata.project_url,
+        icon_url: &metadata.icon_url,
+        tags: &metadata.tags,
         package_source_url: choco_cfg.package_source_url.as_deref(),
         owners: choco_cfg.owners.as_deref(),
-        title: title_rendered.as_deref(),
-        copyright: copyright_rendered.as_deref(),
+        title: text.title.as_deref(),
+        copyright: text.copyright.as_deref(),
         require_license_acceptance: choco_cfg.require_license_acceptance.unwrap_or(false),
         project_source_url: choco_cfg.project_source_url.as_deref(),
         docs_url: choco_cfg.docs_url.as_deref(),
         bug_tracker_url: choco_cfg.bug_tracker_url.as_deref(),
-        summary: summary_rendered.as_deref(),
-        release_notes: release_notes_rendered.as_deref(),
+        summary: text.summary.as_deref(),
+        release_notes: text.release_notes.as_deref(),
         dependencies: choco_cfg.dependencies.as_deref().unwrap_or(&[]),
-    })?;
-    let install_script = match &install_mode {
+    })
+}
+
+/// Renders `chocolateyinstall.ps1` from the resolved `InstallMode`.
+fn build_install_script(pkg_name: &str, install_mode: &InstallMode) -> Result<String> {
+    match install_mode {
         InstallMode::Dual {
             url32,
             hash32,
@@ -390,25 +599,37 @@ pub fn publish_to_chocolatey(
             hash32,
             url64,
             hash64,
-        })?,
+        }),
         InstallMode::Single {
             url,
             hash,
             is_32bit,
-        } => generate_install_script(pkg_name, url, hash, *is_32bit)?,
-    };
+        } => generate_install_script(pkg_name, url, hash, *is_32bit),
+    }
+}
 
+/// Writes the nuspec and install script to a fresh tempdir, then packs
+/// them (natively, no `choco` CLI dependency) into a `.nupkg` OPC/ZIP.
+/// The returned `StagedPackage` owns the tempdir so its lifetime extends
+/// to the push call site.
+fn stage_package(
+    pkg_name: &str,
+    version: &str,
+    nuspec: &str,
+    install_script: &str,
+    log: &StageLogger,
+) -> Result<StagedPackage> {
     let tmp_dir = tempfile::tempdir().context("chocolatey: create temp dir")?;
-    let pkg_dir = tmp_dir.path();
+    let pkg_dir: &Path = tmp_dir.path();
     let nuspec_path = pkg_dir.join(format!("{}.nuspec", pkg_name));
-    std::fs::write(&nuspec_path, &nuspec)
+    std::fs::write(&nuspec_path, nuspec)
         .with_context(|| format!("chocolatey: write nuspec {}", nuspec_path.display()))?;
 
     let tools_dir = pkg_dir.join("tools");
     std::fs::create_dir_all(&tools_dir).context("chocolatey: create tools dir")?;
 
     let install_path = tools_dir.join("chocolateyinstall.ps1");
-    std::fs::write(&install_path, &install_script).with_context(|| {
+    std::fs::write(&install_path, install_script).with_context(|| {
         format!(
             "chocolatey: write install script {}",
             install_path.display()
@@ -427,47 +648,50 @@ pub fn publish_to_chocolatey(
     // Create .nupkg natively (OPC/ZIP format) — no `choco` CLI dependency.
     // A nupkg is a ZIP containing the nuspec, tools/, and OPC metadata files.
     let nupkg_path = pkg_dir.join(format!("{}.{}.nupkg", pkg_name, version));
-    create_nupkg(pkg_name, &version, &nuspec_path, &tools_dir, &nupkg_path)?;
+    create_nupkg(pkg_name, version, &nuspec_path, &tools_dir, &nupkg_path)?;
     log.status(&format!("created nupkg: {}", nupkg_path.display()));
 
+    Ok(StagedPackage {
+        _tmp_dir: tmp_dir,
+        nupkg_path,
+    })
+}
+
+/// Resolves the NuGet API key from `choco.api_key` (template-rendered)
+/// with `CHOCOLATEY_API_KEY` env-var fallback. An empty result signals
+/// "skip push" at the call site.
+fn resolve_api_key(ctx: &Context, choco_cfg: &anodizer_core::config::ChocolateyConfig) -> String {
     // Template-render APIKey (GoReleaser parity: chocolatey.go:184)
-    // Empty default is checked immediately below — the empty branch logs a
+    // Empty default is checked by the caller — the empty branch logs a
     // warn and returns Ok(false) (skip push) rather than letting an empty
     // key reach the NuGet push API where it would surface as opaque 403.
-    let api_key = choco_cfg
+    choco_cfg
         .api_key
         .as_deref()
         .map(|k| ctx.render_template(k).unwrap_or_else(|_| k.to_string()))
         .or_else(|| ctx.env_var("CHOCOLATEY_API_KEY"))
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
 
-    if api_key.is_empty() {
-        log.warn(&format!(
-            "chocolatey: no API key for '{}', skipping push",
-            crate_name
-        ));
-        return Ok(false);
-    }
-
-    let source = choco_cfg
-        .source_repo
-        .as_deref()
-        .unwrap_or("https://push.chocolatey.org/");
-
-    // Idempotency with drift detection: Chocolatey package versions are
-    // immutable once submitted, so re-pushing returns 403. We treat a
-    // version-already-on-feed as a skip ONLY when the feed's recorded package
-    // hash matches our local nupkg hash. If they differ, our local nupkg has
-    // diverged from what the feed has — typically because the same git tag
-    // was re-released with different artifact bytes — and silently skipping
-    // would publish an install script that points at an archive whose sha
-    // no longer matches (Chocolatey's verifier then rejects the package).
-    // In that case we fail loudly and tell the user to bump the version.
-    // Single retry policy resolved from the top-level `retry:` block; reused
-    // for the feed-hash GET and the push PUT.
-    let policy = ctx.retry_policy();
-
-    match package_feed_hash(source, pkg_name, &version, &policy) {
+/// Inspects the feed for the current `pkg_name@version` and decides
+/// whether to short-circuit (already published hash-match, pending
+/// moderation without `republish_in_moderation`), bail (rejected,
+/// hash drift), or fall through to push.
+///
+/// `Ok(None)` means "proceed to push". `Ok(Some(b))` means "return `b`
+/// immediately from `publish_to_chocolatey`".
+#[allow(clippy::too_many_arguments)]
+fn handle_feed_state(
+    ctx: &mut Context,
+    choco_cfg: &anodizer_core::config::ChocolateyConfig,
+    source: &str,
+    pkg_name: &str,
+    version: &str,
+    nupkg_path: &Path,
+    policy: &anodizer_core::retry::RetryPolicy,
+    log: &StageLogger,
+) -> Result<Option<bool>> {
+    match package_feed_hash(source, pkg_name, version, policy) {
         FeedHashResult::Present {
             hash,
             algorithm,
@@ -531,16 +755,16 @@ pub fn publish_to_chocolatey(
                     ctx.record_publisher_outcome(
                         anodizer_core::PublisherOutcome::PendingModeration,
                     );
-                    return Ok(false);
+                    return Ok(Some(false));
                 }
             }
-            let local = compute_nupkg_hash(&nupkg_path, &algorithm)?;
+            let local = compute_nupkg_hash(nupkg_path, &algorithm)?;
             if local == hash {
                 log.status(&format!(
                     "chocolatey: skipping '{}-{}' — already published (hash match)",
                     pkg_name, version
                 ));
-                return Ok(false);
+                return Ok(Some(false));
             }
             anyhow::bail!(
                 "chocolatey: '{}-{}' is already on the feed but the local nupkg \
@@ -571,12 +795,7 @@ pub fn publish_to_chocolatey(
             // Not on feed — push normally.
         }
     }
-
-    // Push via NuGet V2 API — same protocol as `choco push`.
-    push_nupkg(&nupkg_path, source, &api_key, log, &policy)?;
-
-    log.status(&format!("Chocolatey package pushed for '{}'", crate_name));
-    Ok(true)
+    Ok(None)
 }
 
 #[cfg(test)]
