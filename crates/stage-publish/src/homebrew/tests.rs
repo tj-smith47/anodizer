@@ -2715,3 +2715,301 @@ fn homebrew_top_level_cask_url_empty_metadata_bails_with_actionable_error() {
         "error must include an actionable next-step hint; got: {msg}"
     );
 }
+
+// ===========================================================================
+// publish_top_level_homebrew_casks + publish_cask — inner-loop branch
+// coverage beyond the early-exit guards: artifact-resolution failures,
+// project_name fallback, no-URL-block bail, and the skip_upload fallback
+// ladder from cask-level to homebrew-level.
+// ===========================================================================
+
+/// publish_top_level_homebrew_casks: a valid entry (repo set, no skip,
+/// no dry-run) with NO macOS artifact in the bundle must bail with the
+/// cask name in the message — operators need to know which entry is
+/// missing its macOS artifact.
+#[test]
+fn publish_top_level_homebrew_casks_no_macos_artifact_errors_with_cask_name() {
+    let config = Config {
+        homebrew_casks: Some(vec![HomebrewCaskConfig {
+            name: Some("mycask".to_string()),
+            repository: Some(RepositoryConfig {
+                owner: Some("myorg".to_string()),
+                name: Some("homebrew-cask-tap".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    // Linux-only artifact; the darwin selector returns None.
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-linux.tar.gz",
+        "x86_64-unknown-linux-gnu",
+        "https://e.com/mytool.tar.gz",
+        "linuxsha",
+    ));
+    let err = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("no macOS artifact"),
+        "expected no-macOS-artifact bail; got: {msg}"
+    );
+    assert!(msg.contains("mycask"), "must cite cask name; got: {msg}");
+}
+
+/// publish_top_level_homebrew_casks: the cask name defaults to
+/// `config.project_name` when the entry omits `name:`. Without this
+/// fallback, an empty-name cask would render `<empty>.rb` in the tap.
+#[test]
+fn publish_top_level_homebrew_casks_defaults_name_to_project_name() {
+    let config = Config {
+        project_name: "myproject".to_string(),
+        homebrew_casks: Some(vec![HomebrewCaskConfig {
+            // name unset on purpose.
+            name: None,
+            repository: Some(RepositoryConfig {
+                owner: Some("myorg".to_string()),
+                name: Some("homebrew-cask-tap".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    // No darwin artifact -> bails through the artifact lookup, surfacing
+    // the project_name fallback in the error message.
+    let err = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("myproject"),
+        "cask name must default to project_name; got: {msg}"
+    );
+}
+
+/// publish_top_level_homebrew_casks: when no `url:` block is configured AND
+/// the macOS artifact lacks `url` metadata, the publisher bails through the
+/// alternate `else` arm — distinct from the `url:`-block-with-no-template
+/// path already covered above. Error must cite the cask name and the
+/// `url.template` hint.
+#[test]
+fn publish_top_level_homebrew_casks_no_url_block_no_metadata_url_errors() {
+    let config = Config {
+        homebrew_casks: Some(vec![HomebrewCaskConfig {
+            name: Some("mycask".to_string()),
+            repository: Some(RepositoryConfig {
+                owner: Some("myorg".to_string()),
+                name: Some("homebrew-cask-tap".to_string()),
+                ..Default::default()
+            }),
+            // url block absent — different bail arm from the existing
+            // `HomebrewCaskURL { template: None, .. }` test.
+            url: None,
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let mut metadata = HashMap::new();
+    metadata.insert("sha256".to_string(), "dmgsha".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::DiskImage,
+        path: std::path::PathBuf::from("/tmp/mycask.dmg"),
+        name: "mycask.dmg".to_string(),
+        target: Some("aarch64-apple-darwin".to_string()),
+        crate_name: "mytool".to_string(),
+        metadata,
+        size: None,
+    });
+    let err = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("mycask"), "must cite cask name; got: {msg}");
+    assert!(
+        msg.contains("url.template"),
+        "no-url-block bail must hint at url.template; got: {msg}"
+    );
+}
+
+/// publish_top_level_homebrew_casks: artifact has `url` metadata but no
+/// `sha256`. Bail must cite the cask name and the `sha256` field — a cask
+/// rendered with an empty `sha256 ""` line fails `brew install`.
+#[test]
+fn publish_top_level_homebrew_casks_no_sha256_errors_with_cask_name() {
+    let config = Config {
+        homebrew_casks: Some(vec![HomebrewCaskConfig {
+            name: Some("mycask".to_string()),
+            repository: Some(RepositoryConfig {
+                owner: Some("myorg".to_string()),
+                name: Some("homebrew-cask-tap".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let mut metadata = HashMap::new();
+    metadata.insert("url".to_string(), "https://e.com/mycask.dmg".to_string());
+    // sha256 intentionally absent.
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::DiskImage,
+        path: std::path::PathBuf::from("/tmp/mycask.dmg"),
+        name: "mycask.dmg".to_string(),
+        target: Some("aarch64-apple-darwin".to_string()),
+        crate_name: "mytool".to_string(),
+        metadata,
+        size: None,
+    });
+    let err = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("mycask"), "must cite cask name; got: {msg}");
+    assert!(
+        msg.contains("sha256"),
+        "must cite the sha256 field; got: {msg}"
+    );
+}
+
+/// publish_top_level_homebrew_casks: a list with a `skip_upload:true` entry
+/// followed by a missing-repository entry continues past the first and
+/// surfaces the second entry's bail — proves the loop iterates past
+/// `continue` and that `?` propagation cites the failing entry, not the
+/// first-by-index.
+#[test]
+fn publish_top_level_homebrew_casks_skip_then_error_propagates_second_failure() {
+    let config = Config {
+        homebrew_casks: Some(vec![
+            HomebrewCaskConfig {
+                name: Some("skipped-cask".to_string()),
+                repository: Some(RepositoryConfig {
+                    owner: Some("myorg".to_string()),
+                    name: Some("homebrew-cask-tap".to_string()),
+                    ..Default::default()
+                }),
+                skip_upload: Some(StringOrBool::Bool(true)),
+                ..Default::default()
+            },
+            HomebrewCaskConfig {
+                name: Some("broken-cask".to_string()),
+                repository: None,
+                ..Default::default()
+            },
+        ]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let err = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("no repository config"),
+        "second entry's bail must propagate; got: {msg}"
+    );
+    assert!(
+        msg.contains("broken-cask"),
+        "bail must cite the second cask, not the first; got: {msg}"
+    );
+    assert!(
+        !msg.contains("skipped-cask"),
+        "first (skipped) entry must not appear in error; got: {msg}"
+    );
+}
+
+/// publish_cask: when the cask-level `skip_upload` is unset, the fallback
+/// reads from the surrounding HomebrewConfig.skip_upload — so a tap-wide
+/// `skip_upload: true` correctly short-circuits the standalone cask
+/// publisher without requiring a redundant per-cask override.
+#[test]
+fn publish_cask_falls_back_to_homebrew_skip_upload() {
+    let cfg = HomebrewConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("homebrew-tap".to_string()),
+            ..Default::default()
+        }),
+        skip_upload: Some(StringOrBool::Bool(true)),
+        cask: Some(HomebrewCaskConfig {
+            // No cask-level skip_upload; fallback should consult hb_cfg.
+            skip_upload: None,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = hb_ctx(cfg, false);
+    super::publish_cask(&mut ctx, "mytool", &quiet_log())
+        .expect("hb skip_upload=true must short-circuit when cask skip_upload is None");
+}
+
+/// publish_cask: when no macOS artifact exists, the call into
+/// `generate_cask_from_context` bails with an error that names the crate
+/// — distinct from the earlier `cask: None` / `repository: None` bails,
+/// which short-circuit before generation. Forces the explicit
+/// `skip_upload: false` path so the skip guard does not intercept.
+#[test]
+fn publish_cask_no_macos_artifact_errors_with_crate_name() {
+    let cfg = HomebrewConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("homebrew-tap".to_string()),
+            ..Default::default()
+        }),
+        cask: Some(HomebrewCaskConfig {
+            // Both skip_upload values explicitly false to force the path
+            // through generate_cask_from_context.
+            skip_upload: Some(StringOrBool::Bool(false)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = hb_ctx(cfg, false);
+    // Only a Linux artifact present; macOS lookup fails.
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-linux.tar.gz",
+        "x86_64-unknown-linux-gnu",
+        "https://e.com/mytool.tar.gz",
+        "linuxsha",
+    ));
+    let err = super::publish_cask(&mut ctx, "mytool", &quiet_log()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("homebrew cask:"),
+        "error must carry homebrew-cask context; got: {msg}"
+    );
+    assert!(
+        msg.contains("no macOS artifact"),
+        "must surface no-macOS-artifact bail; got: {msg}"
+    );
+    assert!(
+        msg.contains("mytool"),
+        "must cite the crate name; got: {msg}"
+    );
+}
+
+/// publish_cask: cask-level `name` override is independent of the crate
+/// name — when set, downstream cask filename uses the override, but
+/// generator-level bails surface `crate_name` so operators can still match
+/// the failure back to the crate that owns the publisher config.
+#[test]
+fn publish_cask_name_override_does_not_mask_crate_in_errors() {
+    let cfg = HomebrewConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("homebrew-tap".to_string()),
+            ..Default::default()
+        }),
+        cask: Some(HomebrewCaskConfig {
+            name: Some("renamed-cask".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = hb_ctx(cfg, false);
+    // No artifacts -> generate_cask_from_context bails citing crate_name.
+    let err = super::publish_cask(&mut ctx, "mytool", &quiet_log()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("mytool"),
+        "crate name (not the renamed cask) is the operator-visible handle in errors; got: {msg}"
+    );
+}
