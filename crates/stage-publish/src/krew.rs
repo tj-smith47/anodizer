@@ -1595,24 +1595,23 @@ mod tests {
 // KrewPublisher — Publisher trait wrapper (close-PR rollback)
 // ---------------------------------------------------------------------------
 
-/// Krew plugin-index publisher. Each successful per-crate publish opens a
-/// PR against an upstream `krew-index`-style repo from a fork. The rollback
-/// path closes those PRs via `PATCH /repos/<upstream>/pulls/<n>` with
-/// `state=closed`.
-///
-/// PR-number discovery uses the **query-at-rollback-time** approach: at
-/// publish time we only record the upstream coordinates, the fork owner,
-/// and the branch name the publish path pushed to. At rollback time we
-/// list open PRs filtered by `head=<fork_owner>:<branch>` and close each
-/// match. This sidesteps modifying the unchanged `publish_to_krew` body
-/// to surface the new PR number, and stays robust against a stale
-/// evidence file stitched in from an older run.
-///
-/// CREDENTIAL HANDLING: [`KrewPrTarget`] stores `token_env_var` — the
-/// NAME of the env var to consult at rollback time — not the resolved
-/// token VALUE. Same rule applies to every PR-based publisher that
-/// touches GitHub auth.
-use serde::Deserialize;
+// Krew plugin-index publisher. Each successful per-crate publish opens a
+// PR against an upstream `krew-index`-style repo from a fork. The rollback
+// path closes those PRs via `PATCH /repos/<upstream>/pulls/<n>` with
+// `state=closed`.
+//
+// PR-number discovery uses the query-at-rollback-time approach: at
+// publish time only the upstream coordinates, the fork owner, and the
+// branch name the publish path pushed to are recorded. At rollback time
+// open PRs filtered by `head=<fork_owner>:<branch>` are listed and each
+// match is closed. This sidesteps modifying the unchanged
+// `publish_to_krew` body to surface the new PR number, and stays robust
+// against a stale evidence file stitched in from an older run.
+//
+// CREDENTIAL HANDLING: `KrewPrTarget` stores `token_env_var` — the
+// NAME of the env var to consult at rollback time — not the resolved
+// token VALUE. Same rule applies to every PR-based publisher that
+// touches GitHub auth.
 
 simple_publisher!(
     KrewPublisher,
@@ -1622,40 +1621,19 @@ simple_publisher!(
     Some("GITHUB_TOKEN pull_request:write"),
 );
 
-/// Serialized shape of a recorded krew PR target. One entry per crate
-/// whose publish path successfully pushed a branch to its fork. See
-/// the module-level rustdoc for the query-at-rollback-time rationale.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct KrewPrTarget {
-    /// Per-target label — the crate the manifest was generated for.
-    /// Surfaces in log lines.
-    target: String,
-    /// Upstream owner — typically `kubernetes-sigs` (or whatever
-    /// `repository.pull_request.base.owner` overrides to).
-    upstream_owner: String,
-    /// Upstream repo — typically `krew-index`.
-    upstream_repo: String,
-    /// Fork owner — the user/org the publish path pushed the branch to.
-    fork_owner: String,
-    /// Branch name on the fork — `{plugin_name}-v{version}`.
-    branch: String,
-    /// Env var name to consult for the rollback close-PR token.
-    /// Captured at run-time so rollback uses the same env contract the
-    /// publish path validated.
-    token_env_var: Option<String>,
-}
+/// Aliased to the core-owned snapshot so the evidence schema lives in
+/// [`anodizer_core::publish_evidence`] and credential-shaped fields
+/// have no slot to land in. One entry per crate whose publish path
+/// successfully pushed a branch to its fork.
+type KrewPrTarget = anodizer_core::publish_evidence::KrewTargetSnapshot;
 
 /// Decode the `krew_targets` array from
 /// [`anodizer_core::PublishEvidence::extra`].
-///
-/// Returns an empty Vec on any of: missing key, wrong shape, empty
-/// array. Rollback treats empty-decode the same as no-evidence and
-/// emits the canonical empty-evidence warn.
-fn decode_krew_targets(extra: &serde_json::Value) -> Vec<KrewPrTarget> {
-    extra
-        .get("krew_targets")
-        .and_then(|v| serde_json::from_value::<Vec<KrewPrTarget>>(v.clone()).ok())
-        .unwrap_or_default()
+fn decode_krew_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<KrewPrTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::Krew(k) => k.krew_targets.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// Resolve the upstream `<owner>/<repo>` slug for a krew target — mirrors
@@ -1837,7 +1815,11 @@ impl anodizer_core::Publisher for KrewPublisher {
         // (dry-run, skip_upload, no-op NoChanges, bot-template mode).
         if any_pushed {
             let targets = collect_krew_run_targets(ctx);
-            evidence.extra = serde_json::json!({ "krew_targets": targets });
+            evidence.extra = anodizer_core::PublishEvidenceExtra::Krew(
+                anodizer_core::publish_evidence::KrewExtra {
+                    krew_targets: targets,
+                },
+            );
         }
         Ok(evidence)
     }
@@ -2083,16 +2065,20 @@ mod publisher_tests {
 
     #[test]
     fn krew_rollback_warns_when_no_targets_recorded() {
+        let capture = anodizer_core::log::LogCapture::new();
         let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
         let evidence = PublishEvidence::new("krew");
         let p = KrewPublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
 
-        let msg = crate::publisher_helpers::rollback_empty_warning_msg("krew", "PR targets");
-        assert!(msg.starts_with("krew:"), "{msg}");
-        assert!(msg.contains("PR targets"), "{msg}");
-        assert!(msg.contains("verify"), "{msg}");
-        assert!(msg.contains("manually"), "{msg}");
+        let warns = capture.warn_messages();
+        assert!(
+            warns
+                .iter()
+                .any(|m| m.contains("krew") && m.contains("PR targets") && m.contains("verify")),
+            "expected captured warn naming publisher + target-noun + 'verify'; got: {warns:?}"
+        );
     }
 
     #[test]
@@ -2105,30 +2091,42 @@ mod publisher_tests {
             branch: "demo-v1.2.3".into(),
             token_env_var: Some("KREW_INDEX_TOKEN".into()),
         }];
-        let extra = serde_json::json!({ "krew_targets": original.clone() });
+        let extra =
+            anodizer_core::PublishEvidenceExtra::Krew(anodizer_core::publish_evidence::KrewExtra {
+                krew_targets: original.clone(),
+            });
         let decoded = decode_krew_targets(&extra);
         assert_eq!(decoded, original);
     }
 
     #[test]
     fn krew_target_extra_carries_no_secret_material() {
-        // Defense-in-depth: serialize a target and assert no field
-        // names that could leak a token / pat are present. Mirrors
-        // the credential-handling contract on `PublishEvidence::extra`.
-        let t = KrewPrTarget {
-            target: "demo".into(),
-            upstream_owner: "kubernetes-sigs".into(),
-            upstream_repo: "krew-index".into(),
-            fork_owner: "acme".into(),
-            branch: "demo-v1.2.3".into(),
-            token_env_var: Some("KREW_INDEX_TOKEN".into()),
-        };
-        let s = serde_json::to_string(&t).expect("serialize");
+        // Structural pin: build a typed-variant evidence and assert
+        // (a) no credential-shaped keys appear AND (b) the
+        // operator-public PR coordinates are preserved.
+        let mut e = anodizer_core::PublishEvidence::new("krew");
+        e.extra =
+            anodizer_core::PublishEvidenceExtra::Krew(anodizer_core::publish_evidence::KrewExtra {
+                krew_targets: vec![KrewPrTarget {
+                    target: "demo".into(),
+                    upstream_owner: "kubernetes-sigs".into(),
+                    upstream_repo: "krew-index".into(),
+                    fork_owner: "acme".into(),
+                    branch: "demo-v1.2.3".into(),
+                    token_env_var: Some("KREW_INDEX_TOKEN".into()),
+                }],
+            });
+        let s = serde_json::to_string(&e).expect("serialize");
         assert!(!s.contains("\"token\":"), "{s}");
         assert!(!s.contains("\"password\":"), "{s}");
         assert!(!s.contains("\"pat\":"), "{s}");
-        // The env-var NAME is fine; values must never appear.
+        assert!(!s.contains("\"private_key\":"), "{s}");
+        assert!(!s.contains("\"secret\":"), "{s}");
+        assert!(!s.contains("\"api_key\":"), "{s}");
         assert!(s.contains("KREW_INDEX_TOKEN"), "{s}");
+        assert!(s.contains("\"upstream_owner\":\"kubernetes-sigs\""), "{s}");
+        assert!(s.contains("\"upstream_repo\":\"krew-index\""), "{s}");
+        assert!(s.contains("\"fork_owner\":\"acme\""), "{s}");
     }
 
     #[test]

@@ -14,7 +14,6 @@
 //! scoop git-revert publishers.
 
 use anodizer_core::context::Context;
-use serde::{Deserialize, Serialize};
 
 use crate::util::{RevertTarget, run_revert_targets_parallel};
 
@@ -26,19 +25,16 @@ simple_publisher!(
     Some("GITHUB_TOKEN contents:write"),
 );
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct NixTarget {
-    target: String,
-    repo_url: String,
-    branch: Option<String>,
-    token_env_var: Option<String>,
-}
+/// Aliased to the core-owned snapshot so the evidence schema lives in
+/// [`anodizer_core::publish_evidence`] and credential-shaped fields
+/// have no slot to land in.
+type NixTarget = anodizer_core::publish_evidence::NixTargetSnapshot;
 
-fn decode_nix_targets(extra: &serde_json::Value) -> Vec<NixTarget> {
-    extra
-        .get("nix_targets")
-        .and_then(|v| serde_json::from_value::<Vec<NixTarget>>(v.clone()).ok())
-        .unwrap_or_default()
+fn decode_nix_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<NixTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::Nix(n) => n.nix_targets.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// Collapse recorded overlay-push targets to a unique set keyed by
@@ -203,7 +199,11 @@ impl anodizer_core::Publisher for NixPublisher {
         let mut evidence = anodizer_core::PublishEvidence::new("nix");
         if any_pushed {
             let targets = collect_nix_run_targets(ctx);
-            evidence.extra = serde_json::json!({ "nix_targets": targets });
+            evidence.extra = anodizer_core::PublishEvidenceExtra::Nix(
+                anodizer_core::publish_evidence::NixExtra {
+                    nix_targets: targets,
+                },
+            );
         }
         Ok(evidence)
     }
@@ -328,23 +328,29 @@ mod publisher_tests {
 
     #[test]
     fn nix_target_extra_carries_no_secret_material() {
-        // Defense-in-depth: serialize a target and assert no field
-        // names that could leak a token / pat / password are present.
-        // Mirrors the credential-handling contract documented on
-        // `PublishEvidence::extra`.
-        let t = NixTarget {
-            target: "demo".into(),
-            repo_url: "https://github.com/acme/nixpkgs-overlay.git".into(),
-            branch: Some("master".into()),
-            token_env_var: Some("NIX_PKGS_TOKEN".into()),
-        };
-        let s = serde_json::to_string(&t).expect("serialize");
+        // Structural pin: build a typed-variant evidence and assert
+        // (a) no credential-shaped keys appear AND (b) the
+        // operator-public shape is preserved.
+        let mut e = PublishEvidence::new("nix");
+        e.extra =
+            anodizer_core::PublishEvidenceExtra::Nix(anodizer_core::publish_evidence::NixExtra {
+                nix_targets: vec![NixTarget {
+                    target: "demo".into(),
+                    repo_url: "https://github.com/acme/nixpkgs-overlay.git".into(),
+                    branch: Some("master".into()),
+                    token_env_var: Some("NIX_PKGS_TOKEN".into()),
+                }],
+            });
+        let s = serde_json::to_string(&e).expect("serialize");
         assert!(!s.contains("\"token\":"), "{s}");
         assert!(!s.contains("\"password\":"), "{s}");
         assert!(!s.contains("\"pat\":"), "{s}");
         assert!(!s.contains("\"private_key\":"), "{s}");
-        // The env-var NAME is fine; values must never appear.
+        assert!(!s.contains("\"secret\":"), "{s}");
+        assert!(!s.contains("\"api_key\":"), "{s}");
         assert!(s.contains("NIX_PKGS_TOKEN"), "{s}");
+        assert!(s.contains("\"target\":\"demo\""), "{s}");
+        assert!(s.contains("\"branch\":\"master\""), "{s}");
     }
 
     #[test]
@@ -355,7 +361,10 @@ mod publisher_tests {
             branch: Some("master".into()),
             token_env_var: Some("NIX_PKGS_TOKEN".into()),
         }];
-        let extra = serde_json::json!({ "nix_targets": original.clone() });
+        let extra =
+            anodizer_core::PublishEvidenceExtra::Nix(anodizer_core::publish_evidence::NixExtra {
+                nix_targets: original.clone(),
+            });
         let decoded = decode_nix_targets(&extra);
         assert_eq!(decoded, original);
     }

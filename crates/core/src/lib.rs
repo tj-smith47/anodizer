@@ -47,7 +47,7 @@ pub use determinism_report::{
     AllowList, AllowListEntry, ArtifactRow, CURRENT_SCHEMA_VERSION, DeterminismReport, DriftRow,
 };
 pub use env_source::{EnvSource, MapEnvSource, ProcessEnvSource};
-pub use publish_evidence::PublishEvidence;
+pub use publish_evidence::{PublishEvidence, PublishEvidenceExtra};
 pub use publish_report::{
     PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,
 };

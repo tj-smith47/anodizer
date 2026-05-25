@@ -778,65 +778,36 @@ simple_publisher!(
 /// real `DELETE /v1/packages/<org>/<repo>/<slug>/` instead of a warn-only
 /// manual-cleanup checklist.
 ///
-/// `slug` is `Option` because evidence emitted before B13 didn't carry it;
-/// rollback falls back to the warn-only path (see
-/// [`cloudsmith_manual_cleanup_msg`]) for any target whose slug is absent.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CloudsmithTarget {
-    pub org: String,
-    pub repo: String,
-    pub filename: String,
-    pub slug: Option<String>,
+/// Aliased to the core-owned snapshot so the evidence schema lives in
+/// [`anodizer_core::publish_evidence`] and credential-shaped fields
+/// have no slot to land in. `slug` stays `Option` because evidence
+/// emitted before slug-capture didn't carry it; rollback falls back
+/// to the warn-only path (see [`cloudsmith_manual_cleanup_msg`]) for
+/// any target whose slug is absent.
+pub(crate) type CloudsmithTarget = anodizer_core::publish_evidence::CloudsmithTargetSnapshot;
+
+/// Encode the per-target tuples into the typed
+/// [`PublishEvidenceExtra::Cloudsmith`] variant.
+pub(crate) fn encode_cloudsmith_targets(
+    targets: &[CloudsmithTarget],
+) -> anodizer_core::PublishEvidenceExtra {
+    anodizer_core::PublishEvidenceExtra::Cloudsmith(
+        anodizer_core::publish_evidence::CloudsmithExtra {
+            cloudsmith_targets: targets.to_vec(),
+        },
+    )
 }
 
-/// Encode the per-target tuples into the JSON shape stored at
-/// [`PublishEvidence::extra`]`.cloudsmith_targets`. `slug` is emitted as
-/// `null` when absent so the JSON shape is forward-compatible with older
-/// evidence (decoded back via [`decode_cloudsmith_targets`]).
-pub(crate) fn encode_cloudsmith_targets(targets: &[CloudsmithTarget]) -> serde_json::Value {
-    serde_json::json!({
-        "cloudsmith_targets": targets
-            .iter()
-            .map(|t| serde_json::json!({
-                "org": t.org,
-                "repo": t.repo,
-                "filename": t.filename,
-                "slug": t.slug,
-            }))
-            .collect::<Vec<_>>(),
-    })
-}
-
-/// Decode the JSON shape produced by [`encode_cloudsmith_targets`]. Returns
-/// an empty vec on missing / malformed payload — the rollback then surfaces
-/// the empty-evidence warn instead of crashing.
-///
-/// `slug` is read defensively: absent or non-string values decode as
-/// `None`, matching older evidence written before slug capture was added.
-pub(crate) fn decode_cloudsmith_targets(extra: &serde_json::Value) -> Vec<CloudsmithTarget> {
-    let array = extra
-        .get("cloudsmith_targets")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    array
-        .into_iter()
-        .filter_map(|v| {
-            let org = v.get("org")?.as_str()?.to_string();
-            let repo = v.get("repo")?.as_str()?.to_string();
-            let filename = v.get("filename")?.as_str()?.to_string();
-            let slug = v
-                .get("slug")
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_string());
-            Some(CloudsmithTarget {
-                org,
-                repo,
-                filename,
-                slug,
-            })
-        })
-        .collect()
+/// Decode the typed Cloudsmith variant back into structured targets.
+/// Returns an empty vec when the variant doesn't match — the rollback
+/// then surfaces the empty-evidence warn instead of crashing.
+pub(crate) fn decode_cloudsmith_targets(
+    extra: &anodizer_core::PublishEvidenceExtra,
+) -> Vec<CloudsmithTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::Cloudsmith(c) => c.cloudsmith_targets.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// The per-target warn line a rollback emits as a FALLBACK when no slug is
@@ -1623,8 +1594,9 @@ mod publisher_tests {
         assert_eq!(decoded, targets);
     }
 
-    // B13 — slug captured at upload time round-trips through evidence so
-    // rollback can issue real DELETEs.
+    // Slug captured at upload time round-trips through evidence so
+    // rollback can issue real DELETEs. Also pins the wire-format key
+    // for older anodize binaries decoding this evidence.
     #[test]
     fn cloudsmith_target_serde_roundtrip_with_slug() {
         let targets = vec![
@@ -1644,37 +1616,50 @@ mod publisher_tests {
         let encoded = encode_cloudsmith_targets(&targets);
         let decoded = decode_cloudsmith_targets(&encoded);
         assert_eq!(decoded, targets);
-        // Encoded shape carries the slug field literally so older
-        // anodize binaries decoding this evidence will see slug data.
-        let arr = encoded
-            .get("cloudsmith_targets")
-            .and_then(|v| v.as_array())
+        // Wire-format pin: serialize through evidence and inspect the
+        // JSON to confirm the slug rides under the `cloudsmith_targets`
+        // key (matches the pre-typed shape).
+        let mut e = PublishEvidence::new("cloudsmith");
+        e.extra = encoded;
+        let s = serde_json::to_string(&e).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("parse");
+        let arr = v["extra"]["cloudsmith_targets"]
+            .as_array()
             .expect("cloudsmith_targets array");
         let first = arr.first().expect("at least one entry");
         assert_eq!(first.get("slug").and_then(|s| s.as_str()), Some("aBcD1234"));
     }
 
-    // B13 — evidence written by versions before slug capture decodes with
-    // `slug = None`, so rollback degrades cleanly to the warn-only path.
+    // Evidence written by versions before slug capture decodes with
+    // `slug = None`, so rollback degrades cleanly to the warn-only
+    // path. The snapshot's `#[serde(default)]` on `slug` powers this
+    // wire-compat path.
     #[test]
     fn cloudsmith_target_decode_tolerates_missing_slug_field() {
-        // Hand-rolled JSON matching the pre-B13 evidence shape — no
-        // `slug` field on any entry.
-        let extra = serde_json::json!({
-            "cloudsmith_targets": [
-                {
-                    "org": "acme",
-                    "repo": "widget",
-                    "filename": "widget_1.0.0_amd64.deb"
-                },
-                {
-                    "org": "acme",
-                    "repo": "widget",
-                    "filename": "widget-1.0.0-1.x86_64.rpm"
-                }
-            ]
-        });
-        let decoded = decode_cloudsmith_targets(&extra);
+        // Hand-rolled JSON matching the pre-slug-capture evidence shape
+        // — wrapped in the `PublishEvidence` envelope so deserialization
+        // exercises the same path live evidence files take.
+        let raw = r#"{
+            "schema_version": 1,
+            "publisher": "cloudsmith",
+            "artifact_paths": [],
+            "extra": {
+                "cloudsmith_targets": [
+                    {
+                        "org": "acme",
+                        "repo": "widget",
+                        "filename": "widget_1.0.0_amd64.deb"
+                    },
+                    {
+                        "org": "acme",
+                        "repo": "widget",
+                        "filename": "widget-1.0.0-1.x86_64.rpm"
+                    }
+                ]
+            }
+        }"#;
+        let e: PublishEvidence = serde_json::from_str(raw).expect("deserialize");
+        let decoded = decode_cloudsmith_targets(&e.extra);
         assert_eq!(decoded.len(), 2);
         assert!(
             decoded.iter().all(|t| t.slug.is_none()),
@@ -1684,23 +1669,56 @@ mod publisher_tests {
         assert_eq!(decoded[1].filename, "widget-1.0.0-1.x86_64.rpm");
     }
 
-    // B13 — `null` slug values (the explicit serde shape when
+    // `null` slug values (the explicit serde shape when
     // `Option<String>` is None) also decode to `slug = None`.
     #[test]
     fn cloudsmith_target_decode_tolerates_null_slug() {
-        let extra = serde_json::json!({
-            "cloudsmith_targets": [
-                {
-                    "org": "acme",
-                    "repo": "widget",
-                    "filename": "widget_1.0.0_amd64.deb",
-                    "slug": serde_json::Value::Null
-                }
-            ]
-        });
-        let decoded = decode_cloudsmith_targets(&extra);
+        let raw = r#"{
+            "schema_version": 1,
+            "publisher": "cloudsmith",
+            "artifact_paths": [],
+            "extra": {
+                "cloudsmith_targets": [
+                    {
+                        "org": "acme",
+                        "repo": "widget",
+                        "filename": "widget_1.0.0_amd64.deb",
+                        "slug": null
+                    }
+                ]
+            }
+        }"#;
+        let e: PublishEvidence = serde_json::from_str(raw).expect("deserialize");
+        let decoded = decode_cloudsmith_targets(&e.extra);
         assert_eq!(decoded.len(), 1);
         assert!(decoded[0].slug.is_none());
+    }
+
+    #[test]
+    fn cloudsmith_target_extra_carries_no_secret_material() {
+        // Structural pin: build typed evidence and assert (a) no
+        // credential-shaped keys appear AND (b) the operator-public
+        // upload coordinates serialize.
+        let mut e = PublishEvidence::new("cloudsmith");
+        e.extra = encode_cloudsmith_targets(&[CloudsmithTarget {
+            org: "acme".into(),
+            repo: "widget".into(),
+            filename: "widget_1.0.0_amd64.deb".into(),
+            slug: Some("aBcD1234".into()),
+        }]);
+        let s = serde_json::to_string(&e).expect("serialize");
+        assert!(!s.contains("\"token\":"), "{s}");
+        assert!(!s.contains("\"password\":"), "{s}");
+        assert!(!s.contains("\"pat\":"), "{s}");
+        assert!(!s.contains("\"auth\":"), "{s}");
+        assert!(!s.contains("\"private_key\":"), "{s}");
+        assert!(!s.contains("\"secret\":"), "{s}");
+        assert!(!s.contains("\"api_key\":"), "{s}");
+        // Positive shape: org/repo/filename + slug present.
+        assert!(s.contains("\"org\":\"acme\""), "{s}");
+        assert!(s.contains("\"repo\":\"widget\""), "{s}");
+        assert!(s.contains("\"filename\":\"widget_1.0.0_amd64.deb\""), "{s}");
+        assert!(s.contains("\"slug\":\"aBcD1234\""), "{s}");
     }
 
     // B13 — rollback against evidence whose targets all lack a slug

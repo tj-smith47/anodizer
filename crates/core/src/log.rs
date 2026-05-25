@@ -103,6 +103,26 @@ impl LogCapture {
     pub fn all_messages(&self) -> Vec<(LogLevel, String)> {
         self.inner.lock().map(|g| g.clone()).unwrap_or_default()
     }
+
+    /// Snapshot of every [`LogLevel::Warn`] message in insertion order.
+    ///
+    /// Convenience accessor for tests that care only about warns — strips
+    /// the level tuple [`all_messages`] returns so callers can write
+    /// `cap.warn_messages().iter().any(|m| m.contains("..."))` without
+    /// the per-call filter+map boilerplate.
+    ///
+    /// [`all_messages`]: Self::all_messages
+    pub fn warn_messages(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .map(|g| {
+                g.iter()
+                    .filter(|(lvl, _)| *lvl == LogLevel::Warn)
+                    .map(|(_, m)| m.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// Verbosity level, derived from CLI flags.

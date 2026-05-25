@@ -315,8 +315,8 @@ pub(crate) fn build_release_json(spec: &ReleaseJsonSpec<'_>) -> serde_json::Valu
     } = *spec;
     // `tag_name` is required by `POST /repos/{owner}/{repo}/releases` per
     // <https://docs.github.com/en/rest/releases/releases#create-a-release>;
-    // upstream `resolve_release_tag` bails before we get here when the
-    // resolved tag is empty (see release_body.rs::resolve_release_tag).
+    // `resolve_release_tag` bails when the resolved tag is empty, so this
+    // branch is unreachable with `tag == ""`.
     // `name` is optional per the same REST docs (GitHub defaults to the
     // tag when omitted) — sending an empty string is harmless: the GH UI
     // renders the tag as the release header, and `resolved_name_template`

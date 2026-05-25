@@ -618,7 +618,6 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
 /// carries no secret material. Same rule applies to the homebrew /
 /// nix git-revert publishers.
 use crate::util::{RevertTarget, run_revert_targets_parallel};
-use serde::{Deserialize, Serialize};
 
 simple_publisher!(
     ScoopPublisher,
@@ -628,19 +627,17 @@ simple_publisher!(
     Some("GITHUB_TOKEN contents:write"),
 );
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct ScoopTarget {
-    target: String,
-    repo_url: String,
-    branch: Option<String>,
-    token_env_var: Option<String>,
-}
+/// Aliased to the core-owned snapshot so the evidence schema lives in
+/// [`anodizer_core::publish_evidence`] and credential-shaped fields
+/// have no slot to land in. See the homebrew publisher for the same
+/// pattern.
+type ScoopTarget = anodizer_core::publish_evidence::ScoopTargetSnapshot;
 
-fn decode_scoop_targets(extra: &serde_json::Value) -> Vec<ScoopTarget> {
-    extra
-        .get("scoop_targets")
-        .and_then(|v| serde_json::from_value::<Vec<ScoopTarget>>(v.clone()).ok())
-        .unwrap_or_default()
+fn decode_scoop_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<ScoopTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::Scoop(s) => s.scoop_targets.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// Collapse recorded bucket-push targets to a unique set keyed by
@@ -807,7 +804,11 @@ impl anodizer_core::Publisher for ScoopPublisher {
         let mut evidence = anodizer_core::PublishEvidence::new("scoop");
         if any_pushed {
             let targets = collect_scoop_run_targets(ctx);
-            evidence.extra = serde_json::json!({ "scoop_targets": targets });
+            evidence.extra = anodizer_core::PublishEvidenceExtra::Scoop(
+                anodizer_core::publish_evidence::ScoopExtra {
+                    scoop_targets: targets,
+                },
+            );
         }
         Ok(evidence)
     }
@@ -932,23 +933,32 @@ mod publisher_tests {
 
     #[test]
     fn scoop_target_extra_carries_no_secret_material() {
-        // Defense-in-depth: serialize a target and assert no field
-        // names that could leak a token / pat / password are present.
-        // Mirrors the credential-handling contract documented on
-        // `PublishEvidence::extra`.
-        let t = ScoopTarget {
-            target: "demo".into(),
-            repo_url: "https://github.com/acme/scoop-bucket.git".into(),
-            branch: Some("main".into()),
-            token_env_var: Some("SCOOP_BUCKET_TOKEN".into()),
-        };
-        let s = serde_json::to_string(&t).expect("serialize");
+        // Structural pin: build evidence with a populated variant and
+        // assert (a) no credential-shaped keys appear AND (b) the
+        // operator-public shape is preserved. The type system pins
+        // the negative half — the snapshot struct has no token field
+        // to land in.
+        let mut e = PublishEvidence::new("scoop");
+        e.extra = anodizer_core::PublishEvidenceExtra::Scoop(
+            anodizer_core::publish_evidence::ScoopExtra {
+                scoop_targets: vec![ScoopTarget {
+                    target: "demo".into(),
+                    repo_url: "https://github.com/acme/scoop-bucket.git".into(),
+                    branch: Some("main".into()),
+                    token_env_var: Some("SCOOP_BUCKET_TOKEN".into()),
+                }],
+            },
+        );
+        let s = serde_json::to_string(&e).expect("serialize");
         assert!(!s.contains("\"token\":"), "{s}");
         assert!(!s.contains("\"password\":"), "{s}");
         assert!(!s.contains("\"pat\":"), "{s}");
         assert!(!s.contains("\"private_key\":"), "{s}");
-        // The env-var NAME is fine; values must never appear.
+        assert!(!s.contains("\"secret\":"), "{s}");
+        assert!(!s.contains("\"api_key\":"), "{s}");
         assert!(s.contains("SCOOP_BUCKET_TOKEN"), "{s}");
+        assert!(s.contains("\"target\":\"demo\""), "{s}");
+        assert!(s.contains("\"branch\":\"main\""), "{s}");
     }
 
     #[test]
@@ -965,7 +975,11 @@ mod publisher_tests {
             branch: Some("main".into()),
             token_env_var: Some("SCOOP_BUCKET_TOKEN".into()),
         }];
-        let extra = serde_json::json!({ "scoop_targets": original.clone() });
+        let extra = anodizer_core::PublishEvidenceExtra::Scoop(
+            anodizer_core::publish_evidence::ScoopExtra {
+                scoop_targets: original.clone(),
+            },
+        );
         let decoded = decode_scoop_targets(&extra);
         assert_eq!(decoded, original);
     }

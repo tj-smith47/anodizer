@@ -34,7 +34,6 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result};
-use serde::{Deserialize, Serialize};
 
 use anodizer_core::config::{McpAuthMethod, McpConfig};
 
@@ -60,25 +59,12 @@ use manifest::{
 /// dry-run, skip-true, and missing-name short-circuits return `None` so
 /// no phantom evidence ever lands in [`anodizer_core::PublishEvidence::extra`].
 ///
-/// NB: no `token`, `password`, or `pat` fields — see [`publisher`] module
-/// rustdoc for the credential-handling rationale.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct McpTarget {
-    /// Per-target label — duplicates `server_name` for log-line shape
-    /// parity with the krew/homebrew/scoop publishers.
-    pub(crate) target: String,
-    /// Fully-qualified MCP server name in reverse-DNS form
-    /// (e.g. `io.github.user/weather`).
-    pub(crate) server_name: String,
-    /// Resolved registry endpoint the publish path posted to.
-    pub(crate) registry_url: String,
-    /// Version string published (`ctx.version()` at publish time).
-    pub(crate) version: String,
-    /// Auth method in use — determines which provider rollback builds.
-    /// Stored as the enum (serializes as `"none"` / `"github"` /
-    /// `"github-oidc"`) so rollback re-authenticates identically to publish.
-    pub(crate) auth_method: McpAuthMethod,
-}
+/// Aliased to the core-owned snapshot so the evidence schema lives
+/// in [`anodizer_core::publish_evidence`] and credential-shaped
+/// fields (`token`, `password`, `pat`) have no slot to land in. See
+/// [`publisher`] module rustdoc for the credential-handling
+/// rationale.
+pub(crate) type McpTarget = anodizer_core::publish_evidence::McpTargetSnapshot;
 
 /// Process-wide flag — the "mcp is experimental" warning is emitted at
 /// most once per anodizer invocation regardless of how many crates trigger

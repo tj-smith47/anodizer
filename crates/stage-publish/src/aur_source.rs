@@ -622,35 +622,19 @@ simple_publisher!(
 /// `-bin` strip when relevant); `tag` is the current
 /// [`anodizer_core::context::Context::version`] tag the source archive
 /// references. `git_url` is the `ssh://aur@aur.archlinux.org/...`
-/// URL — captured for the warn line only; no credential travels with
-/// it.
-///
-/// NB: no `private_key` / `git_ssh_command` fields — see the Submitter
-/// rustdoc above for the credential-handling rationale.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-struct AurSourceTarget {
-    /// Per-target label — `aur_source: crate '<name>'` for the per-crate
-    /// path or `aur_sources[<i>]` for the top-level array entries.
-    target: String,
-    /// Resolved AUR package name (the basename of `<package>.git` in
-    /// the AUR git URL).
-    package: String,
-    /// Bare semver / tag string from
-    /// [`anodizer_core::context::Context::version`].
-    tag: String,
-    /// AUR SSH git URL — typically
-    /// `ssh://aur@aur.archlinux.org/<package>.git`. Empty when no
-    /// `git_url` was configured (publish path also no-ops in that case).
-    git_url: String,
-}
+/// Aliased to the core-owned snapshot so the evidence schema lives in
+/// [`anodizer_core::publish_evidence`] and credential-shaped fields
+/// (`private_key` / `git_ssh_command`) have no slot to land in. See
+/// the Submitter rustdoc above for the credential-handling rationale.
+type AurSourceTarget = anodizer_core::publish_evidence::AurSourceTargetSnapshot;
 
 /// Decode the `aur_source_targets` array from
 /// [`anodizer_core::PublishEvidence::extra`].
-fn decode_aur_source_targets(extra: &serde_json::Value) -> Vec<AurSourceTarget> {
-    extra
-        .get("aur_source_targets")
-        .and_then(|v| serde_json::from_value::<Vec<AurSourceTarget>>(v.clone()).ok())
-        .unwrap_or_default()
+fn decode_aur_source_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<AurSourceTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::AurSource(a) => a.aur_source_targets.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// True when at least one crate has a `publish.aur_source` block OR the
@@ -787,7 +771,11 @@ impl anodizer_core::Publisher for AurSourcePublisher {
                 first.package
             ));
         }
-        evidence.extra = serde_json::json!({ "aur_source_targets": targets });
+        evidence.extra = anodizer_core::PublishEvidenceExtra::AurSource(
+            anodizer_core::publish_evidence::AurSourceExtra {
+                aur_source_targets: targets,
+            },
+        );
         Ok(evidence)
     }
 
@@ -888,22 +876,24 @@ mod publisher_tests {
     fn aur_source_rollback_warns_per_target_when_evidence_present() {
         let mut ctx = TestContextBuilder::new().build();
         let mut evidence = PublishEvidence::new("upstream-aur");
-        evidence.extra = serde_json::json!({
-            "aur_source_targets": [
-                {
-                    "target": "aur_source: crate 'demo'",
-                    "package": "demo",
-                    "tag": "1.2.3",
-                    "git_url": "ssh://aur@aur.archlinux.org/demo.git",
-                },
-                {
-                    "target": "aur_sources[0]",
-                    "package": "widget",
-                    "tag": "1.2.3",
-                    "git_url": "ssh://aur@aur.archlinux.org/widget.git",
-                },
-            ],
-        });
+        evidence.extra = anodizer_core::PublishEvidenceExtra::AurSource(
+            anodizer_core::publish_evidence::AurSourceExtra {
+                aur_source_targets: vec![
+                    AurSourceTarget {
+                        target: "aur_source: crate 'demo'".into(),
+                        package: "demo".into(),
+                        tag: "1.2.3".into(),
+                        git_url: "ssh://aur@aur.archlinux.org/demo.git".into(),
+                    },
+                    AurSourceTarget {
+                        target: "aur_sources[0]".into(),
+                        package: "widget".into(),
+                        tag: "1.2.3".into(),
+                        git_url: "ssh://aur@aur.archlinux.org/widget.git".into(),
+                    },
+                ],
+            },
+        );
         let p = AurSourcePublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
         assert_eq!(decode_aur_source_targets(&evidence.extra).len(), 2);
@@ -917,30 +907,49 @@ mod publisher_tests {
             tag: "1.2.3".into(),
             git_url: "ssh://aur@aur.archlinux.org/demo.git".into(),
         }];
-        let extra = serde_json::json!({ "aur_source_targets": original.clone() });
+        let extra = anodizer_core::PublishEvidenceExtra::AurSource(
+            anodizer_core::publish_evidence::AurSourceExtra {
+                aur_source_targets: original.clone(),
+            },
+        );
         let decoded = decode_aur_source_targets(&extra);
         assert_eq!(decoded, original);
     }
 
     #[test]
     fn aur_source_target_extra_carries_no_secret_material() {
-        // SECURITY: persisting `private_key` / `git_ssh_command` into
-        // evidence (`dist/run-<id>/report.json`, the run summary, or
-        // the announce-time release-body text) would leak the SSH key.
-        // The struct deliberately has no such fields — this test pins
-        // that contract.
-        let t = AurSourceTarget {
-            target: "aur_source: crate 'demo'".into(),
-            package: "demo".into(),
-            tag: "1.2.3".into(),
-            git_url: "ssh://aur@aur.archlinux.org/demo.git".into(),
-        };
-        let s = serde_json::to_string(&t).expect("serialize");
+        // Structural pin: build a typed-variant evidence and assert
+        // (a) no credential-shaped keys appear AND (b) the
+        // operator-public coordinates are preserved. The
+        // `AurSourceTargetSnapshot` type has no field for
+        // `private_key` / `git_ssh_command`, so the type system
+        // rejects any future leak attempt at the encode boundary.
+        let mut e = PublishEvidence::new("upstream-aur");
+        e.extra = anodizer_core::PublishEvidenceExtra::AurSource(
+            anodizer_core::publish_evidence::AurSourceExtra {
+                aur_source_targets: vec![AurSourceTarget {
+                    target: "aur_source: crate 'demo'".into(),
+                    package: "demo".into(),
+                    tag: "1.2.3".into(),
+                    git_url: "ssh://aur@aur.archlinux.org/demo.git".into(),
+                }],
+            },
+        );
+        let s = serde_json::to_string(&e).expect("serialize");
         assert!(!s.contains("\"private_key\":"), "{s}");
         assert!(!s.contains("\"git_ssh_command\":"), "{s}");
         assert!(!s.contains("\"token\":"), "{s}");
         assert!(!s.contains("\"auth\":"), "{s}");
         assert!(!s.contains("\"password\":"), "{s}");
+        assert!(!s.contains("\"secret\":"), "{s}");
+        assert!(!s.contains("\"api_key\":"), "{s}");
+        // Positive shape: operator-public coordinates serialize.
+        assert!(s.contains("\"package\":\"demo\""), "{s}");
+        assert!(s.contains("\"tag\":\"1.2.3\""), "{s}");
+        assert!(
+            s.contains("\"git_url\":\"ssh://aur@aur.archlinux.org/demo.git\""),
+            "{s}"
+        );
     }
 
     #[test]

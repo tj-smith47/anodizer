@@ -300,7 +300,7 @@ mod tests {
                         primary_ref: Some("https://example.com/r/v1".to_string()),
                         artifact_paths: vec![],
                         nondeterministic: None,
-                        extra: serde_json::Value::Null,
+                        extra: anodizer_core::PublishEvidenceExtra::Empty,
                     }),
                 },
                 RunSummaryResult {

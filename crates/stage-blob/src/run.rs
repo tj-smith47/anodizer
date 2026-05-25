@@ -11,7 +11,7 @@ use object_store::{ObjectStore, PutOptions};
 
 use crate::kms::{KmsProvider, parse_kms_provider, preflight_kms_cli, validate_kms_provider_match};
 use crate::provider::Provider;
-use crate::publisher::BlobTarget;
+use crate::publisher::{BlobTarget, blob_target_url};
 use crate::store::build_store;
 use crate::upload::{
     build_put_options, collect_artifacts, format_remote_path, resolve_extra_files,
@@ -167,10 +167,10 @@ pub(crate) fn record_blob_result(
     let evidence = match exec_result {
         Ok(()) if !uploaded.is_empty() => {
             let mut e = anodizer_core::PublishEvidence::new("blob");
-            e.primary_ref = Some(uploaded[0].url());
+            e.primary_ref = Some(blob_target_url(&uploaded[0]));
             e.artifact_paths = uploaded
                 .iter()
-                .map(|t| std::path::PathBuf::from(t.url()))
+                .map(|t| std::path::PathBuf::from(blob_target_url(t)))
                 .collect();
             e.extra = crate::publisher::encode_blob_targets(uploaded);
             Some(e)
@@ -593,7 +593,7 @@ impl BlobStage {
         // runs of the same job graph.
         let mut targets =
             anodizer_core::parallel::lock_recover(&uploaded_targets, &log, "blob targets").clone();
-        targets.sort_by_key(|t| t.url());
+        targets.sort_by_key(blob_target_url);
 
         if result.is_ok() {
             for job in &jobs {

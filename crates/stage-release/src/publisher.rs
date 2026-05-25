@@ -57,7 +57,6 @@ use anodizer_core::github_client::{
 };
 use anodizer_core::scm::ScmTokenType;
 use anodizer_core::stage::Stage;
-use serde::{Deserialize, Serialize};
 
 use crate::ReleaseStage;
 
@@ -71,36 +70,25 @@ const ROLLBACK_PARALLELISM: usize = 4;
 // GithubReleaseTarget — evidence shape
 // ---------------------------------------------------------------------------
 
-/// One row in `evidence.extra.github_release_targets`. Captures the
-/// (owner, repo, tag) coordinates the publish path acted on plus the
-/// numeric release ID (when GitHub returned one). The release ID is
-/// `None` when the post-publish `get_release_by_tag` lookup failed
-/// — rollback for that row will skip the release-delete step (the
+/// Aliased to the core-owned snapshot so the evidence schema lives in
+/// [`anodizer_core::publish_evidence`]. Captures the (owner, repo,
+/// tag) coordinates the publish path acted on plus the numeric
+/// release ID (when GitHub returned one). The release ID is `None`
+/// when the post-publish `get_release_by_tag` lookup failed —
+/// rollback for that row will skip the release-delete step (the
 /// tag-delete still fires).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct GithubReleaseTarget {
-    /// Logical label — the crate name. Surfaces in log lines.
-    pub crate_name: String,
-    /// GitHub repository owner.
-    pub owner: String,
-    /// GitHub repository name.
-    pub repo: String,
-    /// Release tag (e.g. `v1.0.0` or `myapp/v1.0.0` in monorepos).
-    pub tag: String,
-    /// Numeric release ID from `GET /repos/{owner}/{repo}/releases/tags/{tag}`.
-    /// `None` when the post-publish lookup failed or returned 404 (release
-    /// was never created — likely dry-run / snapshot / skip path).
-    pub release_id: Option<u64>,
-}
+pub(crate) type GithubReleaseTarget = anodizer_core::publish_evidence::GithubReleaseTargetSnapshot;
 
-/// Decode the `github_release_targets` array from
-/// [`anodizer_core::PublishEvidence::extra`]. Returns an empty Vec on
-/// any of: missing key, wrong shape, empty array.
-fn decode_github_release_targets(extra: &serde_json::Value) -> Vec<GithubReleaseTarget> {
-    extra
-        .get("github_release_targets")
-        .and_then(|v| serde_json::from_value::<Vec<GithubReleaseTarget>>(v.clone()).ok())
-        .unwrap_or_default()
+/// Decode the GithubRelease variant from
+/// [`anodizer_core::PublishEvidence::extra`]. Returns an empty Vec
+/// when the variant doesn't match.
+fn decode_github_release_targets(
+    extra: &anodizer_core::PublishEvidenceExtra,
+) -> Vec<GithubReleaseTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::GithubRelease(g) => g.github_release_targets.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// Three-bucket outcome for a single DELETE call (either release or
@@ -319,7 +307,11 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
                 first.owner, first.repo, first.tag
             ));
         }
-        evidence.extra = serde_json::json!({ "github_release_targets": targets });
+        evidence.extra = anodizer_core::PublishEvidenceExtra::GithubRelease(
+            anodizer_core::publish_evidence::GithubReleaseExtra {
+                github_release_targets: targets,
+            },
+        );
         Ok(evidence)
     }
 
@@ -693,7 +685,11 @@ mod publisher_tests {
                 release_id: None,
             },
         ];
-        let extra = serde_json::json!({ "github_release_targets": original.clone() });
+        let extra = anodizer_core::PublishEvidenceExtra::GithubRelease(
+            anodizer_core::publish_evidence::GithubReleaseExtra {
+                github_release_targets: original.clone(),
+            },
+        );
         let decoded = decode_github_release_targets(&extra);
         assert_eq!(decoded, original);
     }
@@ -704,15 +700,22 @@ mod publisher_tests {
     /// addition could regress this contract; pin it explicitly.
     #[test]
     fn github_release_target_extra_carries_no_secret_material() {
-        let targets = vec![GithubReleaseTarget {
-            crate_name: "demo".into(),
-            owner: "acme".into(),
-            repo: "widget".into(),
-            tag: "v1.0.0".into(),
-            release_id: Some(42),
-        }];
-        let extra = serde_json::json!({ "github_release_targets": targets });
-        let serialized = serde_json::to_string(&extra).expect("serialize");
+        // Structural pin: build typed evidence and assert (a) no
+        // credential-shaped keys appear AND (b) the operator-public
+        // (owner, repo, tag) coordinates serialize.
+        let mut e = PublishEvidence::new("github-release");
+        e.extra = anodizer_core::PublishEvidenceExtra::GithubRelease(
+            anodizer_core::publish_evidence::GithubReleaseExtra {
+                github_release_targets: vec![GithubReleaseTarget {
+                    crate_name: "demo".into(),
+                    owner: "acme".into(),
+                    repo: "widget".into(),
+                    tag: "v1.0.0".into(),
+                    release_id: Some(42),
+                }],
+            },
+        );
+        let serialized = serde_json::to_string(&e).expect("serialize");
         let lower = serialized.to_ascii_lowercase();
         for forbidden in [
             "token",
@@ -723,12 +726,17 @@ mod publisher_tests {
             "credential",
             "api_key",
             "apikey",
+            "private_key",
         ] {
             assert!(
                 !lower.contains(forbidden),
                 "evidence must not contain '{forbidden}': {serialized}"
             );
         }
+        // Positive shape: (owner, repo, tag) coordinates present.
+        assert!(serialized.contains("\"owner\":\"acme\""), "{serialized}");
+        assert!(serialized.contains("\"repo\":\"widget\""), "{serialized}");
+        assert!(serialized.contains("\"tag\":\"v1.0.0\""), "{serialized}");
     }
 
     #[test]
@@ -751,7 +759,11 @@ mod publisher_tests {
             release_id: Some(42),
         };
         let mut evidence = PublishEvidence::new("github-release");
-        evidence.extra = serde_json::json!({ "github_release_targets": vec![target.clone()] });
+        evidence.extra = anodizer_core::PublishEvidenceExtra::GithubRelease(
+            anodizer_core::publish_evidence::GithubReleaseExtra {
+                github_release_targets: vec![target.clone()],
+            },
+        );
 
         let mut ctx = TestContextBuilder::new().build();
         p.rollback(&mut ctx, &evidence)
@@ -851,7 +863,11 @@ mod publisher_tests {
             release_id: Some(42),
         };
         let mut evidence = PublishEvidence::new("github-release");
-        evidence.extra = serde_json::json!({ "github_release_targets": vec![target.clone()] });
+        evidence.extra = anodizer_core::PublishEvidenceExtra::GithubRelease(
+            anodizer_core::publish_evidence::GithubReleaseExtra {
+                github_release_targets: vec![target.clone()],
+            },
+        );
 
         let mut ctx = TestContextBuilder::new().build();
         p.rollback(&mut ctx, &evidence).expect("rollback ok");

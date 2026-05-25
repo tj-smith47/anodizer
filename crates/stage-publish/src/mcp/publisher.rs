@@ -52,11 +52,11 @@ enum RollbackOutcome {
 
 /// Decode the `mcp_targets` array from
 /// [`anodizer_core::PublishEvidence::extra`].
-fn decode_mcp_targets(extra: &serde_json::Value) -> Vec<McpTarget> {
-    extra
-        .get("mcp_targets")
-        .and_then(|v| serde_json::from_value::<Vec<McpTarget>>(v.clone()).ok())
-        .unwrap_or_default()
+fn decode_mcp_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<McpTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::Mcp(m) => m.mcp_targets.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// PATCH the registry to mark one published server-version as `"deleted"`.
@@ -197,7 +197,11 @@ impl anodizer_core::Publisher for McpPublisher {
         let target = super::publish_to_mcp(ctx, &log)?;
         let mut evidence = anodizer_core::PublishEvidence::new("mcp");
         if let Some(t) = target {
-            evidence.extra = serde_json::json!({ "mcp_targets": [t] });
+            evidence.extra = anodizer_core::PublishEvidenceExtra::Mcp(
+                anodizer_core::publish_evidence::McpExtra {
+                    mcp_targets: vec![t],
+                },
+            );
         }
         Ok(evidence)
     }
@@ -338,7 +342,10 @@ mod publisher_tests {
             auth_method: McpAuthMethod::None,
         };
         let mut evidence = PublishEvidence::new("mcp");
-        evidence.extra = serde_json::json!({ "mcp_targets": [target] });
+        evidence.extra =
+            anodizer_core::PublishEvidenceExtra::Mcp(anodizer_core::publish_evidence::McpExtra {
+                mcp_targets: vec![target],
+            });
         evidence
     }
 
@@ -387,33 +394,48 @@ mod publisher_tests {
             version: "1.2.3".into(),
             auth_method: McpAuthMethod::Github,
         }];
-        let extra = serde_json::json!({ "mcp_targets": original.clone() });
+        let extra =
+            anodizer_core::PublishEvidenceExtra::Mcp(anodizer_core::publish_evidence::McpExtra {
+                mcp_targets: original.clone(),
+            });
         let decoded = decode_mcp_targets(&extra);
         assert_eq!(decoded, original);
     }
 
     #[test]
     fn mcp_target_extra_carries_no_secret_material() {
-        let t = McpTarget {
-            target: "io.github.user/weather".into(),
-            server_name: "io.github.user/weather".into(),
-            registry_url: "https://registry.modelcontextprotocol.io".into(),
-            version: "1.2.3".into(),
-            auth_method: McpAuthMethod::Github,
-        };
-        let s = serde_json::to_string(&t).expect("serialize");
+        // Structural pin: build typed evidence with a populated
+        // variant and assert (a) no credential-shaped keys appear AND
+        // (b) the operator-public registry coordinates are preserved.
+        let mut e = PublishEvidence::new("mcp");
+        e.extra =
+            anodizer_core::PublishEvidenceExtra::Mcp(anodizer_core::publish_evidence::McpExtra {
+                mcp_targets: vec![McpTarget {
+                    target: "io.github.user/weather".into(),
+                    server_name: "io.github.user/weather".into(),
+                    registry_url: "https://registry.modelcontextprotocol.io".into(),
+                    version: "1.2.3".into(),
+                    auth_method: McpAuthMethod::Github,
+                }],
+            });
+        let s = serde_json::to_string(&e).expect("serialize");
         assert!(!s.contains("\"token\":"), "{s}");
         assert!(!s.contains("\"password\":"), "{s}");
         assert!(!s.contains("\"pat\":"), "{s}");
         assert!(!s.contains("\"auth\":"), "{s}");
-        // New fields are present and carry no secret values.
+        assert!(!s.contains("\"private_key\":"), "{s}");
+        assert!(!s.contains("\"secret\":"), "{s}");
+        assert!(!s.contains("\"api_key\":"), "{s}");
+        // Positive shape: registry coordinates serialize.
+        assert!(s.contains("\"version\":\"1.2.3\""), "{s}");
+        assert!(s.contains("\"auth_method\":\"github\""), "{s}");
         assert!(
-            s.contains("\"version\":"),
-            "version field must be present: {s}"
+            s.contains("\"server_name\":\"io.github.user/weather\""),
+            "{s}"
         );
         assert!(
-            s.contains("\"auth_method\":"),
-            "auth_method field must be present: {s}"
+            s.contains("\"registry_url\":\"https://registry.modelcontextprotocol.io\""),
+            "{s}"
         );
     }
 
@@ -471,8 +493,8 @@ mod publisher_tests {
         let p = McpPublisher::new();
         let evidence = p.run(&mut ctx).expect("dry-run must succeed");
         assert!(
-            evidence.extra.get("mcp_targets").is_none(),
-            "dry-run must not record any mcp_targets; got {}",
+            decode_mcp_targets(&evidence.extra).is_empty(),
+            "dry-run must not record any mcp_targets; got {:?}",
             evidence.extra
         );
         assert_eq!(
@@ -498,8 +520,8 @@ mod publisher_tests {
         let p = McpPublisher::new();
         let evidence = p.run(&mut ctx).expect("skip-true must succeed");
         assert!(
-            evidence.extra.get("mcp_targets").is_none(),
-            "skip=true must not record any mcp_targets; got {}",
+            decode_mcp_targets(&evidence.extra).is_empty(),
+            "skip=true must not record any mcp_targets; got {:?}",
             evidence.extra
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);

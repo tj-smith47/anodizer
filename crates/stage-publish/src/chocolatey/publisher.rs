@@ -24,7 +24,6 @@
 //! no operator benefit.
 
 use anodizer_core::context::Context;
-use serde::{Deserialize, Serialize};
 
 simple_publisher!(
     ChocolateyPublisher,
@@ -42,39 +41,20 @@ simple_publisher!(
 ///
 /// `package_id` is the rendered nuspec `<id>` (the URL slug on
 /// community.chocolatey.org); `version` is the bare semver string
-/// (without the leading `v`) — matching what
-/// [`anodizer_core::context::Context::version`] returns.
-///
-/// NB: no `api_key`, `token`, or `password` fields — see module
-/// rustdoc for the credential-handling rationale.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct ChocolateyTarget {
-    /// Per-target label — the crate the nupkg was generated for.
-    /// Surfaces in log lines.
-    target: String,
-    /// The crate this publish covered. Duplicates `target` to keep the
-    /// shape symmetric with the other Submitter publishers.
-    crate_name: String,
-    /// Chocolatey gallery package ID — the URL slug on
-    /// `community.chocolatey.org/packages/<package_id>`. Resolved from
-    /// `publish.chocolatey.name` when set, else the crate name.
-    package_id: String,
-    /// Bare semver (no leading `v`) — what the Chocolatey gallery
-    /// records as the package version.
-    version: String,
-}
+/// Aliased to the core-owned snapshot so the evidence schema lives in
+/// [`anodizer_core::publish_evidence`] and credential-shaped fields
+/// (`api_key`, `token`, `password`) have no slot to land in.
+type ChocolateyTarget = anodizer_core::publish_evidence::ChocolateyTargetSnapshot;
 
 /// Decode the `chocolatey_targets` array from
-/// [`anodizer_core::PublishEvidence::extra`].
-///
-/// Returns an empty Vec on any of: missing key, wrong shape, empty
-/// array. Rollback treats empty-decode the same as no-evidence and
-/// emits the canonical empty-evidence warn.
-fn decode_chocolatey_targets(extra: &serde_json::Value) -> Vec<ChocolateyTarget> {
-    extra
-        .get("chocolatey_targets")
-        .and_then(|v| serde_json::from_value::<Vec<ChocolateyTarget>>(v.clone()).ok())
-        .unwrap_or_default()
+/// [`anodizer_core::PublishEvidence::extra`]. Rollback treats
+/// empty-decode the same as no-evidence and emits the canonical
+/// empty-evidence warn.
+fn decode_chocolatey_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<ChocolateyTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::Chocolatey(c) => c.chocolatey_targets.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// True when the crate has a `publish.chocolatey` block — mirrors the
@@ -232,7 +212,11 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
                 first.package_id
             ));
         }
-        evidence.extra = serde_json::json!({ "chocolatey_targets": targets });
+        evidence.extra = anodizer_core::PublishEvidenceExtra::Chocolatey(
+            anodizer_core::publish_evidence::ChocolateyExtra {
+                chocolatey_targets: targets,
+            },
+        );
         Ok(evidence)
     }
 
@@ -342,16 +326,26 @@ mod publisher_tests {
         // return Err so the dispatch chain continues.
         let mut ctx = TestContextBuilder::new().build();
         let mut evidence = PublishEvidence::new("chocolatey");
-        evidence.extra = serde_json::json!({
-            "chocolatey_targets": [
-                {"target": "demo", "crate_name": "demo", "package_id": "demo", "version": "1.2.3"},
-                {"target": "widget", "crate_name": "widget", "package_id": "widget", "version": "1.2.3"},
-            ],
-        });
+        evidence.extra = anodizer_core::PublishEvidenceExtra::Chocolatey(
+            anodizer_core::publish_evidence::ChocolateyExtra {
+                chocolatey_targets: vec![
+                    ChocolateyTarget {
+                        target: "demo".into(),
+                        crate_name: "demo".into(),
+                        package_id: "demo".into(),
+                        version: "1.2.3".into(),
+                    },
+                    ChocolateyTarget {
+                        target: "widget".into(),
+                        crate_name: "widget".into(),
+                        package_id: "widget".into(),
+                        version: "1.2.3".into(),
+                    },
+                ],
+            },
+        );
         let p = ChocolateyPublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
-        // Sanity-check that the warn pattern names both targets and
-        // the gallery URL prefix.
         assert_eq!(decode_chocolatey_targets(&evidence.extra).len(), 2);
     }
 
@@ -363,27 +357,41 @@ mod publisher_tests {
             package_id: "demo".into(),
             version: "1.2.3".into(),
         }];
-        let extra = serde_json::json!({ "chocolatey_targets": original.clone() });
+        let extra = anodizer_core::PublishEvidenceExtra::Chocolatey(
+            anodizer_core::publish_evidence::ChocolateyExtra {
+                chocolatey_targets: original.clone(),
+            },
+        );
         let decoded = decode_chocolatey_targets(&extra);
         assert_eq!(decoded, original);
     }
 
     #[test]
     fn chocolatey_target_extra_carries_no_secret_material() {
-        // Defense-in-depth: serialize a target and assert no field
-        // names that could leak the chocolatey API key are present.
-        let t = ChocolateyTarget {
-            target: "demo".into(),
-            crate_name: "demo".into(),
-            package_id: "demo".into(),
-            version: "1.2.3".into(),
-        };
-        let s = serde_json::to_string(&t).expect("serialize");
+        // Structural pin: build a typed-variant evidence and assert
+        // (a) no credential-shaped keys appear AND (b) the
+        // operator-public gallery coordinates are preserved.
+        let mut e = PublishEvidence::new("chocolatey");
+        e.extra = anodizer_core::PublishEvidenceExtra::Chocolatey(
+            anodizer_core::publish_evidence::ChocolateyExtra {
+                chocolatey_targets: vec![ChocolateyTarget {
+                    target: "demo".into(),
+                    crate_name: "demo".into(),
+                    package_id: "demo".into(),
+                    version: "1.2.3".into(),
+                }],
+            },
+        );
+        let s = serde_json::to_string(&e).expect("serialize");
         assert!(!s.contains("\"token\":"), "{s}");
         assert!(!s.contains("\"api_key\":"), "{s}");
         assert!(!s.contains("\"apikey\":"), "{s}");
         assert!(!s.contains("\"auth\":"), "{s}");
         assert!(!s.contains("\"password\":"), "{s}");
+        assert!(!s.contains("\"secret\":"), "{s}");
+        // Positive shape: gallery coordinates present.
+        assert!(s.contains("\"package_id\":\"demo\""), "{s}");
+        assert!(s.contains("\"version\":\"1.2.3\""), "{s}");
     }
 
     #[test]

@@ -699,16 +699,12 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
 // collect_artifactory_targets — evidence helper
 // ---------------------------------------------------------------------------
 
-/// One uploaded URL plus the name of the entry that produced it. Threaded
-/// into [`PublishEvidence::extra`] so the rollback path can resolve the
-/// same credentials [`publish_to_artifactory`] used (basic auth via
-/// `username` + `password`, plus per-entry `ARTIFACTORY_<NAME>_SECRET`
-/// overrides) rather than narrowly looking up `ARTIFACTORY_TOKEN`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ArtifactoryTarget {
-    pub entry: String,
-    pub url: String,
-}
+/// Aliased to the core-owned snapshot so the evidence schema lives in
+/// [`anodizer_core::publish_evidence`] and credential-shaped fields
+/// have no slot to land in. The rollback path resolves credentials
+/// from env at call time via the existing `ARTIFACTORY_<NAME>_*`
+/// ladder; nothing about that flow persists in evidence.
+pub(crate) type ArtifactoryTarget = anodizer_core::publish_evidence::ArtifactoryTargetSnapshot;
 
 /// Re-walk the configured artifactory entries to produce the list of fully
 /// rendered upload URLs that [`publish_to_artifactory`] would PUT to. Used by
@@ -774,37 +770,30 @@ pub(crate) fn collect_artifactory_targets(ctx: &Context) -> Vec<ArtifactoryTarge
     out
 }
 
-/// Encode the per-target `(entry, url)` pairs into the JSON shape stored
-/// at `PublishEvidence::extra.artifactory_targets`. The wrapper key keeps
-/// the slot extensible — other publishers can land alongside without
-/// colliding.
-pub(crate) fn encode_artifactory_targets(targets: &[ArtifactoryTarget]) -> serde_json::Value {
-    serde_json::json!({
-        "artifactory_targets": targets
-            .iter()
-            .map(|t| serde_json::json!({ "entry": t.entry, "url": t.url }))
-            .collect::<Vec<_>>(),
-    })
+/// Encode the per-target `(entry, url)` pairs into the typed
+/// [`PublishEvidenceExtra::Artifactory`] variant. Mirrors the wire
+/// shape `{ "artifactory_targets": [...] }` that shipped pre-typed.
+pub(crate) fn encode_artifactory_targets(
+    targets: &[ArtifactoryTarget],
+) -> anodizer_core::PublishEvidenceExtra {
+    anodizer_core::PublishEvidenceExtra::Artifactory(
+        anodizer_core::publish_evidence::ArtifactoryExtra {
+            artifactory_targets: targets.to_vec(),
+        },
+    )
 }
 
-/// Decode the JSON shape produced by [`encode_artifactory_targets`] back
-/// into structured targets. Returns an empty vec if the field is missing
-/// or malformed — rollback then falls back to URL-only deletion against
-/// the legacy `ARTIFACTORY_TOKEN` ladder.
-pub(crate) fn decode_artifactory_targets(extra: &serde_json::Value) -> Vec<ArtifactoryTarget> {
-    let array = extra
-        .get("artifactory_targets")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    array
-        .into_iter()
-        .filter_map(|v| {
-            let entry = v.get("entry")?.as_str()?.to_string();
-            let url = v.get("url")?.as_str()?.to_string();
-            Some(ArtifactoryTarget { entry, url })
-        })
-        .collect()
+/// Decode the typed Artifactory variant into structured targets.
+/// Returns an empty vec when the variant doesn't match — rollback
+/// then falls back to URL-only deletion against the legacy
+/// `ARTIFACTORY_TOKEN` ladder.
+pub(crate) fn decode_artifactory_targets(
+    extra: &anodizer_core::PublishEvidenceExtra,
+) -> Vec<ArtifactoryTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::Artifactory(a) => a.artifactory_targets.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// Resolve `(username, password)` for an artifactory entry at rollback
@@ -1723,14 +1712,25 @@ mod publisher_tests {
 
     #[test]
     fn artifactory_rollback_warns_when_no_targets_recorded() {
-        // Empty evidence — rollback emits a single warn and returns Ok.
-        // The warn text is fixed by `rollback_empty_warning_msg` and
-        // independently asserted there; this case proves the empty branch
-        // does not crash and returns Ok.
+        // Empty evidence drives rollback into the no-targets branch.
+        // The capture pins that production actually invoked `log.warn`
+        // with the helper-formatted message — a hand-constructed expected
+        // string compared against the helper output would pass even if
+        // the rollback body forgot the warn entirely.
+        let capture = anodizer_core::log::LogCapture::new();
         let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
         let evidence = PublishEvidence::new("artifactory");
         let p = ArtifactoryPublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
+
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("artifactory")
+                && m.contains("upload URLs")
+                && m.contains("verify")),
+            "expected captured warn naming publisher + target-noun + 'verify'; got: {warns:?}"
+        );
     }
 
     /// The empty-evidence warn text comes from the shared helper. Tests
@@ -1821,16 +1821,44 @@ mod publisher_tests {
         assert_eq!(decoded, targets);
     }
 
-    /// A missing or malformed `artifactory_targets` field decodes to an
-    /// empty vec so rollback falls back to URL-only deletion without
-    /// panicking.
+    #[test]
+    fn artifactory_target_extra_carries_no_secret_material() {
+        // Structural pin: build typed evidence with a populated
+        // variant and assert (a) no credential-shaped keys appear AND
+        // (b) the operator-public upload coordinates are preserved.
+        let mut e = anodizer_core::PublishEvidence::new("artifactory");
+        e.extra = encode_artifactory_targets(&[ArtifactoryTarget {
+            entry: "prod".into(),
+            url: "https://art.example.com/repo/foo.tar.gz".into(),
+        }]);
+        let s = serde_json::to_string(&e).expect("serialize");
+        assert!(!s.contains("\"token\":"), "{s}");
+        assert!(!s.contains("\"password\":"), "{s}");
+        assert!(!s.contains("\"pat\":"), "{s}");
+        assert!(!s.contains("\"username\":"), "{s}");
+        assert!(!s.contains("\"private_key\":"), "{s}");
+        assert!(!s.contains("\"secret\":"), "{s}");
+        assert!(!s.contains("\"api_key\":"), "{s}");
+        // Positive shape: operator-public coordinates present.
+        assert!(s.contains("\"entry\":\"prod\""), "{s}");
+        assert!(
+            s.contains("\"url\":\"https://art.example.com/repo/foo.tar.gz\""),
+            "{s}"
+        );
+    }
+
+    /// A non-Artifactory variant decodes to an empty vec so rollback
+    /// falls back to URL-only deletion without panicking.
     #[test]
     fn artifactory_rollback_target_extra_tolerates_missing_field() {
-        assert!(decode_artifactory_targets(&serde_json::Value::Null).is_empty());
-        assert!(decode_artifactory_targets(&serde_json::json!({})).is_empty());
-        assert!(
-            decode_artifactory_targets(&serde_json::json!({ "artifactory_targets": "bogus" }))
-                .is_empty()
+        assert!(decode_artifactory_targets(&anodizer_core::PublishEvidenceExtra::Empty).is_empty());
+        // Wrong variant: a homebrew evidence is not an artifactory
+        // evidence — defensive isolation between publishers.
+        let homebrew = anodizer_core::PublishEvidenceExtra::Homebrew(
+            anodizer_core::publish_evidence::HomebrewExtra {
+                homebrew_targets: Vec::new(),
+            },
         );
+        assert!(decode_artifactory_targets(&homebrew).is_empty());
     }
 }

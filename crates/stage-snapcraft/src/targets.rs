@@ -17,21 +17,11 @@ use anodizer_core::context::Context;
 /// the crate name when `snapcrafts[].name` is not overridden);
 /// `channel` is the rendered channel template (or `None` when the
 /// publish path falls back to the `grade`-derived default).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct SnapcraftTarget {
-    /// The crate this publish covered.
-    pub(crate) crate_name: String,
-    /// Snap Store package name — defaults to the crate name when
-    /// `snapcrafts[].name` is not set.
-    pub(crate) package_name: String,
-    /// First rendered channel template, or `None` when the publish
-    /// path falls back to the `grade`-derived default.
-    pub(crate) channel: Option<String>,
-    /// Reserved for future use — snapcraft prints the revision number
-    /// on upload but the existing publish stage does not capture
-    /// stdout, so this stays `None` until we wire that capture.
-    pub(crate) revision: Option<String>,
-}
+///
+/// Aliased to the core-owned snapshot so the evidence schema lives in
+/// [`anodizer_core::publish_evidence`] and credential-shaped fields
+/// (`SNAPCRAFT_LOGIN`, token, auth) have no slot to land in.
+pub(crate) type SnapcraftTarget = anodizer_core::publish_evidence::SnapcraftTargetSnapshot;
 
 /// Walk `ctx.config.crates[].snapcrafts[]` and build one
 /// [`SnapcraftTarget`] per opted-in snap config. Mirrors the publish
@@ -82,17 +72,16 @@ pub(crate) fn collect_snapcraft_targets(ctx: &Context) -> Vec<SnapcraftTarget> {
     out
 }
 
-/// Decode the `snapcraft_targets` array from `PublishEvidence::extra`.
-///
-/// Returns an empty Vec on any of: missing key, wrong shape, empty
-/// array. Used by `--rollback-only --from-run` consumers and the
-/// wire-stability tests below.
+/// Decode the typed Snapcraft variant from `PublishEvidence::extra`.
+/// Returns an empty Vec when the variant doesn't match.
 #[cfg(test)]
-pub(crate) fn decode_snapcraft_targets(extra: &serde_json::Value) -> Vec<SnapcraftTarget> {
-    extra
-        .get("snapcraft_targets")
-        .and_then(|v| serde_json::from_value::<Vec<SnapcraftTarget>>(v.clone()).ok())
-        .unwrap_or_default()
+pub(crate) fn decode_snapcraft_targets(
+    extra: &anodizer_core::PublishEvidenceExtra,
+) -> Vec<SnapcraftTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::Snapcraft(s) => s.snapcraft_targets.clone(),
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -132,29 +121,44 @@ mod tests {
                 revision: None,
             },
         ];
-        let extra = serde_json::json!({ "snapcraft_targets": original.clone() });
+        let extra = anodizer_core::PublishEvidenceExtra::Snapcraft(
+            anodizer_core::publish_evidence::SnapcraftExtra {
+                snapcraft_targets: original.clone(),
+            },
+        );
         let decoded = decode_snapcraft_targets(&extra);
         assert_eq!(decoded, original);
     }
 
     #[test]
     fn snapcraft_target_extra_carries_no_secret_material() {
-        // Defense-in-depth: serialize a target and assert no field
-        // names that could leak SNAPCRAFT_LOGIN / token / auth material
-        // are present.
-        let t = SnapcraftTarget {
-            crate_name: "demo".into(),
-            package_name: "demo".into(),
-            channel: Some("stable".into()),
-            revision: None,
-        };
-        let s = serde_json::to_string(&t).expect("serialize");
+        // Structural pin: build typed evidence and assert (a) no
+        // credential-shaped keys appear AND (b) the operator-public
+        // package coordinates serialize.
+        let mut e = anodizer_core::PublishEvidence::new("snapcraft");
+        e.extra = anodizer_core::PublishEvidenceExtra::Snapcraft(
+            anodizer_core::publish_evidence::SnapcraftExtra {
+                snapcraft_targets: vec![SnapcraftTarget {
+                    crate_name: "demo".into(),
+                    package_name: "demo".into(),
+                    channel: Some("stable".into()),
+                    revision: None,
+                }],
+            },
+        );
+        let s = serde_json::to_string(&e).expect("serialize");
         assert!(!s.contains("\"token\":"), "{s}");
         assert!(!s.contains("\"login\":"), "{s}");
         assert!(!s.contains("\"password\":"), "{s}");
         assert!(!s.contains("\"auth\":"), "{s}");
         assert!(!s.contains("\"api_key\":"), "{s}");
         assert!(!s.contains("\"snapcraft_login\":"), "{s}");
+        assert!(!s.contains("\"private_key\":"), "{s}");
+        assert!(!s.contains("\"secret\":"), "{s}");
+        // Positive shape: package coordinates serialize.
+        assert!(s.contains("\"package_name\":\"demo\""), "{s}");
+        assert!(s.contains("\"channel\":\"stable\""), "{s}");
+        assert!(s.contains("\"crate_name\":\"demo\""), "{s}");
     }
 
     #[test]

@@ -51,54 +51,41 @@ use crate::run::BlobStage;
 ///   providers); `None` for GCS / Azure.
 /// - `endpoint` — required for S3-compatible storage (MinIO, R2, DO
 ///   Spaces, Backblaze B2); `None` for plain AWS / GCS / Azure.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct BlobTarget {
-    pub provider: String,
-    pub bucket: String,
-    pub key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<String>,
-}
-
-impl BlobTarget {
-    /// Render the operator-readable `<provider>://<bucket>/<key>` URL.
-    /// Used by the publisher to populate
-    /// [`anodizer_core::PublishEvidence`]`.artifact_paths` so the text
-    /// `--rollback-only` summary keeps rendering the same shape that
-    /// shipped before the structured-target capture landed.
-    pub(crate) fn url(&self) -> String {
-        format!("{}://{}/{}", self.provider, self.bucket, self.key)
-    }
-}
-
-/// Encode the per-target tuples into the JSON shape stored at
-/// [`anodizer_core::PublishEvidence`]`.extra.blob_targets`. Mirrors the
-/// cloudsmith pattern (`cloudsmith_targets` key in `extra`).
-pub(crate) fn encode_blob_targets(targets: &[BlobTarget]) -> serde_json::Value {
-    serde_json::json!({ "blob_targets": targets })
-}
-
-/// Decode the JSON shape produced by [`encode_blob_targets`]. Returns an
-/// empty vec on missing / malformed payload — the rollback then falls
-/// back to the warn-only manual-cleanup path (matching legacy evidence
-/// behaviour) instead of crashing.
 ///
-/// Per-item decode failures (e.g. a target missing the required
-/// `provider` field) are silently skipped: the goal is best-effort
-/// rollback, and one malformed entry should not block DELETEs against
-/// the well-formed siblings.
-pub(crate) fn decode_blob_targets(extra: &serde_json::Value) -> Vec<BlobTarget> {
-    extra
-        .get("blob_targets")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| serde_json::from_value::<BlobTarget>(v.clone()).ok())
-                .collect()
-        })
-        .unwrap_or_default()
+/// Aliased to the core-owned snapshot so the evidence schema lives in
+/// [`anodizer_core::publish_evidence`].
+pub(crate) type BlobTarget = anodizer_core::publish_evidence::BlobTargetSnapshot;
+
+/// Render the operator-readable `<provider>://<bucket>/<key>` URL for a
+/// [`BlobTarget`]. Used by the publisher to populate
+/// [`anodizer_core::PublishEvidence`]`.artifact_paths` so the text
+/// `--rollback-only` summary keeps rendering the same shape that
+/// shipped before the structured-target capture landed.
+///
+/// Free function rather than an inherent impl because [`BlobTarget`]
+/// is a type alias for a core-owned struct — Rust does not allow
+/// inherent impls on type aliases.
+pub(crate) fn blob_target_url(t: &BlobTarget) -> String {
+    format!("{}://{}/{}", t.provider, t.bucket, t.key)
+}
+
+/// Encode the per-target tuples into the typed
+/// [`PublishEvidenceExtra::Blob`] variant. Mirrors the cloudsmith
+/// pattern (typed `Cloudsmith` variant).
+pub(crate) fn encode_blob_targets(targets: &[BlobTarget]) -> anodizer_core::PublishEvidenceExtra {
+    anodizer_core::PublishEvidenceExtra::Blob(anodizer_core::publish_evidence::BlobExtra {
+        blob_targets: targets.to_vec(),
+    })
+}
+
+/// Decode the typed Blob variant. Returns an empty vec when the
+/// variant doesn't match — rollback then falls back to the warn-only
+/// manual-cleanup path instead of crashing.
+pub(crate) fn decode_blob_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<BlobTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::Blob(b) => b.blob_targets.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// [`anodizer_core::Publisher`] adapter over [`BlobStage::run`].
@@ -181,11 +168,11 @@ impl anodizer_core::Publisher for BlobPublisher {
         // `extra.blob_targets` is the authoritative source for the
         // DELETE call.
         if let Some(first) = uploaded.first() {
-            evidence.primary_ref = Some(first.url());
+            evidence.primary_ref = Some(blob_target_url(first));
         }
         evidence.artifact_paths = uploaded
             .iter()
-            .map(|t| std::path::PathBuf::from(t.url()))
+            .map(|t| std::path::PathBuf::from(blob_target_url(t)))
             .collect();
         evidence.extra = encode_blob_targets(&uploaded);
         Ok(evidence)
@@ -329,7 +316,7 @@ fn rollback_via_object_store(
 
         for t in group_targets {
             let path = object_store::path::Path::from(t.key.as_str());
-            let url = t.url();
+            let url = blob_target_url(t);
             match rt.block_on(store.delete(&path)) {
                 Ok(()) => {
                     log.status(&format!("blob: DELETE {}", url));
@@ -499,13 +486,16 @@ mod publisher_tests {
         let decoded = decode_blob_targets(&encoded);
         assert_eq!(decoded, vec![t.clone()]);
 
-        // Field-level shape check: the JSON layout must keep
-        // `blob_targets` as the outer key so this evidence shape stays
-        // parallel to `cloudsmith_targets` (the sibling pattern from
-        // B13).
-        let arr = encoded
-            .get("blob_targets")
-            .and_then(|v| v.as_array())
+        // Wire-format pin: serialize through evidence and inspect the
+        // JSON to confirm the array rides under the `blob_targets`
+        // key (matches the pre-typed shape, parallel to
+        // `cloudsmith_targets`).
+        let mut e = PublishEvidence::new("blob");
+        e.extra = encoded;
+        let s = serde_json::to_string(&e).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("parse");
+        let arr = v["extra"]["blob_targets"]
+            .as_array()
             .expect("blob_targets array");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["provider"], "s3");
@@ -521,24 +511,32 @@ mod publisher_tests {
     /// a serializer that doesn't emit `null` for `None`).
     #[test]
     fn blob_target_decode_tolerates_missing_optional_fields() {
-        let json = serde_json::json!({
-            "blob_targets": [
-                {
-                    "provider": "gs",
-                    "bucket": "gcs-bucket",
-                    "key": "myapp/v1.0.0/foo.tar.gz"
-                    // region + endpoint omitted entirely
-                },
-                {
-                    "provider": "azblob",
-                    "bucket": "azure-container",
-                    "key": "myapp/v1.0.0/bar.tar.gz",
-                    "region": null,
-                    "endpoint": null
-                }
-            ]
-        });
-        let decoded = decode_blob_targets(&json);
+        // Hand-rolled JSON matching the evidence shape — wrapped in
+        // the `PublishEvidence` envelope so deserialization exercises
+        // the same untagged-enum path live evidence files take.
+        let raw = r#"{
+            "schema_version": 1,
+            "publisher": "blob",
+            "artifact_paths": [],
+            "extra": {
+                "blob_targets": [
+                    {
+                        "provider": "gs",
+                        "bucket": "gcs-bucket",
+                        "key": "myapp/v1.0.0/foo.tar.gz"
+                    },
+                    {
+                        "provider": "azblob",
+                        "bucket": "azure-container",
+                        "key": "myapp/v1.0.0/bar.tar.gz",
+                        "region": null,
+                        "endpoint": null
+                    }
+                ]
+            }
+        }"#;
+        let e: PublishEvidence = serde_json::from_str(raw).expect("deserialize");
+        let decoded = decode_blob_targets(&e.extra);
         assert_eq!(decoded.len(), 2);
         assert_eq!(decoded[0].provider, "gs");
         assert!(decoded[0].region.is_none());
@@ -548,37 +546,24 @@ mod publisher_tests {
         assert!(decoded[1].endpoint.is_none());
     }
 
-    /// Missing-array decode must yield empty, not panic. The rollback
-    /// dispatch uses the empty-list signal to fall through to the
-    /// legacy warn-only path.
+    /// Non-Blob variant decodes to empty so rollback dispatch falls
+    /// through to the legacy warn-only path.
     #[test]
     fn blob_target_decode_empty_on_missing_key() {
-        let v = serde_json::json!({});
-        assert!(decode_blob_targets(&v).is_empty());
-        let v = serde_json::json!({ "blob_targets": "not-an-array" });
-        assert!(decode_blob_targets(&v).is_empty());
-        let v = serde_json::json!({ "blob_targets": [] });
-        assert!(decode_blob_targets(&v).is_empty());
-    }
-
-    /// Per-item decode failures (e.g. a malformed entry missing the
-    /// required `provider` field) must NOT block well-formed siblings:
-    /// best-effort rollback still deletes what it can.
-    #[test]
-    fn blob_target_decode_skips_malformed_entries() {
-        let json = serde_json::json!({
-            "blob_targets": [
-                { "not_a_target": true },
-                {
-                    "provider": "s3",
-                    "bucket": "ok-bucket",
-                    "key": "ok-key"
-                },
-            ]
-        });
-        let decoded = decode_blob_targets(&json);
-        assert_eq!(decoded.len(), 1);
-        assert_eq!(decoded[0].bucket, "ok-bucket");
+        assert!(decode_blob_targets(&anodizer_core::PublishEvidenceExtra::Empty).is_empty());
+        // Empty Blob variant: array present but vacant.
+        let empty =
+            anodizer_core::PublishEvidenceExtra::Blob(anodizer_core::publish_evidence::BlobExtra {
+                blob_targets: Vec::new(),
+            });
+        assert!(decode_blob_targets(&empty).is_empty());
+        // Wrong variant entirely.
+        let wrong = anodizer_core::PublishEvidenceExtra::Homebrew(
+            anodizer_core::publish_evidence::HomebrewExtra {
+                homebrew_targets: Vec::new(),
+            },
+        );
+        assert!(decode_blob_targets(&wrong).is_empty());
     }
 
     /// Evidence that pre-dates the structured-target capture (only
@@ -645,7 +630,7 @@ mod publisher_tests {
             region: Some("us-east-1".to_string()),
             endpoint: Some("http://127.0.0.1:1".to_string()),
         };
-        evidence.artifact_paths = vec![std::path::PathBuf::from(target.url())];
+        evidence.artifact_paths = vec![std::path::PathBuf::from(blob_target_url(&target))];
         evidence.extra = encode_blob_targets(&[target]);
         let p = BlobPublisher::new();
         // Best-effort: even though the DELETE will fail (unreachable
@@ -661,6 +646,9 @@ mod publisher_tests {
     /// access_key / secret in via `extra.blob_targets` trips here.
     #[test]
     fn blob_target_extra_carries_no_secret_material() {
+        // Structural pin: build typed evidence and assert (a) no
+        // credential-shaped keys appear AND (b) the operator-public
+        // addressing fields serialize.
         let t = BlobTarget {
             provider: "s3".to_string(),
             bucket: "my-bucket".to_string(),
@@ -668,8 +656,9 @@ mod publisher_tests {
             region: Some("us-west-2".to_string()),
             endpoint: Some("https://s3.example.com".to_string()),
         };
-        let encoded = encode_blob_targets(&[t]);
-        let s = serde_json::to_string(&encoded).expect("serialize");
+        let mut e = anodizer_core::PublishEvidence::new("blob");
+        e.extra = encode_blob_targets(&[t]);
+        let s = serde_json::to_string(&e).expect("serialize");
         for forbidden in [
             "\"token\"",
             "\"password\"",
@@ -678,6 +667,7 @@ mod publisher_tests {
             "\"access_key\"",
             "\"secret_key\"",
             "\"session_token\"",
+            "\"api_key\"",
         ] {
             assert!(
                 !s.contains(forbidden),
@@ -686,5 +676,11 @@ mod publisher_tests {
                 s
             );
         }
+        // Positive shape: addressing coordinates present.
+        assert!(s.contains("\"provider\":\"s3\""), "{s}");
+        assert!(s.contains("\"bucket\":\"my-bucket\""), "{s}");
+        assert!(s.contains("\"key\":\"myapp/v1.0.0/foo.tar.gz\""), "{s}");
+        assert!(s.contains("\"region\":\"us-west-2\""), "{s}");
+        assert!(s.contains("\"endpoint\":\"https://s3.example.com\""), "{s}");
     }
 }

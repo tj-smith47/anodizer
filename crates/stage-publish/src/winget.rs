@@ -1102,47 +1102,19 @@ simple_publisher!(
     Some("GITHUB_TOKEN pull_request:write"),
 );
 
-/// Serialized shape of a recorded winget PR target. One entry per crate
-/// whose publish path successfully pushed a branch toward an upstream
-/// winget-pkgs PR.
-///
-/// `package_id` is the resolved `PackageIdentifier` (e.g.
-/// `TJSmith.Anodizer`); `version` is the bare semver from
-/// [`anodizer_core::context::Context::version`]. `branch` matches the
-/// auto-generated `{package_id}-{version}` shape the publish path uses
-/// when `repository.branch` is unset (mirrors `publish_to_winget`).
-///
-/// NB: no `token` / `pat` / `password` fields — see the Submitter
-/// rustdoc above for the credential-handling rationale.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-struct WingetTarget {
-    /// Per-target label — the crate the manifest was generated for.
-    target: String,
-    /// Crate the manifest covers.
-    crate_name: String,
-    /// Resolved `PackageIdentifier` (e.g. `TJSmith.Anodizer`).
-    package_id: String,
-    /// Bare semver (no leading `v`).
-    version: String,
-    /// Upstream owner — typically `microsoft` (or
-    /// `repository.pull_request.base.owner` override).
-    upstream_owner: String,
-    /// Upstream repo — typically `winget-pkgs`.
-    upstream_repo: String,
-    /// Fork owner — the user/org the publish path pushed the branch to.
-    fork_owner: String,
-    /// Branch name on the fork — `{package_id}-{version}` by default,
-    /// or `repository.branch` when set.
-    branch: String,
-}
+/// Aliased to the core-owned snapshot so the evidence schema lives in
+/// [`anodizer_core::publish_evidence`] and credential-shaped fields
+/// have no slot to land in. See the Submitter rustdoc above for the
+/// credential-handling rationale.
+type WingetTarget = anodizer_core::publish_evidence::WingetTargetSnapshot;
 
 /// Decode the `winget_targets` array from
 /// [`anodizer_core::PublishEvidence::extra`].
-fn decode_winget_targets(extra: &serde_json::Value) -> Vec<WingetTarget> {
-    extra
-        .get("winget_targets")
-        .and_then(|v| serde_json::from_value::<Vec<WingetTarget>>(v.clone()).ok())
-        .unwrap_or_default()
+fn decode_winget_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<WingetTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::Winget(w) => w.winget_targets.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// Resolve the upstream `<owner>/<repo>` slug for a winget target —
@@ -1329,7 +1301,11 @@ impl anodizer_core::Publisher for WingetPublisher {
                 first.upstream_owner, first.upstream_repo, first.fork_owner, first.branch
             ));
         }
-        evidence.extra = serde_json::json!({ "winget_targets": targets });
+        evidence.extra = anodizer_core::PublishEvidenceExtra::Winget(
+            anodizer_core::publish_evidence::WingetExtra {
+                winget_targets: targets,
+            },
+        );
         Ok(evidence)
     }
 
@@ -1441,30 +1417,32 @@ mod publisher_tests {
     fn winget_rollback_warns_per_target_when_evidence_present() {
         let mut ctx = TestContextBuilder::new().build();
         let mut evidence = PublishEvidence::new("winget");
-        evidence.extra = serde_json::json!({
-            "winget_targets": [
-                {
-                    "target": "AcmeCo.demo",
-                    "crate_name": "demo",
-                    "package_id": "AcmeCo.demo",
-                    "version": "1.2.3",
-                    "upstream_owner": "microsoft",
-                    "upstream_repo": "winget-pkgs",
-                    "fork_owner": "acme",
-                    "branch": "AcmeCo.demo-1.2.3",
-                },
-                {
-                    "target": "AcmeCo.widget",
-                    "crate_name": "widget",
-                    "package_id": "AcmeCo.widget",
-                    "version": "1.2.3",
-                    "upstream_owner": "microsoft",
-                    "upstream_repo": "winget-pkgs",
-                    "fork_owner": "acme",
-                    "branch": "AcmeCo.widget-1.2.3",
-                },
-            ],
-        });
+        evidence.extra = anodizer_core::PublishEvidenceExtra::Winget(
+            anodizer_core::publish_evidence::WingetExtra {
+                winget_targets: vec![
+                    WingetTarget {
+                        target: "AcmeCo.demo".into(),
+                        crate_name: "demo".into(),
+                        package_id: "AcmeCo.demo".into(),
+                        version: "1.2.3".into(),
+                        upstream_owner: "microsoft".into(),
+                        upstream_repo: "winget-pkgs".into(),
+                        fork_owner: "acme".into(),
+                        branch: "AcmeCo.demo-1.2.3".into(),
+                    },
+                    WingetTarget {
+                        target: "AcmeCo.widget".into(),
+                        crate_name: "widget".into(),
+                        package_id: "AcmeCo.widget".into(),
+                        version: "1.2.3".into(),
+                        upstream_owner: "microsoft".into(),
+                        upstream_repo: "winget-pkgs".into(),
+                        fork_owner: "acme".into(),
+                        branch: "AcmeCo.widget-1.2.3".into(),
+                    },
+                ],
+            },
+        );
         let p = WingetPublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
         assert_eq!(decode_winget_targets(&evidence.extra).len(), 2);
@@ -1482,28 +1460,48 @@ mod publisher_tests {
             fork_owner: "acme".into(),
             branch: "AcmeCo.demo-1.2.3".into(),
         }];
-        let extra = serde_json::json!({ "winget_targets": original.clone() });
+        let extra = anodizer_core::PublishEvidenceExtra::Winget(
+            anodizer_core::publish_evidence::WingetExtra {
+                winget_targets: original.clone(),
+            },
+        );
         let decoded = decode_winget_targets(&extra);
         assert_eq!(decoded, original);
     }
 
     #[test]
     fn winget_target_extra_carries_no_secret_material() {
-        let t = WingetTarget {
-            target: "AcmeCo.demo".into(),
-            crate_name: "demo".into(),
-            package_id: "AcmeCo.demo".into(),
-            version: "1.2.3".into(),
-            upstream_owner: "microsoft".into(),
-            upstream_repo: "winget-pkgs".into(),
-            fork_owner: "acme".into(),
-            branch: "AcmeCo.demo-1.2.3".into(),
-        };
-        let s = serde_json::to_string(&t).expect("serialize");
+        // Structural pin: build a typed-variant evidence and assert
+        // (a) no credential-shaped keys appear AND (b) the
+        // operator-public PR coordinates are preserved.
+        let mut e = PublishEvidence::new("winget");
+        e.extra = anodizer_core::PublishEvidenceExtra::Winget(
+            anodizer_core::publish_evidence::WingetExtra {
+                winget_targets: vec![WingetTarget {
+                    target: "AcmeCo.demo".into(),
+                    crate_name: "demo".into(),
+                    package_id: "AcmeCo.demo".into(),
+                    version: "1.2.3".into(),
+                    upstream_owner: "microsoft".into(),
+                    upstream_repo: "winget-pkgs".into(),
+                    fork_owner: "acme".into(),
+                    branch: "AcmeCo.demo-1.2.3".into(),
+                }],
+            },
+        );
+        let s = serde_json::to_string(&e).expect("serialize");
         assert!(!s.contains("\"token\":"), "{s}");
         assert!(!s.contains("\"pat\":"), "{s}");
         assert!(!s.contains("\"auth\":"), "{s}");
         assert!(!s.contains("\"password\":"), "{s}");
+        assert!(!s.contains("\"secret\":"), "{s}");
+        assert!(!s.contains("\"api_key\":"), "{s}");
+        // Positive shape: PR coordinates present.
+        assert!(s.contains("\"package_id\":\"AcmeCo.demo\""), "{s}");
+        assert!(s.contains("\"upstream_owner\":\"microsoft\""), "{s}");
+        assert!(s.contains("\"upstream_repo\":\"winget-pkgs\""), "{s}");
+        assert!(s.contains("\"fork_owner\":\"acme\""), "{s}");
+        assert!(s.contains("\"branch\":\"AcmeCo.demo-1.2.3\""), "{s}");
     }
 
     #[test]

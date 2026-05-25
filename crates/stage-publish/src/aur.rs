@@ -832,11 +832,39 @@ fn dedup_aur_targets(targets: &[AurOurTarget]) -> Vec<AurOurTarget> {
     out
 }
 
-fn decode_aur_our_targets(extra: &serde_json::Value) -> Vec<AurOurTarget> {
-    extra
-        .get("aur_our_targets")
-        .and_then(|v| serde_json::from_value::<Vec<AurOurTarget>>(v.clone()).ok())
-        .unwrap_or_default()
+impl From<&AurOurTarget> for anodizer_core::publish_evidence::AurTargetSnapshot {
+    fn from(t: &AurOurTarget) -> Self {
+        Self {
+            target: t.target.clone(),
+            git_url: t.git_url.clone(),
+        }
+    }
+}
+
+impl From<anodizer_core::publish_evidence::AurTargetSnapshot> for AurOurTarget {
+    fn from(s: anodizer_core::publish_evidence::AurTargetSnapshot) -> Self {
+        Self {
+            target: s.target,
+            git_url: s.git_url,
+            // SSH credentials are NOT carried in the snapshot — they
+            // live only in the live `aur.private_key:` config and are
+            // resolved at rollback time via
+            // `resolve_aur_credentials_from_config`. This decode
+            // boundary matches what the prior `#[serde(skip)]` shape
+            // produced when the serialized evidence round-tripped.
+            private_key: None,
+            git_ssh_command: None,
+        }
+    }
+}
+
+fn decode_aur_our_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<AurOurTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::Aur(a) => {
+            a.aur_our_targets.iter().cloned().map(Into::into).collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn collect_aur_our_run_targets(ctx: &Context) -> Vec<AurOurTarget> {
@@ -981,7 +1009,11 @@ impl anodizer_core::Publisher for AurOurPublisher {
         // were never touched (dry-run, skip_upload, no-op NoChanges).
         if any_pushed {
             let targets = collect_aur_our_run_targets(ctx);
-            evidence.extra = serde_json::json!({ "aur_our_targets": targets });
+            evidence.extra = anodizer_core::PublishEvidenceExtra::Aur(
+                anodizer_core::publish_evidence::AurExtra {
+                    aur_our_targets: targets.iter().map(Into::into).collect(),
+                },
+            );
         }
         Ok(evidence)
     }
@@ -1083,17 +1115,20 @@ mod publisher_tests {
 
     #[test]
     fn aur_rollback_warns_when_no_targets_recorded() {
+        let capture = anodizer_core::log::LogCapture::new();
         let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
         let evidence = PublishEvidence::new("aur");
         let p = AurOurPublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
 
-        let msg =
-            crate::publisher_helpers::rollback_empty_warning_msg("aur", "AUR repo clone targets");
-        assert!(msg.starts_with("aur:"), "{msg}");
-        assert!(msg.contains("AUR repo clone targets"), "{msg}");
-        assert!(msg.contains("verify"), "{msg}");
-        assert!(msg.contains("manually"), "{msg}");
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("aur")
+                && m.contains("AUR repo clone targets")
+                && m.contains("verify")),
+            "expected captured warn naming publisher + target-noun + 'verify'; got: {warns:?}"
+        );
     }
 
     #[test]
@@ -1104,7 +1139,10 @@ mod publisher_tests {
             private_key: None,
             git_ssh_command: None,
         }];
-        let extra = serde_json::json!({ "aur_our_targets": original.clone() });
+        let extra =
+            anodizer_core::PublishEvidenceExtra::Aur(anodizer_core::publish_evidence::AurExtra {
+                aur_our_targets: original.iter().map(Into::into).collect(),
+            });
         let decoded = decode_aur_our_targets(&extra);
         assert_eq!(decoded, original);
     }
@@ -1158,17 +1196,24 @@ mod publisher_tests {
     #[test]
     fn aur_our_target_extra_omits_private_key_after_serde_roundtrip() {
         // SECURITY: persisting `private_key` / `git_ssh_command` into
-        // `dist/run-<id>/report.json` (return-type-swap), the run
-        // summary (--summary-json), or the announce-time release-body
-        // text would leak the SSH key publicly. `#[serde(skip)]`
-        // enforces the redaction; this test pins the contract.
-        let with_secrets = vec![AurOurTarget {
+        // `dist/run-<id>/report.json`, the run summary
+        // (`--summary-json`), or the announce-time release-body text
+        // would leak the SSH key publicly. The
+        // `AurTargetSnapshot` core type has no field for either
+        // credential, so the type system rejects any future leak
+        // attempt at the encode boundary. This test pins the
+        // resulting wire shape: a populated AurOurTarget converts
+        // into the snapshot WITHOUT carrying the secret bytes.
+        let with_secrets = AurOurTarget {
             target: "demo-bin".into(),
             git_url: "ssh://aur@aur.archlinux.org/demo-bin.git".into(),
             private_key: Some("PRIVATE-KEY-CONTENTS".into()),
             git_ssh_command: Some("ssh -i /tmp/key".into()),
-        }];
-        let extra = serde_json::json!({ "aur_our_targets": with_secrets });
+        };
+        let extra =
+            anodizer_core::PublishEvidenceExtra::Aur(anodizer_core::publish_evidence::AurExtra {
+                aur_our_targets: vec![(&with_secrets).into()],
+            });
         let serialized = serde_json::to_string(&extra).expect("serialize");
         assert!(
             !serialized.contains("PRIVATE-KEY-CONTENTS"),
@@ -1178,7 +1223,6 @@ mod publisher_tests {
             !serialized.contains("/tmp/key"),
             "git_ssh_command leaked into serialized evidence: {serialized}"
         );
-        // Parse back and assert the JSON shape lacks the keys.
         let parsed: serde_json::Value = serde_json::from_str(&serialized).expect("parse");
         let first = &parsed["aur_our_targets"][0];
         assert!(
@@ -1189,6 +1233,10 @@ mod publisher_tests {
             first.get("git_ssh_command").is_none(),
             "git_ssh_command field present in evidence: {first}"
         );
+        // Positive shape: operator-public coordinates survive the
+        // conversion.
+        assert_eq!(first["target"], "demo-bin");
+        assert_eq!(first["git_url"], "ssh://aur@aur.archlinux.org/demo-bin.git");
     }
 
     #[test]

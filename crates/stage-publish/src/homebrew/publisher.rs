@@ -26,7 +26,9 @@
 //! publishers and is documented at their module level.
 
 use anodizer_core::context::Context;
-use serde::{Deserialize, Serialize};
+use anodizer_core::publish_evidence::{
+    HomebrewExtra, HomebrewTargetSnapshot, PublishEvidenceExtra,
+};
 
 use crate::util::{RevertTarget, run_revert_targets_parallel};
 
@@ -38,37 +40,23 @@ simple_publisher!(
     Some("GITHUB_TOKEN contents:write"),
 );
 
-/// Serialized shape of a recorded homebrew tap push. One entry per
-/// pushed formula/cask. See module docs for why this lives in evidence
-/// instead of on disk.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct HomebrewTarget {
-    /// Per-target label — formula name, cask name, or the literal
-    /// `homebrew_casks` for the top-level path. Surfaces in log lines.
-    target: String,
-    /// HTTPS clone URL of the tap repo. Plain HTTPS; auth happens via
-    /// the env-resolved token at rollback time.
-    repo_url: String,
-    /// Branch the publish path pushed to. `None` means "the cloned
-    /// default branch" (Homebrew taps default to `main`/`master`).
-    branch: Option<String>,
-    /// Env var name to consult for the rollback re-clone token.
-    /// Captured at run-time so rollback uses the same env contract
-    /// the publish path validated.
-    token_env_var: Option<String>,
-}
+/// Serialized shape of a recorded homebrew tap push. Aliased to the
+/// core-owned snapshot so the wire schema lives in
+/// [`anodizer_core::publish_evidence`] and credential-shaped fields
+/// have no slot to land in. One entry per pushed formula/cask.
+type HomebrewTarget = HomebrewTargetSnapshot;
 
 /// Decode the `homebrew_targets` array from
 /// [`anodizer_core::PublishEvidence::extra`].
 ///
-/// Returns an empty Vec on any of: missing key, wrong shape, empty
-/// array. The rollback path treats empty-decode the same as
+/// Returns an empty Vec when the variant is not `Homebrew` or when its
+/// list is empty. The rollback path treats empty-decode the same as
 /// no-evidence and emits the canonical empty-evidence warn.
-fn decode_homebrew_targets(extra: &serde_json::Value) -> Vec<HomebrewTarget> {
-    extra
-        .get("homebrew_targets")
-        .and_then(|v| serde_json::from_value::<Vec<HomebrewTarget>>(v.clone()).ok())
-        .unwrap_or_default()
+fn decode_homebrew_targets(extra: &PublishEvidenceExtra) -> Vec<HomebrewTarget> {
+    match extra {
+        PublishEvidenceExtra::Homebrew(h) => h.homebrew_targets.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// Collapse the recorded tap-push targets to a unique set keyed by
@@ -293,7 +281,9 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         // correctly when nothing was published.
         if any_pushed {
             let targets = collect_run_targets(ctx);
-            evidence.extra = serde_json::json!({ "homebrew_targets": targets });
+            evidence.extra = PublishEvidenceExtra::Homebrew(HomebrewExtra {
+                homebrew_targets: targets,
+            });
         }
         Ok(evidence)
     }
@@ -439,28 +429,41 @@ mod publisher_tests {
 
     #[test]
     fn homebrew_target_extra_carries_no_secret_material() {
-        // Defense-in-depth: serialize a target and assert no field
-        // names that could leak a token / pat / password are present.
-        // Mirrors the credential-handling contract documented on
-        // `PublishEvidence::extra`.
-        let t = HomebrewTarget {
-            target: "demo".into(),
-            repo_url: "https://github.com/acme/homebrew-tap.git".into(),
-            branch: Some("main".into()),
-            token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
-        };
-        let s = serde_json::to_string(&t).expect("serialize");
+        // Structural pin: build an evidence with a populated variant,
+        // serialize, assert (a) no credential-shaped keys appear AND
+        // (b) the operator-public shape is preserved. The type system
+        // pins the negative half (the snapshot struct has no token
+        // field to land in); this test pins the positive half.
+        let mut e = PublishEvidence::new("homebrew");
+        e.extra = PublishEvidenceExtra::Homebrew(HomebrewExtra {
+            homebrew_targets: vec![HomebrewTarget {
+                target: "demo".into(),
+                repo_url: "https://github.com/acme/homebrew-tap.git".into(),
+                branch: Some("main".into()),
+                token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+            }],
+        });
+        let s = serde_json::to_string(&e).expect("serialize");
         assert!(!s.contains("\"token\":"), "{s}");
         assert!(!s.contains("\"password\":"), "{s}");
         assert!(!s.contains("\"pat\":"), "{s}");
         assert!(!s.contains("\"private_key\":"), "{s}");
-        // The env-var NAME is fine; values must never appear.
+        assert!(!s.contains("\"secret\":"), "{s}");
+        assert!(!s.contains("\"api_key\":"), "{s}");
+        // Positive shape: the env-var NAME is operator-public and
+        // must serialize; ditto target/repo_url/branch.
         assert!(s.contains("HOMEBREW_TAP_TOKEN"), "{s}");
+        assert!(s.contains("\"target\":\"demo\""), "{s}");
+        assert!(
+            s.contains("\"repo_url\":\"https://github.com/acme/homebrew-tap.git\""),
+            "{s}"
+        );
+        assert!(s.contains("\"branch\":\"main\""), "{s}");
     }
 
     #[test]
     fn homebrew_target_extra_roundtrips() {
-        // Build an evidence blob shaped like what `run` would emit
+        // Build a typed-extra evidence shaped like what `run` would emit
         // and check the decode path returns the same Vec.
         let original = vec![
             HomebrewTarget {
@@ -476,7 +479,9 @@ mod publisher_tests {
                 token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
             },
         ];
-        let extra = serde_json::json!({ "homebrew_targets": original.clone() });
+        let extra = PublishEvidenceExtra::Homebrew(HomebrewExtra {
+            homebrew_targets: original.clone(),
+        });
         let decoded = decode_homebrew_targets(&extra);
         assert_eq!(decoded, original);
     }

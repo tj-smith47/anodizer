@@ -387,7 +387,11 @@ fn build_snapcraft_evidence(targets: &[SnapcraftTarget]) -> PublishEvidence {
     if let Some(first) = targets.first() {
         evidence.primary_ref = Some(format!("https://snapcraft.io/{}", first.package_name));
     }
-    evidence.extra = serde_json::json!({ "snapcraft_targets": targets });
+    evidence.extra = anodizer_core::PublishEvidenceExtra::Snapcraft(
+        anodizer_core::publish_evidence::SnapcraftExtra {
+            snapcraft_targets: targets.to_vec(),
+        },
+    );
     evidence
 }
 

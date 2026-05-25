@@ -4,7 +4,6 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result, anyhow, bail};
-use serde::{Deserialize, Serialize};
 
 /// Serialized shape of a recorded DockerHub PATCH. One entry per
 /// `(entry, image)` cell that was actually mutated this run.
@@ -22,53 +21,19 @@ use serde::{Deserialize, Serialize};
 /// `dist/run-<id>/report.json` and may surface in the announce body.
 /// `username` is operator-public (the DockerHub login appears on every
 /// pushed image) and is recorded verbatim; `secret_env_var` is the
-/// NAME of the env var the rollback path reads — never the resolved
-/// password value. See the [`PublishEvidence::extra` rustdoc][doc] for
-/// the contract this enforces.
-///
-/// [doc]: anodizer_core::PublishEvidence
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct DockerhubTarget {
-    /// Display label for log lines — the `namespace/name` form from
-    /// the original config entry.
-    target: String,
-    /// Fully-qualified PATCH endpoint (also a useful manual-cleanup
-    /// pointer if the rollback fails).
-    repo_url: String,
-    /// DockerHub namespace component, e.g. `myorg` (or `library` for a
-    /// bare repo name in the config).
-    namespace: String,
-    /// DockerHub repo name component.
-    name: String,
-    /// Resolved DockerHub login — operator-public; appears on the
-    /// pushed image tags so persisting it is safe.
-    username: String,
-    /// Env var NAME the rollback path consults to re-resolve the
-    /// password. Never the password VALUE. Captured at publish time
-    /// so a same-process or cross-process rollback honors the same
-    /// env contract the publish validated.
-    secret_env_var: String,
-    /// `description` field as it was on the repo BEFORE our PATCH.
-    /// `None` means the GET response did not carry the field (or
-    /// carried `null`) — rollback omits it from the restore PATCH so
-    /// we do not invent an empty string the repo did not have.
-    snapshot_description: Option<String>,
-    /// `full_description` field as it was on the repo BEFORE our
-    /// PATCH. Same `None` semantics as `snapshot_description`.
-    snapshot_full_description: Option<String>,
-}
+/// Aliased to the core-owned snapshot so the evidence schema lives in
+/// [`anodizer_core::publish_evidence`] and credential-shaped fields
+/// (resolved password VALUES) have no slot to land in — only the env
+/// var NAME the rollback path consults.
+type DockerhubTarget = anodizer_core::publish_evidence::DockerhubTargetSnapshot;
 
 /// Decode the `dockerhub_targets` array from
 /// [`anodizer_core::PublishEvidence::extra`].
-///
-/// Returns an empty Vec on any of: missing key, wrong shape, empty
-/// array. The rollback path treats an empty decode the same as
-/// no-evidence and emits the canonical empty-evidence warn.
-fn decode_dockerhub_targets(extra: &serde_json::Value) -> Vec<DockerhubTarget> {
-    extra
-        .get("dockerhub_targets")
-        .and_then(|v| serde_json::from_value::<Vec<DockerhubTarget>>(v.clone()).ok())
-        .unwrap_or_default()
+fn decode_dockerhub_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<DockerhubTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::Dockerhub(d) => d.dockerhub_targets.clone(),
+        _ => Vec::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -585,7 +550,11 @@ impl anodizer_core::Publisher for DockerhubPublisher {
         }
         evidence.artifact_paths = paths;
         if !targets.is_empty() {
-            evidence.extra = serde_json::json!({ "dockerhub_targets": targets });
+            evidence.extra = anodizer_core::PublishEvidenceExtra::Dockerhub(
+                anodizer_core::publish_evidence::DockerhubExtra {
+                    dockerhub_targets: targets,
+                },
+            );
         }
         Ok(evidence)
     }
@@ -1047,26 +1016,36 @@ mod publisher_tests {
     /// snapshot+restore implementation still does not persist one.
     #[test]
     fn dockerhub_target_extra_carries_no_secret_material() {
-        let t = DockerhubTarget {
-            target: "myorg/myapp".into(),
-            repo_url: "https://hub.docker.com/v2/repositories/myorg/myapp/".into(),
-            namespace: "myorg".into(),
-            name: "myapp".into(),
-            username: "ci-bot".into(),
-            secret_env_var: "DOCKER_PASSWORD".into(),
-            snapshot_description: Some("prior short desc".into()),
-            snapshot_full_description: Some("# Prior README\nbody".into()),
-        };
-        let s = serde_json::to_string(&t).expect("serialize");
+        // Structural pin: build typed evidence with a populated
+        // variant and assert (a) no credential-shaped keys appear AND
+        // (b) the operator-public coordinates serialize.
+        let mut e = anodizer_core::PublishEvidence::new("dockerhub");
+        e.extra = anodizer_core::PublishEvidenceExtra::Dockerhub(
+            anodizer_core::publish_evidence::DockerhubExtra {
+                dockerhub_targets: vec![DockerhubTarget {
+                    target: "myorg/myapp".into(),
+                    repo_url: "https://hub.docker.com/v2/repositories/myorg/myapp/".into(),
+                    namespace: "myorg".into(),
+                    name: "myapp".into(),
+                    username: "ci-bot".into(),
+                    secret_env_var: "DOCKER_PASSWORD".into(),
+                    snapshot_description: Some("prior short desc".into()),
+                    snapshot_full_description: Some("# Prior README\nbody".into()),
+                }],
+            },
+        );
+        let s = serde_json::to_string(&e).expect("serialize");
         assert!(!s.contains("\"token\":"), "{s}");
         assert!(!s.contains("\"password\":"), "{s}");
         assert!(!s.contains("\"pat\":"), "{s}");
         assert!(!s.contains("\"auth\":"), "{s}");
         assert!(!s.contains("\"private_key\":"), "{s}");
-        // The env var NAME is recorded, not the env var VALUE — pin
-        // that the name appears (so the rollback hint surfaces) but
-        // that no `DOCKER_PASSWORD=...` resolved value snuck in.
+        assert!(!s.contains("\"secret\":\""), "{s}");
+        assert!(!s.contains("\"api_key\":"), "{s}");
+        // Positive shape: env var NAME + login + endpoint serialize.
         assert!(s.contains("\"secret_env_var\""), "{s}");
+        assert!(s.contains("\"username\":\"ci-bot\""), "{s}");
+        assert!(s.contains("\"namespace\":\"myorg\""), "{s}");
     }
 
     /// `decode_dockerhub_targets` is the rollback entry point — assert
@@ -1085,20 +1064,28 @@ mod publisher_tests {
             snapshot_description: Some("prior".into()),
             snapshot_full_description: None,
         }];
-        let extra = serde_json::json!({ "dockerhub_targets": original.clone() });
+        let extra = anodizer_core::PublishEvidenceExtra::Dockerhub(
+            anodizer_core::publish_evidence::DockerhubExtra {
+                dockerhub_targets: original.clone(),
+            },
+        );
         let decoded = decode_dockerhub_targets(&extra);
         assert_eq!(decoded, original);
     }
 
-    /// Wrong shape / missing key → empty vec → rollback short-circuits
-    /// to the empty-evidence warn path. Pins the failure mode so a
-    /// renamed-without-migration field cannot accidentally re-enable
-    /// the live-PATCH path against arbitrary decoded data.
+    /// Wrong variant → empty vec → rollback short-circuits to the
+    /// empty-evidence warn path. Pins the failure mode so a typed-enum
+    /// addition that accidentally matches an unrelated payload doesn't
+    /// re-enable the live-PATCH path against decoded data.
     #[test]
     fn dockerhub_target_decode_missing_key_yields_empty() {
-        let extra = serde_json::json!({ "other_targets": [] });
+        let extra = anodizer_core::PublishEvidenceExtra::Empty;
         assert!(decode_dockerhub_targets(&extra).is_empty());
-        let extra = serde_json::json!({ "dockerhub_targets": "not-an-array" });
+        let extra = anodizer_core::PublishEvidenceExtra::Homebrew(
+            anodizer_core::publish_evidence::HomebrewExtra {
+                homebrew_targets: Vec::new(),
+            },
+        );
         assert!(decode_dockerhub_targets(&extra).is_empty());
     }
 

@@ -285,7 +285,9 @@ pub fn assert_publisher_visible_work_contract(publisher: &dyn Publisher, ctx: &m
 
     let status_count = capture.status_count();
     let warn_count = capture.warn_count();
-    let extra_is_empty = evidence.extra.as_object().is_none_or(|m| m.is_empty());
+    // Typed enum: `Empty` is the only "no operator-public fields"
+    // variant. Anything else carries at least one target struct.
+    let extra_is_empty = matches!(evidence.extra, anodizer_core::PublishEvidenceExtra::Empty);
     let has_evidence = evidence.primary_ref.is_some() || !extra_is_empty;
 
     assert!(
