@@ -827,20 +827,10 @@ fn plant_shard_manifest(
     archive_name
 }
 
-/// Locks in the shard-merge contract that gates publish-only: the
-/// dist tree's per-shard `artifacts-<shard>.json` manifests are
-/// **unioned** into the in-process registry, and the post-pipeline
-/// rewrite of `dist/artifacts.json` therefore surfaces every shard's
-/// entries.
-///
-/// Regression caught: a previous ship cycle's `winget.yaml` shipped
-/// with `InstallerSha256` empty because the CI shard-merge collapsed
-/// the per-shard manifests over each other — the surviving file was
-/// one shard's view, the other shard's archives lost their sha256
-/// metadata, and the publisher rendered the empty value. If a future
-/// refactor regresses the loader to overwrite-instead-of-union, this
-/// test fails with exactly one shard's archive present in the final
-/// `dist/artifacts.json`.
+/// Loading per-shard `artifacts-<shard>.json` manifests unions every
+/// shard's entries into the registry, so the rewritten
+/// `dist/artifacts.json` carries each archive with its `sha256`,
+/// `kind`, `target`, and `crate_name` preserved.
 #[test]
 fn publish_only_unions_sha256_across_sharded_manifests() {
     if !tool_on_path("git") {
