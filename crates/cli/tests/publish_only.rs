@@ -747,3 +747,254 @@ Expire-Date: 0
         .status()
         .ok();
 }
+
+// ---------------------------------------------------------------------------
+// Shard-merge union: publish-only must surface BOTH shards' artifacts
+// ---------------------------------------------------------------------------
+
+/// Pinned sha256 hex of `SHARD_A_PAYLOAD` (22 bytes). Computed
+/// out-of-band — verifying the literal here would only re-derive the
+/// value via the same hash function that the production code uses to
+/// satisfy `hash_verify_preserved_dist`, making the test tautological.
+/// Hand-pinned values force a real mismatch surface if the planted
+/// bytes ever drift.
+const SHARD_A_SHA256: &str = "77831ad6a6f50f547137457e01f5013db8ab0850f1e7ac3377cf79531973e2ec";
+const SHARD_B_SHA256: &str = "a67a65f266ffc9cd4acd19945642328a831e1076fe2c30772c881a1f3b6bb974";
+const SHARD_A_PAYLOAD: &[u8] = b"SHARD_A_ARCHIVE_BYTES\n";
+const SHARD_B_PAYLOAD: &[u8] = b"SHARD_B_ARCHIVE_BYTES\n";
+
+/// Plant a per-shard `artifacts-<shard>.json` + matching
+/// `context-<shard>.json` pair plus the on-disk archive bytes the
+/// hash-verify step demands. Returns the archive filename so callers
+/// can grep for it in the post-pipeline `dist/artifacts.json`.
+///
+/// The two shards plant DIFFERENT archive paths so a regression that
+/// collapsed the merge to a single-shard view would lose one of them
+/// — i.e. the duplicate-path detection isn't what catches the bug,
+/// the union assertion is.
+fn plant_shard_manifest(
+    dist: &Path,
+    shard: &str,
+    target: &str,
+    version: &str,
+    commit: &str,
+    sha256_hex: &str,
+    payload: &[u8],
+) -> String {
+    let archive_name = format!("{FIXTURE_CRATE_NAME}_{version}_{shard}_{target}.tar.gz");
+    let archive_path = dist.join(&archive_name);
+    fs::write(&archive_path, payload).unwrap();
+
+    let artifacts_json = serde_json::json!([
+        {
+            "kind": "archive",
+            "name": archive_name,
+            "path": archive_path.to_string_lossy(),
+            "target": target,
+            "crate_name": FIXTURE_CRATE_NAME,
+            "metadata": {
+                "ID": FIXTURE_CRATE_NAME,
+                "Format": "tar.gz",
+                "sha256": sha256_hex,
+            },
+        }
+    ]);
+    fs::write(
+        dist.join(format!("artifacts-{shard}.json")),
+        serde_json::to_string_pretty(&artifacts_json).unwrap(),
+    )
+    .unwrap();
+
+    let context_json = serde_json::json!({
+        "artifacts": [
+            {
+                "name": archive_name,
+                "path": archive_name,
+                "sha256": format!("sha256:{sha256_hex}"),
+                "size": payload.len() as u64,
+            }
+        ],
+        "targets": [target],
+        "version": version,
+        "commit": commit,
+    });
+    fs::write(
+        dist.join(format!("context-{shard}.json")),
+        serde_json::to_string_pretty(&context_json).unwrap(),
+    )
+    .unwrap();
+
+    archive_name
+}
+
+/// Locks in the shard-merge contract that gates publish-only: the
+/// dist tree's per-shard `artifacts-<shard>.json` manifests are
+/// **unioned** into the in-process registry, and the post-pipeline
+/// rewrite of `dist/artifacts.json` therefore surfaces every shard's
+/// entries.
+///
+/// Regression caught: a previous ship cycle's `winget.yaml` shipped
+/// with `InstallerSha256` empty because the CI shard-merge collapsed
+/// the per-shard manifests over each other — the surviving file was
+/// one shard's view, the other shard's archives lost their sha256
+/// metadata, and the publisher rendered the empty value. If a future
+/// refactor regresses the loader to overwrite-instead-of-union, this
+/// test fails with exactly one shard's archive present in the final
+/// `dist/artifacts.json`.
+#[test]
+fn publish_only_unions_sha256_across_sharded_manifests() {
+    if !tool_on_path("git") {
+        eprintln!("SKIP publish_only_unions_sha256_across_sharded_manifests: git missing");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    bootstrap_minimal_cargo_repo(repo, FIXTURE_CRATE_NAME);
+    configure_tag_template(repo);
+
+    let version = "0.1.0";
+    let commit = head_commit(repo);
+    let dist = repo.join("dist");
+    fs::create_dir_all(&dist).unwrap();
+
+    let target = "x86_64-unknown-linux-gnu";
+    let archive_a = plant_shard_manifest(
+        &dist,
+        "shard-a",
+        target,
+        version,
+        &commit,
+        SHARD_A_SHA256,
+        SHARD_A_PAYLOAD,
+    );
+    let archive_b = plant_shard_manifest(
+        &dist,
+        "shard-b",
+        target,
+        version,
+        &commit,
+        SHARD_B_SHA256,
+        SHARD_B_PAYLOAD,
+    );
+    assert_ne!(
+        archive_a, archive_b,
+        "fixture must plant DISTINCT archive paths per shard so a single-shard \
+         collapse loses one entry; otherwise duplicate-path detection masks the bug"
+    );
+
+    tag_head(repo, version);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--publish-only",
+            "--dry-run",
+            "--no-preflight",
+            "--skip",
+            "announce",
+        ])
+        .env_remove("COSIGN_KEY")
+        .env_remove("GPG_PRIVATE_KEY")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN")
+        .current_dir(repo)
+        .output()
+        .expect("invoking anodize release --publish-only --dry-run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let merged_log = format!("{stdout}\n{stderr}");
+
+    assert!(
+        output.status.success(),
+        "expected zero exit from publish-only with two shard manifests; \
+         stdout=\n{stdout}\nstderr=\n{stderr}",
+    );
+
+    // The publish-only banner must announce TWO artifacts manifests
+    // were loaded — a regression that silently picked one would log
+    // "1 artifacts manifest(s)" and fail this assertion before the
+    // post-pipeline file even matters.
+    assert!(
+        merged_log.contains("from 2 artifacts manifest(s)"),
+        "publish-only must report loading exactly 2 shard manifests; output was:\n{merged_log}"
+    );
+
+    // Post-pipeline-rewritten artifacts.json is the load-bearing
+    // assertion: it's what the next consumer of `dist/` (a re-run, a
+    // downstream `anodize publish` invocation, or operator inspection)
+    // sees, and a regression that dropped a shard would surface here
+    // as a missing entry.
+    let post_artifacts = dist.join("artifacts.json");
+    assert!(
+        post_artifacts.is_file(),
+        "expected run_post_pipeline to rewrite {} after publish-only succeeded",
+        post_artifacts.display(),
+    );
+
+    #[derive(serde::Deserialize, Debug)]
+    struct PostArtifact {
+        kind: String,
+        name: String,
+        path: String,
+        #[serde(default)]
+        target: Option<String>,
+        crate_name: String,
+    }
+    let bytes = fs::read_to_string(&post_artifacts)
+        .unwrap_or_else(|e| panic!("read {}: {e}", post_artifacts.display()));
+    let parsed: Vec<PostArtifact> = serde_json::from_str(&bytes).unwrap_or_else(|e| {
+        panic!(
+            "parse {} as Vec<PostArtifact>: {e}",
+            post_artifacts.display()
+        )
+    });
+
+    let archive_entries: Vec<&PostArtifact> =
+        parsed.iter().filter(|a| a.kind == "archive").collect();
+    let names: Vec<&str> = archive_entries.iter().map(|a| a.name.as_str()).collect();
+
+    assert!(
+        names.contains(&archive_a.as_str()),
+        "shard-a archive {archive_a} missing from post-pipeline artifacts.json; \
+         survivors were: {names:?}"
+    );
+    assert!(
+        names.contains(&archive_b.as_str()),
+        "shard-b archive {archive_b} missing from post-pipeline artifacts.json; \
+         survivors were: {names:?}"
+    );
+    assert_eq!(
+        archive_entries.len(),
+        2,
+        "expected EXACTLY two archive entries (one per shard); a regression that \
+         deduped them or dropped a shard would fail here. Got entries: {archive_entries:?}"
+    );
+
+    for entry in &archive_entries {
+        assert_eq!(entry.target.as_deref(), Some(target));
+        assert_eq!(entry.crate_name, FIXTURE_CRATE_NAME);
+        assert!(
+            entry.path.ends_with(&entry.name),
+            "archive path {} must end with its filename {}",
+            entry.path,
+            entry.name,
+        );
+    }
+
+    // Per-shard manifests must be removed once the canonical
+    // un-suffixed artifacts.json is rewritten — otherwise a retry
+    // (operator-driven workflow rerun) trips the unsuffixed-vs-
+    // suffixed collision check. The cleanup is part of the merge
+    // contract too: without it the file the next run reads would
+    // collide with the surviving sharded files.
+    for shard in ["shard-a", "shard-b"] {
+        let shard_manifest = dist.join(format!("artifacts-{shard}.json"));
+        assert!(
+            !shard_manifest.exists(),
+            "shard manifest {} must be cleaned up after successful publish-only",
+            shard_manifest.display(),
+        );
+    }
+}
