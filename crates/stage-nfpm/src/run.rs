@@ -91,23 +91,7 @@ impl Stage for NfpmStage {
         let mut new_artifacts: Vec<Artifact> = Vec::new();
         let mut jobs: Vec<NfpmJob> = Vec::new();
 
-        // Validate nfpm config ID uniqueness across all crates (GoReleaser parity)
-        {
-            let mut seen_ids = std::collections::HashSet::new();
-            for krate in &crates {
-                if let Some(ref nfpm_configs) = krate.nfpms {
-                    for cfg in nfpm_configs {
-                        let id = cfg.id.as_deref().unwrap_or("default");
-                        if !seen_ids.insert(id.to_string()) {
-                            bail!(
-                                "nfpm: duplicate config ID '{}' (each nfpm config must have a unique ID)",
-                                id
-                            );
-                        }
-                    }
-                }
-            }
-        }
+        validate_unique_config_ids(&crates)?;
 
         for krate in &crates {
             let Some(nfpm_configs) = krate.nfpms.as_ref() else {
@@ -139,178 +123,17 @@ impl Stage for NfpmStage {
             for nfpm_cfg in nfpm_configs {
                 let nfpm_id_for_log = nfpm_cfg.id.as_deref().unwrap_or("default").to_string();
 
-                // GoReleaser Pro `nfpm.if`: template-conditional skip.
-                // Rendered "false"/empty => skip with info log; render error => hard bail.
-                // Hard-error on render failure intentionally diverges from stage-sign's
-                // silent-skip-on-render-error. A render failure means the user's template
-                // references an unknown var; silently skipping would ship a release without
-                // the packages the user asked for.
-                if let Some(ref condition) = nfpm_cfg.if_condition {
-                    let rendered = ctx.render_template(condition).with_context(|| {
-                        format!(
-                            "nfpm config '{}': `if` template render failed (expression: {})",
-                            nfpm_id_for_log, condition
-                        )
-                    })?;
-                    let trimmed = rendered.trim();
-                    if trimmed.is_empty() || trimmed == "false" {
-                        let reason = format!("if condition evaluated to '{}'", trimmed);
-                        log.verbose(&format!(
-                            "skipping nfpm config '{}': {}",
-                            nfpm_id_for_log, reason
-                        ));
-                        ctx.remember_skip("nfpm", &nfpm_id_for_log, &reason);
-                        continue;
-                    }
-                }
-
-                // warn and skip when no output formats configured
-                if nfpm_cfg.formats.is_empty() {
-                    let nfpm_id = nfpm_id_for_log.as_str();
-                    ctx.strict_guard(
-                        &log,
-                        &format!(
-                            "nfpm config '{}': no output formats configured, skipping",
-                            nfpm_id
-                        ),
-                    )?;
+                if should_skip_nfpm_config(ctx, nfpm_cfg, &nfpm_id_for_log, &log)? {
                     continue;
-                }
-
-                // warn when maintainer is empty (required for deb)
-                let maintainer = nfpm_cfg.maintainer.as_deref().unwrap_or("");
-                if maintainer.is_empty() {
-                    let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
-                    log.warn(&format!(
-                        "nfpm config '{}': maintainer is empty (required for deb packages)",
-                        nfpm_id
-                    ));
                 }
 
                 let is_meta = nfpm_cfg.meta == Some(true);
 
-                // GoReleaser groups all artifacts by platform and creates ONE
-                // package per platform containing ALL artifacts for that platform.
-                // The tuple contains: (target, binary_paths, library_paths).
-                let platform_groups: Vec<(Option<String>, Vec<String>, NfpmLibraryPaths)> =
-                    if is_meta {
-                        // Meta packages have no binary contents — use a synthetic entry
-                        // so the loop below runs once per target (or once with no target).
-                        if linux_binaries.is_empty() {
-                            vec![(None, Vec::new(), NfpmLibraryPaths::default())]
-                        } else {
-                            let mut seen = std::collections::HashSet::new();
-                            linux_binaries
-                                .iter()
-                                .filter(|b| {
-                                    let key = b.target.clone().unwrap_or_default();
-                                    seen.insert(key)
-                                })
-                                .map(|b| {
-                                    (b.target.clone(), Vec::new(), NfpmLibraryPaths::default())
-                                })
-                                .collect()
-                        }
-                    } else {
-                        // Apply ids filter: when the nfpm config specifies `ids`,
-                        // only include artifacts whose metadata "id" is in the list.
-                        let id_filtered: Vec<_> = if let Some(ref ids) = nfpm_cfg.ids {
-                            linux_binaries
-                                .iter()
-                                .filter(|b| {
-                                    b.metadata
-                                        .get("id")
-                                        .map(|bid| ids.contains(bid))
-                                        .unwrap_or(false)
-                                })
-                                .collect()
-                        } else {
-                            linux_binaries.iter().collect()
-                        };
-
-                        // M8 — `goamd64: []string` filter (GR `nfpm.go:147`,
-                        // calls `artifact.ByGoamd64s(fpm.GoAmd64...)`). When
-                        // the config sets one or more variants, only `amd64`
-                        // artifacts whose `amd64_variant` is in the list pass;
-                        // non-amd64 artifacts are unaffected. Unset
-                        // `amd64_variant` metadata is treated as `v1`. Empty
-                        // `Vec` (`goamd64: []`) is a no-op (matches GR's
-                        // `autoOr` zero-arg shape).
-                        let filtered: Vec<_> = if let Some(ref wants) = nfpm_cfg.goamd64
-                            && !wants.is_empty()
-                        {
-                            id_filtered
-                                .into_iter()
-                                .filter(|b| {
-                                    let target = b.target.as_deref().unwrap_or("");
-                                    let (_, arch) = anodizer_core::target::map_target(target);
-                                    if arch != "amd64" {
-                                        return true;
-                                    }
-                                    let v = b
-                                        .metadata
-                                        .get("amd64_variant")
-                                        .map(String::as_str)
-                                        .unwrap_or("v1");
-                                    wants.iter().any(|w| w == v)
-                                })
-                                .collect()
-                        } else {
-                            id_filtered
-                        };
-
-                        // If the ids filter matched nothing but there ARE artifacts,
-                        // warn and skip — the user likely misconfigured ids.
-                        if filtered.is_empty() && !linux_binaries.is_empty() {
-                            let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
-                            log.warn(&format!(
-                                "nfpm config '{}': ids filter matched no binaries, skipping",
-                                nfpm_id
-                            ));
-                            continue;
-                        }
-
-                        // If no artifacts found at all, use a single synthetic
-                        // entry with a default path.
-                        if filtered.is_empty() {
-                            vec![(
-                                None,
-                                vec![format!("dist/{}", krate.name)],
-                                NfpmLibraryPaths::default(),
-                            )]
-                        } else {
-                            // Group by target: all artifacts for the same platform
-                            // go into one package (GoReleaser parity).
-                            // Split Binary artifacts from C library artifacts.
-                            struct PlatformArtifacts {
-                                binaries: Vec<String>,
-                                libs: NfpmLibraryPaths,
-                            }
-                            let mut groups: std::collections::BTreeMap<
-                                Option<String>,
-                                PlatformArtifacts,
-                            > = std::collections::BTreeMap::new();
-                            for b in &filtered {
-                                let entry = groups.entry(b.target.clone()).or_insert_with(|| {
-                                    PlatformArtifacts {
-                                        binaries: Vec::new(),
-                                        libs: NfpmLibraryPaths::default(),
-                                    }
-                                });
-                                let path = b.path.to_string_lossy().into_owned();
-                                match b.kind {
-                                    ArtifactKind::Header => entry.libs.headers.push(path),
-                                    ArtifactKind::CArchive => entry.libs.c_archives.push(path),
-                                    ArtifactKind::CShared => entry.libs.c_shared.push(path),
-                                    _ => entry.binaries.push(path),
-                                }
-                            }
-                            groups
-                                .into_iter()
-                                .map(|(t, pa)| (t, pa.binaries, pa.libs))
-                                .collect()
-                        }
-                    };
+                let Some(platform_groups) =
+                    build_platform_groups(nfpm_cfg, krate, &linux_binaries, is_meta, &log)
+                else {
+                    continue;
+                };
 
                 for (target, binary_paths, lib_paths) in &platform_groups {
                     // Derive Os/Arch from the target triple for template rendering
@@ -323,39 +146,10 @@ impl Stage for NfpmStage {
                         validate_format(format)
                             .with_context(|| format!("nfpm config for crate {}", krate.name))?;
 
-                        // platform-format
-                        // restrictions for iOS and AIX.
-                        let (os, arch) = match base_os.as_str() {
-                            "ios" => {
-                                if format == "deb" {
-                                    ("iphoneos-arm64".to_string(), base_arch.clone())
-                                } else {
-                                    log.status(&format!(
-                                        "skipping ios for format '{}': only deb is supported",
-                                        format
-                                    ));
-                                    continue;
-                                }
-                            }
-                            "aix" => {
-                                if base_arch != "ppc64" {
-                                    log.status(&format!(
-                                        "skipping aix/{}: only ppc64 is supported",
-                                        base_arch
-                                    ));
-                                    continue;
-                                }
-                                if format == "rpm" {
-                                    ("aix7.2".to_string(), "ppc".to_string())
-                                } else {
-                                    log.status(&format!(
-                                        "skipping aix for format '{}': only rpm is supported",
-                                        format
-                                    ));
-                                    continue;
-                                }
-                            }
-                            _ => (base_os.clone(), base_arch.clone()),
+                        let Some((os, arch)) =
+                            resolve_format_os_arch(&base_os, &base_arch, format, &log)
+                        else {
+                            continue;
                         };
 
                         // Validate architecture compatibility per format
@@ -372,257 +166,33 @@ impl Stage for NfpmStage {
                             continue;
                         }
 
-                        // Template-render key string fields before generating YAML.
-                        // Errors are propagated (not silently swallowed) to match GoReleaser.
-                        //
-                        // GoReleaser Pro parity: fall back to project-level `metadata.*` when
-                        // the nfpm config's own field is unset. Before this, `metadata.homepage`
-                        // / `license` / `description` / `maintainers` were collected but silently
-                        // unused (config-must-wire).
-                        let mut rendered_cfg = nfpm_cfg.clone();
-                        if rendered_cfg.description.is_none() {
-                            rendered_cfg.description =
-                                ctx.config.meta_description().map(str::to_string);
-                        }
-                        if rendered_cfg.maintainer.is_none() {
-                            rendered_cfg.maintainer =
-                                ctx.config.meta_first_maintainer().map(str::to_string);
-                        }
-                        if rendered_cfg.homepage.is_none() {
-                            rendered_cfg.homepage = ctx.config.meta_homepage().map(str::to_string);
-                        }
-                        if rendered_cfg.license.is_none() {
-                            rendered_cfg.license = ctx.config.meta_license().map(str::to_string);
-                        }
-                        render_in_place(&mut rendered_cfg.description, ctx)?;
-                        render_in_place(&mut rendered_cfg.maintainer, ctx)?;
-                        render_in_place(&mut rendered_cfg.homepage, ctx)?;
-                        render_in_place(&mut rendered_cfg.license, ctx)?;
-                        render_in_place(&mut rendered_cfg.vendor, ctx)?;
-                        render_in_place(&mut rendered_cfg.section, ctx)?;
-                        render_in_place(&mut rendered_cfg.priority, ctx)?;
-                        render_in_place(&mut rendered_cfg.changelog, ctx)?;
-                        // Template-render bindir and mtime (GoReleaser parity)
-                        render_in_place(&mut rendered_cfg.bindir, ctx)?;
-                        render_in_place(&mut rendered_cfg.mtime, ctx)?;
-                        // Template-render script paths
-                        if let Some(ref mut scripts) = rendered_cfg.scripts {
-                            render_in_place(&mut scripts.preinstall, ctx)?;
-                            render_in_place(&mut scripts.postinstall, ctx)?;
-                            render_in_place(&mut scripts.preremove, ctx)?;
-                            render_in_place(&mut scripts.postremove, ctx)?;
-                        }
-                        // Template-render signature key_file, key_name, AND
-                        // key_passphrase. Skipping key_passphrase here would
-                        // leave a literal `{{ .Env.X }}` reaching nfpm as
-                        // the passphrase, which silently fails to unlock
-                        // the key — the operator's release dies with a
-                        // confusing "wrong passphrase" or "bad signature"
-                        // surfaced from rpmsign / dpkg-sig rather than the
-                        // real "unrendered template" cause.
-                        if let Some(ref mut deb) = rendered_cfg.deb
-                            && let Some(ref mut sig) = deb.signature
-                        {
-                            render_in_place(&mut sig.key_file, ctx)?;
-                            render_in_place(&mut sig.key_passphrase, ctx)?;
-                        }
-                        if let Some(ref mut rpm) = rendered_cfg.rpm
-                            && let Some(ref mut sig) = rpm.signature
-                        {
-                            render_in_place(&mut sig.key_file, ctx)?;
-                            render_in_place(&mut sig.key_passphrase, ctx)?;
-                        }
-                        if let Some(ref mut apk) = rendered_cfg.apk
-                            && let Some(ref mut sig) = apk.signature
-                        {
-                            render_in_place(&mut sig.key_file, ctx)?;
-                            render_in_place(&mut sig.key_name, ctx)?;
-                            render_in_place(&mut sig.key_passphrase, ctx)?;
-                        }
-                        // Template-render libdirs
-                        if let Some(ref mut libdirs) = rendered_cfg.libdirs {
-                            render_in_place(&mut libdirs.header, ctx)?;
-                            render_in_place(&mut libdirs.cshared, ctx)?;
-                            render_in_place(&mut libdirs.carchive, ctx)?;
-                        }
+                        let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, ctx)?;
 
-                        // Template-render contents: src, dst, file_info.owner/group/mtime
-                        if let Some(ref mut entries) = rendered_cfg.contents {
-                            for entry in entries.iter_mut() {
-                                entry.src = ctx.render_template(&entry.src)?;
-                                entry.dst = ctx.render_template(&entry.dst)?;
-                                if let Some(ref mut fi) = entry.file_info {
-                                    render_in_place(&mut fi.owner, ctx)?;
-                                    render_in_place(&mut fi.group, ctx)?;
-                                    render_in_place(&mut fi.mtime, ctx)?;
-                                }
-                            }
-                        }
+                        process_templated_contents(
+                            &mut rendered_cfg,
+                            nfpm_cfg,
+                            ctx,
+                            &dist,
+                            &krate.name,
+                            dry_run,
+                        )?;
+                        process_templated_scripts(
+                            &mut rendered_cfg,
+                            nfpm_cfg,
+                            ctx,
+                            &dist,
+                            &krate.name,
+                            dry_run,
+                        )?;
 
-                        // GoReleaser Pro `templated_contents`: for each entry, read `src`,
-                        // render its body through Tera, write to a temp file under
-                        // `dist/nfpm-tmp/<crate>/<nfpm_id>/`, and append to `contents` using
-                        // the temp file as the real source. User-supplied `dst` + `file_info`
-                        // are preserved; only `src` is rewritten to the rendered temp path.
-                        if let Some(templated_entries) = rendered_cfg.templated_contents.take()
-                            && !templated_entries.is_empty()
-                        {
-                            {
-                                let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
-                                let tmpl_dir =
-                                    dist.join("nfpm-tmp").join(&krate.name).join(nfpm_id);
-                                if !dry_run {
-                                    fs::create_dir_all(&tmpl_dir).with_context(|| {
-                                        format!(
-                                            "nfpm: create templated-contents dir: {}",
-                                            tmpl_dir.display()
-                                        )
-                                    })?;
-                                }
-                                let rendered_contents =
-                                    rendered_cfg.contents.get_or_insert_with(Vec::new);
-                                for (idx, mut entry) in templated_entries.into_iter().enumerate() {
-                                    entry.src = ctx.render_template(&entry.src)?;
-                                    entry.dst = ctx.render_template(&entry.dst)?;
-                                    let body =
-                                        fs::read_to_string(&entry.src).with_context(|| {
-                                            format!(
-                                                "nfpm: read templated_contents src: {}",
-                                                entry.src
-                                            )
-                                        })?;
-                                    let rendered_body =
-                                        ctx.render_template(&body).with_context(|| {
-                                            format!(
-                                                "nfpm: render templated_contents body for {}",
-                                                entry.src
-                                            )
-                                        })?;
-                                    let base = std::path::Path::new(&entry.src)
-                                        .file_name()
-                                        .map(|s| s.to_string_lossy().into_owned())
-                                        .unwrap_or_else(|| format!("tmpl-{idx}"));
-                                    let out_path = tmpl_dir.join(format!("{idx:03}-{base}"));
-                                    if !dry_run {
-                                        fs::write(&out_path, rendered_body.as_bytes())
-                                            .with_context(|| {
-                                                format!(
-                                                    "nfpm: write rendered templated_contents: {}",
-                                                    out_path.display()
-                                                )
-                                            })?;
-                                    }
-                                    entry.src = out_path.to_string_lossy().into_owned();
-                                    rendered_contents.push(entry);
-                                }
-                            }
-                        }
+                        fill_deb_arch_variant(
+                            &mut rendered_cfg,
+                            &linux_binaries,
+                            target.as_deref(),
+                        );
 
-                        // GoReleaser Pro `templated_scripts`: same idea for lifecycle scripts.
-                        // Each set field names a script file whose contents we render, write
-                        // to a temp path, and substitute into `rendered_cfg.scripts`. Templated
-                        // version wins over a same-named plain `scripts` entry.
-                        if let Some(templated_scripts) = rendered_cfg.templated_scripts.take() {
-                            let any = templated_scripts.preinstall.is_some()
-                                || templated_scripts.postinstall.is_some()
-                                || templated_scripts.preremove.is_some()
-                                || templated_scripts.postremove.is_some();
-                            if any {
-                                let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
-                                let tmpl_dir =
-                                    dist.join("nfpm-tmp").join(&krate.name).join(nfpm_id);
-                                if !dry_run {
-                                    fs::create_dir_all(&tmpl_dir).with_context(|| {
-                                        format!(
-                                            "nfpm: create templated-scripts dir: {}",
-                                            tmpl_dir.display()
-                                        )
-                                    })?;
-                                }
-                                let scripts_out = rendered_cfg
-                                    .scripts
-                                    .get_or_insert_with(NfpmScripts::default);
-                                let render_and_write =
-                                    |name: &str,
-                                     src_path: &str,
-                                     ctx: &mut Context|
-                                     -> Result<String> {
-                                        let rendered_src = ctx.render_template(src_path)?;
-                                        let body = fs::read_to_string(&rendered_src).with_context(
-                                            || {
-                                                format!(
-                                                    "nfpm: read templated_script {}: {}",
-                                                    name, rendered_src
-                                                )
-                                            },
-                                        )?;
-                                        let rendered_body =
-                                            ctx.render_template(&body).with_context(|| {
-                                                format!(
-                                                    "nfpm: render templated_script {}: {}",
-                                                    name, rendered_src
-                                                )
-                                            })?;
-                                        let out_path = tmpl_dir.join(format!("script-{}", name));
-                                        if !dry_run {
-                                            fs::write(&out_path, rendered_body.as_bytes())
-                                                .with_context(|| {
-                                                    format!(
-                                                        "nfpm: write rendered templated_script: {}",
-                                                        out_path.display()
-                                                    )
-                                                })?;
-                                        }
-                                        Ok(out_path.to_string_lossy().into_owned())
-                                    };
-                                if let Some(ref s) = templated_scripts.preinstall {
-                                    scripts_out.preinstall =
-                                        Some(render_and_write("preinstall", s, ctx)?);
-                                }
-                                if let Some(ref s) = templated_scripts.postinstall {
-                                    scripts_out.postinstall =
-                                        Some(render_and_write("postinstall", s, ctx)?);
-                                }
-                                if let Some(ref s) = templated_scripts.preremove {
-                                    scripts_out.preremove =
-                                        Some(render_and_write("preremove", s, ctx)?);
-                                }
-                                if let Some(ref s) = templated_scripts.postremove {
-                                    scripts_out.postremove =
-                                        Some(render_and_write("postremove", s, ctx)?);
-                                }
-                            }
-                        }
-
-                        // Fill deb.arch_variant from artifact amd64 microarch
-                        // when unset; explicit user config wins.
-                        if let Some(ref mut deb) = rendered_cfg.deb
-                            && deb.arch_variant.is_none()
-                            && let Some(t) = target.as_deref()
-                        {
-                            let variant = linux_binaries
-                                .iter()
-                                .find(|b| b.target.as_deref() == Some(t))
-                                .and_then(|b| b.metadata.get("amd64_variant").cloned());
-                            deb.arch_variant = variant;
-                        }
-
-                        // Determine package file name (template or default).
-                        // GoReleaser nfpm.go:68-70 — default is ProjectName
-                        // (not the crate/binary name). Fall back to crate name
-                        // only if project_name is empty.
-                        //
-                        // Computed BEFORE yaml generation because the lintian
-                        // emission below needs `pkg_name` for both the file
-                        // path and the destination key.
-                        let pkg_name_owned: String =
-                            if let Some(n) = nfpm_cfg.package_name.as_deref() {
-                                n.to_string()
-                            } else if !ctx.config.project_name.is_empty() {
-                                ctx.config.project_name.clone()
-                            } else {
-                                krate.name.clone()
-                            };
+                        let pkg_name_owned =
+                            resolve_pkg_name(nfpm_cfg, &ctx.config.project_name, &krate.name);
                         let pkg_name: &str = pkg_name_owned.as_str();
                         let ext = format_extension(format);
 
@@ -662,52 +232,29 @@ impl Stage for NfpmStage {
                             })?;
                         }
 
-                        // Set nfpm-specific template vars (Os, Arch, Format,
-                        // PackageName, ConventionalExtension, ConventionalFileName,
-                        // Release, Epoch) before rendering file_name_template.
-                        ctx.template_vars_mut().set("Os", &os);
-                        ctx.template_vars_mut().set("Arch", &arch);
-                        ctx.template_vars_mut()
-                            .set("Target", target.as_deref().unwrap_or(""));
-                        ctx.template_vars_mut().set("Format", format);
-                        ctx.template_vars_mut().set("PackageName", pkg_name);
-                        ctx.template_vars_mut().set("ConventionalExtension", ext);
-                        // Per-packager ConventionalFileName (nfpm v2.44 parity):
-                        // deb / rpm / apk / archlinux / ipk each have
-                        // distinct filename conventions and arch
-                        // translations. Falls back to the hand-rolled
-                        // default for formats we don't recognise.
-                        let fn_info = filename::FileNameInfo::from_config(
-                            nfpm_cfg, pkg_name, &version, &arch,
+                        set_nfpm_per_pkg_template_vars(
+                            ctx,
+                            nfpm_cfg,
+                            &os,
+                            &arch,
+                            target.as_deref(),
+                            format,
+                            pkg_name,
+                            ext,
+                            &version,
                         );
-                        let conventional = filename::conventional_filename(format, &fn_info)
-                            .unwrap_or_else(|| format!("{pkg_name}_{version}_{os}_{arch}{ext}"));
-                        ctx.template_vars_mut()
-                            .set("ConventionalFileName", &conventional);
-                        ctx.template_vars_mut()
-                            .set("Release", nfpm_cfg.release.as_deref().unwrap_or(""));
-                        ctx.template_vars_mut()
-                            .set("Epoch", nfpm_cfg.epoch.as_deref().unwrap_or(""));
 
-                        let pkg_filename = if let Some(tmpl) = &nfpm_cfg.file_name_template {
-                            let rendered = ctx.render_template(tmpl).with_context(|| {
-                                format!(
-                                    "nfpm: render file_name_template for crate {} target {:?}",
-                                    krate.name, target
-                                )
-                            })?;
-                            // If the rendered template already ends with the
-                            // format extension (e.g. the user used
-                            // ConventionalExtension or ConventionalFileName),
-                            // don't double-append it.
-                            if !ext.is_empty() && rendered.ends_with(ext) {
-                                rendered
-                            } else {
-                                format!("{rendered}{ext}")
-                            }
-                        } else {
-                            format!("{pkg_name}_{version}_{os}_{arch}{ext}")
-                        };
+                        let pkg_filename = compute_pkg_filename(
+                            ctx,
+                            nfpm_cfg,
+                            &krate.name,
+                            target.as_deref(),
+                            pkg_name,
+                            &version,
+                            &os,
+                            &arch,
+                            ext,
+                        )?;
                         let pkg_path = output_dir.join(&pkg_filename);
 
                         // Build metadata: always include format, optionally include nfpm id
@@ -734,126 +281,26 @@ impl Stage for NfpmStage {
                             continue;
                         }
 
-                        // Write temp nfpm YAML config
-                        let tmp_dir =
-                            tempfile::tempdir().context("create temp dir for nfpm config")?;
-                        let config_path = tmp_dir.path().join("nfpm.yaml");
-                        fs::write(&config_path, &yaml_content).with_context(|| {
-                            format!("write nfpm config to {}", config_path.display())
-                        })?;
-
-                        // Pass the full file path (not directory) to nfpm
-                        // --target so the output lands at the exact path we
-                        // registered as the artifact.  This avoids mismatches
-                        // between our predicted filename and nfpm's own naming.
-                        let cmd_args = nfpm_command(
-                            &config_path.to_string_lossy(),
+                        jobs.push(build_nfpm_job(
+                            ctx,
+                            nfpm_cfg,
+                            &yaml_content,
+                            &pkg_path,
                             format,
-                            &pkg_path.to_string_lossy(),
-                        );
-
-                        // Render mtime once in Step 1 so Step 2 doesn't touch
-                        // ctx; pre-parse into SystemTime so workers can call
-                        // set_file_mtime directly.
-                        let (mtime, mtime_repr) = if let Some(ref raw_mtime) = nfpm_cfg.mtime {
-                            let rendered_mtime = ctx
-                                .render_template(raw_mtime)
-                                .unwrap_or_else(|_| raw_mtime.clone());
-                            match anodizer_core::util::parse_mod_timestamp(&rendered_mtime) {
-                                Ok(mt) => (Some(mt), Some(rendered_mtime)),
-                                Err(e) => {
-                                    log.warn(&format!(
-                                        "nfpm: invalid mtime '{rendered_mtime}': {e}"
-                                    ));
-                                    (None, None)
-                                }
-                            }
-                        } else {
-                            (None, None)
-                        };
-
-                        jobs.push(NfpmJob {
-                            _tmp_dir: tmp_dir,
-                            pkg_path: pkg_path.clone(),
-                            format: format.clone(),
-                            cmd_args,
-                            mtime,
-                            mtime_repr,
-                            target: target.clone(),
-                            crate_name: krate.name.clone(),
+                            target.as_deref(),
+                            &krate.name,
                             pkg_metadata,
-                        });
+                            &log,
+                        )?);
                     }
                 }
             }
         }
 
-        anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
-        // nfpm also uses its own per-format / per-packaging vars; clear
-        // them here so user-template state doesn't leak into downstream
-        // stages like announce or publish.
-        for extra in [
-            "Format",
-            "PackageName",
-            "ConventionalExtension",
-            "ConventionalFileName",
-            "Release",
-            "Epoch",
-        ] {
-            ctx.template_vars_mut().set(extra, "");
-        }
+        clear_nfpm_template_vars(ctx);
 
-        // ----------------------------------------------------------------
-        // Parallel: run `nfpm pkg --packager <format>` per job. Bounded
-        // concurrency via chunks(parallelism). Each worker returns the
-        // populated Artifact for serial registration below.
-        // ----------------------------------------------------------------
         if !jobs.is_empty() {
-            let run_job = |job: &NfpmJob| -> Result<Artifact> {
-                let thread_log = anodizer_core::log::StageLogger::new("nfpm", log.verbosity());
-
-                thread_log.status(&format!("running: {}", job.cmd_args.join(" ")));
-
-                let output = Command::new(&job.cmd_args[0])
-                    .args(&job.cmd_args[1..])
-                    .output()
-                    .with_context(|| {
-                        format!(
-                            "execute nfpm for format {} (crate {} target {:?})",
-                            job.format, job.crate_name, job.target
-                        )
-                    })?;
-                thread_log.check_output(output, "nfpm")?;
-
-                // Reproducible-build mtime — pre-parsed in Step 1.
-                if let Some(mt) = job.mtime {
-                    if let Err(e) = anodizer_core::util::set_file_mtime(&job.pkg_path, mt) {
-                        thread_log.warn(&format!(
-                            "nfpm: failed to apply mtime to {}: {}",
-                            job.pkg_path.display(),
-                            e
-                        ));
-                    } else if let Some(ref repr) = job.mtime_repr {
-                        thread_log.verbose(&format!(
-                            "nfpm: applied mtime={repr} to {}",
-                            job.pkg_path.display()
-                        ));
-                    }
-                }
-
-                Ok(Artifact {
-                    kind: ArtifactKind::LinuxPackage,
-                    name: String::new(),
-                    path: job.pkg_path.clone(),
-                    target: job.target.clone(),
-                    crate_name: job.crate_name.clone(),
-                    metadata: job.pkg_metadata.clone(),
-                    size: None,
-                })
-            };
-
-            let results =
-                anodizer_core::parallel::run_parallel_chunks(&jobs, parallelism, "nfpm", run_job)?;
+            let results = execute_nfpm_jobs(&jobs, parallelism, log.verbosity())?;
             new_artifacts.extend(results);
         }
 
@@ -951,4 +398,669 @@ pub(crate) fn setup_lintian_overrides(
         .get_or_insert_with(Vec::new)
         .push(entry);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Private helpers — sliced out of `run` to keep the body navigable.
+// ---------------------------------------------------------------------------
+
+fn validate_unique_config_ids(crates: &[anodizer_core::config::CrateConfig]) -> Result<()> {
+    let mut seen_ids = std::collections::HashSet::new();
+    for krate in crates {
+        if let Some(ref nfpm_configs) = krate.nfpms {
+            for cfg in nfpm_configs {
+                let id = cfg.id.as_deref().unwrap_or("default");
+                if !seen_ids.insert(id.to_string()) {
+                    bail!(
+                        "nfpm: duplicate config ID '{}' (each nfpm config must have a unique ID)",
+                        id
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Evaluate per-config skip predicates (`if`, empty `formats`) and maintainer warning.
+///
+/// Returns `Ok(true)` when the caller should `continue` (skip this config),
+/// `Ok(false)` to proceed.
+fn should_skip_nfpm_config(
+    ctx: &mut Context,
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    nfpm_id_for_log: &str,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<bool> {
+    if let Some(ref condition) = nfpm_cfg.if_condition {
+        let rendered = ctx.render_template(condition).with_context(|| {
+            format!(
+                "nfpm config '{}': `if` template render failed (expression: {})",
+                nfpm_id_for_log, condition
+            )
+        })?;
+        let trimmed = rendered.trim();
+        if trimmed.is_empty() || trimmed == "false" {
+            let reason = format!("if condition evaluated to '{}'", trimmed);
+            log.verbose(&format!(
+                "skipping nfpm config '{}': {}",
+                nfpm_id_for_log, reason
+            ));
+            ctx.remember_skip("nfpm", nfpm_id_for_log, &reason);
+            return Ok(true);
+        }
+    }
+
+    if nfpm_cfg.formats.is_empty() {
+        ctx.strict_guard(
+            log,
+            &format!(
+                "nfpm config '{}': no output formats configured, skipping",
+                nfpm_id_for_log
+            ),
+        )?;
+        return Ok(true);
+    }
+
+    let maintainer = nfpm_cfg.maintainer.as_deref().unwrap_or("");
+    if maintainer.is_empty() {
+        log.warn(&format!(
+            "nfpm config '{}': maintainer is empty (required for deb packages)",
+            nfpm_id_for_log
+        ));
+    }
+
+    Ok(false)
+}
+
+/// Build the per-platform artifact groups for one nfpm config.
+///
+/// GoReleaser groups all artifacts by platform and emits ONE package per
+/// platform containing ALL artifacts for that platform. Returns `None` when
+/// the caller should skip the current nfpm config (ids filter matched
+/// nothing but there were binaries to begin with).
+#[allow(clippy::type_complexity)]
+fn build_platform_groups(
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    krate: &anodizer_core::config::CrateConfig,
+    linux_binaries: &[Artifact],
+    is_meta: bool,
+    log: &anodizer_core::log::StageLogger,
+) -> Option<Vec<(Option<String>, Vec<String>, NfpmLibraryPaths)>> {
+    if is_meta {
+        if linux_binaries.is_empty() {
+            return Some(vec![(None, Vec::new(), NfpmLibraryPaths::default())]);
+        }
+        let mut seen = std::collections::HashSet::new();
+        return Some(
+            linux_binaries
+                .iter()
+                .filter(|b| {
+                    let key = b.target.clone().unwrap_or_default();
+                    seen.insert(key)
+                })
+                .map(|b| (b.target.clone(), Vec::new(), NfpmLibraryPaths::default()))
+                .collect(),
+        );
+    }
+
+    // Apply ids filter
+    let id_filtered: Vec<_> = if let Some(ref ids) = nfpm_cfg.ids {
+        linux_binaries
+            .iter()
+            .filter(|b| {
+                b.metadata
+                    .get("id")
+                    .map(|bid| ids.contains(bid))
+                    .unwrap_or(false)
+            })
+            .collect()
+    } else {
+        linux_binaries.iter().collect()
+    };
+
+    // M8 — `goamd64: []string` filter
+    let filtered: Vec<_> = if let Some(ref wants) = nfpm_cfg.goamd64
+        && !wants.is_empty()
+    {
+        id_filtered
+            .into_iter()
+            .filter(|b| {
+                let target = b.target.as_deref().unwrap_or("");
+                let (_, arch) = anodizer_core::target::map_target(target);
+                if arch != "amd64" {
+                    return true;
+                }
+                let v = b
+                    .metadata
+                    .get("amd64_variant")
+                    .map(String::as_str)
+                    .unwrap_or("v1");
+                wants.iter().any(|w| w == v)
+            })
+            .collect()
+    } else {
+        id_filtered
+    };
+
+    if filtered.is_empty() && !linux_binaries.is_empty() {
+        let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
+        log.warn(&format!(
+            "nfpm config '{}': ids filter matched no binaries, skipping",
+            nfpm_id
+        ));
+        return None;
+    }
+
+    if filtered.is_empty() {
+        return Some(vec![(
+            None,
+            vec![format!("dist/{}", krate.name)],
+            NfpmLibraryPaths::default(),
+        )]);
+    }
+
+    struct PlatformArtifacts {
+        binaries: Vec<String>,
+        libs: NfpmLibraryPaths,
+    }
+    let mut groups: std::collections::BTreeMap<Option<String>, PlatformArtifacts> =
+        std::collections::BTreeMap::new();
+    for b in &filtered {
+        let entry = groups
+            .entry(b.target.clone())
+            .or_insert_with(|| PlatformArtifacts {
+                binaries: Vec::new(),
+                libs: NfpmLibraryPaths::default(),
+            });
+        let path = b.path.to_string_lossy().into_owned();
+        match b.kind {
+            ArtifactKind::Header => entry.libs.headers.push(path),
+            ArtifactKind::CArchive => entry.libs.c_archives.push(path),
+            ArtifactKind::CShared => entry.libs.c_shared.push(path),
+            _ => entry.binaries.push(path),
+        }
+    }
+    Some(
+        groups
+            .into_iter()
+            .map(|(t, pa)| (t, pa.binaries, pa.libs))
+            .collect(),
+    )
+}
+
+/// Resolve the effective `(os, arch)` for a packaging format, honoring the
+/// iOS- and AIX-specific GoReleaser overrides. Returns `None` when the
+/// current `(base_os, base_arch, format)` combination is unsupported (the
+/// caller should `continue`).
+fn resolve_format_os_arch(
+    base_os: &str,
+    base_arch: &str,
+    format: &str,
+    log: &anodizer_core::log::StageLogger,
+) -> Option<(String, String)> {
+    match base_os {
+        "ios" => {
+            if format == "deb" {
+                Some(("iphoneos-arm64".to_string(), base_arch.to_string()))
+            } else {
+                log.status(&format!(
+                    "skipping ios for format '{}': only deb is supported",
+                    format
+                ));
+                None
+            }
+        }
+        "aix" => {
+            if base_arch != "ppc64" {
+                log.status(&format!(
+                    "skipping aix/{}: only ppc64 is supported",
+                    base_arch
+                ));
+                return None;
+            }
+            if format == "rpm" {
+                Some(("aix7.2".to_string(), "ppc".to_string()))
+            } else {
+                log.status(&format!(
+                    "skipping aix for format '{}': only rpm is supported",
+                    format
+                ));
+                None
+            }
+        }
+        _ => Some((base_os.to_string(), base_arch.to_string())),
+    }
+}
+
+/// Clone the nfpm config and template-render every string field that
+/// participates in the generated YAML. Project-level `metadata.*` fall back
+/// values are applied before rendering when the per-config field is unset
+/// (GoReleaser Pro parity for `metadata.homepage/license/description/maintainers`).
+fn render_nfpm_config_fields(
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    ctx: &mut Context,
+) -> Result<anodizer_core::config::NfpmConfig> {
+    let mut rendered_cfg = nfpm_cfg.clone();
+    if rendered_cfg.description.is_none() {
+        rendered_cfg.description = ctx.config.meta_description().map(str::to_string);
+    }
+    if rendered_cfg.maintainer.is_none() {
+        rendered_cfg.maintainer = ctx.config.meta_first_maintainer().map(str::to_string);
+    }
+    if rendered_cfg.homepage.is_none() {
+        rendered_cfg.homepage = ctx.config.meta_homepage().map(str::to_string);
+    }
+    if rendered_cfg.license.is_none() {
+        rendered_cfg.license = ctx.config.meta_license().map(str::to_string);
+    }
+    render_in_place(&mut rendered_cfg.description, ctx)?;
+    render_in_place(&mut rendered_cfg.maintainer, ctx)?;
+    render_in_place(&mut rendered_cfg.homepage, ctx)?;
+    render_in_place(&mut rendered_cfg.license, ctx)?;
+    render_in_place(&mut rendered_cfg.vendor, ctx)?;
+    render_in_place(&mut rendered_cfg.section, ctx)?;
+    render_in_place(&mut rendered_cfg.priority, ctx)?;
+    render_in_place(&mut rendered_cfg.changelog, ctx)?;
+    render_in_place(&mut rendered_cfg.bindir, ctx)?;
+    render_in_place(&mut rendered_cfg.mtime, ctx)?;
+
+    if let Some(ref mut scripts) = rendered_cfg.scripts {
+        render_in_place(&mut scripts.preinstall, ctx)?;
+        render_in_place(&mut scripts.postinstall, ctx)?;
+        render_in_place(&mut scripts.preremove, ctx)?;
+        render_in_place(&mut scripts.postremove, ctx)?;
+    }
+
+    // Render signature key_file, key_name, AND key_passphrase for all
+    // formats. Skipping key_passphrase would leave an unrendered `{{ .Env.X
+    // }}` reaching the signing backend, which fails as "bad passphrase".
+    if let Some(ref mut deb) = rendered_cfg.deb
+        && let Some(ref mut sig) = deb.signature
+    {
+        render_in_place(&mut sig.key_file, ctx)?;
+        render_in_place(&mut sig.key_passphrase, ctx)?;
+    }
+    if let Some(ref mut rpm) = rendered_cfg.rpm
+        && let Some(ref mut sig) = rpm.signature
+    {
+        render_in_place(&mut sig.key_file, ctx)?;
+        render_in_place(&mut sig.key_passphrase, ctx)?;
+    }
+    if let Some(ref mut apk) = rendered_cfg.apk
+        && let Some(ref mut sig) = apk.signature
+    {
+        render_in_place(&mut sig.key_file, ctx)?;
+        render_in_place(&mut sig.key_name, ctx)?;
+        render_in_place(&mut sig.key_passphrase, ctx)?;
+    }
+    if let Some(ref mut libdirs) = rendered_cfg.libdirs {
+        render_in_place(&mut libdirs.header, ctx)?;
+        render_in_place(&mut libdirs.cshared, ctx)?;
+        render_in_place(&mut libdirs.carchive, ctx)?;
+    }
+
+    if let Some(ref mut entries) = rendered_cfg.contents {
+        for entry in entries.iter_mut() {
+            entry.src = ctx.render_template(&entry.src)?;
+            entry.dst = ctx.render_template(&entry.dst)?;
+            if let Some(ref mut fi) = entry.file_info {
+                render_in_place(&mut fi.owner, ctx)?;
+                render_in_place(&mut fi.group, ctx)?;
+                render_in_place(&mut fi.mtime, ctx)?;
+            }
+        }
+    }
+
+    Ok(rendered_cfg)
+}
+
+/// GoReleaser Pro `templated_contents`: render each entry's body through
+/// Tera, write to a temp path under `dist/nfpm-tmp/<crate>/<nfpm_id>/`, and
+/// append the rewritten entry to `contents`. User-supplied `dst` +
+/// `file_info` are preserved; only `src` is rewritten.
+fn process_templated_contents(
+    rendered_cfg: &mut anodizer_core::config::NfpmConfig,
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    ctx: &mut Context,
+    dist: &std::path::Path,
+    crate_name: &str,
+    dry_run: bool,
+) -> Result<()> {
+    let Some(templated_entries) = rendered_cfg.templated_contents.take() else {
+        return Ok(());
+    };
+    if templated_entries.is_empty() {
+        return Ok(());
+    }
+
+    let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
+    let tmpl_dir = dist.join("nfpm-tmp").join(crate_name).join(nfpm_id);
+    if !dry_run {
+        fs::create_dir_all(&tmpl_dir).with_context(|| {
+            format!(
+                "nfpm: create templated-contents dir: {}",
+                tmpl_dir.display()
+            )
+        })?;
+    }
+    let rendered_contents = rendered_cfg.contents.get_or_insert_with(Vec::new);
+    for (idx, mut entry) in templated_entries.into_iter().enumerate() {
+        entry.src = ctx.render_template(&entry.src)?;
+        entry.dst = ctx.render_template(&entry.dst)?;
+        let body = fs::read_to_string(&entry.src)
+            .with_context(|| format!("nfpm: read templated_contents src: {}", entry.src))?;
+        let rendered_body = ctx
+            .render_template(&body)
+            .with_context(|| format!("nfpm: render templated_contents body for {}", entry.src))?;
+        let base = std::path::Path::new(&entry.src)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("tmpl-{idx}"));
+        let out_path = tmpl_dir.join(format!("{idx:03}-{base}"));
+        if !dry_run {
+            fs::write(&out_path, rendered_body.as_bytes()).with_context(|| {
+                format!(
+                    "nfpm: write rendered templated_contents: {}",
+                    out_path.display()
+                )
+            })?;
+        }
+        entry.src = out_path.to_string_lossy().into_owned();
+        rendered_contents.push(entry);
+    }
+    Ok(())
+}
+
+/// GoReleaser Pro `templated_scripts`: render each named lifecycle script
+/// body and substitute the result into `rendered_cfg.scripts`. A templated
+/// entry wins over a same-named plain `scripts` field.
+fn process_templated_scripts(
+    rendered_cfg: &mut anodizer_core::config::NfpmConfig,
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    ctx: &mut Context,
+    dist: &std::path::Path,
+    crate_name: &str,
+    dry_run: bool,
+) -> Result<()> {
+    let Some(templated_scripts) = rendered_cfg.templated_scripts.take() else {
+        return Ok(());
+    };
+    let any = templated_scripts.preinstall.is_some()
+        || templated_scripts.postinstall.is_some()
+        || templated_scripts.preremove.is_some()
+        || templated_scripts.postremove.is_some();
+    if !any {
+        return Ok(());
+    }
+
+    let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
+    let tmpl_dir = dist.join("nfpm-tmp").join(crate_name).join(nfpm_id);
+    if !dry_run {
+        fs::create_dir_all(&tmpl_dir).with_context(|| {
+            format!("nfpm: create templated-scripts dir: {}", tmpl_dir.display())
+        })?;
+    }
+    let scripts_out = rendered_cfg
+        .scripts
+        .get_or_insert_with(NfpmScripts::default);
+    let render_and_write = |name: &str, src_path: &str, ctx: &mut Context| -> Result<String> {
+        let rendered_src = ctx.render_template(src_path)?;
+        let body = fs::read_to_string(&rendered_src)
+            .with_context(|| format!("nfpm: read templated_script {}: {}", name, rendered_src))?;
+        let rendered_body = ctx
+            .render_template(&body)
+            .with_context(|| format!("nfpm: render templated_script {}: {}", name, rendered_src))?;
+        let out_path = tmpl_dir.join(format!("script-{}", name));
+        if !dry_run {
+            fs::write(&out_path, rendered_body.as_bytes()).with_context(|| {
+                format!(
+                    "nfpm: write rendered templated_script: {}",
+                    out_path.display()
+                )
+            })?;
+        }
+        Ok(out_path.to_string_lossy().into_owned())
+    };
+    if let Some(ref s) = templated_scripts.preinstall {
+        scripts_out.preinstall = Some(render_and_write("preinstall", s, ctx)?);
+    }
+    if let Some(ref s) = templated_scripts.postinstall {
+        scripts_out.postinstall = Some(render_and_write("postinstall", s, ctx)?);
+    }
+    if let Some(ref s) = templated_scripts.preremove {
+        scripts_out.preremove = Some(render_and_write("preremove", s, ctx)?);
+    }
+    if let Some(ref s) = templated_scripts.postremove {
+        scripts_out.postremove = Some(render_and_write("postremove", s, ctx)?);
+    }
+    Ok(())
+}
+
+/// Fill `deb.arch_variant` from the per-target artifact `amd64_variant`
+/// metadata when the user has not set it explicitly.
+fn fill_deb_arch_variant(
+    rendered_cfg: &mut anodizer_core::config::NfpmConfig,
+    linux_binaries: &[Artifact],
+    target: Option<&str>,
+) {
+    if let Some(ref mut deb) = rendered_cfg.deb
+        && deb.arch_variant.is_none()
+        && let Some(t) = target
+    {
+        let variant = linux_binaries
+            .iter()
+            .find(|b| b.target.as_deref() == Some(t))
+            .and_then(|b| b.metadata.get("amd64_variant").cloned());
+        deb.arch_variant = variant;
+    }
+}
+
+/// Resolve the package name following GoReleaser nfpm.go:68-70 precedence:
+/// explicit `package_name`, then project-level `project_name`, then the
+/// crate name as last-resort fallback.
+fn resolve_pkg_name(
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    project_name: &str,
+    crate_name: &str,
+) -> String {
+    if let Some(n) = nfpm_cfg.package_name.as_deref() {
+        n.to_string()
+    } else if !project_name.is_empty() {
+        project_name.to_string()
+    } else {
+        crate_name.to_string()
+    }
+}
+
+/// Populate per-package template variables (`Os`, `Arch`, `Target`,
+/// `Format`, `PackageName`, `ConventionalExtension`,
+/// `ConventionalFileName`, `Release`, `Epoch`) before rendering the
+/// user's `file_name_template`.
+#[allow(clippy::too_many_arguments)]
+fn set_nfpm_per_pkg_template_vars(
+    ctx: &mut Context,
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    os: &str,
+    arch: &str,
+    target: Option<&str>,
+    format: &str,
+    pkg_name: &str,
+    ext: &str,
+    version: &str,
+) {
+    ctx.template_vars_mut().set("Os", os);
+    ctx.template_vars_mut().set("Arch", arch);
+    ctx.template_vars_mut().set("Target", target.unwrap_or(""));
+    ctx.template_vars_mut().set("Format", format);
+    ctx.template_vars_mut().set("PackageName", pkg_name);
+    ctx.template_vars_mut().set("ConventionalExtension", ext);
+    let fn_info = filename::FileNameInfo::from_config(nfpm_cfg, pkg_name, version, arch);
+    let conventional = filename::conventional_filename(format, &fn_info)
+        .unwrap_or_else(|| format!("{pkg_name}_{version}_{os}_{arch}{ext}"));
+    ctx.template_vars_mut()
+        .set("ConventionalFileName", &conventional);
+    ctx.template_vars_mut()
+        .set("Release", nfpm_cfg.release.as_deref().unwrap_or(""));
+    ctx.template_vars_mut()
+        .set("Epoch", nfpm_cfg.epoch.as_deref().unwrap_or(""));
+}
+
+/// Render `file_name_template` to a concrete filename, appending the
+/// format-specific extension when the rendered template didn't already
+/// end with it. Falls back to the hand-rolled `<name>_<ver>_<os>_<arch>`
+/// pattern when no template is configured.
+#[allow(clippy::too_many_arguments)]
+fn compute_pkg_filename(
+    ctx: &mut Context,
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    crate_name: &str,
+    target: Option<&str>,
+    pkg_name: &str,
+    version: &str,
+    os: &str,
+    arch: &str,
+    ext: &str,
+) -> Result<String> {
+    let pkg_filename = if let Some(tmpl) = &nfpm_cfg.file_name_template {
+        let rendered = ctx.render_template(tmpl).with_context(|| {
+            format!(
+                "nfpm: render file_name_template for crate {} target {:?}",
+                crate_name, target
+            )
+        })?;
+        if !ext.is_empty() && rendered.ends_with(ext) {
+            rendered
+        } else {
+            format!("{rendered}{ext}")
+        }
+    } else {
+        format!("{pkg_name}_{version}_{os}_{arch}{ext}")
+    };
+    Ok(pkg_filename)
+}
+
+/// Build a fully-prepared `NfpmJob`: write the generated YAML into a
+/// per-job tempdir, compose the `nfpm pkg --packager <format>` args, and
+/// pre-parse the user's `mtime` so the parallel worker doesn't touch
+/// `ctx`.
+#[allow(clippy::too_many_arguments)]
+fn build_nfpm_job(
+    ctx: &mut Context,
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    yaml_content: &str,
+    pkg_path: &std::path::Path,
+    format: &str,
+    target: Option<&str>,
+    crate_name: &str,
+    pkg_metadata: HashMap<String, String>,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<NfpmJob> {
+    let tmp_dir = tempfile::tempdir().context("create temp dir for nfpm config")?;
+    let config_path = tmp_dir.path().join("nfpm.yaml");
+    fs::write(&config_path, yaml_content)
+        .with_context(|| format!("write nfpm config to {}", config_path.display()))?;
+
+    let cmd_args = nfpm_command(
+        &config_path.to_string_lossy(),
+        format,
+        &pkg_path.to_string_lossy(),
+    );
+
+    let (mtime, mtime_repr) = if let Some(ref raw_mtime) = nfpm_cfg.mtime {
+        let rendered_mtime = ctx
+            .render_template(raw_mtime)
+            .unwrap_or_else(|_| raw_mtime.clone());
+        match anodizer_core::util::parse_mod_timestamp(&rendered_mtime) {
+            Ok(mt) => (Some(mt), Some(rendered_mtime)),
+            Err(e) => {
+                log.warn(&format!("nfpm: invalid mtime '{rendered_mtime}': {e}"));
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+
+    Ok(NfpmJob {
+        _tmp_dir: tmp_dir,
+        pkg_path: pkg_path.to_path_buf(),
+        format: format.to_string(),
+        cmd_args,
+        mtime,
+        mtime_repr,
+        target: target.map(str::to_string),
+        crate_name: crate_name.to_string(),
+        pkg_metadata,
+    })
+}
+
+/// Clear the per-target + per-packaging template variables once all jobs
+/// have been prepared, so leaked state doesn't reach downstream stages
+/// like `announce` or `publish`.
+fn clear_nfpm_template_vars(ctx: &mut Context) {
+    anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
+    for extra in [
+        "Format",
+        "PackageName",
+        "ConventionalExtension",
+        "ConventionalFileName",
+        "Release",
+        "Epoch",
+    ] {
+        ctx.template_vars_mut().set(extra, "");
+    }
+}
+
+/// Run all prepared nfpm jobs in parallel with bounded concurrency. Each
+/// worker invokes `nfpm pkg`, applies the reproducible-build mtime, and
+/// returns a populated `Artifact` for serial registration by the caller.
+fn execute_nfpm_jobs(
+    jobs: &[NfpmJob],
+    parallelism: usize,
+    verbosity: anodizer_core::log::Verbosity,
+) -> Result<Vec<Artifact>> {
+    let run_job = |job: &NfpmJob| -> Result<Artifact> {
+        let thread_log = anodizer_core::log::StageLogger::new("nfpm", verbosity);
+
+        thread_log.status(&format!("running: {}", job.cmd_args.join(" ")));
+
+        let output = Command::new(&job.cmd_args[0])
+            .args(&job.cmd_args[1..])
+            .output()
+            .with_context(|| {
+                format!(
+                    "execute nfpm for format {} (crate {} target {:?})",
+                    job.format, job.crate_name, job.target
+                )
+            })?;
+        thread_log.check_output(output, "nfpm")?;
+
+        if let Some(mt) = job.mtime {
+            if let Err(e) = anodizer_core::util::set_file_mtime(&job.pkg_path, mt) {
+                thread_log.warn(&format!(
+                    "nfpm: failed to apply mtime to {}: {}",
+                    job.pkg_path.display(),
+                    e
+                ));
+            } else if let Some(ref repr) = job.mtime_repr {
+                thread_log.verbose(&format!(
+                    "nfpm: applied mtime={repr} to {}",
+                    job.pkg_path.display()
+                ));
+            }
+        }
+
+        Ok(Artifact {
+            kind: ArtifactKind::LinuxPackage,
+            name: String::new(),
+            path: job.pkg_path.clone(),
+            target: job.target.clone(),
+            crate_name: job.crate_name.clone(),
+            metadata: job.pkg_metadata.clone(),
+            size: None,
+        })
+    };
+
+    anodizer_core::parallel::run_parallel_chunks(jobs, parallelism, "nfpm", run_job)
 }

@@ -291,114 +291,22 @@ impl Stage for MsiStage {
             for msi_cfg in msi_configs {
                 let msi_id_for_log = msi_cfg.id.as_deref().unwrap_or("default").to_string();
 
-                // GoReleaser Pro `msi.if`: template-conditional skip (opt-in).
-                // Rendered "false"/empty => skip; render error => hard bail (W1 avoidance).
-                if let Some(ref condition) = msi_cfg.if_condition {
-                    let rendered = ctx.render_template(condition).with_context(|| {
-                        format!(
-                            "msi config '{}' for crate '{}': `if` template render failed (expression: {})",
-                            msi_id_for_log, krate.name, condition
-                        )
-                    })?;
-                    let trimmed = rendered.trim();
-                    if trimmed.is_empty() || trimmed == "false" {
-                        log.status(&format!(
-                            "skipping msi config '{}' for crate {}: if condition evaluated to '{}'",
-                            msi_id_for_log, krate.name, trimmed
-                        ));
-                        continue;
-                    }
-                }
-
-                // Skip configs marked skip:
-                if let Some(ref d) = msi_cfg.skip {
-                    let off = d
-                        .try_evaluates_to_true(|s| ctx.render_template(s))
-                        .with_context(|| {
-                            format!("msi: render skip template for crate {}", krate.name)
-                        })?;
-                    if off {
-                        log.status(&format!("MSI config skipped for crate {}", krate.name));
-                        continue;
-                    }
-                }
-
-                // GoReleaser Pro `msi.hooks.before` (alias `pre`): run once per MSI
-                // config before any artifacts are built. Hard-errors on hook failure.
-                if let Some(pre) = msi_cfg.hooks.as_ref().and_then(|h| h.pre.as_ref()) {
-                    let tmpl_vars = ctx.template_vars().clone();
-                    anodizer_core::hooks::run_hooks(
-                        pre,
-                        "pre-msi",
-                        dry_run,
-                        &log,
-                        Some(&tmpl_vars),
-                    )
-                    .with_context(|| {
-                        format!(
-                            "msi config '{}' for crate '{}': pre-msi hooks failed",
-                            msi_id_for_log, krate.name
-                        )
-                    })?;
-                }
-
-                // C2: Apply ids filtering
-                let mut filtered = windows_binaries.clone();
-                if let Some(ref filter_ids) = msi_cfg.ids
-                    && !filter_ids.is_empty()
-                {
-                    filtered.retain(|b| {
-                        b.metadata
-                            .get("id")
-                            .map(|id| filter_ids.contains(id))
-                            .unwrap_or(false)
-                            || b.metadata
-                                .get("name")
-                                .map(|n| filter_ids.contains(n))
-                                .unwrap_or(false)
-                    });
-                }
-
-                // M8 — `goamd64` filter (GR Pro `msi.goamd64: string`).
-                // Mirrors `goreleaser/internal/artifact/artifact.go::ByGoamd64`:
-                // only constrains `amd64` artifacts. Non-amd64 always passes.
-                // Unset `amd64_variant` metadata is treated as `v1`.
-                if let Some(ref want) = msi_cfg.goamd64 {
-                    filtered.retain(|b| {
-                        let target = b.target.as_deref().unwrap_or("");
-                        let (_, arch) = anodizer_core::target::map_target(target);
-                        if arch != "amd64" {
-                            return true;
-                        }
-                        b.metadata
-                            .get("amd64_variant")
-                            .map(String::as_str)
-                            .unwrap_or("v1")
-                            == want
-                    });
-                }
-
-                // I1: Warn instead of silently creating synthetic binary
-                if filtered.is_empty() && windows_binaries.is_empty() {
-                    log.warn(&format!(
-                        "no Windows binary artifacts found for crate '{}'; \
-                         skipping MSI generation (expected binaries targeting windows/msvc)",
-                        krate.name
-                    ));
-                    continue;
-                }
-                if filtered.is_empty() {
-                    log.warn(&format!(
-                        "ids filter {:?} matched no binaries for crate '{}'; skipping",
-                        msi_cfg.ids, krate.name
-                    ));
+                if should_skip_msi_config(
+                    ctx,
+                    msi_cfg,
+                    &msi_id_for_log,
+                    &krate.name,
+                    dry_run,
+                    &log,
+                )? {
                     continue;
                 }
 
-                let effective_binaries: Vec<(Option<String>, String)> = filtered
-                    .iter()
-                    .map(|b| (b.target.clone(), b.path.to_string_lossy().into_owned()))
-                    .collect();
+                let Some(effective_binaries) =
+                    filter_msi_binaries(msi_cfg, &windows_binaries, &krate.name, &log)
+                else {
+                    continue;
+                };
 
                 // Validate wxs is present
                 let wxs_path = msi_cfg.wxs.as_deref().ok_or_else(|| {
@@ -409,123 +317,39 @@ impl Stage for MsiStage {
                 })?;
 
                 for (target, binary_path) in &effective_binaries {
-                    // Derive Os/Arch from the target triple
                     let (_os, arch) = target
                         .as_deref()
                         .map(anodizer_core::target::map_target)
                         .unwrap_or_else(|| ("windows".to_string(), "amd64".to_string()));
-
                     let msi_arch = map_arch_to_msi(&arch).to_string();
 
-                    // Set template vars for this binary
-                    ctx.template_vars_mut().set("Os", "windows");
-                    ctx.template_vars_mut().set("Arch", &arch);
-                    ctx.template_vars_mut()
-                        .set("Target", target.as_deref().unwrap_or(""));
-                    ctx.template_vars_mut().set("MsiArch", &msi_arch);
+                    set_msi_template_vars(ctx, target.as_deref(), &arch, &msi_arch, binary_path);
 
-                    // I3: Expose binary path as template variable
-                    ctx.template_vars_mut().set("BinaryPath", binary_path);
+                    let wix_version = resolve_wix_version(msi_cfg, wxs_path, &log);
 
-                    // Determine WiX version
-                    let wix_version = if let Some(ver_str) = &msi_cfg.version {
-                        WixVersion::from_config_str(ver_str).unwrap_or_else(|| {
-                            log.status(&format!(
-                                "unrecognized WiX version '{}', auto-detecting",
-                                ver_str
-                            ));
-                            // Try reading .wxs content for detection, fall back to tools
-                            fs::read_to_string(wxs_path)
-                                .map(|c| WixVersion::detect_from_wxs(&c))
-                                .unwrap_or_else(|_| WixVersion::detect_from_tools())
-                        })
-                    } else {
-                        // Auto-detect: try .wxs content first, then tools
-                        fs::read_to_string(wxs_path)
-                            .map(|c| WixVersion::detect_from_wxs(&c))
-                            .unwrap_or_else(|_| WixVersion::detect_from_tools())
-                    };
-
-                    // Determine output filename
                     let output_dir = dist.join("windows");
-                    let msi_filename = if let Some(name_tmpl) = &msi_cfg.name {
-                        let rendered = ctx.render_template(name_tmpl).with_context(|| {
-                            format!(
-                                "msi: render name template for crate {} target {:?}",
-                                krate.name, target
-                            )
-                        })?;
-                        // Ensure .msi extension (case-insensitive)
-                        if rendered.to_lowercase().ends_with(".msi") {
-                            rendered
-                        } else {
-                            format!("{rendered}.msi")
-                        }
-                    } else {
-                        format!(
-                            "{}_{}_{}",
-                            ctx.template_vars()
-                                .get("ProjectName")
-                                .cloned()
-                                .unwrap_or_else(|| krate.name.clone()),
-                            version,
-                            msi_arch
-                        ) + ".msi"
-                    };
+                    let msi_filename = compute_msi_filename(
+                        ctx,
+                        msi_cfg,
+                        &krate.name,
+                        target.as_deref(),
+                        &version,
+                        &msi_arch,
+                    )?;
                     let msi_path = output_dir.join(&msi_filename);
 
-                    // Render WiX extensions through the template engine, filtering
-                    // out empty strings (templates that evaluate to nothing).
-                    let rendered_extensions: Vec<String> =
-                        if let Some(ref exts) = msi_cfg.extensions {
-                            exts.iter()
-                                .filter_map(|ext_tmpl| match ctx.render_template(ext_tmpl) {
-                                    Ok(rendered) => {
-                                        let trimmed = rendered.trim().to_string();
-                                        if trimmed.is_empty() {
-                                            None
-                                        } else {
-                                            Some(trimmed)
-                                        }
-                                    }
-                                    Err(e) => {
-                                        log.warn(&format!(
-                                            "failed to render extension template '{}': {}",
-                                            ext_tmpl, e
-                                        ));
-                                        None
-                                    }
-                                })
-                                .collect()
-                        } else {
-                            Vec::new()
-                        };
+                    let rendered_extensions = render_msi_extensions(ctx, msi_cfg, &log);
 
                     if dry_run {
-                        log.status(&format!(
-                            "(dry-run) would build MSI: {} (WiX {:?}) for crate {} target {:?}",
-                            msi_filename, wix_version, krate.name, target
-                        ));
-
-                        // C3: Log mod_timestamp in dry-run mode
-                        if let Some(ts) = &msi_cfg.mod_timestamp {
-                            log.status(&format!("(dry-run) would apply mod_timestamp={ts}"));
-                        }
-
-                        // Log extra_files in dry-run mode
-                        if let Some(ref extras) = msi_cfg.extra_files {
-                            for f in extras {
-                                log.status(&format!(
-                                    "(dry-run) would copy extra file '{f}' to build context"
-                                ));
-                            }
-                        }
-
-                        // Log extensions in dry-run mode
-                        for ext in &rendered_extensions {
-                            log.status(&format!("(dry-run) would add WiX extension: -ext {ext}"));
-                        }
-
+                        log_msi_dry_run(
+                            &log,
+                            &msi_filename,
+                            wix_version,
+                            &krate.name,
+                            target.as_deref(),
+                            msi_cfg,
+                            &rendered_extensions,
+                        );
                         new_artifacts.push(make_msi_artifact(
                             msi_path,
                             target,
@@ -535,123 +359,27 @@ impl Stage for MsiStage {
                             ctx,
                             &mut archives_to_remove,
                         ));
-
                         continue;
                     }
 
-                    // Live mode: create output directory
                     fs::create_dir_all(&output_dir).with_context(|| {
                         format!("msi: create output dir: {}", output_dir.display())
                     })?;
 
-                    // Read and render the .wxs template
-                    let rendered_wxs = render_wxs_template(ctx, wxs_path)?;
+                    let (tmp_dir, rendered_wxs_path) =
+                        prepare_wxs_build_context(ctx, msi_cfg, wxs_path, &log)?;
 
-                    // Write rendered .wxs to temp dir
-                    let tmp_dir = tempfile::tempdir().context("msi: create temp dir for .wxs")?;
-                    let rendered_wxs_path = tmp_dir.path().join("rendered.wxs");
-                    fs::write(&rendered_wxs_path, &rendered_wxs).with_context(|| {
-                        format!(
-                            "msi: write rendered .wxs to {}",
-                            rendered_wxs_path.display()
-                        )
-                    })?;
-
-                    // Copy extra_files into the temp/build context directory
-                    if let Some(ref extras) = msi_cfg.extra_files {
-                        for filename in extras {
-                            let src = PathBuf::from(filename);
-                            if !src.exists() {
-                                anyhow::bail!("msi: extra_file '{}' does not exist", filename);
-                            }
-                            let dest_name = src
-                                .file_name()
-                                .unwrap_or_else(|| std::ffi::OsStr::new(filename));
-                            let dest = tmp_dir.path().join(dest_name);
-                            fs::copy(&src, &dest).with_context(|| {
-                                format!(
-                                    "msi: copy extra file '{}' to build context '{}'",
-                                    filename,
-                                    dest.display()
-                                )
-                            })?;
-                            log.status(&format!(
-                                "copied extra file '{}' to build context",
-                                filename
-                            ));
-                        }
-                    }
-
-                    // C3: Apply mod_timestamp to rendered .wxs if set
-                    if let Some(ts) = &msi_cfg.mod_timestamp {
-                        log.status(&format!("applying mod_timestamp={ts} to rendered .wxs"));
-                        let mtime = parse_mod_timestamp(ts)?;
-                        set_file_mtime(&rendered_wxs_path, mtime)?;
-                    }
-
-                    // Build commands
-                    let mut commands = msi_command(
+                    execute_msi_build(
                         wix_version,
-                        &rendered_wxs_path.to_string_lossy(),
-                        &msi_path.to_string_lossy(),
+                        msi_cfg,
+                        &rendered_wxs_path,
+                        &msi_path,
                         &rendered_extensions,
-                    );
-
-                    // C3: For WiX v4, add -d BindTimestamp={ts} if mod_timestamp is set
-                    if let Some(ts) = &msi_cfg.mod_timestamp {
-                        match wix_version {
-                            WixVersion::V4 => {
-                                commands.primary.push("-d".to_string());
-                                commands.primary.push(format!("BindTimestamp={ts}"));
-                            }
-                            WixVersion::V3 => {
-                                log.status(&format!(
-                                    "note: mod_timestamp={ts} noted; WiX v3 has limited \
-                                     timestamp support (applied to .wxs and output .msi)"
-                                ));
-                            }
-                        }
-                    }
-
-                    // Execute primary command
-                    log.status(&format!("running: {}", commands.primary.join(" ")));
-                    let output = Command::new(&commands.primary[0])
-                        .args(&commands.primary[1..])
-                        .output()
-                        .with_context(|| {
-                            format!(
-                                "msi: execute {} for crate {} target {:?}",
-                                commands.primary[0], krate.name, target
-                            )
-                        })?;
-                    log.check_output(output, &commands.primary[0])?;
-
-                    // Execute link command if V3
-                    if let Some(link_cmd) = &commands.link {
-                        log.status(&format!("running: {}", link_cmd.join(" ")));
-                        let output = Command::new(&link_cmd[0])
-                            .args(&link_cmd[1..])
-                            .output()
-                            .with_context(|| {
-                                format!(
-                                    "msi: execute {} for crate {} target {:?}",
-                                    link_cmd[0], krate.name, target
-                                )
-                            })?;
-                        log.check_output(output, &link_cmd[0])?;
-                    }
-
-                    // C3: Apply mod_timestamp to output .msi if set
-                    if let Some(ts) = &msi_cfg.mod_timestamp
-                        && msi_path.exists()
-                    {
-                        let mtime = parse_mod_timestamp(ts)?;
-                        set_file_mtime(&msi_path, mtime)?;
-                        log.status(&format!(
-                            "applied mod_timestamp={ts} to {}",
-                            msi_path.display()
-                        ));
-                    }
+                        &krate.name,
+                        target.as_deref(),
+                        &log,
+                    )?;
+                    drop(tmp_dir);
 
                     new_artifacts.push(make_msi_artifact(
                         msi_path,
@@ -664,33 +392,20 @@ impl Stage for MsiStage {
                     ));
                 }
 
-                // GoReleaser Pro `msi.hooks.after` (alias `post`): run once per MSI
-                // config after all artifacts are built. Hard-errors on hook failure.
-                if let Some(post) = msi_cfg.hooks.as_ref().and_then(|h| h.post.as_ref()) {
-                    let tmpl_vars = ctx.template_vars().clone();
-                    anodizer_core::hooks::run_hooks(
-                        post,
-                        "post-msi",
-                        dry_run,
-                        &log,
-                        Some(&tmpl_vars),
-                    )
-                    .with_context(|| {
-                        format!(
-                            "msi config '{}' for crate '{}': post-msi hooks failed",
-                            msi_id_for_log, krate.name
-                        )
-                    })?;
-                }
+                run_msi_hook(
+                    ctx,
+                    msi_cfg.hooks.as_ref().and_then(|h| h.post.as_ref()),
+                    "post-msi",
+                    &msi_id_for_log,
+                    &krate.name,
+                    dry_run,
+                    &log,
+                )?;
             }
         }
 
-        // Clear per-target template vars so they don't leak to downstream stages.
-        ctx.template_vars_mut().set("Os", "");
-        ctx.template_vars_mut().set("Arch", "");
-        ctx.template_vars_mut().set("Target", "");
+        clear_msi_template_vars(ctx);
 
-        // Remove replaced archive artifacts
         if !archives_to_remove.is_empty() {
             ctx.artifacts.remove_by_paths(&archives_to_remove);
         }
@@ -701,6 +416,425 @@ impl Stage for MsiStage {
 
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Private helpers — sliced out of `MsiStage::run` to keep the body short.
+// ---------------------------------------------------------------------------
+
+/// Evaluate per-config skip predicates (`if`, `skip`) and run the
+/// `hooks.before` / `pre` lifecycle hooks. Returns `Ok(true)` when the
+/// caller should `continue` (skip this config).
+fn should_skip_msi_config(
+    ctx: &mut Context,
+    msi_cfg: &anodizer_core::config::MsiConfig,
+    msi_id_for_log: &str,
+    crate_name: &str,
+    dry_run: bool,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<bool> {
+    if let Some(ref condition) = msi_cfg.if_condition {
+        let rendered = ctx.render_template(condition).with_context(|| {
+            format!(
+                "msi config '{}' for crate '{}': `if` template render failed (expression: {})",
+                msi_id_for_log, crate_name, condition
+            )
+        })?;
+        let trimmed = rendered.trim();
+        if trimmed.is_empty() || trimmed == "false" {
+            log.status(&format!(
+                "skipping msi config '{}' for crate {}: if condition evaluated to '{}'",
+                msi_id_for_log, crate_name, trimmed
+            ));
+            return Ok(true);
+        }
+    }
+
+    if let Some(ref d) = msi_cfg.skip {
+        let off = d
+            .try_evaluates_to_true(|s| ctx.render_template(s))
+            .with_context(|| format!("msi: render skip template for crate {}", crate_name))?;
+        if off {
+            log.status(&format!("MSI config skipped for crate {}", crate_name));
+            return Ok(true);
+        }
+    }
+
+    run_msi_hook(
+        ctx,
+        msi_cfg.hooks.as_ref().and_then(|h| h.pre.as_ref()),
+        "pre-msi",
+        msi_id_for_log,
+        crate_name,
+        dry_run,
+        log,
+    )?;
+
+    Ok(false)
+}
+
+/// Apply the ids + goamd64 filters to the collected Windows binaries.
+/// Returns `Some` with `(target, binary_path)` pairs to drive the per-target
+/// build, or `None` when the caller should `continue` (no matching binaries).
+fn filter_msi_binaries(
+    msi_cfg: &anodizer_core::config::MsiConfig,
+    windows_binaries: &[Artifact],
+    crate_name: &str,
+    log: &anodizer_core::log::StageLogger,
+) -> Option<Vec<(Option<String>, String)>> {
+    let mut filtered: Vec<&Artifact> = windows_binaries.iter().collect();
+
+    if let Some(ref filter_ids) = msi_cfg.ids
+        && !filter_ids.is_empty()
+    {
+        filtered.retain(|b| {
+            b.metadata
+                .get("id")
+                .map(|id| filter_ids.contains(id))
+                .unwrap_or(false)
+                || b.metadata
+                    .get("name")
+                    .map(|n| filter_ids.contains(n))
+                    .unwrap_or(false)
+        });
+    }
+
+    if let Some(ref want) = msi_cfg.goamd64 {
+        filtered.retain(|b| {
+            let target = b.target.as_deref().unwrap_or("");
+            let (_, arch) = anodizer_core::target::map_target(target);
+            if arch != "amd64" {
+                return true;
+            }
+            b.metadata
+                .get("amd64_variant")
+                .map(String::as_str)
+                .unwrap_or("v1")
+                == want
+        });
+    }
+
+    if filtered.is_empty() && windows_binaries.is_empty() {
+        log.warn(&format!(
+            "no Windows binary artifacts found for crate '{}'; \
+             skipping MSI generation (expected binaries targeting windows/msvc)",
+            crate_name
+        ));
+        return None;
+    }
+    if filtered.is_empty() {
+        log.warn(&format!(
+            "ids filter {:?} matched no binaries for crate '{}'; skipping",
+            msi_cfg.ids, crate_name
+        ));
+        return None;
+    }
+
+    Some(
+        filtered
+            .into_iter()
+            .map(|b| (b.target.clone(), b.path.to_string_lossy().into_owned()))
+            .collect(),
+    )
+}
+
+/// Populate per-binary template variables. `BinaryPath` exposes the path
+/// to user `.wxs` templates (I3).
+fn set_msi_template_vars(
+    ctx: &mut Context,
+    target: Option<&str>,
+    arch: &str,
+    msi_arch: &str,
+    binary_path: &str,
+) {
+    ctx.template_vars_mut().set("Os", "windows");
+    ctx.template_vars_mut().set("Arch", arch);
+    ctx.template_vars_mut().set("Target", target.unwrap_or(""));
+    ctx.template_vars_mut().set("MsiArch", msi_arch);
+    ctx.template_vars_mut().set("BinaryPath", binary_path);
+}
+
+/// Determine the WiX toolchain version: explicit `version:` config wins,
+/// otherwise sniff the `.wxs` namespace, otherwise probe installed tools.
+fn resolve_wix_version(
+    msi_cfg: &anodizer_core::config::MsiConfig,
+    wxs_path: &str,
+    log: &anodizer_core::log::StageLogger,
+) -> WixVersion {
+    let detect_from_wxs_or_tools = || {
+        fs::read_to_string(wxs_path)
+            .map(|c| WixVersion::detect_from_wxs(&c))
+            .unwrap_or_else(|_| WixVersion::detect_from_tools())
+    };
+    if let Some(ver_str) = &msi_cfg.version {
+        WixVersion::from_config_str(ver_str).unwrap_or_else(|| {
+            log.status(&format!(
+                "unrecognized WiX version '{}', auto-detecting",
+                ver_str
+            ));
+            detect_from_wxs_or_tools()
+        })
+    } else {
+        detect_from_wxs_or_tools()
+    }
+}
+
+/// Resolve the output `.msi` filename: rendered `name:` template wins
+/// (auto-appending `.msi` when absent), otherwise
+/// `<ProjectName>_<version>_<msi_arch>.msi`.
+fn compute_msi_filename(
+    ctx: &mut Context,
+    msi_cfg: &anodizer_core::config::MsiConfig,
+    crate_name: &str,
+    target: Option<&str>,
+    version: &str,
+    msi_arch: &str,
+) -> Result<String> {
+    if let Some(name_tmpl) = &msi_cfg.name {
+        let rendered = ctx.render_template(name_tmpl).with_context(|| {
+            format!(
+                "msi: render name template for crate {} target {:?}",
+                crate_name, target
+            )
+        })?;
+        if rendered.to_lowercase().ends_with(".msi") {
+            Ok(rendered)
+        } else {
+            Ok(format!("{rendered}.msi"))
+        }
+    } else {
+        let project_name = ctx
+            .template_vars()
+            .get("ProjectName")
+            .cloned()
+            .unwrap_or_else(|| crate_name.to_string());
+        Ok(format!("{project_name}_{version}_{msi_arch}.msi"))
+    }
+}
+
+/// Render each `extensions:` template entry through Tera, dropping empties
+/// and logging (but not erroring on) per-entry render failures.
+fn render_msi_extensions(
+    ctx: &mut Context,
+    msi_cfg: &anodizer_core::config::MsiConfig,
+    log: &anodizer_core::log::StageLogger,
+) -> Vec<String> {
+    let Some(exts) = msi_cfg.extensions.as_ref() else {
+        return Vec::new();
+    };
+    exts.iter()
+        .filter_map(|ext_tmpl| match ctx.render_template(ext_tmpl) {
+            Ok(rendered) => {
+                let trimmed = rendered.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }
+            Err(e) => {
+                log.warn(&format!(
+                    "failed to render extension template '{}': {}",
+                    ext_tmpl, e
+                ));
+                None
+            }
+        })
+        .collect()
+}
+
+/// Emit the dry-run logging for a planned MSI build: the headline build
+/// line, any `mod_timestamp:`, `extra_files:`, and `extensions:` entries
+/// that would be applied.
+fn log_msi_dry_run(
+    log: &anodizer_core::log::StageLogger,
+    msi_filename: &str,
+    wix_version: WixVersion,
+    crate_name: &str,
+    target: Option<&str>,
+    msi_cfg: &anodizer_core::config::MsiConfig,
+    rendered_extensions: &[String],
+) {
+    log.status(&format!(
+        "(dry-run) would build MSI: {} (WiX {:?}) for crate {} target {:?}",
+        msi_filename, wix_version, crate_name, target
+    ));
+    if let Some(ts) = &msi_cfg.mod_timestamp {
+        log.status(&format!("(dry-run) would apply mod_timestamp={ts}"));
+    }
+    if let Some(ref extras) = msi_cfg.extra_files {
+        for f in extras {
+            log.status(&format!(
+                "(dry-run) would copy extra file '{f}' to build context"
+            ));
+        }
+    }
+    for ext in rendered_extensions {
+        log.status(&format!("(dry-run) would add WiX extension: -ext {ext}"));
+    }
+}
+
+/// Render the `.wxs` template, write it into a fresh tempdir, copy any
+/// configured `extra_files:` next to it, and apply the rendered file's
+/// `mod_timestamp:` mtime. Returns the tempdir handle (which must outlive
+/// the build) and the path to the rendered `.wxs`.
+fn prepare_wxs_build_context(
+    ctx: &Context,
+    msi_cfg: &anodizer_core::config::MsiConfig,
+    wxs_path: &str,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<(tempfile::TempDir, PathBuf)> {
+    let rendered_wxs = render_wxs_template(ctx, wxs_path)?;
+
+    let tmp_dir = tempfile::tempdir().context("msi: create temp dir for .wxs")?;
+    let rendered_wxs_path = tmp_dir.path().join("rendered.wxs");
+    fs::write(&rendered_wxs_path, &rendered_wxs).with_context(|| {
+        format!(
+            "msi: write rendered .wxs to {}",
+            rendered_wxs_path.display()
+        )
+    })?;
+
+    if let Some(ref extras) = msi_cfg.extra_files {
+        for filename in extras {
+            let src = PathBuf::from(filename);
+            if !src.exists() {
+                anyhow::bail!("msi: extra_file '{}' does not exist", filename);
+            }
+            let dest_name = src
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new(filename));
+            let dest = tmp_dir.path().join(dest_name);
+            fs::copy(&src, &dest).with_context(|| {
+                format!(
+                    "msi: copy extra file '{}' to build context '{}'",
+                    filename,
+                    dest.display()
+                )
+            })?;
+            log.status(&format!(
+                "copied extra file '{}' to build context",
+                filename
+            ));
+        }
+    }
+
+    if let Some(ts) = &msi_cfg.mod_timestamp {
+        log.status(&format!("applying mod_timestamp={ts} to rendered .wxs"));
+        let mtime = parse_mod_timestamp(ts)?;
+        set_file_mtime(&rendered_wxs_path, mtime)?;
+    }
+
+    Ok((tmp_dir, rendered_wxs_path))
+}
+
+/// Compose and execute the WiX build commands (primary + optional link
+/// step for v3), then apply `mod_timestamp:` to the resulting `.msi`. The
+/// `-d BindTimestamp=<ts>` flag is appended for v4 builds; v3 logs the
+/// limitation but otherwise mtime-stamps the same way.
+#[allow(clippy::too_many_arguments)]
+fn execute_msi_build(
+    wix_version: WixVersion,
+    msi_cfg: &anodizer_core::config::MsiConfig,
+    rendered_wxs_path: &std::path::Path,
+    msi_path: &std::path::Path,
+    rendered_extensions: &[String],
+    crate_name: &str,
+    target: Option<&str>,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<()> {
+    let mut commands = msi_command(
+        wix_version,
+        &rendered_wxs_path.to_string_lossy(),
+        &msi_path.to_string_lossy(),
+        rendered_extensions,
+    );
+
+    if let Some(ts) = &msi_cfg.mod_timestamp {
+        match wix_version {
+            WixVersion::V4 => {
+                commands.primary.push("-d".to_string());
+                commands.primary.push(format!("BindTimestamp={ts}"));
+            }
+            WixVersion::V3 => {
+                log.status(&format!(
+                    "note: mod_timestamp={ts} noted; WiX v3 has limited \
+                     timestamp support (applied to .wxs and output .msi)"
+                ));
+            }
+        }
+    }
+
+    log.status(&format!("running: {}", commands.primary.join(" ")));
+    let output = Command::new(&commands.primary[0])
+        .args(&commands.primary[1..])
+        .output()
+        .with_context(|| {
+            format!(
+                "msi: execute {} for crate {} target {:?}",
+                commands.primary[0], crate_name, target
+            )
+        })?;
+    log.check_output(output, &commands.primary[0])?;
+
+    if let Some(link_cmd) = &commands.link {
+        log.status(&format!("running: {}", link_cmd.join(" ")));
+        let output = Command::new(&link_cmd[0])
+            .args(&link_cmd[1..])
+            .output()
+            .with_context(|| {
+                format!(
+                    "msi: execute {} for crate {} target {:?}",
+                    link_cmd[0], crate_name, target
+                )
+            })?;
+        log.check_output(output, &link_cmd[0])?;
+    }
+
+    if let Some(ts) = &msi_cfg.mod_timestamp
+        && msi_path.exists()
+    {
+        let mtime = parse_mod_timestamp(ts)?;
+        set_file_mtime(msi_path, mtime)?;
+        log.status(&format!(
+            "applied mod_timestamp={ts} to {}",
+            msi_path.display()
+        ));
+    }
+
+    Ok(())
+}
+
+/// Run a single pre- or post-MSI hook chain with the current template-var
+/// snapshot. `kind` is either "pre-msi" or "post-msi" and surfaces in the
+/// error context (and is forwarded to the underlying hook runner).
+fn run_msi_hook(
+    ctx: &Context,
+    hook: Option<&Vec<anodizer_core::config::HookEntry>>,
+    kind: &'static str,
+    msi_id_for_log: &str,
+    crate_name: &str,
+    dry_run: bool,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<()> {
+    let Some(hook) = hook else {
+        return Ok(());
+    };
+    let tmpl_vars = ctx.template_vars().clone();
+    anodizer_core::hooks::run_hooks(hook, kind, dry_run, log, Some(&tmpl_vars)).with_context(|| {
+        format!(
+            "msi config '{}' for crate '{}': {} hooks failed",
+            msi_id_for_log, crate_name, kind
+        )
+    })
+}
+
+/// Clear the per-target template vars on stage exit so they don't leak
+/// into downstream stages (`announce`, `publish`).
+fn clear_msi_template_vars(ctx: &mut Context) {
+    ctx.template_vars_mut().set("Os", "");
+    ctx.template_vars_mut().set("Arch", "");
+    ctx.template_vars_mut().set("Target", "");
 }
 
 // ---------------------------------------------------------------------------
