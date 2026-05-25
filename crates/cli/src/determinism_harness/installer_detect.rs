@@ -103,14 +103,28 @@ pub(super) fn is_installer_stage(stage: StageId) -> bool {
 /// available" — the stage's backing `Command::new` would have hit
 /// the same outcome at pipeline-execution time.
 pub(super) fn filter_available_installer_stages(requested: &[StageId]) -> InstallerToolGate {
+    filter_available_with_probe(requested, |tool| tool_available(tool).unwrap_or(false))
+}
+
+/// Inner partition function with an injectable probe. Behavioral tests
+/// pass a stub to verify the "tool missing => stage lands in
+/// `skipped`" contract without depending on what's installed on the
+/// runner.
+fn filter_available_with_probe<P>(requested: &[StageId], probe: P) -> InstallerToolGate
+where
+    P: Fn(&str) -> bool,
+{
     let mut gate = InstallerToolGate::default();
     for &stage in requested {
         match stage_primary_tool(stage) {
             None => gate.available.push(stage),
-            Some(tool) => match tool_available(tool) {
-                Ok(true) => gate.available.push(stage),
-                Ok(false) | Err(_) => gate.skipped.push((stage, tool)),
-            },
+            Some(tool) => {
+                if probe(tool) {
+                    gate.available.push(stage);
+                } else {
+                    gate.skipped.push((stage, tool));
+                }
+            }
         }
     }
     gate
@@ -142,12 +156,10 @@ mod tests {
     }
 
     #[test]
-    fn missing_installer_tool_lands_in_skipped() {
-        // Force a stage whose primary tool will not resolve on this host
-        // by stubbing `stage_primary_tool` through a wrapper. The simplest
-        // form: pick an installer stage and check that AT LEAST ONE of
-        // available / skipped is populated, so the function returns a
-        // well-formed gate regardless of the runner's tool set.
+    fn well_formed_partition_on_every_requested_stage() {
+        // Structural invariant: every requested stage must land in
+        // exactly one of `available` or `skipped`. Independent of host
+        // tool set.
         let req = installer_stages();
         let gate = filter_available_installer_stages(&req);
         assert_eq!(
@@ -163,6 +175,54 @@ mod tests {
             );
             assert!(!tool.is_empty(), "missing-tool name must be non-empty");
         }
+    }
+
+    #[test]
+    fn missing_tool_routes_every_installer_to_skipped() {
+        // Behavioral contract: with an always-false probe (every tool
+        // missing), every installer stage must land in `skipped` paired
+        // with its expected primary-tool name. Non-installer stages
+        // must still pass through to `available`.
+        let req = vec![
+            StageId::Build, // pass-through (no primary tool)
+            StageId::Nfpm,
+            StageId::Makeself,
+            StageId::Msi,
+            StageId::Dmg,
+            StageId::Archive, // pass-through
+        ];
+        let gate = filter_available_with_probe(&req, |_| false);
+        assert_eq!(
+            gate.available,
+            vec![StageId::Build, StageId::Archive],
+            "non-installer stages must pass through even with missing probe"
+        );
+        let skipped_stages: Vec<StageId> = gate.skipped.iter().map(|(s, _)| *s).collect();
+        assert_eq!(
+            skipped_stages,
+            vec![StageId::Nfpm, StageId::Makeself, StageId::Msi, StageId::Dmg],
+            "installer stages must land in `skipped` when their tool is missing"
+        );
+        let dmg_tool = if cfg!(target_os = "macos") {
+            "hdiutil"
+        } else {
+            "mkisofs"
+        };
+        assert_eq!(
+            gate.skipped.iter().map(|(_, t)| *t).collect::<Vec<_>>(),
+            vec!["nfpm", "makeself", "wix", dmg_tool],
+            "each skipped entry must carry its primary-tool name"
+        );
+    }
+
+    #[test]
+    fn present_tool_routes_every_installer_to_available() {
+        // Behavioral contract: with an always-true probe (every tool
+        // installed), every installer stage must land in `available`.
+        let req = installer_stages();
+        let gate = filter_available_with_probe(&req, |_| true);
+        assert_eq!(gate.available, req);
+        assert!(gate.skipped.is_empty());
     }
 
     #[test]

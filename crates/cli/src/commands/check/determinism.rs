@@ -225,11 +225,10 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
             // individual member) doesn't list `msi` twice in
             // `stages_under_test`. The first mention wins, matching
             // the operator's typed intent.
-            let mut seen: std::collections::BTreeSet<&'static str> =
-                std::collections::BTreeSet::new();
+            let mut seen: std::collections::HashSet<StageId> = std::collections::HashSet::new();
             let mut deduped: Vec<StageId> = Vec::with_capacity(parsed.len());
             for stage in parsed {
-                if seen.insert(stage.as_str()) {
+                if seen.insert(stage) {
                     deduped.push(stage);
                 }
             }
