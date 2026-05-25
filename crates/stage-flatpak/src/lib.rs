@@ -567,6 +567,25 @@ enum BinaryOutcome {
 
 /// Stage one `(target, binary, flatpak_arch)` triple for a given flatpak
 /// config: render templates, build the manifest, and either prepare the
+/// Resolved per-cfg identity fields (the four mandatory PKGBUILD-equivalent
+/// strings) passed to the per-binary iteration. Bundled to keep the helper's
+/// signature under clippy's 7-arg threshold.
+struct FlatpakIdentity<'a> {
+    app_id: &'a str,
+    runtime: &'a str,
+    runtime_version: &'a str,
+    sdk: &'a str,
+}
+
+/// Mutable accumulators threaded through the per-crate / per-cfg loop. The
+/// caller seeds empty vectors before the loop and inspects them after; the
+/// helpers append to whichever vector matches the per-binary outcome.
+struct FlatpakAccumulators<'a> {
+    new_artifacts: &'a mut Vec<Artifact>,
+    jobs: &'a mut Vec<FlatpakJob>,
+    archives_to_remove: &'a mut Vec<PathBuf>,
+}
+
 /// dry-run artifact or the live `FlatpakJob`. The caller is responsible for
 /// collecting `archives_to_remove` entries from `flatpak_cfg.replace`; this
 /// helper performs the lookup against `ctx.artifacts` in both branches via
@@ -578,10 +597,7 @@ fn process_binary_iteration(
     dist: &std::path::Path,
     krate: &anodizer_core::config::CrateConfig,
     flatpak_cfg: &anodizer_core::config::FlatpakConfig,
-    app_id: &str,
-    runtime: &str,
-    runtime_version: &str,
-    sdk: &str,
+    identity: &FlatpakIdentity<'_>,
     version: &str,
     target: &Option<String>,
     binary_path: &std::path::Path,
@@ -618,10 +634,10 @@ fn process_binary_iteration(
     };
 
     let manifest = build_manifest(
-        app_id,
-        runtime,
-        runtime_version,
-        sdk,
+        identity.app_id,
+        identity.runtime,
+        identity.runtime_version,
+        identity.sdk,
         command,
         finish_args,
         binary_name,
@@ -655,11 +671,11 @@ fn process_binary_iteration(
         binary_path,
         binary_name,
         &manifest,
-        app_id,
+        identity.app_id,
     )?;
 
     let (builder_args, bundle_args) =
-        build_subprocess_args(app_id, version, flatpak_arch, &output_path);
+        build_subprocess_args(identity.app_id, version, flatpak_arch, &output_path);
 
     archives_to_remove.extend(anodizer_core::util::collect_if_replace(
         flatpak_cfg.replace,
@@ -695,9 +711,7 @@ fn process_flatpak_cfg(
     linux_binaries: &[Artifact],
     version: &str,
     dry_run: bool,
-    new_artifacts: &mut Vec<Artifact>,
-    jobs: &mut Vec<FlatpakJob>,
-    archives_to_remove: &mut Vec<PathBuf>,
+    acc: &mut FlatpakAccumulators<'_>,
 ) -> Result<()> {
     if let Some(ref d) = flatpak_cfg.skip {
         let off = d
@@ -711,6 +725,12 @@ fn process_flatpak_cfg(
 
     let (app_id, runtime, runtime_version, sdk) =
         validate_flatpak_required_fields(flatpak_cfg, &krate.name)?;
+    let identity = FlatpakIdentity {
+        app_id,
+        runtime,
+        runtime_version,
+        sdk,
+    };
 
     let mut filtered = linux_binaries.to_vec();
     filter_binaries_by_ids(&mut filtered, flatpak_cfg.ids.as_ref());
@@ -747,20 +767,17 @@ fn process_flatpak_cfg(
             dist,
             krate,
             flatpak_cfg,
-            app_id,
-            runtime,
-            runtime_version,
-            sdk,
+            &identity,
             version,
             target,
             binary_path,
             flatpak_arch,
             dry_run,
-            archives_to_remove,
+            acc.archives_to_remove,
         )?;
         match outcome {
-            BinaryOutcome::DryRun(artifact) => new_artifacts.push(artifact),
-            BinaryOutcome::Job(job) => jobs.push(job),
+            BinaryOutcome::DryRun(artifact) => acc.new_artifacts.push(artifact),
+            BinaryOutcome::Job(job) => acc.jobs.push(job),
         }
     }
 
@@ -806,6 +823,11 @@ impl Stage for FlatpakStage {
             let linux_binaries = collect_linux_binaries(ctx, &krate.name);
 
             for flatpak_cfg in flatpak_configs {
+                let mut acc = FlatpakAccumulators {
+                    new_artifacts: &mut new_artifacts,
+                    jobs: &mut jobs,
+                    archives_to_remove: &mut archives_to_remove,
+                };
                 process_flatpak_cfg(
                     ctx,
                     &log,
@@ -815,9 +837,7 @@ impl Stage for FlatpakStage {
                     &linux_binaries,
                     &version,
                     dry_run,
-                    &mut new_artifacts,
-                    &mut jobs,
-                    &mut archives_to_remove,
+                    &mut acc,
                 )?;
             }
         }
