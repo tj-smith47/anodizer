@@ -8,6 +8,7 @@
 use anodizer_core::artifact::matches_id_filter;
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
+use anyhow::{Result, bail};
 
 // ---------------------------------------------------------------------------
 // OS / architecture inference from target triples
@@ -52,6 +53,7 @@ pub(crate) fn infer_arch(target: &str) -> String {
 }
 
 /// Describes the OS + architecture of an artifact match.
+#[derive(Debug)]
 pub(crate) struct OsArtifact {
     pub url: String,
     pub sha256: String,
@@ -81,13 +83,21 @@ pub(crate) struct OsArtifact {
 ///
 /// `os_fallback` is used when the OS cannot be determined from the target
 /// triple (e.g. when calling with a known OS needle).
-fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
+fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> Result<OsArtifact> {
     let url = a
         .metadata
         .get("url")
         .cloned()
         .unwrap_or_else(|| a.path.to_string_lossy().into_owned());
     let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
+    if sha256.is_empty() {
+        bail!(
+            "artifact '{}' (target={}) has missing sha256 metadata \
+             — ensure the checksum stage runs before publish",
+            a.path.display(),
+            a.target.as_deref().unwrap_or("<none>"),
+        );
+    }
     let id = a.metadata.get("id").cloned();
     let amd64_variant = a.metadata.get("amd64_variant").cloned();
     let arm_variant = a.metadata.get("arm_variant").cloned();
@@ -100,7 +110,7 @@ fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
         .into_iter()
         .next()
         .or_else(|| a.metadata.get("binary").cloned());
-    OsArtifact {
+    Ok(OsArtifact {
         url,
         sha256,
         os: infer_os(target, os_fallback),
@@ -109,7 +119,7 @@ fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
         amd64_variant,
         arm_variant,
         binary,
-    }
+    })
 }
 
 /// Filter artifacts by IDs using the canonical `matches_id_filter` semantics.
@@ -135,7 +145,7 @@ pub(crate) fn find_artifacts_by_os_with_variant(
     ids: Option<&[String]>,
     amd64_variant: Option<&str>,
     arm_variant: Option<&str>,
-) -> Vec<OsArtifact> {
+) -> Result<Vec<OsArtifact>> {
     // Include both Archive and UploadableBinary artifacts — GoReleaser
     // supports both UploadableArchive and UploadableBinary types for publisher
     // packages. Use UploadableBinary (not Binary) so raw build outputs
@@ -167,8 +177,8 @@ pub(crate) fn find_artifacts_by_os_with_variant(
                     .contains(os_needle)
         })
         .map(|a| artifact_to_os_artifact(a, os_needle))
-        .collect();
-    filter_by_variant(os_artifacts, amd64_variant, arm_variant)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(filter_by_variant(os_artifacts, amd64_variant, arm_variant))
 }
 
 /// Find all platform artifacts with optional amd64_variant/arm_variant microarchitecture
@@ -183,7 +193,7 @@ pub(crate) fn find_all_platform_artifacts_with_variant(
     ids: Option<&[String]>,
     amd64_variant: Option<&str>,
     arm_variant: Option<&str>,
-) -> Vec<OsArtifact> {
+) -> Result<Vec<OsArtifact>> {
     let mut all = ctx
         .artifacts
         .by_kind_and_crate(ArtifactKind::Archive, crate_name);
@@ -201,8 +211,8 @@ pub(crate) fn find_all_platform_artifacts_with_variant(
     let os_artifacts: Vec<OsArtifact> = filtered
         .into_iter()
         .map(|a| artifact_to_os_artifact(a, "unknown"))
-        .collect();
-    filter_by_variant(os_artifacts, amd64_variant, arm_variant)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(filter_by_variant(os_artifacts, amd64_variant, arm_variant))
 }
 
 /// Filter a vec of `OsArtifact` by amd64_variant/arm_variant microarchitecture variants.

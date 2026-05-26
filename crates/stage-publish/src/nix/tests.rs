@@ -744,16 +744,16 @@ fn nix_sha256_empty_metadata_bails_with_actionable_error() {
     let err = publish_to_nix(&mut ctx, "mytool", &nix_log()).expect_err("missing sha256 must bail");
     let msg = format!("{err:#}");
     assert!(
-        msg.contains("nix:") && msg.contains("sha256"),
-        "error must name publisher + field; got: {msg}"
+        msg.contains("missing sha256 metadata"),
+        "error must mention missing sha256; got: {msg}"
     );
     assert!(
         msg.contains("mytool"),
         "error must name the offending crate; got: {msg}"
     );
     assert!(
-        msg.contains("dist/artifacts.json") || msg.contains("re-run"),
-        "error must include a next-step hint; got: {msg}"
+        msg.contains("checksum stage"),
+        "error must mention the checksum stage; got: {msg}"
     );
 }
 

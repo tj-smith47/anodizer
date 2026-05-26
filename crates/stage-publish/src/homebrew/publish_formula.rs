@@ -232,7 +232,7 @@ fn collect_archive_entries(
             }
             true
         })
-        .filter_map(|a| {
+        .map(|a| {
             let target = a.target.as_deref().unwrap_or("");
             // When url_template is set, render it to produce the download URL;
             // otherwise use the artifact metadata URL (from the release stage).
@@ -240,16 +240,39 @@ fn collect_archive_entries(
                 let (os, arch) = anodizer_core::target::map_target(target);
                 crate::util::render_url_template_with_ctx(ctx, tmpl, a.name(), version, &arch, &os)
             } else {
-                a.metadata.get("url")?.to_string()
+                a.metadata
+                    .get("url")
+                    .map(|v| v.to_string())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "homebrew formula: artifact '{}' is missing 'url' metadata — \
+                             ensure the release stage ran successfully and populated \
+                             dist/artifacts.json",
+                            a.name()
+                        )
+                    })?
             };
-            let sha256 = a.metadata.get("sha256")?.to_string();
+            let sha256 = a
+                .metadata
+                .get("sha256")
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "homebrew formula: artifact '{}' is missing sha256 metadata — \
+                         ensure the checksum stage ran before the publish stage; \
+                         without a valid sha256 the generated formula would fail \
+                         `brew audit`",
+                        a.name()
+                    )
+                })?;
             // `format` feeds the multi-archive disambiguator (prefers .tar.gz
             // > tgz). Empty value just demotes this entry to lowest preference;
             // never reaches the rendered formula.
             let format = a.metadata.get("format").cloned().unwrap_or_default();
-            Some((target.to_string(), url, sha256, format))
+            Ok((target.to_string(), url, sha256, format))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     let archive_data =
         disambiguate_homebrew_archives(raw_archive_data, ids_filter.is_some(), crate_name, log)?;

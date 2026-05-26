@@ -65,7 +65,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
     let version = ctx.version();
     let meta = resolve_nix_metadata(ctx, nix_cfg, crate_name)?;
 
-    let all_artifacts = collect_platform_artifacts(ctx, crate_name, nix_cfg);
+    let all_artifacts = collect_platform_artifacts(ctx, crate_name, nix_cfg)?;
     let archives = build_archive_tuples(&all_artifacts, nix_cfg, crate_name, &version, log)?;
 
     let needs_unzip = all_artifacts.iter().any(|a| a.url.ends_with(".zip"));
@@ -281,7 +281,7 @@ fn collect_platform_artifacts(
     ctx: &Context,
     crate_name: &str,
     nix_cfg: &NixConfig,
-) -> Vec<OsArtifact> {
+) -> anyhow::Result<Vec<OsArtifact>> {
     let ids_filter = nix_cfg.ids.as_deref();
     let amd64_variant = nix_cfg.amd64_variant.as_deref().or(Some("v1"));
     util::find_all_platform_artifacts_with_variant(ctx, crate_name, ids_filter, amd64_variant, None)

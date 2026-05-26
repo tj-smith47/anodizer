@@ -701,7 +701,7 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
         ids_filter,
         amd64_variant,
         arm_variant,
-    );
+    )?;
 
     let url_template = krew_cfg.url_template.as_deref();
 
@@ -2430,16 +2430,16 @@ mod publisher_tests {
         let err = publish_to_krew(&mut ctx, "mytool", &log).expect_err("missing sha256 must bail");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("krew:") && msg.contains("sha256"),
-            "error must name publisher + field; got: {msg}"
+            msg.contains("missing sha256 metadata"),
+            "error must mention missing sha256; got: {msg}"
         );
         assert!(
             msg.contains("mytool"),
             "error must name the offending crate; got: {msg}"
         );
         assert!(
-            msg.contains("dist/artifacts.json") || msg.contains("re-run"),
-            "error must include a next-step hint; got: {msg}"
+            msg.contains("checksum stage"),
+            "error must mention the checksum stage; got: {msg}"
         );
     }
 }

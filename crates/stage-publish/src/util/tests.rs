@@ -131,7 +131,8 @@ fn test_find_artifacts_by_os_linux() {
         ],
     );
 
-    let linux = find_artifacts_by_os_with_variant(&ctx, "mytool", "linux", None, None, None);
+    let linux =
+        find_artifacts_by_os_with_variant(&ctx, "mytool", "linux", None, None, None).unwrap();
     assert_eq!(linux.len(), 2);
     assert!(linux.iter().all(|a| a.os == "linux"));
     assert!(
@@ -169,7 +170,8 @@ fn test_find_artifacts_by_os_darwin() {
         ],
     );
 
-    let darwin = find_artifacts_by_os_with_variant(&ctx, "mytool", "darwin", None, None, None);
+    let darwin =
+        find_artifacts_by_os_with_variant(&ctx, "mytool", "darwin", None, None, None).unwrap();
     assert_eq!(darwin.len(), 2);
     assert!(darwin.iter().all(|a| a.os == "darwin"));
 }
@@ -185,7 +187,8 @@ fn test_find_artifacts_by_os_no_match() {
         )],
     );
 
-    let windows = find_artifacts_by_os_with_variant(&ctx, "mytool", "windows", None, None, None);
+    let windows =
+        find_artifacts_by_os_with_variant(&ctx, "mytool", "windows", None, None, None).unwrap();
     assert!(windows.is_empty());
 }
 
@@ -216,7 +219,7 @@ fn test_find_all_platform_artifacts() {
         ],
     );
 
-    let all = find_all_platform_artifacts_with_variant(&ctx, "mytool", None, None, None);
+    let all = find_all_platform_artifacts_with_variant(&ctx, "mytool", None, None, None).unwrap();
     assert_eq!(all.len(), 3);
     assert!(all.iter().any(|a| a.os == "linux" && a.arch == "amd64"));
     assert!(all.iter().any(|a| a.os == "darwin" && a.arch == "arm64"));
@@ -226,7 +229,7 @@ fn test_find_all_platform_artifacts() {
 #[test]
 fn test_find_all_platform_artifacts_empty() {
     let ctx = ctx_with_artifacts("mytool", vec![]);
-    let all = find_all_platform_artifacts_with_variant(&ctx, "mytool", None, None, None);
+    let all = find_all_platform_artifacts_with_variant(&ctx, "mytool", None, None, None).unwrap();
     assert!(all.is_empty());
 }
 
@@ -240,8 +243,76 @@ fn test_find_all_platform_artifacts_wrong_crate() {
             "h1",
         )],
     );
-    let all = find_all_platform_artifacts_with_variant(&ctx, "other_tool", None, None, None);
+    let all =
+        find_all_platform_artifacts_with_variant(&ctx, "other_tool", None, None, None).unwrap();
     assert!(all.is_empty());
+}
+
+// -----------------------------------------------------------------------
+// artifact_to_os_artifact sha256 bail tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn artifact_to_os_artifact_bails_on_empty_sha256() {
+    let ctx = ctx_with_artifacts(
+        "mytool",
+        vec![(
+            "x86_64-unknown-linux-gnu",
+            "https://example.com/mytool-linux-amd64.tar.gz",
+            "",
+        )],
+    );
+
+    let err = find_artifacts_by_os_with_variant(&ctx, "mytool", "linux", None, None, None)
+        .expect_err("empty sha256 must produce an error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("missing sha256 metadata"),
+        "error must mention missing sha256: {msg}"
+    );
+    assert!(
+        msg.contains("checksum stage"),
+        "error must mention the checksum stage: {msg}"
+    );
+}
+
+#[test]
+fn artifact_to_os_artifact_bails_on_missing_sha256_key() {
+    let mut config = Config::default();
+    config.crates = vec![CrateConfig {
+        name: "mytool".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        ..Default::default()
+    }];
+    let mut ctx = Context::new(config, ContextOptions::default());
+    // Add an artifact without any sha256 metadata key at all
+    let mut meta = HashMap::new();
+    meta.insert(
+        "url".to_string(),
+        "https://example.com/mytool.tar.gz".to_string(),
+    );
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        name: String::new(),
+        path: PathBuf::from("dist/mytool.tar.gz"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "mytool".to_string(),
+        metadata: meta,
+        size: None,
+    });
+
+    let err = find_all_platform_artifacts_with_variant(&ctx, "mytool", None, None, None)
+        .expect_err("missing sha256 key must produce an error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("missing sha256 metadata"),
+        "error must mention missing sha256: {msg}"
+    );
+    assert!(
+        msg.contains("checksum stage"),
+        "error must mention the checksum stage: {msg}"
+    );
 }
 
 // -----------------------------------------------------------------------

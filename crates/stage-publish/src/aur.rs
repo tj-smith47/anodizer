@@ -581,7 +581,7 @@ fn aur_build_sources(
         ids_filter,
         amd64_variant,
         Some("7"),
-    );
+    )?;
 
     // An empty linux-archive set produces a PKGBUILD with placeholder URL and
     // empty sha256 that users would have to hand-fix. Hard-fail with an
@@ -1682,16 +1682,16 @@ mod publisher_tests {
         let err = publish_to_aur(&ctx, "mytool", &log).expect_err("missing sha256 must bail");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("aur:") && msg.contains("sha256"),
-            "error must name publisher + field; got: {msg}"
+            msg.contains("missing sha256 metadata"),
+            "error must mention missing sha256; got: {msg}"
         );
         assert!(
             msg.contains("mytool"),
             "error must name the offending crate; got: {msg}"
         );
         assert!(
-            msg.contains("dist/artifacts.json") || msg.contains("re-run"),
-            "error must include a next-step hint; got: {msg}"
+            msg.contains("checksum stage"),
+            "error must mention the checksum stage; got: {msg}"
         );
     }
 }
