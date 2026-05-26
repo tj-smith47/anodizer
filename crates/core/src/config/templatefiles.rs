@@ -1,6 +1,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::{StringOrBool, deserialize_string_or_bool_opt};
+
 // ---------------------------------------------------------------------------
 // TemplateFileConfig
 // ---------------------------------------------------------------------------
@@ -24,4 +26,11 @@ pub struct TemplateFileConfig {
     /// File permissions in octal notation as a string, e.g. `"0755"` (default: `"0655"`).
     /// Parsed at runtime via `parse_octal_mode()` to avoid YAML interpreting as decimal.
     pub mode: Option<String>,
+    /// Skip this entry when truthy. Accepts a literal bool or a Tera
+    /// template that renders to `"true"`/`"false"` (e.g.
+    /// `'{{ if eq .Os "windows" }}true{{ end }}'`). Mirrors the
+    /// per-entry `skip:` pattern used by `ChangelogConfig`,
+    /// `ChecksumConfig`, and the publishers.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip: Option<StringOrBool>,
 }

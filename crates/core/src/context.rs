@@ -1029,12 +1029,11 @@ impl Context {
     /// `FullDescription` (resolved), `CommitAuthor.{Name,Email}`.
     /// Missing fields default to empty strings / empty arrays.
     ///
-    /// `full_description` with `from_url` is NOT resolved here (avoids a
-    /// reqwest dep in core); the FromUrl case returns an error and the caller
-    /// should surface it. Inline and FromFile are resolved synchronously.
+    /// `full_description` supports `Inline`, `FromFile` (template-rendered
+    /// path, read from disk), and `FromUrl` (template-rendered URL +
+    /// headers, fetched through [`crate::content_source::resolve`] which
+    /// applies retries, body caps, and CR/LF header-injection guards).
     pub fn populate_metadata_var(&mut self) -> anyhow::Result<()> {
-        use crate::config::ContentSource;
-
         // Clone the small scalar fields so we don't hold a borrow on self.config
         // across the render_template calls below.
         let (
@@ -1080,29 +1079,14 @@ impl Context {
             )
         };
 
-        // Resolve full_description (Inline + FromFile in-core; FromUrl errors here).
+        // Resolve full_description through the shared ContentSource resolver
+        // so Inline, FromFile (template-rendered path), and FromUrl
+        // (template-rendered URL + headers, retried HTTP fetch with
+        // body cap and CR/LF guard) all behave the same as the release
+        // header/footer fields.
         let full_description = match full_desc_src {
             None => String::new(),
-            Some(ContentSource::Inline(s)) => s,
-            Some(ContentSource::FromFile { from_file }) => {
-                let rendered_path = self.render_template(&from_file).with_context(|| {
-                    format!("metadata.full_description: render path '{}'", from_file)
-                })?;
-                std::fs::read_to_string(&rendered_path).with_context(|| {
-                    format!(
-                        "metadata.full_description: read from_file '{}'",
-                        rendered_path
-                    )
-                })?
-            }
-            Some(ContentSource::FromUrl { .. }) => {
-                anyhow::bail!(
-                    "metadata.full_description: `from_url` is not yet supported at metadata \
-                     population time (core has no HTTP client). Use `from_file` with a \
-                     pre-fetched file, or inline the content. Tracked for future: move \
-                     URL resolution into a late-pipeline stage or add reqwest to core."
-                );
-            }
+            Some(src) => crate::content_source::resolve(&src, "metadata.full_description", self)?,
         };
 
         let commit_author_map = serde_json::json!({
@@ -2187,28 +2171,36 @@ mod tests {
     }
 
     #[test]
-    fn test_populate_metadata_var_full_description_from_url_errors() {
-        // Avoids silent-skip footgun (see W1 in pro-features-audit.md). If the user
-        // configures from_url for metadata.full_description, emit a clear, actionable
-        // error at context-populate time rather than quietly shipping an empty string.
+    fn test_populate_metadata_var_full_description_from_url_resolves() {
+        // `from_url` routes through the shared `content_source::resolve`
+        // helper. We stand up a oneshot HTTP responder so the test is
+        // hermetic (no real network) and verify the body lands in the
+        // rendered Metadata.FullDescription variable.
         use crate::config::ContentSource;
+        use crate::test_helpers::responder::spawn_oneshot_http_responder;
+
+        let body = "long form description body";
+        let body_len = body.len();
+        let response: &'static str = Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{body}").into_boxed_str(),
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![response]);
+
         let mut config = Config::default();
         config.metadata = Some(crate::config::MetadataConfig {
             full_description: Some(ContentSource::FromUrl {
-                from_url: "https://example.com/description.md".to_string(),
+                from_url: format!("http://{addr}/description.md"),
                 headers: None,
             }),
             ..Default::default()
         });
         let mut ctx = Context::new(config, ContextOptions::default());
-        let err = ctx
-            .populate_metadata_var()
-            .expect_err("from_url must error");
-        let msg = format!("{:#}", err);
-        assert!(
-            msg.contains("metadata.full_description") && msg.contains("from_url"),
-            "error should mention the feature + limitation, got: {msg}"
-        );
+        ctx.populate_metadata_var()
+            .expect("from_url should resolve through content_source");
+        let rendered = ctx
+            .render_template("{{ Metadata.FullDescription }}")
+            .unwrap();
+        assert_eq!(rendered, body);
     }
 
     #[test]

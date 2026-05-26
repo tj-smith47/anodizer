@@ -885,11 +885,19 @@ pub(super) fn generate_cask_from_context(
         url: &url,
         url_extras: &url_extras_top,
         url_extras_indented: &url_extras_arch,
-        homepage: cask_cfg.homepage.as_deref().or(hb_cfg.homepage.as_deref()),
+        // Fallback chain: per-cask homepage → per-formula homepage →
+        // project metadata.homepage. Lets a monorepo declare project
+        // metadata once and have every cask inherit it.
+        homepage: cask_cfg
+            .homepage
+            .as_deref()
+            .or(hb_cfg.homepage.as_deref())
+            .or_else(|| ctx.config.meta_homepage()),
         description: cask_cfg
             .description
             .as_deref()
-            .or(hb_cfg.description.as_deref()),
+            .or(hb_cfg.description.as_deref())
+            .or_else(|| ctx.config.meta_description()),
         app: cask_cfg.app.as_deref(),
         binaries: &cask_binaries,
         caveats: cask_cfg.caveats.as_deref(),

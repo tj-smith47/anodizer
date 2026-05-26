@@ -985,9 +985,14 @@ fn run_post_pipeline(
         milestones::close_milestones(milestones, ctx, dry_run, log)?;
     }
 
-    // Run after hooks
+    // Run after hooks.
+    //
+    // Canonical key is `after.hooks:` (GoReleaser Pro). The legacy
+    // `after.post:` spelling is folded into `hooks:` at config-parse
+    // time by `HooksConfig::merge_hook_aliases`, so this reader only
+    // needs the canonical field.
     if let Some(after) = &config.after
-        && let Some(ref hooks) = after.post
+        && let Some(ref hooks) = after.hooks
     {
         pipeline::run_hooks(hooks, "after", dry_run, log, Some(ctx.template_vars()))?;
     }

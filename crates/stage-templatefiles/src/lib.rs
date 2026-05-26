@@ -36,23 +36,51 @@ impl Stage for TemplateFilesStage {
         for entry in &entries {
             let id = entry.id.as_deref().unwrap_or("default");
 
+            // Per-entry skip: bool or templated string. Evaluates the
+            // condition through the global template context so a user
+            // can write `skip: '{{ if eq .Os "windows" }}true{{ end }}'`.
+            if let Some(ref skip) = entry.skip {
+                let off = skip
+                    .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                    .with_context(|| {
+                        format!("templatefiles: render skip template for id '{}'", id)
+                    })?;
+                if off {
+                    let log = ctx.logger("templatefiles");
+                    log.status(&format!("templatefiles: skipped id '{}'", id));
+                    continue;
+                }
+            }
+
             // Render the src path through the template engine
             let rendered_src = ctx.render_template(&entry.src).with_context(|| {
                 format!("templatefiles: failed to render src path for id '{}'", id)
             })?;
 
-            // Read the source file
+            // Read the source file as raw bytes first so binary inputs
+            // emit a clear "binary file passed to template engine" error
+            // instead of the generic "stream did not contain valid UTF-8"
+            // surfaced by `read_to_string`.
             let src_path = PathBuf::from(&rendered_src);
-            let src_contents = std::fs::read_to_string(&src_path).with_context(|| {
+            let src_bytes = std::fs::read(&src_path).with_context(|| {
                 format!(
                     "templatefiles: source file '{}' not found (id: '{}')",
                     src_path.display(),
                     id
                 )
             })?;
+            let src_contents = std::str::from_utf8(&src_bytes).map_err(|_| {
+                anyhow::anyhow!(
+                    "templatefiles: source file '{}' (id: '{}') is not valid UTF-8 — \
+                     templated files must be text. Use `files:` for binary archive \
+                     contents.",
+                    src_path.display(),
+                    id
+                )
+            })?;
 
             // Render the file contents through the template engine
-            let rendered_contents = ctx.render_template(&src_contents).with_context(|| {
+            let rendered_contents = ctx.render_template(src_contents).with_context(|| {
                 format!(
                     "templatefiles: failed to render contents of '{}' (id: '{}')",
                     src_path.display(),
@@ -64,6 +92,17 @@ impl Stage for TemplateFilesStage {
             let rendered_dst = ctx.render_template(&entry.dst).with_context(|| {
                 format!("templatefiles: failed to render dst path for id '{}'", id)
             })?;
+
+            // GoReleaser docs: "Ignored if empty" — skip silently so a
+            // conditionally-rendered dst can opt out without erroring.
+            if rendered_dst.is_empty() {
+                let log = ctx.logger("templatefiles");
+                log.status(&format!(
+                    "templatefiles: dst rendered empty for id '{}', skipping",
+                    id
+                ));
+                continue;
+            }
 
             // Reject path traversal attempts
             if rendered_dst.contains("..") || Path::new(&rendered_dst).is_absolute() {
@@ -169,6 +208,7 @@ mod tests {
             src: src_path.to_string_lossy().to_string(),
             dst: "greeting.txt".to_string(),
             mode: None,
+            skip: None,
         }]);
 
         let stage = TemplateFilesStage;
@@ -193,6 +233,7 @@ mod tests {
             src: src_path.to_string_lossy().to_string(),
             dst: "subdir/output.txt".to_string(),
             mode: None,
+            skip: None,
         }]);
 
         let stage = TemplateFilesStage;
@@ -216,6 +257,7 @@ mod tests {
             src: src_path.to_string_lossy().to_string(),
             dst: "script.sh".to_string(),
             mode: None,
+            skip: None,
         }]);
 
         let stage = TemplateFilesStage;
@@ -243,6 +285,7 @@ mod tests {
             src: src_path.to_string_lossy().to_string(),
             dst: "exec.sh".to_string(),
             mode: Some("0755".to_string()),
+            skip: None,
         }]);
 
         let stage = TemplateFilesStage;
@@ -280,6 +323,7 @@ mod tests {
             src: src_template,
             dst: "{{ .ProjectName }}-{{ .Version }}-install.sh".to_string(),
             mode: None,
+            skip: None,
         }]);
 
         let stage = TemplateFilesStage;
@@ -325,6 +369,7 @@ mod tests {
             src: "/nonexistent/path/template.tpl".to_string(),
             dst: "output.txt".to_string(),
             mode: None,
+            skip: None,
         }]);
 
         let stage = TemplateFilesStage;
@@ -351,6 +396,7 @@ mod tests {
             src: src_path.to_string_lossy().to_string(),
             dst: "data.txt".to_string(),
             mode: None,
+            skip: None,
         }]);
 
         let stage = TemplateFilesStage;
@@ -376,6 +422,7 @@ mod tests {
             src: src_path.to_string_lossy().to_string(),
             dst: "file.txt".to_string(),
             mode: None,
+            skip: None,
         }]);
 
         let stage = TemplateFilesStage;
@@ -403,18 +450,21 @@ mod tests {
                 src: src_a.to_string_lossy().to_string(),
                 dst: "a.txt".to_string(),
                 mode: None,
+                skip: None,
             },
             anodizer_core::config::TemplateFileConfig {
                 id: Some("file-b".to_string()),
                 src: src_b.to_string_lossy().to_string(),
                 dst: "subdir/b.txt".to_string(),
                 mode: Some("0755".to_string()),
+                skip: None,
             },
             anodizer_core::config::TemplateFileConfig {
                 id: Some("file-c".to_string()),
                 src: src_c.to_string_lossy().to_string(),
                 dst: "c.txt".to_string(),
                 mode: None,
+                skip: None,
             },
         ]);
 
@@ -461,6 +511,7 @@ mod tests {
             src: src_path.to_string_lossy().to_string(),
             dst: "bad.txt".to_string(),
             mode: None,
+            skip: None,
         }]);
 
         let stage = TemplateFilesStage;
@@ -490,6 +541,7 @@ mod tests {
             src: src_path.to_string_lossy().to_string(),
             dst: "../escaped.txt".to_string(),
             mode: None,
+            skip: None,
         }]);
 
         let stage = TemplateFilesStage;
@@ -501,6 +553,69 @@ mod tests {
             "error should mention path restriction: {}",
             err
         );
+    }
+
+    #[test]
+    fn test_skip_true_skips_entry() {
+        // `skip: true` short-circuits before any file IO — the source
+        // path can be invalid and the test still passes.
+        use anodizer_core::config::StringOrBool;
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
+            id: Some("skipped".to_string()),
+            src: "/nonexistent/path.tpl".to_string(),
+            dst: "skipped.txt".to_string(),
+            mode: None,
+            skip: Some(StringOrBool::Bool(true)),
+        }]);
+
+        TemplateFilesStage.run(&mut ctx).unwrap();
+        assert!(ctx.artifacts.all().is_empty());
+    }
+
+    #[test]
+    fn test_binary_src_returns_clear_error() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+
+        let src_path = tmp.path().join("binary.tpl");
+        fs::write(&src_path, [0xFF, 0xFE, 0xFD]).unwrap();
+
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
+            id: Some("bin".to_string()),
+            src: src_path.to_string_lossy().to_string(),
+            dst: "out.txt".to_string(),
+            mode: None,
+            skip: None,
+        }]);
+
+        let err = TemplateFilesStage.run(&mut ctx).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("not valid UTF-8"),
+            "binary input should produce a clear UTF-8 error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_empty_rendered_dst_is_skipped() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+        let src_path = tmp.path().join("source.tpl");
+        fs::write(&src_path, "content").unwrap();
+
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
+            id: Some("empty-dst".to_string()),
+            src: src_path.to_string_lossy().to_string(),
+            dst: String::new(),
+            mode: None,
+            skip: None,
+        }]);
+
+        TemplateFilesStage.run(&mut ctx).unwrap();
+        assert!(ctx.artifacts.all().is_empty());
     }
 
     #[test]
@@ -520,6 +635,7 @@ mod tests {
                 "/etc/evil.txt".to_string()
             },
             mode: None,
+            skip: None,
         }]);
 
         let stage = TemplateFilesStage;

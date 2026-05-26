@@ -111,6 +111,119 @@ impl Stage for ArchiveStage {
     }
 }
 
+/// Render every `archives[].templated_files[]` entry into a staging
+/// directory and return one [`ArchiveEntry`] per rendered file so the
+/// archive packer treats them as ordinary contents.
+///
+/// Per-entry `skip:` is consulted up front; the source path, content
+/// body, and destination path are all template-rendered so each archive
+/// can shape its dst based on `.Os`, `.Arch`, `.Format`, etc. Non-UTF8
+/// source files emit a clear error instead of the cryptic
+/// "stream did not contain valid UTF-8" surfaced by `read_to_string`.
+fn render_archive_templated_files(
+    ctx: &mut Context,
+    entries: &[anodizer_core::config::TemplateFileConfig],
+    archive_id: &str,
+    target: &str,
+    format: &str,
+    dist: &Path,
+) -> Result<Vec<ArchiveEntry>> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    // One staging dir per (archive_id, target, format) so multiple
+    // formats for the same archive write to distinct paths.
+    let staging = dist
+        .join(".archive-templated")
+        .join(archive_id)
+        .join(target)
+        .join(format);
+    fs::create_dir_all(&staging).with_context(|| {
+        format!(
+            "archive: create templated_files staging dir '{}'",
+            staging.display()
+        )
+    })?;
+
+    let mut out: Vec<ArchiveEntry> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let id = entry.id.as_deref().unwrap_or("default");
+
+        if let Some(ref skip) = entry.skip {
+            let off = skip
+                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .with_context(|| {
+                    format!("archives[{archive_id}].templated_files[{id}]: render skip template")
+                })?;
+            if off {
+                continue;
+            }
+        }
+
+        let rendered_src = ctx.render_template(&entry.src).with_context(|| {
+            format!("archives[{archive_id}].templated_files[{id}]: render src path")
+        })?;
+        let src_path = PathBuf::from(&rendered_src);
+        let src_bytes = fs::read(&src_path).with_context(|| {
+            format!(
+                "archives[{archive_id}].templated_files[{id}]: source file '{}' not found",
+                src_path.display()
+            )
+        })?;
+        let src_contents = std::str::from_utf8(&src_bytes).map_err(|_| {
+            anyhow::anyhow!(
+                "archives[{archive_id}].templated_files[{id}]: source file '{}' is not \
+                 valid UTF-8 — templated files must be text. Use the archive's `files:` \
+                 list for binary contents.",
+                src_path.display()
+            )
+        })?;
+        let rendered_contents = ctx.render_template(src_contents).with_context(|| {
+            format!(
+                "archives[{archive_id}].templated_files[{id}]: render contents of '{}'",
+                src_path.display()
+            )
+        })?;
+
+        let rendered_dst = ctx.render_template(&entry.dst).with_context(|| {
+            format!("archives[{archive_id}].templated_files[{id}]: render dst path")
+        })?;
+        if rendered_dst.is_empty() {
+            continue;
+        }
+        if rendered_dst.contains("..") || Path::new(&rendered_dst).is_absolute() {
+            bail!(
+                "archives[{archive_id}].templated_files[{id}]: dst '{}' must be a \
+                 relative path with no '..' segments",
+                rendered_dst
+            );
+        }
+
+        let out_path = staging.join(&rendered_dst);
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "archives[{archive_id}].templated_files[{id}]: create parent dir '{}'",
+                    parent.display()
+                )
+            })?;
+        }
+        fs::write(&out_path, &rendered_contents).with_context(|| {
+            format!(
+                "archives[{archive_id}].templated_files[{id}]: write '{}'",
+                out_path.display()
+            )
+        })?;
+
+        out.push(ArchiveEntry {
+            src: out_path,
+            archive_name: PathBuf::from(&rendered_dst),
+            info: None,
+        });
+    }
+    Ok(out)
+}
+
 /// Resolve global archive defaults from `defaults.archives`.
 /// Returns `(default_format, format_overrides)`.
 fn resolve_global_archive_defaults(ctx: &Context) -> (String, Vec<FormatOverride>) {
@@ -617,28 +730,12 @@ fn archive_one_config(
             // Combine binary + extra entries and deduplicate by archive_name.
             // Matches GoReleaser's unique() — first occurrence wins,
             // duplicates are warned and skipped.
-            let combined: Vec<ArchiveEntry> =
+            //
+            // Per-archive `templated_files:` are appended INSIDE the
+            // format loop below so each entry can see `.Format`, which
+            // differs across tar.gz / zip / etc. for the same target.
+            let base_entries: Vec<ArchiveEntry> =
                 binary_entries.into_iter().chain(extra_entries).collect();
-            let deduped = deduplicate_entries(combined);
-            let sorted = sort_entries(deduped);
-            let all_entries: Vec<&ArchiveEntry> = sorted.iter().collect();
-
-            // a meta archive must have
-            // at least one file. Silently emitting an empty archive masks
-            // a config bug (user set `meta: true` but no `files:` patterns
-            // matched). Hard-error with a clear message.
-            if is_meta && all_entries.is_empty() {
-                bail!(
-                    "archive: meta archive for crate '{crate_name}' target '{target}' \
-                 has zero files. Check your `files:` patterns — meta archives \
-                 must bundle at least one file."
-                );
-            }
-
-            // For gz/binary formats, collect flat path refs (these formats
-            // don't support per-entry metadata)
-            let all_src_paths: Vec<PathBuf> = sorted.iter().map(|e| e.src.clone()).collect();
-            let path_refs: Vec<&Path> = all_src_paths.iter().map(PathBuf::as_path).collect();
 
             let source_date_epoch: Option<u64> = resolve_archive_mtime(ctx);
 
@@ -678,6 +775,55 @@ fn archive_one_config(
                     format!("{archive_stem}.{format}")
                 };
                 let archive_path = dist.join(&archive_filename);
+
+                // Expose `.Format` to per-archive templated_files (and
+                // any downstream template that fires inside this scope).
+                // Reset by `clear_archive_template_vars` after the
+                // archive write completes.
+                ctx.template_vars_mut().set("Format", format);
+
+                // Render archive-scoped templated_files into a temp
+                // staging dir, one tree per (archive_id, target, format).
+                // Each rendered file becomes an `ArchiveEntry` packed
+                // into the archive at its rendered `dst:` path. Skip
+                // semantics + non-UTF8 input handling match the
+                // top-level `template_files:` stage.
+                let archive_id = archive_cfg.id.as_deref().unwrap_or("default");
+                let templated_extra_entries = render_archive_templated_files(
+                    ctx,
+                    archive_cfg.templated_files.as_deref().unwrap_or(&[]),
+                    archive_id,
+                    target,
+                    format,
+                    dist,
+                )?;
+
+                // Combine entries, dedup, and sort. Repeated per format
+                // because the templated_files set is format-specific.
+                let mut combined: Vec<ArchiveEntry> = base_entries
+                    .iter()
+                    .map(|e| ArchiveEntry {
+                        src: e.src.clone(),
+                        archive_name: e.archive_name.clone(),
+                        info: e.info.clone(),
+                    })
+                    .collect();
+                combined.extend(templated_extra_entries);
+                let deduped = deduplicate_entries(combined);
+                let sorted = sort_entries(deduped);
+                let all_entries: Vec<&ArchiveEntry> = sorted.iter().collect();
+
+                if is_meta && all_entries.is_empty() {
+                    bail!(
+                        "archive: meta archive for crate '{crate_name}' target '{target}' \
+                     has zero files. Check your `files:` patterns — meta archives \
+                     must bundle at least one file."
+                    );
+                }
+
+                // For gz/binary formats, collect flat path refs.
+                let all_src_paths: Vec<PathBuf> = sorted.iter().map(|e| e.src.clone()).collect();
+                let path_refs: Vec<&Path> = all_src_paths.iter().map(PathBuf::as_path).collect();
 
                 // Duplicate archive name detection: prevent silent overwrites
                 if archive_path.exists() {

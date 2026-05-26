@@ -6,8 +6,15 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::stage::Stage;
 use anyhow::{Context as _, Result, bail};
 use colored::Colorize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// Cap on recursion depth for `includes:` chains. GoReleaser doesn't
+/// document a limit; we pick 32 — well above any plausible org-shared
+/// fan-out, well below the worker-thread stack budget that
+/// `deserialize_on_worker` reserves.
+const MAX_INCLUDE_DEPTH: usize = 32;
 
 /// Find config file. If `config_override` is provided, use that path directly;
 /// otherwise search the current directory for well-known config file names.
@@ -275,9 +282,15 @@ fn load_yaml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
     // Accumulate all included files into a merged defaults value.
     // The base config is then merged on top so its values always win.
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut visited: HashSet<String> = HashSet::new();
+    // Mark the base config itself as visited so a child include cannot
+    // form an A -> B -> A cycle back through the root.
+    if let Some(key) = canonical_path_key(path) {
+        visited.insert(key);
+    }
     let mut merged = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
     for entry in &include_entries {
-        let overlay = resolve_include(entry, base_dir, path)?;
+        let overlay = resolve_include_recursive(entry, base_dir, path, &mut visited, 0)?;
         merge_yaml(&mut merged, &overlay);
     }
     // Merge base config on top of the accumulated defaults (base wins).
@@ -332,6 +345,10 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
         .with_context(|| "failed to convert TOML config to YAML for merging")?;
 
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut visited: HashSet<String> = HashSet::new();
+    if let Some(key) = canonical_path_key(path) {
+        visited.insert(key);
+    }
     let mut merged = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
     for entry in &include_entries {
         // Convert each TOML include entry to a YAML value so resolve_include can handle it.
@@ -339,7 +356,7 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
             .with_context(|| "failed to convert TOML include entry to JSON")?;
         let yaml_entry: serde_yaml_ng::Value = serde_yaml_ng::to_value(&json_entry)
             .with_context(|| "failed to convert TOML include entry to YAML")?;
-        let overlay = resolve_include(&yaml_entry, base_dir, path)?;
+        let overlay = resolve_include_recursive(&yaml_entry, base_dir, path, &mut visited, 0)?;
         merge_yaml(&mut merged, &overlay);
     }
     // Merge base config on top of the accumulated defaults (base wins).
@@ -480,47 +497,167 @@ fn fetch_url_as_yaml(
     }
 }
 
-/// Resolve a single include entry (from a raw YAML value) to its YAML content.
-///
-/// Deserializes the entry into an `IncludeSpec` to avoid duplicate format logic,
-/// then dispatches to the appropriate handler:
-/// - **Path(string)**: treated as a relative file path (backward compatible)
-/// - **FromFile**: structured file path via `from_file.path`
-/// - **FromUrl**: fetch from URL with optional headers, env var expansion on URL and header values
-fn resolve_include(
-    entry: &serde_yaml_ng::Value,
-    base_dir: &Path,
-    config_path: &Path,
-) -> Result<serde_yaml_ng::Value> {
-    let spec: IncludeSpec = serde_yaml_ng::from_value(entry.clone())
-        .with_context(|| format!("includes: invalid entry in {}", config_path.display()))?;
-    match spec {
-        IncludeSpec::Path(path_str) => resolve_file_include(&path_str, base_dir, config_path),
-        IncludeSpec::FromFile { from_file } => {
-            resolve_file_include(&from_file.path, base_dir, config_path)
-        }
-        IncludeSpec::FromUrl { from_url } => {
-            let url = expand_env_vars(&normalize_include_url(&from_url.url));
-            fetch_url_as_yaml(&url, from_url.headers.as_ref(), config_path)
-        }
+/// Canonicalize a path for cycle-detection / dedup. Falls back to the
+/// raw path string when canonicalization fails (file missing, permission
+/// denied) — those callers will hit a clearer downstream error.
+fn canonical_path_key(path: &Path) -> Option<String> {
+    match std::fs::canonicalize(path) {
+        Ok(p) => Some(p.to_string_lossy().to_string()),
+        Err(_) => path.to_str().map(|s| s.to_string()),
     }
 }
 
-/// Resolve a file-based include by reading and parsing it.
-fn resolve_file_include(
+/// Expand a leading `~` into the user's home directory and `$VAR` /
+/// `${VAR}` references via [`expand_env_vars`].
+///
+/// `~` is rewritten only when it appears at the very start of the
+/// rendered string (mirroring POSIX shells' word-initial tilde rule);
+/// anywhere else the literal `~` is preserved so a config path like
+/// `./safe~backup.yaml` survives.
+fn expand_path_tilde_and_env(path_str: &str) -> String {
+    let expanded = expand_env_vars(path_str);
+    if let Some(rest) = expanded.strip_prefix('~')
+        && let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty())
+    {
+        let home = PathBuf::from(home);
+        let rest_trimmed = rest.strip_prefix('/').unwrap_or(rest);
+        if rest.starts_with('/') || rest.is_empty() {
+            return home.join(rest_trimmed).to_string_lossy().to_string();
+        }
+    }
+    expanded
+}
+
+/// Resolve a single include entry recursively, walking the included
+/// file's own `includes:` array (depth-first) before applying it to the
+/// caller's merge tree.
+///
+/// Cycle detection: each include's canonical path (or normalized URL)
+/// goes into `visited` before recursing; a repeat hit bails with the
+/// chain so a misconfigured `A -> B -> A` surfaces with a clear
+/// message. The same set survives across siblings, which means an
+/// include referenced twice in a chain (or twice in the same array) is
+/// deduplicated — the second hit returns an empty mapping. This matches
+/// GoReleaser's "load once" expectation; users wanting an include's
+/// values applied twice cannot express that anyway because the deep
+/// merge is idempotent.
+///
+/// Path resolution: file includes inside a child config resolve
+/// relative to THAT child's directory, not the root config's directory,
+/// so a shared `includes/team-defaults.yaml` that itself references
+/// `./platform.yaml` finds `includes/platform.yaml` correctly.
+fn resolve_include_recursive(
+    entry: &serde_yaml_ng::Value,
+    base_dir: &Path,
+    config_path: &Path,
+    visited: &mut HashSet<String>,
+    depth: usize,
+) -> Result<serde_yaml_ng::Value> {
+    if depth >= MAX_INCLUDE_DEPTH {
+        bail!(
+            "includes: depth limit ({}) exceeded (referenced from {})",
+            MAX_INCLUDE_DEPTH,
+            config_path.display(),
+        );
+    }
+    let spec: IncludeSpec = serde_yaml_ng::from_value(entry.clone())
+        .with_context(|| format!("includes: invalid entry in {}", config_path.display()))?;
+
+    // Resolve to (canonical key, raw YAML value, child base_dir, child config_path)
+    let (key, mut value, child_base_dir, child_config_path) = match spec {
+        IncludeSpec::Path(path_str) => {
+            resolve_file_include_value(&path_str, base_dir, config_path)?
+        }
+        IncludeSpec::FromFile { from_file } => {
+            resolve_file_include_value(&from_file.path, base_dir, config_path)?
+        }
+        IncludeSpec::FromUrl { from_url } => {
+            let url = expand_env_vars(&normalize_include_url(&from_url.url));
+            let value = fetch_url_as_yaml(&url, from_url.headers.as_ref(), config_path)?;
+            // URL includes have no on-disk base_dir; child file includes
+            // are resolved relative to the ORIGINAL config_path's parent,
+            // which is the closest analogue. URL-to-URL includes resolve
+            // by absolute URL anyway, so the base_dir is only consulted
+            // if a URL include carries a relative file include — an
+            // unusual mix that gets the same treatment as before.
+            let child_base_dir = base_dir.to_path_buf();
+            let child_config_path = PathBuf::from(&url);
+            (url, value, child_base_dir, child_config_path)
+        }
+    };
+
+    // Dedup / cycle detection. A repeat hit returns an empty mapping so
+    // sibling includes can keep accumulating without double-merging the
+    // already-loaded values.
+    if !visited.insert(key.clone()) {
+        if depth > 0 {
+            // Mid-chain repeat: this is a cycle, not just a dedup hit.
+            // The same key can only re-appear in `visited` here because
+            // an ancestor loaded it; report the cycle.
+            bail!(
+                "includes: cycle detected at '{}' (referenced from {})",
+                key,
+                config_path.display(),
+            );
+        }
+        // Top-level dedup: an earlier sibling already loaded this
+        // include. Return empty so the merge is a no-op.
+        return Ok(serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new()));
+    }
+
+    // Strip `includes:` from the included value BEFORE returning so
+    // typed deserialization at the end of `load_yaml_config_with_includes`
+    // doesn't see a stale list. Recurse into it first.
+    let child_entries: Vec<serde_yaml_ng::Value> = match &mut value {
+        serde_yaml_ng::Value::Mapping(map) => map
+            .remove("includes")
+            .and_then(|v| match v {
+                serde_yaml_ng::Value::Sequence(seq) => Some(seq),
+                _ => None,
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    let mut accumulated = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
+    for child_entry in &child_entries {
+        let child_overlay = resolve_include_recursive(
+            child_entry,
+            &child_base_dir,
+            &child_config_path,
+            visited,
+            depth + 1,
+        )?;
+        merge_yaml(&mut accumulated, &child_overlay);
+    }
+    // The included file's own contents apply ON TOP of its transitive
+    // children — same "later wins" semantics the top-level loop uses.
+    merge_yaml(&mut accumulated, &value);
+    Ok(accumulated)
+}
+
+/// Read a file include from disk and return the canonical key, parsed
+/// YAML value, the directory child includes resolve against, and the
+/// child's display path (for error messages and cycle reporting).
+fn resolve_file_include_value(
     path_str: &str,
     base_dir: &Path,
     config_path: &Path,
-) -> Result<serde_yaml_ng::Value> {
-    // Reject absolute paths to prevent unexpected file reads.
-    if Path::new(path_str).is_absolute() {
+) -> Result<(String, serde_yaml_ng::Value, PathBuf, PathBuf)> {
+    let expanded = expand_path_tilde_and_env(path_str);
+    let include_path = if Path::new(&expanded).is_absolute() {
+        // Absolute paths are still rejected for plain-string / from_file
+        // entries — but only AFTER expansion, so a config that ships
+        // `~/.config/anodize/defaults.yaml` is treated as the resolved
+        // absolute home path and rejected with an actionable error.
         bail!(
             "includes: absolute paths are not allowed (got '{}' in {})",
             path_str,
             config_path.display()
         );
-    }
-    let include_path = base_dir.join(path_str);
+    } else {
+        base_dir.join(&expanded)
+    };
     let include_content = std::fs::read_to_string(&include_path).with_context(|| {
         format!(
             "failed to read include file '{}' (referenced from {})",
@@ -528,7 +665,14 @@ fn resolve_file_include(
             config_path.display()
         )
     })?;
-    load_include_as_yaml(&include_path, &include_content)
+    let value = load_include_as_yaml(&include_path, &include_content)?;
+    let key =
+        canonical_path_key(&include_path).unwrap_or_else(|| include_path.display().to_string());
+    let child_base_dir = include_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    Ok((key, value, child_base_dir, include_path))
 }
 
 /// Parse an include file as a serde_yaml_ng::Value, auto-detecting format
@@ -1266,6 +1410,123 @@ mod tests {
         let config = load_config(&cfg_path).unwrap();
         assert_eq!(config.project_name, "simple");
         assert!(config.includes.is_none());
+    }
+
+    #[test]
+    fn test_load_config_includes_recursive_two_level() {
+        // a.yaml includes b.yaml; b.yaml includes c.yaml. Every level
+        // should contribute fields to the merged config.
+        let tmp = TempDir::new().unwrap();
+
+        let c_path = tmp.path().join("c.yaml");
+        fs::write(&c_path, "dist: /from-c\nreport_sizes: true\n").unwrap();
+
+        let b_path = tmp.path().join("b.yaml");
+        fs::write(
+            &b_path,
+            "includes:\n  - c.yaml\ncrates:\n  - name: from-b\n    path: crates/b\n",
+        )
+        .unwrap();
+
+        let cfg_path = tmp.path().join("anodizer.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: recursive\nincludes:\n  - b.yaml\ncrates:\n  - name: base\n    path: crates/base\n",
+        )
+        .unwrap();
+
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(config.project_name, "recursive");
+        assert_eq!(
+            config.dist,
+            std::path::PathBuf::from("/from-c"),
+            "c.yaml's scalar value should propagate up two levels"
+        );
+        assert_eq!(
+            config.report_sizes,
+            Some(true),
+            "c.yaml's report_sizes should propagate up"
+        );
+        // Sequence concatenation order: c (no crates) → b (from-b) → base.
+        let names: Vec<&str> = config.crates.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["from-b", "base"],
+            "crates concat in declaration order with base last"
+        );
+    }
+
+    #[test]
+    fn test_load_config_includes_cycle_detected() {
+        // a -> b -> a should bail with a "cycle detected" error.
+        let tmp = TempDir::new().unwrap();
+        let b_path = tmp.path().join("b.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
+        fs::write(&b_path, "includes:\n  - anodizer.yaml\n").unwrap();
+        fs::write(
+            &cfg_path,
+            "project_name: cycle\nincludes:\n  - b.yaml\ncrates: []\n",
+        )
+        .unwrap();
+
+        let err = load_config(&cfg_path).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("cycle detected"),
+            "expected cycle-detected error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_load_config_includes_path_relative_to_included_file() {
+        // a.yaml includes nested/b.yaml; b.yaml includes c.yaml — which
+        // lives in `nested/` next to b.yaml, NOT next to a.yaml.
+        let tmp = TempDir::new().unwrap();
+        let nested = tmp.path().join("nested");
+        fs::create_dir_all(&nested).unwrap();
+
+        let c_path = nested.join("c.yaml");
+        fs::write(&c_path, "dist: /from-nested-c\n").unwrap();
+
+        let b_path = nested.join("b.yaml");
+        fs::write(&b_path, "includes:\n  - c.yaml\nreport_sizes: true\n").unwrap();
+
+        let cfg_path = tmp.path().join("anodizer.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: rel\nincludes:\n  - nested/b.yaml\ncrates: []\n",
+        )
+        .unwrap();
+
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(
+            config.dist,
+            std::path::PathBuf::from("/from-nested-c"),
+            "second-level include resolved relative to its own directory"
+        );
+    }
+
+    #[test]
+    fn test_load_config_includes_dedup_same_file_twice() {
+        // The same include listed twice should load once — sequences
+        // wouldn't double, scalars wouldn't drift, and the visit set
+        // suppresses the second pass.
+        let tmp = TempDir::new().unwrap();
+        let extra = tmp.path().join("extra.yaml");
+        fs::write(&extra, "crates:\n  - name: only-once\n    path: crates/x\n").unwrap();
+        let cfg_path = tmp.path().join("anodizer.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: dedup\nincludes:\n  - extra.yaml\n  - extra.yaml\ncrates: []\n",
+        )
+        .unwrap();
+
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(
+            config.crates.len(),
+            1,
+            "duplicate include should only contribute once"
+        );
     }
 
     // ---- Version validation in load_config ----

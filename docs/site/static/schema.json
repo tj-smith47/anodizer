@@ -494,7 +494,7 @@
       }
     },
     "variables": {
-      "description": "Custom template variables accessible as {{ .Var.key }} in templates. Provides a way to define reusable values, especially useful with config includes.",
+      "description": "Custom template variables accessible as `{{ .Var.<key> }}` in templates. Provides a way to define reusable values, especially useful with config includes.\n\nStored as a `BTreeMap` so rendering iterates in deterministic (sorted) key order — without this guarantee, a value that references another variable (`b: \"{{ .Var.a }}_v2\"`) could render before its dependency on a different process / host. The current resolver is single-pass (one render per value), so cross-variable references only resolve when the referenced key sorts earlier.",
       "default": null,
       "type": [
         "object",
@@ -956,6 +956,16 @@
             "boolean",
             "null"
           ]
+        },
+        "templated_files": {
+          "description": "Templated files scoped to this archive entry. Rendered per-archive (so each entry's `dst:` and contents see `.Os`, `.Arch`, `.Target`, `.Format`, etc.) and packed into the archive at the rendered `dst:` path. Mirrors GoReleaser Pro's `archives[].templated_files:`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/TemplateFileConfig"
+          }
         },
         "wrap_in_directory": {
           "description": "When set, wrap archive contents in a top-level directory. Accepts `true` (use archive stem as directory name), `false` (no wrapping), or a string template for a custom directory name.",
@@ -6359,12 +6369,11 @@
       ]
     },
     "HooksConfig": {
-      "description": "Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` and `post` lists of hook commands that run around the entire pipeline (not individual stages).",
+      "description": "Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).\n\nThe canonical key is `hooks:` for both `before:` and `after:` to match GoReleaser Pro (`hooks.md`). The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see [`HooksConfig::merge_hook_aliases`]).",
       "type": "object",
       "properties": {
         "hooks": {
-          "description": "Commands to run before the pipeline or stage starts. Matches GoReleaser `before.hooks` canonically.",
-          "default": null,
+          "description": "Commands to run when the block fires. The wire format accepts either `hooks:` (canonical, GoReleaser-aligned) or the legacy `post:` spelling; both fold into this field at parse time.",
           "type": [
             "array",
             "null"
@@ -6374,8 +6383,7 @@
           }
         },
         "post": {
-          "description": "Commands to run after the pipeline or stage completes. Anodizer extension (GoReleaser has no top-level `after:` block).",
-          "default": null,
+          "description": "Legacy alias for `hooks:` (anodizer pre-v0.4). Always `None` after parsing — `merge_hook_aliases` collapses it into `hooks`. Present on the struct only because `Deserialize` writes through it before the fold step.",
           "type": [
             "array",
             "null"
@@ -12209,6 +12217,18 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip this entry when truthy. Accepts a literal bool or a Tera template that renders to `\"true\"`/`\"false\"` (e.g. `'{{ if eq .Os \"windows\" }}true{{ end }}'`). Mirrors the per-entry `skip:` pattern used by `ChangelogConfig`, `ChecksumConfig`, and the publishers.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "src": {

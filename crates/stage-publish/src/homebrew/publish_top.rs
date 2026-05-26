@@ -232,8 +232,18 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
             url: &url,
             url_extras: &url_extras_top,
             url_extras_indented: &url_extras_arch,
-            homepage: cask_cfg.homepage.as_deref(),
-            description: cask_cfg.description.as_deref(),
+            // Per-cask homepage / description fall back to the project's
+            // global `metadata.homepage` / `metadata.description` so a
+            // monorepo only needs to declare those once. Same pattern the
+            // formula publisher uses (`publish_formula::resolve_homebrew_metadata`).
+            homepage: cask_cfg
+                .homepage
+                .as_deref()
+                .or_else(|| ctx.config.meta_homepage()),
+            description: cask_cfg
+                .description
+                .as_deref()
+                .or_else(|| ctx.config.meta_description()),
             app: cask_cfg.app.as_deref(),
             binaries,
             caveats: cask_cfg.caveats.as_deref(),

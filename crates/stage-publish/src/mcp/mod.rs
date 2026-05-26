@@ -139,6 +139,10 @@ pub(crate) fn publish_with_registry(
     let mut mcp_rendered: McpConfig = mcp.clone();
     render_strings(ctx, &mut mcp_rendered)?;
     infer_repository_from_release(ctx, &mut mcp_rendered);
+    // Fall back to project-level metadata for the description / homepage
+    // when the MCP block leaves them unset, so a single `metadata:` block
+    // can drive every publisher in a monorepo.
+    fill_from_project_metadata(ctx, &mut mcp_rendered);
 
     let rendered_name = mcp_rendered.name.clone().unwrap_or_default();
 
@@ -203,6 +207,23 @@ pub(crate) fn publish_with_registry(
         version: ctx.version(),
         auth_method: mcp_rendered.auth.method,
     }))
+}
+
+/// Populate `mcp.description` and `mcp.homepage` from the project's
+/// top-level `metadata:` block when the MCP config leaves them empty.
+/// Mirrors the fallback pattern used by Homebrew (formula + cask),
+/// Snapcraft, and DockerHub.
+fn fill_from_project_metadata(ctx: &Context, mcp: &mut McpConfig) {
+    if mcp.description.as_deref().is_none_or(str::is_empty)
+        && let Some(d) = ctx.config.meta_description()
+    {
+        mcp.description = Some(d.to_string());
+    }
+    if mcp.homepage.as_deref().is_none_or(str::is_empty)
+        && let Some(h) = ctx.config.meta_homepage()
+    {
+        mcp.homepage = Some(h.to_string());
+    }
 }
 
 /// Fill in `mcp.repository.url` / `mcp.repository.source` from the configured

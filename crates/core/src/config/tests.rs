@@ -4446,6 +4446,52 @@ crates:
     assert!(config.variables.is_none());
 }
 
+// ---- Project metadata accessor + fallback tests ------------------------
+//
+// `meta_homepage` / `meta_description` / `meta_license` back the
+// `or_else(|| ctx.config.meta_*())` fallbacks that the per-publisher
+// blocks (homebrew formula + cask, scoop, dockerhub, mcp, nix, …)
+// consult when their own field is unset. These tests pin the
+// reference shape so a regression in the accessor (renaming
+// metadata fields, switching MetadataConfig storage) surfaces
+// before the publishers silently emit empty homepage / description
+// strings.
+
+#[test]
+fn test_meta_accessors_return_values_when_set() {
+    let yaml = r#"
+project_name: test
+metadata:
+  homepage: "https://example.com"
+  description: "shared description"
+  license: "MIT"
+  maintainers:
+    - "Alice <a@example.com>"
+crates: []
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert_eq!(config.meta_homepage(), Some("https://example.com"));
+    assert_eq!(config.meta_description(), Some("shared description"));
+    assert_eq!(config.meta_license(), Some("MIT"));
+    assert_eq!(
+        config.meta_first_maintainer(),
+        Some("Alice <a@example.com>")
+    );
+}
+
+#[test]
+fn test_meta_accessors_return_none_when_metadata_omitted() {
+    let yaml = r#"
+project_name: test
+crates: []
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(config.meta_homepage().is_none());
+    assert!(config.meta_description().is_none());
+    assert!(config.meta_license().is_none());
+    assert!(config.meta_first_maintainer().is_none());
+}
+
 // ---- SnapcraftConfig disable StringOrBool tests ----
 
 #[test]

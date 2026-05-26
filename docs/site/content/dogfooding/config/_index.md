@@ -76,7 +76,7 @@ partial:
 | `includes[].from_file` | ✅ Verified | [`crates/core/src/config/mod.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/config/mod.rs) (`IncludeSpec`, parsed from `includes:`) |
 | `includes[].from_url` | 🤝 Help wanted | No live config pulls a remote include |
 | `before` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`before.hooks` runs `cargo fmt --check`, `clippy`, `test`) |
-| `after` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`after.post` echo) |
+| `after` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`after.hooks` echo) |
 | `build.hooks.pre` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (archive `hooks.before`) |
 | `build.hooks.post` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (archive `hooks.after`) |
 | `snapshot.name_template` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`snapshot.version_template`) |

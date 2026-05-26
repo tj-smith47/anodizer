@@ -1953,6 +1953,8 @@ crates: []
 
 #[test]
 fn test_parse_hooks_after() {
+    // Legacy `after.post:` is folded into `after.hooks:` at parse time
+    // (back-compat alias for GoReleaser-style `after.hooks:`).
     let yaml = r#"
 project_name: test
 after:
@@ -1963,9 +1965,30 @@ crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let after = config.after.as_ref().unwrap();
-    let post = after.post.as_ref().unwrap();
-    assert_eq!(post.len(), 2);
-    assert_eq!(post[0], "echo done");
+    let hooks = after
+        .hooks
+        .as_ref()
+        .expect("after.post should fold into after.hooks");
+    assert_eq!(hooks.len(), 2);
+    assert_eq!(hooks[0], "echo done");
+    assert!(after.post.is_none(), "after.post should be empty post-fold");
+}
+
+#[test]
+fn test_parse_hooks_after_canonical_hooks_spelling() {
+    // Canonical `after.hooks:` (matches GoReleaser Pro docs).
+    let yaml = r#"
+project_name: test
+after:
+  hooks:
+    - "echo done"
+crates: []
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let after = config.after.as_ref().unwrap();
+    let hooks = after.hooks.as_ref().unwrap();
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0], "echo done");
 }
 
 #[test]
@@ -1993,8 +2016,9 @@ crates: []
         1
     );
     assert_eq!(
-        config.after.as_ref().unwrap().post.as_ref().unwrap().len(),
-        1
+        config.after.as_ref().unwrap().hooks.as_ref().unwrap().len(),
+        1,
+        "after.post folds into after.hooks"
     );
 }
 
@@ -2728,8 +2752,9 @@ tag_template = "v{{ .Version }}"
         2
     );
     assert_eq!(
-        config.after.as_ref().unwrap().post.as_ref().unwrap().len(),
-        1
+        config.after.as_ref().unwrap().hooks.as_ref().unwrap().len(),
+        1,
+        "TOML after.post folds into after.hooks"
     );
 }
 

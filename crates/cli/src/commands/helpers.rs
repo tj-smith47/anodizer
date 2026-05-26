@@ -584,10 +584,23 @@ pub fn setup_env(
     }
 
     // Populate user-defined custom variables into template context.
+    //
+    // Iteration is sorted by key (BTreeMap) so cross-variable references
+    // resolve deterministically: a value like `b: "{{ .Var.a }}_v2"`
+    // sees `a` IF `a` sorts earlier than `b`. The single-pass model is
+    // documented behaviour — variables that reference other variables
+    // must rely on the alphabetical-key ordering, or refer through
+    // `{{ .Env.* }}`.
+    //
+    // Render errors are hard: an unknown variable / typo in a template
+    // expression (`{{ .Tagg }}`) fails the load instead of silently
+    // passing the literal `{{ }}` through to a publisher (homebrew,
+    // scoop, nix, …) where it would surface only after publication.
     if let Some(ref vars_map) = config.variables {
         for (key, value) in vars_map {
-            // Render variable values through templates (they may reference env vars or other template vars)
-            let rendered = ctx.render_template(value).unwrap_or_else(|_| value.clone());
+            let rendered = ctx
+                .render_template(value)
+                .with_context(|| format!("variables.{key}: failed to render template '{value}'"))?;
             ctx.template_vars_mut().set_custom_var(key, &rendered);
         }
     }
@@ -1093,19 +1106,22 @@ mod tests {
     use anodizer_core::context::ContextOptions;
     use anodizer_core::scm::ScmTokenType;
 
-    /// `Config.variables` is a `HashMap<String, String>` whose iteration order
-    /// is randomized per process. The determinism harness fingerprints
+    /// `Config.variables` is stored as a `BTreeMap` so iteration is
+    /// always sorted by key. The determinism harness fingerprints
     /// `dist/config.yaml`, so two runs in the same workspace must emit
     /// byte-identical YAML. `write_effective_config` is expected to route
     /// the serialized config through `sort_yaml_mapping`, alphabetising the
     /// keys of every mapping (top-level AND nested). Without that, the
-    /// `variables:` block's emit order tracks HashMap randomness and drifts.
+    /// `variables:` block's emit order drifts even though the source map
+    /// is sorted.
     #[test]
     fn write_effective_config_emits_sorted_keys() {
+        use std::collections::BTreeMap;
         let tmp = tempfile::tempdir().unwrap();
-        let mut variables = HashMap::new();
-        // Insert in deliberately non-alphabetical order so the test would
-        // pass on raw HashMap iteration only by luck (1 / N!).
+        let mut variables = BTreeMap::new();
+        // Insert in deliberately non-alphabetical order — the BTreeMap's
+        // sorted iteration normalises this for the input side; the test
+        // still verifies that `sort_yaml_mapping` sorts NESTED maps too.
         variables.insert("zeta".to_string(), "1".to_string());
         variables.insert("alpha".to_string(), "2".to_string());
         variables.insert("mu".to_string(), "3".to_string());
@@ -1119,11 +1135,7 @@ mod tests {
         };
         let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
 
-        // Build a second config with the same contents inserted in REVERSE
-        // order. Two HashMaps containing the same keys may still iterate
-        // differently depending on insertion history; the sort step must
-        // collapse both to the same byte stream.
-        let mut variables_reversed = HashMap::new();
+        let mut variables_reversed = BTreeMap::new();
         for key in ["nu", "beta", "mu", "alpha", "zeta"] {
             let v = match key {
                 "zeta" => "1",
@@ -1995,5 +2007,59 @@ list:
             Some("b"),
             "top-level config.env should override defaults.env on duplicate key",
         );
+    }
+
+    /// Strict variable rendering — a template typo (`{{ .Tagg }}` instead
+    /// of `{{ .Tag }}`) used to silently pass the literal string through
+    /// to downstream publishers; the strict path makes it a hard error so
+    /// the user sees the failure at config-load.
+    #[test]
+    fn test_setup_env_variables_template_error_fails_load() {
+        use std::collections::BTreeMap;
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "bad".to_string(),
+            "{{ NoSuchVariable | nonexistent_filter }}".to_string(),
+        );
+        let config = Config {
+            variables: Some(vars),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config.clone(), ContextOptions::default());
+        let log =
+            anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        let err = setup_env(&mut ctx, &config, &log)
+            .expect_err("invalid variable template must fail the load");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("variables.bad"),
+            "error should name the offending variable key, got: {msg}"
+        );
+    }
+
+    /// Deterministic order — a value referencing an earlier-sorting key
+    /// resolves correctly because the BTreeMap iterates in alphabetical
+    /// order. (`b` references `a`; `a` sorts first, so `b` sees `a`.)
+    #[test]
+    fn test_setup_env_variables_resolve_in_sorted_order() {
+        use std::collections::BTreeMap;
+        let mut vars = BTreeMap::new();
+        // Insert in reverse order to confirm BTreeMap iteration order
+        // (not insertion order) drives resolution.
+        vars.insert("b".to_string(), "{{ Var.a }}_v2".to_string());
+        vars.insert("a".to_string(), "hello".to_string());
+        let config = Config {
+            project_name: "p".to_string(),
+            variables: Some(vars),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config.clone(), ContextOptions::default());
+        let log =
+            anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        setup_env(&mut ctx, &config, &log).expect("setup_env should succeed");
+        // `b` references `a` and `a` sorts first, so the resolved value
+        // for `b` is `hello_v2`.
+        let rendered = ctx.render_template("{{ Var.b }}").expect("render Var.b");
+        assert_eq!(rendered, "hello_v2");
     }
 }

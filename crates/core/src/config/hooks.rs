@@ -6,17 +6,89 @@ use serde::{Deserialize, Deserializer, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Top-level lifecycle hooks for `before` and `after` blocks.
-/// Each block has `pre` and `post` lists of hook commands that run around the
+/// Each block carries a list of hook commands that run around the
 /// entire pipeline (not individual stages).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+///
+/// The canonical key is `hooks:` for both `before:` and `after:` to
+/// match GoReleaser Pro (`hooks.md`). The `post:` spelling is accepted
+/// as a serde alias on `hooks` for back-compat with the previous
+/// anodizer spelling; users with `after: { post: [...] }` keep working
+/// and a deprecation warning is logged when both spellings appear in
+/// the same block (see [`HooksConfig::merge_hook_aliases`]).
+#[derive(Debug, Clone, PartialEq, Default, JsonSchema)]
 pub struct HooksConfig {
-    /// Commands to run before the pipeline or stage starts. Matches GoReleaser
-    /// `before.hooks` canonically.
+    /// Commands to run when the block fires. The wire format accepts
+    /// either `hooks:` (canonical, GoReleaser-aligned) or the legacy
+    /// `post:` spelling; both fold into this field at parse time.
     pub hooks: Option<Vec<HookEntry>>,
-    /// Commands to run after the pipeline or stage completes. Anodizer extension
-    /// (GoReleaser has no top-level `after:` block).
+    /// Legacy alias for `hooks:` (anodizer pre-v0.4). Always `None`
+    /// after parsing — `merge_hook_aliases` collapses it into `hooks`.
+    /// Present on the struct only because `Deserialize` writes through
+    /// it before the fold step.
+    #[doc(hidden)]
     pub post: Option<Vec<HookEntry>>,
+}
+
+impl HooksConfig {
+    /// Fold the deprecated `post:` spelling into `hooks:` so downstream
+    /// readers consult one field. Emits a `tracing::warn!` when both
+    /// spellings appear in the same block (the user almost certainly
+    /// meant one or the other).
+    fn merge_hook_aliases(&mut self) {
+        let has_hooks = self.hooks.as_ref().is_some_and(|v| !v.is_empty());
+        let has_post = self.post.as_ref().is_some_and(|v| !v.is_empty());
+        if has_hooks && has_post {
+            tracing::warn!(
+                "DEPRECATION: top-level hooks block has both 'hooks:' and 'post:' \
+                 — using 'hooks:' and ignoring 'post:'. The 'post:' spelling is \
+                 deprecated; remove it from your config."
+            );
+            self.post = None;
+        } else if has_post {
+            tracing::warn!(
+                "DEPRECATION: top-level 'after.post:' / 'before.post:' is renamed to \
+                 'hooks:' for GoReleaser parity. The old spelling still works but \
+                 will be removed in a future release; switch to 'hooks:'."
+            );
+            self.hooks = self.post.take();
+        }
+    }
+}
+
+impl Serialize for HooksConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let count = self.hooks.is_some() as usize + self.post.is_some() as usize;
+        let mut state = serializer.serialize_struct("HooksConfig", count)?;
+        if let Some(ref h) = self.hooks {
+            state.serialize_field("hooks", h)?;
+        }
+        if let Some(ref p) = self.post {
+            state.serialize_field("post", p)?;
+        }
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for HooksConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct Raw {
+            hooks: Option<Vec<HookEntry>>,
+            post: Option<Vec<HookEntry>>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let mut out = HooksConfig {
+            hooks: raw.hooks,
+            post: raw.post,
+        };
+        out.merge_hook_aliases();
+        Ok(out)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]

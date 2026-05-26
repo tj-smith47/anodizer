@@ -59,16 +59,20 @@ List of `KEY=VALUE` strings (matches GoReleaser): `env: ["MY_VAR=hello", "DEPLOY
 | `template_files` | list of TemplateFileConfig | — | Template files to render and include as release artifacts. File contents are processed through the template engine. |
 | `uploads` | list of UploadConfig | — | Generic HTTP upload configurations. |
 | `upx` | list of UpxConfig | `[]` | UPX binary compression configurations. |
-| `variables` | map | — | Custom template variables accessible as {{ .Var.key }} in templates. Provides a way to define reusable values, especially useful with config includes. |
+| `variables` | map | — | Custom template variables accessible as `{{ .Var.<key> }}` in templates. Provides a way to define reusable values, especially useful with config includes.
+
+Stored as a `BTreeMap` so rendering iterates in deterministic (sorted) key order — without this guarantee, a value that references another variable (`b: "{{ .Var.a }}_v2"`) could render before its dependency on a different process / host. The current resolver is single-pass (one render per value), so cross-variable references only resolve when the referenced key sorts earlier. |
 | `version` | integer | — | Schema version. Currently supports 1 (implicit default) and 2. |
 | `workspaces` | list of WorkspaceConfig | — | Independent workspace roots in a monorepo. |
 
 ## `after`
-Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` and `post` lists of hook commands that run around the entire pipeline (not individual stages).
+Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).
+
+The canonical key is `hooks:` for both `before:` and `after:` to match GoReleaser Pro (`hooks.md`). The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see [`HooksConfig::merge_hook_aliases`]).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `hooks` | list of HookEntry | — | Commands to run before the pipeline or stage starts. Matches GoReleaser `before.hooks` canonically. |
-| `post` | list of HookEntry | — | Commands to run after the pipeline or stage completes. Anodizer extension (GoReleaser has no top-level `after:` block). |
+| `hooks` | list of HookEntry | — | Commands to run when the block fires. The wire format accepts either `hooks:` (canonical, GoReleaser-aligned) or the legacy `post:` spelling; both fold into this field at parse time. |
+| `post` | list of HookEntry | — | Legacy alias for `hooks:` (anodizer pre-v0.4). Always `None` after parsing — `merge_hook_aliases` collapses it into `hooks`. Present on the struct only because `Deserialize` writes through it before the fold step. |
 
 ## `announce`
 | Field | Type | Default | Description |
@@ -154,11 +158,13 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `url_template` | string | — | Custom URL template for download URLs. |
 
 ## `before`
-Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` and `post` lists of hook commands that run around the entire pipeline (not individual stages).
+Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).
+
+The canonical key is `hooks:` for both `before:` and `after:` to match GoReleaser Pro (`hooks.md`). The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see [`HooksConfig::merge_hook_aliases`]).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `hooks` | list of HookEntry | — | Commands to run before the pipeline or stage starts. Matches GoReleaser `before.hooks` canonically. |
-| `post` | list of HookEntry | — | Commands to run after the pipeline or stage completes. Anodizer extension (GoReleaser has no top-level `after:` block). |
+| `hooks` | list of HookEntry | — | Commands to run when the block fires. The wire format accepts either `hooks:` (canonical, GoReleaser-aligned) or the legacy `post:` spelling; both fold into this field at parse time. |
+| `post` | list of HookEntry | — | Legacy alias for `hooks:` (anodizer pre-v0.4). Always `None` after parsing — `merge_hook_aliases` collapses it into `hooks`. Present on the struct only because `Deserialize` writes through it before the fold step. |
 
 ## `binary_signs`
 | Field | Type | Default | Description |
@@ -633,6 +639,7 @@ GoReleaser Pro feature: all rendered template files are uploaded to the release 
 | `dst` | string | — | Destination filename, prefixed with the dist directory. Templates: allowed. |
 | `id` | string | — | Identifier for this template file entry (default: "default"). |
 | `mode` | string | — | File permissions in octal notation as a string, e.g. `"0755"` (default: `"0655"`). Parsed at runtime via `parse_octal_mode()` to avoid YAML interpreting as decimal. |
+| `skip` | StringOrBool | — | Skip this entry when truthy. Accepts a literal bool or a Tera template that renders to `"true"`/`"false"` (e.g. `'{{ if eq .Os "windows" }}true{{ end }}'`). Mirrors the per-entry `skip:` pattern used by `ChangelogConfig`, `ChecksumConfig`, and the publishers. |
 | `src` | string | — | Source template file path. The file contents are rendered through the template engine. Templates: allowed (in path itself). |
 
 ## `uploads`

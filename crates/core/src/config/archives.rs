@@ -248,6 +248,11 @@ pub struct ArchiveConfig {
     pub allow_different_binary_count: Option<bool>,
     /// Pre/post archive hooks (`before`/`after`).
     pub hooks: Option<ArchiveHooksConfig>,
+    /// Templated files scoped to this archive entry. Rendered per-archive
+    /// (so each entry's `dst:` and contents see `.Os`, `.Arch`, `.Target`,
+    /// `.Format`, etc.) and packed into the archive at the rendered `dst:`
+    /// path. Mirrors GoReleaser Pro's `archives[].templated_files:`.
+    pub templated_files: Option<Vec<super::TemplateFileConfig>>,
 }
 
 /// Fold a deprecated singular `format: tar.gz` into the canonical
@@ -308,6 +313,7 @@ impl<'de> Deserialize<'de> for ArchiveConfig {
             strip_binary_directory: Option<bool>,
             allow_different_binary_count: Option<bool>,
             hooks: Option<ArchiveHooksConfig>,
+            templated_files: Option<Vec<super::TemplateFileConfig>>,
         }
 
         let raw = Raw::deserialize(deserializer)?;
@@ -345,6 +351,7 @@ impl<'de> Deserialize<'de> for ArchiveConfig {
             strip_binary_directory: raw.strip_binary_directory,
             allow_different_binary_count: raw.allow_different_binary_count,
             hooks: raw.hooks,
+            templated_files: raw.templated_files,
         })
     }
 }

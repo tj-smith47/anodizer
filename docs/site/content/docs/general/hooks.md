@@ -30,6 +30,14 @@ after:
 - Hooks are skipped in `--dry-run` mode (logged but not executed)
 - Environment variables from the `env` config section are available to hooks
 
+## Back-compat alias: `post:`
+
+Older anodizer configs use `after.post:` instead of `after.hooks:`. The
+old spelling is still accepted (folded into `hooks:` at parse time with
+a deprecation warning) so existing configs keep working, but new
+configs should match GoReleaser Pro and use `hooks:` for both `before:`
+and `after:` blocks.
+
 ## Use cases
 
 - Pre-flight checks: `cargo fmt --check`, `cargo clippy`
