@@ -1,4 +1,4 @@
-use anodizer_cli::{CheckCmd, Cli, Commands, detect_host_target, num_cpus};
+use anodizer_cli::{CheckCmd, Cli, Commands, num_cpus};
 use anodizer_core::context::{VALID_BUILD_SKIPS, VALID_RELEASE_SKIPS, validate_skip_values};
 
 use clap::{CommandFactory, FromArgMatches};
@@ -37,28 +37,48 @@ fn parse_targets_csv(raw: Option<&str>) -> Result<Option<Vec<String>>, String> {
 }
 
 /// Resolve --single-target flag to the actual host target triple.
+///
+/// Honours GoReleaser's priority chain
+/// (see `anodizer_core::partial::resolve_host_target_with_env`):
+/// `TARGET=<triple>` > `GGOOS`/`GGOARCH` host-rewrite > `rustc -vV`.
+/// CI jobs targeting a non-host triple can therefore drive
+/// `--single-target` with `TARGET=x86_64-unknown-linux-musl` without
+/// changing the runner's actual architecture, matching the GR escape
+/// hatch documented under `goreleaser build --single-target`.
+///
+/// The resolved triple is also exported as `TARGET=<triple>` to the
+/// process environment so any downstream hook subprocess (`hooks.before`,
+/// per-build `pre`/`post`) inherits the active target — parity with
+/// GR's `partial.Pipe.Run` populating `ctx.PartialTarget` for the rest
+/// of the pipeline.
 fn resolve_single_target(single_target: bool) -> Option<String> {
-    if single_target {
-        match detect_host_target() {
-            Ok(triple) => {
-                eprintln!(
-                    "{} building only for host target: {}",
-                    "Note:".cyan().bold(),
-                    triple
-                );
-                Some(triple)
+    if !single_target {
+        return None;
+    }
+    match anodizer_core::partial::resolve_host_target() {
+        Ok(triple) => {
+            eprintln!(
+                "{} building only for host target: {}",
+                "Note:".cyan().bold(),
+                triple
+            );
+            // SAFETY: single-threaded CLI startup, well before any
+            // worker threads or pipeline workers spawn. Setting `TARGET`
+            // here is required so user hooks see the resolved triple,
+            // matching GoReleaser's `cmd/build.go` behaviour.
+            unsafe {
+                std::env::set_var("TARGET", &triple);
             }
-            Err(e) => {
-                eprintln!(
-                    "{} failed to detect host target: {}",
-                    "Error:".red().bold(),
-                    e
-                );
-                std::process::exit(1);
-            }
+            Some(triple)
         }
-    } else {
-        None
+        Err(e) => {
+            eprintln!(
+                "{} failed to detect host target: {}",
+                "Error:".red().bold(),
+                e
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -608,7 +628,7 @@ mod tests {
 
     #[test]
     fn test_detect_host_target_returns_triple() {
-        let result = detect_host_target();
+        let result = anodizer_cli::detect_host_target();
         assert!(
             result.is_ok(),
             "detect_host_target should succeed: {:?}",

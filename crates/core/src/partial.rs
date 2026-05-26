@@ -167,6 +167,119 @@ pub fn detect_host_target() -> Result<String> {
     anyhow::bail!("could not detect host target from `rustc -vV` output")
 }
 
+/// Resolve the effective host target triple for `--single-target`.
+///
+/// Priority chain (mirrors GoReleaser's `partial.Pipe.Run` +
+/// `getGoEnvFilter` / `findRuntime` so a config originally written for GR
+/// keeps the same CI escape hatches under anodizer):
+/// 1. `TARGET=<triple>` env var (exact triple, highest priority).
+/// 2. `GGOOS` / `GGOARCH` filter-only aliases combined with the host
+///    triple to synthesize a `<arch>-...-<os>...` shape that
+///    [`find_runtime_target`] can later match against configured targets.
+///    These do NOT bleed into hook subprocesses' `GOOS` / `GOARCH`.
+/// 3. `rustc -vV` host detection.
+///
+/// `GGOOS`/`GGOARCH` are honored on a best-effort basis — without a real
+/// `GOOS` -> rust-triple mapping the synthesized string is only useful
+/// when paired with the alias-table fallback in
+/// [`find_runtime_target`]. When both env vars are absent the resolver
+/// returns the raw `rustc -vV` host triple.
+pub fn resolve_host_target_with_env<E: EnvSource + ?Sized>(env: &E) -> Result<String> {
+    // Priority 1: TARGET env var - exact triple override.
+    if let Some(t) = env.var("TARGET")
+        && !t.trim().is_empty()
+    {
+        return Ok(t);
+    }
+
+    // Priority 2 + 3: detect the host first; if `GGOOS`/`GGOARCH` were
+    // supplied as filter-only overrides, rewrite the OS/arch components
+    // of the host triple so downstream filtering picks up the override.
+    let host = detect_host_target()?;
+    let ggoos = env.var("GGOOS").filter(|s| !s.trim().is_empty());
+    let ggoarch = env.var("GGOARCH").filter(|s| !s.trim().is_empty());
+    if ggoos.is_some() || ggoarch.is_some() {
+        return Ok(synthesize_triple_with_overrides(
+            &host,
+            ggoos.as_deref(),
+            ggoarch.as_deref(),
+        ));
+    }
+    Ok(host)
+}
+
+/// Process-env form of [`resolve_host_target_with_env`].
+pub fn resolve_host_target() -> Result<String> {
+    resolve_host_target_with_env(&crate::ProcessEnvSource)
+}
+
+/// Best-effort host->triple fuzzy matcher for `--single-target`.
+///
+/// Mirrors GoReleaser's `partial.findRuntime` (OSS): walks
+/// `goos -> {macos, darwin}` and `goarch -> {x86_64, amd64, arm64,
+/// aarch64, 386 -> i686/i586/i386}` alias tables to find a configured
+/// target that matches the runtime even when the user's `targets:`
+/// list spells a semantically-equivalent but lexically-different triple
+/// than `rustc -vV`. Returns the first configured target whose
+/// `(os, arch)` (via [`crate::target::map_target`]) matches the host
+/// after alias normalization, or `None` when nothing matches.
+pub fn find_runtime_target(host: &str, configured: &[String]) -> Option<String> {
+    let (host_os, host_arch) = crate::target::map_target(host);
+    configured
+        .iter()
+        .find(|t| {
+            let (t_os, t_arch) = crate::target::map_target(t);
+            t_os == host_os && t_arch == host_arch
+        })
+        .cloned()
+}
+
+/// Replace the OS / arch first-component of `host_triple` with the
+/// supplied `GGOOS` / `GGOARCH` overrides so the synthesized string
+/// passes through [`find_runtime_target`] correctly.
+///
+/// The mapping accepts both GoReleaser-style aliases (`darwin`, `amd64`,
+/// `arm64`, `386`) and their rust-triple spellings (`apple-darwin`,
+/// `x86_64`, `aarch64`, `i686`). Unknown values are passed through
+/// verbatim — best-effort behaviour matching `findRuntime`.
+fn synthesize_triple_with_overrides(
+    host_triple: &str,
+    goos: Option<&str>,
+    goarch: Option<&str>,
+) -> String {
+    // Map alias -> canonical rust component when we recognize it.
+    let arch_token = goarch.map(|a| match a {
+        "amd64" | "x86_64" => "x86_64",
+        "arm64" | "aarch64" => "aarch64",
+        "386" | "i686" => "i686",
+        other => other,
+    });
+    let os_token = goos.map(|o| match o {
+        "darwin" | "macos" => "apple-darwin",
+        "linux" => "unknown-linux-gnu",
+        "windows" => "pc-windows-msvc",
+        other => other,
+    });
+
+    // Pull the original components apart.
+    let parts: Vec<&str> = host_triple.split('-').collect();
+    let original_arch = parts.first().copied().unwrap_or("");
+    let original_rest = if parts.len() > 1 {
+        parts[1..].join("-")
+    } else {
+        String::new()
+    };
+
+    let new_arch = arch_token.unwrap_or(original_arch);
+    let new_rest = os_token.map(str::to_string).unwrap_or(original_rest);
+
+    if new_rest.is_empty() {
+        new_arch.to_string()
+    } else {
+        format!("{}-{}", new_arch, new_rest)
+    }
+}
+
 /// Suggest a GitHub Actions runner for a given OS.
 pub fn suggest_runner(os: &str) -> &'static str {
     match os {
@@ -462,5 +575,92 @@ mod tests {
         assert_eq!(suggest_runner("darwin"), "macos-latest");
         assert_eq!(suggest_runner("windows"), "windows-latest");
         assert_eq!(suggest_runner("freebsd"), "ubuntu-latest");
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_host_target_with_env (--single-target path)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_host_target_honours_target_env_override() {
+        let env = crate::MapEnvSource::new().with("TARGET", "x86_64-unknown-linux-musl");
+        let triple = resolve_host_target_with_env(&env).unwrap();
+        assert_eq!(triple, "x86_64-unknown-linux-musl");
+    }
+
+    #[test]
+    fn resolve_host_target_target_env_wins_over_ggoos() {
+        let env = crate::MapEnvSource::new()
+            .with("TARGET", "aarch64-apple-darwin")
+            .with("GGOOS", "linux")
+            .with("GGOARCH", "amd64");
+        let triple = resolve_host_target_with_env(&env).unwrap();
+        assert_eq!(triple, "aarch64-apple-darwin");
+    }
+
+    #[test]
+    fn resolve_host_target_blank_target_falls_through() {
+        // A whitespace-only TARGET should be ignored (matches GR's
+        // `if t := os.Getenv("TARGET"); t != ""` early-return).
+        let env = crate::MapEnvSource::new().with("TARGET", "   ");
+        let triple = resolve_host_target_with_env(&env).unwrap();
+        assert!(triple.contains('-'), "fell back to rustc -vV: {triple}");
+    }
+
+    #[test]
+    fn ggoos_overrides_host_os_component() {
+        // No TARGET set; GGOOS=darwin should rewrite the host triple's
+        // OS slot to `apple-darwin`.
+        let synthesized = synthesize_triple_with_overrides(
+            "x86_64-unknown-linux-gnu",
+            Some("darwin"),
+            Some("arm64"),
+        );
+        assert_eq!(synthesized, "aarch64-apple-darwin");
+    }
+
+    #[test]
+    fn ggoos_alone_keeps_host_arch() {
+        let synthesized =
+            synthesize_triple_with_overrides("x86_64-unknown-linux-gnu", Some("windows"), None);
+        assert_eq!(synthesized, "x86_64-pc-windows-msvc");
+    }
+
+    #[test]
+    fn ggoarch_alone_keeps_host_os() {
+        let synthesized =
+            synthesize_triple_with_overrides("x86_64-unknown-linux-gnu", None, Some("arm64"));
+        assert_eq!(synthesized, "aarch64-unknown-linux-gnu");
+    }
+
+    // -----------------------------------------------------------------------
+    // find_runtime_target (host-alias fallback for --single-target)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn find_runtime_matches_exact() {
+        let configured = vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "aarch64-apple-darwin".to_string(),
+        ];
+        let m = find_runtime_target("x86_64-unknown-linux-gnu", &configured);
+        assert_eq!(m.as_deref(), Some("x86_64-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn find_runtime_matches_by_alias() {
+        // Host says `x86_64-unknown-linux-musl`; configured target uses
+        // `x86_64-unknown-linux-gnu`. Both map to `(linux, amd64)` so
+        // the alias matcher should pair them.
+        let configured = vec!["x86_64-unknown-linux-gnu".to_string()];
+        let m = find_runtime_target("x86_64-unknown-linux-musl", &configured);
+        assert_eq!(m.as_deref(), Some("x86_64-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn find_runtime_returns_none_when_no_match() {
+        let configured = vec!["aarch64-apple-darwin".to_string()];
+        let m = find_runtime_target("x86_64-unknown-linux-gnu", &configured);
+        assert!(m.is_none());
     }
 }

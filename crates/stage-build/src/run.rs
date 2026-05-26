@@ -300,16 +300,43 @@ fn plan_build_jobs(
                 Vec::new()
             };
 
-            // --single-target: filter targets to only the specified triple
+            // --single-target: filter targets to only the specified triple.
+            //
+            // Step 1 — exact match. Step 2 — fall back to a best-effort
+            // (os, arch) alias-table match via
+            // `anodizer_core::partial::find_runtime_target` so a config
+            // listing `x86_64-apple-darwin` still picks up a host triple
+            // spelled differently by `rustc -vV` (mirrors GR's
+            // `partial.findRuntime` OS / arch alias tables). When the
+            // user explicitly requested `--single-target` and zero
+            // configured targets match (even after alias resolution),
+            // this is an error: silent "warn then skip" produced empty
+            // `dist/` directories in CI that exited 0.
             if let Some(ref single) = ctx.options.single_target {
                 let had_targets = !targets.is_empty();
-                targets.retain(|t| t == single);
-                if had_targets && targets.is_empty() {
-                    log.warn(&format!(
-                        "--single-target: host triple '{}' not in configured targets for {}/{}, skipping",
-                        single, crate_cfg.name, binary_name_raw
-                    ));
-                    continue;
+                if had_targets {
+                    let original = targets.clone();
+                    targets.retain(|t| t == single);
+                    if targets.is_empty()
+                        && let Some(matched) =
+                            anodizer_core::partial::find_runtime_target(single, &original)
+                    {
+                        log.verbose(&format!(
+                            "--single-target: host '{}' matched configured target '{}' via alias table",
+                            single, matched
+                        ));
+                        targets.push(matched);
+                    }
+                    if targets.is_empty() {
+                        anyhow::bail!(
+                            "--single-target: host triple '{}' is not in configured targets for {}/{} \
+                             (configured: [{}]). Set TARGET=<triple> or update build.targets to include the host.",
+                            single,
+                            crate_cfg.name,
+                            binary_name_raw,
+                            original.join(", ")
+                        );
+                    }
                 }
             }
 
