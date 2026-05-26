@@ -16,10 +16,24 @@
 //! preserved so future rebases can't drift the reference). Re-introduce
 //! it only if a future feature actually queries `/search/users`.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::time::Duration;
+
 use crate::release_log;
 use anodizer_core::EnvSource;
 #[cfg(test)]
 use anodizer_core::ProcessEnvSource;
+
+/// Async sleep callback signature used by [`check_github_rate_limit_with_sleep`].
+/// Production callers pass [`tokio_sleep`]; tests inject a recorder that
+/// captures the requested duration without blocking.
+pub(crate) type SleepFn = Box<dyn Fn(Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+
+/// Production sleep callback — delegates to [`tokio::time::sleep`].
+pub(crate) fn tokio_sleep() -> SleepFn {
+    Box::new(|d| Box::pin(tokio::time::sleep(d)))
+}
 
 /// Compute the seconds to sleep waiting for the GitHub rate-limit window
 /// to reset. Returns `None` when `remaining > threshold` (no sleep needed).
@@ -84,11 +98,29 @@ pub(crate) async fn check_github_rate_limit(client: &reqwest::Client, token: &st
 /// entry point delegates to this via [`ProcessEnvSource`]; tests inject
 /// a [`MapEnvSource`](anodizer_core::MapEnvSource) so the responder
 /// address is read from the map instead of the process env.
+///
+/// Delegates to [`check_github_rate_limit_with_sleep`] with
+/// [`tokio_sleep`] as the sleep callback.
 pub(crate) async fn check_github_rate_limit_with_env<E: EnvSource + ?Sized>(
     client: &reqwest::Client,
     token: &str,
     threshold: u64,
     env: &E,
+) {
+    check_github_rate_limit_with_sleep(client, token, threshold, env, tokio_sleep()).await;
+}
+
+/// Fully-injectable form: env source **and** sleep callback are caller-
+/// supplied. Production callers reach this through
+/// [`check_github_rate_limit_with_env`] (which passes [`tokio_sleep`]);
+/// tests inject a no-op recorder to verify sleep duration without
+/// wall-clock delay.
+pub(crate) async fn check_github_rate_limit_with_sleep<E: EnvSource + ?Sized>(
+    client: &reqwest::Client,
+    token: &str,
+    threshold: u64,
+    env: &E,
+    sleep_fn: SleepFn,
 ) {
     let url = format!("{}/rate_limit", github_api_base_from(env));
     let resp = match client
@@ -133,6 +165,8 @@ pub(crate) async fn check_github_rate_limit_with_env<E: EnvSource + ?Sized>(
         "rate limit almost reached ({remaining} remaining), sleeping for {sleep_secs}s..."
     ));
 
+    let duration = Duration::from_secs(sleep_secs);
+
     // Mirrors GoReleaser PR #6540 (commit
     // `60028b19eb6845164ed7bac541032efe1b07fe14`) — use a single `select`-
     // based wait so a cancellation signal aborts the sleep instead of
@@ -140,7 +174,7 @@ pub(crate) async fn check_github_rate_limit_with_env<E: EnvSource + ?Sized>(
     // both SIGINT (`ctrl_c()`) and SIGTERM (Unix only). On Windows there is
     // no SIGTERM equivalent reachable from `tokio::signal`; ctrl_c covers
     // the only console-cancel signal there.
-    let sleep = tokio::time::sleep(std::time::Duration::from_secs(sleep_secs));
+    let sleep = sleep_fn(duration);
     tokio::pin!(sleep);
     #[cfg(unix)]
     {
@@ -565,6 +599,140 @@ mod compute_tests {
         assert_eq!(
             compute_rate_limit_sleep_secs(0, 100, 2000, 1000),
             Some(1001),
+        );
+    }
+}
+
+#[cfg(test)]
+mod sleep_injection_tests {
+    //! Verify the sleep callback injection wiring.
+    //!
+    //! These tests use [`check_github_rate_limit_with_sleep`] with a
+    //! no-op sleep recorder that captures the requested [`Duration`]
+    //! without blocking. The pure branch logic is already covered by
+    //! `compute_tests`; these tests pin that the wiring between the
+    //! HTTP-response parser and the sleep callback is correct — i.e.
+    //! the computed duration actually reaches the injected callback.
+    use super::*;
+    use anodizer_core::MapEnvSource;
+    use anodizer_core::test_helpers::https_responder::{
+        https_test_client, spawn_oneshot_https_responder,
+    };
+    use std::sync::{Arc, Mutex};
+
+    fn env_with_base(base: &str) -> MapEnvSource {
+        MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", base)
+    }
+
+    fn canned_json_200(body: &str) -> &'static str {
+        let raw = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        Box::leak(raw.into_boxed_str())
+    }
+
+    /// Build a [`SleepFn`] that records every requested duration into
+    /// the returned `Arc<Mutex<Vec<Duration>>>` and resolves immediately.
+    fn recording_sleep() -> (SleepFn, Arc<Mutex<Vec<Duration>>>) {
+        let log: Arc<Mutex<Vec<Duration>>> = Arc::new(Mutex::new(Vec::new()));
+        let log_clone = Arc::clone(&log);
+        let f: SleepFn = Box::new(move |d| {
+            log_clone.lock().unwrap().push(d);
+            Box::pin(async {})
+        });
+        (f, log)
+    }
+
+    /// When `remaining <= threshold` and `reset_epoch > now`, the
+    /// function must sleep for `(reset_epoch - now + 1)` seconds. The
+    /// injected recorder captures the duration so we can assert the
+    /// exact value without wall-clock delay.
+    #[tokio::test]
+    async fn sleep_until_future_reset_records_correct_duration() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is post-epoch")
+            .as_secs();
+        let reset = now + 600; // 10 minutes from now
+        let body = format!(
+            r#"{{"resources":{{"core":{{"remaining":0,"reset":{reset},"limit":5000}}}}}}"#,
+        );
+        let (addr, _calls) =
+            spawn_oneshot_https_responder(vec![canned_json_200(Box::leak(body.into_boxed_str()))]);
+        let env = env_with_base(&format!("https://{addr}"));
+        let client = https_test_client();
+
+        let (sleep_fn, log) = recording_sleep();
+        check_github_rate_limit_with_sleep(&client, "fake-token", 100, &env, sleep_fn).await;
+
+        let recorded = log.lock().unwrap();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "sleep callback must be invoked exactly once"
+        );
+        // `compute_rate_limit_sleep_secs` adds +1 to the diff.
+        // The exact value depends on wall-clock `now` read inside the
+        // function; bound it within a 2-second tolerance window.
+        let secs = recorded[0].as_secs();
+        assert!(
+            (600..=602).contains(&secs),
+            "expected ~601s sleep, got {secs}s",
+        );
+    }
+
+    /// When `reset_epoch <= now` (reset already passed), the 5-second
+    /// floor applies. Pins the past-reset branch through the full
+    /// HTTP + sleep-injection path.
+    #[tokio::test]
+    async fn past_reset_records_five_second_floor() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is post-epoch")
+            .as_secs();
+        let reset = now.saturating_sub(100); // 100 seconds in the past
+        let body = format!(
+            r#"{{"resources":{{"core":{{"remaining":0,"reset":{reset},"limit":5000}}}}}}"#,
+        );
+        let (addr, _calls) =
+            spawn_oneshot_https_responder(vec![canned_json_200(Box::leak(body.into_boxed_str()))]);
+        let env = env_with_base(&format!("https://{addr}"));
+        let client = https_test_client();
+
+        let (sleep_fn, log) = recording_sleep();
+        check_github_rate_limit_with_sleep(&client, "fake-token", 100, &env, sleep_fn).await;
+
+        let recorded = log.lock().unwrap();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "sleep callback must be invoked exactly once"
+        );
+        assert_eq!(
+            recorded[0],
+            Duration::from_secs(5),
+            "past-reset branch must sleep exactly 5s",
+        );
+    }
+
+    /// When `remaining > threshold`, no sleep occurs at all. The
+    /// recorder must remain empty.
+    #[tokio::test]
+    async fn no_sleep_when_remaining_above_threshold() {
+        let body = r#"{"resources":{"core":{"remaining":5000,"reset":9999999999,"limit":5000}}}"#;
+        let (addr, _calls) = spawn_oneshot_https_responder(vec![canned_json_200(body)]);
+        let env = env_with_base(&format!("https://{addr}"));
+        let client = https_test_client();
+
+        let (sleep_fn, log) = recording_sleep();
+        check_github_rate_limit_with_sleep(&client, "fake-token", 100, &env, sleep_fn).await;
+
+        let recorded = log.lock().unwrap();
+        assert!(
+            recorded.is_empty(),
+            "sleep callback must not be invoked when remaining > threshold",
         );
     }
 }
