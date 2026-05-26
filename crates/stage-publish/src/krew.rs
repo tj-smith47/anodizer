@@ -1795,6 +1795,9 @@ impl anodizer_core::Publisher for KrewPublisher {
     fn rollback_scope_needed(&self) -> Option<&'static str> {
         Self::ROLLBACK_SCOPE
     }
+    fn skips_on_nightly(&self) -> bool {
+        true
+    }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");

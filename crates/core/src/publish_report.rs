@@ -70,6 +70,10 @@ pub enum SkipReason {
     Snapshot,
     /// Pipeline ran in `--dry-run` mode; publishers do not fire.
     DryRun,
+    /// Pipeline ran in `--nightly` mode and this publisher opts out of
+    /// nightly publishes (e.g. homebrew, scoop, aur, krew, nix, every
+    /// announcer — matches GoReleaser's nightly skip-list).
+    Nightly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

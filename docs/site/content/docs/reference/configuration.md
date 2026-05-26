@@ -500,8 +500,12 @@ Tags matching this prefix are selected during tag discovery, and the prefix is s
 ## `nightly`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name_template` | string | — | Template for the release name. Default: "{{ .ProjectName }}-nightly" |
-| `tag_name` | string | — | Tag name used for the nightly release. Default: "nightly". |
+| `draft` | bool | — | Override `release.draft` for nightly runs only (GoReleaser v2.12+). `None` falls through to `release.draft`; `Some(v)` overrides it. |
+| `keep_single_release` | bool | — | Delete the prior release that points at the same tag before creating the new one. Default: `false`. Set `true` to maintain a single rolling nightly release on GitHub. Destructive: deletes a published release via the GitHub Releases API. |
+| `name_template` | string | — | Template for the release name. Default: `"{{ ProjectName }}-nightly"`. |
+| `publish_release` | bool | — | Whether to publish a GitHub Release at all. Default: `true`. Set `false` for nightly-only docker pushes / blob uploads. |
+| `tag_name` | string | — | Tag name used for the nightly release. Default: `"nightly"`. Templates allowed (GoReleaser v2.16+). |
+| `version_template` | string | — | Template for the rendered version string the nightly run sets on `Version` / `RawVersion`. GoReleaser default: `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"` — produces commit-immutable nightly versions (two same-day commits yield two distinct nightly versions). |
 
 ## `notarize`
 Top-level notarization configuration supporting both cross-platform (`rcodesign`) and native macOS (`codesign` + `xcrun notarytool`) modes.

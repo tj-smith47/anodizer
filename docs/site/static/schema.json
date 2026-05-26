@@ -9179,16 +9179,48 @@
     "NightlyConfig": {
       "type": "object",
       "properties": {
+        "draft": {
+          "description": "Override `release.draft` for nightly runs only (GoReleaser v2.12+). `None` falls through to `release.draft`; `Some(v)` overrides it.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "keep_single_release": {
+          "description": "Delete the prior release that points at the same tag before creating the new one. Default: `false`. Set `true` to maintain a single rolling nightly release on GitHub. Destructive: deletes a published release via the GitHub Releases API.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "name_template": {
-          "description": "Template for the release name. Default: \"{{ .ProjectName }}-nightly\"",
+          "description": "Template for the release name. Default: `\"{{ ProjectName }}-nightly\"`.",
           "default": null,
           "type": [
             "string",
             "null"
           ]
         },
+        "publish_release": {
+          "description": "Whether to publish a GitHub Release at all. Default: `true`. Set `false` for nightly-only docker pushes / blob uploads.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "tag_name": {
-          "description": "Tag name used for the nightly release. Default: \"nightly\".",
+          "description": "Tag name used for the nightly release. Default: `\"nightly\"`. Templates allowed (GoReleaser v2.16+).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version_template": {
+          "description": "Template for the rendered version string the nightly run sets on `Version` / `RawVersion`. GoReleaser default: `\"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly\"` — produces commit-immutable nightly versions (two same-day commits yield two distinct nightly versions).",
           "default": null,
           "type": [
             "string",

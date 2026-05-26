@@ -174,6 +174,12 @@ pub(crate) struct UploadOpts {
     /// upload loop runs against an existing release left by a prior failed
     /// attempt.
     pub resume_release: bool,
+    /// Nightly `keep_single_release: true`: delete the existing release that
+    /// points at the same tag before creating the new one, so the rolling
+    /// nightly tag always resolves to a single live release. Destructive —
+    /// the prior release (and any unique assets the user uploaded out-of-band)
+    /// is removed via the GitHub Releases API.
+    pub keep_single_release: bool,
 }
 
 /// Outcome for the upload-asset 422 `already_exists` decision branch.
@@ -288,6 +294,7 @@ pub(crate) fn run_github_backend(
         replace_existing_artifacts,
         use_existing_draft,
         resume_release,
+        keep_single_release,
     } = *upload_opts;
     let github = match resolve_release_repo(release_cfg, ctx.token_type, ctx)? {
         Some(r) => r,
@@ -396,6 +403,71 @@ pub(crate) fn run_github_backend(
         } else {
             None
         };
+
+        // Nightly `keep_single_release: true`: delete the prior release at
+        // the same tag so the rolling nightly tag always resolves to a
+        // single live release. Skipped when an existing-draft reuse is in
+        // play (the draft IS the release we'll PATCH). The underlying git
+        // ref is left intact — the new release POST below targets the
+        // same tag, so GitHub reuses the ref instead of leaving a
+        // dangling tag.
+        if keep_single_release && existing_draft.is_none() {
+            let owner = github.owner.clone();
+            let repo = github.name.clone();
+            let tag_owned = tag.to_string();
+            let lookup: Result<octocrab::models::repos::Release, octocrab::Error> =
+                retry_octocrab_call(&policy, "get release by tag (keep_single_release)", Some(&retry_after_capture), || {
+                    let octo = octo.clone();
+                    let owner = owner.clone();
+                    let repo = repo.clone();
+                    let tag_owned = tag_owned.clone();
+                    async move {
+                        octo.repos(&owner, &repo)
+                            .releases()
+                            .get_by_tag(&tag_owned)
+                            .await
+                    }
+                })
+                .await;
+            match lookup {
+                Ok(existing) => {
+                    let existing_id = existing.id.into_inner();
+                    log.status(&format!(
+                        "nightly: keep_single_release — deleting prior release for tag '{}' (id={})",
+                        tag, existing_id
+                    ));
+                    retry_octocrab_call(&policy, "delete release (keep_single_release)", Some(&retry_after_capture), || {
+                        let octo = octo.clone();
+                        let owner = github.owner.clone();
+                        let repo = github.name.clone();
+                        async move {
+                            octo.repos(&owner, &repo)
+                                .releases()
+                                .delete(existing_id)
+                                .await
+                        }
+                    })
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "release: delete prior nightly release for tag '{}' on {}/{}",
+                            tag, github.owner, github.name
+                        )
+                    })?;
+                }
+                Err(err) if is_octocrab_404(&err) => {
+                    // No prior release at this tag — nothing to delete.
+                }
+                Err(err) => {
+                    return Err(anyhow::Error::new(err)).with_context(|| {
+                        format!(
+                            "release: look up existing nightly release by tag '{}' on {}/{}",
+                            tag, github.owner, github.name
+                        )
+                    });
+                }
+            }
+        }
 
         // When updating an existing release, apply mode-based body composition.
         // Also track any existing release found by tag so we can PATCH it
@@ -1743,7 +1815,7 @@ mod spec_struct_surface_tests {
 
     #[test]
     fn upload_opts_round_trips_every_boolean() {
-        // Five independent booleans -> a drift in field order or a silent
+        // Six independent booleans -> a drift in field order or a silent
         // removal would let the caller in `run.rs` send `replace_existing_draft`
         // where `skip_upload` was wanted. Pin each one by name.
         let opts = UploadOpts {
@@ -1752,6 +1824,7 @@ mod spec_struct_surface_tests {
             replace_existing_artifacts: true,
             use_existing_draft: false,
             resume_release: true,
+            keep_single_release: true,
         };
         let copy = opts; // exercises Copy
         assert!(copy.skip_upload);
@@ -1759,6 +1832,7 @@ mod spec_struct_surface_tests {
         assert!(copy.replace_existing_artifacts);
         assert!(!copy.use_existing_draft);
         assert!(copy.resume_release);
+        assert!(copy.keep_single_release);
     }
 
     #[test]
@@ -1773,12 +1847,14 @@ mod spec_struct_surface_tests {
             replace_existing_artifacts: false,
             use_existing_draft: false,
             resume_release: false,
+            keep_single_release: false,
         };
         assert!(!opts.skip_upload);
         assert!(!opts.replace_existing_draft);
         assert!(!opts.replace_existing_artifacts);
         assert!(!opts.use_existing_draft);
         assert!(!opts.resume_release);
+        assert!(!opts.keep_single_release);
     }
 }
 
@@ -2011,6 +2087,7 @@ mod orchestrator_tests {
             replace_existing_artifacts: false,
             use_existing_draft: false,
             resume_release: false,
+            keep_single_release: false,
         }
     }
 

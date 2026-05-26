@@ -722,37 +722,44 @@ fn enforce_dirty_repo_gate(ctx: &Context) -> Result<()> {
     Ok(())
 }
 
-/// Apply nightly overrides after git vars are populated: build the
-/// `<base>-nightly.<YYYYMMDD>` version, override `Version` / `RawVersion`
-/// / `Tag` / `IsNightly` / `ReleaseName` template vars. SDE-aware so the
-/// harness's two from-clean rebuilds stay byte-stable.
+/// Apply nightly overrides after git vars are populated: render
+/// `nightly.version_template` (default mirrors GoReleaser's
+/// `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"`), then override
+/// `Version` / `RawVersion` / `Tag` / `IsNightly` / `ReleaseName` template
+/// vars. SDE-aware so the harness's two from-clean rebuilds stay
+/// byte-stable.
 fn apply_nightly_template_vars(
     ctx: &mut Context,
     config: &Config,
     log: &StageLogger,
 ) -> Result<()> {
     let nightly_cfg = config.nightly.as_ref();
-    let date_str = anodizer_core::sde::resolve_now()
-        .format("%Y%m%d")
-        .to_string();
 
-    let base_version = ctx
-        .template_vars()
-        .get("Version")
-        .cloned()
-        .unwrap_or_else(|| "0.1.0".to_string());
-    let numeric_base = base_version
-        .split('-')
-        .next()
-        .unwrap_or(&base_version)
-        .to_string();
-    let nightly_version = format!("{}-nightly.{}", numeric_base, date_str);
+    // `IsNightly` must be set first so `version_template`, `tag_name`,
+    // and `name_template` can all branch on `{{ if .IsNightly }}…{{ end }}`
+    // when rendered below.
+    ctx.template_vars_mut().set("IsNightly", "true");
 
+    // GoReleaser default: `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"`
+    // — bumps the patch component and embeds the commit SHA so two nightly
+    // runs at different commits produce distinct, commit-immutable
+    // versions. Users can override with `nightly.version_template` to
+    // match their own conventions (e.g. embed `{{ .Date }}` for a
+    // date-stamped scheme).
+    let version_tmpl = nightly_cfg
+        .and_then(|c| c.version_template.as_deref())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly");
+    let nightly_version = template::render(version_tmpl, ctx.template_vars())
+        .with_context(|| format!("failed to render nightly version_template: {version_tmpl}"))?;
+    let nightly_version = nightly_version.trim().to_string();
+    if nightly_version.is_empty() {
+        anyhow::bail!(
+            "nightly version_template rendered to an empty string (template: {version_tmpl})"
+        );
+    }
     ctx.template_vars_mut().set("Version", &nightly_version);
     ctx.template_vars_mut().set("RawVersion", &nightly_version);
-    // `IsNightly` must be set before rendering `tag_name` / `name_template` so
-    // user templates can branch on it (`{{ if .IsNightly }}…{{ end }}`).
-    ctx.template_vars_mut().set("IsNightly", "true");
 
     // GR v2.16 nightly templates `tag_name` (alongside `name_template`).
     // Render after `Version` / `RawVersion` / `IsNightly` are populated so
@@ -980,9 +987,14 @@ fn run_post_pipeline(
         )?;
     }
 
-    // Close milestones
+    // Close milestones (skipped on nightly per GoReleaser parity — a
+    // rolling nightly tag does not correspond to a milestone closure).
     if let Some(ref milestones) = config.milestones {
-        milestones::close_milestones(milestones, ctx, dry_run, log)?;
+        if ctx.is_nightly() {
+            log.status("milestone close skipped — nightly run (GoReleaser parity)");
+        } else {
+            milestones::close_milestones(milestones, ctx, dry_run, log)?;
+        }
     }
 
     // Run after hooks.
@@ -1791,8 +1803,9 @@ mod tests {
     /// Shared scaffolding for the `apply_nightly_template_vars` tests:
     /// `project_name="myproj"` config (with the caller-supplied
     /// `tag_name`, or no `nightly` block at all when `tag_name` is
-    /// `None`), a fresh `Context`, and `Version` / `ProjectName`
-    /// pre-populated.
+    /// `None`), a fresh `Context`, and `Version` / `ProjectName` /
+    /// `ShortCommit` pre-populated (the GR default version_template
+    /// references `ShortCommit`).
     fn setup_nightly_ctx(tag_name: Option<&str>, version: &str) -> (Config, Context) {
         let config = Config {
             project_name: "myproj".to_string(),
@@ -1805,6 +1818,7 @@ mod tests {
         let mut ctx = Context::new(config.clone(), ContextOptions::default());
         ctx.template_vars_mut().set("Version", version);
         ctx.template_vars_mut().set("ProjectName", "myproj");
+        ctx.template_vars_mut().set("ShortCommit", "abc123d");
         (config, ctx)
     }
 
@@ -1819,17 +1833,50 @@ mod tests {
     }
 
     #[test]
+    fn nightly_default_version_uses_incpatch_and_short_commit() {
+        let (config, mut ctx) = setup_nightly_ctx(None, "1.2.3");
+        apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("1.2.4-abc123d-nightly"),
+            "GR-default nightly version: incpatch(1.2.3)-abc123d-nightly",
+        );
+        assert_eq!(
+            ctx.template_vars().get("RawVersion").map(String::as_str),
+            Some("1.2.4-abc123d-nightly"),
+        );
+    }
+
+    #[test]
+    fn nightly_version_template_user_override() {
+        let config = Config {
+            project_name: "myproj".to_string(),
+            nightly: Some(NightlyConfig {
+                version_template: Some("{{ Version }}-edge-{{ ShortCommit }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config.clone(), ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "2.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myproj");
+        ctx.template_vars_mut().set("ShortCommit", "deadbee");
+        apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("2.0.0-edge-deadbee"),
+        );
+    }
+
+    #[test]
     fn nightly_tag_name_renders_version_template() {
         let (config, mut ctx) = setup_nightly_ctx(Some("nightly-{{ .Version }}"), "1.2.3");
         apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
-        // `{{ .Version }}` resolves to the nightly-overridden value (which
-        // is "1.2.3-nightly.<YYYYMMDD>"), not the base "1.2.3" — proving the
+        // `{{ .Version }}` resolves to the nightly-overridden value (now
+        // `1.2.4-abc123d-nightly`), not the base "1.2.3" — proving the
         // tag template is evaluated LATE, after Version is rewritten.
         let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
-        assert!(
-            tag.starts_with("nightly-1.2.3-nightly."),
-            "tag should resolve nightly-rewritten Version, got: {tag}"
-        );
+        assert_eq!(tag, "nightly-1.2.4-abc123d-nightly");
     }
 
     #[test]

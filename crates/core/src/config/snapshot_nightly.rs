@@ -27,10 +27,28 @@ pub struct SnapshotConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct NightlyConfig {
-    /// Template for the release name. Default: "{{ .ProjectName }}-nightly"
+    /// Template for the rendered version string the nightly run sets on
+    /// `Version` / `RawVersion`. GoReleaser default:
+    /// `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"` — produces
+    /// commit-immutable nightly versions (two same-day commits yield two
+    /// distinct nightly versions).
+    pub version_template: Option<String>,
+    /// Template for the release name. Default: `"{{ ProjectName }}-nightly"`.
     pub name_template: Option<String>,
-    /// Tag name used for the nightly release. Default: "nightly".
+    /// Tag name used for the nightly release. Default: `"nightly"`.
+    /// Templates allowed (GoReleaser v2.16+).
     pub tag_name: Option<String>,
+    /// Whether to publish a GitHub Release at all. Default: `true`.
+    /// Set `false` for nightly-only docker pushes / blob uploads.
+    pub publish_release: Option<bool>,
+    /// Delete the prior release that points at the same tag before
+    /// creating the new one. Default: `false`. Set `true` to maintain a
+    /// single rolling nightly release on GitHub. Destructive: deletes a
+    /// published release via the GitHub Releases API.
+    pub keep_single_release: Option<bool>,
+    /// Override `release.draft` for nightly runs only (GoReleaser v2.12+).
+    /// `None` falls through to `release.draft`; `Some(v)` overrides it.
+    pub draft: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------

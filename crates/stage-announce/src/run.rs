@@ -94,6 +94,7 @@ pub(crate) fn evaluate_gate(report: Option<&PublishReport>, gate: AnnounceGate) 
                 | PublisherOutcome::Skipped(SkipReason::NotConfigured)
                 | PublisherOutcome::Skipped(SkipReason::Snapshot)
                 | PublisherOutcome::Skipped(SkipReason::DryRun)
+                | PublisherOutcome::Skipped(SkipReason::Nightly)
                 | PublisherOutcome::RolledBack
                 | PublisherOutcome::RollbackSkippedNoScope
                 | PublisherOutcome::PendingModeration
@@ -133,6 +134,14 @@ impl Stage for AnnounceStage {
 fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     let log = ctx.logger("announce");
     if ctx.skip_in_snapshot(&log, "announce") {
+        return Ok(());
+    }
+    // GoReleaser `customization/publish/nightlies.md`: every announcer is
+    // skipped on nightly runs (a nightly is not a "release the world
+    // should hear about"). Stage-level skip — bypasses the per-provider
+    // dispatch entirely so a misconfigured webhook can't bypass the gate.
+    if ctx.is_nightly() {
+        log.status("announce skipped — nightly run (GoReleaser parity)");
         return Ok(());
     }
 

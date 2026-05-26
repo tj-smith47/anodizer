@@ -57,8 +57,9 @@ impl Stage for super::ReleaseStage {
 }
 
 /// Check whether a crate's release should be skipped: evaluates the `skip`
-/// template and validates that `replace_existing_draft` and
-/// `use_existing_draft` are not both set.
+/// template, honours `nightly.publish_release: false` on nightly runs, and
+/// validates that `replace_existing_draft` and `use_existing_draft` are
+/// not both set.
 fn should_skip_release(
     ctx: &Context,
     release_cfg: &anodizer_core::config::ReleaseConfig,
@@ -73,6 +74,15 @@ fn should_skip_release(
             log.status(&format!("release skipped for crate '{}'", crate_name));
             return Ok(true);
         }
+    }
+    if ctx.is_nightly()
+        && ctx.config.nightly.as_ref().and_then(|n| n.publish_release) == Some(false)
+    {
+        log.status(&format!(
+            "release skipped for crate '{}' (nightly.publish_release: false)",
+            crate_name
+        ));
+        return Ok(true);
     }
     if release_cfg.resolved_replace_existing_draft() && release_cfg.resolved_use_existing_draft() {
         bail!(
@@ -458,6 +468,10 @@ struct ResolvedReleaseFlags {
     discussion_category_name: Option<String>,
     include_meta: bool,
     use_existing_draft: bool,
+    /// Nightly: delete the existing release that points at the same tag
+    /// before creating the new one (GoReleaser `nightly.keep_single_release`).
+    /// Only honored on `--nightly` runs; ignored otherwise.
+    keep_single_release: bool,
 }
 
 /// Resolve all release flags from config + CLI overrides for one crate.
@@ -479,8 +493,22 @@ fn resolve_release_flags(
                 crate_name
             )
         })?;
+    // Nightly overrides: `nightly.draft` (Some(v) wins over `release.draft`)
+    // and `nightly.keep_single_release` (only meaningful when `is_nightly()`).
+    let nightly_cfg = ctx.config.nightly.as_ref();
+    let draft = if ctx.is_nightly()
+        && let Some(d) = nightly_cfg.and_then(|n| n.draft)
+    {
+        d
+    } else {
+        release_cfg.resolved_draft()
+    };
+    let keep_single_release = ctx.is_nightly()
+        && nightly_cfg
+            .and_then(|n| n.keep_single_release)
+            .unwrap_or(false);
     Ok(ResolvedReleaseFlags {
-        draft: release_cfg.resolved_draft(),
+        draft,
         prerelease: should_mark_prerelease(&release_cfg.prerelease, tag),
         skip_upload,
         replace_existing_draft: release_cfg.resolved_replace_existing_draft(),
@@ -491,6 +519,7 @@ fn resolve_release_flags(
         discussion_category_name: release_cfg.discussion_category_name.clone(),
         include_meta: release_cfg.resolved_include_meta(),
         use_existing_draft: release_cfg.resolved_use_existing_draft(),
+        keep_single_release,
     })
 }
 
@@ -594,6 +623,7 @@ fn dispatch_to_scm_backend(
                 replace_existing_artifacts: flags.replace_existing_artifacts,
                 use_existing_draft: flags.use_existing_draft,
                 resume_release: ctx.options.resume_release,
+                keep_single_release: flags.keep_single_release,
             };
             Ok(github::run_github_backend(
                 &env,
