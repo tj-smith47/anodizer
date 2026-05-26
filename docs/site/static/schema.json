@@ -2759,7 +2759,7 @@
           }
         },
         "skip": {
-          "description": "Skip changelog generation. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional skip).",
+          "description": "Skip changelog generation. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional skip).\n\nAccepts `disable:` as an alias so GoReleaser configs (which use `changelog.disable:`) parse cleanly without a rename. Anodizer's broader convention is `skip:` (mirrors `release.skip_upload`, stage-level `skip:` flags), so the canonical key stays `skip:`.",
           "default": null,
           "anyOf": [
             {

@@ -3098,3 +3098,127 @@ fn test_render_changelog_gitea_default_format_with_login() {
         md
     );
 }
+
+// ---- AuthorsList / LoginsList structured per-entry vars ----
+
+#[test]
+fn test_render_authors_list_structured_for_iteration() {
+    // `AuthorsList` is the GR Pro v2.14 shape: a list of
+    // {Name, Email, Username} records, iterable from Tera.
+    let grouped = vec![GroupedCommits::new(
+        "",
+        vec![CommitInfo {
+            raw_message: "feat: ship it".into(),
+            kind: "feat".into(),
+            description: "ship it".into(),
+            hash: "deadbee".into(),
+            full_hash: "deadbeefdeadbeef".into(),
+            author_name: "Alice".into(),
+            author_email: "alice@example.com".into(),
+            login: "alice42".into(),
+            co_authors: vec!["Bob".into()],
+        }],
+    )];
+    // Iterate over the structured list: emit `name(@login)` separated by `;`.
+    let md = render_changelog(
+        &grouped,
+        7,
+        Some(
+            "{{ ShortSHA }} {{ Message }} cc {% for a in AuthorsList %}{{ a.Name }}(@{{ a.Username }}){% if not loop.last %}; {% endif %}{% endfor %}",
+        ),
+        "",
+        "git",
+        None,
+        None,
+    );
+    assert!(
+        md.contains("deadbee ship it cc Alice(@alice42); Bob(@)"),
+        "AuthorsList must be iterable as structured records, got: {md}"
+    );
+}
+
+#[test]
+fn test_render_all_authors_release_wide_unique_set() {
+    // `AllAuthors` is release-wide: every commit's primary author + every
+    // co-author trailer name, deduped and alpha-sorted. Templated as a
+    // comma-string for footer-style rendering. Per-commit scope is the
+    // only template scope anodizer's changelog renderer exposes, so the
+    // value is repeated on every line; here we just sample line 1.
+    let grouped = vec![
+        GroupedCommits::new(
+            "Features",
+            vec![CommitInfo {
+                raw_message: "feat: a".into(),
+                kind: "feat".into(),
+                description: "a".into(),
+                hash: "aaa".into(),
+                full_hash: "aaa".into(),
+                author_name: "Bob".into(),
+                author_email: "bob@example.com".into(),
+                login: String::new(),
+                co_authors: vec!["Alice".into()],
+            }],
+        ),
+        GroupedCommits::new(
+            "Bug Fixes",
+            vec![CommitInfo {
+                raw_message: "fix: b".into(),
+                kind: "fix".into(),
+                description: "b".into(),
+                hash: "bbb".into(),
+                full_hash: "bbb".into(),
+                author_name: "Carol".into(),
+                author_email: "carol@example.com".into(),
+                login: String::new(),
+                co_authors: vec!["Alice".into()],
+            }],
+        ),
+    ];
+    let md = render_changelog(
+        &grouped,
+        7,
+        Some("{{ ShortSHA }} {{ Message }} (release: {{ AllAuthors }})"),
+        "",
+        "git",
+        Some(""),
+        None,
+    );
+    assert!(
+        md.contains("release: Alice, Bob, Carol"),
+        "AllAuthors should render the sorted, deduped author set, got: {md}"
+    );
+}
+
+#[test]
+fn test_render_logins_list_with_english_join_filter() {
+    // `LoginsList` is the structured-list shape for per-entry logins;
+    // pairing it with the new `englishJoin` filter mirrors GR's default
+    // `{{ .Logins | englishJoin }}` template fragment.
+    let grouped = vec![GroupedCommits::new(
+        "",
+        vec![CommitInfo {
+            raw_message: "feat: x".into(),
+            kind: "feat".into(),
+            description: "x".into(),
+            hash: "aaa1111".into(),
+            full_hash: "aaa1111aaa1111".into(),
+            author_name: "Alice".into(),
+            author_email: "alice@example.com".into(),
+            login: "alice".into(),
+            co_authors: Vec::new(),
+        }],
+    )];
+    let md = render_changelog(
+        &grouped,
+        7,
+        Some("{{ ShortSHA }} {{ Message }} ({{ LoginsList | englishJoin }})"),
+        "",
+        "git",
+        None,
+        None,
+    );
+    assert!(
+        md.contains("aaa1111 x (alice)"),
+        "LoginsList | englishJoin should render the per-entry logins, got: {md}"
+    );
+}

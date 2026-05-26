@@ -156,6 +156,10 @@ pub fn load_config(path: &Path) -> Result<Config> {
         .map_err(anyhow::Error::msg)?;
     // Validate archives[].id and universal_binaries[].id uniqueness.
     anodizer_core::config::validate_id_uniqueness(&config).map_err(anyhow::Error::msg)?;
+    // Validate changelog.groups subgroup depth (GoReleaser caps at one level).
+    anodizer_core::config::validate_changelog_groups_depth(&config).map_err(anyhow::Error::msg)?;
+    // Validate changelog.paths[] syntax (reject leading `/` and empty entries).
+    anodizer_core::config::validate_changelog_paths(&config).map_err(anyhow::Error::msg)?;
     anodizer_core::config::warn_on_submitter_required(&config);
     anodizer_core::config::warn_on_legacy_homebrew_formula(&config);
 

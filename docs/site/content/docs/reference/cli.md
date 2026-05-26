@@ -132,6 +132,10 @@ Generate changelog only
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--crate` | — | — | Generate changelog for a specific crate |
+| `--from` | — | — | Start tag/ref for the commit range (default: latest matching tag) |
+| `--to` | — | — | End ref for the commit range (default: HEAD) |
+| `--output` | — | — | Write the rendered changelog to this file (parent dirs auto-created); still echoes to stdout |
+| `--snapshot` | — | — | Preview as a snapshot release (overrides changelog.snapshot) |
 
 
 ### `anodizer completion`

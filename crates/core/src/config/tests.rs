@@ -6,8 +6,9 @@ use serde::Deserialize;
 // Inline items from config/mod.rs
 use super::{Config, ERR_DEFAULTS_AXIS_MISMATCH, IncludeFilePath, IncludeSpec, IncludeUrlConfig};
 use super::{
-    validate_defaults_axis, validate_format_overrides, validate_homebrew_cask_url_template,
-    validate_tag_sort, validate_version,
+    validate_changelog_groups_depth, validate_changelog_paths, validate_defaults_axis,
+    validate_format_overrides, validate_homebrew_cask_url_template, validate_tag_sort,
+    validate_version,
 };
 
 // Items re-exported from config submodules (all reachable as super::ItemName
@@ -7034,4 +7035,173 @@ crates:
             msg
         );
     }
+}
+
+// ---- changelog.disable alias for skip ----
+
+#[test]
+fn test_changelog_disable_alias_parses() {
+    let yaml = r#"
+project_name: test
+changelog:
+  disable: true
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let cl = config.changelog.as_ref().expect("changelog present");
+    assert_eq!(
+        cl.skip,
+        Some(StringOrBool::Bool(true)),
+        "disable: alias should populate skip"
+    );
+}
+
+#[test]
+fn test_changelog_disable_template_string_alias() {
+    let yaml = r#"
+project_name: test
+changelog:
+  disable: "{{ if IsSnapshot }}true{{ endif }}"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let cl = config.changelog.as_ref().expect("changelog present");
+    match cl.skip.as_ref() {
+        Some(StringOrBool::String(s)) => assert!(s.contains("IsSnapshot")),
+        other => panic!(
+            "expected templated skip via disable alias, got: {:?}",
+            other
+        ),
+    }
+}
+
+// ---- validate_changelog_groups_depth ----
+
+#[test]
+fn test_validate_changelog_groups_depth_accepts_one_level() {
+    let yaml = r#"
+project_name: test
+changelog:
+  groups:
+    - title: Features
+      regexp: "^feat"
+      groups:
+        - title: Core
+          regexp: "^feat\\(core\\)"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(validate_changelog_groups_depth(&config).is_ok());
+}
+
+#[test]
+fn test_validate_changelog_groups_depth_rejects_three_levels() {
+    let yaml = r#"
+project_name: test
+changelog:
+  groups:
+    - title: Features
+      regexp: "^feat"
+      groups:
+        - title: Core
+          regexp: "^feat\\(core\\)"
+          groups:
+            - title: Auth
+              regexp: "^feat\\(core/auth\\)"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_changelog_groups_depth(&config).unwrap_err();
+    assert!(err.contains("Features"), "{err}");
+    assert!(err.contains("Core"), "{err}");
+    assert!(err.contains("one level"), "{err}");
+}
+
+#[test]
+fn test_validate_changelog_groups_depth_walks_workspaces() {
+    let yaml = r#"
+project_name: test
+workspaces:
+  - name: w
+    changelog:
+      groups:
+        - title: A
+          groups:
+            - title: B
+              groups:
+                - title: C
+    crates:
+      - name: a
+        path: a
+        tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_changelog_groups_depth(&config).unwrap_err();
+    assert!(err.contains("workspaces[w].changelog"), "{err}");
+}
+
+// ---- validate_changelog_paths ----
+
+#[test]
+fn test_validate_changelog_paths_rejects_leading_slash() {
+    let yaml = r#"
+project_name: test
+changelog:
+  paths:
+    - "/src/lib.rs"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_changelog_paths(&config).unwrap_err();
+    assert!(err.contains("repo-root-relative"), "{err}");
+    assert!(err.contains("/src/lib.rs"), "{err}");
+}
+
+#[test]
+fn test_validate_changelog_paths_rejects_empty_entry() {
+    let yaml = r#"
+project_name: test
+changelog:
+  paths:
+    - ""
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_changelog_paths(&config).unwrap_err();
+    assert!(err.contains("empty"), "{err}");
+}
+
+#[test]
+fn test_validate_changelog_paths_accepts_relative() {
+    let yaml = r#"
+project_name: test
+changelog:
+  paths:
+    - "src/**/*.rs"
+    - "crates/core"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(validate_changelog_paths(&config).is_ok());
 }

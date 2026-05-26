@@ -213,7 +213,9 @@ The canonical key is `hooks:` for both `before:` and `after:` to match GoRelease
 | `groups` | list of ChangelogGroup | — | Groups for organizing changelog entries by commit message prefix. |
 | `header` | ContentSource | — | Text prepended to the changelog. Inline string, `from_file: <path>`, or `from_url: <url>` — symmetric with the release block's header/footer so users can compose headers from a templated file or remote endpoint (GoReleaser uses a plain string here; anodizer extends to ContentSource for consistency with `release.header`). |
 | `paths` | list of string | — | File paths to filter commits by. Only commits touching files under these paths are included. Works with `use: git` for precise per-commit filtering. With `use: github`, only the first path is used for API queries; multi-path filtering is coarse. Supports template rendering. |
-| `skip` | StringOrBool | — | Skip changelog generation. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip). |
+| `skip` | StringOrBool | — | Skip changelog generation. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip).
+
+Accepts `disable:` as an alias so GoReleaser configs (which use `changelog.disable:`) parse cleanly without a rename. Anodizer's broader convention is `skip:` (mirrors `release.skip_upload`, stage-level `skip:` flags), so the canonical key stays `skip:`. |
 | `snapshot` | bool | — | When `true`, render the changelog even in snapshot mode. Anodizer matches GoReleaser's default (skip changelog on `ctx.Snapshot`) and lets users opt back in here for local preview / draft generation. Wired in `crates/stage-changelog/src/lib.rs::ChangelogStage::run`. |
 | `sort` | string | — | Sort order for changelog entries: "asc" or "desc" (default: "asc"). |
 | `title` | string | — | Title heading for the changelog. Default: "Changelog". Supports templates. |

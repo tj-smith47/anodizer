@@ -27,7 +27,16 @@ pub struct ChangelogConfig {
     pub footer: Option<ContentSource>,
     /// Skip changelog generation. Accepts bool or template string
     /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip).
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    ///
+    /// Accepts `disable:` as an alias so GoReleaser configs (which use
+    /// `changelog.disable:`) parse cleanly without a rename. Anodizer's
+    /// broader convention is `skip:` (mirrors `release.skip_upload`,
+    /// stage-level `skip:` flags), so the canonical key stays `skip:`.
+    #[serde(
+        deserialize_with = "deserialize_string_or_bool_opt",
+        default,
+        alias = "disable"
+    )]
     pub skip: Option<StringOrBool>,
     /// Changelog source: `"git"` (default), `"github"`, or `"github-native"`.
     /// `"github"` fetches commits via the GitHub API, enriching entries with

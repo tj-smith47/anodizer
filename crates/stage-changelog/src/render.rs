@@ -13,6 +13,7 @@
 use anodizer_core::config::ChangelogGroup;
 use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
+use serde_json::Value as JsonValue;
 
 use crate::fetch::{fetch_git_commits_in, relative_filter};
 use crate::group::{
@@ -35,6 +36,37 @@ pub(crate) struct ChangelogRenderOpts<'a> {
     /// Overrides `use_source` for newline selection only (matches
     /// GoReleaser's `newLineFor()` which inspects `ctx.TokenType`).
     pub scm_provider: Option<&'a str>,
+}
+
+/// Compute the release-wide unique author-name set across every commit
+/// in the rendered groups (including subgroups) and return it as a
+/// comma-separated string. Mirrors how `AllLogins` is built upstream of
+/// `render_changelog_with_provider`; surfaces as the `AllAuthors`
+/// per-line template var so users can render
+/// `Contributors: {{ AllAuthors }}` once at the bottom of a changelog
+/// footer (the per-line scope is the only template scope anodizer
+/// currently exposes from the changelog renderer).
+fn collect_all_authors(grouped: &[GroupedCommits]) -> String {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    fn walk(group: &GroupedCommits, seen: &mut std::collections::BTreeSet<String>) {
+        for commit in &group.commits {
+            if !commit.author_name.is_empty() {
+                seen.insert(commit.author_name.clone());
+            }
+            for ca in &commit.co_authors {
+                if !ca.is_empty() {
+                    seen.insert(ca.clone());
+                }
+            }
+        }
+        for sub in &group.subgroups {
+            walk(sub, seen);
+        }
+    }
+    for g in grouped {
+        walk(g, &mut seen);
+    }
+    seen.into_iter().collect::<Vec<_>>().join(", ")
 }
 
 /// Inner render function that accepts an optional SCM provider override for
@@ -88,10 +120,12 @@ pub(crate) fn render_changelog_with_provider(
     if !changelog_title.is_empty() {
         out.push_str(&format!("## {}\n\n", changelog_title));
     }
+    let all_authors = collect_all_authors(grouped);
     let state = RenderGroupsState {
         abbrev,
         tmpl,
         logins,
+        all_authors: &all_authors,
         divider,
         newline,
     };
@@ -110,6 +144,7 @@ struct RenderGroupsState<'a> {
     abbrev: i32,
     tmpl: &'a str,
     logins: &'a str,
+    all_authors: &'a str,
     divider: Option<&'a str>,
     newline: &'a str,
 }
@@ -145,6 +180,11 @@ fn render_groups(
         // empty title so commits render as a plain bullet list without a
         // spurious heading — matching GoReleaser behaviour.
         if !group.title.is_empty() {
+            // Group titles are pre-rendered by the stage before reaching
+            // this function (`run.rs::resolve_changelog_opts` walks the
+            // groups tree and resolves each title through the project's
+            // template context). Heading-emit is therefore a plain
+            // string append.
             out.push_str(&format!("{} {}\n\n", hashes, group.title));
         }
         for commit in &group.commits {
@@ -154,6 +194,7 @@ fn render_groups(
                 state.abbrev,
                 state.tmpl,
                 state.logins,
+                state.all_authors,
                 state.newline,
             )?;
         }
@@ -176,8 +217,12 @@ fn render_groups(
 /// - `SHA` — full commit hash
 /// - `ShortSHA` — abbreviated commit hash (controlled by `abbrev`)
 /// - `Message` — commit subject / description
-/// - `AuthorName` — commit author name
-/// - `AuthorEmail` — commit author email
+/// - `AuthorName` — commit author name. GoReleaser v2.14 marks
+///   `AuthorName` / `AuthorEmail` / `AuthorUsername` as deprecated in
+///   favour of `AuthorsList[0].Name` / `.Email` / `.Username`. Anodizer
+///   keeps the flat fields for backward compatibility; new templates
+///   should prefer the `AuthorsList` structured form.
+/// - `AuthorEmail` — commit author email (see `AuthorName` deprecation note).
 /// - `Login` — per-commit GitHub username (populated only with `github` backend)
 /// - `Authors` — comma-separated names for this commit (primary author +
 ///   `Co-Authored-By:` trailers). matches GR's per-entry
@@ -189,12 +234,18 @@ fn render_groups(
 ///   release. Was the previous `Logins` semantic (release-wide) before
 ///   `Logins` was reclaimed for per-entry data; renamed to keep both
 ///   available without ambiguity.
+/// - `AllAuthors` — comma-separated, alphabetically-sorted list of unique
+///   commit + co-author names seen across the entire changelog window
+///   (release-wide). Available on every per-commit line so a user can
+///   render `Contributors: {{ AllAuthors }}` in the footer slot of
+///   their format template; the value is identical for every line.
 fn render_commit_line(
     out: &mut String,
     commit: &CommitInfo,
     abbrev: i32,
     tmpl: &str,
     logins: &str,
+    all_authors: &str,
     newline: &str,
 ) -> Result<()> {
     let short_sha = if abbrev < 0 {
@@ -253,6 +304,33 @@ fn render_commit_line(
         commit_authors.push(ca.clone());
     }
     vars.set("Authors", &commit_authors.join(", "));
+    // GR Pro v2.14 also surfaces `Authors` as a structured list of
+    // {Name, Email, Username} records so templates can iterate
+    // (`{% for a in AuthorsList %}@{{ a.Username }}{% endfor %}`).
+    // Anodizer exposes the same shape under `AuthorsList` to keep the
+    // existing comma-string `Authors` working (backward compat) while
+    // adding the GR Pro structured access pattern. Co-author trailers
+    // contribute Name only (email is in the raw trailer string,
+    // Username is unknown without an extra SCM API hit — left empty).
+    let mut authors_list: Vec<JsonValue> = Vec::new();
+    if !commit.author_name.is_empty() {
+        let mut obj = serde_json::Map::new();
+        obj.insert("Name".into(), JsonValue::String(commit.author_name.clone()));
+        obj.insert(
+            "Email".into(),
+            JsonValue::String(commit.author_email.clone()),
+        );
+        obj.insert("Username".into(), JsonValue::String(commit.login.clone()));
+        authors_list.push(JsonValue::Object(obj));
+    }
+    for ca in &commit.co_authors {
+        let mut obj = serde_json::Map::new();
+        obj.insert("Name".into(), JsonValue::String(ca.clone()));
+        obj.insert("Email".into(), JsonValue::String(String::new()));
+        obj.insert("Username".into(), JsonValue::String(String::new()));
+        authors_list.push(JsonValue::Object(obj));
+    }
+    vars.set_structured("AuthorsList", JsonValue::Array(authors_list));
     // For per-entry Logins: include the primary commit login when present.
     // Co-author logins aren't extractable from the email-only trailer
     // without an extra GitHub API lookup, so the per-entry list contains
@@ -263,7 +341,19 @@ fn render_commit_line(
         commit_logins.push(commit.login.clone());
     }
     vars.set("Logins", &commit_logins.join(", "));
+    // `Logins` as a structured list too — symmetric with `AuthorsList`
+    // so `{{ Logins | englishJoin }}` from a copy-pasted GR config works
+    // (GR's `.Logins` is a `[]string` while ours has historically been a
+    // comma-string for the bare `{{ Logins }}` render. The structured
+    // alias under `LoginsList` lets templates iterate or filter without
+    // re-splitting on commas.
+    let logins_list: Vec<JsonValue> = commit_logins
+        .iter()
+        .map(|s| JsonValue::String(s.clone()))
+        .collect();
+    vars.set_structured("LoginsList", JsonValue::Array(logins_list));
     vars.set("AllLogins", logins);
+    vars.set("AllAuthors", all_authors);
     let rendered = template::render(tmpl, &vars).with_context(|| {
         format!(
             "changelog: render commit format template '{tmpl}' for commit {}",

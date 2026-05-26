@@ -373,7 +373,11 @@ fn resolve_changelog_opts(
     let filters = cfg.and_then(|c| c.filters.as_ref());
     let exclude_filters: Vec<String> = filters.and_then(|f| f.exclude.clone()).unwrap_or_default();
     let include_filters: Vec<String> = filters.and_then(|f| f.include.clone()).unwrap_or_default();
-    let groups: Vec<ChangelogGroup> = cfg.and_then(|c| c.groups.clone()).unwrap_or_default();
+    let raw_groups: Vec<ChangelogGroup> = cfg.and_then(|c| c.groups.clone()).unwrap_or_default();
+    // Pre-render each group's title through the project's template context
+    // so configs like `title: "{{ .ProjectName }} features"` resolve. GR
+    // Pro template-renders these too. Walks subgroups recursively.
+    let groups = render_group_titles(ctx, log, raw_groups)?;
 
     let header_src: Option<ContentSource> = cfg.and_then(|c| c.header.clone());
     let footer_src: Option<ContentSource> = cfg.and_then(|c| c.footer.clone());
@@ -421,6 +425,36 @@ fn resolve_changelog_opts(
         title,
         divider,
     })
+}
+
+/// Recursively render each `ChangelogGroup.title` through the project's
+/// template context. GR Pro accepts templated group headings (e.g.
+/// `title: "{{ .ProjectName }} features"`); rendering at the stage edge
+/// keeps `render_groups` free of template-engine ceremony.
+fn render_group_titles(
+    ctx: &mut Context,
+    log: &StageLogger,
+    groups: Vec<ChangelogGroup>,
+) -> Result<Vec<ChangelogGroup>> {
+    let mut out = Vec::with_capacity(groups.len());
+    for g in groups {
+        let rendered_title = if g.title.is_empty() {
+            String::new()
+        } else {
+            ctx.render_template_strict(&g.title, "changelog group title", log)?
+        };
+        let rendered_subgroups = match g.groups {
+            Some(subs) => Some(render_group_titles(ctx, log, subs)?),
+            None => None,
+        };
+        out.push(ChangelogGroup {
+            title: rendered_title,
+            regexp: g.regexp,
+            order: g.order,
+            groups: rendered_subgroups,
+        });
+    }
+    Ok(out)
 }
 
 /// Pick the effective path filter for a crate. Precedence:

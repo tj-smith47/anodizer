@@ -288,6 +288,23 @@ pub enum Commands {
     Changelog {
         #[arg(long = "crate", help = "Generate changelog for a specific crate")]
         crate_name: Option<String>,
+        #[arg(
+            long,
+            help = "Start tag/ref for the commit range (default: latest matching tag)"
+        )]
+        from: Option<String>,
+        #[arg(long, help = "End ref for the commit range (default: HEAD)")]
+        to: Option<String>,
+        #[arg(
+            long,
+            help = "Write the rendered changelog to this file (parent dirs auto-created); still echoes to stdout"
+        )]
+        output: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Preview as a snapshot release (overrides changelog.snapshot)"
+        )]
+        snapshot: bool,
     },
     /// Generate shell completions
     Completion {

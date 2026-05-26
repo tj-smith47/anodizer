@@ -144,6 +144,27 @@ fn test_toupper_alias() {
 }
 
 #[test]
+fn test_english_join_pipe_form_on_structured_var() {
+    // Regression guard for B15: the changelog renderer publishes per-entry
+    // `LoginsList` / `AuthorsList` via `set_structured`, then user format
+    // templates pipe through `englishJoin`. Existing englishJoin tests
+    // only exercised inline-literal arrays — pin the
+    // `set_structured(...) → {{ Var | englishJoin }}` path so that
+    // contract doesn't regress.
+    let mut vars = test_vars();
+    vars.set_structured(
+        "Names",
+        Value::Array(vec![
+            Value::String("alice".into()),
+            Value::String("bob".into()),
+            Value::String("carol".into()),
+        ]),
+    );
+    let result = render("{{ Names | englishJoin }}", &vars).unwrap();
+    assert_eq!(result, "alice, bob, and carol");
+}
+
+#[test]
 fn test_trimprefix() {
     let vars = test_vars();
     let result = render("{{ Tag | trimprefix(prefix=\"v\") }}", &vars).unwrap();

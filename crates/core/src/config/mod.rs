@@ -842,6 +842,102 @@ pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate the depth of `changelog.groups[].groups`.
+///
+/// GoReleaser Pro caps subgroups at ONE level
+/// (`/customization/publish/changelog.md`: "There can only be one level of
+/// subgroups"). Anodizer's renderer can technically handle deeper nesting
+/// (capped at 6 to match Markdown's heading limit), but accepting deeper
+/// configs silently is a footgun: a config that works in anodizer but is
+/// rejected by GR breaks parity for users migrating between the two.
+///
+/// Rejects any `changelog.groups[i].groups[j].groups[..]` configuration
+/// with a clear error pointing at the offending parent group title.
+pub fn validate_changelog_groups_depth(config: &Config) -> Result<(), String> {
+    let check = |location: &str, cfg: &ChangelogConfig| -> Result<(), String> {
+        let Some(ref groups) = cfg.groups else {
+            return Ok(());
+        };
+        for g in groups {
+            if let Some(ref subs) = g.groups {
+                for sub in subs {
+                    if sub.groups.as_ref().is_some_and(|s| !s.is_empty()) {
+                        return Err(format!(
+                            "{location}: changelog group '{}' > '{}' nests further \
+                             subgroups; GoReleaser permits only one level of subgroups \
+                             (see https://goreleaser.com/customization/changelog/). \
+                             Flatten the inner groups into the parent or split into \
+                             sibling top-level groups.",
+                            g.title, sub.title
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    };
+    if let Some(ref cfg) = config.changelog {
+        check("changelog", cfg)?;
+    }
+    if let Some(ref ws_list) = config.workspaces {
+        for ws in ws_list {
+            if let Some(ref cfg) = ws.changelog {
+                check(&format!("workspaces[{}].changelog", ws.name), cfg)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate `changelog.paths[]` syntax.
+///
+/// Path patterns are passed straight to `git log -- <path>` (or the
+/// per-SCM equivalent). Two patterns are always wrong:
+/// - Leading `/` — git pathspec treats this as anchored-to-CWD which is
+///   almost never what the user wrote and produces empty changelogs.
+/// - Empty string — silently matches everything; rejected so a typo
+///   doesn't disable filtering.
+///
+/// Globs containing `**` are accepted (git accepts them) but the docs
+/// note their semantics differ from gitignore; that's a docs concern,
+/// not a hard error.
+pub fn validate_changelog_paths(config: &Config) -> Result<(), String> {
+    let check = |location: &str, cfg: &ChangelogConfig| -> Result<(), String> {
+        let Some(ref paths) = cfg.paths else {
+            return Ok(());
+        };
+        for (idx, p) in paths.iter().enumerate() {
+            if p.is_empty() {
+                return Err(format!(
+                    "{location}: changelog.paths[{idx}] is empty; remove the entry \
+                     or set a real path (empty string matches everything and \
+                     disables filtering)"
+                ));
+            }
+            if p.starts_with('/') {
+                return Err(format!(
+                    "{location}: changelog.paths[{idx}] = {:?} starts with '/'; \
+                     git pathspec is repo-root-relative — write {:?} instead",
+                    p,
+                    p.trim_start_matches('/')
+                ));
+            }
+        }
+        Ok(())
+    };
+    if let Some(ref cfg) = config.changelog {
+        check("changelog", cfg)?;
+    }
+    if let Some(ref ws_list) = config.workspaces {
+        for ws in ws_list {
+            if let Some(ref cfg) = ws.changelog {
+                check(&format!("workspaces[{}].changelog", ws.name), cfg)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Emit a `tracing::warn!` for each publisher configured with `required: true`
 /// whose group is Submitter (chocolatey, winget, aur_source).
 ///
