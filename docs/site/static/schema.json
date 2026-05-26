@@ -1176,6 +1176,13 @@
             "null"
           ]
         },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "signature": {
           "description": "Include signatures in uploaded artifacts.",
           "default": null,
@@ -1439,6 +1446,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "skip": {
           "description": "Skip this AUR config. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"` for conditional skip).",
@@ -1713,6 +1727,13 @@
           "default": null,
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
             "null"
           ]
         },
@@ -2404,6 +2425,13 @@
             "null"
           ]
         },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "skip": {
           "description": "Skip this publisher; supports template strings or bool. Truthy renders disable the publisher without removing the block.",
           "default": null,
@@ -2997,6 +3025,13 @@
             "null"
           ]
         },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "skip": {
           "description": "Skip pushing to the Chocolatey community repository. Bool, string, or template expression (e.g. `\"{{ .IsSnapshot }}\"`). Accepts the legacy `skip_publish:` spelling for back-compat with configs; canonical name is `skip:` to align with every other publisher.",
           "default": null,
@@ -3151,6 +3186,13 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
+            "null"
           ]
         },
         "secret_name": {
@@ -4249,6 +4291,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "secret_name": {
           "description": "Environment variable name containing the DockerHub token.",
@@ -5609,6 +5658,13 @@
             }
           ]
         },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "service": {
           "description": "Homebrew service definition.",
           "default": null,
@@ -6177,6 +6233,13 @@
             }
           ]
         },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "service": {
           "description": "Homebrew service block content (alternative to plist).",
           "default": null,
@@ -6492,6 +6555,13 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
+            "null"
           ]
         },
         "short_description": {
@@ -7273,6 +7343,13 @@
             {
               "$ref": "#/definitions/McpRepository"
             }
+          ]
+        },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
+            "null"
           ]
         },
         "skip": {
@@ -8945,6 +9022,13 @@
             }
           ]
         },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "skip": {
           "description": "Skip this Nix config. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"` for conditional skip). Distinct from `skip_upload` so users can model both intents — disable means \"don't generate at all\", skip_upload means \"generate but don't push\". Without this field, `nix: { skip: true }` was silently dropped by the serde unknown-field default.",
           "default": null,
@@ -10029,6 +10113,13 @@
             "null"
           ]
         },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "skip": {
           "description": "Skip the release stage. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional skip). GoReleaser supports template strings here since v1.15.0. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's release config field is `pkg/config/config.go:909` `Disable string`).",
           "default": null,
@@ -10440,6 +10531,13 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
+            "null"
           ]
         },
         "shortcuts": {
@@ -12817,6 +12915,13 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "type": [
+            "boolean",
+            "null"
           ]
         },
         "short_description": {

@@ -107,9 +107,10 @@ pub(crate) fn rollback_failure_warning_msg(
     )
 }
 
-/// Emit the boilerplate for a top-level publisher struct: unit struct,
-/// `new()` / `Default`, and an **inherent impl** carrying associated
-/// constants for `name`, `group`, `required`, and `rollback_scope_needed`.
+/// Emit the boilerplate for a top-level publisher struct: a struct with an
+/// `Option<bool>` override field, `new()` / `Default`, `with_required()`,
+/// and an **inherent impl** carrying associated constants for `name`, `group`,
+/// `required`, and `rollback_scope_needed`.
 ///
 /// Why constants on an inherent impl, not a `Publisher` impl? Rust requires
 /// a trait impl to live in a single `impl Trait for Type { ... }` block,
@@ -120,13 +121,17 @@ pub(crate) fn rollback_failure_warning_msg(
 /// forwards to them. Per-publisher code shrinks to: the constants
 /// declaration plus the three bodies that actually vary.
 ///
+/// `with_required(override)` passes a config-level `Option<bool>` into the
+/// struct. `None` falls through to `PUBLISHER_REQUIRED`; `Some(v)` overrides
+/// it. The trait `required()` method reads `required_override` first.
+///
 /// Usage:
 /// ```ignore
 /// simple_publisher!(MyPublisher, "my", Group::Assets, false, Some("scope"));
 /// impl anodizer_core::Publisher for MyPublisher {
 ///     fn name(&self) -> &str { Self::PUBLISHER_NAME }
 ///     fn group(&self) -> anodizer_core::PublisherGroup { Self::PUBLISHER_GROUP }
-///     fn required(&self) -> bool { Self::PUBLISHER_REQUIRED }
+///     fn required(&self) -> bool { self.required_override.unwrap_or(Self::PUBLISHER_REQUIRED) }
 ///     fn rollback_scope_needed(&self) -> Option<&'static str> { Self::ROLLBACK_SCOPE }
 ///     fn run(&self, ctx: &mut Context) -> anyhow::Result<PublishEvidence> { ... }
 ///     fn rollback(&self, ctx: &mut Context, ev: &PublishEvidence) -> anyhow::Result<()> { ... }
@@ -141,18 +146,33 @@ macro_rules! simple_publisher {
         $required:expr,
         $rollback_scope:expr $(,)?
     ) => {
-        pub struct $struct_name;
+        pub struct $struct_name {
+            /// Config-level override for `required()`. `None` falls through to
+            /// `PUBLISHER_REQUIRED`; `Some(v)` overrides it.
+            required_override: Option<bool>,
+        }
 
         impl $struct_name {
             pub fn new() -> Self {
-                Self
+                Self {
+                    required_override: None,
+                }
+            }
+
+            /// Construct with a config-supplied `required` override.
+            ///
+            /// Pass the `Option<bool>` read from the publisher's config struct
+            /// (e.g. `ctx.config.crates[].publish.homebrew.required`). `None`
+            /// keeps the built-in default; `Some(v)` overrides it for this run.
+            pub fn with_required(required_override: Option<bool>) -> Self {
+                Self { required_override }
             }
 
             /// Stable lowercase publisher identifier (see [`anodizer_core::Publisher::name`]).
             pub const PUBLISHER_NAME: &'static str = $name_str;
             /// Scheduling group (see [`anodizer_core::Publisher::group`]).
             pub const PUBLISHER_GROUP: anodizer_core::PublisherGroup = $group_expr;
-            /// Whether failure here fails the release (see [`anodizer_core::Publisher::required`]).
+            /// Built-in default for whether failure here fails the release (see [`anodizer_core::Publisher::required`]).
             pub const PUBLISHER_REQUIRED: bool = $required;
             /// OAuth / token scope rollback would need (see [`anodizer_core::Publisher::rollback_scope_needed`]).
             pub const ROLLBACK_SCOPE: Option<&'static str> = $rollback_scope;

@@ -838,7 +838,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
     }
 
     fn required(&self) -> bool {
-        Self::PUBLISHER_REQUIRED
+        self.required_override.unwrap_or(Self::PUBLISHER_REQUIRED)
     }
 
     fn rollback_scope_needed(&self) -> Option<&'static str> {

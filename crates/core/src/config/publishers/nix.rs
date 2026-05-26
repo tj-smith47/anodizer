@@ -63,6 +63,10 @@ pub struct NixConfig {
     /// contains multiple executables. Templated: supports
     /// `{{ .Version }}` etc. Omitted when unset.
     pub main_program: Option<String>,
+    /// Override whether this publisher failing should fail the overall release.
+    /// When unset, falls through to the built-in default for this publisher.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
 }
 
 /// Nix package dependency with optional OS restriction.

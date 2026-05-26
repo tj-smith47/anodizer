@@ -68,6 +68,7 @@ fn mcp_ctx(mcp_overrides: impl FnOnce(&mut McpConfig)) -> Context {
             token: "preissued-jwt".to_string(),
         },
         registry: None,
+        required: None,
     };
     mcp_overrides(&mut config.mcp);
 
@@ -259,6 +260,7 @@ fn dry_run_short_circuits_before_network() {
             token: "preissued-jwt".to_string(),
         },
         registry: None,
+        required: None,
     };
 
     let opts = ContextOptions {

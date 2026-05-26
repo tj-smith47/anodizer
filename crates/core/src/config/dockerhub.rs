@@ -27,6 +27,10 @@ pub struct DockerHubConfig {
     /// Skip this publisher. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
+    /// Override whether this publisher failing should fail the overall release.
+    /// When unset, falls through to the built-in default for this publisher.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
 }
 
 /// Full description source for DockerHub: either from a URL or a local file.

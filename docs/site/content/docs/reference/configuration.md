@@ -109,6 +109,7 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 | `mode` | string | — | Upload mode: "archive" (upload archives) or "binary" (upload binaries). |
 | `name` | string | — | Human-readable name for this publisher (used in logs). |
 | `password` | string | — | Artifactory password or API key (or env var reference). |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher. |
 | `signature` | bool | — | Include signatures in uploaded artifacts. |
 | `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. |
 | `target` | string | — | Target URL template for uploads (supports template variables). |
@@ -143,6 +144,7 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 | `private_key` | string | — | Path to SSH private key file. |
 | `provides` | list of string | — | Packages this PKGBUILD provides. |
 | `rel` | string | — | Package release number (default: "1"). |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher. |
 | `skip` | StringOrBool | — | Skip this config. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. |
 | `url_template` | string | — | Custom URL template for download URLs. |
@@ -199,6 +201,7 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 | `organization` | string | — | CloudSmith organization slug. |
 | `repository` | string | — | CloudSmith repository slug. |
 | `republish` | StringOrBool | — | When true, allow republishing over existing package versions. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher. |
 | `secret_name` | string | — | Environment variable name containing the CloudSmith API key. |
 | `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. |
 
@@ -290,6 +293,7 @@ DockerHub description sync configuration. Pushes image descriptions and README c
 | `description` | string | — | Short description for the DockerHub repository (max 100 chars). |
 | `full_description` | DockerHubFullDescription | — | Full description (README) source for the DockerHub repository. |
 | `images` | list of string | — | DockerHub image names to update (e.g. `myorg/myapp`). |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher. |
 | `secret_name` | string | — | Environment variable name containing the DockerHub token. |
 | `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. |
 | `username` | string | — | DockerHub username for authentication. |
@@ -364,6 +368,7 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `manpages` | list of string | — | Manual page references to install. |
 | `name` | string | — | Cask name (default: crate / project name). |
 | `repository` | RepositoryConfig | — | Unified repository config for the Homebrew tap. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher. |
 | `service` | string | — | Homebrew service definition. |
 | `skip_upload` | StringOrBool | — | Skip publishing the cask. `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
 | `uninstall` | HomebrewCaskUninstall | — | Structured uninstall stanza configuration. |
@@ -487,6 +492,7 @@ Paths / globs are resolved relative to the project root. `..` segments are accep
 | `prerelease` | object | — | Mark release as pre-release: true, false, or "auto" (inferred from tag). |
 | `replace_existing_artifacts` | bool | — | When true, replace existing release artifacts with the same name. |
 | `replace_existing_draft` | bool | — | When true, replace an existing draft release instead of failing. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher. |
 | `skip` | StringOrBool | — | Skip the release stage. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip). GoReleaser supports template strings here since v1.15.0. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's release config field is `pkg/config/config.go:909` `Disable string`). |
 | `skip_upload` | StringOrBool | — | Skip uploading artifacts: true, false, or "auto" (skip for snapshots). Accepts bool or template string (GoReleaser uses string type). |
 | `tag` | string | — | Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `"{{ .Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`). This is a GoReleaser Pro feature provided for free by anodizer. |

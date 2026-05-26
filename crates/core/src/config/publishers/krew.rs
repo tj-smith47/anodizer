@@ -58,4 +58,8 @@ pub struct KrewConfig {
     /// sees that the publisher did not update the PR.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub update_existing_pr: Option<StringOrBool>,
+    /// Override whether this publisher failing should fail the overall release.
+    /// When unset, falls through to the built-in default for this publisher.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
 }

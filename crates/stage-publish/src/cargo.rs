@@ -931,11 +931,23 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
 /// (Marker for follow-up: when the `PublishStage::run` dispatch swap
 /// lands in the return-type-swap task, update this doc to reflect that
 /// the new dispatch path is the only consumer.)
-pub struct CargoPublisher;
+pub struct CargoPublisher {
+    required_override: Option<bool>,
+}
 
 impl CargoPublisher {
     pub fn new() -> Self {
-        Self
+        Self {
+            required_override: None,
+        }
+    }
+
+    /// Construct with a config-supplied `required` override.
+    ///
+    /// Pass the `Option<bool>` read from `publish.cargo.required`. `None`
+    /// keeps the built-in default (`true`); `Some(v)` overrides it for this run.
+    pub fn with_required(required_override: Option<bool>) -> Self {
+        Self { required_override }
     }
 }
 
@@ -1008,7 +1020,7 @@ impl anodizer_core::Publisher for CargoPublisher {
     }
 
     fn required(&self) -> bool {
-        true
+        self.required_override.unwrap_or(true)
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {

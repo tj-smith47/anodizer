@@ -34,4 +34,8 @@ pub struct CloudSmithConfig {
     /// When true, allow republishing over existing package versions.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub republish: Option<StringOrBool>,
+    /// Override whether this publisher failing should fail the overall release.
+    /// When unset, falls through to the built-in default for this publisher.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
 }

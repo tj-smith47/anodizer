@@ -139,6 +139,7 @@ fn classify_delete_err(err: &anyhow::Error) -> ReleaseDeleteOutcome {
 /// GitHub backend. See module rustdoc for the design.
 pub struct GithubReleasePublisher {
     client: Arc<dyn GitHubClient + Send + Sync>,
+    required_override: Option<bool>,
 }
 
 impl GithubReleasePublisher {
@@ -147,7 +148,7 @@ impl GithubReleasePublisher {
     /// Scheduling group.
     pub const PUBLISHER_GROUP: anodizer_core::PublisherGroup =
         anodizer_core::PublisherGroup::Assets;
-    /// Required publisher — failure fails the overall release.
+    /// Built-in default: required — failure fails the overall release.
     pub const PUBLISHER_REQUIRED: bool = true;
     /// OAuth / token scope rollback needs.
     pub const ROLLBACK_SCOPE: Option<&'static str> = Some("GITHUB_TOKEN contents:write");
@@ -158,13 +159,28 @@ impl GithubReleasePublisher {
     pub fn new() -> Self {
         Self {
             client: Arc::new(gh_cli_client::GhCliGitHubClient),
+            required_override: None,
+        }
+    }
+
+    /// Construct with a config-supplied `required` override.
+    ///
+    /// Pass the `Option<bool>` read from the release config. `None` keeps
+    /// the built-in default (`true`); `Some(v)` overrides it for this run.
+    pub fn with_required(required_override: Option<bool>) -> Self {
+        Self {
+            client: Arc::new(gh_cli_client::GhCliGitHubClient),
+            required_override,
         }
     }
 
     /// Construct with a caller-provided client. Used by tests to inject a
     /// [`MockGitHubClient`](anodizer_core::github_client::MockGitHubClient).
     pub fn with_client(client: Arc<dyn GitHubClient + Send + Sync>) -> Self {
-        Self { client }
+        Self {
+            client,
+            required_override: None,
+        }
     }
 }
 
@@ -277,7 +293,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
     }
 
     fn required(&self) -> bool {
-        Self::PUBLISHER_REQUIRED
+        self.required_override.unwrap_or(Self::PUBLISHER_REQUIRED)
     }
 
     fn rollback_scope_needed(&self) -> Option<&'static str> {

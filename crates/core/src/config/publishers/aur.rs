@@ -71,4 +71,8 @@ pub struct AurConfig {
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
     pub amd64_variant: Option<String>,
+    /// Override whether this publisher failing should fail the overall release.
+    /// When unset, falls through to the built-in default for this publisher.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
 }

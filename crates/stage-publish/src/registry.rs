@@ -37,56 +37,142 @@ use anodizer_core::{Publisher, PublisherGroup};
 pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     let mut v: Vec<Box<dyn Publisher>> = Vec::new();
     if is_cargo_configured(ctx) {
-        v.push(Box::new(crate::cargo::CargoPublisher::new()));
+        let req = ctx
+            .config
+            .crates
+            .iter()
+            .find_map(|c| c.publish.as_ref()?.cargo.as_ref()?.required);
+        v.push(Box::new(crate::cargo::CargoPublisher::with_required(req)));
     }
     // Assets group: dockerhub, artifactory, cloudsmith.
     // `blob` is also Assets-group but runs as its own `BlobStage` (see
     // doc on `configured_publishers` above for why it's not registered).
     if is_dockerhub_configured(ctx) {
-        v.push(Box::new(crate::dockerhub::DockerhubPublisher::new()));
+        let req = ctx
+            .config
+            .dockerhub
+            .as_ref()
+            .and_then(|v| v.iter().find_map(|c| c.required));
+        v.push(Box::new(
+            crate::dockerhub::DockerhubPublisher::with_required(req),
+        ));
     }
     if is_artifactory_configured(ctx) {
-        v.push(Box::new(crate::artifactory::ArtifactoryPublisher::new()));
+        let req = ctx
+            .config
+            .artifactories
+            .as_ref()
+            .and_then(|v| v.iter().find_map(|c| c.required));
+        v.push(Box::new(
+            crate::artifactory::ArtifactoryPublisher::with_required(req),
+        ));
     }
     if is_cloudsmith_configured(ctx) {
-        v.push(Box::new(crate::cloudsmith::CloudsmithPublisher::new()));
+        let req = ctx
+            .config
+            .cloudsmiths
+            .as_ref()
+            .and_then(|v| v.iter().find_map(|c| c.required));
+        v.push(Box::new(
+            crate::cloudsmith::CloudsmithPublisher::with_required(req),
+        ));
     }
     if is_github_release_configured(ctx) {
+        let req = ctx
+            .config
+            .crates
+            .iter()
+            .find_map(|c| c.release.as_ref()?.required);
         v.push(Box::new(
-            anodizer_stage_release::publisher::GithubReleasePublisher::new(),
+            anodizer_stage_release::publisher::GithubReleasePublisher::with_required(req),
         ));
     }
     // Manager group — git-revert rollback against publisher-owned repo.
     if is_homebrew_configured(ctx) {
+        let req = ctx
+            .config
+            .crates
+            .iter()
+            .find_map(|c| c.publish.as_ref()?.homebrew.as_ref()?.required);
         v.push(Box::new(
-            crate::homebrew::publisher::HomebrewPublisher::new(),
+            crate::homebrew::publisher::HomebrewPublisher::with_required(req),
         ));
     }
     if is_scoop_configured(ctx) {
-        v.push(Box::new(crate::scoop::ScoopPublisher::new()));
+        let req = ctx
+            .config
+            .crates
+            .iter()
+            .find_map(|c| c.publish.as_ref()?.scoop.as_ref()?.required);
+        v.push(Box::new(crate::scoop::ScoopPublisher::with_required(req)));
     }
     if is_nix_configured(ctx) {
-        v.push(Box::new(crate::nix::publisher::NixPublisher::new()));
+        let req = ctx
+            .config
+            .crates
+            .iter()
+            .find_map(|c| c.publish.as_ref()?.nix.as_ref()?.required);
+        v.push(Box::new(
+            crate::nix::publisher::NixPublisher::with_required(req),
+        ));
     }
     if is_aur_configured(ctx) {
-        v.push(Box::new(crate::aur::AurOurPublisher::new()));
+        let req = ctx
+            .config
+            .crates
+            .iter()
+            .find_map(|c| c.publish.as_ref()?.aur.as_ref()?.required);
+        v.push(Box::new(crate::aur::AurOurPublisher::with_required(req)));
     }
     // Manager group — close-PR / registry rollback.
     if is_krew_configured(ctx) {
-        v.push(Box::new(crate::krew::KrewPublisher::new()));
+        let req = ctx
+            .config
+            .crates
+            .iter()
+            .find_map(|c| c.publish.as_ref()?.krew.as_ref()?.required);
+        v.push(Box::new(crate::krew::KrewPublisher::with_required(req)));
     }
     if is_mcp_configured(ctx) {
-        v.push(Box::new(crate::mcp::publisher::McpPublisher::new()));
+        let req = ctx.config.mcp.required;
+        v.push(Box::new(
+            crate::mcp::publisher::McpPublisher::with_required(req),
+        ));
     }
     // Submitter group (no programmatic rollback — warn-only).
     if is_chocolatey_configured(ctx) {
-        v.push(Box::new(crate::chocolatey::ChocolateyPublisher::new()));
+        let req = ctx
+            .config
+            .crates
+            .iter()
+            .find_map(|c| c.publish.as_ref()?.chocolatey.as_ref()?.required);
+        v.push(Box::new(
+            crate::chocolatey::ChocolateyPublisher::with_required(req),
+        ));
     }
     if is_winget_configured(ctx) {
-        v.push(Box::new(crate::winget::WingetPublisher::new()));
+        let req = ctx
+            .config
+            .crates
+            .iter()
+            .find_map(|c| c.publish.as_ref()?.winget.as_ref()?.required);
+        v.push(Box::new(crate::winget::WingetPublisher::with_required(req)));
     }
     if crate::aur_source::is_aur_source_configured(ctx) {
-        v.push(Box::new(crate::aur_source::AurSourcePublisher::new()));
+        let req = ctx
+            .config
+            .crates
+            .iter()
+            .find_map(|c| c.publish.as_ref()?.aur_source.as_ref()?.required)
+            .or_else(|| {
+                ctx.config
+                    .aur_sources
+                    .as_ref()
+                    .and_then(|v| v.iter().find_map(|c| c.required))
+            });
+        v.push(Box::new(
+            crate::aur_source::AurSourcePublisher::with_required(req),
+        ));
     }
     // Snapcraft is intentionally NOT registered here — see the
     // doc comment on `configured_publishers` above.
@@ -682,5 +768,155 @@ mod tests {
                 "snapcraft must NOT register for publish={publish_flag:?}; got {names:?}"
             );
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // required-override tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn config_required_override_honored_homebrew() {
+        use anodizer_core::config::{HomebrewConfig, RepositoryConfig};
+        let demo = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                homebrew: Some(HomebrewConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("homebrew-tap".to_string()),
+                        ..Default::default()
+                    }),
+                    required: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![demo]).build();
+        let publishers = configured_publishers(&ctx);
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "homebrew")
+            .expect("homebrew registered");
+        assert!(
+            p.required(),
+            "homebrew.required = Some(true) must override the default false"
+        );
+    }
+
+    #[test]
+    fn config_required_none_uses_default_homebrew() {
+        use anodizer_core::config::{HomebrewConfig, RepositoryConfig};
+        let demo = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                homebrew: Some(HomebrewConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("homebrew-tap".to_string()),
+                        ..Default::default()
+                    }),
+                    required: None,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![demo]).build();
+        let publishers = configured_publishers(&ctx);
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "homebrew")
+            .expect("homebrew registered");
+        assert!(
+            !p.required(),
+            "homebrew.required = None must fall through to the default (false)"
+        );
+    }
+
+    #[test]
+    fn config_required_override_honored_chocolatey() {
+        use anodizer_core::config::ChocolateyConfig;
+        let demo = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                chocolatey: Some(ChocolateyConfig {
+                    name: Some("demo".to_string()),
+                    required: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![demo]).build();
+        let publishers = configured_publishers(&ctx);
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "chocolatey")
+            .expect("chocolatey registered");
+        assert!(
+            p.required(),
+            "chocolatey.required = Some(true) must override the default false"
+        );
+    }
+
+    #[test]
+    fn config_required_false_overrides_default_cargo() {
+        let demo = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                cargo: Some(CargoPublishConfig {
+                    required: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![demo]).build();
+        let publishers = configured_publishers(&ctx);
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "cargo")
+            .expect("cargo registered");
+        assert!(
+            !p.required(),
+            "cargo.required = Some(false) must override the default true"
+        );
+    }
+
+    #[test]
+    fn config_required_none_preserves_cargo_default_true() {
+        let demo = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                cargo: Some(CargoPublishConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![demo]).build();
+        let publishers = configured_publishers(&ctx);
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "cargo")
+            .expect("cargo registered");
+        assert!(
+            p.required(),
+            "cargo with no required override must keep the built-in default (true)"
+        );
     }
 }

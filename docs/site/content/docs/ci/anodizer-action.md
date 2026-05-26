@@ -26,11 +26,12 @@ Pick exactly one installation path. Defaults to downloading the latest released 
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `version` | `latest` | Anodizer version to install from GitHub releases (e.g. `v0.1.1`, `latest`). Ignored when `from-artifact` or `from-source` is set. |
+| `version` | `latest` | Anodizer version to install from GitHub releases (e.g. `v0.1.1`, `latest`). Ignored when `from-artifact`, `from-source`, or `from-branch` is set. |
 | `from-artifact` | | Artifact name to download instead of a release binary (e.g. `anodizer-linux`). Pair with `artifact-run-id` for cross-workflow downloads. |
 | `artifact-run-id` | | Workflow run ID for the artifact. Use `auto` to automatically resolve the latest successful run of `artifact-workflow` for the current commit. Use a numeric ID for explicit control. Omit to download from the current workflow run. |
 | `artifact-workflow` | `ci.yml` | Workflow filename to search when `artifact-run-id` is `auto`. Ignored otherwise. |
 | `from-source` | `false` | Build anodizer from source in the current workdir (bootstrap mode). Requires a Rust toolchain — combine with `install-rust: true` if needed. Useful when `from-artifact` covers one platform and the current runner needs a platform-native binary. |
+| `from-branch` | | Shallow-clone `tj-smith47/anodizer` at the given branch (e.g. `my-feature`) and build it from source. Accepts a **branch name only** — the repo is hardcoded; there is no `from-branch-repo` or `@ref` syntax. Auto-installs the stable Rust toolchain (no need for `install-rust: true`). Clones to `${RUNNER_TEMP}/anodizer-src`; your `workdir:` is untouched. Cargo's `target/` is cached per branch. Mutually exclusive with `version`, `from-artifact`, and `from-source`. |
 
 ### Dependency setup
 
@@ -339,6 +340,26 @@ jobs:
 - run: anodizer release --snapshot
 - run: anodizer resolve-tag v1.2.3 --json
 ```
+
+### Test an un-released branch of anodizer
+
+For integration testing a downstream project against an in-flight anodizer PR — or dogfooding a feature branch before it lands — use `from-branch`. The action shallow-clones `tj-smith47/anodizer` at the branch you name, builds it from source, and puts it on `PATH`:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: tj-smith47/anodizer-action@v1
+  with:
+    from-branch: my-feature        # branch on tj-smith47/anodizer
+    args: release --snapshot --clean
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+- The input accepts a branch name only — the repository is hardcoded to `tj-smith47/anodizer`.
+- The Rust toolchain is auto-installed; you don't need to pass `install-rust: true`.
+- The cargo `target/` directory is cached per branch (separate cache key from `from-source` / `determinism` modes), so re-runs of the same branch on a hot runner are fast.
+- Clones to `${RUNNER_TEMP}/anodizer-src` — your `workdir:` is never mutated.
+- Mutually exclusive with `version`, `from-artifact`, and `from-source`. Setting two install paths at once fails the workflow with an actionable error.
 
 ## Env vars the action honors
 
