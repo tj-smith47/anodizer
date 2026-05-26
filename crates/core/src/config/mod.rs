@@ -811,19 +811,27 @@ pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
-/// Return a warning string for each publisher configured with `required: true`
+/// Emit a `tracing::warn!` for each publisher configured with `required: true`
 /// whose group is Submitter (chocolatey, winget, aur_source).
 ///
 /// Submitter publishers push to external moderation queues that do not resolve
 /// within a release window, so `required: true` never has the desired effect
-/// of blocking the release on approval. This function returns warnings — not
-/// errors — because the user may have private-registry semantics where
-/// resolution is fast. Cargo is excluded: its default is already `required:
-/// true` and the warning would be noise.
-pub fn validate_submitter_required(config: &Config) -> Vec<String> {
-    fn warn(name: &str) -> String {
+/// of blocking the release on approval. The warning is non-fatal — the user
+/// may have private-registry semantics where resolution is fast. Cargo is
+/// excluded: its default is already `required: true` and the warning would
+/// be noise.
+pub fn warn_on_submitter_required(config: &Config) {
+    for msg in submitter_required_warnings(config) {
+        tracing::warn!("{}", msg);
+    }
+}
+
+/// Pure helper: returns the warning strings without emitting them. Exposed
+/// for tests; production callers use [`warn_on_submitter_required`].
+pub fn submitter_required_warnings(config: &Config) -> Vec<String> {
+    fn submitter_warning(location: &str, name: &str) -> String {
         format!(
-            "publisher '{name}' is a submitter (external moderation queue); \
+            "{location}: publisher '{name}' is a submitter (external moderation queue); \
              `required: true` has no meaningful effect — the submitter gate \
              evaluates at push time, not at approval time."
         )
@@ -833,23 +841,26 @@ pub fn validate_submitter_required(config: &Config) -> Vec<String> {
 
     for krate in &config.crates {
         if let Some(ref publish) = krate.publish {
+            let loc = format!("crate '{}'", krate.name);
             if publish.chocolatey.as_ref().and_then(|c| c.required) == Some(true) {
-                warnings.push(warn("chocolatey"));
+                warnings.push(submitter_warning(&loc, "chocolatey"));
             }
             if publish.winget.as_ref().and_then(|w| w.required) == Some(true) {
-                warnings.push(warn("winget"));
+                warnings.push(submitter_warning(&loc, "winget"));
             }
             if publish.aur_source.as_ref().and_then(|a| a.required) == Some(true) {
-                warnings.push(warn("aur_source"));
+                warnings.push(submitter_warning(&loc, "aur_source"));
             }
         }
     }
 
-    // Top-level aur_sources list (not nested under publish:)
+    // Top-level aur_sources list (not nested under publish:) — no crate axis,
+    // distinguish via the index in the list so two top-level entries collide cleanly.
     if let Some(ref sources) = config.aur_sources {
-        for src in sources {
+        for (idx, src) in sources.iter().enumerate() {
             if src.required == Some(true) {
-                warnings.push(warn("aur_source"));
+                let loc = format!("top-level aur_sources[{idx}]");
+                warnings.push(submitter_warning(&loc, "aur_source"));
             }
         }
     }

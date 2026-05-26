@@ -6391,7 +6391,7 @@ crates:
         required: true
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let warnings = super::validate_submitter_required(&config);
+    let warnings = super::submitter_required_warnings(&config);
     assert!(
         !warnings.is_empty(),
         "expected a warning for chocolatey required: true"
@@ -6416,7 +6416,7 @@ crates:
         required: true
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let warnings = super::validate_submitter_required(&config);
+    let warnings = super::submitter_required_warnings(&config);
     assert!(
         warnings.is_empty(),
         "homebrew (Manager group) should not trigger a warning, got: {:?}",
@@ -6436,7 +6436,7 @@ crates:
       chocolatey: {}
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let warnings = super::validate_submitter_required(&config);
+    let warnings = super::submitter_required_warnings(&config);
     assert!(
         warnings.is_empty(),
         "chocolatey with required: None should not warn, got: {:?}",
@@ -6457,7 +6457,7 @@ crates:
         required: false
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let warnings = super::validate_submitter_required(&config);
+    let warnings = super::submitter_required_warnings(&config);
     assert!(
         warnings.is_empty(),
         "winget with required: false should not warn, got: {:?}",
@@ -6480,7 +6480,7 @@ crates:
         required: true
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let warnings = super::validate_submitter_required(&config);
+    let warnings = super::submitter_required_warnings(&config);
     assert_eq!(
         warnings.len(),
         2,
@@ -6495,4 +6495,101 @@ crates:
         warnings.iter().any(|w| w.contains("winget")),
         "missing winget warning"
     );
+}
+
+#[test]
+fn submitter_aur_source_nested_required_true_warns() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      aur_source:
+        required: true
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::submitter_required_warnings(&config);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected one warning for nested aur_source, got: {:?}",
+        warnings
+    );
+    assert!(
+        warnings[0].contains("aur_source"),
+        "expected aur_source in warning, got: {}",
+        warnings[0]
+    );
+    assert!(
+        warnings[0].contains("crate 'a'"),
+        "expected crate-name prefix in warning, got: {}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn submitter_aur_sources_top_level_required_true_warns() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+aur_sources:
+  - name: mypkg
+    required: true
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::submitter_required_warnings(&config);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected one warning for top-level aur_sources entry, got: {:?}",
+        warnings
+    );
+    assert!(
+        warnings[0].contains("aur_source"),
+        "expected aur_source in warning, got: {}",
+        warnings[0]
+    );
+    assert!(
+        warnings[0].contains("top-level aur_sources"),
+        "expected top-level prefix in warning, got: {}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn submitter_warning_message_matches_spec_verbatim() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey:
+        required: true
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::submitter_required_warnings(&config);
+    assert_eq!(warnings.len(), 1, "expected exactly one warning");
+    let msg = &warnings[0];
+    for clause in [
+        "chocolatey",
+        "submitter",
+        "external moderation queue",
+        "no meaningful effect",
+        "push time",
+        "crate 'myapp'",
+    ] {
+        assert!(
+            msg.contains(clause),
+            "warning missing clause {:?}, got: {}",
+            clause,
+            msg
+        );
+    }
 }
