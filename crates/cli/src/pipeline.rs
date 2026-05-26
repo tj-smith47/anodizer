@@ -546,13 +546,17 @@ fn load_yaml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut visited: HashSet<String> = HashSet::new();
     // Mark the base config itself as visited so a child include cannot
-    // form an A -> B -> A cycle back through the root.
-    if let Some(key) = canonical_path_key(path) {
-        visited.insert(key);
+    // form an A -> B -> A cycle back through the root. The same key is
+    // also passed as `root_key` so a direct A -> A self-cycle errors
+    // explicitly instead of silently deduping into an empty mapping.
+    let root_key = canonical_path_key(path);
+    if let Some(ref key) = root_key {
+        visited.insert(key.clone());
     }
     let mut merged = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
     for entry in &include_entries {
-        let overlay = resolve_include_recursive(entry, base_dir, path, &mut visited, 0)?;
+        let overlay =
+            resolve_include_recursive(entry, base_dir, path, &mut visited, 0, root_key.as_deref())?;
         merge_yaml(&mut merged, &overlay);
     }
     // Merge base config on top of the accumulated defaults (base wins).
@@ -608,8 +612,9 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
 
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut visited: HashSet<String> = HashSet::new();
-    if let Some(key) = canonical_path_key(path) {
-        visited.insert(key);
+    let root_key = canonical_path_key(path);
+    if let Some(ref key) = root_key {
+        visited.insert(key.clone());
     }
     let mut merged = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
     for entry in &include_entries {
@@ -618,7 +623,14 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
             .with_context(|| "failed to convert TOML include entry to JSON")?;
         let yaml_entry: serde_yaml_ng::Value = serde_yaml_ng::to_value(&json_entry)
             .with_context(|| "failed to convert TOML include entry to YAML")?;
-        let overlay = resolve_include_recursive(&yaml_entry, base_dir, path, &mut visited, 0)?;
+        let overlay = resolve_include_recursive(
+            &yaml_entry,
+            base_dir,
+            path,
+            &mut visited,
+            0,
+            root_key.as_deref(),
+        )?;
         merge_yaml(&mut merged, &overlay);
     }
     // Merge base config on top of the accumulated defaults (base wins).
@@ -773,9 +785,15 @@ fn canonical_path_key(path: &Path) -> Option<String> {
 /// `${VAR}` references via [`expand_env_vars`].
 ///
 /// `~` is rewritten only when it appears at the very start of the
-/// rendered string (mirroring POSIX shells' word-initial tilde rule);
-/// anywhere else the literal `~` is preserved so a config path like
-/// `./safe~backup.yaml` survives.
+/// rendered string AND is followed by `/` (or end-of-string), mirroring
+/// the POSIX-shell word-initial tilde rule; anywhere else the literal
+/// `~` is preserved so a config path like `./safe~backup.yaml` survives.
+///
+/// `~user/...` (POSIX user-home form) is NOT supported — only `~/` and
+/// `$VAR` are recognized. A path like `~bob/foo` is returned unchanged
+/// because resolving an arbitrary user's home requires a `getpwnam(3)`
+/// call (or platform equivalent) which we deliberately avoid for the
+/// security and cross-platform-portability cost.
 fn expand_path_tilde_and_env(path_str: &str) -> String {
     let expanded = expand_env_vars(path_str);
     if let Some(rest) = expanded.strip_prefix('~')
@@ -814,6 +832,7 @@ fn resolve_include_recursive(
     config_path: &Path,
     visited: &mut HashSet<String>,
     depth: usize,
+    root_key: Option<&str>,
 ) -> Result<serde_yaml_ng::Value> {
     if depth >= MAX_INCLUDE_DEPTH {
         bail!(
@@ -847,6 +866,21 @@ fn resolve_include_recursive(
             (url, value, child_base_dir, child_config_path)
         }
     };
+
+    // Self-cycle: the included file resolves back to the root config (A
+    // includes A, directly or transitively). Without this branch, the
+    // root key pre-inserted into `visited` would silently dedup the
+    // include into an empty mapping and the user would see no error for
+    // a clearly malformed config.
+    if let Some(rk) = root_key
+        && key == rk
+    {
+        bail!(
+            "includes: self-cycle detected at '{}' (referenced from {})",
+            key,
+            config_path.display(),
+        );
+    }
 
     // Dedup / cycle detection. A repeat hit returns an empty mapping so
     // sibling includes can keep accumulating without double-merging the
@@ -889,6 +923,7 @@ fn resolve_include_recursive(
             &child_config_path,
             visited,
             depth + 1,
+            root_key,
         )?;
         merge_yaml(&mut accumulated, &child_overlay);
     }
@@ -1739,6 +1774,28 @@ mod tests {
         );
     }
 
+    /// A config that includes itself directly (A -> A) must error with a
+    /// self-cycle message. Without the dedicated check, the root key
+    /// pre-inserted into `visited` would silently dedup the include into
+    /// an empty mapping and the malformed config would parse cleanly.
+    #[test]
+    fn test_load_config_includes_self_cycle() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodizer.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: self\nincludes:\n  - anodizer.yaml\ncrates: []\n",
+        )
+        .unwrap();
+
+        let err = load_config(&cfg_path).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("self-cycle"),
+            "expected self-cycle error, got: {msg}"
+        );
+    }
+
     #[test]
     fn test_load_config_includes_path_relative_to_included_file() {
         // a.yaml includes nested/b.yaml; b.yaml includes c.yaml — which
@@ -1765,6 +1822,25 @@ mod tests {
             config.dist,
             std::path::PathBuf::from("/from-nested-c"),
             "second-level include resolved relative to its own directory"
+        );
+    }
+
+    /// `~user/...` (POSIX user-home form) is intentionally NOT expanded
+    /// — only `~/` and `$VAR` are recognized. A path like `~bob/foo`
+    /// must round-trip unchanged so the downstream `read_to_string`
+    /// surfaces the missing-file error, rather than us guessing at
+    /// `bob`'s home and silently rewriting the user's path.
+    #[test]
+    fn test_expand_path_tilde_user_form_not_supported() {
+        let got = expand_path_tilde_and_env("~bob/foo");
+        assert_eq!(
+            got, "~bob/foo",
+            "~user/... must NOT be expanded (POSIX user-home form unsupported)"
+        );
+        let got_no_slash = expand_path_tilde_and_env("~bob");
+        assert_eq!(
+            got_no_slash, "~bob",
+            "~user with no trailing slash must NOT be expanded either"
         );
     }
 

@@ -31,26 +31,35 @@ pub struct HooksConfig {
 
 impl HooksConfig {
     /// Fold the deprecated `post:` spelling into `hooks:` so downstream
-    /// readers consult one field. Emits a `tracing::warn!` when both
-    /// spellings appear in the same block (the user almost certainly
-    /// meant one or the other).
+    /// readers consult one field. Emits a `tracing::warn!` with one of two
+    /// suffixes depending on whether both spellings appeared or only the
+    /// legacy one — both messages carry the same "switch to 'hooks:'"
+    /// guidance, with the conflict case adding the "and ignoring 'post:'"
+    /// note so the user knows which side won.
     fn merge_hook_aliases(&mut self) {
         let has_hooks = self.hooks.as_ref().is_some_and(|v| !v.is_empty());
         let has_post = self.post.as_ref().is_some_and(|v| !v.is_empty());
-        if has_hooks && has_post {
-            tracing::warn!(
-                "DEPRECATION: top-level hooks block has both 'hooks:' and 'post:' \
-                 — using 'hooks:' and ignoring 'post:'. The 'post:' spelling is \
-                 deprecated; remove it from your config."
-            );
-            self.post = None;
-        } else if has_post {
-            tracing::warn!(
-                "DEPRECATION: top-level 'after.post:' / 'before.post:' is renamed to \
-                 'hooks:' for GoReleaser parity. The old spelling still works but \
-                 will be removed in a future release; switch to 'hooks:'."
-            );
-            self.hooks = self.post.take();
+        match (has_hooks, has_post) {
+            (true, true) => {
+                tracing::warn!(
+                    "DEPRECATION: top-level hooks block has both 'hooks:' and 'post:' \
+                     — using 'hooks:' and ignoring 'post:'. The 'post:' spelling is \
+                     renamed to 'hooks:' for GoReleaser parity; remove the 'post:' \
+                     key from your config."
+                );
+                self.post = None;
+            }
+            (false, true) => {
+                tracing::warn!(
+                    "DEPRECATION: top-level 'after.post:' / 'before.post:' is renamed to \
+                     'hooks:' for GoReleaser parity. The 'post:' spelling still works \
+                     but will be removed in a future release; switch to 'hooks:'."
+                );
+                self.hooks = self.post.take();
+            }
+            // (true, false): canonical shape, nothing to do.
+            // (false, false): empty block, nothing to do.
+            _ => {}
         }
     }
 }
@@ -147,5 +156,147 @@ impl<'de> Deserialize<'de> for HookEntry {
                 "hook entry must be a string or an object with cmd/dir/env/output",
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+    use std::sync::{Arc, Mutex, MutexGuard};
+    use tracing::subscriber::with_default;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    /// Shared buffer writer that captures `tracing` output into a `Vec<u8>`.
+    #[derive(Clone, Default)]
+    struct BufferWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl BufferWriter {
+        fn captured(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).to_string()
+        }
+    }
+
+    impl io::Write for BufferWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `BufferWriterHandle` matches the `MakeWriter` contract: each
+    /// `make_writer` call returns a cheap clone that writes into the
+    /// same `Arc<Mutex<Vec<u8>>>` as every other clone.
+    impl<'a> MakeWriter<'a> for BufferWriter {
+        type Writer = BufferWriterGuard<'a>;
+        fn make_writer(&'a self) -> Self::Writer {
+            BufferWriterGuard(self.0.lock().unwrap())
+        }
+    }
+
+    struct BufferWriterGuard<'a>(MutexGuard<'a, Vec<u8>>);
+    impl io::Write for BufferWriterGuard<'_> {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Run `body` with a tracing subscriber that captures every event into
+    /// the returned buffer; assertions then inspect the captured text.
+    fn capture_warnings<F: FnOnce()>(body: F) -> String {
+        let buf = BufferWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_max_level(tracing::Level::WARN)
+            .without_time()
+            .with_ansi(false)
+            .finish();
+        with_default(subscriber, body);
+        buf.captured()
+    }
+
+    /// Legacy-only spelling (post: set, hooks: unset) folds into `hooks`
+    /// and emits a DEPRECATION warning that points at the canonical name.
+    #[test]
+    fn legacy_post_only_folds_and_warns() {
+        let captured = capture_warnings(|| {
+            let mut cfg = HooksConfig {
+                hooks: None,
+                post: Some(vec![HookEntry::Simple("legacy.sh".to_string())]),
+            };
+            cfg.merge_hook_aliases();
+            assert_eq!(
+                cfg.hooks.as_deref().map(|v| v.len()),
+                Some(1),
+                "post: should have moved into hooks:"
+            );
+            assert!(cfg.post.is_none(), "post: must be cleared after merge");
+        });
+        assert!(
+            captured.contains("DEPRECATION"),
+            "expected DEPRECATION marker in warning: {captured}"
+        );
+        assert!(
+            captured.contains("renamed to 'hooks:'"),
+            "legacy-only warning must guide to 'hooks:' rename: {captured}"
+        );
+    }
+
+    /// Both spellings set: `hooks:` wins, `post:` is dropped, and the
+    /// emitted warning explicitly calls out the conflict.
+    #[test]
+    fn both_present_keeps_hooks_drops_post_and_warns() {
+        let captured = capture_warnings(|| {
+            let mut cfg = HooksConfig {
+                hooks: Some(vec![HookEntry::Simple("modern.sh".to_string())]),
+                post: Some(vec![HookEntry::Simple("legacy.sh".to_string())]),
+            };
+            cfg.merge_hook_aliases();
+            assert!(cfg.post.is_none(), "post: must be cleared on conflict");
+            let names: Vec<&str> = cfg
+                .hooks
+                .as_deref()
+                .unwrap()
+                .iter()
+                .map(|h| match h {
+                    HookEntry::Simple(s) => s.as_str(),
+                    HookEntry::Structured(s) => s.cmd.as_str(),
+                })
+                .collect();
+            assert_eq!(names, vec!["modern.sh"], "hooks: must win on conflict");
+        });
+        assert!(
+            captured.contains("DEPRECATION"),
+            "expected DEPRECATION marker: {captured}"
+        );
+        assert!(
+            captured.contains("ignoring 'post:'"),
+            "conflict warning must mention 'ignoring post': {captured}"
+        );
+    }
+
+    /// Canonical `hooks:`-only block emits no warning and stays as-is.
+    #[test]
+    fn canonical_hooks_only_emits_no_warning() {
+        let captured = capture_warnings(|| {
+            let mut cfg = HooksConfig {
+                hooks: Some(vec![HookEntry::Simple("modern.sh".to_string())]),
+                post: None,
+            };
+            cfg.merge_hook_aliases();
+            assert!(cfg.post.is_none());
+            assert_eq!(cfg.hooks.as_deref().map(|v| v.len()), Some(1));
+        });
+        assert!(
+            !captured.contains("DEPRECATION"),
+            "canonical hooks-only must not warn: {captured}"
+        );
     }
 }

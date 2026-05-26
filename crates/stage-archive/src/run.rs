@@ -8,6 +8,7 @@ use anodizer_core::context::Context;
 use anodizer_core::hooks::run_hooks;
 use anodizer_core::stage::Stage;
 use anodizer_core::target::map_target;
+use anodizer_core::template_file_render::render_templated_file_entry;
 use anyhow::{Context as _, Result, bail};
 
 use crate::entries::{ArchiveEntry, deduplicate_entries, sort_entries};
@@ -146,76 +147,24 @@ fn render_archive_templated_files(
     let mut out: Vec<ArchiveEntry> = Vec::with_capacity(entries.len());
     for entry in entries {
         let id = entry.id.as_deref().unwrap_or("default");
+        let label = format!("archives[{archive_id}].templated_files[{id}]");
 
-        if let Some(ref skip) = entry.skip {
-            let off = skip
-                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                .with_context(|| {
-                    format!("archives[{archive_id}].templated_files[{id}]: render skip template")
-                })?;
-            if off {
-                continue;
-            }
-        }
+        let render = match render_templated_file_entry(ctx, entry, &label)? {
+            Some(r) => r,
+            None => continue,
+        };
 
-        let rendered_src = ctx.render_template(&entry.src).with_context(|| {
-            format!("archives[{archive_id}].templated_files[{id}]: render src path")
-        })?;
-        let src_path = PathBuf::from(&rendered_src);
-        let src_bytes = fs::read(&src_path).with_context(|| {
-            format!(
-                "archives[{archive_id}].templated_files[{id}]: source file '{}' not found",
-                src_path.display()
-            )
-        })?;
-        let src_contents = std::str::from_utf8(&src_bytes).map_err(|_| {
-            anyhow::anyhow!(
-                "archives[{archive_id}].templated_files[{id}]: source file '{}' is not \
-                 valid UTF-8 — templated files must be text. Use the archive's `files:` \
-                 list for binary contents.",
-                src_path.display()
-            )
-        })?;
-        let rendered_contents = ctx.render_template(src_contents).with_context(|| {
-            format!(
-                "archives[{archive_id}].templated_files[{id}]: render contents of '{}'",
-                src_path.display()
-            )
-        })?;
-
-        let rendered_dst = ctx.render_template(&entry.dst).with_context(|| {
-            format!("archives[{archive_id}].templated_files[{id}]: render dst path")
-        })?;
-        if rendered_dst.is_empty() {
-            continue;
-        }
-        if rendered_dst.contains("..") || Path::new(&rendered_dst).is_absolute() {
-            bail!(
-                "archives[{archive_id}].templated_files[{id}]: dst '{}' must be a \
-                 relative path with no '..' segments",
-                rendered_dst
-            );
-        }
-
-        let out_path = staging.join(&rendered_dst);
+        let out_path = staging.join(&render.rendered_dst);
         if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "archives[{archive_id}].templated_files[{id}]: create parent dir '{}'",
-                    parent.display()
-                )
-            })?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("{label}: create parent dir '{}'", parent.display()))?;
         }
-        fs::write(&out_path, &rendered_contents).with_context(|| {
-            format!(
-                "archives[{archive_id}].templated_files[{id}]: write '{}'",
-                out_path.display()
-            )
-        })?;
+        fs::write(&out_path, &render.rendered_contents)
+            .with_context(|| format!("{label}: write '{}'", out_path.display()))?;
 
         out.push(ArchiveEntry {
             src: out_path,
-            archive_name: PathBuf::from(&rendered_dst),
+            archive_name: PathBuf::from(&render.rendered_dst),
             info: None,
         });
     }

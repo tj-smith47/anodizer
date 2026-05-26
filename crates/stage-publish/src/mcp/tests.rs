@@ -10,6 +10,8 @@
 //! scenario completes in a few milliseconds rather than waiting on the
 //! default 10s base delay.
 
+#![allow(clippy::field_reassign_with_default)]
+
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -20,9 +22,9 @@ use anodizer_core::config::{
 use anodizer_core::context::{Context, ContextOptions};
 
 use super::{
-    DEFAULT_REGISTRY_URL, infer_repository_from_release, publish_with_registry,
-    reset_experimental_warned_for_test, resolve_registry_url, warn_experimental_once,
-    warn_once_lock,
+    DEFAULT_REGISTRY_URL, fill_from_project_metadata, infer_repository_from_release,
+    publish_with_registry, reset_experimental_warned_for_test, resolve_registry_url,
+    warn_experimental_once, warn_once_lock,
 };
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
@@ -400,6 +402,77 @@ fn inference_no_ops_when_owner_or_name_empty() {
             mcp.repository.source
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Project-metadata fallback
+// ---------------------------------------------------------------------------
+
+/// When `mcp.description` is unset, the publisher must fall back to the
+/// top-level `metadata.description`. Same fallback shape used by every
+/// other publisher (homebrew cask, dockerhub, snapcraft).
+#[test]
+fn mcp_inherits_meta_description_when_unset() {
+    use anodizer_core::config::MetadataConfig;
+
+    let mut config = Config::default();
+    config.metadata = Some(MetadataConfig {
+        description: Some("from project metadata".to_string()),
+        homepage: Some("https://example.com/project".to_string()),
+        ..Default::default()
+    });
+
+    // Per-MCP description / homepage left None — fallback must kick in.
+    let mut mcp = McpConfig::default();
+    let ctx = Context::new(config, ContextOptions::default());
+    fill_from_project_metadata(&ctx, &mut mcp);
+    assert_eq!(
+        mcp.description.as_deref(),
+        Some("from project metadata"),
+        "missing mcp.description must inherit metadata.description"
+    );
+    assert_eq!(
+        mcp.homepage.as_deref(),
+        Some("https://example.com/project"),
+        "missing mcp.homepage must inherit metadata.homepage"
+    );
+}
+
+/// Empty per-MCP description (literally `Some("")`) falls back too —
+/// the helper treats empty-string the same as `None`.
+#[test]
+fn mcp_empty_description_falls_back_to_meta() {
+    use anodizer_core::config::MetadataConfig;
+
+    let mut config = Config::default();
+    config.metadata = Some(MetadataConfig {
+        description: Some("project description".to_string()),
+        ..Default::default()
+    });
+
+    let mut mcp = McpConfig::default();
+    mcp.description = Some(String::new());
+    let ctx = Context::new(config, ContextOptions::default());
+    fill_from_project_metadata(&ctx, &mut mcp);
+    assert_eq!(mcp.description.as_deref(), Some("project description"));
+}
+
+/// Explicit per-MCP description wins over the metadata fallback.
+#[test]
+fn mcp_explicit_description_wins_over_meta() {
+    use anodizer_core::config::MetadataConfig;
+
+    let mut config = Config::default();
+    config.metadata = Some(MetadataConfig {
+        description: Some("metadata fallback".to_string()),
+        ..Default::default()
+    });
+
+    let mut mcp = McpConfig::default();
+    mcp.description = Some("explicit mcp value".to_string());
+    let ctx = Context::new(config, ContextOptions::default());
+    fill_from_project_metadata(&ctx, &mut mcp);
+    assert_eq!(mcp.description.as_deref(), Some("explicit mcp value"));
 }
 
 // ---------------------------------------------------------------------------

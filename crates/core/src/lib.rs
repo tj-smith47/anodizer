@@ -37,6 +37,7 @@ pub mod signing;
 pub mod stage;
 pub mod target;
 pub mod template;
+pub mod template_file_render;
 mod template_preprocess;
 pub mod templated_files;
 pub mod tool_detect;

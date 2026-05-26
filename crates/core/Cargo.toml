@@ -15,6 +15,7 @@ test-helpers = ["dep:rustls", "dep:rcgen"]
 [dev-dependencies]
 anodizer-core = { path = ".", features = ["test-helpers"] }
 serial_test.workspace = true
+tracing-subscriber.workspace = true
 
 [dependencies]
 anyhow.workspace = true

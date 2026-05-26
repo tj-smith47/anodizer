@@ -7,9 +7,41 @@ use super::cask::{
 };
 use super::commit_msg::render_commit_msg;
 use super::formula::{build_conflicts_directives, build_depends_directives};
+use anodizer_core::config::HomebrewCaskConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
+
+/// Resolve the effective homepage for a top-level cask entry.
+///
+/// Per-cask `homepage` wins; when unset, fall back to the project-level
+/// `metadata.homepage` so a monorepo only needs to declare it once.
+/// Mirrors the same `or_else(|| ctx.config.meta_homepage())` chain used
+/// by the per-crate cask renderer in `homebrew::cask`.
+fn resolve_top_cask_homepage<'a>(
+    cask_cfg: &'a HomebrewCaskConfig,
+    ctx: &'a Context,
+) -> Option<&'a str> {
+    cask_cfg
+        .homepage
+        .as_deref()
+        .or_else(|| ctx.config.meta_homepage())
+}
+
+/// Resolve the effective description for a top-level cask entry.
+///
+/// Per-cask `description` wins; when unset, fall back to the
+/// project-level `metadata.description`. Symmetric with
+/// [`resolve_top_cask_homepage`].
+fn resolve_top_cask_description<'a>(
+    cask_cfg: &'a HomebrewCaskConfig,
+    ctx: &'a Context,
+) -> Option<&'a str> {
+    cask_cfg
+        .description
+        .as_deref()
+        .or_else(|| ctx.config.meta_description())
+}
 /// Render and push every entry in `homebrew_casks:`. Returns `Ok(true)`
 /// when at least one cask was actually pushed to its tap repo; `Ok(false)`
 /// when every entry skipped (no config, skip_upload, dry-run). The
@@ -236,14 +268,8 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
             // global `metadata.homepage` / `metadata.description` so a
             // monorepo only needs to declare those once. Same pattern the
             // formula publisher uses (`publish_formula::resolve_homebrew_metadata`).
-            homepage: cask_cfg
-                .homepage
-                .as_deref()
-                .or_else(|| ctx.config.meta_homepage()),
-            description: cask_cfg
-                .description
-                .as_deref()
-                .or_else(|| ctx.config.meta_description()),
+            homepage: resolve_top_cask_homepage(cask_cfg, ctx),
+            description: resolve_top_cask_description(cask_cfg, ctx),
             app: cask_cfg.app.as_deref(),
             binaries,
             caveats: cask_cfg.caveats.as_deref(),
@@ -376,9 +402,74 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
+    use super::{resolve_top_cask_description, resolve_top_cask_homepage};
     use anodizer_core::PublisherOutcome;
-    use anodizer_core::context::Context;
+    use anodizer_core::config::{Config, HomebrewCaskConfig, MetadataConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    /// When per-cask `homepage` is unset, the resolver returns the
+    /// project-level `metadata.homepage`. Same fallback shape used by
+    /// the rendered Cask file, so the rendered Ruby will carry the
+    /// metadata-level value.
+    #[test]
+    fn cask_uses_meta_homepage_when_unset() {
+        let mut config = Config::default();
+        config.metadata = Some(MetadataConfig {
+            homepage: Some("https://metadata.example.com".to_string()),
+            description: Some("metadata description".to_string()),
+            ..Default::default()
+        });
+        let ctx = Context::new(config, ContextOptions::default());
+
+        let cask_cfg = HomebrewCaskConfig {
+            homepage: None,
+            description: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_top_cask_homepage(&cask_cfg, &ctx),
+            Some("https://metadata.example.com"),
+            "missing per-cask homepage must inherit metadata.homepage"
+        );
+        assert_eq!(
+            resolve_top_cask_description(&cask_cfg, &ctx),
+            Some("metadata description"),
+            "missing per-cask description must inherit metadata.description"
+        );
+    }
+
+    /// Per-cask `homepage` set explicitly wins over the project-level
+    /// metadata.homepage fallback.
+    #[test]
+    fn cask_homepage_wins_over_meta_homepage() {
+        let mut config = Config::default();
+        config.metadata = Some(MetadataConfig {
+            homepage: Some("https://metadata.example.com".to_string()),
+            ..Default::default()
+        });
+        let ctx = Context::new(config, ContextOptions::default());
+
+        let cask_cfg = HomebrewCaskConfig {
+            homepage: Some("https://per-cask.example.com".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_top_cask_homepage(&cask_cfg, &ctx),
+            Some("https://per-cask.example.com")
+        );
+    }
+
+    /// When neither per-cask nor metadata.homepage is set, the resolver
+    /// returns None so the renderer can omit the `homepage` line.
+    #[test]
+    fn cask_homepage_returns_none_when_neither_set() {
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let cask_cfg = HomebrewCaskConfig::default();
+        assert_eq!(resolve_top_cask_homepage(&cask_cfg, &ctx), None);
+        assert_eq!(resolve_top_cask_description(&cask_cfg, &ctx), None);
+    }
 
     /// Sticky-pending semantic: a cask that records `PendingValidation`
     /// followed by a cask that records nothing must leave the slot at

@@ -1,12 +1,12 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::parse_octal_mode;
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
+use anodizer_core::template_file_render::render_templated_file_entry;
 
 /// Default file permission mode (octal 0o655 = decimal 429).
 const DEFAULT_MODE: u32 = 0o655;
@@ -35,85 +35,24 @@ impl Stage for TemplateFilesStage {
 
         for entry in &entries {
             let id = entry.id.as_deref().unwrap_or("default");
+            let label = format!("templatefiles: id '{}'", id);
 
-            // Per-entry skip: bool or templated string. Evaluates the
-            // condition through the global template context so a user
-            // can write `skip: '{{ if eq .Os "windows" }}true{{ end }}'`.
-            if let Some(ref skip) = entry.skip {
-                let off = skip
-                    .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                    .with_context(|| {
-                        format!("templatefiles: render skip template for id '{}'", id)
-                    })?;
-                if off {
-                    let log = ctx.logger("templatefiles");
-                    log.status(&format!("templatefiles: skipped id '{}'", id));
+            let render = match render_templated_file_entry(ctx, entry, &label)? {
+                Some(r) => r,
+                None => {
+                    // Skipped (skip=true or empty dst). Log only the
+                    // skip-true path here — empty-dst is a quiet
+                    // "ignored if empty" per GoReleaser docs.
+                    if entry.skip.is_some() {
+                        let log = ctx.logger("templatefiles");
+                        log.status(&format!("templatefiles: skipped id '{}'", id));
+                    }
                     continue;
                 }
-            }
-
-            // Render the src path through the template engine
-            let rendered_src = ctx.render_template(&entry.src).with_context(|| {
-                format!("templatefiles: failed to render src path for id '{}'", id)
-            })?;
-
-            // Read the source file as raw bytes first so binary inputs
-            // emit a clear "binary file passed to template engine" error
-            // instead of the generic "stream did not contain valid UTF-8"
-            // surfaced by `read_to_string`.
-            let src_path = PathBuf::from(&rendered_src);
-            let src_bytes = std::fs::read(&src_path).with_context(|| {
-                format!(
-                    "templatefiles: source file '{}' not found (id: '{}')",
-                    src_path.display(),
-                    id
-                )
-            })?;
-            let src_contents = std::str::from_utf8(&src_bytes).map_err(|_| {
-                anyhow::anyhow!(
-                    "templatefiles: source file '{}' (id: '{}') is not valid UTF-8 — \
-                     templated files must be text. Use `files:` for binary archive \
-                     contents.",
-                    src_path.display(),
-                    id
-                )
-            })?;
-
-            // Render the file contents through the template engine
-            let rendered_contents = ctx.render_template(src_contents).with_context(|| {
-                format!(
-                    "templatefiles: failed to render contents of '{}' (id: '{}')",
-                    src_path.display(),
-                    id
-                )
-            })?;
-
-            // Render the dst path through the template engine
-            let rendered_dst = ctx.render_template(&entry.dst).with_context(|| {
-                format!("templatefiles: failed to render dst path for id '{}'", id)
-            })?;
-
-            // GoReleaser docs: "Ignored if empty" — skip silently so a
-            // conditionally-rendered dst can opt out without erroring.
-            if rendered_dst.is_empty() {
-                let log = ctx.logger("templatefiles");
-                log.status(&format!(
-                    "templatefiles: dst rendered empty for id '{}', skipping",
-                    id
-                ));
-                continue;
-            }
-
-            // Reject path traversal attempts
-            if rendered_dst.contains("..") || Path::new(&rendered_dst).is_absolute() {
-                bail!(
-                    "templatefiles: dst '{}' must be a relative path within dist (no '..' or absolute paths)",
-                    rendered_dst
-                );
-            }
+            };
 
             // Write to dist/dst
-            let output_path = dist.join(&rendered_dst);
+            let output_path = dist.join(&render.rendered_dst);
             if let Some(parent) = output_path.parent() {
                 std::fs::create_dir_all(parent).with_context(|| {
                     format!(
@@ -122,7 +61,7 @@ impl Stage for TemplateFilesStage {
                     )
                 })?;
             }
-            std::fs::write(&output_path, &rendered_contents).with_context(|| {
+            std::fs::write(&output_path, &render.rendered_contents).with_context(|| {
                 format!("templatefiles: failed to write '{}'", output_path.display())
             })?;
 
@@ -152,7 +91,7 @@ impl Stage for TemplateFilesStage {
 
             log.status(&format!(
                 "rendered '{}' -> '{}'",
-                rendered_src,
+                entry.src,
                 output_path.display()
             ));
 
@@ -160,7 +99,7 @@ impl Stage for TemplateFilesStage {
             ctx.artifacts.add(Artifact {
                 kind: ArtifactKind::UploadableFile,
                 path: output_path,
-                name: rendered_dst,
+                name: render.rendered_dst,
                 target: None,
                 crate_name: ctx.config.project_name.clone(),
                 metadata: HashMap::from([("id".to_string(), id.to_string())]),
@@ -549,7 +488,7 @@ mod tests {
         assert!(result.is_err(), "path traversal should be rejected");
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("must be a relative path within dist"),
+            err.contains("must be a relative path"),
             "error should mention path restriction: {}",
             err
         );
@@ -643,7 +582,7 @@ mod tests {
         assert!(result.is_err(), "absolute dst path should be rejected");
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("must be a relative path within dist"),
+            err.contains("must be a relative path"),
             "error should mention path restriction: {}",
             err
         );

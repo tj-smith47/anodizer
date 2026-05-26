@@ -4825,3 +4825,131 @@ fn archive_after_hook_sees_artifact_path() {
         "after-hook must see `.ArtifactPath` populated"
     );
 }
+
+/// `archives[].templated_files` must render once per (target, format)
+/// pair, with `.Format` resolving to the current archive's format string
+/// in the rendered output path.
+///
+/// Setup: one crate with one binary, archives configured with
+/// `formats: [tar.gz, zip]` and a single `templated_files` entry whose
+/// `dst` embeds `{{ .Format }}`. After running the stage, two archives
+/// are produced (one per format) and each must contain the templated
+/// file rendered with its own `.Format` value.
+#[test]
+fn test_archive_templated_files_per_format() {
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig, TemplateFileConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+
+    // Stand up the source template file referenced by templated_files.src.
+    // It renders to a body that embeds .Format so we can also assert
+    // contents (not just the dst path).
+    let tpl_path = tmp.path().join("formats.tpl");
+    fs::write(&tpl_path, "format={{ .Format }}\n").unwrap();
+
+    let bin_path = tmp.path().join("myapp");
+    fs::write(&bin_path, b"fake binary").unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist)
+        .crates(vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some(
+                    "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
+                ),
+                formats: Some(vec!["tar.gz".to_string(), "zip".to_string()]),
+                format_overrides: None,
+                files: None,
+                binaries: None,
+                wrap_in_directory: None,
+                templated_files: Some(vec![TemplateFileConfig {
+                    id: Some("formats".to_string()),
+                    src: tpl_path.to_string_lossy().to_string(),
+                    // .Format embedded in dst — must resolve per archive.
+                    dst: "{{ .Format }}/info.txt".to_string(),
+                    mode: None,
+                    skip: None,
+                }]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .build();
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: bin_path,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: {
+            let mut m = HashMap::new();
+            m.insert("binary".to_string(), "myapp".to_string());
+            m
+        },
+        size: None,
+    });
+
+    let stage = ArchiveStage;
+    stage.run(&mut ctx).expect("archive stage runs");
+
+    // Two archives: one .tar.gz, one .zip.
+    let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+    assert_eq!(archives.len(), 2, "expected one archive per format");
+
+    let tar_archive = archives
+        .iter()
+        .find(|a| a.path.to_string_lossy().ends_with(".tar.gz"))
+        .expect(".tar.gz archive must exist");
+    let zip_archive = archives
+        .iter()
+        .find(|a| a.path.to_string_lossy().ends_with(".zip"))
+        .expect(".zip archive must exist");
+
+    // .tar.gz: read entries, look for `tar.gz/info.txt`.
+    let file = File::open(&tar_archive.path).unwrap();
+    let dec = flate2::read::GzDecoder::new(file);
+    let tar_entries = read_tar_entries(tar::Archive::new(dec));
+    let tar_dst = "tar.gz/info.txt";
+    assert!(
+        tar_entries.contains_key(tar_dst),
+        ".tar.gz archive must contain `{tar_dst}`; got entries: {:?}",
+        tar_entries.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        tar_entries[tar_dst],
+        b"format=tar.gz\n".to_vec(),
+        ".Format must resolve to 'tar.gz' inside the rendered file body"
+    );
+
+    // .zip: enumerate entries, look for `zip/info.txt`.
+    let file = File::open(&zip_archive.path).unwrap();
+    let mut zip = zip::ZipArchive::new(file).unwrap();
+    let zip_dst = "zip/info.txt";
+    let mut zip_body = Vec::new();
+    let mut found_zip = false;
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).unwrap();
+        if entry.name() == zip_dst {
+            std::io::Read::read_to_end(&mut entry, &mut zip_body).unwrap();
+            found_zip = true;
+            break;
+        }
+    }
+    assert!(
+        found_zip,
+        ".zip archive must contain `{zip_dst}` — .Format must resolve to 'zip'"
+    );
+    assert_eq!(
+        zip_body,
+        b"format=zip\n".to_vec(),
+        ".Format must resolve to 'zip' inside the rendered file body"
+    );
+}

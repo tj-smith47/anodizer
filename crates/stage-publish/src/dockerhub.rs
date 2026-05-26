@@ -88,6 +88,29 @@ pub fn resolve_full_description(
     bail!("dockerhub: full_description has neither from_file nor from_url set")
 }
 
+/// Resolve the short description for a DockerHub entry. Returns
+/// `entry.description` when set non-empty; otherwise falls back to the
+/// top-level `metadata.description` via [`Config::meta_description`].
+/// Returns `None` when both sources are unset/empty so the caller can
+/// short-circuit the PATCH and avoid clobbering an existing remote
+/// description with the empty string.
+fn effective_description(
+    entry: &anodizer_core::config::DockerHubConfig,
+    ctx: &Context,
+) -> Option<String> {
+    entry
+        .description
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            ctx.config
+                .meta_description()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+}
+
 // ---------------------------------------------------------------------------
 // publish_to_dockerhub
 // ---------------------------------------------------------------------------
@@ -159,20 +182,9 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
 
         // Empty per-entry description falls back to the project's global
         // metadata.description so a single source of truth covers every
-        // dockerhub entry.
-        let description_owned: Option<String> = entry
-            .description
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .or_else(|| {
-                ctx.config
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| m.description.as_deref())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-            });
+        // dockerhub entry. Same fallback chain as homebrew (cask +
+        // formula), MCP, scoop, krew, etc.
+        let description_owned: Option<String> = effective_description(entry, ctx);
         let short_desc: &str = description_owned.as_deref().unwrap_or("");
         // Docker Hub counts code points, not UTF-8 bytes, so emoji /
         // accented descriptions don't falsely trip the 100-char warning.
@@ -687,6 +699,81 @@ mod tests {
         let ctx = dry_run_ctx(config);
         let log = ctx.logger("dockerhub");
         assert!(publish_to_dockerhub(&ctx, &log).is_ok());
+    }
+
+    /// When `dockerhub[].description` is unset, the publisher must fall
+    /// back to the project-level `metadata.description` so a single source
+    /// of truth covers every entry. Mirrors the same fallback shape used
+    /// by the homebrew cask + MCP publishers (`effective_description` is
+    /// the dockerhub-specific seam).
+    #[test]
+    fn dockerhub_uses_meta_description_when_unset() {
+        use anodizer_core::config::MetadataConfig;
+
+        let mut config = Config::default();
+        config.metadata = Some(MetadataConfig {
+            description: Some("from project metadata".to_string()),
+            ..Default::default()
+        });
+        // Per-entry description left None — the fallback must kick in.
+        let entry = DockerHubConfig {
+            username: Some("testuser".to_string()),
+            images: Some(vec!["myorg/myapp".to_string()]),
+            description: None,
+            ..Default::default()
+        };
+        config.dockerhub = Some(vec![entry.clone()]);
+        let ctx = dry_run_ctx(config);
+
+        let resolved =
+            effective_description(&entry, &ctx).expect("metadata fallback must produce a value");
+        assert_eq!(resolved, "from project metadata");
+    }
+
+    /// Per-entry `description` always wins over the project metadata
+    /// fallback when set non-empty.
+    #[test]
+    fn dockerhub_entry_description_wins_over_meta() {
+        use anodizer_core::config::MetadataConfig;
+
+        let mut config = Config::default();
+        config.metadata = Some(MetadataConfig {
+            description: Some("project-wide fallback".to_string()),
+            ..Default::default()
+        });
+        let entry = DockerHubConfig {
+            username: Some("testuser".to_string()),
+            images: Some(vec!["myorg/myapp".to_string()]),
+            description: Some("per-entry override".to_string()),
+            ..Default::default()
+        };
+        config.dockerhub = Some(vec![entry.clone()]);
+        let ctx = dry_run_ctx(config);
+        let resolved = effective_description(&entry, &ctx).expect("description present");
+        assert_eq!(resolved, "per-entry override");
+    }
+
+    /// Empty per-entry description (an explicit `""`) falls back to the
+    /// project metadata — same shape as the `or_else` guard in `effective_description`.
+    #[test]
+    fn dockerhub_empty_entry_description_falls_back_to_meta() {
+        use anodizer_core::config::MetadataConfig;
+
+        let mut config = Config::default();
+        config.metadata = Some(MetadataConfig {
+            description: Some("from project metadata".to_string()),
+            ..Default::default()
+        });
+        let entry = DockerHubConfig {
+            username: Some("testuser".to_string()),
+            images: Some(vec!["myorg/myapp".to_string()]),
+            description: Some(String::new()),
+            ..Default::default()
+        };
+        config.dockerhub = Some(vec![entry.clone()]);
+        let ctx = dry_run_ctx(config);
+        let resolved = effective_description(&entry, &ctx).expect("metadata fallback used");
+        assert_eq!(resolved, "from project metadata");
     }
 
     #[test]
