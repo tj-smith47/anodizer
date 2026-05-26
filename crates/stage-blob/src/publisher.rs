@@ -96,25 +96,11 @@ pub(crate) fn decode_blob_targets(extra: &anodizer_core::PublishEvidenceExtra) -
 /// that never existed when a mid-stream upload failed; the post-upload
 /// snapshot is the safer end state — fewer rollback items, no phantom
 /// targets.
-pub struct BlobPublisher {
-    required_override: Option<bool>,
-}
+pub struct BlobPublisher;
 
 impl BlobPublisher {
     pub fn new() -> Self {
-        Self {
-            required_override: None,
-        }
-    }
-
-    /// Construct with a config-supplied `required` override.
-    ///
-    /// Pass the `Option<bool>` from the blob config. `None` keeps the
-    /// built-in default (`false` — per-blob `BlobConfig.required` governs
-    /// the stage outcome independently). `Some(v)` overrides the trait
-    /// surface for the dispatch path.
-    pub fn with_required(required_override: Option<bool>) -> Self {
-        Self { required_override }
+        Self
     }
 }
 
@@ -155,12 +141,13 @@ impl anodizer_core::Publisher for BlobPublisher {
     /// per-run from `BlobConfig.required` in
     /// [`crate::run::record_blob_result`] (called by
     /// [`crate::run::BlobStage`]), not by this trait method. The
-    /// config-level `required_override` is threaded here for
-    /// consistency with the dispatch path; `None` falls through to
-    /// `false` (the built-in default) and the actual per-config
-    /// policy is enforced inside the stage.
+    /// trait impl has no access to the active `Context`, so it
+    /// returns `false` and the actual policy is enforced inside the
+    /// stage. Kept as `false` so a future refactor that drops the
+    /// trait-vs-stage split doesn't silently start failing pipelines
+    /// that don't opt into `required:`.
     fn required(&self) -> bool {
-        self.required_override.unwrap_or(false)
+        false
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {

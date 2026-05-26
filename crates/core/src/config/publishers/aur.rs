@@ -72,7 +72,9 @@ pub struct AurConfig {
     /// Only artifacts matching this variant are included. Default: "v1".
     pub amd64_variant: Option<String>,
     /// Override whether this publisher failing should fail the overall release.
-    /// When unset, falls through to the built-in default for this publisher.
+    ///
+    /// Default: `false` — a failure here is logged but does not abort the release.
+    /// Set to `true` to fail the release on any error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
 }

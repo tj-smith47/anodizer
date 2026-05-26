@@ -37,6 +37,8 @@ use anodizer_core::{Publisher, PublisherGroup};
 pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     let mut v: Vec<Box<dyn Publisher>> = Vec::new();
     if is_cargo_configured(ctx) {
+        // First non-None across crates wins; cross-crate conflict is the
+        // config author's problem to resolve.
         let req = ctx
             .config
             .crates
@@ -48,6 +50,7 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     // `blob` is also Assets-group but runs as its own `BlobStage` (see
     // doc on `configured_publishers` above for why it's not registered).
     if is_dockerhub_configured(ctx) {
+        // First non-None across `dockerhub:` entries wins.
         let req = ctx
             .config
             .dockerhub
@@ -58,6 +61,7 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
         ));
     }
     if is_artifactory_configured(ctx) {
+        // First non-None across `artifactories:` entries wins.
         let req = ctx
             .config
             .artifactories
@@ -68,6 +72,7 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
         ));
     }
     if is_cloudsmith_configured(ctx) {
+        // First non-None across `cloudsmiths:` entries wins.
         let req = ctx
             .config
             .cloudsmiths
@@ -78,6 +83,7 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
         ));
     }
     if is_github_release_configured(ctx) {
+        // First non-None across crates' `release.required` wins.
         let req = ctx
             .config
             .crates
@@ -89,16 +95,27 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     }
     // Manager group — git-revert rollback against publisher-owned repo.
     if is_homebrew_configured(ctx) {
+        // First non-None across per-crate `publish.homebrew.required` wins;
+        // falls back to the first non-None across top-level `homebrew_casks:`
+        // entries so cask-only setups (no per-crate publish block) can still
+        // override the publisher's required default.
         let req = ctx
             .config
             .crates
             .iter()
-            .find_map(|c| c.publish.as_ref()?.homebrew.as_ref()?.required);
+            .find_map(|c| c.publish.as_ref()?.homebrew.as_ref()?.required)
+            .or_else(|| {
+                ctx.config
+                    .homebrew_casks
+                    .as_ref()
+                    .and_then(|v| v.iter().find_map(|c| c.required))
+            });
         v.push(Box::new(
             crate::homebrew::publisher::HomebrewPublisher::with_required(req),
         ));
     }
     if is_scoop_configured(ctx) {
+        // First non-None across crates wins.
         let req = ctx
             .config
             .crates
@@ -107,6 +124,7 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
         v.push(Box::new(crate::scoop::ScoopPublisher::with_required(req)));
     }
     if is_nix_configured(ctx) {
+        // First non-None across crates wins.
         let req = ctx
             .config
             .crates
@@ -117,6 +135,7 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
         ));
     }
     if is_aur_configured(ctx) {
+        // First non-None across crates wins.
         let req = ctx
             .config
             .crates
@@ -126,6 +145,7 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     }
     // Manager group — close-PR / registry rollback.
     if is_krew_configured(ctx) {
+        // First non-None across crates wins.
         let req = ctx
             .config
             .crates
@@ -134,6 +154,7 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
         v.push(Box::new(crate::krew::KrewPublisher::with_required(req)));
     }
     if is_mcp_configured(ctx) {
+        // mcp is single top-level config — no precedence to resolve.
         let req = ctx.config.mcp.required;
         v.push(Box::new(
             crate::mcp::publisher::McpPublisher::with_required(req),
@@ -141,6 +162,7 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     }
     // Submitter group (no programmatic rollback — warn-only).
     if is_chocolatey_configured(ctx) {
+        // First non-None across crates wins.
         let req = ctx
             .config
             .crates
@@ -151,6 +173,7 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
         ));
     }
     if is_winget_configured(ctx) {
+        // First non-None across crates wins.
         let req = ctx
             .config
             .crates
@@ -159,6 +182,9 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
         v.push(Box::new(crate::winget::WingetPublisher::with_required(req)));
     }
     if crate::aur_source::is_aur_source_configured(ctx) {
+        // First non-None across per-crate `publish.aur_source.required` wins;
+        // falls back to the first non-None across top-level `aur_sources:`
+        // entries.
         let req = ctx
             .config
             .crates
@@ -917,6 +943,207 @@ mod tests {
         assert!(
             p.required(),
             "cargo with no required override must keep the built-in default (true)"
+        );
+    }
+
+    #[test]
+    fn config_required_override_honored_homebrew_cask_only() {
+        use anodizer_core::config::{HomebrewCaskConfig, RepositoryConfig};
+        // Cask-only setup: no per-crate `publish.homebrew`, only top-level
+        // `homebrew_casks:`. The cask config's `required` must reach
+        // HomebrewPublisher via the fallback lookup branch.
+        let demo = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new().crates(vec![demo]).build();
+        ctx.config.homebrew_casks = Some(vec![HomebrewCaskConfig {
+            name: Some("demo".to_string()),
+            repository: Some(RepositoryConfig {
+                owner: Some("acme".to_string()),
+                name: Some("homebrew-tap".to_string()),
+                ..Default::default()
+            }),
+            required: Some(true),
+            ..Default::default()
+        }]);
+        let publishers = configured_publishers(&ctx);
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "homebrew")
+            .expect("homebrew registered via homebrew_casks");
+        assert!(
+            p.required(),
+            "homebrew_casks[].required = Some(true) must override the default false for cask-only setups"
+        );
+    }
+
+    #[test]
+    fn config_required_first_non_none_across_crates_wins() {
+        use anodizer_core::config::{HomebrewConfig, RepositoryConfig};
+        // Two crates with conflicting `required` settings. The walk uses
+        // `find_map`, so the FIRST crate with a non-None value wins.
+        // Order in `crates:` is the tiebreak; cross-crate conflict is the
+        // config author's problem to resolve.
+        let alpha = CrateConfig {
+            name: "alpha".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                homebrew: Some(HomebrewConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("homebrew-tap".to_string()),
+                        ..Default::default()
+                    }),
+                    required: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let beta = CrateConfig {
+            name: "beta".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                homebrew: Some(HomebrewConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("homebrew-tap".to_string()),
+                        ..Default::default()
+                    }),
+                    required: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![alpha, beta]).build();
+        let publishers = configured_publishers(&ctx);
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "homebrew")
+            .expect("homebrew registered");
+        assert!(
+            p.required(),
+            "first non-None across crates wins — alpha's Some(true) takes precedence over beta's Some(false)"
+        );
+    }
+
+    #[test]
+    fn config_required_override_honored_dockerhub() {
+        use anodizer_core::config::DockerHubConfig;
+        let mut ctx = Context::test_fixture();
+        ctx.config.dockerhub = Some(vec![DockerHubConfig {
+            username: Some("u".to_string()),
+            images: Some(vec!["acme/widget".to_string()]),
+            required: Some(true),
+            ..Default::default()
+        }]);
+        let publishers = configured_publishers(&ctx);
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "dockerhub")
+            .expect("dockerhub registered");
+        assert!(
+            p.required(),
+            "dockerhub[].required = Some(true) must override the default false"
+        );
+    }
+
+    #[test]
+    fn config_required_override_honored_artifactory() {
+        use anodizer_core::config::ArtifactoryConfig;
+        let mut ctx = Context::test_fixture();
+        ctx.config.artifactories = Some(vec![ArtifactoryConfig {
+            name: Some("prod".to_string()),
+            target: Some("https://art.example.com/repo/".to_string()),
+            required: Some(true),
+            ..Default::default()
+        }]);
+        let publishers = configured_publishers(&ctx);
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "artifactory")
+            .expect("artifactory registered");
+        assert!(
+            p.required(),
+            "artifactories[].required = Some(true) must override the default false"
+        );
+    }
+
+    #[test]
+    fn config_required_override_honored_cloudsmith() {
+        use anodizer_core::config::CloudSmithConfig;
+        let mut ctx = Context::test_fixture();
+        ctx.config.cloudsmiths = Some(vec![CloudSmithConfig {
+            organization: Some("acme".to_string()),
+            repository: Some("widget".to_string()),
+            required: Some(true),
+            ..Default::default()
+        }]);
+        let publishers = configured_publishers(&ctx);
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "cloudsmith")
+            .expect("cloudsmith registered");
+        assert!(
+            p.required(),
+            "cloudsmiths[].required = Some(true) must override the default false"
+        );
+    }
+
+    #[test]
+    fn config_required_false_overrides_default_release() {
+        use anodizer_core::config::{ReleaseConfig, ScmRepoConfig};
+        let crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            release: Some(ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: "acme".to_string(),
+                    name: "widget".to_string(),
+                }),
+                required: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+        let publishers = configured_publishers(&ctx);
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "github-release")
+            .expect("github-release registered");
+        assert!(
+            !p.required(),
+            "release.required = Some(false) must override the default true"
+        );
+    }
+
+    #[test]
+    fn config_required_override_honored_mcp() {
+        use anodizer_core::config::McpConfig;
+        let mut ctx = Context::test_fixture();
+        ctx.config.mcp = McpConfig {
+            name: Some("io.github.acme/widget".to_string()),
+            required: Some(true),
+            ..Default::default()
+        };
+        let publishers = configured_publishers(&ctx);
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "mcp")
+            .expect("mcp registered");
+        assert!(
+            p.required(),
+            "mcp.required = Some(true) must override the default false"
         );
     }
 }

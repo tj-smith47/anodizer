@@ -110,7 +110,8 @@ pub(crate) fn rollback_failure_warning_msg(
 /// Emit the boilerplate for a top-level publisher struct: a struct with an
 /// `Option<bool>` override field, `new()` / `Default`, `with_required()`,
 /// and an **inherent impl** carrying associated constants for `name`, `group`,
-/// `required`, and `rollback_scope_needed`.
+/// `required`, and `rollback_scope_needed` plus a `resolved_required()`
+/// helper that combines the config override with `PUBLISHER_REQUIRED`.
 ///
 /// Why constants on an inherent impl, not a `Publisher` impl? Rust requires
 /// a trait impl to live in a single `impl Trait for Type { ... }` block,
@@ -118,12 +119,15 @@ pub(crate) fn rollback_failure_warning_msg(
 /// (constants) away from `run`/`rollback`/`preflight` (per-publisher
 /// bodies). Instead, the macro pins the constants on the struct itself
 /// and each publisher's `impl Publisher for $struct { ... }` block just
-/// forwards to them. Per-publisher code shrinks to: the constants
-/// declaration plus the three bodies that actually vary.
+/// forwards to them.
 ///
 /// `with_required(override)` passes a config-level `Option<bool>` into the
 /// struct. `None` falls through to `PUBLISHER_REQUIRED`; `Some(v)` overrides
-/// it. The trait `required()` method reads `required_override` first.
+/// it. `resolved_required(&self)` performs the resolution so per-publisher
+/// trait impls forward via a single `Self::resolved_required(self)` call —
+/// the override logic lives in exactly one place and a future publisher
+/// author cannot silently drop the override by forgetting the `unwrap_or`
+/// expression.
 ///
 /// Usage:
 /// ```ignore
@@ -131,7 +135,7 @@ pub(crate) fn rollback_failure_warning_msg(
 /// impl anodizer_core::Publisher for MyPublisher {
 ///     fn name(&self) -> &str { Self::PUBLISHER_NAME }
 ///     fn group(&self) -> anodizer_core::PublisherGroup { Self::PUBLISHER_GROUP }
-///     fn required(&self) -> bool { self.required_override.unwrap_or(Self::PUBLISHER_REQUIRED) }
+///     fn required(&self) -> bool { Self::resolved_required(self) }
 ///     fn rollback_scope_needed(&self) -> Option<&'static str> { Self::ROLLBACK_SCOPE }
 ///     fn run(&self, ctx: &mut Context) -> anyhow::Result<PublishEvidence> { ... }
 ///     fn rollback(&self, ctx: &mut Context, ev: &PublishEvidence) -> anyhow::Result<()> { ... }
@@ -166,6 +170,15 @@ macro_rules! simple_publisher {
             /// keeps the built-in default; `Some(v)` overrides it for this run.
             pub fn with_required(required_override: Option<bool>) -> Self {
                 Self { required_override }
+            }
+
+            /// Combine the config-supplied override with `PUBLISHER_REQUIRED`.
+            ///
+            /// The `Publisher::required()` trait impl forwards here so the
+            /// override-resolution logic lives in exactly one place and a
+            /// publisher cannot silently lose the override.
+            pub fn resolved_required(&self) -> bool {
+                self.required_override.unwrap_or(Self::PUBLISHER_REQUIRED)
             }
 
             /// Stable lowercase publisher identifier (see [`anodizer_core::Publisher::name`]).

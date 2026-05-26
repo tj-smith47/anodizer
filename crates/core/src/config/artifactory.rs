@@ -57,7 +57,9 @@ pub struct ArtifactoryConfig {
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Override whether this publisher failing should fail the overall release.
-    /// When unset, falls through to the built-in default for this publisher.
+    ///
+    /// Default: `false` — a failure here is logged but does not abort the release.
+    /// Set to `true` to fail the release on any error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
 }

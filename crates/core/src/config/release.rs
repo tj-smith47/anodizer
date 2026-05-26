@@ -93,7 +93,9 @@ pub struct ReleaseConfig {
     /// `ANODIZER_GITHUB_UPLOAD_CONCURRENCY`.
     pub upload_concurrency: Option<u32>,
     /// Override whether this publisher failing should fail the overall release.
-    /// When unset, falls through to the built-in default for this publisher.
+    ///
+    /// Default: `true` — a failure here aborts the release.
+    /// Set to `false` to log failures but continue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
 }
