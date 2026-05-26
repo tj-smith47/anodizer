@@ -175,145 +175,45 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
         return Ok(());
     }
 
-    // Collect errors from all providers instead of failing fast on the first one.
     let mut errors: Vec<String> = vec![];
-
-    // P1.3 — wire `Config.retry` into every announcer that makes a
-    // network call. `RetryConfig::default()` matches GR's defaults
-    // (10 attempts × 10s base × 5m cap); per-call retry classifies 5xx
-    // / 429 / transport failures as retriable and 4xx as fast-fail via
-    // `core::retry::is_retriable` + `HttpError`.
     let retry_policy = ctx.retry_policy();
 
-    run_announcer(
-        &DiscordAnnouncer,
-        ctx,
-        &announce,
-        &retry_policy,
-        &log,
-        &mut errors,
-    )?;
+    dispatch_all_announcers(ctx, &announce, &retry_policy, &log, &mut errors)?;
 
-    run_announcer(
-        &DiscourseAnnouncer,
-        ctx,
-        &announce,
-        &retry_policy,
-        &log,
-        &mut errors,
-    )?;
-
-    run_announcer(
-        &SlackAnnouncer,
-        ctx,
-        &announce,
-        &retry_policy,
-        &log,
-        &mut errors,
-    )?;
-
-    run_announcer(
-        &WebhookAnnouncer,
-        ctx,
-        &announce,
-        &retry_policy,
-        &log,
-        &mut errors,
-    )?;
-
-    run_announcer(
-        &TelegramAnnouncer,
-        ctx,
-        &announce,
-        &retry_policy,
-        &log,
-        &mut errors,
-    )?;
-
-    run_announcer(
-        &TeamsAnnouncer,
-        ctx,
-        &announce,
-        &retry_policy,
-        &log,
-        &mut errors,
-    )?;
-
-    run_announcer(
-        &MattermostAnnouncer,
-        ctx,
-        &announce,
-        &retry_policy,
-        &log,
-        &mut errors,
-    )?;
-
-    run_announcer(
-        &RedditAnnouncer,
-        ctx,
-        &announce,
-        &retry_policy,
-        &log,
-        &mut errors,
-    )?;
-
-    run_announcer(
-        &TwitterAnnouncer,
-        ctx,
-        &announce,
-        &retry_policy,
-        &log,
-        &mut errors,
-    )?;
-
-    run_announcer(
-        &MastodonAnnouncer,
-        ctx,
-        &announce,
-        &retry_policy,
-        &log,
-        &mut errors,
-    )?;
-
-    run_announcer(
-        &BlueskyAnnouncer,
-        ctx,
-        &announce,
-        &retry_policy,
-        &log,
-        &mut errors,
-    )?;
-
-    run_announcer(
-        &LinkedInAnnouncer,
-        ctx,
-        &announce,
-        &retry_policy,
-        &log,
-        &mut errors,
-    )?;
-
-    run_announcer(
-        &OpenCollectiveAnnouncer,
-        ctx,
-        &announce,
-        &retry_policy,
-        &log,
-        &mut errors,
-    )?;
-
-    run_announcer(
-        &EmailAnnouncer,
-        ctx,
-        &announce,
-        &retry_policy,
-        &log,
-        &mut errors,
-    )?;
-
-    // Report all collected errors together.
     if !errors.is_empty() {
         anyhow::bail!("announce errors:\n{}", errors.join("\n"));
+    }
+
+    Ok(())
+}
+
+/// Dispatch every registered announcer, collecting per-provider errors.
+fn dispatch_all_announcers(
+    ctx: &mut Context,
+    announce: &AnnounceConfig,
+    retry_policy: &RetryPolicy,
+    log: &StageLogger,
+    errors: &mut Vec<String>,
+) -> Result<()> {
+    let announcers: &[&dyn Announcer] = &[
+        &DiscordAnnouncer,
+        &DiscourseAnnouncer,
+        &SlackAnnouncer,
+        &WebhookAnnouncer,
+        &TelegramAnnouncer,
+        &TeamsAnnouncer,
+        &MattermostAnnouncer,
+        &RedditAnnouncer,
+        &TwitterAnnouncer,
+        &MastodonAnnouncer,
+        &BlueskyAnnouncer,
+        &LinkedInAnnouncer,
+        &OpenCollectiveAnnouncer,
+        &EmailAnnouncer,
+    ];
+
+    for announcer in announcers {
+        run_announcer(*announcer, ctx, announce, retry_policy, log, errors)?;
     }
 
     Ok(())

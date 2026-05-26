@@ -827,7 +827,7 @@ impl Context {
         // `IsSnapshot == "false"` would otherwise skip them.
         self.template_vars.set(
             "IsHarness",
-            if std::env::var_os("ANODIZER_IN_DETERMINISM_HARNESS").is_some() {
+            if self.env_var("ANODIZER_IN_DETERMINISM_HARNESS").is_some() {
                 "true"
             } else {
                 "false"
@@ -892,11 +892,13 @@ impl Context {
     ///    behavior intentionally.
     pub fn populate_time_vars(&mut self) {
         // Resolution order (SDE first, else wall-clock) is centralized in
-        // `crate::sde::resolve_now` so any caller — `populate_time_vars`,
-        // Tera built-ins, stage-srpm's `%changelog` date, nightly
-        // `date_str` — sees identical "now" semantics. Earlier this
-        // function inlined the resolution and drifted from the helper.
-        let now = crate::sde::resolve_now();
+        // `crate::sde::resolve_now_with_env` so any caller —
+        // `populate_time_vars`, Tera built-ins, stage-srpm's `%changelog`
+        // date, nightly `date_str` — sees identical "now" semantics.
+        // Routes through the injected `env_source` so tests can inject
+        // SOURCE_DATE_EPOCH via TestContextBuilder::env() without
+        // mutating the process env.
+        let now = crate::sde::resolve_now_with_env(self.env_source());
         self.template_vars.set("Date", &now.to_rfc3339());
         self.template_vars
             .set("Timestamp", &now.timestamp().to_string());
@@ -1429,18 +1431,14 @@ mod tests {
     /// `.sha256` sidecar across runs. CI run 25975073213 surfaced this
     /// drift on every platform shard before the fix landed.
     #[test]
-    #[serial_test::serial(env)]
     fn populate_time_vars_uses_source_date_epoch_when_set() {
-        let key = "SOURCE_DATE_EPOCH";
-        let prev = std::env::var(key).ok();
         // 1_715_000_000 = 2024-05-06T12:53:20+00:00 — picked to be safely
         // earlier than wall-clock so a wall-clock-derived assertion would
         // visibly fail.
-        // SAFETY: serialized on the `env` lock group.
-        unsafe { std::env::set_var(key, "1715000000") };
-
+        let env = crate::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1715000000");
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.set_env_source(env);
         ctx.populate_time_vars();
 
         let v = ctx.template_vars();
@@ -1457,28 +1455,16 @@ mod tests {
         assert_eq!(v.get("Year"), Some(&"2024".to_string()));
         assert_eq!(v.get("Month"), Some(&"05".to_string()));
         assert_eq!(v.get("Day"), Some(&"06".to_string()));
-
-        // SAFETY: serialized.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var(key, v),
-                None => std::env::remove_var(key),
-            }
-        }
     }
 
     #[test]
-    #[serial_test::serial(env)]
     fn test_populate_time_vars() {
-        // Wall-clock fallback path: clear SDE so we exercise the
-        // chrono::Utc::now() branch.
-        let key = "SOURCE_DATE_EPOCH";
-        let prev = std::env::var(key).ok();
-        // SAFETY: serialized.
-        unsafe { std::env::remove_var(key) };
-
+        // Wall-clock fallback path: empty MapEnvSource has no
+        // SOURCE_DATE_EPOCH, so we exercise the chrono::Utc::now() branch.
+        let env = crate::MapEnvSource::new();
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.set_env_source(env);
         ctx.populate_time_vars();
 
         let v = ctx.template_vars();
@@ -1504,13 +1490,6 @@ mod tests {
         // Now should be ISO 8601
         let now = v.get("Now").unwrap_or_else(|| panic!("Now should be set"));
         assert!(now.contains('T'), "Now should be ISO 8601, got: {now}");
-
-        // SAFETY: serialized.
-        unsafe {
-            if let Some(v) = prev {
-                std::env::set_var(key, v);
-            }
-        }
     }
 
     #[test]

@@ -16,11 +16,21 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::process::Command;
 
+use crate::EnvSource;
+
 /// Resolves the SOURCE_DATE_EPOCH for a snapshot-mode release run.
 ///
 /// Returns seconds-since-epoch. See module docs for the resolution order.
 pub fn resolve_snapshot_sde(repo: &Path) -> Result<i64> {
-    if let Ok(v) = std::env::var("ANODIZE_SOURCE_DATE_EPOCH") {
+    resolve_snapshot_sde_with_env(repo, &crate::ProcessEnvSource)
+}
+
+/// Env-injectable form of [`resolve_snapshot_sde`]. Production wires up
+/// [`ProcessEnvSource`]; tests inject a [`MapEnvSource`](crate::MapEnvSource)
+/// to drive the `ANODIZE_SOURCE_DATE_EPOCH` branch without mutating the
+/// process env.
+pub fn resolve_snapshot_sde_with_env<E: EnvSource + ?Sized>(repo: &Path, env: &E) -> Result<i64> {
+    if let Some(v) = env.var("ANODIZE_SOURCE_DATE_EPOCH") {
         let parsed = v.parse::<i64>().with_context(|| {
             format!(
                 "ANODIZE_SOURCE_DATE_EPOCH is set but not a valid i64: {}",

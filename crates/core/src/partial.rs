@@ -5,6 +5,7 @@
 
 use anyhow::{Context as _, Result};
 
+use crate::EnvSource;
 use crate::config::PartialConfig;
 use crate::target;
 
@@ -89,8 +90,19 @@ impl PartialTarget {
 ///    alias; filter-only — does not override the host's `GOOS`/`GOARCH` for hooks)
 /// 3. Host detection via `rustc -vV`, interpreted per `partial.by` config
 pub fn resolve_partial_target(config: &Option<PartialConfig>) -> Result<PartialTarget> {
+    resolve_partial_target_with_env(config, &crate::ProcessEnvSource)
+}
+
+/// Env-injectable form of [`resolve_partial_target`]. Production wires up
+/// [`ProcessEnvSource`]; tests inject a
+/// [`MapEnvSource`](crate::MapEnvSource) to drive the env-var branches
+/// without mutating the process env.
+pub fn resolve_partial_target_with_env<E: EnvSource + ?Sized>(
+    config: &Option<PartialConfig>,
+    env: &E,
+) -> Result<PartialTarget> {
     // Priority 1: TARGET env var — exact target triple
-    if let Ok(t) = std::env::var("TARGET")
+    if let Some(t) = env.var("TARGET")
         && !t.is_empty()
     {
         return Ok(PartialTarget::Exact(t));
@@ -98,15 +110,15 @@ pub fn resolve_partial_target(config: &Option<PartialConfig>) -> Result<PartialT
 
     // Priority 2: ANODIZER_OS/ANODIZER_ARCH, or GGOOS/GGOARCH alias for GoReleaser
     // compatibility. Canonical vars win when both are set.
-    let os = std::env::var("ANODIZER_OS")
-        .ok()
+    let os = env
+        .var("ANODIZER_OS")
         .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("GGOOS").ok().filter(|s| !s.is_empty()));
+        .or_else(|| env.var("GGOOS").filter(|s| !s.is_empty()));
     if let Some(os) = os {
-        let arch = std::env::var("ANODIZER_ARCH")
-            .ok()
+        let arch = env
+            .var("ANODIZER_ARCH")
             .filter(|a| !a.is_empty())
-            .or_else(|| std::env::var("GGOARCH").ok().filter(|a| !a.is_empty()));
+            .or_else(|| env.var("GGOARCH").filter(|a| !a.is_empty()));
         return Ok(PartialTarget::OsArch { os, arch });
     }
 

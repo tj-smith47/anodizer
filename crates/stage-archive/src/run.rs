@@ -36,118 +36,18 @@ impl Stage for ArchiveStage {
         let dry_run = ctx.options.dry_run;
         let template_vars = ctx.template_vars().clone();
 
-        // Global archive defaults: first entry of `defaults.archives.formats`
-        // is the singular default; falls back to "tar.gz" when neither is set.
-        let global_default_format = ctx
-            .config
-            .defaults
-            .as_ref()
-            .and_then(|d| d.archives.as_ref())
-            .and_then(|a| a.formats.as_ref())
-            .and_then(|fmts| fmts.first().cloned())
-            .unwrap_or_else(|| "tar.gz".to_string());
-        let global_format_overrides: Vec<FormatOverride> = ctx
-            .config
-            .defaults
-            .as_ref()
-            .and_then(|d| d.archives.as_ref())
-            .and_then(|a| a.format_overrides.clone())
-            .unwrap_or_default();
+        let (global_default_format, global_format_overrides) = resolve_global_archive_defaults(ctx);
 
-        // Collect crate configs to avoid borrow conflict later
-        let crates: Vec<_> = ctx
-            .config
-            .crates
-            .iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .cloned()
-            .collect();
-
-        // Build a list of (crate_name, archive_configs) pairs to process.
-        //
-        // A crate enters the archive workflow only when it has *something to
-        // archive*: either configured builds, a meta-archive (which doesn't
-        // need binaries), or already-registered binary artifacts inherited from a
-        // prior stage / split-merge context. Library-only crates with none of
-        // the above are silently skipped — treating "no binaries" as a
-        // strict-mode error for them would force every lib-only crate in a
-        // workspace to opt out via `archives: disabled`. The strict_guard
-        // further down still fires when a crate qualified to enter the
-        // workflow but produced no binaries — that's the genuine error case.
-        let archivable_kinds = [
-            ArtifactKind::Binary,
-            ArtifactKind::UniversalBinary,
-            ArtifactKind::Header,
-            ArtifactKind::CArchive,
-            ArtifactKind::CShared,
-        ];
-        // Resolve the project root once: per-crate paths in CrateConfig are
-        // recorded relative to the project root, so default-extra-files glob
-        // (LICENSE/README/CHANGELOG) needs an absolute base to avoid leaking
-        // the workspace's own README into per-crate archives during
-        // `cargo test` runs that execute from the workspace root.
-        let project_root = ctx
-            .options
-            .project_root
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| PathBuf::from("."));
-
-        let work: Vec<(String, PathBuf, Vec<ArchiveConfig>)> = crates
-            .into_iter()
-            .filter_map(|c| {
-                match &c.archives {
-                    ArchivesConfig::Disabled => None,
-                    ArchivesConfig::Configs(cfgs) => {
-                        let has_builds = c.builds.as_ref().map(|b| !b.is_empty()).unwrap_or(false);
-                        let has_meta_archive = cfgs.iter().any(|cfg| cfg.meta.unwrap_or(false));
-                        let has_existing_artifacts = !ctx
-                            .artifacts
-                            .by_kinds_and_crate(&archivable_kinds, &c.name)
-                            .is_empty();
-                        if !has_builds && !has_meta_archive && !has_existing_artifacts {
-                            return None;
-                        }
-                        let archive_cfgs = if cfgs.is_empty() {
-                            // Default: one archive with all defaults
-                            vec![ArchiveConfig::default()]
-                        } else {
-                            cfgs.clone()
-                        };
-                        let crate_dir = project_root.join(&c.path);
-                        Some((c.name.clone(), crate_dir, archive_cfgs))
-                    }
-                }
-            })
-            .collect();
+        let work = collect_archivable_crates(ctx, &selected)?;
 
         validate_archive_configs(&work, &log)?;
 
-        // Ensure dist directory exists
         fs::create_dir_all(&dist)
             .with_context(|| format!("create dist dir: {}", dist.display()))?;
 
         let mut new_artifacts: Vec<Artifact> = Vec::new();
-
-        // pick the default `archive.name_template` based on whether
-        // the run produces archives for more than one crate. In a single-crate
-        // config the GoReleaser-canonical `{{ .ProjectName }}_..._{{ .Os }}_..`
-        // template is unambiguous; in a monorepo every crate would resolve to
-        // the same filename and emit `artifact '<...>' already registered`
-        // warnings.
-        //
-        // In multi-crate mode the default template still references
-        // `{{ .ProjectName }}` (matching GR archive.go:30 verbatim) and the
-        // per-crate iteration below overrides the `ProjectName` template var
-        // to the crate name. This keeps user templates that reference
-        // `{{ .ProjectName }}` working under GR semantics — each crate is its
-        // own "project" in the workspace model. `{{ .CrateName }}` remains
-        // separately available.
         let multi_crate = work.len() > 1;
 
-        // Snapshot the workspace-level ProjectName so the per-crate override
-        // can be restored after the loop (downstream stages — checksum, sign,
-        // release, blob — must continue to see the workspace name).
         let original_project_name = ctx
             .template_vars()
             .get("ProjectName")
@@ -155,32 +55,12 @@ impl Stage for ArchiveStage {
             .unwrap_or_else(|| ctx.config.project_name.clone());
 
         for (crate_name, crate_dir, archive_cfgs) in &work {
-            // GR-aligned ProjectName resolution for multi-crate workspaces:
-            // in a single-crate config ProjectName == workspace project name;
-            // in a multi-crate config each crate behaves like its own project,
-            // so user `name_template`s referencing `{{ .ProjectName }}` (the
-            // common GR migration shape) resolve to a per-crate-distinct
-            // value instead of the workspace name.
             if multi_crate {
                 ctx.template_vars_mut().set("ProjectName", crate_name);
             }
-            // Archive all build artifact types, matching GoReleaser
-            // (Binary, UniversalBinary, Header, CArchive, CShared).
-            let archivable_kinds = [
-                ArtifactKind::Binary,
-                ArtifactKind::UniversalBinary,
-                ArtifactKind::Header,
-                ArtifactKind::CArchive,
-                ArtifactKind::CShared,
-            ];
-            let all_binaries: Vec<Artifact> = ctx
-                .artifacts
-                .by_kinds_and_crate(&archivable_kinds, crate_name)
-                .into_iter()
-                .cloned()
-                .collect();
 
-            // meta archives can skip the "no binaries" check
+            let all_binaries = collect_crate_archivable_artifacts(ctx, crate_name);
+
             let has_any_meta = archive_cfgs.iter().any(|cfg| cfg.meta.unwrap_or(false));
 
             if all_binaries.is_empty() && !has_any_meta {
@@ -208,10 +88,6 @@ impl Stage for ArchiveStage {
             )?;
         }
 
-        // Restore the workspace-level ProjectName after multi-crate iteration
-        // overrode it per-crate (see Q-arch1 / 2026-05-08 second-opinion audit).
-        // Downstream stages (checksum, sign, release, blob) must see the
-        // workspace project name, not whichever crate happened to be last.
         ctx.template_vars_mut()
             .set("ProjectName", &original_project_name);
 
@@ -223,6 +99,99 @@ impl Stage for ArchiveStage {
 
         Ok(())
     }
+}
+
+/// Resolve global archive defaults from `defaults.archives`.
+/// Returns `(default_format, format_overrides)`.
+fn resolve_global_archive_defaults(ctx: &Context) -> (String, Vec<FormatOverride>) {
+    let global_default_format = ctx
+        .config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.archives.as_ref())
+        .and_then(|a| a.formats.as_ref())
+        .and_then(|fmts| fmts.first().cloned())
+        .unwrap_or_else(|| "tar.gz".to_string());
+    let global_format_overrides: Vec<FormatOverride> = ctx
+        .config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.archives.as_ref())
+        .and_then(|a| a.format_overrides.clone())
+        .unwrap_or_default();
+    (global_default_format, global_format_overrides)
+}
+
+/// Build the list of `(crate_name, crate_dir, archive_configs)` for all
+/// crates that have something to archive: configured builds, a meta-archive,
+/// or already-registered binary artifacts.
+fn collect_archivable_crates(
+    ctx: &Context,
+    selected: &[String],
+) -> Result<Vec<(String, PathBuf, Vec<ArchiveConfig>)>> {
+    let crates: Vec<_> = ctx
+        .config
+        .crates
+        .iter()
+        .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        .cloned()
+        .collect();
+
+    let archivable_kinds = [
+        ArtifactKind::Binary,
+        ArtifactKind::UniversalBinary,
+        ArtifactKind::Header,
+        ArtifactKind::CArchive,
+        ArtifactKind::CShared,
+    ];
+
+    let project_root = ctx
+        .options
+        .project_root
+        .clone()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    Ok(crates
+        .into_iter()
+        .filter_map(|c| match &c.archives {
+            ArchivesConfig::Disabled => None,
+            ArchivesConfig::Configs(cfgs) => {
+                let has_builds = c.builds.as_ref().map(|b| !b.is_empty()).unwrap_or(false);
+                let has_meta_archive = cfgs.iter().any(|cfg| cfg.meta.unwrap_or(false));
+                let has_existing_artifacts = !ctx
+                    .artifacts
+                    .by_kinds_and_crate(&archivable_kinds, &c.name)
+                    .is_empty();
+                if !has_builds && !has_meta_archive && !has_existing_artifacts {
+                    return None;
+                }
+                let archive_cfgs = if cfgs.is_empty() {
+                    vec![ArchiveConfig::default()]
+                } else {
+                    cfgs.clone()
+                };
+                let crate_dir = project_root.join(&c.path);
+                Some((c.name.clone(), crate_dir, archive_cfgs))
+            }
+        })
+        .collect())
+}
+
+/// Collect all archivable binary artifacts for a single crate.
+fn collect_crate_archivable_artifacts(ctx: &Context, crate_name: &str) -> Vec<Artifact> {
+    let archivable_kinds = [
+        ArtifactKind::Binary,
+        ArtifactKind::UniversalBinary,
+        ArtifactKind::Header,
+        ArtifactKind::CArchive,
+        ArtifactKind::CShared,
+    ];
+    ctx.artifacts
+        .by_kinds_and_crate(&archivable_kinds, crate_name)
+        .into_iter()
+        .cloned()
+        .collect()
 }
 
 /// Process every `archives:` config attached to a single crate.
