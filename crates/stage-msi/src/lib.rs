@@ -270,138 +270,16 @@ impl Stage for MsiStage {
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
 
         for krate in &crates {
-            let Some(msi_configs) = krate.msis.as_ref() else {
-                continue;
-            };
-
-            // Collect all Windows binary artifacts for this crate
-            let windows_binaries: Vec<_> = ctx
-                .artifacts
-                .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
-                .into_iter()
-                .filter(|b| {
-                    b.target
-                        .as_deref()
-                        .map(anodizer_core::target::is_windows)
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect();
-
-            for msi_cfg in msi_configs {
-                let msi_id_for_log = msi_cfg.id.as_deref().unwrap_or("default").to_string();
-
-                if should_skip_msi_config(
-                    ctx,
-                    msi_cfg,
-                    &msi_id_for_log,
-                    &krate.name,
-                    dry_run,
-                    &log,
-                )? {
-                    continue;
-                }
-
-                let Some(effective_binaries) =
-                    filter_msi_binaries(msi_cfg, &windows_binaries, &krate.name, &log)
-                else {
-                    continue;
-                };
-
-                // Validate wxs is present
-                let wxs_path = msi_cfg.wxs.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "msi: `wxs` field is required but missing for crate {}",
-                        krate.name
-                    )
-                })?;
-
-                for (target, binary_path) in &effective_binaries {
-                    let (_os, arch) = target
-                        .as_deref()
-                        .map(anodizer_core::target::map_target)
-                        .unwrap_or_else(|| ("windows".to_string(), "amd64".to_string()));
-                    let msi_arch = map_arch_to_msi(&arch).to_string();
-
-                    set_msi_template_vars(ctx, target.as_deref(), &arch, &msi_arch, binary_path);
-
-                    let wix_version = resolve_wix_version(msi_cfg, wxs_path, &log);
-
-                    let output_dir = dist.join("windows");
-                    let msi_filename = compute_msi_filename(
-                        ctx,
-                        msi_cfg,
-                        &krate.name,
-                        target.as_deref(),
-                        &version,
-                        &msi_arch,
-                    )?;
-                    let msi_path = output_dir.join(&msi_filename);
-
-                    let rendered_extensions = render_msi_extensions(ctx, msi_cfg, &log);
-
-                    if dry_run {
-                        log_msi_dry_run(
-                            &log,
-                            &msi_filename,
-                            wix_version,
-                            &krate.name,
-                            target.as_deref(),
-                            msi_cfg,
-                            &rendered_extensions,
-                        );
-                        new_artifacts.push(make_msi_artifact(
-                            msi_path,
-                            target,
-                            &krate.name,
-                            wix_version,
-                            msi_cfg,
-                            ctx,
-                            &mut archives_to_remove,
-                        ));
-                        continue;
-                    }
-
-                    fs::create_dir_all(&output_dir).with_context(|| {
-                        format!("msi: create output dir: {}", output_dir.display())
-                    })?;
-
-                    let (tmp_dir, rendered_wxs_path) =
-                        prepare_wxs_build_context(ctx, msi_cfg, wxs_path, &log)?;
-
-                    execute_msi_build(
-                        wix_version,
-                        msi_cfg,
-                        &rendered_wxs_path,
-                        &msi_path,
-                        &rendered_extensions,
-                        &krate.name,
-                        target.as_deref(),
-                        &log,
-                    )?;
-                    drop(tmp_dir);
-
-                    new_artifacts.push(make_msi_artifact(
-                        msi_path,
-                        target,
-                        &krate.name,
-                        wix_version,
-                        msi_cfg,
-                        ctx,
-                        &mut archives_to_remove,
-                    ));
-                }
-
-                run_msi_hook(
-                    ctx,
-                    msi_cfg.hooks.as_ref().and_then(|h| h.post.as_ref()),
-                    "post-msi",
-                    &msi_id_for_log,
-                    &krate.name,
-                    dry_run,
-                    &log,
-                )?;
-            }
+            process_msi_crate(
+                ctx,
+                &log,
+                krate,
+                &dist,
+                &version,
+                dry_run,
+                &mut new_artifacts,
+                &mut archives_to_remove,
+            )?;
         }
 
         clear_msi_template_vars(ctx);
@@ -416,6 +294,179 @@ impl Stage for MsiStage {
 
         Ok(())
     }
+}
+
+/// Process all MSI configs for one crate: filter binaries, validate wxs,
+/// build or dry-run each target, and fire post-hooks.
+#[allow(clippy::too_many_arguments)]
+fn process_msi_crate(
+    ctx: &mut Context,
+    log: &anodizer_core::log::StageLogger,
+    krate: &anodizer_core::config::CrateConfig,
+    dist: &std::path::Path,
+    version: &str,
+    dry_run: bool,
+    new_artifacts: &mut Vec<Artifact>,
+    archives_to_remove: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let Some(msi_configs) = krate.msis.as_ref() else {
+        return Ok(());
+    };
+
+    let windows_binaries: Vec<_> = ctx
+        .artifacts
+        .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
+        .into_iter()
+        .filter(|b| {
+            b.target
+                .as_deref()
+                .map(anodizer_core::target::is_windows)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+
+    for msi_cfg in msi_configs {
+        let msi_id_for_log = msi_cfg.id.as_deref().unwrap_or("default").to_string();
+
+        if should_skip_msi_config(ctx, msi_cfg, &msi_id_for_log, &krate.name, dry_run, log)? {
+            continue;
+        }
+
+        let Some(effective_binaries) =
+            filter_msi_binaries(msi_cfg, &windows_binaries, &krate.name, log)
+        else {
+            continue;
+        };
+
+        let wxs_path = msi_cfg.wxs.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "msi: `wxs` field is required but missing for crate {}",
+                krate.name
+            )
+        })?;
+
+        for (target, binary_path) in &effective_binaries {
+            build_msi_target(
+                ctx,
+                log,
+                msi_cfg,
+                &krate.name,
+                target,
+                binary_path,
+                wxs_path,
+                dist,
+                version,
+                dry_run,
+                new_artifacts,
+                archives_to_remove,
+            )?;
+        }
+
+        run_msi_hook(
+            ctx,
+            msi_cfg.hooks.as_ref().and_then(|h| h.post.as_ref()),
+            "post-msi",
+            &msi_id_for_log,
+            &krate.name,
+            dry_run,
+            log,
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Build (or dry-run) one MSI target: set template vars, compute filename,
+/// render WXS, and execute the WiX toolchain.
+#[allow(clippy::too_many_arguments)]
+fn build_msi_target(
+    ctx: &mut Context,
+    log: &anodizer_core::log::StageLogger,
+    msi_cfg: &anodizer_core::config::MsiConfig,
+    crate_name: &str,
+    target: &Option<String>,
+    binary_path: &str,
+    wxs_path: &str,
+    dist: &std::path::Path,
+    version: &str,
+    dry_run: bool,
+    new_artifacts: &mut Vec<Artifact>,
+    archives_to_remove: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let (_os, arch) = target
+        .as_deref()
+        .map(anodizer_core::target::map_target)
+        .unwrap_or_else(|| ("windows".to_string(), "amd64".to_string()));
+    let msi_arch = map_arch_to_msi(&arch).to_string();
+
+    set_msi_template_vars(ctx, target.as_deref(), &arch, &msi_arch, binary_path);
+
+    let wix_version = resolve_wix_version(msi_cfg, wxs_path, log);
+
+    let output_dir = dist.join("windows");
+    let msi_filename = compute_msi_filename(
+        ctx,
+        msi_cfg,
+        crate_name,
+        target.as_deref(),
+        version,
+        &msi_arch,
+    )?;
+    let msi_path = output_dir.join(&msi_filename);
+
+    let rendered_extensions = render_msi_extensions(ctx, msi_cfg, log);
+
+    if dry_run {
+        log_msi_dry_run(
+            log,
+            &msi_filename,
+            wix_version,
+            crate_name,
+            target.as_deref(),
+            msi_cfg,
+            &rendered_extensions,
+        );
+        new_artifacts.push(make_msi_artifact(
+            msi_path,
+            target,
+            crate_name,
+            wix_version,
+            msi_cfg,
+            ctx,
+            archives_to_remove,
+        ));
+        return Ok(());
+    }
+
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("msi: create output dir: {}", output_dir.display()))?;
+
+    let (tmp_dir, rendered_wxs_path) = prepare_wxs_build_context(ctx, msi_cfg, wxs_path, log)?;
+
+    execute_msi_build(
+        wix_version,
+        msi_cfg,
+        &rendered_wxs_path,
+        &msi_path,
+        &rendered_extensions,
+        crate_name,
+        target.as_deref(),
+        log,
+    )?;
+    drop(tmp_dir);
+
+    new_artifacts.push(make_msi_artifact(
+        msi_path,
+        target,
+        crate_name,
+        wix_version,
+        msi_cfg,
+        ctx,
+        archives_to_remove,
+    ));
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

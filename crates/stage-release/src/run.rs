@@ -46,282 +46,188 @@ impl Stage for super::ReleaseStage {
             let Some(release_cfg) = crate_cfg.release.as_ref() else {
                 continue;
             };
-
-            // Skip crates where release is explicitly disabled (supports template strings).
-            if let Some(ref d) = release_cfg.skip {
-                let off = d
-                    .try_evaluates_to_true(|s| ctx.render_template(s))
-                    .with_context(|| {
-                        format!(
-                            "release: render skip template for crate '{}'",
-                            crate_cfg.name
-                        )
-                    })?;
-                if off {
-                    log.status(&format!("release skipped for crate '{}'", crate_cfg.name));
-                    continue;
-                }
-            }
-
-            let crate_name = crate_cfg.name.clone();
-
-            // Validate conflicting draft options.
-            if release_cfg.resolved_replace_existing_draft()
-                && release_cfg.resolved_use_existing_draft()
-            {
-                bail!(
-                    "release: crate '{}': cannot set both replace_existing_draft and \
-                     use_existing_draft — replace deletes drafts that use_existing_draft needs",
-                    crate_name
-                );
-            }
-
-            let changelog_body = ctx
-                .stage_outputs
-                .changelogs
-                .get(&crate_name)
-                .cloned()
-                .unwrap_or_default();
-
-            // Populate the {{ Checksums }} template variable from checksum
-            // artifacts. See `populate_checksums_var` for the workspace
-            // aggregation rules (combined-mode union vs split-mode map).
-            crate::populate_checksums_var(ctx);
-
-            // Resolve and validate release mode.
-            let release_mode = release_cfg
-                .resolved_mode()
-                .map(|m| m.to_string())
-                .with_context(|| format!("release: invalid mode for crate '{}'", crate_name))?;
-            if release_mode != anodizer_core::config::ReleaseConfig::DEFAULT_MODE {
-                log.status(&format!(
-                    "release mode '{}' for crate '{}'",
-                    release_mode, crate_name
-                ));
-            }
-
-            // Refresh Artifacts template var so release body templates can iterate artifacts.
-            ctx.refresh_artifacts_var();
-
-            let release_body =
-                compose_full_release_body(ctx, release_cfg, &crate_name, &changelog_body)?;
-
-            // Resolve tag: use release.tag override if set, otherwise tag_template.
-            let tag = resolve_release_tag(
-                ctx,
-                &crate_cfg.tag_template,
-                release_cfg.tag.as_deref(),
-                &crate_cfg.name,
-            )?;
-
-            // Warn loudly when `release.tag` resolves to something other than
-            // the pushed git tag: GitHub will auto-create the override tag at
-            // target_commitish, diverging from the source-of-truth tag that
-            // triggered the release.
-            if release_cfg.tag.is_some()
-                && let Some(pushed_tag) = ctx.template_vars().get("Tag")
-                && !pushed_tag.is_empty()
-                && pushed_tag != tag.as_str()
-            {
-                log.warn(&format!(
-                    "release: release.tag override '{}' differs from pushed git tag '{}' (crate '{}') — GitHub will create a new tag at the target commit",
-                    tag, pushed_tag, crate_cfg.name
-                ));
-            }
-
-            // Resolve release name. GoReleaser defaults to `"{{.Tag}}"` (Go
-            // template); anodizer's renderer expects Tera syntax so the default
-            // is the equivalent `"{{ Tag }}"`. The two render to the same
-            // string for any user-supplied template; this only affects the
-            // surface form (no leading dot) when introspecting the default.
-            let name_tmpl = release_cfg.resolved_name_template();
-            let release_name = ctx.render_template(name_tmpl).with_context(|| {
-                format!(
-                    "release: render name_template for crate '{}'",
-                    crate_cfg.name
-                )
-            })?;
-
-            let draft = release_cfg.resolved_draft();
-            let prerelease = should_mark_prerelease(&release_cfg.prerelease, &tag);
-            let skip_upload = resolve_skip_upload(ctx, release_cfg, &crate_cfg.name)?;
-            let replace_existing_draft = release_cfg.resolved_replace_existing_draft();
-            // OR config-resolved value with the `--replace-existing` CLI
-            // override. The CLI flag is a one-shot escalation for the current
-            // run; users who always want overwrite behavior should set
-            // `release.replace_existing_artifacts: true` in config.
-            let replace_existing_artifacts = release_cfg.resolved_replace_existing_artifacts()
-                || ctx.options.replace_existing_artifacts;
-            let make_latest =
-                resolve_make_latest(&release_cfg.make_latest, |s| ctx.render_template(s))?;
-            let ids_filter = release_cfg.ids.as_ref();
-            let target_commitish = release_cfg
-                .target_commitish
-                .as_ref()
-                .map(|tc| ctx.render_template(tc))
-                .transpose()
-                .with_context(|| {
-                    format!(
-                        "release: render target_commitish for crate '{}'",
-                        crate_name
-                    )
-                })?;
-            let discussion_category_name = release_cfg.discussion_category_name.clone();
-            let include_meta = release_cfg.resolved_include_meta();
-            let use_existing_draft = release_cfg.resolved_use_existing_draft();
-
-            let artifact_entries = assemble_artifact_entries(
-                ctx,
-                &log,
-                crate_cfg,
-                release_cfg,
-                ids_filter,
-                include_meta,
-                dry_run,
-            )?;
-
-            if dry_run {
-                handle_dry_run(
-                    ctx,
-                    &log,
-                    release_cfg,
-                    DryRunSummary {
-                        crate_name: &crate_name,
-                        release_name: &release_name,
-                        tag: &tag,
-                        draft,
-                        prerelease,
-                        release_mode: &release_mode,
-                        skip_upload,
-                        artifact_entries: &artifact_entries,
-                    },
-                )?;
+            if should_skip_release(ctx, release_cfg, &crate_cfg.name, &log)? {
                 continue;
             }
-
-            // Each backend arm returns (release_html_url, download_base, owner, repo)
-            // so artifact metadata["url"] can be populated after the match.
-            let (release_url, download_base, repo_owner, repo_name) = match ctx.token_type {
-                ScmTokenType::GitLab => {
-                    let gitlab_env = gitlab::GitlabBackendEnv {
-                        rt: &rt,
-                        ctx,
-                        log: &log,
-                        token: &token,
-                    };
-                    let gitlab_spec = gitlab::GitlabBackendSpec {
-                        tag: &tag,
-                        release_name: &release_name,
-                        release_body: &release_body,
-                        release_mode: &release_mode,
-                        skip_upload,
-                        replace_existing_draft,
-                        use_existing_draft,
-                        replace_existing_artifacts,
-                    };
-                    match gitlab::run_gitlab_backend(
-                        &gitlab_env,
-                        crate_cfg,
-                        release_cfg,
-                        &gitlab_spec,
-                        &artifact_entries,
-                    )? {
-                        Some(t) => t,
-                        None => continue,
-                    }
-                }
-
-                ScmTokenType::Gitea => {
-                    let gitea_env = gitea::GiteaBackendEnv {
-                        rt: &rt,
-                        ctx,
-                        log: &log,
-                        token: &token,
-                    };
-                    let gitea_spec = gitea::GiteaBackendSpec {
-                        tag: &tag,
-                        release_name: &release_name,
-                        release_body: &release_body,
-                        release_mode: &release_mode,
-                        draft,
-                        prerelease,
-                        skip_upload,
-                        replace_existing_draft,
-                        use_existing_draft,
-                        replace_existing_artifacts,
-                    };
-                    match gitea::run_gitea_backend(
-                        &gitea_env,
-                        crate_cfg,
-                        release_cfg,
-                        &gitea_spec,
-                        &artifact_entries,
-                    )? {
-                        Some(t) => t,
-                        None => continue,
-                    }
-                }
-
-                ScmTokenType::GitHub => {
-                    let env = github::BackendEnv {
-                        rt: &rt,
-                        ctx,
-                        log: &log,
-                        token: &token,
-                    };
-                    let spec = github::GithubReleaseSpec {
-                        tag: &tag,
-                        name: &release_name,
-                        body: &release_body,
-                        mode: &release_mode,
-                        draft,
-                        prerelease,
-                        make_latest: &make_latest,
-                        target_commitish: &target_commitish,
-                        discussion_category: &discussion_category_name,
-                    };
-                    let upload_opts = github::UploadOpts {
-                        skip_upload,
-                        replace_existing_draft,
-                        replace_existing_artifacts,
-                        use_existing_draft,
-                        resume_release: ctx.options.resume_release,
-                    };
-                    match github::run_github_backend(
-                        &env,
-                        crate_cfg,
-                        release_cfg,
-                        &spec,
-                        &upload_opts,
-                        &artifact_entries,
-                    )? {
-                        Some(t) => t,
-                        None => continue,
-                    }
-                }
-            }; // end match ctx.token_type
-
-            // Populate artifact metadata["url"] for all uploadable artifacts
-            // so publishers (homebrew, scoop, chocolatey, winget, krew, nix, cask)
-            // can construct download links without requiring explicit url_template.
-            // Matches GoReleaser's ReleaseURLTemplate() pattern.
-            if !skip_upload {
-                populate_artifact_download_urls(
-                    ctx,
-                    &crate_name,
-                    ctx.token_type,
-                    &download_base,
-                    &repo_owner,
-                    &repo_name,
-                    &tag,
-                );
-            }
-
-            ctx.set_release_url(&release_url);
+            release_one_crate(ctx, &log, &rt, &token, crate_cfg, release_cfg, dry_run)?;
         }
 
         Ok(())
     }
+}
+
+/// Check whether a crate's release should be skipped: evaluates the `skip`
+/// template and validates that `replace_existing_draft` and
+/// `use_existing_draft` are not both set.
+fn should_skip_release(
+    ctx: &Context,
+    release_cfg: &anodizer_core::config::ReleaseConfig,
+    crate_name: &str,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<bool> {
+    if let Some(ref d) = release_cfg.skip {
+        let off = d
+            .try_evaluates_to_true(|s| ctx.render_template(s))
+            .with_context(|| format!("release: render skip template for crate '{}'", crate_name))?;
+        if off {
+            log.status(&format!("release skipped for crate '{}'", crate_name));
+            return Ok(true);
+        }
+    }
+    if release_cfg.resolved_replace_existing_draft() && release_cfg.resolved_use_existing_draft() {
+        bail!(
+            "release: crate '{}': cannot set both replace_existing_draft and \
+             use_existing_draft — replace deletes drafts that use_existing_draft needs",
+            crate_name
+        );
+    }
+    Ok(false)
+}
+
+/// Execute the full release pipeline for a single crate: resolve tag, build
+/// release body, collect artifacts, and either emit dry-run telemetry or
+/// dispatch to the live SCM backend.
+fn release_one_crate(
+    ctx: &mut Context,
+    log: &anodizer_core::log::StageLogger,
+    rt: &tokio::runtime::Runtime,
+    token: &Option<String>,
+    crate_cfg: &anodizer_core::config::CrateConfig,
+    release_cfg: &anodizer_core::config::ReleaseConfig,
+    dry_run: bool,
+) -> Result<()> {
+    let crate_name = crate_cfg.name.clone();
+
+    let changelog_body = ctx
+        .stage_outputs
+        .changelogs
+        .get(&crate_name)
+        .cloned()
+        .unwrap_or_default();
+
+    crate::populate_checksums_var(ctx);
+
+    let release_mode = release_cfg
+        .resolved_mode()
+        .map(|m| m.to_string())
+        .with_context(|| format!("release: invalid mode for crate '{}'", crate_name))?;
+    if release_mode != anodizer_core::config::ReleaseConfig::DEFAULT_MODE {
+        log.status(&format!(
+            "release mode '{}' for crate '{}'",
+            release_mode, crate_name
+        ));
+    }
+
+    ctx.refresh_artifacts_var();
+
+    let release_body = compose_full_release_body(ctx, release_cfg, &crate_name, &changelog_body)?;
+
+    let tag = resolve_release_tag(
+        ctx,
+        &crate_cfg.tag_template,
+        release_cfg.tag.as_deref(),
+        &crate_cfg.name,
+    )?;
+
+    warn_tag_override_divergence(ctx, release_cfg, &tag, &crate_cfg.name, log);
+
+    let release_name = resolve_release_name(ctx, release_cfg, &crate_cfg.name)?;
+
+    let flags = resolve_release_flags(ctx, release_cfg, &crate_name, &tag)?;
+    let ids_filter = release_cfg.ids.as_ref();
+
+    let artifact_entries = assemble_artifact_entries(
+        ctx,
+        log,
+        crate_cfg,
+        release_cfg,
+        ids_filter,
+        flags.include_meta,
+        dry_run,
+    )?;
+
+    if dry_run {
+        handle_dry_run(
+            ctx,
+            log,
+            release_cfg,
+            DryRunSummary {
+                crate_name: &crate_name,
+                release_name: &release_name,
+                tag: &tag,
+                draft: flags.draft,
+                prerelease: flags.prerelease,
+                release_mode: &release_mode,
+                skip_upload: flags.skip_upload,
+                artifact_entries: &artifact_entries,
+            },
+        )?;
+        return Ok(());
+    }
+
+    let backend_result = dispatch_to_scm_backend(
+        ctx,
+        log,
+        rt,
+        token,
+        crate_cfg,
+        release_cfg,
+        &tag,
+        &release_name,
+        &release_body,
+        &release_mode,
+        &flags,
+        &artifact_entries,
+    )?;
+
+    if let Some((release_url, download_base, repo_owner, repo_name)) = backend_result {
+        if !flags.skip_upload {
+            populate_artifact_download_urls(
+                ctx,
+                &crate_name,
+                ctx.token_type,
+                &download_base,
+                &repo_owner,
+                &repo_name,
+                &tag,
+            );
+        }
+        ctx.set_release_url(&release_url);
+    }
+
+    Ok(())
+}
+
+/// Warn when `release.tag` resolves to a value different from the pushed
+/// git tag.
+fn warn_tag_override_divergence(
+    ctx: &Context,
+    release_cfg: &anodizer_core::config::ReleaseConfig,
+    tag: &str,
+    crate_name: &str,
+    log: &anodizer_core::log::StageLogger,
+) {
+    if release_cfg.tag.is_some()
+        && let Some(pushed_tag) = ctx.template_vars().get("Tag")
+        && !pushed_tag.is_empty()
+        && pushed_tag != tag
+    {
+        log.warn(&format!(
+            "release: release.tag override '{}' differs from pushed git tag '{}' (crate '{}') — GitHub will create a new tag at the target commit",
+            tag, pushed_tag, crate_name
+        ));
+    }
+}
+
+/// Render the release name from the configured name_template.
+fn resolve_release_name(
+    ctx: &Context,
+    release_cfg: &anodizer_core::config::ReleaseConfig,
+    crate_name: &str,
+) -> Result<String> {
+    let name_tmpl = release_cfg.resolved_name_template();
+    ctx.render_template(name_tmpl)
+        .with_context(|| format!("release: render name_template for crate '{}'", crate_name))
 }
 
 /// Collect the full set of `(path, Option<custom_name>)` entries to upload as
@@ -537,6 +443,168 @@ fn resolve_skip_upload(
             crate_name
         ),
     })
+}
+
+/// Resolved boolean/enum flags for one crate's release, computed once and
+/// threaded through the dry-run path and the live SCM backend dispatch.
+struct ResolvedReleaseFlags {
+    draft: bool,
+    prerelease: bool,
+    skip_upload: bool,
+    replace_existing_draft: bool,
+    replace_existing_artifacts: bool,
+    make_latest: Option<octocrab::repos::releases::MakeLatest>,
+    target_commitish: Option<String>,
+    discussion_category_name: Option<String>,
+    include_meta: bool,
+    use_existing_draft: bool,
+}
+
+/// Resolve all release flags from config + CLI overrides for one crate.
+fn resolve_release_flags(
+    ctx: &Context,
+    release_cfg: &anodizer_core::config::ReleaseConfig,
+    crate_name: &str,
+    tag: &str,
+) -> Result<ResolvedReleaseFlags> {
+    let skip_upload = resolve_skip_upload(ctx, release_cfg, crate_name)?;
+    let target_commitish = release_cfg
+        .target_commitish
+        .as_ref()
+        .map(|tc| ctx.render_template(tc))
+        .transpose()
+        .with_context(|| {
+            format!(
+                "release: render target_commitish for crate '{}'",
+                crate_name
+            )
+        })?;
+    Ok(ResolvedReleaseFlags {
+        draft: release_cfg.resolved_draft(),
+        prerelease: should_mark_prerelease(&release_cfg.prerelease, tag),
+        skip_upload,
+        replace_existing_draft: release_cfg.resolved_replace_existing_draft(),
+        replace_existing_artifacts: release_cfg.resolved_replace_existing_artifacts()
+            || ctx.options.replace_existing_artifacts,
+        make_latest: resolve_make_latest(&release_cfg.make_latest, |s| ctx.render_template(s))?,
+        target_commitish,
+        discussion_category_name: release_cfg.discussion_category_name.clone(),
+        include_meta: release_cfg.resolved_include_meta(),
+        use_existing_draft: release_cfg.resolved_use_existing_draft(),
+    })
+}
+
+/// Dispatch a single crate's release to the appropriate SCM backend
+/// (GitHub, GitLab, or Gitea) based on `ctx.token_type`.
+///
+/// Returns `Some((release_url, download_base, owner, repo))` on success,
+/// or `None` when the backend signals "skip this crate" (e.g. `keep_existing`
+/// mode with an existing release).
+#[allow(clippy::too_many_arguments)]
+fn dispatch_to_scm_backend(
+    ctx: &mut Context,
+    log: &anodizer_core::log::StageLogger,
+    rt: &tokio::runtime::Runtime,
+    token: &Option<String>,
+    crate_cfg: &anodizer_core::config::CrateConfig,
+    release_cfg: &anodizer_core::config::ReleaseConfig,
+    tag: &str,
+    release_name: &str,
+    release_body: &str,
+    release_mode: &str,
+    flags: &ResolvedReleaseFlags,
+    artifact_entries: &[(std::path::PathBuf, Option<String>)],
+) -> Result<Option<(String, String, String, String)>> {
+    match ctx.token_type {
+        ScmTokenType::GitLab => {
+            let gitlab_env = gitlab::GitlabBackendEnv {
+                rt,
+                ctx,
+                log,
+                token,
+            };
+            let gitlab_spec = gitlab::GitlabBackendSpec {
+                tag,
+                release_name,
+                release_body,
+                release_mode,
+                skip_upload: flags.skip_upload,
+                replace_existing_draft: flags.replace_existing_draft,
+                use_existing_draft: flags.use_existing_draft,
+                replace_existing_artifacts: flags.replace_existing_artifacts,
+            };
+            Ok(gitlab::run_gitlab_backend(
+                &gitlab_env,
+                crate_cfg,
+                release_cfg,
+                &gitlab_spec,
+                artifact_entries,
+            )?)
+        }
+
+        ScmTokenType::Gitea => {
+            let gitea_env = gitea::GiteaBackendEnv {
+                rt,
+                ctx,
+                log,
+                token,
+            };
+            let gitea_spec = gitea::GiteaBackendSpec {
+                tag,
+                release_name,
+                release_body,
+                release_mode,
+                draft: flags.draft,
+                prerelease: flags.prerelease,
+                skip_upload: flags.skip_upload,
+                replace_existing_draft: flags.replace_existing_draft,
+                use_existing_draft: flags.use_existing_draft,
+                replace_existing_artifacts: flags.replace_existing_artifacts,
+            };
+            Ok(gitea::run_gitea_backend(
+                &gitea_env,
+                crate_cfg,
+                release_cfg,
+                &gitea_spec,
+                artifact_entries,
+            )?)
+        }
+
+        ScmTokenType::GitHub => {
+            let env = github::BackendEnv {
+                rt,
+                ctx,
+                log,
+                token,
+            };
+            let spec = github::GithubReleaseSpec {
+                tag,
+                name: release_name,
+                body: release_body,
+                mode: release_mode,
+                draft: flags.draft,
+                prerelease: flags.prerelease,
+                make_latest: &flags.make_latest,
+                target_commitish: &flags.target_commitish,
+                discussion_category: &flags.discussion_category_name,
+            };
+            let upload_opts = github::UploadOpts {
+                skip_upload: flags.skip_upload,
+                replace_existing_draft: flags.replace_existing_draft,
+                replace_existing_artifacts: flags.replace_existing_artifacts,
+                use_existing_draft: flags.use_existing_draft,
+                resume_release: ctx.options.resume_release,
+            };
+            Ok(github::run_github_backend(
+                &env,
+                crate_cfg,
+                release_cfg,
+                &spec,
+                &upload_opts,
+                artifact_entries,
+            )?)
+        }
+    }
 }
 
 /// Per-release summary fields surfaced in dry-run output.

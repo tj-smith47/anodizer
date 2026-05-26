@@ -1103,19 +1103,46 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
         return Ok(());
     }
 
-    let version = ctx.version();
-    let description = resolve_winget_description(ctx, &winget_cfg);
-    let short_desc = resolve_winget_short_description(ctx, &winget_cfg, crate_name)?;
-    let license = resolve_winget_license(ctx, &winget_cfg, crate_name)?;
+    generate_and_submit_winget_manifest(
+        ctx,
+        log,
+        crate_name,
+        &winget_cfg,
+        name,
+        publisher_name,
+        package_id,
+        &repo_owner,
+        &repo_name,
+    )
+}
 
-    let installers = collect_winget_installers(ctx, crate_name, &winget_cfg, name, &version)?;
+/// Generate WinGet YAML manifests, clone the package repo, commit, push,
+/// and open a PR.
+#[allow(clippy::too_many_arguments)]
+fn generate_and_submit_winget_manifest(
+    ctx: &mut Context,
+    log: &StageLogger,
+    crate_name: &str,
+    winget_cfg: &anodizer_core::config::WingetConfig,
+    name: &str,
+    publisher_name: &str,
+    package_id: &str,
+    repo_owner: &str,
+    repo_name: &str,
+) -> Result<()> {
+    let version = ctx.version();
+    let description = resolve_winget_description(ctx, winget_cfg);
+    let short_desc = resolve_winget_short_description(ctx, winget_cfg, crate_name)?;
+    let license = resolve_winget_license(ctx, winget_cfg, crate_name)?;
+
+    let installers = collect_winget_installers(ctx, crate_name, winget_cfg, name, &version)?;
 
     let deps = winget_cfg.dependencies.as_deref().unwrap_or(&[]);
     let release_date = resolve_winget_release_date(ctx);
     let release_date_ref = release_date.as_deref();
 
     let rendered =
-        render_winget_fields(ctx, &winget_cfg, name, publisher_name, license, &short_desc);
+        render_winget_fields(ctx, winget_cfg, name, publisher_name, license, &short_desc);
 
     let (ver_yaml, inst_yaml, locale_yaml) = generate_manifests(&WingetManifestParams {
         package_id,
@@ -1154,8 +1181,8 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
     let repo_path = tmp_dir.path();
     util::clone_repo(
         winget_cfg.repository.as_ref(),
-        &repo_owner,
-        &repo_name,
+        repo_owner,
+        repo_name,
         token.as_deref(),
         repo_path,
         "winget",
@@ -1221,8 +1248,8 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
     let pr_outcome = submit_winget_pr(
         repo_path,
         winget_cfg.repository.as_ref(),
-        &repo_owner,
-        &repo_name,
+        repo_owner,
+        repo_name,
         branch_name,
         package_id,
         &version,

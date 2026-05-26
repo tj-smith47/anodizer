@@ -94,207 +94,17 @@ impl Stage for NfpmStage {
         validate_unique_config_ids(&crates)?;
 
         for krate in &crates {
-            let Some(nfpm_configs) = krate.nfpms.as_ref() else {
-                continue;
-            };
-
-            // Collect all nfpm-eligible artifacts for this crate.
-            // ByTypes(Binary, Header, CArchive, CShared)
-            // filtered by ByGooses("linux", "ios", "android", "aix").
-            let nfpm_artifact_kinds = &[
-                ArtifactKind::Binary,
-                ArtifactKind::Header,
-                ArtifactKind::CArchive,
-                ArtifactKind::CShared,
-            ];
-            let linux_binaries: Vec<_> = ctx
-                .artifacts
-                .by_kinds_and_crate(nfpm_artifact_kinds, &krate.name)
-                .into_iter()
-                .filter(|b| {
-                    b.target
-                        .as_deref()
-                        .map(anodizer_core::target::is_nfpm_target)
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect();
-
-            for nfpm_cfg in nfpm_configs {
-                let nfpm_id_for_log = nfpm_cfg.id.as_deref().unwrap_or("default").to_string();
-
-                if should_skip_nfpm_config(ctx, nfpm_cfg, &nfpm_id_for_log, &log)? {
-                    continue;
-                }
-
-                let is_meta = nfpm_cfg.meta == Some(true);
-
-                let Some(platform_groups) =
-                    build_platform_groups(nfpm_cfg, krate, &linux_binaries, is_meta, &log)
-                else {
-                    continue;
-                };
-
-                for (target, binary_paths, lib_paths) in &platform_groups {
-                    // Derive Os/Arch from the target triple for template rendering
-                    let (base_os, base_arch) = target
-                        .as_deref()
-                        .map(anodizer_core::target::map_target)
-                        .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()));
-
-                    for format in &nfpm_cfg.formats {
-                        validate_format(format)
-                            .with_context(|| format!("nfpm config for crate {}", krate.name))?;
-
-                        let Some((os, arch)) =
-                            resolve_format_os_arch(&base_os, &base_arch, format, &log)
-                        else {
-                            continue;
-                        };
-
-                        // Validate architecture compatibility per format
-                        if let Some(triple) = target.as_deref()
-                            && !is_arch_supported_for_format(triple, format)
-                        {
-                            ctx.strict_guard(
-                                &log,
-                                &format!(
-                                    "nfpm: skipping format '{}' for target '{}': architecture not supported",
-                                    format, triple
-                                ),
-                            )?;
-                            continue;
-                        }
-
-                        let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, ctx)?;
-
-                        process_templated_contents(
-                            &mut rendered_cfg,
-                            nfpm_cfg,
-                            ctx,
-                            &dist,
-                            &krate.name,
-                            dry_run,
-                        )?;
-                        process_templated_scripts(
-                            &mut rendered_cfg,
-                            nfpm_cfg,
-                            ctx,
-                            &dist,
-                            &krate.name,
-                            dry_run,
-                        )?;
-
-                        fill_deb_arch_variant(
-                            &mut rendered_cfg,
-                            &linux_binaries,
-                            target.as_deref(),
-                        );
-
-                        let pkg_name_owned =
-                            resolve_pkg_name(nfpm_cfg, &ctx.config.project_name, &krate.name);
-                        let pkg_name: &str = pkg_name_owned.as_str();
-                        let ext = format_extension(format);
-
-                        // M5: setupLintian — see `setup_lintian_overrides`
-                        // for full rationale. Emits the lintian override
-                        // file and injects the content entry, then clears
-                        // the now-orphaned `lintian_overrides:` field on
-                        // the rendered_cfg clone so the generated nfpm.yaml
-                        // does not carry the dead key into nfpm input.
-                        setup_lintian_overrides(
-                            &mut rendered_cfg,
-                            format,
-                            pkg_name,
-                            &arch,
-                            &dist,
-                            dry_run,
-                        )?;
-
-                        // Generate YAML per format so format-specific deps are selected.
-                        // Pass the anodizer ctx env map so passphrase lookups
-                        // see project `env:` / `env_files:` values (W6 fix).
-                        let yaml_content = generate_nfpm_yaml_with_env(
-                            &rendered_cfg,
-                            &version,
-                            binary_paths,
-                            Some(format),
-                            skip_sign,
-                            lib_paths,
-                            ctx.template_vars().all_env(),
-                        )?;
-
-                        // Ensure output directory exists
-                        let output_dir = dist.join("linux");
-                        if !dry_run {
-                            fs::create_dir_all(&output_dir).with_context(|| {
-                                format!("create nfpm output dir: {}", output_dir.display())
-                            })?;
-                        }
-
-                        set_nfpm_per_pkg_template_vars(
-                            ctx,
-                            nfpm_cfg,
-                            &os,
-                            &arch,
-                            target.as_deref(),
-                            format,
-                            pkg_name,
-                            ext,
-                            &version,
-                        );
-
-                        let pkg_filename = compute_pkg_filename(
-                            ctx,
-                            nfpm_cfg,
-                            &krate.name,
-                            target.as_deref(),
-                            pkg_name,
-                            &version,
-                            &os,
-                            &arch,
-                            ext,
-                        )?;
-                        let pkg_path = output_dir.join(&pkg_filename);
-
-                        // Build metadata: always include format, optionally include nfpm id
-                        let mut pkg_metadata =
-                            HashMap::from([("format".to_string(), format.clone())]);
-                        if let Some(ref id) = nfpm_cfg.id {
-                            pkg_metadata.insert("id".to_string(), id.clone());
-                        }
-
-                        if dry_run {
-                            log.status(&format!(
-                                "(dry-run) would run: nfpm pkg --packager {format} for crate {} target {:?}",
-                                krate.name, target
-                            ));
-                            new_artifacts.push(Artifact {
-                                kind: ArtifactKind::LinuxPackage,
-                                name: String::new(),
-                                path: pkg_path,
-                                target: target.clone(),
-                                crate_name: krate.name.clone(),
-                                metadata: pkg_metadata,
-                                size: None,
-                            });
-                            continue;
-                        }
-
-                        jobs.push(build_nfpm_job(
-                            ctx,
-                            nfpm_cfg,
-                            &yaml_content,
-                            &pkg_path,
-                            format,
-                            target.as_deref(),
-                            &krate.name,
-                            pkg_metadata,
-                            &log,
-                        )?);
-                    }
-                }
-            }
+            collect_nfpm_jobs_for_crate(
+                ctx,
+                &log,
+                krate,
+                &dist,
+                &version,
+                skip_sign,
+                dry_run,
+                &mut new_artifacts,
+                &mut jobs,
+            )?;
         }
 
         clear_nfpm_template_vars(ctx);
@@ -310,6 +120,225 @@ impl Stage for NfpmStage {
 
         Ok(())
     }
+}
+
+/// Collect nfpm build jobs for one crate: iterates configs, platform groups,
+/// and formats, staging YAML and populating `new_artifacts` (dry-run) or
+/// `jobs` (live run).
+#[allow(clippy::too_many_arguments)]
+fn collect_nfpm_jobs_for_crate(
+    ctx: &mut Context,
+    log: &anodizer_core::log::StageLogger,
+    krate: &anodizer_core::config::CrateConfig,
+    dist: &std::path::Path,
+    version: &str,
+    skip_sign: bool,
+    dry_run: bool,
+    new_artifacts: &mut Vec<Artifact>,
+    jobs: &mut Vec<NfpmJob>,
+) -> Result<()> {
+    let Some(nfpm_configs) = krate.nfpms.as_ref() else {
+        return Ok(());
+    };
+
+    let nfpm_artifact_kinds = &[
+        ArtifactKind::Binary,
+        ArtifactKind::Header,
+        ArtifactKind::CArchive,
+        ArtifactKind::CShared,
+    ];
+    let linux_binaries: Vec<_> = ctx
+        .artifacts
+        .by_kinds_and_crate(nfpm_artifact_kinds, &krate.name)
+        .into_iter()
+        .filter(|b| {
+            b.target
+                .as_deref()
+                .map(anodizer_core::target::is_nfpm_target)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+
+    for nfpm_cfg in nfpm_configs {
+        let nfpm_id_for_log = nfpm_cfg.id.as_deref().unwrap_or("default").to_string();
+
+        if should_skip_nfpm_config(ctx, nfpm_cfg, &nfpm_id_for_log, log)? {
+            continue;
+        }
+
+        let is_meta = nfpm_cfg.meta == Some(true);
+
+        let Some(platform_groups) =
+            build_platform_groups(nfpm_cfg, krate, &linux_binaries, is_meta, log)
+        else {
+            continue;
+        };
+
+        for (target, binary_paths, lib_paths) in &platform_groups {
+            let (base_os, base_arch) = target
+                .as_deref()
+                .map(anodizer_core::target::map_target)
+                .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()));
+
+            for format in &nfpm_cfg.formats {
+                process_nfpm_format(
+                    ctx,
+                    log,
+                    nfpm_cfg,
+                    &krate.name,
+                    &linux_binaries,
+                    target,
+                    binary_paths,
+                    lib_paths,
+                    &base_os,
+                    &base_arch,
+                    format,
+                    dist,
+                    version,
+                    skip_sign,
+                    dry_run,
+                    new_artifacts,
+                    jobs,
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Render, validate, and stage one nfpm format for one platform group.
+///
+/// Adds a dry-run artifact to `new_artifacts` or a live `NfpmJob` to `jobs`.
+#[allow(clippy::too_many_arguments)]
+fn process_nfpm_format(
+    ctx: &mut Context,
+    log: &anodizer_core::log::StageLogger,
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    crate_name: &str,
+    linux_binaries: &[Artifact],
+    target: &Option<String>,
+    binary_paths: &[String],
+    lib_paths: &NfpmLibraryPaths,
+    base_os: &str,
+    base_arch: &str,
+    format: &str,
+    dist: &std::path::Path,
+    version: &str,
+    skip_sign: bool,
+    dry_run: bool,
+    new_artifacts: &mut Vec<Artifact>,
+    jobs: &mut Vec<NfpmJob>,
+) -> Result<()> {
+    validate_format(format).with_context(|| format!("nfpm config for crate {}", crate_name))?;
+
+    let Some((os, arch)) = resolve_format_os_arch(base_os, base_arch, format, log) else {
+        return Ok(());
+    };
+
+    if let Some(triple) = target.as_deref()
+        && !is_arch_supported_for_format(triple, format)
+    {
+        ctx.strict_guard(
+            log,
+            &format!(
+                "nfpm: skipping format '{}' for target '{}': architecture not supported",
+                format, triple
+            ),
+        )?;
+        return Ok(());
+    }
+
+    let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, ctx)?;
+
+    process_templated_contents(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
+    process_templated_scripts(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
+
+    fill_deb_arch_variant(&mut rendered_cfg, linux_binaries, target.as_deref());
+
+    let pkg_name_owned = resolve_pkg_name(nfpm_cfg, &ctx.config.project_name, crate_name);
+    let pkg_name: &str = pkg_name_owned.as_str();
+    let ext = format_extension(format);
+
+    setup_lintian_overrides(&mut rendered_cfg, format, pkg_name, &arch, dist, dry_run)?;
+
+    let yaml_content = generate_nfpm_yaml_with_env(
+        &rendered_cfg,
+        version,
+        binary_paths,
+        Some(format),
+        skip_sign,
+        lib_paths,
+        ctx.template_vars().all_env(),
+    )?;
+
+    let output_dir = dist.join("linux");
+    if !dry_run {
+        fs::create_dir_all(&output_dir)
+            .with_context(|| format!("create nfpm output dir: {}", output_dir.display()))?;
+    }
+
+    set_nfpm_per_pkg_template_vars(
+        ctx,
+        nfpm_cfg,
+        &os,
+        &arch,
+        target.as_deref(),
+        format,
+        pkg_name,
+        ext,
+        version,
+    );
+
+    let pkg_filename = compute_pkg_filename(
+        ctx,
+        nfpm_cfg,
+        crate_name,
+        target.as_deref(),
+        pkg_name,
+        version,
+        &os,
+        &arch,
+        ext,
+    )?;
+    let pkg_path = output_dir.join(&pkg_filename);
+
+    let mut pkg_metadata = HashMap::from([("format".to_string(), format.to_string())]);
+    if let Some(ref id) = nfpm_cfg.id {
+        pkg_metadata.insert("id".to_string(), id.clone());
+    }
+
+    if dry_run {
+        log.status(&format!(
+            "(dry-run) would run: nfpm pkg --packager {format} for crate {} target {:?}",
+            crate_name, target
+        ));
+        new_artifacts.push(Artifact {
+            kind: ArtifactKind::LinuxPackage,
+            name: String::new(),
+            path: pkg_path,
+            target: target.clone(),
+            crate_name: crate_name.to_string(),
+            metadata: pkg_metadata,
+            size: None,
+        });
+        return Ok(());
+    }
+
+    jobs.push(build_nfpm_job(
+        ctx,
+        nfpm_cfg,
+        &yaml_content,
+        &pkg_path,
+        format,
+        target.as_deref(),
+        crate_name,
+        pkg_metadata,
+        log,
+    )?);
+
+    Ok(())
 }
 
 /// Return the file extension for a given nfpm packager format.

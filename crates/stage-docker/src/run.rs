@@ -140,32 +140,7 @@ impl Stage for super::DockerStage {
                 &mut config_first_digest,
             )?;
 
-            // Per-config post-hooks fire ONCE per docker_v2 config, after
-            // every snapshot-platform job for that config has completed.
-            // Matches GR's `buildImage` lifecycle (pre → build → post).
-            for cph in &config_post_hooks {
-                let digest_val = config_first_digest.get(&cph.idx).cloned().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "docker_v2[{}]: post-hooks configured but no image digest captured \
-                         (iidfile id.txt missing or empty after a successful build); \
-                         this usually means buildx + multi-platform --push produced no iidfile — \
-                         upgrade buildx or remove the post-hook",
-                        cph.id.as_deref().unwrap_or(&cph.idx.to_string())
-                    )
-                })?;
-                let mut hook_vars = ctx.template_vars().clone();
-                hook_vars.set_structured("Images", cph.images_json.clone());
-                hook_vars.set("Dockerfile", &cph.dockerfile_path);
-                hook_vars.set("ContextDir", &cph.staging_dir.to_string_lossy());
-                hook_vars.set("Digest", &digest_val);
-                hook_vars.set("BaseImage", &cph.base_image_name);
-                hook_vars.set("BaseImageDigest", &cph.base_image_digest);
-                let post_label = format!(
-                    "post-docker_v2[{}]",
-                    cph.id.as_deref().unwrap_or(&cph.idx.to_string())
-                );
-                run_hooks(&cph.hooks, &post_label, false, &log, Some(&hook_vars))?;
-            }
+            run_docker_post_hooks(ctx, &log, &config_post_hooks, &config_first_digest)?;
         }
 
         // Surface accumulated pre-hook errors AFTER successful per-config
@@ -213,6 +188,41 @@ impl Stage for super::DockerStage {
 // ---------------------------------------------------------------------------
 // Run helpers
 // ---------------------------------------------------------------------------
+
+/// Fire per-config post-hooks once per docker_v2 config, after all
+/// snapshot-platform jobs for that config have completed. Matches GR's
+/// `buildImage` lifecycle (pre -> build -> post).
+fn run_docker_post_hooks(
+    ctx: &Context,
+    log: &anodizer_core::log::StageLogger,
+    config_post_hooks: &[PerConfigPostHook],
+    config_first_digest: &std::collections::BTreeMap<usize, String>,
+) -> Result<()> {
+    for cph in config_post_hooks {
+        let digest_val = config_first_digest.get(&cph.idx).cloned().ok_or_else(|| {
+            anyhow::anyhow!(
+                "docker_v2[{}]: post-hooks configured but no image digest captured \
+                 (iidfile id.txt missing or empty after a successful build); \
+                 this usually means buildx + multi-platform --push produced no iidfile — \
+                 upgrade buildx or remove the post-hook",
+                cph.id.as_deref().unwrap_or(&cph.idx.to_string())
+            )
+        })?;
+        let mut hook_vars = ctx.template_vars().clone();
+        hook_vars.set_structured("Images", cph.images_json.clone());
+        hook_vars.set("Dockerfile", &cph.dockerfile_path);
+        hook_vars.set("ContextDir", &cph.staging_dir.to_string_lossy());
+        hook_vars.set("Digest", &digest_val);
+        hook_vars.set("BaseImage", &cph.base_image_name);
+        hook_vars.set("BaseImageDigest", &cph.base_image_digest);
+        let post_label = format!(
+            "post-docker_v2[{}]",
+            cph.id.as_deref().unwrap_or(&cph.idx.to_string())
+        );
+        run_hooks(&cph.hooks, &post_label, false, log, Some(&hook_vars))?;
+    }
+    Ok(())
+}
 
 /// Run `build_jobs` in parallel under a channel-based semaphore bounded by
 /// `parallelism`, matching GoReleaser's `semerrgroup.New(ctx.Parallelism)`.

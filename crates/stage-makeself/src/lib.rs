@@ -511,212 +511,16 @@ impl Stage for MakeselfStage {
         let mut jobs: Vec<MakeselfJob> = Vec::new();
 
         for cfg in &configs {
-            // Skip configs marked skip:
-            if let Some(ref d) = cfg.skip {
-                let off = d
-                    .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                    .with_context(|| "makeself: render skip template")?;
-                if off {
-                    log.verbose("makeself config skipped");
-                    continue;
-                }
-            }
-
-            let id = cfg.id.as_deref().unwrap_or("default");
-            let name = cfg.name.as_deref().unwrap_or(&project_name);
-            // GoReleaser makeself.go:31 default name_template:
-            //   {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
-            //   {{ with .Arm }}v{{ . }}{{ end }}
-            //   {{ with .Mips }}_{{ . }}{{ end }}
-            //   {{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}.run
-            // Rendered here using the Tera-style syntax anodizer exposes.
-            let default_name_template = concat!(
-                "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}",
-                "{% if Arm %}v{{ Arm }}{% endif %}",
-                "{% if Mips %}_{{ Mips }}{% endif %}",
-                "{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}.run",
-            );
-            let name_template = cfg.filename.as_deref().unwrap_or(default_name_template);
-
-            let script = cfg.script.as_deref().unwrap_or("");
-            if script.is_empty() {
-                anyhow::bail!("makeself: 'script' is required for config id '{}'", id);
-            }
-
-            // Default goos: linux and darwin
-            let goos_filter: Vec<String> = cfg
-                .goos
-                .clone()
-                .unwrap_or_else(|| vec!["linux".to_string(), "darwin".to_string()]);
-
-            let all_binaries = collect_matching_binaries(ctx, cfg, &goos_filter);
-
-            if all_binaries.is_empty() {
-                anyhow::bail!(
-                    "makeself: no binaries found for config '{}' with goos {:?}",
-                    id,
-                    goos_filter
-                );
-            }
-
-            let groups = group_by_platform(&all_binaries);
-
-            for (platform, binaries) in &groups {
-                let primary = binaries[0];
-                let (os, arch) = primary
-                    .target
-                    .as_deref()
-                    .map(anodizer_core::target::map_target)
-                    .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
-
-                set_per_target_template_vars(ctx, primary.target.as_deref(), &os, &arch);
-
-                let rendered_name = if cfg.name.is_some() {
-                    ctx.render_template(name)?
-                } else {
-                    project_name.clone()
-                };
-
-                let filename = resolve_makeself_filename(
-                    ctx,
-                    name_template,
-                    &project_name,
-                    &version,
-                    &os,
-                    &arch,
-                )?;
-
-                let rendered_description = cfg
-                    .description
-                    .as_deref()
-                    .map(|d| ctx.render_template(d))
-                    .transpose()?
-                    .unwrap_or_default();
-                let rendered_maintainer = cfg
-                    .maintainer
-                    .as_deref()
-                    .map(|m| ctx.render_template(m))
-                    .transpose()?
-                    .unwrap_or_default();
-                let rendered_homepage = cfg
-                    .homepage
-                    .as_deref()
-                    .map(|h| ctx.render_template(h))
-                    .transpose()?
-                    .unwrap_or_default();
-                let rendered_license = cfg
-                    .license
-                    .as_deref()
-                    .map(|l| ctx.render_template(l))
-                    .transpose()?
-                    .unwrap_or_default();
-                let rendered_script = ctx.render_template(script)?;
-                let rendered_compression = cfg
-                    .compression
-                    .as_deref()
-                    .map(|c| ctx.render_template(c))
-                    .transpose()?;
-
-                let keywords: Vec<String> = cfg
-                    .keywords
-                    .as_deref()
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|k| ctx.render_template(k))
-                    .collect::<Result<Vec<_>>>()?;
-
-                let extra_args: Vec<String> = cfg
-                    .extra_args
-                    .as_deref()
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|a| ctx.render_template(a))
-                    .collect::<Result<Vec<_>>>()?;
-
-                // Build LSM metadata
-                let lsm = Lsm {
-                    title: rendered_name.clone(),
-                    version: version.clone(),
-                    description: rendered_description,
-                    keywords,
-                    maintained_by: rendered_maintainer,
-                    primary_site: rendered_homepage,
-                    platform: platform.clone(),
-                    copying_policy: rendered_license,
-                };
-
-                // Set up working directory
-                let work_dir = dist.join("makeself").join(id).join(platform);
-
-                if dry_run {
-                    log.status(&format!(
-                        "(dry-run) would create makeself package: {}",
-                        filename
-                    ));
-                    continue;
-                }
-
-                // Collect binary (src, name_in_archive) pairs so Step 2 can
-                // copy them without borrowing ctx.artifacts.
-                let job_binaries: Vec<(std::path::PathBuf, String)> = binaries
-                    .iter()
-                    .map(|b| (b.path.clone(), b.name.clone()))
-                    .collect();
-
-                // Resolve extra-file (src, dest-relative) pairs now — the
-                // decision depends on strip_parent / destination which are
-                // cheap to pre-compute.
-                let job_extra_files: Vec<(std::path::PathBuf, String)> =
-                    if let Some(ref files) = cfg.files {
-                        files
-                            .iter()
-                            .map(|f| {
-                                let src = Path::new(&f.source);
-                                let dest_name = if let Some(ref dst) = f.destination {
-                                    dst.clone()
-                                } else if f.strip_parent.unwrap_or(false) {
-                                    src.file_name()
-                                        .and_then(|n| n.to_str())
-                                        .unwrap_or(&f.source)
-                                        .to_string()
-                                } else {
-                                    f.source.clone()
-                                };
-                                (src.to_path_buf(), dest_name)
-                            })
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-
-                let script_path = Path::new(&rendered_script).to_path_buf();
-                let script_basename = script_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("setup.sh")
-                    .to_string();
-
-                let output_path = dist.join(&filename);
-                let lsm_text = lsm.render();
-
-                jobs.push(MakeselfJob {
-                    id: id.to_string(),
-                    filename: filename.clone(),
-                    work_dir,
-                    output_path,
-                    rendered_name,
-                    script_src: script_path,
-                    script_basename,
-                    rendered_compression,
-                    extra_args,
-                    lsm_text,
-                    binaries: job_binaries,
-                    extra_files: job_extra_files,
-                    primary_target: primary.target.clone(),
-                    primary_crate_name: primary.crate_name.clone(),
-                    primary_replaces: primary.metadata.get("replaces").cloned(),
-                });
-            }
+            collect_makeself_config_jobs(
+                ctx,
+                &log,
+                cfg,
+                &dist,
+                &version,
+                &project_name,
+                dry_run,
+                &mut jobs,
+            )?;
         }
 
         if jobs.is_empty() {
@@ -752,6 +556,253 @@ impl Stage for MakeselfStage {
 
         Ok(())
     }
+}
+
+/// Collect `MakeselfJob` entries for one makeself config: validates, groups
+/// binaries by platform, renders all templates, and pushes jobs (or emits
+/// dry-run output).
+#[allow(clippy::too_many_arguments)]
+fn collect_makeself_config_jobs(
+    ctx: &mut Context,
+    log: &anodizer_core::log::StageLogger,
+    cfg: &anodizer_core::config::MakeselfConfig,
+    dist: &std::path::Path,
+    version: &str,
+    project_name: &str,
+    dry_run: bool,
+    jobs: &mut Vec<MakeselfJob>,
+) -> Result<()> {
+    if let Some(ref d) = cfg.skip {
+        let off = d
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| "makeself: render skip template")?;
+        if off {
+            log.verbose("makeself config skipped");
+            return Ok(());
+        }
+    }
+
+    let id = cfg.id.as_deref().unwrap_or("default");
+    let name = cfg.name.as_deref().unwrap_or(project_name);
+    let default_name_template = concat!(
+        "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}",
+        "{% if Arm %}v{{ Arm }}{% endif %}",
+        "{% if Mips %}_{{ Mips }}{% endif %}",
+        "{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}.run",
+    );
+    let name_template = cfg.filename.as_deref().unwrap_or(default_name_template);
+
+    let script = cfg.script.as_deref().unwrap_or("");
+    if script.is_empty() {
+        anyhow::bail!("makeself: 'script' is required for config id '{}'", id);
+    }
+
+    let goos_filter: Vec<String> = cfg
+        .goos
+        .clone()
+        .unwrap_or_else(|| vec!["linux".to_string(), "darwin".to_string()]);
+
+    let all_binaries = collect_matching_binaries(ctx, cfg, &goos_filter);
+
+    if all_binaries.is_empty() {
+        anyhow::bail!(
+            "makeself: no binaries found for config '{}' with goos {:?}",
+            id,
+            goos_filter
+        );
+    }
+
+    let groups = group_by_platform(&all_binaries);
+
+    for (platform, binaries) in &groups {
+        build_makeself_platform_job(
+            ctx,
+            log,
+            cfg,
+            id,
+            name,
+            name_template,
+            script,
+            dist,
+            version,
+            project_name,
+            platform,
+            binaries,
+            dry_run,
+            jobs,
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Render templates and build a `MakeselfJob` for one platform within a
+/// makeself config, or emit dry-run output.
+#[allow(clippy::too_many_arguments)]
+fn build_makeself_platform_job(
+    ctx: &mut Context,
+    log: &anodizer_core::log::StageLogger,
+    cfg: &anodizer_core::config::MakeselfConfig,
+    id: &str,
+    name: &str,
+    name_template: &str,
+    script: &str,
+    dist: &std::path::Path,
+    version: &str,
+    project_name: &str,
+    platform: &str,
+    binaries: &[&Artifact],
+    dry_run: bool,
+    jobs: &mut Vec<MakeselfJob>,
+) -> Result<()> {
+    let primary = binaries[0];
+    let (os, arch) = primary
+        .target
+        .as_deref()
+        .map(anodizer_core::target::map_target)
+        .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
+
+    set_per_target_template_vars(ctx, primary.target.as_deref(), &os, &arch);
+
+    let rendered_name = if cfg.name.is_some() {
+        ctx.render_template(name)?
+    } else {
+        project_name.to_string()
+    };
+
+    let filename =
+        resolve_makeself_filename(ctx, name_template, project_name, version, &os, &arch)?;
+
+    let rendered_description = cfg
+        .description
+        .as_deref()
+        .map(|d| ctx.render_template(d))
+        .transpose()?
+        .unwrap_or_default();
+    let rendered_maintainer = cfg
+        .maintainer
+        .as_deref()
+        .map(|m| ctx.render_template(m))
+        .transpose()?
+        .unwrap_or_default();
+    let rendered_homepage = cfg
+        .homepage
+        .as_deref()
+        .map(|h| ctx.render_template(h))
+        .transpose()?
+        .unwrap_or_default();
+    let rendered_license = cfg
+        .license
+        .as_deref()
+        .map(|l| ctx.render_template(l))
+        .transpose()?
+        .unwrap_or_default();
+    let rendered_script = ctx.render_template(script)?;
+    let rendered_compression = cfg
+        .compression
+        .as_deref()
+        .map(|c| ctx.render_template(c))
+        .transpose()?;
+
+    let keywords: Vec<String> = cfg
+        .keywords
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|k| ctx.render_template(k))
+        .collect::<Result<Vec<_>>>()?;
+
+    let extra_args: Vec<String> = cfg
+        .extra_args
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|a| ctx.render_template(a))
+        .collect::<Result<Vec<_>>>()?;
+
+    let lsm = Lsm {
+        title: rendered_name.clone(),
+        version: version.to_string(),
+        description: rendered_description,
+        keywords,
+        maintained_by: rendered_maintainer,
+        primary_site: rendered_homepage,
+        platform: platform.to_string(),
+        copying_policy: rendered_license,
+    };
+
+    let work_dir = dist.join("makeself").join(id).join(platform);
+
+    if dry_run {
+        log.status(&format!(
+            "(dry-run) would create makeself package: {}",
+            filename
+        ));
+        return Ok(());
+    }
+
+    let job_binaries: Vec<(std::path::PathBuf, String)> = binaries
+        .iter()
+        .map(|b| (b.path.clone(), b.name.clone()))
+        .collect();
+
+    let job_extra_files: Vec<(std::path::PathBuf, String)> = resolve_extra_file_pairs(cfg);
+
+    let script_path = Path::new(&rendered_script).to_path_buf();
+    let script_basename = script_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("setup.sh")
+        .to_string();
+
+    let output_path = dist.join(&filename);
+    let lsm_text = lsm.render();
+
+    jobs.push(MakeselfJob {
+        id: id.to_string(),
+        filename,
+        work_dir,
+        output_path,
+        rendered_name,
+        script_src: script_path,
+        script_basename,
+        rendered_compression,
+        extra_args,
+        lsm_text,
+        binaries: job_binaries,
+        extra_files: job_extra_files,
+        primary_target: primary.target.clone(),
+        primary_crate_name: primary.crate_name.clone(),
+        primary_replaces: primary.metadata.get("replaces").cloned(),
+    });
+
+    Ok(())
+}
+
+/// Pre-compute `(source_path, dest_name)` pairs for extra files.
+fn resolve_extra_file_pairs(
+    cfg: &anodizer_core::config::MakeselfConfig,
+) -> Vec<(std::path::PathBuf, String)> {
+    let Some(ref files) = cfg.files else {
+        return Vec::new();
+    };
+    files
+        .iter()
+        .map(|f| {
+            let src = Path::new(&f.source);
+            let dest_name = if let Some(ref dst) = f.destination {
+                dst.clone()
+            } else if f.strip_parent.unwrap_or(false) {
+                src.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&f.source)
+                    .to_string()
+            } else {
+                f.source.clone()
+            };
+            (src.to_path_buf(), dest_name)
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

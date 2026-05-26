@@ -218,121 +218,20 @@ impl Stage for SnapcraftStage {
                 }
 
                 for (target_key, target_binaries) in &by_target {
-                    let target = if target_key == "unknown" {
-                        None
-                    } else {
-                        Some(target_key.clone())
-                    };
-
-                    // skip unsupported
-                    // architectures (e.g. riscv64 is not in the snap store).
-                    if let Some(ref t) = target {
-                        let snap_arch = triple_to_snap_arch(t);
-                        if !is_valid_snap_arch(snap_arch) {
-                            log.warn(&format!(
-                                "snapcraft: skipping unsupported arch '{}' (target: {})",
-                                snap_arch, t
-                            ));
-                            continue;
-                        }
-                    }
-
-                    // Derive Os/Arch from the target triple for template rendering
-                    let (os, arch) = target
-                        .as_deref()
-                        .map(anodizer_core::target::map_target)
-                        .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()));
-
-                    // Ensure output directory exists
-                    let output_dir = dist.join("linux");
-                    if !dry_run {
-                        fs::create_dir_all(&output_dir).with_context(|| {
-                            format!("create snapcraft output dir: {}", output_dir.display())
-                        })?;
-                    }
-
-                    let snap_name = snap_cfg.name.as_deref().unwrap_or(&krate.name);
-                    let snap_filename = compute_snap_filename(
-                        ctx,
-                        snap_cfg,
-                        &krate.name,
-                        snap_name,
-                        target.as_deref(),
-                        &os,
-                        &arch,
-                    )?;
-                    let snap_path = output_dir.join(&snap_filename);
-
-                    // Build artifact metadata (I4)
-                    let artifact_metadata = {
-                        let mut m = HashMap::new();
-                        if let Some(id) = &snap_cfg.id {
-                            m.insert("id".to_string(), id.clone());
-                        }
-                        m
-                    };
-
-                    if dry_run {
-                        log.status(&format!(
-                            "(dry-run) would run: snapcraft pack --output {} for crate {} target {:?}",
-                            snap_path.display(),
-                            krate.name,
-                            target,
-                        ));
-                        new_artifacts.push(Artifact {
-                            kind: ArtifactKind::Snap,
-                            name: String::new(),
-                            path: snap_path,
-                            target: target.clone(),
-                            crate_name: krate.name.clone(),
-                            metadata: artifact_metadata,
-                            size: None,
-                        });
-
-                        // If replace is set, mark archives for this crate+target for removal
-                        archives_to_remove.extend(anodizer_core::util::collect_if_replace(
-                            snap_cfg.replace,
-                            &ctx.artifacts,
-                            &krate.name,
-                            target.as_deref(),
-                        ));
-
-                        continue;
-                    }
-
-                    let (tmp_dir, prime_dir) = stage_prime_dir(
+                    process_snap_target(
                         ctx,
                         &log,
                         snap_cfg,
                         &krate.name,
-                        snap_name,
+                        target_key,
                         target_binaries,
-                        target.as_deref(),
+                        &dist,
                         &version,
+                        dry_run,
+                        &mut new_artifacts,
+                        &mut archives_to_remove,
+                        &mut jobs,
                     )?;
-
-                    let cmd_args = snapcraft_command(
-                        &prime_dir.to_string_lossy(),
-                        &snap_path.to_string_lossy(),
-                    );
-
-                    // If replace is set, mark archives for this crate+target
-                    // for removal — do it now while ctx.artifacts is accessible.
-                    archives_to_remove.extend(anodizer_core::util::collect_if_replace(
-                        snap_cfg.replace,
-                        &ctx.artifacts,
-                        &krate.name,
-                        target.as_deref(),
-                    ));
-
-                    jobs.push(SnapcraftJob {
-                        _tmp_dir: tmp_dir,
-                        snap_path,
-                        cmd_args,
-                        target: target.clone(),
-                        crate_name: krate.name.clone(),
-                        artifact_metadata,
-                    });
                 }
             }
         }
@@ -355,6 +254,133 @@ impl Stage for SnapcraftStage {
 
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Per-target helper
+// ---------------------------------------------------------------------------
+
+/// Process one target platform for a snapcraft config: validate arch,
+/// compute filename, and either emit dry-run output or stage the prime
+/// directory and enqueue a `SnapcraftJob`.
+#[allow(clippy::too_many_arguments)]
+fn process_snap_target(
+    ctx: &mut Context,
+    log: &StageLogger,
+    snap_cfg: &SnapcraftConfig,
+    crate_name: &str,
+    target_key: &str,
+    target_binaries: &[&Artifact],
+    dist: &Path,
+    version: &str,
+    dry_run: bool,
+    new_artifacts: &mut Vec<Artifact>,
+    archives_to_remove: &mut Vec<PathBuf>,
+    jobs: &mut Vec<SnapcraftJob>,
+) -> Result<()> {
+    let target = if target_key == "unknown" {
+        None
+    } else {
+        Some(target_key.to_string())
+    };
+
+    if let Some(ref t) = target {
+        let snap_arch = triple_to_snap_arch(t);
+        if !is_valid_snap_arch(snap_arch) {
+            log.warn(&format!(
+                "snapcraft: skipping unsupported arch '{}' (target: {})",
+                snap_arch, t
+            ));
+            return Ok(());
+        }
+    }
+
+    let (os, arch) = target
+        .as_deref()
+        .map(anodizer_core::target::map_target)
+        .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()));
+
+    let output_dir = dist.join("linux");
+    if !dry_run {
+        fs::create_dir_all(&output_dir)
+            .with_context(|| format!("create snapcraft output dir: {}", output_dir.display()))?;
+    }
+
+    let snap_name = snap_cfg.name.as_deref().unwrap_or(crate_name);
+    let snap_filename = compute_snap_filename(
+        ctx,
+        snap_cfg,
+        crate_name,
+        snap_name,
+        target.as_deref(),
+        &os,
+        &arch,
+    )?;
+    let snap_path = output_dir.join(&snap_filename);
+
+    let artifact_metadata = {
+        let mut m = HashMap::new();
+        if let Some(id) = &snap_cfg.id {
+            m.insert("id".to_string(), id.clone());
+        }
+        m
+    };
+
+    if dry_run {
+        log.status(&format!(
+            "(dry-run) would run: snapcraft pack --output {} for crate {} target {:?}",
+            snap_path.display(),
+            crate_name,
+            target,
+        ));
+        new_artifacts.push(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: snap_path,
+            target: target.clone(),
+            crate_name: crate_name.to_string(),
+            metadata: artifact_metadata,
+            size: None,
+        });
+        archives_to_remove.extend(anodizer_core::util::collect_if_replace(
+            snap_cfg.replace,
+            &ctx.artifacts,
+            crate_name,
+            target.as_deref(),
+        ));
+        return Ok(());
+    }
+
+    let (tmp_dir, prime_dir) = stage_prime_dir(
+        ctx,
+        log,
+        snap_cfg,
+        crate_name,
+        snap_name,
+        target_binaries,
+        target.as_deref(),
+        version,
+    )?;
+
+    let cmd_args = snapcraft_command(&prime_dir.to_string_lossy(), &snap_path.to_string_lossy());
+
+    archives_to_remove.extend(anodizer_core::util::collect_if_replace(
+        snap_cfg.replace,
+        &ctx.artifacts,
+        crate_name,
+        target.as_deref(),
+    ));
+
+    jobs.push(SnapcraftJob {
+        _tmp_dir: tmp_dir,
+        snap_path,
+        cmd_args,
+        target: target.clone(),
+        crate_name: crate_name.to_string(),
+        artifact_metadata,
+    });
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
