@@ -44,7 +44,6 @@ impl Stage for ArchiveStage {
         let selected = ctx.options.selected_crates.clone();
         let dist = ctx.config.dist.clone();
         let dry_run = ctx.options.dry_run;
-        let template_vars = ctx.template_vars().clone();
 
         let (global_default_format, global_format_overrides) = resolve_global_archive_defaults(ctx);
 
@@ -84,7 +83,6 @@ impl Stage for ArchiveStage {
             archive_one_config(
                 ctx,
                 &log,
-                &template_vars,
                 &dist,
                 dry_run,
                 multi_crate,
@@ -311,7 +309,6 @@ fn collect_crate_archivable_artifacts(ctx: &Context, crate_name: &str) -> Vec<Ar
 fn archive_one_config(
     ctx: &mut Context,
     log: &anodizer_core::log::StageLogger,
-    template_vars: &anodizer_core::template::TemplateVars,
     dist: &Path,
     dry_run: bool,
     multi_crate: bool,
@@ -408,13 +405,6 @@ fn archive_one_config(
             }
         }
 
-        // Determine singular default format (per-config first entry > global default)
-        let singular_format = archive_cfg
-            .formats
-            .as_ref()
-            .and_then(|fs| fs.first().map(|s| s.as_str()))
-            .unwrap_or(global_default_format);
-
         // Determine format overrides (per-config > global)
         let format_overrides: Vec<FormatOverride> = archive_cfg
             .format_overrides
@@ -439,17 +429,17 @@ fn archive_one_config(
         // strip_binary_directory: place binaries at archive root
         let strip_bin_dir = archive_cfg.strip_binary_directory.unwrap_or(false);
 
-        // Archive-scope template vars expose `.Format` to hook templates.
-        let mut hook_vars = template_vars.clone();
-        hook_vars.set("Format", singular_format);
-
+        // Hook firing happens INSIDE the format loop below so each
+        // (target, format) pair gets its own before/after pair with
+        // `.Format` / `.Os` / `.Arch` / `.Target` / `.ArtifactPath` /
+        // `.ArtifactName` / `.ArtifactExt` / `.ArtifactID` set on the
+        // live template-var scope. Mirrors GR Pro's contract: "If
+        // multiple formats are set, hooks will be executed for each
+        // format" (`archives.md:183`) and "Extra template fields
+        // available: `.Format`" (`archives.md:184`).
         let archive_id = archive_cfg.id.as_deref().unwrap_or("default");
         let pre_label = format!("pre-archive[{archive_id}]");
         let post_label = format!("post-archive[{archive_id}]");
-
-        if let Some(pre) = archive_cfg.hooks.as_ref().and_then(|h| h.before.as_ref()) {
-            run_hooks(pre, &pre_label, dry_run, log, Some(&hook_vars))?;
-        }
 
         for (target, target_bins) in &by_target {
             // Filter binaries for this archive config
@@ -782,6 +772,20 @@ fn archive_one_config(
                 // archive write completes.
                 ctx.template_vars_mut().set("Format", format);
 
+                // Fire the `before:` hook here — after `.Format` / `.Os`
+                // / `.Arch` / `.Target` are wired but before the archive
+                // is written. Skipped when format is `binary` to match
+                // GR Pro (`archives.md:182`: "Skipped if archive format
+                // is binary"); the user's hook expects an archive to
+                // create or post-process, and the `binary` branch
+                // creates none.
+                if format != "binary"
+                    && let Some(pre) = archive_cfg.hooks.as_ref().and_then(|h| h.before.as_ref())
+                {
+                    let hook_vars = ctx.template_vars().clone();
+                    run_hooks(pre, &pre_label, dry_run, log, Some(&hook_vars))?;
+                }
+
                 // Render archive-scoped templated_files into a temp
                 // staging dir, one tree per (archive_id, target, format).
                 // Each rendered file becomes an `ArchiveEntry` packed
@@ -990,11 +994,20 @@ fn archive_one_config(
                         size: None,
                     });
                 }
-            }
-        }
 
-        if let Some(post) = archive_cfg.hooks.as_ref().and_then(|h| h.after.as_ref()) {
-            run_hooks(post, &post_label, dry_run, log, Some(&hook_vars))?;
+                // Fire the `after:` hook here — after the archive is
+                // written AND its `.ArtifactName` / `.ArtifactPath` /
+                // `.ArtifactExt` / `.ArtifactID` vars are wired so the
+                // hook can reference the freshly-built archive (e.g.,
+                // `cosign sign-blob {{ ArtifactPath }}`). Skipped for
+                // `binary` to match GR Pro (`archives.md:182`).
+                if format != "binary"
+                    && let Some(post) = archive_cfg.hooks.as_ref().and_then(|h| h.after.as_ref())
+                {
+                    let hook_vars = ctx.template_vars().clone();
+                    run_hooks(post, &post_label, dry_run, log, Some(&hook_vars))?;
+                }
+            }
         }
     }
     Ok(())

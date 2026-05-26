@@ -4626,3 +4626,202 @@ fn archive_byte_differs_for_different_sde() {
         "different mtimes must produce different tar bytes (sanity check on SDE wiring)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// B31 — archive before/after hooks
+// ---------------------------------------------------------------------------
+
+/// Drive ArchiveStage with a configured `hooks.before` + `hooks.after`
+/// pair that touches sentinel files, then return the sentinel paths so
+/// the test can assert which hooks fired.
+fn run_with_hook_sentinels(
+    crate_dir: &Path,
+    dist: PathBuf,
+    formats: Vec<String>,
+    before_sentinel: &Path,
+    after_sentinel: &Path,
+) -> anyhow::Result<()> {
+    use anodizer_core::config::{
+        ArchiveConfig, ArchiveHooksConfig, ArchivesConfig, CrateConfig, HookEntry,
+    };
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    let bin_path = crate_dir.join("myapp");
+    fs::write(&bin_path, b"fake binary").unwrap();
+
+    // Use templated paths so {{ Format }} appears in the touch target —
+    // that's how we verify per-format firing.
+    let before_cmd = format!(
+        "touch {}.{{{{ Format }}}}",
+        before_sentinel.to_string_lossy()
+    );
+    let after_cmd = format!(
+        "touch {}.{{{{ Format }}}}",
+        after_sentinel.to_string_lossy()
+    );
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist)
+        .crates(vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                id: Some("default".to_string()),
+                name_template: Some("{{ ProjectName }}-{{ Version }}".to_string()),
+                formats: Some(formats),
+                hooks: Some(ArchiveHooksConfig {
+                    before: Some(vec![HookEntry::Simple(before_cmd)]),
+                    after: Some(vec![HookEntry::Simple(after_cmd)]),
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .build();
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: bin_path,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: {
+            let mut m = HashMap::new();
+            m.insert("binary".to_string(), "myapp".to_string());
+            m
+        },
+        size: None,
+    });
+
+    let stage = ArchiveStage;
+    stage.run(&mut ctx)
+}
+
+#[test]
+fn archive_hooks_skipped_for_binary_format() {
+    let tmp = TempDir::new().unwrap();
+    let before = tmp.path().join("BEFORE");
+    let after = tmp.path().join("AFTER");
+
+    run_with_hook_sentinels(
+        tmp.path(),
+        tmp.path().join("dist"),
+        vec!["binary".to_string()],
+        &before,
+        &after,
+    )
+    .expect("archive stage runs for binary format");
+
+    // GR contract: hooks skipped when format is `binary`. The sentinels
+    // would be `BEFORE.binary` / `AFTER.binary` if the hooks had fired.
+    let before_marker = tmp.path().join("BEFORE.binary");
+    let after_marker = tmp.path().join("AFTER.binary");
+    assert!(
+        !before_marker.exists(),
+        "before hook MUST NOT fire for format: binary"
+    );
+    assert!(
+        !after_marker.exists(),
+        "after hook MUST NOT fire for format: binary"
+    );
+}
+
+#[test]
+fn archive_hooks_run_per_format() {
+    let tmp = TempDir::new().unwrap();
+    let before = tmp.path().join("BEFORE");
+    let after = tmp.path().join("AFTER");
+
+    run_with_hook_sentinels(
+        tmp.path(),
+        tmp.path().join("dist"),
+        vec!["tar.gz".to_string(), "zip".to_string()],
+        &before,
+        &after,
+    )
+    .expect("archive stage runs for multi-format");
+
+    // GR contract: "If multiple formats are set, hooks will be executed
+    // for each format" (`archives.md:183`). Each format must observe
+    // its own `.Format` value so the per-format `touch X.{{ Format }}`
+    // creates one sentinel per format.
+    let before_tar = tmp.path().join("BEFORE.tar.gz");
+    let before_zip = tmp.path().join("BEFORE.zip");
+    let after_tar = tmp.path().join("AFTER.tar.gz");
+    let after_zip = tmp.path().join("AFTER.zip");
+    assert!(
+        before_tar.exists(),
+        "before hook must fire for tar.gz format"
+    );
+    assert!(before_zip.exists(), "before hook must fire for zip format");
+    assert!(after_tar.exists(), "after hook must fire for tar.gz format");
+    assert!(after_zip.exists(), "after hook must fire for zip format");
+}
+
+#[test]
+fn archive_after_hook_sees_artifact_path() {
+    use anodizer_core::config::{
+        ArchiveConfig, ArchiveHooksConfig, ArchivesConfig, CrateConfig, HookEntry,
+    };
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let bin_path = tmp.path().join("myapp");
+    fs::write(&bin_path, b"fake binary").unwrap();
+
+    let sentinel = tmp.path().join("SAW_ARTIFACT");
+    // `.ArtifactPath` must be resolved to a non-empty value for the
+    // after-hook so users can post-process the just-written archive.
+    let after_cmd = format!(
+        "test -n '{{{{ ArtifactPath }}}}' && touch {}",
+        sentinel.to_string_lossy()
+    );
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist)
+        .crates(vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                id: Some("default".to_string()),
+                name_template: Some("{{ ProjectName }}-{{ Version }}".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
+                hooks: Some(ArchiveHooksConfig {
+                    before: None,
+                    after: Some(vec![HookEntry::Simple(after_cmd)]),
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .build();
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: bin_path,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: {
+            let mut m = HashMap::new();
+            m.insert("binary".to_string(), "myapp".to_string());
+            m
+        },
+        size: None,
+    });
+
+    let stage = ArchiveStage;
+    stage.run(&mut ctx).expect("archive stage runs");
+
+    assert!(
+        sentinel.exists(),
+        "after-hook must see `.ArtifactPath` populated"
+    );
+}
