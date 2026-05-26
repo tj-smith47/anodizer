@@ -12,12 +12,15 @@
 
 use std::fs;
 use std::io::Write;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anodizer_core::config::NpmConfig;
+use anodizer_core::config::{ArchivesConfig, NpmConfig, NpmTemplatedExtraFile};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
+use anodizer_core::retry::{RetryPolicy, retry_sync};
+use anodizer_core::template_file_render::render_templated_file_entry;
 use anyhow::{Context as _, Result, bail};
 use tempfile::TempDir;
 
@@ -124,6 +127,25 @@ pub fn assemble_tarball(
         }
     }
 
+    // Render any `templated_extra_files` entries and write the rendered
+    // bytes at the rendered `dst:` path inside `package/`. Each entry is
+    // bridged through the shared `render_templated_file_entry` helper so
+    // the skip / render-src / read-bytes / from_utf8 / render-contents /
+    // render-dst / traversal-reject pipeline matches the other stages
+    // that consume `templated_extra_files`.
+    if let Some(specs) = cfg.templated_extra_files.as_ref() {
+        for (idx, spec) in specs.iter().enumerate() {
+            let bridged = npm_to_template_file_config(spec);
+            let label = format!("npm: templated_extra_files[{}]", idx);
+            let render = match render_templated_file_entry(ctx, &bridged, &label)? {
+                Some(r) => r,
+                None => continue,
+            };
+            let dst_path = pkg_dir.join(&render.rendered_dst);
+            write_deterministic(&dst_path, render.rendered_contents.as_bytes())?;
+        }
+    }
+
     // Pack the tarball. We use the `tar` + `flate2` crates (already in
     // the workspace via stage-archive / sibling stages); for the npm
     // publisher we shell out to `tar` to keep the tarball assembly
@@ -154,6 +176,148 @@ fn sanitize_tarball_basename(pkg_name: &str) -> String {
     } else {
         pkg_name.to_string()
     }
+}
+
+/// Bridge an [`NpmTemplatedExtraFile`] (`src` + `dst` only) into the shared
+/// [`anodizer_core::config::TemplateFileConfig`] shape consumed by
+/// [`render_templated_file_entry`]. `id`/`mode`/`skip` are left at
+/// defaults; npm tarball entries always render and always land at the
+/// rendered `dst:`.
+fn npm_to_template_file_config(
+    spec: &NpmTemplatedExtraFile,
+) -> anodizer_core::config::TemplateFileConfig {
+    anodizer_core::config::TemplateFileConfig {
+        id: None,
+        src: spec.src.clone(),
+        dst: spec.dst.clone(),
+        mode: None,
+        skip: None,
+    }
+}
+
+/// Iterate the configured crates (filtered by [`NpmConfig::ids`] when
+/// set) and check whether any matching `archives:` block declares
+/// multiple `formats:`. When that's the case AND the npm publisher's
+/// own `format:` is unset, the publisher cannot pick a single archive
+/// to download from the postinstall script, so we hard-error rather
+/// than silently picking the default `tgz`.
+///
+/// Returns `Ok(())` when no ambiguity exists. Errors carry the offending
+/// crate name + the multi-format list so the operator knows exactly what
+/// to set.
+fn preflight_multi_format_unambiguous(
+    ctx: &Context,
+    cfg: &NpmConfig,
+    crate_name: &str,
+) -> Result<()> {
+    // The user explicitly picked a format — no ambiguity to surface.
+    if cfg
+        .format
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+    {
+        return Ok(());
+    }
+    let id_filter = cfg.ids.as_ref();
+    for krate in &ctx.config.crates {
+        // Respect the `ids:` filter when set; otherwise only consider the
+        // crate the entry already targets so an unrelated multi-format
+        // crate in the workspace doesn't block this publisher.
+        let matches = if let Some(ids) = id_filter {
+            ids.iter().any(|id| id == &krate.name)
+        } else {
+            krate.name == crate_name
+        };
+        if !matches {
+            continue;
+        }
+        let configs = match &krate.archives {
+            ArchivesConfig::Configs(c) => c,
+            ArchivesConfig::Disabled => continue,
+        };
+        for archive in configs {
+            let Some(formats) = archive.formats.as_ref() else {
+                continue;
+            };
+            if formats.len() > 1 {
+                bail!(
+                    "npm publisher for crate {}: archive has multiple formats {:?} \
+                     and npm publisher's `format:` is unset — set format: tgz \
+                     (or zip) explicitly",
+                    krate.name,
+                    formats
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Probe the registry for an existing `<name>@<version>` publication via
+/// `npm view <name>@<version> version --registry <url> --userconfig <path>`.
+///
+/// Exit-code semantics:
+/// * `0` + non-empty stdout → version is published (returns `Ok(true)`).
+/// * Non-zero stderr containing `E404` / `code E404` → never published
+///   (returns `Ok(false)`).
+/// * Any other failure shape → returns `Ok(false)` so the publish path
+///   isn't blocked by a transient `npm view` glitch (the actual publish
+///   will surface the real error).
+///
+/// Used for idempotency: a re-run of `anodize release` against an already-
+/// pushed version short-circuits the publish rather than letting npm fail
+/// with the immutable-version error.
+pub(crate) fn version_already_published(
+    name: &str,
+    version: &str,
+    cfg_dir: &Path,
+    registry: &str,
+) -> Result<bool> {
+    let mut cmd = Command::new("npm");
+    cmd.arg("view")
+        .arg(format!("{}@{}", name, version))
+        .arg("version")
+        .arg("--registry")
+        .arg(registry)
+        .arg("--userconfig")
+        .arg(cfg_dir.join(".npmrc"))
+        // `npm view` writes the resolved version to stdout when found.
+        // `--json` would also do, but the plain form is what most CI
+        // examples show and is enough for a presence check.
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let out = match cmd.output() {
+        Ok(o) => o,
+        // npm not on PATH or spawn failed — treat as "unknown" so the
+        // publish path still runs.
+        Err(_) => return Ok(false),
+    };
+    if out.status.success() {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        return Ok(!stdout.trim().is_empty());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if stderr.contains("E404") {
+        return Ok(false);
+    }
+    // Any other non-success is treated as unknown; let the publish run.
+    Ok(false)
+}
+
+/// Classify an `npm publish` stderr blob as transient (worth retrying)
+/// vs. terminal. Matches the standard set of npm registry transients
+/// the audit calls out: HTTP 5xx error tag, ECONNRESET / ETIMEDOUT /
+/// EAI_AGAIN socket failures.
+fn is_transient_npm_publish_stderr(stderr: &str) -> bool {
+    let s = stderr.to_ascii_uppercase();
+    s.contains("5XX")
+        || s.contains("503")
+        || s.contains("502")
+        || s.contains("504")
+        || s.contains("ECONNRESET")
+        || s.contains("ETIMEDOUT")
+        || s.contains("EAI_AGAIN")
 }
 
 /// Write `bytes` to `path` with a deterministic mode (`0o644`) and mtime
@@ -305,6 +469,11 @@ pub fn publish_to_npm(
         return Ok(None);
     }
 
+    // Fail-loud preflight: when an `archives:` block declares multiple
+    // formats AND the npm publisher's own `format:` is unset, the
+    // postinstall script cannot pick which archive to download.
+    preflight_multi_format_unambiguous(ctx, cfg, crate_name)?;
+
     let version = ctx.version();
     let pkg_name = resolve_name(cfg, crate_name).to_string();
     let registry = resolve_registry(cfg);
@@ -344,12 +513,31 @@ pub fn publish_to_npm(
     let cfg_dir = TempDir::new().context("npm: create .npmrc temp dir")?;
     write_npmrc(cfg_dir.path(), &registry, &token, access.as_deref())?;
 
+    // Idempotency probe: if the exact `<name>@<version>` is already on the
+    // registry, short-circuit the publish (matches the immutable-releases
+    // policy — a re-run for a previously-pushed tag must not error).
+    if version_already_published(&staged.package, &version, cfg_dir.path(), &registry)? {
+        log.status(&format!(
+            "npm: '{}@{}' already published to {} — skipping (idempotent re-run)",
+            staged.package, version, registry
+        ));
+        return Ok(Some(NpmTarget {
+            package: staged.package,
+            version,
+            registry,
+            dist_tag,
+            token_env_var: token_env_var(cfg).to_string(),
+        }));
+    }
+
+    let policy = ctx.retry_policy();
     run_npm_publish(
         &staged.tarball_path,
         cfg_dir.path(),
         &registry,
         &dist_tag,
         access.as_deref(),
+        &policy,
         log,
     )?;
 
@@ -366,44 +554,76 @@ pub fn publish_to_npm(
 /// --tag <dist_tag> [--access <a>]`. Token is read from `.npmrc`,
 /// never argv. Surfaces a clean error on non-zero exit; stderr is
 /// scrubbed for bearer-token redaction.
+///
+/// The invocation is wrapped in [`retry_sync`] against the supplied
+/// [`RetryPolicy`] (resolved from the user's top-level `retry:` block).
+/// Transient registry failures classified by
+/// [`is_transient_npm_publish_stderr`] (HTTP 5xx, ECONNRESET, ETIMEDOUT,
+/// EAI_AGAIN) re-attempt with exponential backoff; non-transient
+/// failures (auth, validation, immutable-version) break out immediately.
 fn run_npm_publish(
     tarball: &Path,
     cfg_dir: &Path,
     registry: &str,
     dist_tag: &str,
     access: Option<&str>,
+    policy: &RetryPolicy,
     log: &StageLogger,
 ) -> Result<()> {
-    let mut cmd = Command::new("npm");
-    cmd.arg("publish")
-        .arg(tarball)
-        .arg("--userconfig")
-        .arg(cfg_dir.join(".npmrc"))
-        .arg("--registry")
-        .arg(registry)
-        .arg("--tag")
-        .arg(dist_tag);
-    if let Some(a) = access {
-        cmd.arg("--access").arg(a);
-    }
-    log.status(&format!(
-        "npm: publish {} --registry {} --tag {}",
-        tarball.display(),
-        registry,
-        dist_tag
-    ));
-    let out = cmd
-        .output()
-        .with_context(|| format!("npm: invoke `npm publish` for {}", tarball.display()))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        bail!(
+    let max_attempts = policy.max_attempts.max(1);
+    retry_sync(policy, |attempt| {
+        if attempt > 1 {
+            log.warn(&format!(
+                "npm: publish attempt {}/{} failed (transient), retrying…",
+                attempt - 1,
+                max_attempts
+            ));
+        }
+        let mut cmd = Command::new("npm");
+        cmd.arg("publish")
+            .arg(tarball)
+            .arg("--userconfig")
+            .arg(cfg_dir.join(".npmrc"))
+            .arg("--registry")
+            .arg(registry)
+            .arg("--tag")
+            .arg(dist_tag);
+        if let Some(a) = access {
+            cmd.arg("--access").arg(a);
+        }
+        log.status(&format!(
+            "npm: publish {} --registry {} --tag {}",
+            tarball.display(),
+            registry,
+            dist_tag
+        ));
+        let out = match cmd.output() {
+            Ok(o) => o,
+            Err(e) => {
+                // Spawning npm itself failed (binary missing, permission
+                // denied) — not a transient registry error.
+                return Err(ControlFlow::Break(anyhow::Error::from(e).context(format!(
+                    "npm: invoke `npm publish` for {}",
+                    tarball.display()
+                ))));
+            }
+        };
+        if out.status.success() {
+            return Ok(());
+        }
+        let stderr_raw = String::from_utf8_lossy(&out.stderr);
+        let stderr_trimmed = stderr_raw.trim();
+        let err = anyhow::anyhow!(
             "npm: `npm publish` exited with status {}: {}",
             out.status,
-            anodizer_core::redact::redact_bearer_tokens(stderr.trim())
+            anodizer_core::redact::redact_bearer_tokens(stderr_trimmed)
         );
-    }
-    Ok(())
+        if is_transient_npm_publish_stderr(stderr_trimmed) {
+            Err(ControlFlow::Continue(err))
+        } else {
+            Err(ControlFlow::Break(err))
+        }
+    })
 }
 
 /// `npm unpublish <package>@<version> --userconfig <.npmrc> --registry

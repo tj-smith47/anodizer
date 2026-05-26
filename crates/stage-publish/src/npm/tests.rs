@@ -618,3 +618,204 @@ impl From<NpmTarget> for anodizer_core::publish_evidence::NpmTargetSnapshot {
         }
     }
 }
+
+// -----------------------------------------------------------------------------
+// templated_extra_files
+// -----------------------------------------------------------------------------
+
+#[test]
+fn npm_tarball_includes_templated_extra_file() {
+    use anodizer_core::config::NpmTemplatedExtraFile;
+    use flate2::read::GzDecoder;
+
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let tpl_path = tmp.path().join("notes.tera");
+    std::fs::write(&tpl_path, "release: {{ .ProjectName }}-{{ .Version }}\n")
+        .expect("write template");
+
+    let ctx = ctx_with_archives();
+    let cfg = NpmConfig {
+        name: Some("anodize-demo".into()),
+        templated_extra_files: Some(vec![NpmTemplatedExtraFile {
+            src: tpl_path.to_string_lossy().to_string(),
+            dst: "{{ .Version }}/notes.txt".to_string(),
+        }]),
+        ..Default::default()
+    };
+    let bins = vec![one_binary("linux", "x64")];
+
+    let staged = assemble_tarball(&ctx, &cfg, "demo", "1.2.3", &bins).expect("assemble");
+    let tar_bytes = std::fs::read(&staged.tarball_path).expect("read tarball");
+    let mut archive = tar::Archive::new(GzDecoder::new(&tar_bytes[..]));
+
+    let mut found_rendered_at: Option<String> = None;
+    let mut rendered_contents: Option<String> = None;
+    for entry in archive.entries().expect("entries") {
+        let mut entry = entry.expect("entry ok");
+        let path = entry.path().expect("path").into_owned();
+        let path_str = path.to_string_lossy().into_owned();
+        if path_str.ends_with("notes.txt") {
+            found_rendered_at = Some(path_str.clone());
+            let mut s = String::new();
+            use std::io::Read;
+            entry.read_to_string(&mut s).expect("read entry");
+            rendered_contents = Some(s);
+        }
+    }
+
+    let dst = found_rendered_at.expect("notes.txt present in tarball");
+    assert!(
+        dst.contains("1.2.3/notes.txt"),
+        "expected rendered dst under '1.2.3/', got '{}'",
+        dst
+    );
+    let contents = rendered_contents.expect("entry bytes");
+    assert!(
+        contents.contains("release: demo-1.2.3"),
+        "expected template to render project + version, got '{}'",
+        contents
+    );
+}
+
+// -----------------------------------------------------------------------------
+// Multi-format preflight (ambiguous archive format)
+// -----------------------------------------------------------------------------
+
+fn multi_format_ctx() -> anodizer_core::context::Context {
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig};
+    let mut ctx = ctx_with_archives();
+    let archive_cfg = ArchiveConfig {
+        id: Some("default".into()),
+        formats: Some(vec!["tar.gz".into(), "zip".into()]),
+        ..Default::default()
+    };
+    ctx.config.crates[0].archives = ArchivesConfig::Configs(vec![archive_cfg]);
+    ctx
+}
+
+#[test]
+fn npm_fails_on_multi_format_archive_without_format_set() {
+    let ctx = multi_format_ctx();
+    let cfg = npm_cfg();
+    let log = ctx.logger("publish");
+    let err = publish_to_npm(&ctx, &cfg, "demo", &log)
+        .expect_err("multi-format with no `format:` must error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("multiple formats") && msg.contains("`format:` is unset"),
+        "expected multi-format diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn npm_allows_multi_format_when_format_set_explicitly() {
+    let mut ctx = multi_format_ctx();
+    ctx.options.dry_run = true;
+    let cfg = NpmConfig {
+        name: Some("anodize-demo".into()),
+        format: Some("tgz".into()),
+        ..Default::default()
+    };
+    let log = ctx.logger("publish");
+    let outcome = publish_to_npm(&ctx, &cfg, "demo", &log).expect("must succeed dry-run");
+    assert!(outcome.is_none(), "dry-run returns None");
+}
+
+// -----------------------------------------------------------------------------
+// Idempotency probe + retry helpers
+// -----------------------------------------------------------------------------
+
+#[test]
+fn npm_version_already_published_returns_false_when_npm_unavailable() {
+    use super::publish::version_already_published;
+    // Drive a registry that no real `npm` will recognize. When the
+    // subprocess errors (404 or "npm not on PATH"), the probe must
+    // return `Ok(false)` so the publish path still runs.
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let out = version_already_published(
+        "definitely-not-a-published-package-xyz",
+        "9.9.9-anodize-fixture",
+        tmp.path(),
+        "https://registry.npmjs.org",
+    );
+    // Either spawn error or 404 — both surface as Ok(false).
+    match out {
+        Ok(b) => assert!(!b, "expected probe to report 'not published'"),
+        Err(_) => {
+            // No npm on PATH at all — implementation already swallows
+            // this and returns Ok(false), so this branch should be
+            // unreachable. If it isn't, the test environment is broken,
+            // not the code.
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Rollback dispatch — fake-npm shim verifies `npm unpublish` is invoked
+// -----------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(npm_path_shim)]
+fn rollback_npm_calls_npm_unpublish() {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::TempDir::new().expect("tempdir for shim");
+    let invocations_log = tmp.path().join("npm-invocations.log");
+    let shim_path = tmp.path().join("npm");
+    {
+        let mut f = std::fs::File::create(&shim_path).expect("create shim");
+        // POSIX shim: appends every npm invocation to a log file and
+        // returns 0 so the rollback path treats it as success.
+        writeln!(
+            f,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {log}\nexit 0",
+            log = invocations_log.display()
+        )
+        .expect("write shim");
+    }
+    std::fs::set_permissions(&shim_path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod shim");
+
+    // Prepend the shim dir to PATH so `Command::new("npm")` resolves
+    // to it for the duration of this test.
+    let prev_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", tmp.path().display(), prev_path);
+    // SAFETY: env mutation is serialized by `serial(npm_path_shim)`.
+    unsafe {
+        std::env::set_var("PATH", &new_path);
+        std::env::set_var("NPM_TOKEN", "fake-token-value");
+    }
+
+    let mut ctx = TestContextBuilder::new().project_name("demo").build();
+    let mut evidence = PublishEvidence::new("npm");
+    evidence.extra =
+        anodizer_core::PublishEvidenceExtra::Npm(anodizer_core::publish_evidence::NpmExtra {
+            npm_targets: vec![anodizer_core::publish_evidence::NpmTargetSnapshot {
+                target: "@anodize/demo".into(),
+                package: "@anodize/demo".into(),
+                version: "1.2.3".into(),
+                registry: "https://registry.npmjs.org".into(),
+                dist_tag: "latest".into(),
+                token_env_var: "NPM_TOKEN".into(),
+            }],
+        });
+    let p = NpmPublisher::new();
+    let result = p.rollback(&mut ctx, &evidence);
+
+    // Restore PATH before any assertion so failures don't leak the
+    // shim into sibling tests.
+    // SAFETY: still inside the serial-guarded block.
+    unsafe {
+        std::env::set_var("PATH", prev_path);
+        std::env::remove_var("NPM_TOKEN");
+    }
+
+    result.expect("rollback should succeed against the shim");
+    let log_contents = std::fs::read_to_string(&invocations_log).expect("read log");
+    assert!(
+        log_contents.contains("unpublish") && log_contents.contains("@anodize/demo@1.2.3"),
+        "expected shim to have observed `npm unpublish @anodize/demo@1.2.3`, got: {log_contents}"
+    );
+}
