@@ -22,9 +22,11 @@ Default: **`true`** — a crates.io publish failure fails the release.
 Set `required: false` to log failures but continue:
 
 ```yaml
-publish:
-  cargo:
-    required: false   # continue release even if crates.io publish fails
+crates:
+  - name: myapp
+    publish:
+      cargo:
+        required: false   # continue release even if crates.io publish fails
 ```
 
 See [Publish overview — the `required:` field](../) for the full semantics.

@@ -22,13 +22,15 @@ Default: **`false`** — a Krew index PR failure is logged but does not fail the
 Set `required: true` to make the release exit non-zero if this publisher fails:
 
 ```yaml
-publish:
-  krew:
-    repository:
-      owner: myorg
-      name: krew-index
-    short_description: "A kubectl plugin for managing things"
-    required: true
+crates:
+  - name: kubectl-mytool
+    publish:
+      krew:
+        repository:
+          owner: myorg
+          name: krew-index
+        short_description: "A kubectl plugin for managing things"
+        required: true
 ```
 
 See [Publish overview — the `required:` field](../) for the full semantics.

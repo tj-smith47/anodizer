@@ -22,14 +22,16 @@ Default: **`false`** — a Nix derivation push failure is logged but does not fa
 Set `required: true` to make the release exit non-zero if this publisher fails:
 
 ```yaml
-publish:
-  nix:
-    repository:
-      owner: my-org
-      name: nixpkgs
-    description: "A fast CLI tool"
-    license: mit
-    required: true
+crates:
+  - name: myapp
+    publish:
+      nix:
+        repository:
+          owner: my-org
+          name: nixpkgs
+        description: "A fast CLI tool"
+        license: mit
+        required: true
 ```
 
 See [Publish overview — the `required:` field](../) for the full semantics.

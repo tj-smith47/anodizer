@@ -22,12 +22,14 @@ Default: **`false`** — a winget PR submission failure is logged but does not f
 Set `required: true` to make the release exit non-zero if this publisher fails:
 
 ```yaml
-publish:
-  winget:
-    package_identifier: "MyOrg.MyApp"
-    publisher: "My Organization"
-    license: MIT
-    required: true
+crates:
+  - name: myapp
+    publish:
+      winget:
+        package_identifier: "MyOrg.MyApp"
+        publisher: "My Organization"
+        license: MIT
+        required: true
 ```
 
 > **Warning:** Winget is a _submitter_ publisher — it opens a pull request against

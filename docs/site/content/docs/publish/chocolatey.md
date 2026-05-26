@@ -22,13 +22,15 @@ Default: **`false`** — a Chocolatey submission failure is logged but does not 
 Set `required: true` to make the release exit non-zero if this publisher fails:
 
 ```yaml
-publish:
-  chocolatey:
-    repository:
-      owner: myorg
-      name: myapp
-    license: MIT
-    required: true
+crates:
+  - name: myapp
+    publish:
+      chocolatey:
+        repository:
+          owner: myorg
+          name: myapp
+        license: MIT
+        required: true
 ```
 
 > **Warning:** Chocolatey is a _submitter_ publisher — it pushes a `.nupkg` to the

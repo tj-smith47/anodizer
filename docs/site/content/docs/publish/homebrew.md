@@ -22,12 +22,14 @@ Default: **`false`** — a Homebrew push failure is logged but does not fail the
 Set `required: true` to make the release exit non-zero if this publisher fails:
 
 ```yaml
-publish:
-  homebrew:
-    repository:
-      owner: myorg
-      name: homebrew-tap
-    required: true
+crates:
+  - name: myapp
+    publish:
+      homebrew:
+        repository:
+          owner: myorg
+          name: homebrew-tap
+        required: true
 ```
 
 See [Publish overview — the `required:` field](../) for the full semantics.

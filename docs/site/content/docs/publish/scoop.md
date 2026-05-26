@@ -22,12 +22,14 @@ Default: **`false`** — a Scoop bucket push failure is logged but does not fail
 Set `required: true` to make the release exit non-zero if this publisher fails:
 
 ```yaml
-publish:
-  scoop:
-    repository:
-      owner: myorg
-      name: scoop-bucket
-    required: true
+crates:
+  - name: myapp
+    publish:
+      scoop:
+        repository:
+          owner: myorg
+          name: scoop-bucket
+        required: true
 ```
 
 See [Publish overview — the `required:` field](../) for the full semantics.
