@@ -257,22 +257,21 @@ impl Stage for AppBundleStage {
                 let bundle_id_for_log = bundle_cfg.id.as_deref().unwrap_or("default").to_string();
 
                 // GoReleaser Pro `app_bundle.if`: template-conditional skip (opt-in).
-                // Rendered "false"/empty => skip; render error => hard bail (W1 avoidance).
-                if let Some(ref condition) = bundle_cfg.if_condition {
-                    let rendered = ctx.render_template(condition).with_context(|| {
-                        format!(
-                            "appbundle config '{}' for crate '{}': `if` template render failed (expression: {})",
-                            bundle_id_for_log, krate.name, condition
-                        )
-                    })?;
-                    let trimmed = rendered.trim();
-                    if trimmed.is_empty() || trimmed == "false" {
-                        log.status(&format!(
-                            "skipping appbundle config '{}' for crate {}: if condition evaluated to '{}'",
-                            bundle_id_for_log, krate.name, trimmed
-                        ));
-                        continue;
-                    }
+                // Render error => hard bail (W1 avoidance).
+                let proceed = anodizer_core::config::evaluate_if_condition(
+                    bundle_cfg.if_condition.as_deref(),
+                    &format!(
+                        "appbundle config '{}' for crate '{}'",
+                        bundle_id_for_log, krate.name
+                    ),
+                    |t| ctx.render_template(t),
+                )?;
+                if !proceed {
+                    log.status(&format!(
+                        "skipping appbundle config '{}' for crate {}: `if` condition evaluated falsy",
+                        bundle_id_for_log, krate.name
+                    ));
+                    continue;
                 }
 
                 // Skip configs marked skip:

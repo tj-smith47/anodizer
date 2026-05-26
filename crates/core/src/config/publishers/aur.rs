@@ -77,4 +77,9 @@ pub struct AurConfig {
     /// Set to `true` to fail the release on any error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
+    /// Template-conditional gate: when the rendered result is falsy
+    /// (`"false"` / `"0"` / `"no"` / empty), the AUR publisher is skipped.
+    /// Render failure hard-errors. Mirrors GoReleaser Pro `aurs[].if:`.
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }

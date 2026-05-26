@@ -1076,6 +1076,19 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
         return Ok(());
     }
 
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        winget_cfg.if_condition.as_deref(),
+        &format!("winget publisher for crate '{}'", crate_name),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status(&format!(
+            "winget: skipping '{}' — `if` condition evaluated falsy",
+            crate_name
+        ));
+        return Ok(());
+    }
+
     let (repo_owner, repo_name) =
         crate::util::resolve_repo_owner_name(winget_cfg.repository.as_ref())
             .ok_or_else(|| anyhow::anyhow!("winget: no repository config for '{}'", crate_name))?;

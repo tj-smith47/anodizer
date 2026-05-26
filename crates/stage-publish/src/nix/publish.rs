@@ -186,6 +186,18 @@ fn check_skip_guards(
             return Ok(Some("skip"));
         }
     }
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        nix_cfg.if_condition.as_deref(),
+        &format!("nix publisher for crate '{}'", crate_name),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status(&format!(
+            "nix: skipping '{}' — `if` condition evaluated falsy",
+            crate_name
+        ));
+        return Ok(Some("if"));
+    }
     if util::should_skip_upload(nix_cfg.skip_upload.as_ref(), ctx, log) {
         log.status(&format!(
             "nix: skipping upload for '{}' (skip_upload={})",

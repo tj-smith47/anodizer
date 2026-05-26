@@ -414,6 +414,19 @@ fn aur_check_skip_and_resolve_git_url(
         }
     }
 
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        aur_cfg.if_condition.as_deref(),
+        &format!("aur publisher for crate '{}'", crate_name),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status(&format!(
+            "aur: skipping '{}' — `if` condition evaluated falsy",
+            crate_name
+        ));
+        return Ok(None);
+    }
+
     if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx, log) {
         log.status(&format!(
             "aur: skipping upload for '{}' (skip_upload={})",

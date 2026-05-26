@@ -767,6 +767,18 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
                     continue;
                 }
             }
+            let proceed = anodizer_core::config::evaluate_if_condition(
+                cargo_cfg.if_condition.as_deref(),
+                &format!("cargo publisher for crate '{}'", c.name),
+                |t| ctx.render_template(t),
+            )?;
+            if !proceed {
+                log.status(&format!(
+                    "cargo: skipping '{}' — `if` condition evaluated falsy",
+                    c.name
+                ));
+                continue;
+            }
             m.insert(c.name.clone(), cargo_cfg.clone());
         }
         m

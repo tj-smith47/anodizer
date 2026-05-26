@@ -131,6 +131,15 @@ pub(crate) fn publish_with_registry(
             return Ok(None);
         }
     }
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        mcp.if_condition.as_deref(),
+        "mcp publisher",
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status("mcp: skipping — `if` condition evaluated falsy");
+        return Ok(None);
+    }
 
     // ---- One-shot experimental warning ----
     warn_experimental_once(log);

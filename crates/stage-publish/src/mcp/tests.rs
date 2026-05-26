@@ -51,8 +51,6 @@ fn mcp_ctx(mcp_overrides: impl FnOnce(&mut McpConfig)) -> Context {
     config.mcp = McpConfig {
         name: Some("io.github.test/server".to_string()),
         description: Some("Test server".to_string()),
-        title: None,
-        homepage: None,
         packages: vec![McpPackage {
             registry_type: McpRegistryType::Oci,
             identifier: "ghcr.io/test/server:v1".to_string(),
@@ -60,17 +58,11 @@ fn mcp_ctx(mcp_overrides: impl FnOnce(&mut McpConfig)) -> Context {
                 kind: McpTransportType::Stdio,
             },
         }],
-        transports: vec![],
-        skip: None,
-        repository: Default::default(),
         auth: anodizer_core::config::McpAuth {
             method: McpAuthMethod::None,
-            // Non-empty token short-circuits NoneAuthProvider — no
-            // `/v0/auth/none` round-trip in tests, just `/v0/publish`.
             token: "preissued-jwt".to_string(),
         },
-        registry: None,
-        required: None,
+        ..Default::default()
     };
     mcp_overrides(&mut config.mcp);
 
@@ -245,8 +237,6 @@ fn dry_run_short_circuits_before_network() {
     config.mcp = McpConfig {
         name: Some("io.github.test/server".to_string()),
         description: Some("Test server".to_string()),
-        title: None,
-        homepage: None,
         packages: vec![McpPackage {
             registry_type: McpRegistryType::Oci,
             identifier: "ghcr.io/test/server:v1".to_string(),
@@ -254,15 +244,11 @@ fn dry_run_short_circuits_before_network() {
                 kind: McpTransportType::Stdio,
             },
         }],
-        transports: vec![],
-        skip: None,
-        repository: Default::default(),
         auth: anodizer_core::config::McpAuth {
             method: McpAuthMethod::None,
             token: "preissued-jwt".to_string(),
         },
-        registry: None,
-        required: None,
+        ..Default::default()
     };
 
     let opts = ContextOptions {

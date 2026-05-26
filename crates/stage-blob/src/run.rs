@@ -315,6 +315,20 @@ impl BlobStage {
                     continue;
                 }
 
+                // GoReleaser Pro `blobs[].if:` parity.
+                let proceed = anodizer_core::config::evaluate_if_condition(
+                    blob_cfg.if_condition.as_deref(),
+                    &format!("blob config for crate {}", krate.name),
+                    |t| ctx.render_template(t),
+                )?;
+                if !proceed {
+                    log.status(&format!(
+                        "blob config for crate {} skipped — `if` condition evaluated falsy",
+                        krate.name
+                    ));
+                    continue;
+                }
+
                 // Validate required fields
                 if blob_cfg.provider.is_empty() {
                     anyhow::bail!("blobs: provider is required for crate '{}'", krate.name);

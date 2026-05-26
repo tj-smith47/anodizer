@@ -576,6 +576,18 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
             return Ok(false);
         }
     }
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        krew_cfg.if_condition.as_deref(),
+        &format!("krew publisher for crate '{}'", crate_name),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status(&format!(
+            "krew: skipping '{}' — `if` condition evaluated falsy",
+            crate_name
+        ));
+        return Ok(false);
+    }
     if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx, log) {
         log.status(&format!(
             "krew: skipping upload for '{}' (skip_upload={})",

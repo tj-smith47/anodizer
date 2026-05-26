@@ -36,6 +36,13 @@ pub struct AnnounceConfig {
     /// Template-conditional skip: if rendered to "true", skip the entire announce stage.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
+    /// Template-conditional gate: when the rendered result is falsy
+    /// (`"false"` / `"0"` / `"no"` / empty), the entire announce stage is
+    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
+    /// `announce.if:`. Distinct from `skip:` (always-skip predicate) — both
+    /// surfaces are documented by GR.
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
     /// Selects when AnnounceStage runs vs. skips based on the
     /// `PublishReport` written by PublishStage/BlobStage. Default is
     /// `required_publishers` (announce only if every required publisher

@@ -461,23 +461,19 @@ fn should_skip_nfpm_config(
     nfpm_id_for_log: &str,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<bool> {
-    if let Some(ref condition) = nfpm_cfg.if_condition {
-        let rendered = ctx.render_template(condition).with_context(|| {
-            format!(
-                "nfpm config '{}': `if` template render failed (expression: {})",
-                nfpm_id_for_log, condition
-            )
-        })?;
-        let trimmed = rendered.trim();
-        if trimmed.is_empty() || trimmed == "false" {
-            let reason = format!("if condition evaluated to '{}'", trimmed);
-            log.verbose(&format!(
-                "skipping nfpm config '{}': {}",
-                nfpm_id_for_log, reason
-            ));
-            ctx.remember_skip("nfpm", nfpm_id_for_log, &reason);
-            return Ok(true);
-        }
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        nfpm_cfg.if_condition.as_deref(),
+        &format!("nfpm config '{nfpm_id_for_log}'"),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        let reason = "`if` condition evaluated falsy".to_string();
+        log.verbose(&format!(
+            "skipping nfpm config '{}': {}",
+            nfpm_id_for_log, reason
+        ));
+        ctx.remember_skip("nfpm", nfpm_id_for_log, &reason);
+        return Ok(true);
     }
 
     if nfpm_cfg.formats.is_empty() {

@@ -80,6 +80,23 @@ pub fn run_publishers(
             }
         }
 
+        // Check template-conditional gate (GoReleaser Pro `if:` parity).
+        let proceed = anodizer_core::config::evaluate_if_condition(
+            publisher.if_condition.as_deref(),
+            &format!("publisher '{}'", label),
+            |tmpl| template::render(tmpl, base_vars),
+        )?;
+        if !proceed {
+            log.verbose(&format!(
+                "[publisher] skipping {} -- `if` condition evaluated falsy",
+                label
+            ));
+            if let Some(sm) = skip_memento {
+                sm.remember("publisher", label, "skipped by `if` condition");
+            }
+            continue;
+        }
+
         if publisher.cmd.is_empty() {
             log.verbose(&format!("[publisher] skipping {} -- empty cmd", label));
             if let Some(sm) = skip_memento {
@@ -467,17 +484,9 @@ mod tests {
         PublisherConfig {
             name: Some("test-publisher".to_string()),
             cmd: cmd.to_string(),
-            args: None,
             ids: ids.map(|v| v.into_iter().map(|s| s.to_string()).collect()),
             artifact_types: artifact_types.map(|v| v.into_iter().map(|s| s.to_string()).collect()),
-            env: None,
-            dir: None,
-            skip: None,
-            checksum: None,
-            signature: None,
-            meta: None,
-            extra_files: None,
-            templated_extra_files: None,
+            ..Default::default()
         }
     }
 
@@ -753,17 +762,7 @@ mod tests {
         let publishers = vec![PublisherConfig {
             name: Some("test".to_string()),
             cmd: "this-command-does-not-exist --should-not-run".to_string(),
-            args: None,
-            ids: None,
-            artifact_types: None,
-            env: None,
-            dir: None,
-            skip: None,
-            checksum: None,
-            signature: None,
-            meta: None,
-            extra_files: None,
-            templated_extra_files: None,
+            ..Default::default()
         }];
 
         // In dry-run mode, the command is never executed, so a non-existent
@@ -804,17 +803,7 @@ mod tests {
         let publishers = vec![PublisherConfig {
             name: Some("empty".to_string()),
             cmd: String::new(),
-            args: None,
-            ids: None,
-            artifact_types: None,
-            env: None,
-            dir: None,
-            skip: None,
-            checksum: None,
-            signature: None,
-            meta: None,
-            extra_files: None,
-            templated_extra_files: None,
+            ..Default::default()
         }];
 
         let result = run_publishers(
@@ -841,17 +830,7 @@ mod tests {
         let publishers = vec![PublisherConfig {
             name: Some("noisy".to_string()),
             cmd: String::new(),
-            args: None,
-            ids: None,
-            artifact_types: None,
-            env: None,
-            dir: None,
-            skip: None,
-            checksum: None,
-            signature: None,
-            meta: None,
-            extra_files: None,
-            templated_extra_files: None,
+            ..Default::default()
         }];
 
         let memento = anodizer_core::pipe_skip::SkipMemento::new();
@@ -881,17 +860,8 @@ mod tests {
         let publishers = vec![PublisherConfig {
             name: Some("filtered".to_string()),
             cmd: "true".to_string(),
-            args: None,
             ids: Some(vec!["does-not-exist".to_string()]),
-            artifact_types: None,
-            env: None,
-            dir: None,
-            skip: None,
-            checksum: None,
-            signature: None,
-            meta: None,
-            extra_files: None,
-            templated_extra_files: None,
+            ..Default::default()
         }];
 
         let memento = anodizer_core::pipe_skip::SkipMemento::new();
@@ -1056,17 +1026,8 @@ crates:
         let publisher = PublisherConfig {
             name: Some("test".to_string()),
             cmd: "echo hello".to_string(),
-            args: None,
-            ids: None,
-            artifact_types: None,
-            env: None,
             dir: Some("/tmp/work".to_string()),
-            skip: None,
-            checksum: None,
-            signature: None,
-            meta: None,
-            extra_files: None,
-            templated_extra_files: None,
+            ..Default::default()
         };
         assert_eq!(publisher.dir.as_deref(), Some("/tmp/work"));
     }
@@ -1082,17 +1043,8 @@ crates:
         let publishers = vec![PublisherConfig {
             name: Some("disabled".to_string()),
             cmd: "this-should-not-run".to_string(),
-            args: None,
-            ids: None,
-            artifact_types: None,
-            env: None,
-            dir: None,
             skip: Some(StringOrBool::String("true".to_string())),
-            checksum: None,
-            signature: None,
-            meta: None,
-            extra_files: None,
-            templated_extra_files: None,
+            ..Default::default()
         }];
 
         // Publisher with disable="true" should be skipped entirely
@@ -1125,17 +1077,8 @@ crates:
         let publishers = vec![PublisherConfig {
             name: Some("conditional".to_string()),
             cmd: "this-should-not-run".to_string(),
-            args: None,
-            ids: None,
-            artifact_types: None,
-            env: None,
-            dir: None,
             skip: Some(StringOrBool::String("{{ IsSnapshot }}".to_string())),
-            checksum: None,
-            signature: None,
-            meta: None,
-            extra_files: None,
-            templated_extra_files: None,
+            ..Default::default()
         }];
 
         // When IsSnapshot is "true", the disable template renders to "true" and publisher is skipped
@@ -1152,6 +1095,134 @@ crates:
             result.is_ok(),
             "conditionally disabled publisher should be skipped: {:?}",
             result.err()
+        );
+    }
+
+    // ---- GoReleaser Pro `if:` conditional gate ----
+
+    #[test]
+    fn test_publisher_if_falsy_skips() {
+        let mut vars = base_vars();
+        vars.set("IsSnapshot", "false");
+        let artifacts = vec![make_artifact(
+            ArtifactKind::Archive,
+            "/dist/myapp.tar.gz",
+            None,
+        )];
+        let publishers = vec![PublisherConfig {
+            name: Some("gated".to_string()),
+            cmd: "this-should-not-run".to_string(),
+            if_condition: Some("{{ IsSnapshot }}".to_string()),
+            ..Default::default()
+        }];
+        let memento = anodizer_core::pipe_skip::SkipMemento::new();
+        run_publishers(
+            &publishers,
+            &artifacts,
+            &vars,
+            false,
+            &test_logger(),
+            1,
+            Some(&memento),
+        )
+        .expect("falsy `if:` must skip without spawning the cmd");
+        let events = memento.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].label, "gated");
+        assert!(events[0].reason.contains("`if` condition"));
+    }
+
+    #[test]
+    fn test_publisher_if_truthy_proceeds() {
+        let mut vars = base_vars();
+        vars.set("IsSnapshot", "true");
+        let artifacts = vec![make_artifact(
+            ArtifactKind::Archive,
+            "/dist/myapp.tar.gz",
+            None,
+        )];
+        let publishers = vec![PublisherConfig {
+            name: Some("snapshot-only".to_string()),
+            cmd: "true".to_string(),
+            if_condition: Some("{{ IsSnapshot }}".to_string()),
+            ..Default::default()
+        }];
+        let memento = anodizer_core::pipe_skip::SkipMemento::new();
+        run_publishers(
+            &publishers,
+            &artifacts,
+            &vars,
+            true,
+            &test_logger(),
+            1,
+            Some(&memento),
+        )
+        .expect("truthy `if:` must allow the publisher to proceed");
+        assert!(
+            memento.snapshot().is_empty(),
+            "no skip event should be recorded when `if:` proceeds",
+        );
+    }
+
+    #[test]
+    fn test_publisher_if_empty_string_is_noop_gate() {
+        let vars = base_vars();
+        let artifacts = vec![make_artifact(
+            ArtifactKind::Archive,
+            "/dist/myapp.tar.gz",
+            None,
+        )];
+        let publishers = vec![PublisherConfig {
+            name: Some("empty-if".to_string()),
+            cmd: "true".to_string(),
+            if_condition: Some(String::new()),
+            ..Default::default()
+        }];
+        let memento = anodizer_core::pipe_skip::SkipMemento::new();
+        run_publishers(
+            &publishers,
+            &artifacts,
+            &vars,
+            true,
+            &test_logger(),
+            1,
+            Some(&memento),
+        )
+        .expect("empty `if:` must be a no-op gate");
+        assert!(
+            memento.snapshot().is_empty(),
+            "empty `if:` literal must not record a skip",
+        );
+    }
+
+    #[test]
+    fn test_publisher_if_render_error_propagates() {
+        let vars = base_vars();
+        let artifacts = vec![make_artifact(
+            ArtifactKind::Archive,
+            "/dist/myapp.tar.gz",
+            None,
+        )];
+        let publishers = vec![PublisherConfig {
+            name: Some("broken".to_string()),
+            cmd: "true".to_string(),
+            if_condition: Some("{{ undefined.symbol(".to_string()),
+            ..Default::default()
+        }];
+        let err = run_publishers(
+            &publishers,
+            &artifacts,
+            &vars,
+            true,
+            &test_logger(),
+            1,
+            None,
+        )
+        .expect_err("malformed `if:` template must surface as a hard error");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("template render failed") || chain.contains("if"),
+            "expected `if:` diagnostic in error chain: {chain}",
         );
     }
 

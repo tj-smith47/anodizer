@@ -118,22 +118,18 @@ impl Stage for PkgStage {
                 let pkg_id_for_log = pkg_cfg.id.as_deref().unwrap_or("default").to_string();
 
                 // GoReleaser Pro `pkg.if`: template-conditional skip (opt-in).
-                // Rendered "false"/empty => skip; render error => hard bail (W1 avoidance).
-                if let Some(ref condition) = pkg_cfg.if_condition {
-                    let rendered = ctx.render_template(condition).with_context(|| {
-                        format!(
-                            "pkg config '{}' for crate '{}': `if` template render failed (expression: {})",
-                            pkg_id_for_log, krate.name, condition
-                        )
-                    })?;
-                    let trimmed = rendered.trim();
-                    if trimmed.is_empty() || trimmed == "false" {
-                        log.status(&format!(
-                            "skipping pkg config '{}' for crate {}: if condition evaluated to '{}'",
-                            pkg_id_for_log, krate.name, trimmed
-                        ));
-                        continue;
-                    }
+                // Render error => hard bail (W1 avoidance).
+                let proceed = anodizer_core::config::evaluate_if_condition(
+                    pkg_cfg.if_condition.as_deref(),
+                    &format!("pkg config '{}' for crate '{}'", pkg_id_for_log, krate.name),
+                    |t| ctx.render_template(t),
+                )?;
+                if !proceed {
+                    log.status(&format!(
+                        "skipping pkg config '{}' for crate {}: `if` condition evaluated falsy",
+                        pkg_id_for_log, krate.name
+                    ));
+                    continue;
                 }
 
                 // Skip configs marked skip:

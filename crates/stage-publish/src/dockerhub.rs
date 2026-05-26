@@ -159,6 +159,17 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             }
         }
 
+        // Check `if:` conditional gate (GoReleaser Pro parity).
+        let proceed = anodizer_core::config::evaluate_if_condition(
+            entry.if_condition.as_deref(),
+            "dockerhub entry",
+            |t| ctx.render_template(t),
+        )?;
+        if !proceed {
+            log.status("dockerhub: entry skipped — `if` condition evaluated falsy");
+            continue;
+        }
+
         // Resolve username from config, falling back to DOCKER_USERNAME.
         // Bail early when neither is set so config errors surface even in
         // dry-run.

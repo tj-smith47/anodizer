@@ -178,31 +178,20 @@ pub(crate) fn process_sign_configs(
             .unwrap_or_else(|| format!("{}[{}]", label, sign_idx));
 
         // Evaluate the `if` conditional template — skip when rendered
-        // result is "false" or empty/whitespace-only.
-        if let Some(ref condition) = sign_cfg.if_condition {
-            match ctx.render_template(condition) {
-                Ok(result) => {
-                    let trimmed = result.trim();
-                    if trimmed.is_empty() || trimmed == "false" {
-                        let reason = format!("if condition evaluated to '{}'", trimmed);
-                        log.verbose(&format!(
-                            "skipping {} config '{}': {}",
-                            label, sub_label, reason
-                        ));
-                        ctx.remember_skip(label, &sub_label, &reason);
-                        continue;
-                    }
-                }
-                Err(e) => {
-                    anyhow::bail!(
-                        "{} '{}': if condition render failed ({}): {}",
-                        label,
-                        sub_label,
-                        condition,
-                        e
-                    );
-                }
-            }
+        // result is falsy. Render failure hard-errors.
+        let proceed = anodizer_core::config::evaluate_if_condition(
+            sign_cfg.if_condition.as_deref(),
+            &format!("{label} '{sub_label}'"),
+            |t| ctx.render_template(t),
+        )?;
+        if !proceed {
+            let reason = "`if` condition evaluated falsy".to_string();
+            log.verbose(&format!(
+                "skipping {} config '{}': {}",
+                label, sub_label, reason
+            ));
+            ctx.remember_skip(label, &sub_label, &reason);
+            continue;
         }
 
         let config_filter = sign_cfg.resolved_artifacts(match filter_mode {

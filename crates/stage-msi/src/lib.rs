@@ -484,21 +484,16 @@ fn should_skip_msi_config(
     dry_run: bool,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<bool> {
-    if let Some(ref condition) = msi_cfg.if_condition {
-        let rendered = ctx.render_template(condition).with_context(|| {
-            format!(
-                "msi config '{}' for crate '{}': `if` template render failed (expression: {})",
-                msi_id_for_log, crate_name, condition
-            )
-        })?;
-        let trimmed = rendered.trim();
-        if trimmed.is_empty() || trimmed == "false" {
-            log.status(&format!(
-                "skipping msi config '{}' for crate {}: if condition evaluated to '{}'",
-                msi_id_for_log, crate_name, trimmed
-            ));
-            return Ok(true);
-        }
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        msi_cfg.if_condition.as_deref(),
+        &format!("msi config '{msi_id_for_log}' for crate '{crate_name}'"),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status(&format!(
+            "skipping msi config '{msi_id_for_log}' for crate {crate_name}: `if` condition evaluated falsy"
+        ));
+        return Ok(true);
     }
 
     if let Some(ref d) = msi_cfg.skip {

@@ -44,12 +44,43 @@ pub fn run_hooks(
     template_vars: Option<&TemplateVars>,
 ) -> Result<()> {
     for hook in hooks {
-        let (raw_cmd, raw_dir, env, output_flag) = match hook {
-            HookEntry::Simple(s) => (s.as_str(), None, None, None),
-            HookEntry::Structured(h) => {
-                (h.cmd.as_str(), h.dir.as_deref(), h.env.as_ref(), h.output)
-            }
+        let (raw_cmd, raw_dir, env, output_flag, if_cond) = match hook {
+            HookEntry::Simple(s) => (s.as_str(), None, None, None, None),
+            HookEntry::Structured(h) => (
+                h.cmd.as_str(),
+                h.dir.as_deref(),
+                h.env.as_ref(),
+                h.output,
+                h.if_condition.as_deref(),
+            ),
         };
+
+        if let Some(tv) = template_vars {
+            let proceed = config::evaluate_if_condition(if_cond, &format!("{label} hook"), |t| {
+                render_hook_template(t, tv, label)
+            })?;
+            if !proceed {
+                tracing::debug!(
+                    label = label,
+                    cmd = raw_cmd,
+                    "skipping hook: `if` condition evaluated falsy"
+                );
+                continue;
+            }
+        } else if let Some(cond) = if_cond {
+            // Without template_vars there's no way to render — treat the gate
+            // as proceed only when the literal condition itself is truthy.
+            let trimmed = cond.trim();
+            let falsy = matches!(trimmed, "" | "false" | "0" | "no");
+            if falsy {
+                tracing::debug!(
+                    label = label,
+                    cmd = raw_cmd,
+                    "skipping hook: literal `if` condition is falsy"
+                );
+                continue;
+            }
+        }
 
         let cmd_str = if let Some(tv) = template_vars {
             render_hook_template(raw_cmd, tv, label)?
@@ -123,4 +154,82 @@ pub fn run_hooks(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::StructuredHook;
+    use crate::log::{StageLogger, Verbosity};
+
+    fn test_logger() -> StageLogger {
+        StageLogger::new("test", Verbosity::Normal)
+    }
+
+    fn vars_with_snapshot(is_snapshot: bool) -> TemplateVars {
+        let mut v = TemplateVars::new();
+        v.set("IsSnapshot", if is_snapshot { "true" } else { "false" });
+        v
+    }
+
+    fn structured(cmd: &str, if_cond: Option<&str>) -> HookEntry {
+        HookEntry::Structured(StructuredHook {
+            cmd: cmd.to_string(),
+            if_condition: if_cond.map(str::to_string),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn hook_if_snapshot_template_runs_on_snapshot() {
+        let log = test_logger();
+        let vars = vars_with_snapshot(true);
+        let hooks = vec![structured("true", Some("{{ IsSnapshot }}"))];
+        // dry_run=true → no actual exec; the function still walks the gate.
+        run_hooks(&hooks, "test", true, &log, Some(&vars))
+            .expect("snapshot=true must let the hook proceed");
+    }
+
+    #[test]
+    fn hook_if_snapshot_template_skips_when_not_snapshot() {
+        let log = test_logger();
+        let vars = vars_with_snapshot(false);
+        let hooks = vec![structured(
+            "false-cmd-must-be-skipped",
+            Some("{{ IsSnapshot }}"),
+        )];
+        run_hooks(&hooks, "test", false, &log, Some(&vars))
+            .expect("falsy `if:` must skip without spawning the cmd");
+    }
+
+    #[test]
+    fn hook_if_literal_true_always_runs() {
+        let log = test_logger();
+        let vars = vars_with_snapshot(false);
+        let hooks = vec![structured("true", Some("true"))];
+        run_hooks(&hooks, "test", true, &log, Some(&vars)).expect("`if: true` must proceed");
+    }
+
+    #[test]
+    fn hook_if_empty_literal_is_noop_gate() {
+        let log = test_logger();
+        let vars = vars_with_snapshot(false);
+        let hooks = vec![structured("true", Some(""))];
+        run_hooks(&hooks, "test", true, &log, Some(&vars))
+            .expect("empty `if:` literal must be a no-op (always proceed)");
+    }
+
+    #[test]
+    fn hook_if_render_error_propagates() {
+        let log = test_logger();
+        let vars = vars_with_snapshot(false);
+        let hooks = vec![structured("true", Some("{{ UndefinedSymbol }}"))];
+        let err = run_hooks(&hooks, "test", true, &log, Some(&vars))
+            .expect_err("unrenderable template must surface as Err");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("template render failed") || chain.contains("UndefinedSymbol"),
+            "expected render-error diagnostic, got: {chain}",
+        );
+    }
 }

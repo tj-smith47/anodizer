@@ -492,6 +492,19 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             }
         }
 
+        let proceed = anodizer_core::config::evaluate_if_condition(
+            entry.if_condition.as_deref(),
+            &format!(
+                "artifactory entry '{}'",
+                entry.name.as_deref().unwrap_or("<unnamed>")
+            ),
+            |t| ctx.render_template(t),
+        )?;
+        if !proceed {
+            log.status("artifactory: entry skipped — `if` condition evaluated falsy");
+            continue;
+        }
+
         // Name is required.
         let name = match entry.name {
             Some(ref n) if !n.is_empty() => n.as_str(),

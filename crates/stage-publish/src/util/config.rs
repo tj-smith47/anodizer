@@ -201,15 +201,19 @@ pub(crate) fn should_skip_upload(
     }
 }
 
-/// Evaluate `skip` / `skip_upload` fields for a publisher entry.
+/// Evaluate `skip` / `skip_upload` / `if:` fields for a publisher entry.
 ///
-/// Returns `Ok(true)` to skip; `Ok(false)` to proceed. This consolidates the
-/// per-publisher pattern of two near-identical `if let Some(d) = ...` blocks
-/// that previously lived in aur_source.rs (per-crate AND top-level paths).
-pub(crate) fn should_skip_publisher(
+/// Returns `Ok(true)` to skip; `Ok(false)` to proceed. Consolidates the
+/// per-publisher pattern of near-identical `if let Some(d) = ...` blocks
+/// that previously lived in aur_source.rs (per-crate AND top-level paths),
+/// extended to also evaluate the GoReleaser Pro `if:` conditional gate.
+/// `if_condition` is the resource's `if:` template (or `None` when the
+/// resource does not yet expose `if:`).
+pub(crate) fn should_skip_publisher_with_if(
     ctx: &Context,
     skip: Option<&anodizer_core::config::StringOrBool>,
     skip_upload: Option<&anodizer_core::config::StringOrBool>,
+    if_condition: Option<&str>,
     label: &str,
     log: &StageLogger,
 ) -> Result<bool> {
@@ -230,6 +234,15 @@ pub(crate) fn should_skip_publisher(
             log.status(&format!("{label}: skipping upload (skip_upload=true)"));
             return Ok(true);
         }
+    }
+    let proceed = anodizer_core::config::evaluate_if_condition(if_condition, label, |t| {
+        ctx.render_template(t)
+    })?;
+    if !proceed {
+        log.status(&format!(
+            "{label}: skipped — `if` condition evaluated falsy"
+        ));
+        return Ok(true);
     }
     Ok(false)
 }

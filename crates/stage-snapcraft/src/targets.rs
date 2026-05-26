@@ -50,6 +50,18 @@ pub(crate) fn collect_snapcraft_targets(ctx: &Context) -> Vec<SnapcraftTarget> {
                     continue;
                 }
             }
+            // Treat a render-error on `if:` as proceed for target counting —
+            // the canonical hard-error site is in build/publish, which sees
+            // the same condition and re-renders it for real diagnostics.
+            let proceed = anodizer_core::config::evaluate_if_condition(
+                snap_cfg.if_condition.as_deref(),
+                "snapcraft target",
+                |t| ctx.render_template(t),
+            )
+            .unwrap_or(true);
+            if !proceed {
+                continue;
+            }
             let package_name = snap_cfg.name.clone().unwrap_or_else(|| krate.name.clone());
             // GoReleaser parity: `channel_templates` is a Vec rendered
             // through the template engine. Capture the first non-empty

@@ -33,6 +33,26 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         return Ok(());
     }
 
+    // GoReleaser Pro `homebrew_cask.if:` parity. Cask-level `if:` wins; if
+    // unset, fall back to the parent formula's `if:` so a per-crate gate on
+    // homebrew covers both surfaces in one declaration.
+    let effective_if = cask_cfg
+        .if_condition
+        .as_deref()
+        .or(hb_cfg.if_condition.as_deref());
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        effective_if,
+        &format!("homebrew cask publisher for crate '{}'", crate_name),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status(&format!(
+            "homebrew cask: skipping '{}' — `if` condition evaluated falsy",
+            crate_name
+        ));
+        return Ok(());
+    }
+
     // Resolve repository owner/name from `repository:` (RepositoryConfig).
     let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(hb_cfg.repository.as_ref())
         .ok_or_else(|| {

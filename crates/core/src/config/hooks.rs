@@ -121,6 +121,12 @@ pub struct StructuredHook {
     pub env: Option<Vec<String>>,
     /// When true, capture and log stdout/stderr of the command.
     pub output: Option<bool>,
+    /// Template-conditional: when set, the hook only runs if the rendered
+    /// result is truthy (not `"false"` / `"0"` / `"no"` / empty). Render
+    /// failure hard-errors (not silent-skip). Mirrors GoReleaser OSS v2.7+
+    /// `before.hooks[].if:` / per-build / per-archive hook `if:` surface.
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]

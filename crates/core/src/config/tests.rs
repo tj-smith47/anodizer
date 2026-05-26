@@ -5485,6 +5485,61 @@ publishers:
 }
 
 #[test]
+fn test_publisher_if_condition_parses() {
+    // Spot-check that the new `if:` field deserializes via the `#[serde(rename = "if")]`
+    // attribute on PublisherConfig. Mirrors the surface every other new `if:`
+    // consumer added in this batch (blob/upload/announce/archive/snapcraft/aur/etc.).
+    let yaml = r#"
+project_name: test
+publishers:
+  - name: snapshot-only
+    cmd: publish.sh
+    if: "{{ IsSnapshot }}"
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).expect("config parses with if:");
+    let p = &cfg.publishers.as_ref().unwrap()[0];
+    assert_eq!(p.if_condition.as_deref(), Some("{{ IsSnapshot }}"));
+}
+
+#[test]
+fn test_archive_if_condition_parses() {
+    let yaml = r#"
+project_name: test
+defaults:
+  archives:
+    id: linux-only
+    formats: [tar.gz]
+    if: "{{ eq .Os \"linux\" }}"
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).expect("archives.if: parses");
+    let archive = cfg.defaults.unwrap().archives.unwrap();
+    assert_eq!(
+        archive.if_condition.as_deref(),
+        Some("{{ eq .Os \"linux\" }}"),
+        "ArchiveConfig must round-trip the `if:` field",
+    );
+}
+
+#[test]
+fn test_hook_if_condition_parses() {
+    let yaml = r#"
+project_name: test
+before:
+  hooks:
+    - cmd: "go mod tidy"
+      if: "{{ IsSnapshot }}"
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).expect("hook.if: parses");
+    let hooks = cfg.before.unwrap().hooks.unwrap();
+    match &hooks[0] {
+        crate::config::HookEntry::Structured(h) => {
+            assert_eq!(h.if_condition.as_deref(), Some("{{ IsSnapshot }}"));
+        }
+        other => panic!("expected structured hook, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_build_override_env_list_format() {
     let yaml = r#"
 project_name: test
@@ -5851,6 +5906,74 @@ fn test_try_evaluates_to_true_bool_variant_skips_render() {
         !StringOrBool::Bool(false)
             .try_evaluates_to_true(render)
             .unwrap()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// evaluate_if_condition — central `if:` predicate
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_evaluate_if_condition_none_proceeds() {
+    use super::evaluate_if_condition;
+    let render = |_: &str| -> anyhow::Result<String> {
+        panic!("render must not run when condition is None")
+    };
+    assert!(
+        evaluate_if_condition(None, "x", render).unwrap(),
+        "no condition set must always proceed",
+    );
+}
+
+#[test]
+fn test_evaluate_if_condition_empty_proceeds() {
+    use super::evaluate_if_condition;
+    let render = |_: &str| -> anyhow::Result<String> {
+        panic!("render must not run for empty literal — empty gate is a no-op")
+    };
+    assert!(
+        evaluate_if_condition(Some(""), "x", render).unwrap(),
+        "empty `if:` literal must be a no-op (matches GR's no-`if:`=always-run)",
+    );
+}
+
+#[test]
+fn test_evaluate_if_condition_falsy_values_skip() {
+    use super::evaluate_if_condition;
+    for falsy in ["false", "0", "no", "  false  ", ""] {
+        let v = falsy.to_string();
+        let render = move |_: &str| Ok(v.clone());
+        let proceed = evaluate_if_condition(Some("anything"), "x", render).unwrap();
+        assert!(
+            !proceed,
+            "rendered value {falsy:?} (trimmed) must skip the resource",
+        );
+    }
+}
+
+#[test]
+fn test_evaluate_if_condition_truthy_proceeds() {
+    use super::evaluate_if_condition;
+    for truthy in ["true", "1", "yes", "TRUE", "any-non-falsy"] {
+        let v = truthy.to_string();
+        let render = move |_: &str| Ok(v.clone());
+        let proceed = evaluate_if_condition(Some("anything"), "x", render).unwrap();
+        assert!(
+            proceed,
+            "rendered value {truthy:?} must proceed (only false/0/no/empty are falsy)",
+        );
+    }
+}
+
+#[test]
+fn test_evaluate_if_condition_render_error_propagates() {
+    use super::evaluate_if_condition;
+    let render = |_: &str| -> anyhow::Result<String> { anyhow::bail!("tera parse error") };
+    let err = evaluate_if_condition(Some("{{ broken"), "publisher 'foo'", render).unwrap_err();
+    let chain = format!("{err:#}");
+    assert!(
+        chain.contains("publisher 'foo'") && chain.contains("template render failed"),
+        "render error must carry label + diagnostic: {chain}",
     );
 }
 

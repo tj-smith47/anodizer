@@ -710,7 +710,7 @@ fn test_sign_if_false_records_skip_memento() {
     assert_eq!(events[0].stage, "sign");
     assert_eq!(events[0].label, "gated");
     assert!(
-        events[0].reason.contains("if condition evaluated to"),
+        events[0].reason.contains("`if` condition evaluated falsy"),
         "unexpected reason: {}",
         events[0].reason
     );
@@ -1519,12 +1519,15 @@ fn test_if_condition_true_proceeds() {
 }
 
 #[test]
-fn test_if_condition_empty_skips_sign() {
+fn test_if_condition_template_renders_to_empty_skips_sign() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
-    // A template that renders to empty should skip the config.
-    // "{{ IsSnapshot }}" is "false" in non-snapshot mode, but let's test
-    // an explicitly empty result.
+    // A template that RENDERS to an empty / whitespace-only string must skip
+    // the sign config (matches GR Pro: rendered "" / "false" / "0" / "no"
+    // are falsy). NOTE: an EMPTY LITERAL `if: ""` is a separate no-op-gate
+    // case (covered by config-tests) — this test exercises the
+    // template-that-renders-empty path, which is the actual runtime
+    // gate behavior the operator-facing skip surfaces.
     let signs = vec![SignConfig {
         id: Some("skipped".to_string()),
         cmd: Some("/nonexistent/sign-tool".to_string()),
@@ -1537,8 +1540,11 @@ fn test_if_condition_empty_skips_sign() {
         env: None,
         certificate: None,
         output: None,
-        // A template that renders to empty string
-        if_condition: Some("".to_string()),
+        // Render expands to an empty string (UndefinedSymbol unset; the
+        // {{ ... }} braces render as nothing in Tera's strict mode would
+        // error — use a literal " " that trims to empty instead so we exercise
+        // the trimmed-empty branch).
+        if_condition: Some(" ".to_string()),
     }];
 
     let mut ctx = TestContextBuilder::new()
@@ -1559,7 +1565,14 @@ fn test_if_condition_empty_skips_sign() {
     let stage = SignStage;
     assert!(
         stage.run(&mut ctx).is_ok(),
-        "empty if condition should skip the sign config"
+        "trim-empty rendered `if:` must skip the sign config",
+    );
+    let events = ctx.skip_memento.snapshot();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.stage == "sign" && e.label == "skipped"),
+        "expected a sign skip memento for the gated config: {events:?}",
     );
 }
 

@@ -74,6 +74,45 @@ impl Default for StringOrBool {
     }
 }
 
+/// Evaluate an `if:` conditional template (GoReleaser Pro `if:` semantics).
+///
+/// Returns `Ok(true)` when the caller should proceed with the resource and
+/// `Ok(false)` when the resource must be skipped. Mirrors the contract every
+/// existing `if_condition` consumer in anodizer applies:
+///
+/// - `None` → proceed (no gate set).
+/// - `Some("")` → proceed (empty literal is a no-op gate; matches GR's
+///   "no `if:` = always run" behavior — keeps round-tripping clean for
+///   configs that emit empty strings).
+/// - Template render failure → hard `Err` (matches every existing
+///   `if_condition` site; silent-skip on a typo'd template was the W1
+///   release-resilience footgun and is intentionally NOT replicated).
+/// - Rendered value (trimmed) equal to `"false"`, `"0"`, `"no"`, or empty
+///   → skip.
+/// - Any other rendered value → proceed.
+///
+/// `label` is the resource-identifying string woven into the error context
+/// chain (e.g. `"publisher 'upload-artifacts'"` or `"blob 's3-cache'"`).
+pub fn evaluate_if_condition(
+    condition: Option<&str>,
+    label: &str,
+    render: impl Fn(&str) -> anyhow::Result<String>,
+) -> anyhow::Result<bool> {
+    use anyhow::Context as _;
+    let Some(template) = condition else {
+        return Ok(true);
+    };
+    if template.is_empty() {
+        return Ok(true);
+    }
+    let rendered = render(template).with_context(|| {
+        format!("{label}: `if` template render failed (expression: {template})")
+    })?;
+    let trimmed = rendered.trim();
+    let falsy = matches!(trimmed, "" | "false" | "0" | "no");
+    Ok(!falsy)
+}
+
 /// Custom deserializer for `Option<StringOrBool>`.
 pub(crate) fn deserialize_string_or_bool_opt<'de, D>(
     deserializer: D,

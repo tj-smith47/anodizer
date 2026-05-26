@@ -83,6 +83,12 @@ pub struct HomebrewConfig {
     /// Set to `true` to fail the release on any error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
+    /// Template-conditional gate: when the rendered result is falsy
+    /// (`"false"` / `"0"` / `"no"` / empty), the Homebrew publisher is
+    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
+    /// `brews[].if:`.
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
@@ -248,6 +254,12 @@ pub struct HomebrewCaskConfig {
     /// Set to `true` to fail the release on any error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
+    /// Template-conditional gate: when the rendered result is falsy
+    /// (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is
+    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
+    /// `homebrew_casks[].if:`.
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 /// Structured URL configuration for Homebrew Cask downloads.
@@ -452,6 +464,12 @@ pub struct ScoopConfig {
     /// Set to `true` to fail the release on any error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
+    /// Template-conditional gate: when the rendered result is falsy
+    /// (`"false"` / `"0"` / `"no"` / empty), the Scoop publisher is
+    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
+    /// `scoop[].if:`.
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 // `TapConfig` / `BucketConfig` (legacy {owner, name}-only repo types) live

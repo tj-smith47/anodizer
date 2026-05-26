@@ -261,6 +261,7 @@
         },
         "description": null,
         "homepage": null,
+        "if": null,
         "name": null,
         "packages": [],
         "registry": null,
@@ -596,6 +597,14 @@
             {
               "$ref": "#/definitions/AnnounceGate"
             }
+          ]
+        },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the entire announce stage is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `announce.if:`. Distinct from `skip:` (always-skip predicate) — both surfaces are documented by GR.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
           ]
         },
         "linkedin": {
@@ -936,6 +945,13 @@
             "type": "string"
           }
         },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the archive entry is skipped entirely (no archives produced for this `id`). Render failure hard-errors. Defensive ahead of GoReleaser exposing the field on archives (GR Pro lists \"filter artifacts with `if` statements\" as a blanket promise — anodizer surfaces it explicitly to keep imported configs portable).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "meta": {
           "description": "When true, create archive with no binaries (metadata-only).",
           "type": [
@@ -1145,6 +1161,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the artifactory publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `artifactories[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "meta": {
           "description": "Include metadata artifacts in uploaded artifacts.",
@@ -1364,6 +1388,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the AUR publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `aurs[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "install": {
           "description": "Content for a .install file (post-install/pre-remove scripts).",
@@ -1648,6 +1680,14 @@
             "type": "string"
           }
         },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the AUR source config is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `aur_sources[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "license": {
           "description": "SPDX license identifier.",
           "default": null,
@@ -1915,6 +1955,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the blob config is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `blobs[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "include_meta": {
           "description": "Also upload metadata.json and artifacts.json.",
@@ -2348,6 +2396,14 @@
           "default": null,
           "type": [
             "boolean",
+            "null"
+          ]
+        },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the cargo publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro publisher `if:` semantics.",
+          "default": null,
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -2927,6 +2983,14 @@
             "type": "string"
           }
         },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Chocolatey publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `chocolateys[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "license": {
           "description": "SPDX license identifier (e.g., \"MIT\", \"Apache-2.0\").",
           "default": null,
@@ -3169,6 +3233,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `cloudsmiths[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "organization": {
           "description": "CloudSmith organization slug.",
@@ -4289,6 +4361,14 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the DockerHub publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `dockerhub[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
           ]
         },
         "images": {
@@ -5629,6 +5709,14 @@
             "type": "string"
           }
         },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `homebrew_casks[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "license": {
           "description": "License identifier (SPDX).",
           "default": null,
@@ -6191,6 +6279,14 @@
             "type": "string"
           }
         },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Homebrew publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `brews[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "install": {
           "description": "Ruby `install` block content for the formula.",
           "default": null,
@@ -6544,6 +6640,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Krew publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `krews[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "name": {
           "description": "Override the plugin name (default: crate name).",
@@ -7309,6 +7413,14 @@
         },
         "homepage": {
           "description": "Optional URL to the server's homepage, documentation, or project website. Serialized as `websiteUrl` in the registry payload.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the MCP publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `mcp.if:`.",
           "default": null,
           "type": [
             "string",
@@ -8970,6 +9082,14 @@
             "type": "string"
           }
         },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Nix publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `nix[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "install": {
           "description": "Custom install commands (replaces auto-generated binary install).",
           "default": null,
@@ -9772,6 +9892,14 @@
             "type": "string"
           }
         },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro's `customization/publishers/` `if:` field. Distinct from `skip:` (which expresses \"always skip\") and provides GR config-import parity.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "meta": {
           "description": "Include metadata artifacts in published artifacts.",
           "default": null,
@@ -10479,6 +10607,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Scoop publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `scoop[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "license": {
           "description": "SPDX license identifier (e.g., \"MIT\", \"Apache-2.0\").",
@@ -11299,6 +11435,14 @@
             "type": "string"
           }
         },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the snapcraft config is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `snapcrafts[].if:`. Distinct from `skip:` (always-skip predicate).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "layouts": {
           "description": "Directory mappings for sandbox accessibility.",
           "default": null,
@@ -11904,6 +12048,14 @@
             "type": "string"
           }
         },
+        "if": {
+          "description": "Template-conditional: when set, the hook only runs if the rendered result is truthy (not `\"false\"` / `\"0\"` / `\"no\"` / empty). Render failure hard-errors (not silent-skip). Mirrors GoReleaser OSS v2.7+ `before.hooks[].if:` / per-build / per-archive hook `if:` surface.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "output": {
           "description": "When true, capture and log stdout/stderr of the command.",
           "default": null,
@@ -12445,6 +12597,14 @@
             "type": "string"
           }
         },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the upload is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `uploads[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "meta": {
           "description": "Include metadata artifacts in uploaded artifacts.",
           "default": null,
@@ -12800,6 +12960,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the WinGet publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `winget[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "installation_notes": {
           "description": "Post-install notes shown to the user.",

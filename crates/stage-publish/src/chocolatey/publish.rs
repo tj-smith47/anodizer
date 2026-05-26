@@ -209,6 +209,18 @@ fn check_skip_publish(
             return Ok(true);
         }
     }
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        choco_cfg.if_condition.as_deref(),
+        &format!("chocolatey publisher for crate '{}'", crate_name),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status(&format!(
+            "chocolatey: skipping publish for '{}' — `if` condition evaluated falsy",
+            crate_name
+        ));
+        return Ok(true);
+    }
     Ok(false)
 }
 

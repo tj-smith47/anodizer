@@ -149,32 +149,21 @@ impl Stage for DockerSignStage {
                 let sign_id = docker_sign_cfg.resolved_id();
 
                 // Evaluate the `if` conditional template for docker signs.
-                // (See comment in process_sign_configs for why this uses
-                // inverted logic compared to `disable`.)
-                if let Some(ref condition) = docker_sign_cfg.if_condition {
-                    match ctx.render_template(condition) {
-                        Ok(result) => {
-                            let trimmed = result.trim();
-                            if trimmed.is_empty() || trimmed == "false" {
-                                let reason = format!("if condition evaluated to '{}'", trimmed);
-                                log.verbose(&format!(
-                                    "skipping docker-sign config '{}': {}",
-                                    sign_id, reason
-                                ));
-                                ctx.remember_skip("docker-sign", sign_id, &reason);
-                                continue;
-                            }
-                        }
-                        Err(e) => {
-                            // Hard-fail: silent skip would ship unsigned images.
-                            anyhow::bail!(
-                                "docker-sign '{}': if condition render failed ({}): {}",
-                                sign_id,
-                                condition,
-                                e
-                            );
-                        }
-                    }
+                // Hard-fail on render error: silent skip would ship unsigned
+                // images.
+                let proceed = anodizer_core::config::evaluate_if_condition(
+                    docker_sign_cfg.if_condition.as_deref(),
+                    &format!("docker-sign '{sign_id}'"),
+                    |t| ctx.render_template(t),
+                )?;
+                if !proceed {
+                    let reason = "`if` condition evaluated falsy".to_string();
+                    log.verbose(&format!(
+                        "skipping docker-sign config '{}': {}",
+                        sign_id, reason
+                    ));
+                    ctx.remember_skip("docker-sign", sign_id, &reason);
+                    continue;
                 }
 
                 let cmd = docker_sign_cfg.resolved_cmd().to_string();

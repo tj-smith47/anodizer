@@ -188,7 +188,14 @@ fn render_skip_decisions(ctx: &Context, crates: &[CrateConfig]) -> Result<Vec<bo
             } else {
                 false
             };
-            decisions.push(skip);
+            // Treat `if:` as another skip-decision: when the gate is falsy,
+            // skip this snap from the publish phase too.
+            let if_skip = !anodizer_core::config::evaluate_if_condition(
+                snap_cfg.if_condition.as_deref(),
+                &format!("snapcraft publish for crate '{}'", krate.name),
+                |t| ctx.render_template(t),
+            )?;
+            decisions.push(skip || if_skip);
         }
     }
     Ok(decisions)

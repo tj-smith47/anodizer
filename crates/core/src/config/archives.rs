@@ -253,6 +253,15 @@ pub struct ArchiveConfig {
     /// `.Format`, etc.) and packed into the archive at the rendered `dst:`
     /// path. Mirrors GoReleaser Pro's `archives[].templated_files:`.
     pub templated_files: Option<Vec<super::TemplateFileConfig>>,
+    /// Template-conditional gate: when the rendered result is falsy
+    /// (`"false"` / `"0"` / `"no"` / empty), the archive entry is skipped
+    /// entirely (no archives produced for this `id`). Render failure
+    /// hard-errors. Defensive ahead of GoReleaser exposing the field on
+    /// archives (GR Pro lists "filter artifacts with `if` statements" as a
+    /// blanket promise — anodizer surfaces it explicitly to keep imported
+    /// configs portable).
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 /// Fold a deprecated singular `format: tar.gz` into the canonical
@@ -314,6 +323,8 @@ impl<'de> Deserialize<'de> for ArchiveConfig {
             allow_different_binary_count: Option<bool>,
             hooks: Option<ArchiveHooksConfig>,
             templated_files: Option<Vec<super::TemplateFileConfig>>,
+            #[serde(rename = "if")]
+            if_condition: Option<String>,
         }
 
         let raw = Raw::deserialize(deserializer)?;
@@ -352,6 +363,7 @@ impl<'de> Deserialize<'de> for ArchiveConfig {
             allow_different_binary_count: raw.allow_different_binary_count,
             hooks: raw.hooks,
             templated_files: raw.templated_files,
+            if_condition: raw.if_condition,
         })
     }
 }

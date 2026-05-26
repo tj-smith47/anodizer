@@ -408,6 +408,17 @@ fn validate_and_check_skip(
             return Ok(true);
         }
     }
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        snap_cfg.if_condition.as_deref(),
+        &format!("snapcraft config for crate '{krate_name}'"),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status(&format!(
+            "skipping snapcraft config for crate {krate_name} — `if` condition evaluated falsy"
+        ));
+        return Ok(true);
+    }
 
     if let Some(conf) = &snap_cfg.confinement {
         match conf.as_str() {

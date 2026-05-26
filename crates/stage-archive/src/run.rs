@@ -270,6 +270,22 @@ fn archive_one_config(
     new_artifacts: &mut Vec<Artifact>,
 ) -> Result<()> {
     for archive_cfg in archive_cfgs {
+        let archive_id_log = archive_cfg.id.as_deref().unwrap_or("default");
+        // GoReleaser Pro `archives[].if:` parity. Skip the entire archive
+        // config (no archives produced for this id) when the rendered
+        // condition is falsy.
+        let proceed = anodizer_core::config::evaluate_if_condition(
+            archive_cfg.if_condition.as_deref(),
+            &format!("archive config '{archive_id_log}'"),
+            |t| ctx.render_template(t),
+        )?;
+        if !proceed {
+            log.status(&format!(
+                "archives[{archive_id_log}]: skipped — `if` condition evaluated falsy"
+            ));
+            continue;
+        }
+
         let is_meta = archive_cfg.meta.unwrap_or(false);
 
         // ids filtering: only include binary artifacts whose metadata

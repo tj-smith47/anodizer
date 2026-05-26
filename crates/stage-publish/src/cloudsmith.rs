@@ -239,6 +239,16 @@ pub(crate) fn publish_to_cloudsmith(
             }
         }
 
+        let proceed = anodizer_core::config::evaluate_if_condition(
+            entry.if_condition.as_deref(),
+            "cloudsmith entry",
+            |t| ctx.render_template(t),
+        )?;
+        if !proceed {
+            log.status("cloudsmith: entry skipped — `if` condition evaluated falsy");
+            continue;
+        }
+
         // Organization is required — bail before dry-run so config errors
         // surface even in dry-run mode.
         let org_raw = match entry.organization.as_deref() {

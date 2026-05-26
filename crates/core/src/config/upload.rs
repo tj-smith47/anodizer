@@ -62,4 +62,9 @@ pub struct UploadConfig {
     /// Skip condition template (if rendered to "true", skip this upload).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
+    /// Template-conditional gate: when the rendered result is falsy
+    /// (`"false"` / `"0"` / `"no"` / empty), the upload is skipped.
+    /// Render failure hard-errors. Mirrors GoReleaser Pro `uploads[].if:`.
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }

@@ -567,6 +567,19 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         return Ok(false);
     }
 
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        hb_cfg.if_condition.as_deref(),
+        &format!("homebrew publisher for crate '{}'", crate_name),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status(&format!(
+            "homebrew: skipping '{}' — `if` condition evaluated falsy",
+            crate_name
+        ));
+        return Ok(false);
+    }
+
     let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(hb_cfg.repository.as_ref())
         .ok_or_else(|| anyhow::anyhow!("homebrew: no repository config for '{}'", crate_name))?;
 

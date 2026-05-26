@@ -158,6 +158,17 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
         }
     }
 
+    // GoReleaser Pro `announce.if:` parity.
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        announce.if_condition.as_deref(),
+        "announce",
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status("announce: skipped — `if` condition evaluated falsy");
+        return Ok(());
+    }
+
     // PublishReport-driven gate: skip when configured required (or all)
     // publishers didn't succeed. The flag on PublishReport lets the
     // run-summary JSON expose the skip cleanly to CI.

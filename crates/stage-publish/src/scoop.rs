@@ -244,6 +244,19 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         return Ok(false);
     }
 
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        scoop_cfg.if_condition.as_deref(),
+        &format!("scoop publisher for crate '{}'", crate_name),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status(&format!(
+            "scoop: skipping '{}' — `if` condition evaluated falsy",
+            crate_name
+        ));
+        return Ok(false);
+    }
+
     let (repo_owner, repo_name) =
         crate::util::resolve_repo_owner_name(scoop_cfg.repository.as_ref())
             .ok_or_else(|| anyhow::anyhow!("scoop: no repository config for '{}'", crate_name))?;

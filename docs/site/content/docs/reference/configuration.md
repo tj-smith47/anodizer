@@ -38,7 +38,7 @@ List of `KEY=VALUE` strings (matches GoReleaser): `env: ["MY_VAR=hello", "DEPLOY
 | `homebrew_casks` | list of HomebrewCaskConfig | — | Top-level Homebrew Cask configurations. `homebrew_casks` is a top-level array with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, completions, manpages, structured uninstall/zap, etc. |
 | `includes` | list of IncludeSpec | — | Additional config files to merge into this config. Supports plain string paths, `from_file:` for structured file paths, and `from_url:` for fetching configs from URLs with optional headers. |
 | `makeselfs` | list of MakeselfConfig | `[]` | Makeself self-extracting archive configurations. |
-| `mcp` | McpConfig | `{"auth":{"type":"none"},"description":null,"homepage":null,"name":null,"packages":[],"registry":null,"repository":{"id":"","source":"","subfolder":"","url":""},"skip":null,"title":null,"transports":[]}` | MCP (Model Context Protocol) server registry publishing configuration. When `name` is empty (the default), the publisher is skipped. Mirrors GoReleaser's `mcp:` block. |
+| `mcp` | McpConfig | `{"auth":{"type":"none"},"description":null,"homepage":null,"if":null,"name":null,"packages":[],"registry":null,"repository":{"id":"","source":"","subfolder":"","url":""},"skip":null,"title":null,"transports":[]}` | MCP (Model Context Protocol) server registry publishing configuration. When `name` is empty (the default), the publisher is skipped. Mirrors GoReleaser's `mcp:` block. |
 | `metadata` | MetadataConfig | — | Project metadata configuration (applied to metadata.json output files). |
 | `milestones` | list of MilestoneConfig | — | Milestone closing configurations. |
 | `monorepo` | MonorepoConfig | — | GoReleaser Pro monorepo configuration. When configured, tag discovery filters by tag_prefix and the working directory is scoped to dir. |
@@ -82,6 +82,7 @@ The canonical key is `hooks:` for both `before:` and `after:` to match GoRelease
 | `discourse` | DiscourseAnnounce | — | Discourse announcement configuration. |
 | `email` | EmailAnnounce | — | Email announcement configuration. accepts the historical `smtp:` key as an alias because GR itself renamed `smtp:` -> `email:` in v1.21+ and kept the alias for migration. Mirroring GR's own alias keeps "use what GR uses today" consistent without forcing a re-yaml of legacy GR configs. |
 | `gate_on` | AnnounceGate | `required_publishers` | Selects when AnnounceStage runs vs. skips based on the `PublishReport` written by PublishStage/BlobStage. Default is `required_publishers` (announce only if every required publisher succeeded). See [`AnnounceGate`] for the other variants. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the entire announce stage is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `announce.if:`. Distinct from `skip:` (always-skip predicate) — both surfaces are documented by GR. |
 | `linkedin` | LinkedInAnnounce | — | LinkedIn announcement configuration. |
 | `mastodon` | MastodonAnnounce | — | Mastodon announcement configuration. |
 | `mattermost` | MattermostAnnounce | — | Mattermost announcement configuration. |
@@ -108,6 +109,7 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 | `extra_files_only` | bool | — | When true, upload only extra_files (skip normal artifacts). |
 | `exts` | list of string | — | File extension filter: only upload artifacts matching these extensions. |
 | `ids` | list of string | — | Build IDs filter: only upload artifacts from builds whose `id` is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the artifactory publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `artifactories[].if:`. |
 | `meta` | bool | — | Include metadata artifacts in uploaded artifacts. |
 | `method` | string | — | HTTP method to use for uploads (default: "PUT"). |
 | `mode` | string | — | Upload mode: "archive" (upload archives) or "binary" (upload binaries). |
@@ -140,6 +142,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `git_url` | string | — | AUR SSH git URL. |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR source config is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `aur_sources[].if:`. |
 | `license` | string | — | SPDX license identifier. |
 | `maintainers` | list of string | — | PKGBUILD maintainer entries. |
 | `makedepends` | list of string | — | Build-time dependencies (source packages need these). |
@@ -208,6 +211,7 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 | `distributions` | map | — | Distribution mapping per format (e.g. `deb: "ubuntu/focal"`). |
 | `formats` | list of string | — | Package format filter: only publish artifacts matching these formats. |
 | `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `cloudsmiths[].if:`. |
 | `organization` | string | — | CloudSmith organization slug. |
 | `repository` | string | — | CloudSmith repository slug. |
 | `republish` | StringOrBool | — | When true, allow republishing over existing package versions. |
@@ -304,6 +308,7 @@ DockerHub description sync configuration. Pushes image descriptions and README c
 |-------|------|---------|-------------|
 | `description` | string | — | Short description for the DockerHub repository (max 100 chars). |
 | `full_description` | DockerHubFullDescription | — | Full description (README) source for the DockerHub repository. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the DockerHub publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `dockerhub[].if:`. |
 | `images` | list of string | — | DockerHub image names to update (e.g. `myorg/myapp`). |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
@@ -378,6 +383,7 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `homepage` | string | — | Project homepage URL. |
 | `hooks` | HomebrewCaskHooks | — | Pre/post install/uninstall hooks. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts from builds whose `id` is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `homebrew_casks[].if:`. |
 | `license` | string | — | License identifier (SPDX). |
 | `manpages` | list of string | — | Manual page references to install. |
 | `name` | string | — | Cask name (default: crate / project name). |
@@ -481,6 +487,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `env` | list of string | — | Environment variables passed to the publish command. |
 | `extra_files` | list of ExtraFileSpec | — | Extra files to include in publishing (glob patterns with optional name override). |
 | `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro's `customization/publishers/` `if:` field. Distinct from `skip:` (which expresses "always skip") and provides GR config-import parity. |
 | `meta` | bool | — | Include metadata artifacts in published artifacts. |
 | `name` | string | — | Human-readable name for this publisher (used in logs). |
 | `signature` | bool | — | Include signatures in published artifacts. |
@@ -655,6 +662,7 @@ GoReleaser Pro feature: all rendered template files are uploaded to the release 
 | `extra_files_only` | bool | — | Upload only extra files, skip normal artifacts. |
 | `exts` | list of string | — | File extension filter: only upload artifacts with these extensions. |
 | `ids` | list of string | — | Build IDs filter: only upload artifacts whose `id` is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the upload is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `uploads[].if:`. |
 | `meta` | bool | — | Include metadata artifacts in uploaded artifacts. |
 | `method` | string | — | HTTP method: PUT or POST (default: PUT). |
 | `mode` | string | — | Upload mode: "archive" (default) or "binary". |

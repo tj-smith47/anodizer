@@ -84,4 +84,9 @@ pub struct BlobConfig {
     /// in. Same semantics as "any required blob target failing should
     /// fail the release."
     pub required: Option<bool>,
+    /// Template-conditional gate: when the rendered result is falsy
+    /// (`"false"` / `"0"` / `"no"` / empty), the blob config is skipped.
+    /// Render failure hard-errors. Mirrors GoReleaser Pro `blobs[].if:`.
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }

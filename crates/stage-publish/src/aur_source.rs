@@ -288,10 +288,11 @@ pub fn publish_to_aur_source(
         .clone();
 
     let label = format!("aur_source: crate '{crate_name}'");
-    if crate::util::should_skip_publisher(
+    if crate::util::should_skip_publisher_with_if(
         ctx,
         publish_cfg.skip.as_ref(),
         publish_cfg.skip_upload.as_ref(),
+        publish_cfg.if_condition.as_deref(),
         &label,
         log,
     )? {
@@ -321,10 +322,11 @@ pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Re
     let mut any_pushed = false;
     for (i, cfg) in entries.iter().enumerate() {
         let label = format!("aur_sources[{}]", i);
-        if crate::util::should_skip_publisher(
+        if crate::util::should_skip_publisher_with_if(
             ctx,
             cfg.skip.as_ref(),
             cfg.skip_upload.as_ref(),
+            cfg.if_condition.as_deref(),
             &label,
             log,
         )? {

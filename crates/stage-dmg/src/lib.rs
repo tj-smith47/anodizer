@@ -148,24 +148,20 @@ impl Stage for DmgStage {
                 let dmg_id_for_log = dmg_cfg.id.as_deref().unwrap_or("default").to_string();
 
                 // GoReleaser Pro `dmg.if`: template-conditional skip (opt-in).
-                // Rendered "false"/empty => skip with info log; render error => hard bail
-                // (avoids W1 silent-skip footgun: user's typo must surface, not silently
-                // ship a release without the DMG they asked for).
-                if let Some(ref condition) = dmg_cfg.if_condition {
-                    let rendered = ctx.render_template(condition).with_context(|| {
-                        format!(
-                            "dmg config '{}' for crate '{}': `if` template render failed (expression: {})",
-                            dmg_id_for_log, krate.name, condition
-                        )
-                    })?;
-                    let trimmed = rendered.trim();
-                    if trimmed.is_empty() || trimmed == "false" {
-                        log.status(&format!(
-                            "skipping dmg config '{}' for crate {}: if condition evaluated to '{}'",
-                            dmg_id_for_log, krate.name, trimmed
-                        ));
-                        continue;
-                    }
+                // Render error => hard bail (avoids the W1 silent-skip
+                // footgun: user's typo must surface, not silently ship a
+                // release without the DMG they asked for).
+                let proceed = anodizer_core::config::evaluate_if_condition(
+                    dmg_cfg.if_condition.as_deref(),
+                    &format!("dmg config '{}' for crate '{}'", dmg_id_for_log, krate.name),
+                    |t| ctx.render_template(t),
+                )?;
+                if !proceed {
+                    log.status(&format!(
+                        "skipping dmg config '{}' for crate {}: `if` condition evaluated falsy",
+                        dmg_id_for_log, krate.name
+                    ));
+                    continue;
                 }
 
                 // Skip configs marked skip:

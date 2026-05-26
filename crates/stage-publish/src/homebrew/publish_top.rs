@@ -74,6 +74,20 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
             continue;
         }
 
+        // GoReleaser Pro `homebrew_casks[].if:` parity.
+        let proceed = anodizer_core::config::evaluate_if_condition(
+            cask_cfg.if_condition.as_deref(),
+            &format!("homebrew_casks entry '{}'", cask_name),
+            |t| ctx.render_template(t),
+        )?;
+        if !proceed {
+            log.status(&format!(
+                "homebrew_casks: skipping '{}' — `if` condition evaluated falsy",
+                cask_name
+            ));
+            continue;
+        }
+
         // Repository is required for top-level cask.
         let repo_cfg = cask_cfg.repository.as_ref();
         let (repo_owner, repo_name) =

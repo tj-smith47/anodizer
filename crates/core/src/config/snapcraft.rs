@@ -87,6 +87,12 @@ pub struct SnapcraftConfig {
     pub mod_timestamp: Option<String>,
     /// Snap hooks — maps hook name to arbitrary hook config.
     pub hooks: Option<BTreeMap<String, serde_json::Value>>,
+    /// Template-conditional gate: when the rendered result is falsy
+    /// (`"false"` / `"0"` / `"no"` / empty), the snapcraft config is
+    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
+    /// `snapcrafts[].if:`. Distinct from `skip:` (always-skip predicate).
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]

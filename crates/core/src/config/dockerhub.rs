@@ -33,6 +33,12 @@ pub struct DockerHubConfig {
     /// Set to `true` to fail the release on any error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
+    /// Template-conditional gate: when the rendered result is falsy
+    /// (`"false"` / `"0"` / `"no"` / empty), the DockerHub publisher is
+    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
+    /// `dockerhub[].if:`.
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 /// Full description source for DockerHub: either from a URL or a local file.
