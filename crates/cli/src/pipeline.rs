@@ -2518,6 +2518,26 @@ crates:
     // before_publish: hooks
     // -----------------------------------------------------------------------
 
+    /// Register a single sentinel archive artifact on the context. The
+    /// before-publish stage runs once per matching artifact, so any test
+    /// that asserts the hook executed (rather than asserting it didn't
+    /// because of a filter / `if:` gate / dry-run) must seed at least
+    /// one artifact for the per-artifact iteration to fire against.
+    fn add_sentinel_archive(ctx: &mut anodizer_core::context::Context) {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("dist/myapp_linux_amd64.tar.gz"),
+            name: "myapp_linux_amd64.tar.gz".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+    }
+
     /// `release` pipeline: BeforePublishStage runs AFTER sign/checksum (the
     /// integrity stages) and BEFORE release/publish (the publish phase),
     /// so a non-zero hook can abort the release before any publisher writes
@@ -2615,6 +2635,7 @@ crates:
         });
         let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
         ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+        add_sentinel_archive(&mut ctx);
 
         let log = ctx.logger("pipeline-test");
         let result = p.run(&mut ctx, &log);
@@ -2719,6 +2740,7 @@ crates:
         };
         let mut ctx = anodizer_core::context::Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+        add_sentinel_archive(&mut ctx);
 
         let log = ctx.logger("pipeline-test");
         p.run(&mut ctx, &log)
@@ -2752,6 +2774,7 @@ crates:
         let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
         ctx.template_vars_mut().set("Tag", "v9.9.9-test");
         ctx.template_vars_mut().set("IsSnapshot", "false");
+        add_sentinel_archive(&mut ctx);
 
         let log = ctx.logger("pipeline-test");
         p.run(&mut ctx, &log)
@@ -2783,6 +2806,7 @@ crates:
         });
         let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
         ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+        add_sentinel_archive(&mut ctx);
 
         let log = ctx.logger("pipeline-test");
         // The subprocess returns 0 and prints to stdout — the run must succeed.
@@ -2819,6 +2843,7 @@ crates:
         });
         let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
         ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+        add_sentinel_archive(&mut ctx);
 
         let log = ctx.logger("pipeline-test");
         p.run(&mut ctx, &log)
@@ -2853,6 +2878,414 @@ before_publish:
             HookEntry::Simple(s) => assert_eq!(s, "echo foo"),
             HookEntry::Structured(h) => panic!("expected Simple, got Structured({:?})", h),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // before_publish per-artifact iteration (GR Pro contract)
+    // -----------------------------------------------------------------------
+
+    /// Register N archives, one hook with `artifacts: archive`, and verify
+    /// the rendered cmd carried each artifact's `ArtifactPath` exactly once.
+    /// The hook writes one line per invocation into a tempfile so the test
+    /// can count by reading the file back.
+    #[test]
+    fn before_publish_runs_per_matching_artifact() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{
+            BeforePublishArtifactFilter, HookEntry, HooksConfig, StructuredHook,
+        };
+        use anodizer_core::context::ContextOptions;
+        use anodizer_core::hooks::BeforePublishStage;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("hook-invocations.log");
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(BeforePublishStage));
+
+        let mut config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        config.before_publish = Some(HooksConfig {
+            hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: format!(
+                    "echo {{{{ ArtifactPath }}}} >> {}",
+                    log_path.to_string_lossy()
+                ),
+                artifacts: Some(BeforePublishArtifactFilter::Archive),
+                ..Default::default()
+            })]),
+            post: None,
+        });
+        let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+
+        for i in 0..3 {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Archive,
+                path: PathBuf::from(format!("dist/myapp_{i}.tar.gz")),
+                name: format!("myapp_{i}.tar.gz"),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: HashMap::new(),
+                size: None,
+            });
+        }
+
+        let log = ctx.logger("pipeline-test");
+        p.run(&mut ctx, &log)
+            .expect("per-artifact iteration must succeed");
+
+        let contents = fs::read_to_string(&log_path).expect("log file exists");
+        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 3, "hook should run 3 times, got: {lines:?}");
+        for i in 0..3 {
+            let expected = format!("dist/myapp_{i}.tar.gz");
+            assert!(
+                lines.iter().any(|l| l == &expected),
+                "missing iteration for {expected}; got {lines:?}"
+            );
+        }
+    }
+
+    /// `ids: [a]` restricts iteration to artifacts whose `metadata["id"] == "a"`.
+    /// Register two archives with ids `a` and `b`; only `a` should fire.
+    #[test]
+    fn before_publish_ids_filter_narrows_to_subset() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{HookEntry, HooksConfig, StructuredHook};
+        use anodizer_core::context::ContextOptions;
+        use anodizer_core::hooks::BeforePublishStage;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("ids-filter.log");
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(BeforePublishStage));
+
+        let mut config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        config.before_publish = Some(HooksConfig {
+            hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: format!(
+                    "echo {{{{ ArtifactID }}}} >> {}",
+                    log_path.to_string_lossy()
+                ),
+                ids: Some(vec!["a".to_string()]),
+                ..Default::default()
+            })]),
+            post: None,
+        });
+        let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+
+        for id in &["a", "b"] {
+            let mut meta = HashMap::new();
+            meta.insert("id".to_string(), (*id).to_string());
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Archive,
+                path: PathBuf::from(format!("dist/myapp-{id}.tar.gz")),
+                name: format!("myapp-{id}.tar.gz"),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: meta,
+                size: None,
+            });
+        }
+
+        let log = ctx.logger("pipeline-test");
+        p.run(&mut ctx, &log).expect("ids filter must not error");
+
+        let contents = fs::read_to_string(&log_path).expect("log file exists");
+        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines, vec!["a"], "only id=a should match; got {lines:?}");
+    }
+
+    /// `artifacts: archive` excludes a binary artifact: register one binary
+    /// and one archive, then verify only the archive triggered the hook.
+    #[test]
+    fn before_publish_artifacts_filter_excludes_non_matching_kinds() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{
+            BeforePublishArtifactFilter, HookEntry, HooksConfig, StructuredHook,
+        };
+        use anodizer_core::context::ContextOptions;
+        use anodizer_core::hooks::BeforePublishStage;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("kind-filter.log");
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(BeforePublishStage));
+
+        let mut config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        config.before_publish = Some(HooksConfig {
+            hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: format!(
+                    "echo {{{{ ArtifactKind }}}}={{{{ ArtifactName }}}} >> {}",
+                    log_path.to_string_lossy()
+                ),
+                artifacts: Some(BeforePublishArtifactFilter::Archive),
+                ..Default::default()
+            })]),
+            post: None,
+        });
+        let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: PathBuf::from("dist/myapp"),
+            name: "myapp".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("dist/myapp.tar.gz"),
+            name: "myapp.tar.gz".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let log = ctx.logger("pipeline-test");
+        p.run(&mut ctx, &log)
+            .expect("archive filter must not error");
+
+        let contents = fs::read_to_string(&log_path).expect("log file exists");
+        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            lines,
+            vec!["archive=myapp.tar.gz"],
+            "archive filter must skip binary; got {lines:?}"
+        );
+    }
+
+    /// Per-artifact template variables (`ArtifactPath`, `ArtifactName`,
+    /// `ArtifactExt`, `Os`, `Arch`) all render correctly for each
+    /// iteration.
+    #[test]
+    fn before_publish_template_artifact_vars_bound() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{HookEntry, HooksConfig, StructuredHook};
+        use anodizer_core::context::ContextOptions;
+        use anodizer_core::hooks::BeforePublishStage;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("vars.log");
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(BeforePublishStage));
+
+        let mut config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        // Each `{{ Var }}` renders to a token; the cmd writes them
+        // space-separated onto one line. The pipe character is
+        // deliberately avoided (it has shell meaning under `sh -c`).
+        config.before_publish = Some(HooksConfig {
+            hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: format!(
+                    "printf '%s %s %s %s %s\\n' {{{{ ArtifactPath }}}} {{{{ ArtifactName }}}} {{{{ ArtifactExt }}}} {{{{ Os }}}} {{{{ Arch }}}} >> {}",
+                    log_path.to_string_lossy()
+                ),
+                ..Default::default()
+            })]),
+            post: None,
+        });
+        let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("dist/myapp_linux_amd64.tar.gz"),
+            name: "myapp_linux_amd64.tar.gz".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let log = ctx.logger("pipeline-test");
+        p.run(&mut ctx, &log)
+            .expect("template-vars hook must succeed");
+
+        let contents = fs::read_to_string(&log_path).expect("log file exists");
+        let line = contents.lines().next().expect("at least one line").trim();
+        assert_eq!(
+            line, "dist/myapp_linux_amd64.tar.gz myapp_linux_amd64.tar.gz .tar.gz linux amd64",
+            "all per-artifact template vars must bind; got {line:?}"
+        );
+    }
+
+    /// A hook command that exits non-zero on the second artifact aborts the
+    /// pipeline so the publish stage never dispatches. The cmd writes its
+    /// own iteration count to disk and exits 1 once it sees two
+    /// invocations.
+    #[test]
+    fn before_publish_failure_on_any_artifact_aborts_release() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{HookEntry, HooksConfig, StructuredHook};
+        use anodizer_core::context::ContextOptions;
+        use anodizer_core::hooks::BeforePublishStage;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct RecordingStage(Arc<AtomicBool>);
+        impl anodizer_core::stage::Stage for RecordingStage {
+            fn name(&self) -> &str {
+                "publish"
+            }
+            fn run(&self, _ctx: &mut anodizer_core::context::Context) -> anyhow::Result<()> {
+                self.0.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let publish_ran = Arc::new(AtomicBool::new(false));
+        let tmp = TempDir::new().unwrap();
+        let counter_path = tmp.path().join("counter");
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(BeforePublishStage));
+        p.add(Box::new(RecordingStage(publish_ran.clone())));
+
+        let mut config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        // The cmd appends a byte per invocation; when the file size reaches
+        // 2, it exits 1 — so the second artifact's iteration fails.
+        let cmd = format!(
+            r#"sh -c 'printf x >> {p}; if [ "$(wc -c < {p})" -ge 2 ]; then exit 1; fi'"#,
+            p = counter_path.to_string_lossy(),
+        );
+        config.before_publish = Some(HooksConfig {
+            hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd,
+                ..Default::default()
+            })]),
+            post: None,
+        });
+        let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+
+        for i in 0..3 {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Archive,
+                path: PathBuf::from(format!("dist/myapp_{i}.tar.gz")),
+                name: format!("myapp_{i}.tar.gz"),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: HashMap::new(),
+                size: None,
+            });
+        }
+
+        let log = ctx.logger("pipeline-test");
+        let result = p.run(&mut ctx, &log);
+        assert!(
+            result.is_err(),
+            "hook failure on any artifact must abort the pipeline",
+        );
+        assert!(
+            !publish_ran.load(Ordering::SeqCst),
+            "publish stage must NOT run after a mid-iteration hook failure",
+        );
+        let count = fs::read_to_string(&counter_path)
+            .map(|s| s.len())
+            .unwrap_or(0);
+        assert_eq!(
+            count, 2,
+            "hook should have run exactly twice before aborting; got {count}",
+        );
+    }
+
+    /// Omitting `artifacts:` is equivalent to `all`: the hook fires against
+    /// every registered artifact regardless of kind.
+    #[test]
+    fn before_publish_artifacts_all_default_matches_everything() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{HookEntry, HooksConfig, StructuredHook};
+        use anodizer_core::context::ContextOptions;
+        use anodizer_core::hooks::BeforePublishStage;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("default-all.log");
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(BeforePublishStage));
+
+        let mut config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        config.before_publish = Some(HooksConfig {
+            hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: format!(
+                    "echo {{{{ ArtifactKind }}}} >> {}",
+                    log_path.to_string_lossy()
+                ),
+                ..Default::default()
+            })]),
+            post: None,
+        });
+        let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+
+        let kinds = [
+            ArtifactKind::Binary,
+            ArtifactKind::Archive,
+            ArtifactKind::Checksum,
+            ArtifactKind::Sbom,
+        ];
+        for (i, kind) in kinds.iter().enumerate() {
+            ctx.artifacts.add(Artifact {
+                kind: *kind,
+                path: PathBuf::from(format!("dist/a{i}")),
+                name: format!("a{i}"),
+                target: None,
+                crate_name: "myapp".to_string(),
+                metadata: HashMap::new(),
+                size: None,
+            });
+        }
+
+        let log = ctx.logger("pipeline-test");
+        p.run(&mut ctx, &log)
+            .expect("default-all filter must fire for every artifact");
+
+        let contents = fs::read_to_string(&log_path).expect("log file exists");
+        let mut lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+        lines.sort();
+        assert_eq!(
+            lines,
+            vec!["archive", "binary", "checksum", "sbom"],
+            "default (artifacts: all) must match every kind; got {lines:?}"
+        );
     }
 
     // -----------------------------------------------------------------------

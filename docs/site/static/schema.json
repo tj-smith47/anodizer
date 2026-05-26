@@ -1856,6 +1856,22 @@
       },
       "additionalProperties": false
     },
+    "BeforePublishArtifactFilter": {
+      "description": "Artifact-type filter for `before_publish[*].artifacts`.\n\nMirrors GoReleaser Pro's `before_publish[*].artifacts` enum (`checksum` / `source` / `package` / `installer` / `diskimage` / `archive` / `binary` / `sbom` / `image` / `all`). Maps each variant to a predicate over [`ArtifactKind`]:\n\n| Variant | Matched [`ArtifactKind`] values | |---|---| | `Checksum` | `Checksum` | | `Source` | `SourceArchive`, `SourcePkgBuild`, `SourceSrcInfo`, `SourceRpm` | | `Package` | `LinuxPackage`, `Snap`, `PublishableSnapcraft`, `Flatpak` | | `Installer` | `Installer`, `MacOsPackage` (GR Pro's \"installer\" covers MSI/NSIS/Pkg) | | `DiskImage` | `DiskImage` | | `Archive` | `Archive`, `Makeself` | | `Binary` | `Binary`, `UploadableBinary`, `UniversalBinary` | | `Sbom` | `Sbom` | | `Image` | `DockerImage`, `DockerImageV2`, `PublishableDockerImage` (multi-arch `DockerManifest` excluded — covers individual images only) | | `All` | every kind |\n\nMapping notes: - `Source` includes RPM-source variants since GR groups all source-derived artifacts under one bucket. - `Installer` covers macOS `.pkg` (`MacOsPackage`) alongside Windows MSI/NSIS — GR docs say \"installer\" without OS qualification, so anodizer follows GR. - `Image` deliberately excludes [`ArtifactKind::DockerManifest`] / [`ArtifactKind::DockerDigest`]; those are multi-arch index entries and don't correspond to a scannable image blob. Matches GR's per-image hook semantics (the multi-arch manifest is published separately and isn't a vulnerability scan target).",
+      "type": "string",
+      "enum": [
+        "checksum",
+        "source",
+        "package",
+        "installer",
+        "disk_image",
+        "archive",
+        "binary",
+        "sbom",
+        "image",
+        "all"
+      ]
+    },
     "BinstallConfig": {
       "type": "object",
       "properties": {
@@ -12402,6 +12418,18 @@
     "StructuredHook": {
       "type": "object",
       "properties": {
+        "artifacts": {
+          "description": "Artifact-kind filter (`before_publish:` only). When `Some`, the per-artifact iteration only fires for artifacts whose [`ArtifactKind`] matches the filter. `None` is equivalent to [`BeforePublishArtifactFilter::All`] (every registered artifact). Ignored by lifecycle hook sites for the same reason as `ids`.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BeforePublishArtifactFilter"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "cmd": {
           "description": "Command to run.\n\nThe entire string is interpreted by `sh -c`, so shell metacharacters (`|`, `;`, `&&`, backticks, `$()`, redirects, globs) are honoured — any templated values folded into `cmd` become part of the shell command and are subject to word-splitting and metacharacter expansion. Keep templated user-config values out of `cmd` when possible, or quote them defensively (e.g. `'{{ .Env.FOO }}'`). Hooks already run with `env_clear()` plus an allow-list, so secrets in `$ENV` are not inherited unless explicitly listed in `env`.",
           "default": "",
@@ -12417,6 +12445,17 @@
         },
         "env": {
           "description": "Environment variables for the command.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "ids": {
+          "description": "Artifact-id allow-list (`before_publish:` only). When `Some`, the per-artifact iteration only fires for artifacts whose `metadata[\"id\"]` matches one of these strings. `None` (the default) imposes no id constraint. Ignored by lifecycle hook sites (`before:` / `after:` / per-build / per-archive) — those run once per pipeline tick, not per artifact.",
           "default": null,
           "type": [
             "array",

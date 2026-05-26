@@ -1,4 +1,5 @@
-use crate::config::{self, HookEntry};
+use crate::artifact::Artifact;
+use crate::config::{self, BeforePublishArtifactFilter, HookEntry};
 use crate::log::StageLogger;
 use crate::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
@@ -165,8 +166,25 @@ pub fn run_hooks(
 /// giving operators a last-chance hook for smoke tests, antivirus scans,
 /// or external state staging against the staged dist tree.
 ///
-/// Honors `--skip=before-publish`: when set, logs a status line and
-/// returns `Ok(())` without spawning any hook.
+/// Each `hooks[*]` entry runs **once per matching artifact** (GoReleaser
+/// Pro `before_publish:` semantics). For each entry:
+///
+/// 1. Resolve the entry's `ids:` + `artifacts:` filters and walk
+///    `ctx.artifacts.all()` for matches.
+/// 2. For each match, bind per-artifact template variables
+///    (`ArtifactPath`, `ArtifactName`, `ArtifactExt`, `Os`, `Arch`,
+///    plus `ArtifactID` / `ArtifactKind` for parity with the publisher
+///    template surface) and render `cmd` / `dir` / `env` / `if`.
+/// 3. Execute the rendered hook (or log it under `--dry-run`).
+///
+/// `HookEntry::Simple` (bare string) implies `artifacts: all` and no
+/// `ids:` filter — it runs against every registered artifact. Zero
+/// matching artifacts means the hook runs zero times (the lifecycle
+/// semantics of `before:` / `after:` do not apply here).
+///
+/// Honors `--skip=before-publish`: when set, the pipeline's generic
+/// skip handling fires before `run` is invoked, so this stage never
+/// executes.
 pub struct BeforePublishStage;
 
 impl crate::stage::Stage for BeforePublishStage {
@@ -187,8 +205,89 @@ impl crate::stage::Stage for BeforePublishStage {
         }
 
         let dry_run = ctx.is_dry_run();
-        let template_vars = ctx.template_vars().clone();
-        run_hooks(hooks, "before-publish", dry_run, &log, Some(&template_vars))
+        let base_vars = ctx.template_vars().clone();
+        let artifacts: Vec<Artifact> = ctx.artifacts.all().to_vec();
+
+        for entry in hooks {
+            run_before_publish_entry(entry, &artifacts, dry_run, &log, &base_vars)?;
+        }
+        Ok(())
+    }
+}
+
+/// Iterate `artifacts` for a single `before_publish[*]` entry, executing
+/// the hook command once per match with per-artifact template variables
+/// bound. Returns `Err` on first hook failure so the pipeline aborts
+/// before any publisher dispatches.
+fn run_before_publish_entry(
+    entry: &HookEntry,
+    artifacts: &[Artifact],
+    dry_run: bool,
+    log: &StageLogger,
+    base_vars: &TemplateVars,
+) -> Result<()> {
+    let (ids_filter, kind_filter) = match entry {
+        HookEntry::Simple(_) => (None, BeforePublishArtifactFilter::All),
+        HookEntry::Structured(h) => (
+            h.ids.as_deref(),
+            h.artifacts.unwrap_or(BeforePublishArtifactFilter::All),
+        ),
+    };
+
+    for artifact in artifacts {
+        if !kind_filter.matches(artifact.kind) {
+            continue;
+        }
+        if let Some(allow_ids) = ids_filter {
+            let id = artifact
+                .metadata
+                .get("id")
+                .map(String::as_str)
+                .unwrap_or("");
+            if !allow_ids.iter().any(|a| a == id) {
+                continue;
+            }
+        }
+
+        let mut vars = base_vars.clone();
+        bind_per_artifact_vars(&mut vars, artifact);
+        // Reuse the existing single-entry runner so dry-run, output capture,
+        // env allow-list, redaction, and `if:` evaluation behave identically
+        // to the lifecycle hook sites — only the per-artifact iteration is
+        // new here.
+        let single = std::slice::from_ref(entry);
+        run_hooks(single, "before-publish", dry_run, log, Some(&vars))?;
+    }
+    Ok(())
+}
+
+/// Bind per-artifact template variables onto `vars` for a single
+/// `before_publish:` iteration. Mirrors the publisher-side template
+/// surface (`crates/cli/src/commands/publisher.rs::build_publisher_command`)
+/// so user templates work identically across `publishers:` and
+/// `before_publish:`.
+fn bind_per_artifact_vars(vars: &mut TemplateVars, artifact: &Artifact) {
+    vars.set("ArtifactPath", &artifact.path.to_string_lossy());
+    vars.set("ArtifactName", artifact.name());
+    vars.set("ArtifactExt", &artifact.ext());
+    vars.set("ArtifactKind", artifact.kind.as_str());
+    vars.set(
+        "ArtifactID",
+        artifact
+            .metadata
+            .get("id")
+            .map(String::as_str)
+            .unwrap_or(""),
+    );
+    if let Some(target) = artifact.target.as_deref() {
+        let (os, arch) = crate::target::map_target(target);
+        vars.set("Os", &os);
+        vars.set("Arch", &arch);
+        vars.set("Target", target);
+    } else {
+        vars.set("Os", "");
+        vars.set("Arch", "");
+        vars.set("Target", "");
     }
 }
 

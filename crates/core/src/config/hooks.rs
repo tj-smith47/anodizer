@@ -1,6 +1,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::artifact::ArtifactKind;
+
 // ---------------------------------------------------------------------------
 // HooksConfig
 // ---------------------------------------------------------------------------
@@ -127,6 +129,107 @@ pub struct StructuredHook {
     /// `before.hooks[].if:` / per-build / per-archive hook `if:` surface.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
+    /// Artifact-id allow-list (`before_publish:` only). When `Some`, the
+    /// per-artifact iteration only fires for artifacts whose
+    /// `metadata["id"]` matches one of these strings. `None` (the default)
+    /// imposes no id constraint. Ignored by lifecycle hook sites
+    /// (`before:` / `after:` / per-build / per-archive) — those run once
+    /// per pipeline tick, not per artifact.
+    pub ids: Option<Vec<String>>,
+    /// Artifact-kind filter (`before_publish:` only). When `Some`, the
+    /// per-artifact iteration only fires for artifacts whose
+    /// [`ArtifactKind`] matches the filter. `None` is equivalent to
+    /// [`BeforePublishArtifactFilter::All`] (every registered artifact).
+    /// Ignored by lifecycle hook sites for the same reason as `ids`.
+    pub artifacts: Option<BeforePublishArtifactFilter>,
+}
+
+/// Artifact-type filter for `before_publish[*].artifacts`.
+///
+/// Mirrors GoReleaser Pro's `before_publish[*].artifacts` enum
+/// (`checksum` / `source` / `package` / `installer` / `diskimage` /
+/// `archive` / `binary` / `sbom` / `image` / `all`). Maps each variant
+/// to a predicate over [`ArtifactKind`]:
+///
+/// | Variant | Matched [`ArtifactKind`] values |
+/// |---|---|
+/// | `Checksum` | `Checksum` |
+/// | `Source` | `SourceArchive`, `SourcePkgBuild`, `SourceSrcInfo`, `SourceRpm` |
+/// | `Package` | `LinuxPackage`, `Snap`, `PublishableSnapcraft`, `Flatpak` |
+/// | `Installer` | `Installer`, `MacOsPackage` (GR Pro's "installer" covers MSI/NSIS/Pkg) |
+/// | `DiskImage` | `DiskImage` |
+/// | `Archive` | `Archive`, `Makeself` |
+/// | `Binary` | `Binary`, `UploadableBinary`, `UniversalBinary` |
+/// | `Sbom` | `Sbom` |
+/// | `Image` | `DockerImage`, `DockerImageV2`, `PublishableDockerImage` (multi-arch `DockerManifest` excluded — covers individual images only) |
+/// | `All` | every kind |
+///
+/// Mapping notes:
+/// - `Source` includes RPM-source variants since GR groups all source-derived
+///   artifacts under one bucket.
+/// - `Installer` covers macOS `.pkg` (`MacOsPackage`) alongside Windows
+///   MSI/NSIS — GR docs say "installer" without OS qualification, so
+///   anodizer follows GR.
+/// - `Image` deliberately excludes [`ArtifactKind::DockerManifest`] /
+///   [`ArtifactKind::DockerDigest`]; those are multi-arch index entries
+///   and don't correspond to a scannable image blob. Matches GR's
+///   per-image hook semantics (the multi-arch manifest is published
+///   separately and isn't a vulnerability scan target).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BeforePublishArtifactFilter {
+    Checksum,
+    Source,
+    Package,
+    Installer,
+    #[serde(alias = "diskimage")]
+    DiskImage,
+    Archive,
+    Binary,
+    Sbom,
+    Image,
+    #[default]
+    All,
+}
+
+impl BeforePublishArtifactFilter {
+    /// Returns `true` when `kind` should run the hook under this filter.
+    pub fn matches(self, kind: ArtifactKind) -> bool {
+        match self {
+            Self::All => true,
+            Self::Checksum => matches!(kind, ArtifactKind::Checksum),
+            Self::Source => matches!(
+                kind,
+                ArtifactKind::SourceArchive
+                    | ArtifactKind::SourcePkgBuild
+                    | ArtifactKind::SourceSrcInfo
+                    | ArtifactKind::SourceRpm
+            ),
+            Self::Package => matches!(
+                kind,
+                ArtifactKind::LinuxPackage
+                    | ArtifactKind::Snap
+                    | ArtifactKind::PublishableSnapcraft
+                    | ArtifactKind::Flatpak
+            ),
+            Self::Installer => matches!(kind, ArtifactKind::Installer | ArtifactKind::MacOsPackage),
+            Self::DiskImage => matches!(kind, ArtifactKind::DiskImage),
+            Self::Archive => matches!(kind, ArtifactKind::Archive | ArtifactKind::Makeself),
+            Self::Binary => matches!(
+                kind,
+                ArtifactKind::Binary
+                    | ArtifactKind::UploadableBinary
+                    | ArtifactKind::UniversalBinary
+            ),
+            Self::Sbom => matches!(kind, ArtifactKind::Sbom),
+            Self::Image => matches!(
+                kind,
+                ArtifactKind::DockerImage
+                    | ArtifactKind::DockerImageV2
+                    | ArtifactKind::PublishableDockerImage
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
