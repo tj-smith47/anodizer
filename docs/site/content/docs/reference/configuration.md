@@ -362,7 +362,7 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `caveats` | string | — | Custom caveats shown after install. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. Default: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}" |
-| `completions` | HomebrewCaskCompletions | — | Shell completion definitions. |
+| `completion` | HomebrewCaskCompletion | — | Shell completion definitions. |
 | `conflicts` | list of HomebrewCaskConflictEntry | — | Conflicting casks or formulae. |
 | `custom_block` | string | — | Arbitrary Ruby code inserted into the cask block. |
 | `dependencies` | list of HomebrewCaskDependencyEntry | — | Cask dependencies (other casks or formulae). |

@@ -898,15 +898,9 @@ pub(super) fn generate_cask_from_context(
         custom_block: cask_cfg.custom_block.as_deref(),
         service: cask_cfg.service.as_deref(),
         manpages: cask_cfg.manpages.as_deref().unwrap_or(&empty_vec),
-        completions_bash: cask_cfg
-            .completions
-            .as_ref()
-            .and_then(|c| c.bash.as_deref()),
-        completions_zsh: cask_cfg.completions.as_ref().and_then(|c| c.zsh.as_deref()),
-        completions_fish: cask_cfg
-            .completions
-            .as_ref()
-            .and_then(|c| c.fish.as_deref()),
+        completions_bash: cask_cfg.completion.as_ref().and_then(|c| c.bash.as_deref()),
+        completions_zsh: cask_cfg.completion.as_ref().and_then(|c| c.zsh.as_deref()),
+        completions_fish: cask_cfg.completion.as_ref().and_then(|c| c.fish.as_deref()),
         platforms: if use_platforms {
             platform_blocks
         } else {

@@ -76,7 +76,7 @@ homebrew_casks:
       template: ""                   # optional; download URL template
       verified: ""                   # optional
       using: ""                      # optional; download strategy
-    completions:
+    completion:
       bash: ""                       # optional; path to bash completion
       zsh: ""                        # optional
       fish: ""                       # optional

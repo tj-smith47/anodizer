@@ -211,15 +211,9 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
             .and_then(|p| p.uninstall.as_deref());
 
         // Extract completions
-        let completions_bash = cask_cfg
-            .completions
-            .as_ref()
-            .and_then(|c| c.bash.as_deref());
-        let completions_zsh = cask_cfg.completions.as_ref().and_then(|c| c.zsh.as_deref());
-        let completions_fish = cask_cfg
-            .completions
-            .as_ref()
-            .and_then(|c| c.fish.as_deref());
+        let completions_bash = cask_cfg.completion.as_ref().and_then(|c| c.bash.as_deref());
+        let completions_zsh = cask_cfg.completion.as_ref().and_then(|c| c.zsh.as_deref());
+        let completions_fish = cask_cfg.completion.as_ref().and_then(|c| c.fish.as_deref());
 
         let manpages = cask_cfg.manpages.as_deref().unwrap_or(&empty_vec);
 
