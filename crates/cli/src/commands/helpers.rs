@@ -983,7 +983,15 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
         None
     };
 
-    let force_token = resolve_force_token_with_env(config, ctx.env_source());
+    // Resolution priority: explicit `release.provider:` (GoReleaser Pro
+    // cross-platform publishing) > top-level `force_token:` > env-var
+    // detection. `release.provider:` makes the cross-platform case
+    // declarative: a project that lives on GitLab but publishes to
+    // GitHub declares `provider: github` and the token detection
+    // honours it without needing the user to clear `GITLAB_TOKEN`.
+    let provider_force = config.release.as_ref().and_then(|r| r.provider.clone());
+    let force_token =
+        provider_force.or_else(|| resolve_force_token_with_env(config, ctx.env_source()));
 
     ctx.token_type = scm::resolve_token_type(force_token.as_ref(), env_hint);
 

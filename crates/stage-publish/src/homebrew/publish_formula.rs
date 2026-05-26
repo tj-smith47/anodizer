@@ -368,6 +368,11 @@ struct CaskInTapOutcome {
     cask_name: Option<String>,
     /// On-disk path of the written cask (for `git add`) when one was written.
     cask_path: Option<PathBuf>,
+    /// Additional versioned alt-name `.rb` files (GR Pro
+    /// `alternative_names:` versioned-file emission). Each entry is
+    /// included in the commit set so the tap commit covers every file
+    /// touched by this publish.
+    versioned_paths: Vec<PathBuf>,
 }
 
 /// When a cask config is present alongside the formula config, generate and
@@ -397,18 +402,47 @@ fn maybe_write_cask_into_tap(
     }
     let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg)?;
 
-    let casks_dir = repo_path.join("Casks");
-    std::fs::create_dir_all(&casks_dir)
-        .with_context(|| format!("homebrew cask: create Casks dir {}", casks_dir.display()))?;
+    // Honor `cask.directory:` (GR cask.go:65-67) so a tap can place
+    // casks in a sub-tree. Defaults to "Casks". The cask config field
+    // takes precedence; without it we land at the conventional
+    // homebrew-cask path.
+    let directory_raw = cask_cfg.directory.as_deref().unwrap_or("Casks");
+    let directory = ctx
+        .render_template(directory_raw)
+        .unwrap_or_else(|_| directory_raw.to_string());
+    let casks_dir = repo_path.join(&directory);
+    std::fs::create_dir_all(&casks_dir).with_context(|| {
+        format!(
+            "homebrew cask: create {} dir {}",
+            directory,
+            casks_dir.display()
+        )
+    })?;
 
     let cask_path = casks_dir.join(format!("{}.rb", cask_result.cask_name));
     std::fs::write(&cask_path, &cask_result.content)
         .with_context(|| format!("homebrew cask: write cask file {}", cask_path.display()))?;
-
     log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
+
+    // Versioned alt-name files. Each emits a sibling `.rb` so users can
+    // `brew install <pkg>@<version>` for a pinned/downgrade install path.
+    let mut versioned_paths: Vec<PathBuf> = Vec::with_capacity(cask_result.versioned_files.len());
+    for (alt_name, body) in &cask_result.versioned_files {
+        let alt_path = casks_dir.join(format!("{}.rb", alt_name));
+        std::fs::write(&alt_path, body).with_context(|| {
+            format!(
+                "homebrew cask: write versioned cask file {}",
+                alt_path.display()
+            )
+        })?;
+        log.status(&format!("wrote Homebrew cask: {}", alt_path.display()));
+        versioned_paths.push(alt_path);
+    }
+
     Ok(CaskInTapOutcome {
         cask_name: Some(cask_result.cask_name),
         cask_path: Some(cask_path),
+        versioned_paths,
     })
 }
 
@@ -428,9 +462,17 @@ fn commit_files_to_tap(
 ) -> Result<crate::util::CommitOutcome> {
     let formula_lossy = formula_path.to_string_lossy();
     let cask_lossy = cask.cask_path.as_ref().map(|p| p.to_string_lossy());
+    let versioned_lossy: Vec<std::borrow::Cow<'_, str>> = cask
+        .versioned_paths
+        .iter()
+        .map(|p| p.to_string_lossy())
+        .collect();
     let mut files_to_commit: Vec<&str> = vec![&formula_lossy];
     if let Some(ref cl) = cask_lossy {
         files_to_commit.push(cl);
+    }
+    for v in &versioned_lossy {
+        files_to_commit.push(v.as_ref());
     }
 
     let kind = if cask.cask_name.is_some() {

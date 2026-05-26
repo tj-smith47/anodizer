@@ -224,7 +224,7 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `component` | string | — | Debian component name (e.g. "main"). |
-| `distributions` | map | — | Distribution mapping per format (e.g. `deb: "ubuntu/focal"`). |
+| `distributions` | map | — | Distribution mapping per format. Each entry accepts either a single slug (`deb: "ubuntu/focal"`) or an array of slugs (`deb: ["ubuntu/focal", "ubuntu/jammy"]`); the array form issues one upload per entry. Mirrors GoReleaser Pro v2.8+. |
 | `formats` | list of string | — | Package format filter: only publish artifacts matching these formats. |
 | `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `cloudsmiths[].if:`. |
@@ -330,7 +330,7 @@ DockerHub description sync configuration. Pushes image descriptions and README c
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `secret_name` | string | — | Environment variable name containing the DockerHub token. |
-| `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. |
+| `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's dockerhub field is `disable:`). |
 | `username` | string | — | DockerHub username for authentication. |
 
 ## `gemfury`
@@ -582,6 +582,11 @@ Paths / globs are resolved relative to the project root. `..` segments are accep
 | `mode` | string | — | Release mode: "keep-existing", "append", "prepend", or "replace". |
 | `name_template` | string | — | Release title template (supports templates). |
 | `prerelease` | object | — | Mark release as pre-release: true, false, or "auto" (inferred from tag). |
+| `provider` | ForceTokenKind | — | Explicit publish target — the SCM provider whose `release.<provider>` block the publisher uses. When set, overrides the implicit token-type fallback chain in [`crate::scm::resolve_token_type`].
+
+Use this for the GoReleaser Pro **cross-platform publishing** pattern: source repo on one provider (e.g. GitLab) but releases land on another (e.g. GitHub). Without it, the publish target is inferred from which `*_TOKEN` env-var is set — fine for single-provider setups but ambiguous when both tokens are available.
+
+```yaml release: provider: github github: owner: my-org name: my-app ``` |
 | `replace_existing_artifacts` | bool | — | When true, replace existing release artifacts with the same name. |
 | `replace_existing_draft` | bool | — | When true, replace an existing draft release instead of failing. |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.

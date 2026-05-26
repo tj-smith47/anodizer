@@ -91,15 +91,44 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         log,
     )?;
 
-    let casks_dir = repo_path.join("Casks");
-    std::fs::create_dir_all(&casks_dir)
-        .with_context(|| format!("homebrew cask: create Casks dir {}", casks_dir.display()))?;
+    // Honor `cask_cfg.directory:` so the tap can place casks in a sub-tree
+    // (e.g. `Casks/versioned/`) instead of always landing under `Casks/`.
+    // Mirrors GR Pro `internal/pipe/cask/cask.go:65-67`.
+    let directory_raw = cask_cfg.directory.as_deref().unwrap_or("Casks");
+    let directory = ctx
+        .render_template(directory_raw)
+        .unwrap_or_else(|_| directory_raw.to_string());
+    let casks_dir = repo_path.join(&directory);
+    std::fs::create_dir_all(&casks_dir).with_context(|| {
+        format!(
+            "homebrew cask: create {} dir {}",
+            directory,
+            casks_dir.display()
+        )
+    })?;
 
     let cask_path = casks_dir.join(format!("{}.rb", cask_result.cask_name));
     std::fs::write(&cask_path, &cask_result.content)
         .with_context(|| format!("homebrew cask: write cask file {}", cask_path.display()))?;
-
     log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
+
+    // GR Pro `alternative_names:` versioned-file emission. Each entry that
+    // renders to a token containing `@` (e.g. `myapp@1.2.3`) becomes its
+    // own `.rb` file so `brew install myapp@1.2.3` installs a pinned
+    // version. Aliases without `@` are rendered inline as `name "..."`
+    // directives (handled in `generate_cask_from_context`).
+    let mut written_paths: Vec<std::path::PathBuf> = vec![cask_path.clone()];
+    for (alt_name, body) in &cask_result.versioned_files {
+        let alt_path = casks_dir.join(format!("{}.rb", alt_name));
+        std::fs::write(&alt_path, body).with_context(|| {
+            format!(
+                "homebrew cask: write versioned cask file {}",
+                alt_path.display()
+            )
+        })?;
+        log.status(&format!("wrote Homebrew cask: {}", alt_path.display()));
+        written_paths.push(alt_path);
+    }
 
     let commit_msg = render_commit_msg(
         hb_cfg.commit_msg_template.as_deref(),
@@ -108,12 +137,16 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         "cask",
     );
 
-    let cask_lossy = cask_path.to_string_lossy();
+    let path_strings: Vec<String> = written_paths
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let path_refs: Vec<&str> = path_strings.iter().map(String::as_str).collect();
     let commit_opts = crate::util::resolve_commit_opts(ctx, hb_cfg.commit_author.as_ref());
     let branch = crate::util::resolve_branch(hb_cfg.repository.as_ref());
     let outcome = crate::util::commit_and_push_with_opts(
         repo_path,
-        &[&cask_lossy],
+        &path_refs,
         &commit_msg,
         branch,
         "homebrew cask",

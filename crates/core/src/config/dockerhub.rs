@@ -25,7 +25,13 @@ pub struct DockerHubConfig {
     /// Full description (README) source for the DockerHub repository.
     pub full_description: Option<DockerHubFullDescription>,
     /// Skip this publisher. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat
+    /// with imported GoReleaser configs (GR's dockerhub field is `disable:`).
+    #[serde(
+        deserialize_with = "deserialize_string_or_bool_opt",
+        default,
+        alias = "disable"
+    )]
     pub skip: Option<StringOrBool>,
     /// Override whether this publisher failing should fail the overall release.
     ///

@@ -458,6 +458,55 @@ pub(super) fn render_additional_url_params(
     out
 }
 
+/// Split rendered `alternative_names` into two groups:
+///
+/// - **Aliases**: pure-string alternative names that Homebrew treats as
+///   aliases — they render as additional `name "..."` directives INSIDE
+///   the primary cask file.
+/// - **Versioned files**: alternative names that contain an `@` (or any
+///   character invalid in a Homebrew cask token) — these emit a SECOND
+///   `.rb` file named after the alt entry (e.g. `myapp@1.2.3.rb`) so
+///   users can `brew install myapp@1.2.3` for a downgrade path.
+///
+/// The split mirrors GR Pro's `alternative_names:` semantics
+/// (`publish/homebrew_casks.md:28-35`): the example
+/// `myproject@{{ .Version }}` only makes sense as a separate file, since
+/// using it as an alias would mean every release overwrites the previous
+/// version's record.
+pub(super) fn split_alternative_names(
+    rendered: &[String],
+    cask_name: &str,
+) -> (Vec<String>, Vec<String>) {
+    let mut aliases: Vec<String> = Vec::new();
+    let mut versioned: Vec<String> = Vec::new();
+    for entry in rendered {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() || trimmed == cask_name {
+            continue;
+        }
+        if trimmed.contains('@') {
+            versioned.push(trimmed.to_string());
+        } else {
+            aliases.push(trimmed.to_string());
+        }
+    }
+    (aliases, versioned)
+}
+
+/// Pre-render every `alternative_names` entry through the user's template
+/// engine. A failure surfaces as `Err` so a typo in the template doesn't
+/// silently degrade the rendered cask body.
+pub(super) fn render_alternative_names(ctx: &Context, raw: &[String]) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    for entry in raw {
+        let rendered = ctx.render_template(entry).with_context(|| {
+            format!("homebrew cask: render alternative_names entry '{}'", entry)
+        })?;
+        out.push(rendered);
+    }
+    Ok(out)
+}
+
 /// Generate a Homebrew Cask Ruby file string from the given parameters.
 pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
     let tera = anodizer_core::template::parse_static("cask", CASK_TEMPLATE)
@@ -570,10 +619,17 @@ pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
 // ---------------------------------------------------------------------------
 
 /// Intermediate result from cask content generation: the rendered cask file
-/// string plus the cask name used as the filename stem.
+/// string, the cask name used as the filename stem, and any versioned
+/// alternative-name files to emit alongside (one extra `.rb` per entry).
 pub(super) struct CaskGenResult {
     pub(super) content: String,
     pub(super) cask_name: String,
+    /// Tuples of (filename-stem, file-body) for each versioned alt-name
+    /// (e.g. `myapp@1.2.3`). Empty when no alt-name templated to a
+    /// versioned form. Each body is the same as `content` but with the
+    /// `cask "<name>"` header re-keyed to the alt-name so
+    /// `brew install <alt>` resolves to the version-pinned cask.
+    pub(super) versioned_files: Vec<(String, String)>,
 }
 
 /// Generate a Homebrew Cask `.rb` file string from the project context.
@@ -876,10 +932,21 @@ pub(super) fn generate_cask_from_context(
         .map(|u| render_additional_url_params(u, "        "))
         .unwrap_or_default();
 
+    // Pre-render every `alternative_names` entry through the user's
+    // template engine. GR Pro docs (`homebrew_casks.md:28-35`) show
+    // `myproject@{{ .Version }}` which is templated, not literal. Without
+    // this pass the rendered Ruby would carry the unresolved `{{ .Version }}`
+    // substring and `brew style` would reject it.
+    let rendered_alts = render_alternative_names(
+        ctx,
+        cask_cfg.alternative_names.as_deref().unwrap_or(&empty_vec),
+    )?;
+    let (alias_alts, versioned_alts) = split_alternative_names(&rendered_alts, cask_name);
+
     let params = CaskParams {
         name: cask_name,
         display_name,
-        alternative_names: cask_cfg.alternative_names.as_deref().unwrap_or(&empty_vec),
+        alternative_names: &alias_alts,
         version: &version,
         sha256: &sha256,
         url: &url,
@@ -948,10 +1015,71 @@ pub(super) fn generate_cask_from_context(
             .and_then(render_generate_completions),
     };
 
+    let content = generate_cask(&params)?;
+
+    // For each versioned alt-name, emit a second .rb whose body re-keys
+    // the `cask "<name>" do` header to the alt-name and drops the
+    // (cosmetic) `alternative_names` aliases — the alt-name's own file
+    // does not need to advertise the others. The versioned cask is the
+    // pin: it points at the same URL/sha256 as the primary cask body, so
+    // a user who pinned to `myapp@1.2.3` can downgrade and stay there.
+    let mut versioned_files: Vec<(String, String)> = Vec::with_capacity(versioned_alts.len());
+    for alt in &versioned_alts {
+        let alt_params = CaskParams {
+            name: alt,
+            display_name: alt,
+            // Inside the versioned cask file, don't carry the alias list;
+            // the file's identity IS the alt-name.
+            alternative_names: &[],
+            ..clone_cask_params(&params)
+        };
+        let body = generate_cask(&alt_params)?;
+        versioned_files.push((alt.clone(), body));
+    }
+
     Ok(CaskGenResult {
-        content: generate_cask(&params)?,
+        content,
         cask_name: cask_name.to_string(),
+        versioned_files,
     })
+}
+
+/// Borrow-shaped clone of [`CaskParams`] used when re-rendering the same
+/// cask body under a different `name` / `display_name` (the versioned
+/// alt-name path). All references re-bind to the source struct's
+/// lifetime so the alt-name's own slices stay independent.
+pub(super) fn clone_cask_params<'a>(p: &'a CaskParams<'a>) -> CaskParams<'a> {
+    CaskParams {
+        name: p.name,
+        display_name: p.display_name,
+        alternative_names: p.alternative_names,
+        version: p.version,
+        sha256: p.sha256,
+        url: p.url,
+        url_extras: p.url_extras,
+        url_extras_indented: p.url_extras_indented,
+        homepage: p.homepage,
+        description: p.description,
+        app: p.app,
+        binaries: p.binaries,
+        caveats: p.caveats,
+        zap_block: p.zap_block,
+        uninstall_block: p.uninstall_block,
+        custom_block: p.custom_block,
+        service: p.service,
+        manpages: p.manpages,
+        completions_bash: p.completions_bash,
+        completions_zsh: p.completions_zsh,
+        completions_fish: p.completions_fish,
+        platforms: p.platforms.clone(),
+        depends_on: p.depends_on,
+        conflicts_with: p.conflicts_with,
+        preflight: p.preflight,
+        postflight: p.postflight,
+        uninstall_preflight: p.uninstall_preflight,
+        uninstall_postflight: p.uninstall_postflight,
+        generate_completions: p.generate_completions.clone(),
+    }
 }
 /// Find a macOS artifact for top-level cask config.
 /// Searches all artifacts (not per-crate) with optional ID filtering.

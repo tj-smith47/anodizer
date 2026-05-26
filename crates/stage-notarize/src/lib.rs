@@ -11,14 +11,28 @@ use anodizer_core::stage::Stage;
 // Helper: refresh artifact checksums after signing
 // ---------------------------------------------------------------------------
 
-/// Re-compute SHA256 for all darwin Binary/UniversalBinary artifacts whose
-/// files may have been modified by signing. Updates the `sha256` metadata
-/// field in-place (GoReleaser parity: macos.go:144 calls `binaries.Refresh()`).
+/// Re-compute SHA256 for all darwin artifacts whose bytes may have been
+/// rewritten by the signing / stapling steps. Covers:
+///
+/// - `Binary` / `UniversalBinary` — cross-platform `rcodesign sign`
+///   mutates the Mach-O in place.
+/// - `DiskImage` — native `xcrun stapler staple` rewrites the DMG with
+///   an embedded notarization ticket.
+/// - `MacOsPackage` — `productsign` produces a freshly-signed `.pkg`
+///   whose bytes differ from the unsigned input.
+///
+/// Skipping the DMG / PKG refresh would leave `metadata["sha256"]`
+/// pointing at the pre-sign bytes, so any downstream publisher
+/// (Homebrew cask, GitHub Release blob) would advertise a checksum that
+/// fails on `brew install` / `shasum -a 256 -c`.
 fn refresh_artifact_checksums(ctx: &mut Context, log: &anodizer_core::log::StageLogger) {
     for artifact in ctx.artifacts.all_mut() {
         if !matches!(
             artifact.kind,
-            ArtifactKind::Binary | ArtifactKind::UniversalBinary
+            ArtifactKind::Binary
+                | ArtifactKind::UniversalBinary
+                | ArtifactKind::DiskImage
+                | ArtifactKind::MacOsPackage
         ) {
             continue;
         }
@@ -91,6 +105,78 @@ use anodizer_core::artifact::matches_id_filter;
 /// canonical `anodizer_core::artifact::matches_id_filter` (GoReleaser `ByID`).
 fn matches_ids(artifact: &Artifact, ids: &Option<Vec<String>>) -> bool {
     matches_id_filter(artifact, ids.as_deref())
+}
+
+// ---------------------------------------------------------------------------
+// Base64 cert / key materialization
+// ---------------------------------------------------------------------------
+
+/// Detect whether `value` looks like a base64-encoded P12 / P8 blob
+/// (as opposed to a filesystem path). GR's `notarize.macos[*].sign.certificate`
+/// and `notarize.macos[*].notarize.key` both accept either spelling so the
+/// secret can flow through an env-var without a sidecar file. The heuristic:
+///
+/// 1. Value is non-empty.
+/// 2. Value does NOT contain a path separator (`/` or `\`).
+/// 3. Value is longer than typical bare filenames (>= 64 chars) so we
+///    don't false-positive on a literal `cert.p12`.
+/// 4. Value matches the base64 alphabet (`[A-Za-z0-9+/=]`) end-to-end.
+fn looks_like_base64(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    if value.contains('/') || value.contains('\\') {
+        return false;
+    }
+    if value.len() < 64 {
+        return false;
+    }
+    value
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'=' || b == b'\n' || b == b'\r')
+}
+
+/// Materialize a path-or-base64 value into a path the underlying tool
+/// (rcodesign) can read directly. Returns either the original path
+/// (string-cloned) or a [`tempfile::NamedTempFile`] that owns the
+/// decoded bytes for the lifetime of the caller. The caller must keep
+/// the [`MaterializedSecret`] alive until after the subprocess exits.
+struct MaterializedSecret {
+    /// Path string the caller passes to the subprocess.
+    path: String,
+    /// `Some` when we wrote a tempfile; `None` when we passed the user
+    /// path through verbatim. Dropped at the end of the caller's scope
+    /// to remove the on-disk decode.
+    _tempfile: Option<tempfile::NamedTempFile>,
+}
+
+fn materialize_secret(value: &str, label: &str) -> Result<MaterializedSecret> {
+    if !looks_like_base64(value) {
+        return Ok(MaterializedSecret {
+            path: value.to_string(),
+            _tempfile: None,
+        });
+    }
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(value.trim().replace(['\r', '\n'], "").as_bytes())
+        .with_context(|| format!("notarize: base64-decode {}", label))?;
+    let mut tf = tempfile::NamedTempFile::new()
+        .with_context(|| format!("notarize: create tempfile for {}", label))?;
+    {
+        use std::io::Write as _;
+        tf.write_all(&bytes)
+            .with_context(|| format!("notarize: write decoded bytes to tempfile for {}", label))?;
+    }
+    let path = tf
+        .path()
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("notarize: tempfile path is not valid UTF-8 for {}", label))?
+        .to_string();
+    Ok(MaterializedSecret {
+        path,
+        _tempfile: Some(tf),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -538,16 +624,25 @@ fn run_cross_platform(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("notarize: macos[{idx}] requires a 'sign' configuration"))?;
 
-    let certificate = ctx
+    let certificate_raw = ctx
         .render_template_opt(sign.certificate.as_deref())
         .with_context(|| format!("notarize: macos[{idx}] render sign.certificate"))?
         .ok_or_else(|| anyhow::anyhow!("notarize: macos[{idx}] sign.certificate is required"))?;
 
-    // Stat-check the P12 path before launching rcodesign so a typo or missing
-    // file produces a clean "certificate not found" error instead of an
-    // opaque rcodesign exit code partway through artifact iteration.
-    // Skipped in dry-run because dry-run never actually invokes rcodesign and
-    // upstream callers (incl. tests) commonly point to placeholder paths.
+    // GR docs allow `certificate:` to be either a path OR a base64-encoded
+    // P12 blob (the latter is the common shape for storing the cert in a
+    // CI secret store). Materialize the base64 form to a tempfile so
+    // rcodesign can read it via its `--p12-file` flag.
+    let _cert_secret = materialize_secret(&certificate_raw, "sign.certificate")
+        .with_context(|| format!("notarize: macos[{idx}] materialize sign.certificate"))?;
+    let certificate = _cert_secret.path.clone();
+
+    // Stat-check the resolved path before launching rcodesign so a typo or
+    // missing file produces a clean "certificate not found" error instead
+    // of an opaque rcodesign exit code partway through artifact
+    // iteration. Skipped in dry-run because dry-run never actually
+    // invokes rcodesign and upstream callers (incl. tests) commonly
+    // point to placeholder paths.
     if !dry_run && !std::path::Path::new(&certificate).exists() {
         bail!("notarize: macos[{idx}] sign.certificate path does not exist: '{certificate}'");
     }
@@ -561,14 +656,18 @@ fn run_cross_platform(
         .render_template_opt(sign.entitlements.as_deref())
         .with_context(|| format!("notarize: macos[{idx}] render sign.entitlements"))?;
 
-    // Render and validate notarize config fields (if present)
+    // Render and validate notarize config fields (if present). The
+    // `_key_secret` binding is lifted to the function scope so a
+    // materialized base64-decoded tempfile survives until the subprocess
+    // launches below.
+    let mut _key_secret: Option<MaterializedSecret> = None;
     let notarize_api = if let Some(ref ncfg) = cfg.notarize {
         let issuer_id = ctx.render_template_opt(ncfg.issuer_id.as_deref())
             .with_context(|| format!("notarize: macos[{idx}] render notarize.issuer_id"))?
             .ok_or_else(|| {
                 anyhow::anyhow!("notarize: macos[{idx}] notarize.issuer_id is required when notarize block is present")
             })?;
-        let key = ctx
+        let key_raw = ctx
             .render_template_opt(ncfg.key.as_deref())
             .with_context(|| format!("notarize: macos[{idx}] render notarize.key"))?
             .ok_or_else(|| {
@@ -576,11 +675,19 @@ fn run_cross_platform(
                     "notarize: macos[{idx}] notarize.key is required when notarize block is present"
                 )
             })?;
-        // Stat-check the API key file path before launching rcodesign so a
-        // typo or unmounted secret produces a clean "key not found" error
-        // instead of an opaque rcodesign exit code partway through artifact
-        // iteration. Skipped in dry-run for the same reason as the cert
-        // check above.
+        // Same path-or-base64 contract as the certificate above. The
+        // .p8 API key is commonly stored as `APPLE_API_KEY=$(cat key.p8 | base64)`
+        // in CI; materialize the base64 form to a tempfile that survives
+        // until the end of run_cross_platform.
+        let secret = materialize_secret(&key_raw, "notarize.key")
+            .with_context(|| format!("notarize: macos[{idx}] materialize notarize.key"))?;
+        let key = secret.path.clone();
+        _key_secret = Some(secret);
+        // Stat-check the resolved path before launching rcodesign so a
+        // typo or unmounted secret produces a clean "key not found"
+        // error instead of an opaque rcodesign exit code partway through
+        // artifact iteration. Skipped in dry-run for the same reason as
+        // the cert check above.
         if !dry_run && !std::path::Path::new(&key).exists() {
             bail!("notarize: macos[{idx}] notarize.key path does not exist: '{key}'");
         }
@@ -996,7 +1103,18 @@ fn run_native_dmg(
             let output = run_with_retry(&notarize_args, &label, log, &real_sleep)?;
             check_notarize_output(&output, &label, log)?;
 
-            // Staple if wait was enabled
+            // Staple if wait was enabled. Without `wait: true`, the
+            // submit returns before Apple completes processing, so the
+            // ticket isn't available to staple. Surface that explicitly
+            // so a user who expected a stapled DMG knows the publisher
+            // skipped that step on purpose.
+            if !params.wait {
+                log.status(&format!(
+                    "notarize: {} submitted (wait disabled; ticket will not be stapled — \
+                     end-users will need an internet connection on first launch)",
+                    dmg.name()
+                ));
+            }
             if params.wait {
                 let dmg_path_str = dmg_path.to_string();
                 let staple_args = ["xcrun", "stapler", "staple", &dmg_path_str];
@@ -1151,7 +1269,18 @@ fn run_native_pkg(
             let output = run_with_retry(&notarize_args, &label, log, &real_sleep)?;
             check_notarize_output(&output, &label, log)?;
 
-            // Staple if wait was enabled
+            // Without `wait: true`, the submit returns before Apple
+            // completes processing, so the ticket isn't available to
+            // staple. Surface that explicitly so a user who expected a
+            // stapled PKG knows the publisher skipped that step on
+            // purpose.
+            if !params.wait {
+                log.status(&format!(
+                    "notarize: {} submitted (wait disabled; ticket will not be stapled — \
+                     end-users will need an internet connection on first launch)",
+                    pkg.name()
+                ));
+            }
             if params.wait {
                 let pkg_path_str = pkg_path.to_string();
                 let staple_args = ["xcrun", "stapler", "staple", &pkg_path_str];
@@ -2408,5 +2537,64 @@ crates: []
         let args = vec!["false".to_string()];
         let result = run_with_retry(&args, "false-cmd", &log, &no_delay).unwrap();
         assert!(!result.status.success());
+    }
+
+    /// `refresh_artifact_checksums` must cover signed DMG and PKG artifacts
+    /// in addition to binaries — productsign and stapler rewrite bytes
+    /// in place, so any cached `sha256` metadata is stale unless we
+    /// recompute it after the signing pipeline.
+    #[test]
+    fn refresh_artifact_checksums_covers_dmg_and_pkg() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::tempdir().unwrap();
+
+        let dmg_path = tmp.path().join("app.dmg");
+        std::fs::write(&dmg_path, b"signed-dmg-bytes").unwrap();
+        let pkg_path = tmp.path().join("app.pkg");
+        std::fs::write(&pkg_path, b"signed-pkg-bytes").unwrap();
+
+        let mut dmg_md = HashMap::new();
+        dmg_md.insert("sha256".to_string(), "stale".to_string());
+        let mut pkg_md = HashMap::new();
+        pkg_md.insert("sha256".to_string(), "stale".to_string());
+
+        let mut config = Config::default();
+        config.project_name = "p".to_string();
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.artifacts.add(Artifact {
+            name: "app.dmg".to_string(),
+            path: PathBuf::from(&dmg_path),
+            kind: ArtifactKind::DiskImage,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "p".to_string(),
+            metadata: dmg_md,
+            size: None,
+        });
+        ctx.artifacts.add(Artifact {
+            name: "app.pkg".to_string(),
+            path: PathBuf::from(&pkg_path),
+            kind: ArtifactKind::MacOsPackage,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "p".to_string(),
+            metadata: pkg_md,
+            size: None,
+        });
+
+        let log = test_logger();
+        refresh_artifact_checksums(&mut ctx, &log);
+
+        for art in ctx.artifacts.all() {
+            let sha = art.metadata.get("sha256").expect("sha256 set");
+            assert_ne!(sha, "stale", "{} sha256 must be refreshed", art.name);
+            assert_eq!(sha.len(), 64, "sha256 must be 64 hex chars");
+        }
     }
 }

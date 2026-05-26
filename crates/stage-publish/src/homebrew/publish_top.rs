@@ -269,10 +269,22 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
 
         let manpages = cask_cfg.manpages.as_deref().unwrap_or(&empty_vec);
 
+        // Pre-render `alternative_names` entries through the template engine
+        // (GR Pro `myproject@{{ .Version }}` style) and split into aliases
+        // vs versioned-file emission. Aliases stay inside the primary
+        // file; versioned alt-names get their own `.rb` so users can
+        // `brew install myapp@1.2.3`.
+        let rendered_alts = super::cask::render_alternative_names(
+            ctx,
+            cask_cfg.alternative_names.as_deref().unwrap_or(&empty_vec),
+        )?;
+        let (alias_alts, versioned_alts) =
+            super::cask::split_alternative_names(&rendered_alts, cask_name);
+
         let params = CaskParams {
             name: cask_name,
             display_name: cask_name,
-            alternative_names: cask_cfg.alternative_names.as_deref().unwrap_or(&empty_vec),
+            alternative_names: &alias_alts,
             version: &version,
             sha256: &sha256,
             url: &url,
@@ -332,8 +344,29 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
         let cask_path = cask_dir.join(format!("{}.rb", cask_name));
         std::fs::write(&cask_path, &content)
             .with_context(|| format!("homebrew_casks: write cask file {}", cask_path.display()))?;
-
         log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
+
+        // Emit one extra `.rb` per versioned alt-name (e.g. `myapp@1.2.3.rb`)
+        // so users can `brew install myapp@1.2.3` to pin / downgrade.
+        let mut written_paths: Vec<std::path::PathBuf> = vec![cask_path.clone()];
+        for alt in &versioned_alts {
+            let alt_params = CaskParams {
+                name: alt,
+                display_name: alt,
+                alternative_names: &[],
+                ..super::cask::clone_cask_params(&params)
+            };
+            let alt_body = generate_cask(&alt_params)?;
+            let alt_path = cask_dir.join(format!("{}.rb", alt));
+            std::fs::write(&alt_path, &alt_body).with_context(|| {
+                format!(
+                    "homebrew_casks: write versioned cask file {}",
+                    alt_path.display()
+                )
+            })?;
+            log.status(&format!("wrote Homebrew cask: {}", alt_path.display()));
+            written_paths.push(alt_path);
+        }
 
         // Render commit message.
         let commit_msg = render_commit_msg(
@@ -343,12 +376,16 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
             "cask",
         );
 
-        let cask_lossy = cask_path.to_string_lossy();
+        let path_strings: Vec<String> = written_paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        let path_refs: Vec<&str> = path_strings.iter().map(String::as_str).collect();
         let commit_opts = crate::util::resolve_commit_opts(ctx, cask_cfg.commit_author.as_ref());
         let branch = crate::util::resolve_branch(repo_cfg);
         let outcome = crate::util::commit_and_push_with_opts(
             repo_path,
-            &[&cask_lossy],
+            &path_refs,
             &commit_msg,
             branch,
             "homebrew_casks",

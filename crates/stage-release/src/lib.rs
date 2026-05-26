@@ -119,8 +119,13 @@ pub(crate) fn populate_artifact_download_urls(
 // render_repo_ref
 // ---------------------------------------------------------------------------
 
-/// Pick the `ScmRepoConfig` for the active token type (with github
-/// fallback) and template-render its `owner` and `name` fields.
+/// Pick the `ScmRepoConfig` for the active publish target and template-render
+/// its `owner` and `name` fields.
+///
+/// Resolution order:
+/// 1. Explicit `release.provider:` (GR Pro cross-platform publishing).
+/// 2. Active SCM token type with provider-side fallback (the historical
+///    behaviour — preserved so existing configs don't change shape).
 ///
 /// Returns `Ok(None)` when no matching block is configured.
 pub(crate) fn resolve_release_repo(
@@ -128,10 +133,20 @@ pub(crate) fn resolve_release_repo(
     token_type: ScmTokenType,
     ctx: &anodizer_core::context::Context,
 ) -> Result<Option<anodizer_core::config::ScmRepoConfig>> {
-    let raw = match token_type {
-        ScmTokenType::GitLab => release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref()),
-        ScmTokenType::Gitea => release_cfg.gitea.as_ref().or(release_cfg.github.as_ref()),
-        ScmTokenType::GitHub => release_cfg.github.as_ref(),
+    // Explicit `release.provider:` wins over token-type inference. This
+    // is the cross-platform publishing seam: a project hosted on GitLab
+    // (so `GITLAB_TOKEN` is the active token) can declare
+    // `provider: github` to redirect publish output to GitHub.
+    use anodizer_core::config::ForceTokenKind;
+    let raw = match release_cfg.provider {
+        Some(ForceTokenKind::GitHub) => release_cfg.github.as_ref(),
+        Some(ForceTokenKind::GitLab) => release_cfg.gitlab.as_ref(),
+        Some(ForceTokenKind::Gitea) => release_cfg.gitea.as_ref(),
+        None => match token_type {
+            ScmTokenType::GitLab => release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref()),
+            ScmTokenType::Gitea => release_cfg.gitea.as_ref().or(release_cfg.github.as_ref()),
+            ScmTokenType::GitHub => release_cfg.github.as_ref(),
+        },
     };
     let Some(repo) = raw else {
         return Ok(None);
@@ -143,6 +158,22 @@ pub(crate) fn resolve_release_repo(
         .render_template(&repo.name)
         .with_context(|| format!("release: render repo.name '{}'", repo.name))?;
     Ok(Some(anodizer_core::config::ScmRepoConfig { owner, name }))
+}
+
+/// Map an explicit `release.provider:` (when set) to the [`ScmTokenType`]
+/// the rest of the release pipeline should use for URL composition,
+/// auth-header selection, and asset-upload routing. Returns `None` when
+/// no explicit provider was declared so the caller falls back to the
+/// token-type detection chain.
+pub fn release_provider_token_type(
+    release_cfg: &anodizer_core::config::ReleaseConfig,
+) -> Option<ScmTokenType> {
+    use anodizer_core::config::ForceTokenKind;
+    release_cfg.provider.as_ref().map(|p| match p {
+        ForceTokenKind::GitHub => ScmTokenType::GitHub,
+        ForceTokenKind::GitLab => ScmTokenType::GitLab,
+        ForceTokenKind::Gitea => ScmTokenType::Gitea,
+    })
 }
 
 /// Compose the public release HTML URL for the active SCM provider.

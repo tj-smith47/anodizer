@@ -46,18 +46,35 @@ fn decode_dockerhub_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<
 /// The `from_url` branch routes through [`retry_http_blocking`] so transient
 /// 5xx / 429 / network failures retry per the user's top-level `retry:`
 /// policy; 4xx fast-fails so a typo'd URL surfaces immediately.
+///
+/// Both `from_file.path` and `from_url.url` are template-rendered through
+/// `ctx` before use so configs like
+/// `from_url: { url: "https://raw.githubusercontent.com/{{ .Env.OWNER }}/.../README.md" }`
+/// work as documented.
 pub fn resolve_full_description(
     desc: &DockerHubFullDescription,
+    ctx: &Context,
     client: &reqwest::blocking::Client,
     policy: &RetryPolicy,
 ) -> Result<String> {
     if let Some(ref from_file) = desc.from_file {
-        return std::fs::read_to_string(&from_file.path)
-            .with_context(|| format!("dockerhub: failed to read file '{}'", from_file.path));
+        let path = ctx.render_template(&from_file.path).with_context(|| {
+            format!(
+                "dockerhub: render full_description from_file path '{}'",
+                from_file.path
+            )
+        })?;
+        return std::fs::read_to_string(&path)
+            .with_context(|| format!("dockerhub: failed to read file '{}'", path));
     }
 
     if let Some(ref from_url) = desc.from_url {
-        let url = from_url.url.clone();
+        let url = ctx.render_template(&from_url.url).with_context(|| {
+            format!(
+                "dockerhub: render full_description from_url '{}'",
+                from_url.url
+            )
+        })?;
         let headers = from_url.headers.clone();
         let label = format!("dockerhub: fetch full_description from {}", url);
         let (_, body) = retry_http_blocking(
@@ -147,6 +164,13 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
     // GoReleaser, where the retryx policy is captured once per pipe).
     let policy = ctx.retry_policy();
 
+    // JWT cache keyed by `(username, secret_env_name)`. When N entries
+    // share the same login pair we authenticate once and reuse the
+    // bearer across PATCHes — saves API calls AND reduces the number
+    // of times the secret value crosses the wire.
+    let mut jwt_cache: std::collections::HashMap<(String, String), String> =
+        std::collections::HashMap::new();
+
     for entry in entries {
         // Check skip flag.
         if let Some(ref d) = entry.skip {
@@ -184,7 +208,19 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             },
         };
 
-        let images = entry.images.as_deref().unwrap_or_default();
+        // Render each image entry through the template engine. GR docs
+        // say image entries are templated; without this pass a config like
+        // `images: ["{{ .Env.NAMESPACE }}/myapp"]` would be rejected as
+        // malformed by the path-validation loop below.
+        let raw_images = entry.images.as_deref().unwrap_or_default();
+        let mut rendered_images: Vec<String> = Vec::with_capacity(raw_images.len());
+        for image in raw_images {
+            let rendered = ctx
+                .render_template(image)
+                .with_context(|| format!("dockerhub: render image '{}'", image))?;
+            rendered_images.push(rendered);
+        }
+        let images: &[String] = &rendered_images;
 
         if images.is_empty() {
             ctx.strict_guard(log, "dockerhub: no images configured, skipping entry")?;
@@ -260,7 +296,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         // Resolve full description if configured (after dry-run check).
         let full_desc = match entry.full_description {
             Some(ref fd) => Some(
-                resolve_full_description(fd, client, &policy)
+                resolve_full_description(fd, ctx, client, &policy)
                     .context("dockerhub: failed to resolve full_description")?,
             ),
             None => None,
@@ -277,40 +313,51 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             continue;
         }
 
-        // Authenticate: POST to get JWT token.
-        let password = ctx
-            .env_var(secret_name)
-            .ok_or_else(|| anyhow!("dockerhub: environment variable '{}' not set", secret_name))?;
+        // Authenticate: POST to get JWT token. Reuse a cached JWT when
+        // multiple entries share the same (username, secret_env_name)
+        // pair so we don't pay the login round-trip per entry.
+        let cache_key = (username.clone(), secret_name.to_string());
+        let token = if let Some(cached) = jwt_cache.get(&cache_key) {
+            cached.clone()
+        } else {
+            let password = ctx.env_var(secret_name).ok_or_else(|| {
+                anyhow!("dockerhub: environment variable '{}' not set", secret_name)
+            })?;
 
-        let login_body = serde_json::json!({
-            "username": username,
-            "password": password,
-        });
+            let login_body = serde_json::json!({
+                "username": username,
+                "password": password,
+            });
 
-        let (_, login_body_text) = retry_http_blocking(
-            "dockerhub: authenticate",
-            &policy,
-            SuccessClass::Strict,
-            |_| {
-                client
-                    .post("https://hub.docker.com/v2/users/login/")
-                    .json(&login_body)
-                    .send()
-            },
-            |status, body| {
-                format!(
-                    "dockerhub: authentication failed (HTTP {status}): {}",
-                    redact_bearer_tokens(body)
-                )
-            },
-        )?;
+            let (_, login_body_text) = retry_http_blocking(
+                "dockerhub: authenticate",
+                &policy,
+                SuccessClass::Strict,
+                |_| {
+                    client
+                        .post("https://hub.docker.com/v2/users/login/")
+                        .json(&login_body)
+                        .send()
+                },
+                |status, body| {
+                    format!(
+                        "dockerhub: authentication failed (HTTP {status}): {}",
+                        redact_bearer_tokens(body)
+                    )
+                },
+            )?;
 
-        let login_json: serde_json::Value = serde_json::from_str(&login_body_text)
-            .context("dockerhub: failed to parse login response")?;
+            let login_json: serde_json::Value = serde_json::from_str(&login_body_text)
+                .context("dockerhub: failed to parse login response")?;
 
-        let token = login_json["token"]
-            .as_str()
-            .ok_or_else(|| anyhow!("dockerhub: no token in login response"))?;
+            let token_str = login_json["token"]
+                .as_str()
+                .ok_or_else(|| anyhow!("dockerhub: no token in login response"))?
+                .to_string();
+            jwt_cache.insert(cache_key.clone(), token_str.clone());
+            token_str
+        };
+        let token = token.as_str();
 
         // PATCH each image repository.
         for image in images {
@@ -364,6 +411,28 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
                 .get("full_description")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
+
+            // Content-hash idempotency: skip the PATCH entirely when the
+            // snapshot already matches the values we'd send. Saves an API
+            // call AND keeps the Docker Hub audit log free of no-op
+            // "description updated" entries.
+            let short_unchanged = if short_desc.is_empty() {
+                true
+            } else {
+                snapshot_description.as_deref() == Some(short_desc)
+            };
+            let full_unchanged = match (&snapshot_full_description, &full_desc) {
+                (_, None) => true,
+                (Some(prev), Some(new)) => prev == new,
+                (None, Some(new)) => new.is_empty(),
+            };
+            if short_unchanged && full_unchanged {
+                log.status(&format!(
+                    "dockerhub: no changes for '{}' (description / full_description match remote); skipping PATCH",
+                    image
+                ));
+                continue;
+            }
 
             let mut patch_body = serde_json::Map::new();
             if !short_desc.is_empty() {
@@ -871,6 +940,10 @@ mod tests {
         }
     }
 
+    fn render_ctx() -> Context {
+        dry_run_ctx(Config::default())
+    }
+
     #[test]
     fn test_resolve_full_description_from_file() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -884,7 +957,9 @@ mod tests {
             }),
             from_url: None,
         };
-        let result = resolve_full_description(&desc, &client, &fast_policy()).expect("resolve");
+        let ctx = render_ctx();
+        let result =
+            resolve_full_description(&desc, &ctx, &client, &fast_policy()).expect("resolve");
         assert_eq!(result, "# My App\nDescription here");
     }
 
@@ -897,7 +972,8 @@ mod tests {
             }),
             from_url: None,
         };
-        assert!(resolve_full_description(&desc, &client, &fast_policy()).is_err());
+        let ctx = render_ctx();
+        assert!(resolve_full_description(&desc, &ctx, &client, &fast_policy()).is_err());
     }
 
     #[test]
@@ -907,7 +983,28 @@ mod tests {
             from_file: None,
             from_url: None,
         };
-        assert!(resolve_full_description(&desc, &client, &fast_policy()).is_err());
+        let ctx = render_ctx();
+        assert!(resolve_full_description(&desc, &ctx, &client, &fast_policy()).is_err());
+    }
+
+    /// `disable:` is a serde alias for `skip:` so YAML configs imported from
+    /// GoReleaser parse without renaming the field.
+    #[test]
+    fn dockerhub_disable_alias_parses_as_skip() {
+        let yaml = r#"
+project_name: test
+dockerhub:
+  - username: u
+    images:
+      - org/img
+    disable: true
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).expect("parse");
+        let entry = &cfg.dockerhub.as_ref().expect("dockerhub")[0];
+        match entry.skip.as_ref().expect("skip set via disable alias") {
+            StringOrBool::Bool(b) => assert!(*b),
+            other => panic!("expected Bool(true), got {:?}", other),
+        }
     }
 
     #[test]
@@ -964,7 +1061,8 @@ mod tests {
                 headers: None,
             }),
         };
-        let err = resolve_full_description(&desc, &client, &fast_policy()).expect_err("err");
+        let ctx = render_ctx();
+        let err = resolve_full_description(&desc, &ctx, &client, &fast_policy()).expect_err("err");
         let chain = format!("{err:#}");
         assert!(
             chain.contains("dockerhub: fetch full_description")
@@ -1001,7 +1099,8 @@ mod tests {
                 headers: None,
             }),
         };
-        let body = resolve_full_description(&desc, &client, &fast_policy())
+        let ctx = render_ctx();
+        let body = resolve_full_description(&desc, &ctx, &client, &fast_policy())
             .expect("retries 5xx then succeeds");
         assert_eq!(body, "hello");
         assert_eq!(
@@ -1042,7 +1141,8 @@ mod tests {
                 headers: None,
             }),
         };
-        let err = resolve_full_description(&desc, &client, &fast_policy())
+        let ctx = render_ctx();
+        let err = resolve_full_description(&desc, &ctx, &client, &fast_policy())
             .expect_err("500 exhaustion must error");
         let chain = format!("{err:#}");
         assert!(

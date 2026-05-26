@@ -16,8 +16,32 @@ pub fn cloudsmith_default_formats() -> Vec<&'static str> {
 }
 
 /// Check if a filename matches any of the given format extensions.
+///
+/// The user-facing CloudSmith config (per Pro docs) uses `apk`, `deb`,
+/// `rpm`, `src.rpm` as filter slugs. CloudSmith's API path slug for
+/// `.apk` files is `alpine`, so users may write either spelling — both
+/// are recognized here. `srpm` / `src.rpm` strip the dotted prefix when
+/// matched against a `.src.rpm` filename (the dotted slug otherwise
+/// won't match through the generic suffix helper).
 pub fn cloudsmith_format_matches(filename: &str, formats: &[impl AsRef<str>]) -> bool {
-    crate::util::format_matches(filename, formats)
+    let lower = filename.to_ascii_lowercase();
+    for fmt in formats {
+        let raw = fmt.as_ref();
+        let suffix = match raw {
+            "alpine" => ".apk",
+            "srpm" | "src.rpm" => ".src.rpm",
+            other => {
+                if lower.ends_with(&format!(".{}", other)) {
+                    return true;
+                }
+                continue;
+            }
+        };
+        if lower.ends_with(suffix) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Cloudsmith API base URL (used for files/create and packages/upload/*).
@@ -36,17 +60,30 @@ pub fn cloudsmith_upload_url(org: &str, repo: &str, format: &str, distribution: 
 }
 
 /// Detect the package format from a filename extension.
+///
+/// Returns the CloudSmith API-side format slug (`alpine`, `deb`, `rpm`,
+/// `srpm`, or `raw`). `.src.rpm` is matched BEFORE `.rpm` because the
+/// suffix overlaps — CloudSmith treats source RPMs as a distinct format
+/// at `/packages/<org>/<repo>/upload/srpm/`.
 fn detect_format(filename: &str) -> &str {
-    if filename.ends_with(".deb") {
+    let lower = filename.to_ascii_lowercase();
+    if lower.ends_with(".src.rpm") {
+        "srpm"
+    } else if lower.ends_with(".deb") {
         "deb"
-    } else if filename.ends_with(".rpm") {
+    } else if lower.ends_with(".rpm") {
         "rpm"
-    } else if filename.ends_with(".apk") {
+    } else if lower.ends_with(".apk") {
         "alpine"
     } else {
         "raw"
     }
 }
+
+/// CloudSmith API format slugs that accept a Debian `component:` field.
+/// Other formats silently ignore `component`; the upload code drops it
+/// to avoid noise in the request body.
+const COMPONENT_BEARING_FORMATS: &[&str] = &["deb"];
 
 /// Outcome of checking whether a package already exists on Cloudsmith.
 /// Returned by [`check_cloudsmith_package_exists`].
@@ -285,18 +322,31 @@ pub(crate) fn publish_to_cloudsmith(
                 .collect(),
         };
 
-        // Resolve distributions map (format -> distro string).
-        let distributions: HashMap<String, String> = match entry.distributions {
-            Some(ref d) => d
-                .iter()
-                .map(|(k, v)| {
-                    let rendered_val = match v.as_str() {
-                        Some(s) => ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
-                        None => v.to_string(),
-                    };
-                    (k.clone(), rendered_val)
-                })
-                .collect(),
+        // Resolve distributions map (format -> Vec<distro string>). Each
+        // entry yields one or more distribution slugs (the publisher
+        // issues one upload per slug, GR Pro v2.8+ semantics). A
+        // template-rendering failure on any slug is a config error and
+        // hard-bails so a typo doesn't silently route an upload to the
+        // wrong distribution.
+        let distributions: HashMap<String, Vec<String>> = match entry.distributions {
+            Some(ref d) => {
+                let mut out: HashMap<String, Vec<String>> = HashMap::new();
+                for (k, v) in d {
+                    let raw_entries = v.as_slice();
+                    let mut rendered_entries: Vec<String> = Vec::with_capacity(raw_entries.len());
+                    for raw in raw_entries {
+                        let rendered = ctx.render_template(raw).with_context(|| {
+                            format!(
+                                "cloudsmith: render distribution slug '{}' for format '{}'",
+                                raw, k
+                            )
+                        })?;
+                        rendered_entries.push(rendered);
+                    }
+                    out.insert(k.clone(), rendered_entries);
+                }
+                out
+            }
             None => HashMap::new(),
         };
 
@@ -402,15 +452,27 @@ pub(crate) fn publish_to_cloudsmith(
             let art_name = artifact.name();
             let fmt = detect_format(art_name);
 
-            // Look up distribution for this format. Cloudsmith accepts an
+            // Look up distribution(s) for this format. Cloudsmith accepts an
             // `any-distro/any-version` pseudo-entry for repos that aren't
-            // distro-pinned, so an empty value is valid input and treated
-            // as "no distribution override".
-            let distro = distributions
-                .get(fmt)
-                .or_else(|| distributions.get(art_name))
-                .cloned()
-                .unwrap_or_default();
+            // distro-pinned, so an empty list is valid input and treated as
+            // "no distribution override". The array form (GR Pro v2.8+)
+            // produces one upload per slug.
+            //
+            // Routing is keyed on the API-side format slug (`apk`/`alpine`,
+            // `deb`, `rpm`, `srpm`). The user-facing config key may be
+            // either spelling — handle both so a config written against
+            // GR docs (which use `apk`) and one written against
+            // CloudSmith's API path (`alpine`) both work.
+            let distro_slugs: Vec<String> = {
+                let mut slugs: Vec<String> = distributions.get(fmt).cloned().unwrap_or_default();
+                if slugs.is_empty() && fmt == "alpine" {
+                    slugs = distributions.get("apk").cloned().unwrap_or_default();
+                }
+                if slugs.is_empty() && fmt == "srpm" {
+                    slugs = distributions.get("src.rpm").cloned().unwrap_or_default();
+                }
+                slugs
+            };
 
             let file_bytes = std::fs::read(path)
                 .with_context(|| format!("cloudsmith: failed to read '{}'", path.display()))?;
@@ -476,6 +538,15 @@ pub(crate) fn publish_to_cloudsmith(
                 }
             }
 
+            // Iterate at least once even when no distributions are
+            // configured. An empty slug means "no distribution override"
+            // (some repos are not distro-pinned).
+            let upload_slugs: Vec<String> = if distro_slugs.is_empty() {
+                vec![String::new()]
+            } else {
+                distro_slugs.clone()
+            };
+
             log.status(&format!(
                 "uploading {} ({}, {} bytes, md5={}) -> org '{}' repo '{}'{}",
                 art_name,
@@ -484,10 +555,10 @@ pub(crate) fn publish_to_cloudsmith(
                 md5_hex,
                 organization,
                 repository,
-                if distro.is_empty() {
+                if distro_slugs.is_empty() {
                     String::new()
                 } else {
-                    format!(" distro='{}'", distro)
+                    format!(" distros={:?}", distro_slugs)
                 },
             ));
 
@@ -596,149 +667,152 @@ pub(crate) fn publish_to_cloudsmith(
             // identifier + distribution tells Cloudsmith to take the
             // uploaded raw file and register it as a deb/rpm/alpine
             // package. Without this step the bytes are dangling.
+            //
+            // When multiple distributions are configured (GR Pro v2.8+
+            // array form), step 3 is issued once per slug — CloudSmith's
+            // API accepts only one `distribution` per call.
             let package_upload_url = format!(
                 "{}/packages/{}/{}/upload/{}/",
                 CLOUDSMITH_API_BASE, organization, repository, fmt
             );
-            let mut package_body = serde_json::json!({
-                "package_file": identifier,
-            });
-            if !distro.is_empty() {
-                package_body["distribution"] = serde_json::Value::String(distro.clone());
-            }
-            if let Some(ref comp) = component {
-                package_body["component"] = serde_json::Value::String(comp.clone());
-            }
-            if republish {
-                package_body["republish"] = serde_json::Value::Bool(true);
+            let component_for_format = component
+                .as_ref()
+                .filter(|_| COMPONENT_BEARING_FORMATS.contains(&fmt));
+            if component.is_some() && component_for_format.is_none() {
+                log.verbose(&format!(
+                    "cloudsmith: component is set but format '{}' does not accept a component; dropping",
+                    fmt
+                ));
             }
 
-            log.verbose(&format!(
-                "[step 3/3] POST {} (identifier={})",
-                package_upload_url, identifier
-            ));
-            let label = format!("packages/upload/{}", fmt);
-            let step3_result = retry_request(&label, art_name, &policy, log, || {
-                client
-                    .post(&package_upload_url)
-                    .header("Authorization", format!("token {}", token))
-                    .header("Accept", "application/json")
-                    .json(&package_body)
-                    .send()
-            });
+            for distro in &upload_slugs {
+                let mut package_body = serde_json::json!({
+                    "package_file": identifier,
+                });
+                if !distro.is_empty() {
+                    package_body["distribution"] = serde_json::Value::String(distro.clone());
+                }
+                if let Some(comp) = component_for_format {
+                    package_body["component"] = serde_json::Value::String(comp.clone());
+                }
+                if republish {
+                    package_body["republish"] = serde_json::Value::Bool(true);
+                }
 
-            let (pkg_status, pkg_body) = match step3_result {
-                Ok(pair) => pair,
-                Err(err) => {
-                    // Race-recovery: a concurrent CI loop can submit the
-                    // same name+version between our pre-check (or
-                    // first-attempt step-3) and this step-3, returning
-                    // 409/422 here. Without recovery, the upload aborts
-                    // even though the operator's intent — "land this
-                    // artifact on the registry" — was satisfied by the
-                    // racing process. Re-query the remote: if it now
-                    // exists with our md5, treat as idempotent skip; if
-                    // it exists with a different md5, surface the same
-                    // conflict the pre-check would have. Anything else
-                    // (transport failure, 5xx after retries) propagates.
-                    // Walk the anyhow chain to find the upstream HTTP
-                    // status `retry_http_blocking` wrapped into
-                    // `HttpError`. `root_cause()` would unwrap past
-                    // HttpError to the io::Error leaf; `.chain()` keeps
-                    // it visible.
-                    let status_in_chain: Option<u16> = err.chain().find_map(|e| {
-                        e.downcast_ref::<anodizer_core::retry::HttpError>()
-                            .map(|h| h.status)
-                    });
-                    let is_conflict = matches!(status_in_chain, Some(409) | Some(422));
-                    if !is_conflict {
-                        return Err(err);
-                    }
-                    log.warn(&format!(
-                        "cloudsmith: step-3 returned {:?} for '{}'; re-checking remote to \
-                         decide between idempotent skip and real conflict",
-                        status_in_chain, art_name
-                    ));
-                    match check_cloudsmith_package_exists(
-                        &client,
-                        &check_url,
-                        &check_query,
-                        &token,
-                        art_name,
-                        &md5_hex,
-                        &policy,
-                        log,
-                    )? {
-                        CloudsmithPackageState::SkipIdempotent => {
-                            // Bump severity to warn when the user
-                            // explicitly requested `republish: true`:
-                            // they expected to overwrite, and another
-                            // process beat us to landing the same
-                            // md5. Surfacing this above info-level
-                            // makes the unexpected race visible
-                            // instead of buried in verbose logs.
-                            let msg = format!(
-                                "cloudsmith: '{}' already landed with matching md5 \
-                                 (concurrent uploader); treating as idempotent skip",
-                                art_name
-                            );
-                            if republish {
-                                log.warn(&msg);
-                            } else {
-                                log.status(&msg);
-                            }
-                            // Skip target-record: nothing for OUR rollback
-                            // to delete (someone else owns this upload).
-                            continue;
-                        }
-                        CloudsmithPackageState::Md5Mismatch { remote } => {
-                            bail!(
-                                "cloudsmith: step-3 conflict for '{}' in org '{}' repo \
-                                 '{}'; remote md5={} differs from local={}. A concurrent \
-                                 upload submitted different bytes under the same name. \
-                                 Set republish: true to force overwrite, or bump the \
-                                 release.",
-                                art_name,
-                                organization,
-                                repository,
-                                remote,
-                                md5_hex
-                            );
-                        }
-                        CloudsmithPackageState::NotFound => {
-                            // 409/422 but nothing on the feed — surface
-                            // the original error (likely a distribution
-                            // mismatch or policy rejection, not a race).
+                log.verbose(&format!(
+                    "[step 3/3] POST {} (identifier={}, distro={:?})",
+                    package_upload_url, identifier, distro
+                ));
+                let label = format!("packages/upload/{}", fmt);
+                let step3_result = retry_request(&label, art_name, &policy, log, || {
+                    client
+                        .post(&package_upload_url)
+                        .header("Authorization", format!("token {}", token))
+                        .header("Accept", "application/json")
+                        .json(&package_body)
+                        .send()
+                });
+
+                let (pkg_status, pkg_body) = match step3_result {
+                    Ok(pair) => pair,
+                    Err(err) => {
+                        // Race-recovery: a concurrent CI loop can submit the
+                        // same name+version between our pre-check (or
+                        // first-attempt step-3) and this step-3, returning
+                        // 409/422 here. Without recovery, the upload aborts
+                        // even though the operator's intent — "land this
+                        // artifact on the registry" — was satisfied by the
+                        // racing process. Re-query the remote: if it now
+                        // exists with our md5, treat as idempotent skip; if
+                        // it exists with a different md5, surface the same
+                        // conflict the pre-check would have. Anything else
+                        // (transport failure, 5xx after retries) propagates.
+                        let status_in_chain: Option<u16> = err.chain().find_map(|e| {
+                            e.downcast_ref::<anodizer_core::retry::HttpError>()
+                                .map(|h| h.status)
+                        });
+                        let is_conflict = matches!(status_in_chain, Some(409) | Some(422));
+                        if !is_conflict {
                             return Err(err);
                         }
+                        log.warn(&format!(
+                            "cloudsmith: step-3 returned {:?} for '{}'; re-checking remote to \
+                             decide between idempotent skip and real conflict",
+                            status_in_chain, art_name
+                        ));
+                        match check_cloudsmith_package_exists(
+                            &client,
+                            &check_url,
+                            &check_query,
+                            &token,
+                            art_name,
+                            &md5_hex,
+                            &policy,
+                            log,
+                        )? {
+                            CloudsmithPackageState::SkipIdempotent => {
+                                let msg = format!(
+                                    "cloudsmith: '{}' already landed with matching md5 \
+                                     (concurrent uploader); treating as idempotent skip",
+                                    art_name
+                                );
+                                if republish {
+                                    log.warn(&msg);
+                                } else {
+                                    log.status(&msg);
+                                }
+                                continue;
+                            }
+                            CloudsmithPackageState::Md5Mismatch { remote } => {
+                                bail!(
+                                    "cloudsmith: step-3 conflict for '{}' in org '{}' repo \
+                                     '{}'; remote md5={} differs from local={}. A concurrent \
+                                     upload submitted different bytes under the same name. \
+                                     Set republish: true to force overwrite, or bump the \
+                                     release.",
+                                    art_name,
+                                    organization,
+                                    repository,
+                                    remote,
+                                    md5_hex
+                                );
+                            }
+                            CloudsmithPackageState::NotFound => {
+                                return Err(err);
+                            }
+                        }
                     }
-                }
-            };
+                };
 
-            let slug = serde_json::from_str::<serde_json::Value>(&pkg_body)
-                .ok()
-                .and_then(|v| {
-                    v.get("slug_perm")
-                        .or_else(|| v.get("slug"))
-                        .and_then(|s| s.as_str())
-                        .map(|s| s.to_string())
+                let slug = serde_json::from_str::<serde_json::Value>(&pkg_body)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("slug_perm")
+                            .or_else(|| v.get("slug"))
+                            .and_then(|s| s.as_str())
+                            .map(|s| s.to_string())
+                    });
+                if let Some(ref s) = slug {
+                    log.status(&format!(
+                        "uploaded {} (slug={}{})",
+                        art_name,
+                        s,
+                        if distro.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", distro={}", distro)
+                        }
+                    ));
+                } else {
+                    log.status(&format!("uploaded {} (HTTP {})", art_name, pkg_status));
+                }
+                uploaded.push(CloudsmithTarget {
+                    org: organization.clone(),
+                    repo: repository.clone(),
+                    filename: art_name.to_string(),
+                    slug,
                 });
-            if let Some(ref s) = slug {
-                log.status(&format!("uploaded {} (slug={})", art_name, s));
-            } else {
-                log.status(&format!("uploaded {} (HTTP {})", art_name, pkg_status));
             }
-            // Record what we uploaded so rollback can DELETE it. The slug
-            // is `None` when Cloudsmith's step-3 response shape changes
-            // and no `slug` / `slug_perm` field is parseable — rollback
-            // then degrades to the warn-only manual-cleanup checklist
-            // for that target (see [`cloudsmith_manual_cleanup_msg`]).
-            uploaded.push(CloudsmithTarget {
-                org: organization.clone(),
-                repo: repository.clone(),
-                filename: art_name.to_string(),
-                slug,
-            });
         }
 
         log.status(&format!(
@@ -1195,10 +1269,12 @@ mod tests {
 
     #[test]
     fn test_cloudsmith_dry_run_with_distributions() {
+        use anodizer_core::config::CloudSmithDistributions;
+
         let mut distributions = HashMap::new();
         distributions.insert(
             "deb".to_string(),
-            serde_json::Value::String("ubuntu/focal".to_string()),
+            CloudSmithDistributions::Single("ubuntu/focal".to_string()),
         );
 
         let mut config = Config::default();
@@ -1211,6 +1287,62 @@ mod tests {
         let ctx = dry_run_ctx(config);
         let log = ctx.logger("cloudsmith");
         assert!(publish_to_cloudsmith(&ctx, &log).is_ok());
+    }
+
+    /// YAML array form (`deb: ["ubuntu/focal", "ubuntu/jammy"]`) parses
+    /// into [`CloudSmithDistributions::Multiple`] (GR Pro v2.8+).
+    #[test]
+    fn distributions_array_form_parses() {
+        use anodizer_core::config::CloudSmithDistributions;
+        let yaml = "deb:\n  - ubuntu/focal\n  - ubuntu/jammy\n";
+        let parsed: HashMap<String, CloudSmithDistributions> =
+            serde_yaml_ng::from_str(yaml).unwrap();
+        match parsed.get("deb").unwrap() {
+            CloudSmithDistributions::Multiple(v) => {
+                assert_eq!(
+                    v,
+                    &vec!["ubuntu/focal".to_string(), "ubuntu/jammy".to_string()]
+                );
+            }
+            other => panic!("expected Multiple, got {:?}", other),
+        }
+    }
+
+    /// `.src.rpm` files map to the `srpm` format slug (NOT `rpm`).
+    #[test]
+    fn detect_format_distinguishes_src_rpm() {
+        assert_eq!(detect_format("pkg-1.0-1.src.rpm"), "srpm");
+        assert_eq!(detect_format("pkg-1.0-1.x86_64.rpm"), "rpm");
+        assert_eq!(
+            detect_format("pkg-1.0-1.SRC.rpm"),
+            "srpm",
+            "case-insensitive"
+        );
+    }
+
+    /// `cloudsmith_format_matches` accepts both `apk` (user-facing) and
+    /// `alpine` (API-side) spellings.
+    #[test]
+    fn format_matches_apk_and_alpine_aliases() {
+        assert!(cloudsmith_format_matches("pkg.apk", &["apk".to_string()]));
+        assert!(cloudsmith_format_matches(
+            "pkg.apk",
+            &["alpine".to_string()]
+        ));
+    }
+
+    /// `cloudsmith_format_matches` recognises both `srpm` and `src.rpm`
+    /// filter slugs against a `.src.rpm` file.
+    #[test]
+    fn format_matches_srpm_aliases() {
+        assert!(cloudsmith_format_matches(
+            "pkg-1.0-1.src.rpm",
+            &["srpm".to_string()]
+        ));
+        assert!(cloudsmith_format_matches(
+            "pkg-1.0-1.src.rpm",
+            &["src.rpm".to_string()]
+        ));
     }
 
     #[test]

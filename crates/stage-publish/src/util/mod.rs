@@ -62,7 +62,7 @@ pub(crate) use disambiguate::{DisambiguateConfig, disambiguate_by_format};
 pub(crate) use disambiguate::{
     InnerConfig as DisambiguateInnerConfig, disambiguate_by_format_with_sink,
 };
-pub(crate) use formats::{default_package_formats, format_matches};
+pub(crate) use formats::default_package_formats;
 pub(crate) use git_revert::RevertTarget;
 // `FindPrError` is reached through its `Display` impl only — krew's
 // rollback formats `{e}` directly without naming variants. Keeping it

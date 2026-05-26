@@ -22,7 +22,7 @@ pub struct NotarizeConfig {
 }
 
 /// Cross-platform macOS signing and notarization via `rcodesign`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct MacOSSignNotarizeConfig {
     /// Build IDs to filter. Default: project name.
@@ -31,12 +31,48 @@ pub struct MacOSSignNotarizeConfig {
     /// Replaces the previous `enabled:` toggle with the canonical
     /// `skip:` (inverted semantic) to align with every other publisher /
     /// pipe in anodizer.
+    ///
+    /// Back-compat: GoReleaser uses `enabled:` (opt-in, default false).
+    /// A YAML written against GR docs is accepted via the wire-level
+    /// `enabled:` alias that inverts the bool — `enabled: true` becomes
+    /// `skip: false`, `enabled: false` becomes `skip: true`. The
+    /// canonical field at runtime is `skip:`.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Signing configuration (P12 certificate).
     pub sign: Option<MacOSSignConfig>,
     /// Notarization configuration (App Store Connect API key). Omit for sign-only.
     pub notarize: Option<MacOSNotarizeApiConfig>,
+}
+
+/// Wire-format mirror used to accept GoReleaser's `enabled:` field as a
+/// deserialize-time alias for the canonical `skip:`. `enabled: true`
+/// inverts to `skip: false` (run); `enabled: false` inverts to
+/// `skip: true` (skip).
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct MacOSSignNotarizeConfigWire {
+    ids: Option<Vec<String>>,
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    skip: Option<StringOrBool>,
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    enabled: Option<StringOrBool>,
+    sign: Option<MacOSSignConfig>,
+    notarize: Option<MacOSNotarizeApiConfig>,
+}
+
+impl<'de> Deserialize<'de> for MacOSSignNotarizeConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = MacOSSignNotarizeConfigWire::deserialize(deserializer)?;
+        let skip = resolve_skip_with_enabled_alias(wire.skip, wire.enabled)
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            ids: wire.ids,
+            skip,
+            sign: wire.sign,
+            notarize: wire.notarize,
+        })
+    }
 }
 
 /// P12-certificate signing configuration for `rcodesign sign`.
@@ -123,13 +159,15 @@ pub enum MacOSNativeArtifactKind {
 }
 
 /// Native macOS signing and notarization via `codesign` + `xcrun notarytool`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct MacOSNativeSignNotarizeConfig {
     /// Build IDs to filter. Default: project name.
     pub ids: Option<Vec<String>>,
     /// Skip this configuration. Accepts bool or template string.
-    /// Replaces `enabled:` with the canonical `skip:`.
+    /// Replaces `enabled:` with the canonical `skip:`. Imported GR
+    /// configs may continue to write `enabled:` — the deserializer
+    /// inverts it into `skip:` so both spellings work.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Artifact type to sign and notarize: `dmg` (default) or `pkg`.
@@ -144,6 +182,93 @@ pub struct MacOSNativeSignNotarizeConfig {
     pub sign: Option<MacOSNativeSignConfig>,
     /// Native notarization configuration (xcrun notarytool).
     pub notarize: Option<MacOSNativeNotarizeConfig>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct MacOSNativeSignNotarizeConfigWire {
+    ids: Option<Vec<String>>,
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    skip: Option<StringOrBool>,
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    enabled: Option<StringOrBool>,
+    #[serde(rename = "use")]
+    use_: Option<MacOSNativeArtifactKind>,
+    sign: Option<MacOSNativeSignConfig>,
+    notarize: Option<MacOSNativeNotarizeConfig>,
+}
+
+impl<'de> Deserialize<'de> for MacOSNativeSignNotarizeConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = MacOSNativeSignNotarizeConfigWire::deserialize(deserializer)?;
+        let skip = resolve_skip_with_enabled_alias(wire.skip, wire.enabled)
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            ids: wire.ids,
+            skip,
+            use_: wire.use_,
+            sign: wire.sign,
+            notarize: wire.notarize,
+        })
+    }
+}
+
+/// Invert GR's `enabled:` (opt-in, default false) into anodizer's
+/// canonical `skip:` (opt-out, default false). Both keys may be present;
+/// if they conflict (e.g. `skip: true` AND `enabled: true`), surface a
+/// clear error.
+fn resolve_skip_with_enabled_alias(
+    skip: Option<StringOrBool>,
+    enabled: Option<StringOrBool>,
+) -> Result<Option<StringOrBool>, String> {
+    match (skip, enabled) {
+        (Some(s), None) => Ok(Some(s)),
+        (None, Some(e)) => Ok(Some(invert_string_or_bool(e))),
+        (None, None) => Ok(None),
+        (Some(s), Some(e)) => {
+            // Both spellings present. Allow the case where they agree on
+            // intent ("don't run") to be lenient with imported configs;
+            // disagreement is a config error.
+            let inverted = invert_string_or_bool(e);
+            if string_or_bool_eq(&s, &inverted) {
+                Ok(Some(s))
+            } else {
+                Err(format!(
+                    "notarize: both `skip:` and `enabled:` are set and disagree (`skip={:?}` / `enabled={:?}`); use one or the other",
+                    s, inverted
+                ))
+            }
+        }
+    }
+}
+
+/// Invert a [`StringOrBool`]. `Bool(b)` flips; `String(tmpl)` wraps in a
+/// Tera negation so the original template still drives the decision.
+fn invert_string_or_bool(v: StringOrBool) -> StringOrBool {
+    match v {
+        StringOrBool::Bool(b) => StringOrBool::Bool(!b),
+        StringOrBool::String(s) => {
+            let trimmed = s.trim();
+            // Map a literal `"true"` / `"false"` to its inverse without
+            // wrapping in a template — keeps round-tripping simple.
+            match trimmed {
+                "true" => StringOrBool::Bool(false),
+                "false" => StringOrBool::Bool(true),
+                _ => StringOrBool::String(format!(
+                    "{{% if {} %}}false{{% else %}}true{{% endif %}}",
+                    trimmed
+                )),
+            }
+        }
+    }
+}
+
+fn string_or_bool_eq(a: &StringOrBool, b: &StringOrBool) -> bool {
+    match (a, b) {
+        (StringOrBool::Bool(a), StringOrBool::Bool(b)) => a == b,
+        (StringOrBool::String(a), StringOrBool::String(b)) => a == b,
+        _ => false,
+    }
 }
 
 impl MacOSNativeSignNotarizeConfig {

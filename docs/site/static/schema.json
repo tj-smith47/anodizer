@@ -3254,13 +3254,15 @@
           ]
         },
         "distributions": {
-          "description": "Distribution mapping per format (e.g. `deb: \"ubuntu/focal\"`).",
+          "description": "Distribution mapping per format. Each entry accepts either a single slug (`deb: \"ubuntu/focal\"`) or an array of slugs (`deb: [\"ubuntu/focal\", \"ubuntu/jammy\"]`); the array form issues one upload per entry. Mirrors GoReleaser Pro v2.8+.",
           "default": null,
           "type": [
             "object",
             "null"
           ],
-          "additionalProperties": true
+          "additionalProperties": {
+            "$ref": "#/definitions/CloudSmithDistributions"
+          }
         },
         "formats": {
           "description": "Package format filter: only publish artifacts matching these formats.",
@@ -3348,6 +3350,22 @@
           ]
         }
       }
+    },
+    "CloudSmithDistributions": {
+      "description": "Per-format distribution value. Accepts either a single distribution string (`deb: \"ubuntu/focal\"`) or an array of distribution slugs (`deb: [\"ubuntu/focal\", \"ubuntu/jammy\"]`) — the array form mirrors GoReleaser Pro v2.8+ and causes the publisher to issue one upload per distribution slug.",
+      "anyOf": [
+        {
+          "description": "Single distribution slug (`\"ubuntu/focal\"`).",
+          "type": "string"
+        },
+        {
+          "description": "Multiple distribution slugs; the publisher uploads once per entry.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "CommitAuthorConfig": {
       "description": "Shared commit author configuration with optional GPG/SSH signing. Equivalent to GoReleaser's `CommitAuthor`.",
@@ -4448,7 +4466,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this publisher. Accepts bool or template string.",
+          "description": "Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's dockerhub field is `disable:`).",
           "default": null,
           "anyOf": [
             {
@@ -7045,7 +7063,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this configuration. Accepts bool or template string. Replaces `enabled:` with the canonical `skip:`.",
+          "description": "Skip this configuration. Accepts bool or template string. Replaces `enabled:` with the canonical `skip:`. Imported GR configs may continue to write `enabled:` — the deserializer inverts it into `skip:` so both spellings work.",
           "default": null,
           "anyOf": [
             {
@@ -7199,7 +7217,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this configuration. Accepts bool or template string. Replaces the previous `enabled:` toggle with the canonical `skip:` (inverted semantic) to align with every other publisher / pipe in anodizer.",
+          "description": "Skip this configuration. Accepts bool or template string. Replaces the previous `enabled:` toggle with the canonical `skip:` (inverted semantic) to align with every other publisher / pipe in anodizer.\n\nBack-compat: GoReleaser uses `enabled:` (opt-in, default false). A YAML written against GR docs is accepted via the wire-level `enabled:` alias that inverts the bool — `enabled: true` becomes `skip: false`, `enabled: false` becomes `skip: true`. The canonical field at runtime is `skip:`.",
           "default": null,
           "anyOf": [
             {
@@ -10624,6 +10642,17 @@
             },
             {
               "type": "boolean"
+            }
+          ]
+        },
+        "provider": {
+          "description": "Explicit publish target — the SCM provider whose `release.<provider>` block the publisher uses. When set, overrides the implicit token-type fallback chain in [`crate::scm::resolve_token_type`].\n\nUse this for the GoReleaser Pro **cross-platform publishing** pattern: source repo on one provider (e.g. GitLab) but releases land on another (e.g. GitHub). Without it, the publish target is inferred from which `*_TOKEN` env-var is set — fine for single-provider setups but ambiguous when both tokens are available.\n\n```yaml release: provider: github github: owner: my-org name: my-app ```",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ForceTokenKind"
+            },
+            {
+              "type": "null"
             }
           ]
         },

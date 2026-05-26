@@ -302,8 +302,10 @@ version = "0.1.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
+ "base64",
  "serde_yaml_ng",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]

@@ -7,6 +7,7 @@ pub(crate) fn default_package_formats() -> Vec<&'static str> {
 }
 
 /// Check if a filename matches any of the given format extensions.
+#[allow(dead_code)]
 pub(crate) fn format_matches(filename: &str, formats: &[impl AsRef<str>]) -> bool {
     formats
         .iter()

@@ -3090,12 +3090,13 @@ crates: []
     assert_eq!(macos[0].skip, Some(StringOrBool::Bool(false)));
 }
 
+/// GoReleaser writes `enabled:` (opt-in, default false) where anodizer
+/// writes `skip:` (opt-out once the block is present). The deserializer
+/// inverts the bool so a YAML imported from GR docs runs the pipeline
+/// instead of being rejected at parse time.
 #[test]
-fn test_notarize_macos_legacy_enabled_rejected() {
-    // `deny_unknown_fields` must reject legacy `enabled: true` on
-    // MacOSSignNotarizeConfig — without it, the field would silently
-    // drop and produce a confusing no-op pipeline run.
-    let yaml = r#"
+fn test_notarize_macos_enabled_alias_inverts_to_skip() {
+    let yaml_true = r#"
 notarize:
   macos:
     - enabled: true
@@ -3104,26 +3105,46 @@ notarize:
         password: pw
 crates: []
 "#;
-    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
-    assert!(
-        result.is_err(),
-        "legacy `enabled:` on MacOSSignNotarizeConfig must be rejected by deny_unknown_fields"
+    let cfg: Config = serde_yaml_ng::from_str(yaml_true).expect("enabled alias should parse");
+    let macos = cfg.notarize.unwrap().macos.unwrap();
+    assert_eq!(
+        macos[0].skip,
+        Some(StringOrBool::Bool(false)),
+        "`enabled: true` must invert to `skip: false`"
+    );
+
+    let yaml_false = r#"
+notarize:
+  macos:
+    - enabled: false
+      sign:
+        certificate: /tmp/cert.p12
+        password: pw
+crates: []
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml_false).expect("enabled alias should parse");
+    let macos = cfg.notarize.unwrap().macos.unwrap();
+    assert_eq!(
+        macos[0].skip,
+        Some(StringOrBool::Bool(true)),
+        "`enabled: false` must invert to `skip: true`"
     );
 }
 
 #[test]
-fn test_notarize_macos_native_legacy_enabled_rejected() {
-    // Same `deny_unknown_fields` check for MacOSNativeSignNotarizeConfig.
+fn test_notarize_macos_native_enabled_alias_inverts_to_skip() {
     let yaml = r#"
 notarize:
   macos_native:
     - enabled: true
 crates: []
 "#;
-    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
-    assert!(
-        result.is_err(),
-        "legacy `enabled:` on MacOSNativeSignNotarizeConfig must be rejected by deny_unknown_fields"
+    let cfg: Config = serde_yaml_ng::from_str(yaml).expect("enabled alias should parse");
+    let macos_native = cfg.notarize.unwrap().macos_native.unwrap();
+    assert_eq!(
+        macos_native[0].skip,
+        Some(StringOrBool::Bool(false)),
+        "`enabled: true` must invert to `skip: false`"
     );
 }
 
@@ -5385,7 +5406,41 @@ cloudsmiths:
     assert_eq!(cs.repository.as_deref(), Some("myrepo"));
     assert_eq!(cs.formats.as_ref().unwrap(), &["deb"]);
     let dists = cs.distributions.as_ref().unwrap();
-    assert_eq!(dists.get("deb").unwrap(), "ubuntu/focal");
+    match dists.get("deb").unwrap() {
+        crate::config::CloudSmithDistributions::Single(s) => {
+            assert_eq!(s, "ubuntu/focal");
+        }
+        other => panic!("expected Single, got {:?}", other),
+    }
+}
+
+/// Multi-distribution array form (GR Pro v2.8+): `deb: ["ubuntu/focal", ...]`
+/// must parse into [`CloudSmithDistributions::Multiple`] so the publisher
+/// can issue one upload per slug.
+#[test]
+fn test_cloudsmith_distributions_array_form() {
+    let yaml = r#"
+project_name: test
+cloudsmiths:
+  - organization: myorg
+    repository: myrepo
+    distributions:
+      deb:
+        - ubuntu/focal
+        - ubuntu/jammy
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let cs = &cfg.cloudsmiths.unwrap()[0];
+    let dists = cs.distributions.as_ref().unwrap();
+    match dists.get("deb").unwrap() {
+        crate::config::CloudSmithDistributions::Multiple(v) => {
+            assert_eq!(
+                v,
+                &vec!["ubuntu/focal".to_string(), "ubuntu/jammy".to_string()]
+            );
+        }
+        other => panic!("expected Multiple, got {:?}", other),
+    }
 }
 
 // -----------------------------------------------------------------------

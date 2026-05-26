@@ -98,6 +98,27 @@ pub struct ReleaseConfig {
     /// Set to `false` to log failures but continue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
+    /// Explicit publish target — the SCM provider whose `release.<provider>`
+    /// block the publisher uses. When set, overrides the implicit
+    /// token-type fallback chain in
+    /// [`crate::scm::resolve_token_type`].
+    ///
+    /// Use this for the GoReleaser Pro **cross-platform publishing**
+    /// pattern: source repo on one provider (e.g. GitLab) but releases
+    /// land on another (e.g. GitHub). Without it, the publish target
+    /// is inferred from which `*_TOKEN` env-var is set — fine for
+    /// single-provider setups but ambiguous when both tokens are
+    /// available.
+    ///
+    /// ```yaml
+    /// release:
+    ///   provider: github
+    ///   github:
+    ///     owner: my-org
+    ///     name: my-app
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ForceTokenKind>,
 }
 
 impl ReleaseConfig {

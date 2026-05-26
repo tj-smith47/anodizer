@@ -2986,6 +2986,53 @@ fn publish_cask_no_macos_artifact_errors_with_crate_name() {
     );
 }
 
+/// `split_alternative_names`: rendered entries containing `@` route to
+/// the "versioned-file" bucket (one `.rb` per entry); entries without
+/// `@` route to the "alias" bucket (inline `name "..."` directives).
+#[test]
+fn split_alternative_names_partitions_by_at_sign() {
+    let rendered = vec![
+        "myapp@1.2.3".to_string(),
+        "myapp-alias".to_string(),
+        "myapp".to_string(), // matches base — dropped
+        "".to_string(),      // empty — dropped
+    ];
+    let (aliases, versioned) = super::cask::split_alternative_names(&rendered, "myapp");
+    assert_eq!(aliases, vec!["myapp-alias".to_string()]);
+    assert_eq!(versioned, vec!["myapp@1.2.3".to_string()]);
+}
+
+/// `render_alternative_names`: pass-through when no template
+/// substitutions are present, and the template engine renders
+/// `{{ ProjectName }}` against the configured `Context`. A failure in
+/// the engine surfaces as `Err` so a typo in the template doesn't
+/// silently produce a malformed Ruby cask file.
+#[test]
+fn render_alternative_names_runs_each_entry_through_template_engine() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    let ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+
+    let entries = vec![
+        "{{ ProjectName }}-stable".to_string(),
+        "literal".to_string(),
+    ];
+    let rendered = super::cask::render_alternative_names(&ctx, &entries).expect("render");
+    assert_eq!(
+        rendered,
+        vec!["myapp-stable".to_string(), "literal".to_string()]
+    );
+}
+
 /// publish_cask: cask-level `name` override is independent of the crate
 /// name — when set, downstream cask filename uses the override, but
 /// generator-level bails surface `crate_name` so operators can still match
