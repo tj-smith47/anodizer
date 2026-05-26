@@ -18,6 +18,11 @@ Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root.
 | `artifactories` | list of ArtifactoryConfig | — | Artifactory upload configurations. |
 | `aur_sources` | list of AurSourceConfig | — | AUR source package publishing configurations (source-only PKGBUILD, not -bin). |
 | `before` | HooksConfig | — | Hooks run before the release pipeline starts. |
+| `before_publish` | HooksConfig | — | Hooks run after build/archive/sign/sbom/checksum complete but immediately before the publish phase dispatches any publisher.
+
+Use cases: smoke-test artifacts against the staged dist tree, run external validators (antivirus, vulnerability scanners), stage external state, or abort the release before any publisher writes to a registry.
+
+A non-zero exit code from any hook aborts the release before publish runs. Hooks fire in declared order. Use `--skip=before-publish` to bypass. |
 | `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to `binary` / `none` (or omitted) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`. |
 | `changelog` | ChangelogConfig | — | Changelog generation configuration. |
 | `cloudsmiths` | list of CloudSmithConfig | — | CloudSmith publisher configurations. |
@@ -163,6 +168,15 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `url_template` | string | — | Custom URL template for download URLs. |
 
 ## `before`
+Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).
+
+The canonical key is `hooks:` for both `before:` and `after:` to match GoReleaser Pro (`hooks.md`). The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see [`HooksConfig::merge_hook_aliases`]).
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `hooks` | list of HookEntry | — | Commands to run when the block fires. The wire format accepts either `hooks:` (canonical, GoReleaser-aligned) or the legacy `post:` spelling; both fold into this field at parse time. |
+| `post` | list of HookEntry | — | Legacy alias for `hooks:` (anodizer pre-v0.4). Always `None` after parsing — `merge_hook_aliases` collapses it into `hooks`. Present on the struct only because `Deserialize` writes through it before the fold step. |
+
+## `before_publish`
 Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).
 
 The canonical key is `hooks:` for both `before:` and `after:` to match GoReleaser Pro (`hooks.md`). The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see [`HooksConfig::merge_hook_aliases`]).

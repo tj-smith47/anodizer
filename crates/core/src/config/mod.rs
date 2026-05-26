@@ -79,6 +79,18 @@ pub struct Config {
     pub before: Option<HooksConfig>,
     /// Hooks run after the release pipeline completes.
     pub after: Option<HooksConfig>,
+    /// Hooks run after build/archive/sign/sbom/checksum complete but
+    /// immediately before the publish phase dispatches any publisher.
+    ///
+    /// Use cases: smoke-test artifacts against the staged dist tree,
+    /// run external validators (antivirus, vulnerability scanners),
+    /// stage external state, or abort the release before any
+    /// publisher writes to a registry.
+    ///
+    /// A non-zero exit code from any hook aborts the release before
+    /// publish runs. Hooks fire in declared order. Use `--skip=before-publish`
+    /// to bypass.
+    pub before_publish: Option<HooksConfig>,
     /// List of crates in this project.
     pub crates: Vec<CrateConfig>,
     /// Changelog generation configuration.
@@ -262,6 +274,7 @@ impl Default for Config {
             defaults: None,
             before: None,
             after: None,
+            before_publish: None,
             crates: Vec::new(),
             changelog: None,
             signs: Vec::new(),

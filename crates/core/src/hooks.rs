@@ -156,6 +156,42 @@ pub fn run_hooks(
     Ok(())
 }
 
+/// Pipeline stage that runs `config.before_publish.hooks` immediately
+/// before any publisher dispatches.
+///
+/// Sits between the integrity stages (sign / checksum) and the publish
+/// phase (release / publish / blob / snapcraft-publish). A non-zero hook
+/// exit aborts the release before any publisher writes to a registry,
+/// giving operators a last-chance hook for smoke tests, antivirus scans,
+/// or external state staging against the staged dist tree.
+///
+/// Honors `--skip=before-publish`: when set, logs a status line and
+/// returns `Ok(())` without spawning any hook.
+pub struct BeforePublishStage;
+
+impl crate::stage::Stage for BeforePublishStage {
+    fn name(&self) -> &str {
+        "before-publish"
+    }
+
+    fn run(&self, ctx: &mut crate::context::Context) -> Result<()> {
+        let log = ctx.logger("before-publish");
+        let Some(cfg) = ctx.config.before_publish.as_ref() else {
+            return Ok(());
+        };
+        let Some(hooks) = cfg.hooks.as_ref() else {
+            return Ok(());
+        };
+        if hooks.is_empty() {
+            return Ok(());
+        }
+
+        let dry_run = ctx.is_dry_run();
+        let template_vars = ctx.template_vars().clone();
+        run_hooks(hooks, "before-publish", dry_run, &log, Some(&template_vars))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

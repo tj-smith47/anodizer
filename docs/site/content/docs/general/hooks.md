@@ -25,8 +25,13 @@ after:
 
 - **`before` hooks** run before any pipeline stage executes
 - **`after` hooks** run after all pipeline stages complete successfully
+- **`before_publish` hooks** run after build / archive / sign / sbom /
+  checksum complete but before any publisher dispatches — see
+  [Before-Publish Hooks](/docs/publish/before-publish/) for the full
+  reference
 - Each hook is executed via `sh -c "<command>"`
-- If any `before` hook fails (non-zero exit), the pipeline aborts
+- If any `before` or `before_publish` hook fails (non-zero exit), the
+  pipeline aborts before any subsequent stage runs
 - Hooks are skipped in `--dry-run` mode (logged but not executed)
 - Environment variables from the `env` config section are available to hooks
 

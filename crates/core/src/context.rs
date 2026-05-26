@@ -61,6 +61,7 @@ pub const VALID_RELEASE_SKIPS: &[&str] = &[
     "flatpak",
     "srpm",
     "before",
+    "before-publish",
     "notarize",
     "archive",
     "source",

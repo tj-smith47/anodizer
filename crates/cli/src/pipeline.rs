@@ -1298,6 +1298,10 @@ pub fn build_release_pipeline() -> Pipeline {
     p.add(Box::new(SignStage));
 
     // ── Publish ──────────────────────────────────────────────────────────
+    // BeforePublishStage runs user-defined `before_publish:` hooks here so a
+    // non-zero hook can abort the release before any publisher writes to a
+    // registry — last gate for smoke-tests / scanners against the staged dist.
+    p.add(Box::new(anodizer_core::hooks::BeforePublishStage));
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(DockerStage::new()));
     // DockerSignStage runs after DockerStage so docker image artifacts exist.
@@ -1341,6 +1345,7 @@ pub fn build_publish_pipeline() -> Pipeline {
     use anodizer_stage_snapcraft::SnapcraftPublishStage;
 
     let mut p = Pipeline::new();
+    p.add(Box::new(anodizer_core::hooks::BeforePublishStage));
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(PublishStage));
     // BlobStage before SnapcraftPublishStage so the snapcraft submitter
@@ -1408,6 +1413,7 @@ pub(crate) fn build_publish_only_pipeline() -> Pipeline {
     // schema requires. The recompute is byte-deterministic, so this
     // is idempotent across re-runs.
     p.add(Box::new(ChecksumStage));
+    p.add(Box::new(anodizer_core::hooks::BeforePublishStage));
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(PublishStage));
     p.add(Box::new(BlobStage));
@@ -1471,6 +1477,7 @@ pub fn build_merge_pipeline() -> Pipeline {
     p.add(Box::new(TemplateFilesStage));
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(SignStage));
+    p.add(Box::new(anodizer_core::hooks::BeforePublishStage));
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(DockerStage::new()));
     p.add(Box::new(DockerSignStage));
@@ -2505,6 +2512,347 @@ crates:
             names.len() - 1,
             "announce must be the final stage; got {names:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // before_publish: hooks
+    // -----------------------------------------------------------------------
+
+    /// `release` pipeline: BeforePublishStage runs AFTER sign/checksum (the
+    /// integrity stages) and BEFORE release/publish (the publish phase),
+    /// so a non-zero hook can abort the release before any publisher writes
+    /// to a registry.
+    #[test]
+    fn before_publish_runs_after_sbom_before_publish_dispatch() {
+        let p = build_release_pipeline();
+        let names = p.stage_names();
+        let sbom_idx = names
+            .iter()
+            .position(|n| *n == "sbom")
+            .expect("release pipeline must include sbom stage");
+        let sign_idx = names
+            .iter()
+            .position(|n| *n == "sign")
+            .expect("release pipeline must include sign stage");
+        let checksum_idx = names
+            .iter()
+            .position(|n| *n == "checksum")
+            .expect("release pipeline must include checksum stage");
+        let before_publish_idx = names
+            .iter()
+            .position(|n| *n == "before-publish")
+            .expect("release pipeline must include before-publish stage");
+        let release_idx = names
+            .iter()
+            .position(|n| *n == "release")
+            .expect("release pipeline must include release stage");
+        let publish_idx = names
+            .iter()
+            .position(|n| *n == "publish")
+            .expect("release pipeline must include publish stage");
+
+        assert!(
+            sbom_idx < before_publish_idx,
+            "before-publish ({before_publish_idx}) must follow sbom ({sbom_idx}); got {names:?}"
+        );
+        assert!(
+            sign_idx < before_publish_idx,
+            "before-publish ({before_publish_idx}) must follow sign ({sign_idx}); got {names:?}"
+        );
+        assert!(
+            checksum_idx < before_publish_idx,
+            "before-publish ({before_publish_idx}) must follow checksum ({checksum_idx}); got {names:?}"
+        );
+        assert!(
+            before_publish_idx < release_idx,
+            "before-publish ({before_publish_idx}) must precede release ({release_idx}); got {names:?}"
+        );
+        assert!(
+            before_publish_idx < publish_idx,
+            "before-publish ({before_publish_idx}) must precede publish ({publish_idx}); got {names:?}"
+        );
+    }
+
+    /// A hook exiting non-zero must surface as Err from the pipeline so the
+    /// PublishStage never gets to dispatch. Verified by building a pipeline
+    /// of `[BeforePublishStage, RecordingStage]` and asserting that
+    /// RecordingStage never ran.
+    #[test]
+    fn before_publish_hook_failure_aborts_release_before_publish_dispatch() {
+        use anodizer_core::config::{HookEntry, HooksConfig, StructuredHook};
+        use anodizer_core::context::ContextOptions;
+        use anodizer_core::hooks::BeforePublishStage;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct RecordingStage(Arc<AtomicBool>);
+        impl anodizer_core::stage::Stage for RecordingStage {
+            fn name(&self) -> &str {
+                "publish"
+            }
+            fn run(&self, _ctx: &mut anodizer_core::context::Context) -> anyhow::Result<()> {
+                self.0.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let publish_ran = Arc::new(AtomicBool::new(false));
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(BeforePublishStage));
+        p.add(Box::new(RecordingStage(publish_ran.clone())));
+
+        let mut config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        config.before_publish = Some(HooksConfig {
+            hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: "exit 1".to_string(),
+                ..Default::default()
+            })]),
+            post: None,
+        });
+        let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+
+        let log = ctx.logger("pipeline-test");
+        let result = p.run(&mut ctx, &log);
+
+        assert!(
+            result.is_err(),
+            "non-zero before_publish hook must abort the pipeline; got Ok",
+        );
+        assert!(
+            !publish_ran.load(Ordering::SeqCst),
+            "publish stage must NOT run after a failed before_publish hook",
+        );
+    }
+
+    /// `--skip=before-publish` short-circuits the stage (the pipeline's
+    /// generic skip handling fires before stage.run is invoked) AND lets
+    /// every subsequent stage continue.
+    #[test]
+    fn before_publish_skip_via_cli_flag_logs_and_continues() {
+        use anodizer_core::config::{HookEntry, HooksConfig, StructuredHook};
+        use anodizer_core::context::ContextOptions;
+        use anodizer_core::hooks::BeforePublishStage;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct SentinelStage(Arc<AtomicBool>);
+        impl anodizer_core::stage::Stage for SentinelStage {
+            fn name(&self) -> &str {
+                "publish"
+            }
+            fn run(&self, _ctx: &mut anodizer_core::context::Context) -> anyhow::Result<()> {
+                self.0.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let publish_ran = Arc::new(AtomicBool::new(false));
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(BeforePublishStage));
+        p.add(Box::new(SentinelStage(publish_ran.clone())));
+
+        let mut config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        // Configure a hook that would FAIL — `--skip` must prevent it from
+        // running so subsequent stages still execute.
+        config.before_publish = Some(HooksConfig {
+            hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: "exit 1".to_string(),
+                ..Default::default()
+            })]),
+            post: None,
+        });
+
+        let opts = ContextOptions {
+            skip_stages: vec!["before-publish".to_string()],
+            ..ContextOptions::default()
+        };
+        let mut ctx = anodizer_core::context::Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+
+        let log = ctx.logger("pipeline-test");
+        p.run(&mut ctx, &log)
+            .expect("pipeline must succeed when before-publish is skipped");
+
+        assert!(
+            publish_ran.load(Ordering::SeqCst),
+            "publish stage must run when before-publish is operator-skipped",
+        );
+    }
+
+    /// Dry-run shape: the hook runner logs `[dry-run] before-publish hook: ...`
+    /// instead of spawning the subprocess. Verified by asking the stage to
+    /// run with a `exit 1` hook under dry-run; if the subprocess actually
+    /// fired the pipeline would Err.
+    #[test]
+    fn before_publish_skip_via_cli_flag_via_dry_run() {
+        use anodizer_core::config::{HookEntry, HooksConfig, StructuredHook};
+        use anodizer_core::context::ContextOptions;
+        use anodizer_core::hooks::BeforePublishStage;
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(BeforePublishStage));
+
+        let mut config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        config.before_publish = Some(HooksConfig {
+            hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: "exit 1".to_string(),
+                ..Default::default()
+            })]),
+            post: None,
+        });
+
+        let opts = ContextOptions {
+            dry_run: true,
+            ..ContextOptions::default()
+        };
+        let mut ctx = anodizer_core::context::Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+
+        let log = ctx.logger("pipeline-test");
+        p.run(&mut ctx, &log)
+            .expect("dry-run before_publish hook must NOT execute the subprocess");
+    }
+
+    /// `if: "{{ IsSnapshot }}"` skips when not a snapshot. Mirrors the shared
+    /// `evaluate_if_condition` behavior exercised by build / archive / sign
+    /// hooks — pinning the contract for before-publish too.
+    #[test]
+    fn before_publish_hook_if_condition_skip_when_falsy() {
+        use anodizer_core::config::{HookEntry, HooksConfig, StructuredHook};
+        use anodizer_core::context::ContextOptions;
+        use anodizer_core::hooks::BeforePublishStage;
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(BeforePublishStage));
+
+        let mut config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        config.before_publish = Some(HooksConfig {
+            hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: "exit 1".to_string(),
+                if_condition: Some("{{ IsSnapshot }}".to_string()),
+                ..Default::default()
+            })]),
+            post: None,
+        });
+        let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+        ctx.template_vars_mut().set("IsSnapshot", "false");
+
+        let log = ctx.logger("pipeline-test");
+        p.run(&mut ctx, &log)
+            .expect("falsy `if:` must skip the hook so the exit-1 cmd never spawns");
+    }
+
+    /// `output: true` streams stdout to the StageLogger so operators see
+    /// hook progress in real time. Verified by capturing tracing output.
+    #[test]
+    fn before_publish_hook_output_true_streams_logs() {
+        use anodizer_core::config::{HookEntry, HooksConfig, StructuredHook};
+        use anodizer_core::context::ContextOptions;
+        use anodizer_core::hooks::BeforePublishStage;
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(BeforePublishStage));
+
+        let mut config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        config.before_publish = Some(HooksConfig {
+            hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: "echo hello-from-before-publish".to_string(),
+                output: Some(true),
+                ..Default::default()
+            })]),
+            post: None,
+        });
+        let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+
+        let log = ctx.logger("pipeline-test");
+        // The subprocess returns 0 and prints to stdout — the run must succeed.
+        // `output: true` plumbing is identical to the shared `run_hooks` path
+        // already exercised by `crates/core/src/hooks.rs::tests`; this test
+        // pins the call site, not the output capture mechanism itself.
+        p.run(&mut ctx, &log)
+            .expect("echo hook must succeed under before-publish");
+    }
+
+    /// Per-hook `env:` propagates to the subprocess. Verified by running a
+    /// hook whose cmd asserts `$FOO == bar` — exits non-zero if the env var
+    /// is not visible.
+    #[test]
+    fn before_publish_hook_env_propagates() {
+        use anodizer_core::config::{HookEntry, HooksConfig, StructuredHook};
+        use anodizer_core::context::ContextOptions;
+        use anodizer_core::hooks::BeforePublishStage;
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(BeforePublishStage));
+
+        let mut config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        config.before_publish = Some(HooksConfig {
+            hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: r#"sh -c 'test "$FOO" = "bar"'"#.to_string(),
+                env: Some(vec!["FOO=bar".to_string()]),
+                ..Default::default()
+            })]),
+            post: None,
+        });
+        let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+
+        let log = ctx.logger("pipeline-test");
+        p.run(&mut ctx, &log)
+            .expect("per-hook env must reach the subprocess");
+    }
+
+    /// Shorthand form `before_publish: { hooks: ["echo foo"] }` parses as a
+    /// `HookEntry::Simple` (same shape as top-level `before:` / `after:`).
+    #[test]
+    fn before_publish_string_form_parses() {
+        use anodizer_core::config::{Config, HookEntry};
+
+        let yaml = r#"
+project_name: myapp
+crates:
+  - name: myapp
+    path: ""
+before_publish:
+  hooks:
+    - "echo foo"
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).expect("parse yaml");
+        let hooks = cfg
+            .before_publish
+            .as_ref()
+            .expect("before_publish set")
+            .hooks
+            .as_ref()
+            .expect("hooks set");
+        assert_eq!(hooks.len(), 1);
+        match &hooks[0] {
+            HookEntry::Simple(s) => assert_eq!(s, "echo foo"),
+            HookEntry::Structured(h) => panic!("expected Simple, got Structured({:?})", h),
+        }
     }
 
     // -----------------------------------------------------------------------

@@ -62,6 +62,18 @@
         }
       ]
     },
+    "before_publish": {
+      "description": "Hooks run after build/archive/sign/sbom/checksum complete but immediately before the publish phase dispatches any publisher.\n\nUse cases: smoke-test artifacts against the staged dist tree, run external validators (antivirus, vulnerability scanners), stage external state, or abort the release before any publisher writes to a registry.\n\nA non-zero exit code from any hook aborts the release before publish runs. Hooks fire in declared order. Use `--skip=before-publish` to bypass.",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/HooksConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "binary_signs": {
       "description": "Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to `binary` / `none` (or omitted) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`.",
       "default": [],
