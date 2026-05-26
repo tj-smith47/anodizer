@@ -318,6 +318,24 @@ mod sigterm_tests {
 }
 
 #[cfg(test)]
+mod test_helpers {
+    use anodizer_core::MapEnvSource;
+
+    pub(super) fn env_with_base(base: &str) -> MapEnvSource {
+        MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", base)
+    }
+
+    pub(super) fn canned_json_200(body: &str) -> &'static str {
+        let raw = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        Box::leak(raw.into_boxed_str())
+    }
+}
+
+#[cfg(test)]
 mod http_tests {
     //! End-to-end coverage of the `/rate_limit` HTTP path.
     //!
@@ -335,35 +353,13 @@ mod http_tests {
     //! tokio's runtime; the wiring that actually sleeps + races against
     //! signals is covered by `e2e_sleeps_briefly_when_reset_is_one_second_away`
     //! using a sub-second reset window so the wall-clock cost is bounded.
+    use super::test_helpers::{canned_json_200, env_with_base};
     use super::*;
     use anodizer_core::MapEnvSource;
     use anodizer_core::test_helpers::https_responder::{
         https_test_client, spawn_oneshot_https_responder,
     };
     use std::sync::atomic::Ordering;
-
-    fn env_with_base(base: &str) -> MapEnvSource {
-        MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", base)
-    }
-
-    /// Build a canned `200 OK` HTTPS response carrying the given JSON
-    /// body. `Content-Length` is auto-derived so callers can't drift
-    /// header and body out of sync (an early flake in retry-call tests
-    /// before the helper landed).
-    ///
-    /// Returns `&'static str` because `spawn_oneshot_https_responder`
-    /// requires `'static` lifetimes; `Box::leak` is the established
-    /// idiom across this codebase (see
-    /// `crates/stage-release/src/github/retry_call.rs::secondary_rate_limit_403_retries_with_delay`)
-    /// and the per-test leak is bounded by test-binary lifetime.
-    fn canned_json_200(body: &str) -> &'static str {
-        let raw = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(),
-            body,
-        );
-        Box::leak(raw.into_boxed_str())
-    }
 
     /// `remaining > threshold` means quota is available, so the
     /// function returns without sleeping after exactly one HTTP
@@ -613,25 +609,12 @@ mod sleep_injection_tests {
     //! `compute_tests`; these tests pin that the wiring between the
     //! HTTP-response parser and the sleep callback is correct — i.e.
     //! the computed duration actually reaches the injected callback.
+    use super::test_helpers::{canned_json_200, env_with_base};
     use super::*;
-    use anodizer_core::MapEnvSource;
     use anodizer_core::test_helpers::https_responder::{
         https_test_client, spawn_oneshot_https_responder,
     };
     use std::sync::{Arc, Mutex};
-
-    fn env_with_base(base: &str) -> MapEnvSource {
-        MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", base)
-    }
-
-    fn canned_json_200(body: &str) -> &'static str {
-        let raw = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(),
-            body,
-        );
-        Box::leak(raw.into_boxed_str())
-    }
 
     /// Build a [`SleepFn`] that records every requested duration into
     /// the returned `Arc<Mutex<Vec<Duration>>>` and resolves immediately.
