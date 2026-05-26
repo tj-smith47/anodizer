@@ -735,13 +735,13 @@ pub(crate) fn run_gitea_backend(
                     };
 
                     // Handle replace_existing_artifacts (immutable-releases
-                    // policy, GR v2.16): probe the existing asset's byte size
-                    // first; when it matches the local file, skip BOTH the
-                    // delete AND the upload — same-size bytes are treated as
-                    // an idempotent no-op so --resume-release does NOT mutate
+                    // policy): probe the existing asset's byte size first;
+                    // when it matches the local file, skip BOTH the delete
+                    // AND the upload — same-size bytes are treated as an
+                    // idempotent no-op so --resume-release does NOT mutate
                     // already-published assets. Different-size bytes plus
                     // the user's opt-in (`replace_existing_artifacts: true`)
-                    // delete-then-reupload through the legacy path.
+                    // fall through to the delete-then-reupload path below.
                     if replace_existing_artifacts {
                         let local_size = tokio::fs::metadata(&path)
                             .await

@@ -708,16 +708,11 @@ pub(crate) fn run_github_backend(
                         .await
                         .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
 
-                    // Immutable-releases policy (GR v2.16): never pre-emptively
-                    // delete a published asset. The upload loop's 422
-                    // already_exists arm below handles every recoverable case
-                    // lazily: byte-identical resume bytes are a no-op
-                    // (SkipIdempotent), and an opt-in `replace_existing_artifacts:
-                    // true` plus a real size mismatch delete-and-retries through
-                    // that same arm. Pre-emptive delete-on-every-upload was a
-                    // mutation path: it deleted byte-identical published bytes
-                    // (e.g. when --resume-release reuploaded the same files),
-                    // which the immutability policy forbids.
+                    // Immutable-releases policy: never pre-emptively delete a
+                    // published asset. The 422 already_exists arm below probes
+                    // the asset's size and dispatches Skip / Bail /
+                    // DeleteAndRetry via classify_already_exists — that is the
+                    // only delete site for an already-published asset.
 
                     // Retry parameters come from `ctx.config.retry` (resolved
                     // into `policy` above): `attempts` caps the loop,
@@ -2509,14 +2504,10 @@ mod orchestrator_tests {
         let addr = listener.local_addr().expect("addr");
         let release = release_json(addr, 42, true, "v1.2.3");
 
-        // Immutable-releases policy (GR v2.16): the orchestrator no
-        // longer pre-emptively deletes the stale asset before the first
-        // upload — that path was a mutation hazard for byte-identical
-        // resume bytes. The first upload runs straight into 422
-        // already_exists; the size-probe assets list returns a
-        // different size (9999 vs local 11), the stale asset is
-        // deleted (`DeleteAndRetry` arm), and the second upload
-        // succeeds.
+        // First upload hits 422. The size probe returns 9999 (existing)
+        // vs 11 (local) — classify_already_exists routes to
+        // DeleteAndRetry, the stale asset_id=9 is deleted, and the
+        // second upload succeeds.
         let stale_asset = asset_json(9, "demo.tar.gz", 9999);
         let stale_list = format!("[{stale_asset}]");
 
