@@ -1778,7 +1778,7 @@ impl anodizer_core::Publisher for KrewPublisher {
         Self::PUBLISHER_GROUP
     }
     fn required(&self) -> bool {
-        self.required_override.unwrap_or(Self::PUBLISHER_REQUIRED)
+        Self::resolved_required(self)
     }
     fn rollback_scope_needed(&self) -> Option<&'static str> {
         Self::ROLLBACK_SCOPE
