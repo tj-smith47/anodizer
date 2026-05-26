@@ -475,6 +475,64 @@ pub(crate) async fn gitea_delete_asset_by_name(
     Ok(false)
 }
 
+/// Look up an existing release attachment by name and return its byte size.
+///
+/// Mirrors the GitHub backend's `find_release_asset_size`. Used by the
+/// preemptive-delete path's idempotency check: when the remote asset's
+/// size matches the local file, the upload is treated as an idempotent
+/// no-op so the published bytes are not mutated (GR v2.16 immutable-
+/// releases policy).
+pub(crate) async fn gitea_find_asset_size(
+    ctx: &GiteaCtx<'_>,
+    release_id: u64,
+    file_name: &str,
+) -> Result<Option<u64>> {
+    let GiteaCtx {
+        client,
+        api_url,
+        owner,
+        repo,
+        policy,
+    } = *ctx;
+    let api = api_url.trim_end_matches('/');
+    let enc_owner = encode_segment(owner);
+    let enc_repo = encode_segment(repo);
+
+    let list_url = format!(
+        "{}/api/v1/repos/{}/{}/releases/{}/assets",
+        api, enc_owner, enc_repo, release_id
+    );
+
+    let resp = retry_http_async(
+        "gitea: GET release assets (size probe)",
+        policy,
+        SuccessClass::Strict,
+        |_| client.get(&list_url).send(),
+        |status, body| {
+            format!(
+                "gitea: list release assets failed (HTTP {status}): {}",
+                redact_bearer_tokens(body)
+            )
+        },
+    )
+    .await?;
+
+    let assets: Vec<serde_json::Value> = resp
+        .json()
+        .await
+        .context("gitea: parse release assets JSON")?;
+
+    for asset in &assets {
+        if asset["name"].as_str() == Some(file_name) {
+            // Gitea returns `size` as a 64-bit integer on the asset
+            // payload. Missing/non-numeric is treated as "unknown size"
+            // and falls through to delete-and-reupload.
+            return Ok(asset["size"].as_u64());
+        }
+    }
+    Ok(None)
+}
+
 // ---------------------------------------------------------------------------
 // Backend orchestration
 // ---------------------------------------------------------------------------
@@ -676,9 +734,34 @@ pub(crate) fn run_gitea_backend(
                         policy: &policy_inner,
                     };
 
-                    // Handle replace_existing_artifacts: if an asset with the
-                    // same name exists, delete it before uploading.
+                    // Handle replace_existing_artifacts (immutable-releases
+                    // policy, GR v2.16): probe the existing asset's byte size
+                    // first; when it matches the local file, skip BOTH the
+                    // delete AND the upload — same-size bytes are treated as
+                    // an idempotent no-op so --resume-release does NOT mutate
+                    // already-published assets. Different-size bytes plus
+                    // the user's opt-in (`replace_existing_artifacts: true`)
+                    // delete-then-reupload through the legacy path.
                     if replace_existing_artifacts {
+                        let local_size = tokio::fs::metadata(&path)
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "gitea: stat local artifact '{}' for size comparison",
+                                    file_name
+                                )
+                            })?
+                            .len();
+                        if let Some(remote_size) =
+                            gitea_find_asset_size(&ctx, release_id, &file_name).await?
+                            && remote_size == local_size
+                        {
+                            // Idempotent no-op: a prior attempt uploaded
+                            // byte-identical content. Skip the upload
+                            // entirely so the published asset is not
+                            // mutated.
+                            return Ok::<String, anyhow::Error>(file_name);
+                        }
                         gitea_delete_asset_by_name(&ctx, release_id, &file_name)
                             .await
                             .with_context(|| {

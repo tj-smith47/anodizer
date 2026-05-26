@@ -708,27 +708,16 @@ pub(crate) fn run_github_backend(
                         .await
                         .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
 
-                    // Handle replace_existing_artifacts: if an asset with the
-                    // same name already exists, delete it before uploading.
-                    // Uses paginated asset listing to handle releases with >30 assets.
-                    if replace_existing_artifacts {
-                        delete_release_asset_by_name(
-                            &octo,
-                            &gh_owner,
-                            &gh_name,
-                            release_id_raw,
-                            &file_name,
-                            &policy_for_upload,
-                            Some(&retry_after_for_upload),
-                        )
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "release: delete existing artifact '{}' from release '{}'",
-                                file_name, tag_c
-                            )
-                        })?;
-                    }
+                    // Immutable-releases policy (GR v2.16): never pre-emptively
+                    // delete a published asset. The upload loop's 422
+                    // already_exists arm below handles every recoverable case
+                    // lazily: byte-identical resume bytes are a no-op
+                    // (SkipIdempotent), and an opt-in `replace_existing_artifacts:
+                    // true` plus a real size mismatch delete-and-retries through
+                    // that same arm. Pre-emptive delete-on-every-upload was a
+                    // mutation path: it deleted byte-identical published bytes
+                    // (e.g. when --resume-release reuploaded the same files),
+                    // which the immutability policy forbids.
 
                     // Retry parameters come from `ctx.config.retry` (resolved
                     // into `policy` above): `attempts` caps the loop,
@@ -2520,16 +2509,14 @@ mod orchestrator_tests {
         let addr = listener.local_addr().expect("addr");
         let release = release_json(addr, 42, true, "v1.2.3");
 
-        // First pre-emptive delete-list: returns the stale asset so it gets
-        // deleted before the first upload attempt. After that, the upload
-        // still hits 422 (simulating the eventual-consistency window or a
-        // racing reappear), the size-probe assets list returns a different
-        // size, the asset is deleted again, and the second upload succeeds.
-        //
-        // The orchestrator's `replace_existing_artifacts: true` arm calls
-        // `delete_release_asset_by_name` BEFORE the first upload attempt,
-        // so the first list-assets needs to return the stale asset; the
-        // pre-emptive delete then runs against the matching asset_id.
+        // Immutable-releases policy (GR v2.16): the orchestrator no
+        // longer pre-emptively deletes the stale asset before the first
+        // upload — that path was a mutation hazard for byte-identical
+        // resume bytes. The first upload runs straight into 422
+        // already_exists; the size-probe assets list returns a
+        // different size (9999 vs local 11), the stale asset is
+        // deleted (`DeleteAndRetry` arm), and the second upload
+        // succeeds.
         let stale_asset = asset_json(9, "demo.tar.gz", 9999);
         let stale_list = format!("[{stale_asset}]");
 
@@ -2546,7 +2533,10 @@ mod orchestrator_tests {
                 response: http_ok(release),
                 times: None,
             },
-            // Pre-emptive delete: list + DELETE (asset_id=9).
+            // Size-probe + recovery delete (size mismatch path,
+            // triggered by the 422 below): GET assets returns the
+            // stale asset; DELETE asset_id=9 clears the way; second
+            // upload below succeeds.
             ScriptedRoute {
                 method: "GET",
                 path_pattern: "/repos/o/r/releases/42/assets?per_page=100&page=1",
