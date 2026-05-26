@@ -155,6 +155,15 @@ pub fn create_tar_gz(
 }
 
 /// Create a tar.xz archive containing the given files.
+///
+/// Compression preset is fixed at level 9 (xz2's `XzEncoder::new(_, 9)`),
+/// matching liblzma's `LZMA_PRESET_EXTREME`-adjacent profile. The
+/// resulting dictionary size is 64 MiB — strictly larger than
+/// GoReleaser's hand-picked `xz.WriterConfig{DictCap: 16 MiB}` in
+/// `pkg/archive/tarxz/tarxz.go` — so anodizer's tar.xz is at least as
+/// compressible as GR's and decoders that handle GR's output decode
+/// anodizer's too. GR does not expose a per-archive `compression_level`
+/// for xz, so neither does anodizer.
 pub fn create_tar_xz(
     files: &[&Path],
     output: &Path,
@@ -235,6 +244,10 @@ pub fn create_gz(file: &Path, output: &Path) -> Result<()> {
 /// (`pkg/archive/xz/xz.go`): the xz container is single-file, so callers
 /// must dispatch with exactly one source. Error mirrors upstream's
 /// `xz: failed to add %s, only one file can be archived in xz format`.
+///
+/// Preset 9 dictionary size (~64 MiB) is strictly larger than GR's
+/// hand-picked `DictCap: 16 MiB`, so the resulting `.xz` is no less
+/// compressible than upstream and decodes interchangeably.
 pub fn create_xz(file: &Path, output: &Path) -> Result<()> {
     if !file.exists() {
         bail!("xz: source file does not exist: {}", file.display());

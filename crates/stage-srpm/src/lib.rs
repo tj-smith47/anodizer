@@ -296,12 +296,14 @@ impl Stage for SrpmStage {
 
         // Register artifact
         let mut metadata = HashMap::new();
-        metadata.insert("format".to_string(), "srpm".to_string());
-        // Mirror GoReleaser's `artifact.ExtraExt = ".src.rpm"` so downstream
-        // template consumers (`.Artifact.Ext`, filename templates) and other
-        // stages keying off the canonical extension see the same value
-        // regardless of whether the artifact came from the archive stage or
-        // the SRPM stage.
+        // Mirrors GR `internal/pipe/srpm/srpm.go` (commit e696cf8):
+        //   ExtraFormat: strings.TrimPrefix(extension, ".") == "src.rpm"
+        //   ExtraExt:    extension                          == ".src.rpm"
+        // Downstream template consumers (`.Artifact.Format`, `.Artifact.Ext`)
+        // and other stages keying off the canonical extension see the same
+        // values regardless of whether the artifact came from the archive
+        // stage or the SRPM stage.
+        metadata.insert("format".to_string(), "src.rpm".to_string());
         metadata.insert("ext".to_string(), ".src.rpm".to_string());
 
         ctx.artifacts.add(Artifact {
@@ -565,14 +567,15 @@ mod tests {
         );
     }
 
-    /// `ext` extra mirrors GoReleaser's
-    /// `artifact.ExtraExt: ".src.rpm"` so downstream filename templates and
-    /// publisher stages see the canonical extension. Because the artifact
-    /// emission path runs `rpmbuild` (an external tool unavailable in CI),
-    /// this regression test pins the literal at source level rather than
-    /// driving the full pipe end-to-end.
+    /// `format` and `ext` extras mirror GoReleaser's
+    /// `artifact.ExtraFormat: "src.rpm"` / `artifact.ExtraExt: ".src.rpm"` so
+    /// downstream filename templates and publisher stages see the canonical
+    /// extension and routing key. Because the artifact emission path runs
+    /// `rpmbuild` (an external tool unavailable in CI), this regression test
+    /// pins the literals at source level rather than driving the full pipe
+    /// end-to-end.
     #[test]
-    fn test_srpm_artifact_metadata_includes_ext() {
+    fn test_srpm_artifact_metadata_includes_format_and_ext() {
         let src = include_str!("lib.rs");
         assert!(
             src.contains("metadata.insert(\"ext\".to_string(), \".src.rpm\".to_string())"),
@@ -580,8 +583,10 @@ mod tests {
              `.src.rpm` extension (GR `artifact.ExtraExt` parity)"
         );
         assert!(
-            src.contains("metadata.insert(\"format\".to_string(), \"srpm\".to_string())"),
-            "srpm artifact must continue to register `format=srpm`"
+            src.contains("metadata.insert(\"format\".to_string(), \"src.rpm\".to_string())"),
+            "srpm artifact must register `format=src.rpm` (GR \
+             `artifact.ExtraFormat` parity — commit e696cf8 sets \
+             `strings.TrimPrefix(extension, \".\")`)"
         );
     }
 
