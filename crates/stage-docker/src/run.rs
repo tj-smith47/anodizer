@@ -224,6 +224,22 @@ fn run_docker_post_hooks(
     Ok(())
 }
 
+/// Insert the `Platforms` artifact-metadata entry on a `DockerImageV2`
+/// artifact's metadata map. `Platforms` is the GR-aligned key (capital P,
+/// JSON-array string) exposed as `extra.Platforms` so custom publishers can
+/// route on the resolved platform list. Mirrors `ExtraPlatforms = "Platforms"`
+/// in `internal/pipe/docker/v2/docker.go`. The serialization is infallible
+/// for `Vec<String>` slices — `.expect` documents the invariant so a silent
+/// fallback to `""` cannot mask a future refactor that broadens the input
+/// type (the downstream `JSON_LIST_KEYS` parser would otherwise read the
+/// empty string and skip the key without warning).
+fn insert_platforms_meta(meta: &mut HashMap<String, String>, plats: &[String]) {
+    meta.insert(
+        "Platforms".to_string(),
+        serde_json::to_string(plats).expect("serde_json::to_string on Vec<String> cannot fail"),
+    );
+}
+
 /// Run `build_jobs` in parallel under a channel-based semaphore bounded by
 /// `parallelism`, matching GoReleaser's `semerrgroup.New(ctx.Parallelism)`.
 /// After all jobs return, registers `DockerImageV2` + `DockerDigest`
@@ -292,15 +308,7 @@ fn execute_jobs_and_register(
         for tag in &job.rendered_tags {
             let mut meta = HashMap::new();
             meta.insert("tag".to_string(), tag.clone());
-            // `Platforms` is the GR-aligned key (capital P, JSON-array value)
-            // exposed on `DockerImageV2` artifacts as
-            // `extra.Platforms` — custom publishers route on this list.
-            // Mirrors `ExtraPlatforms = "Platforms"` in
-            // `internal/pipe/docker/v2/docker.go`.
-            meta.insert(
-                "Platforms".to_string(),
-                serde_json::to_string(&job.platforms_list).unwrap_or_default(),
-            );
+            insert_platforms_meta(&mut meta, &job.platforms_list);
             if let Some(ref id) = job.id {
                 meta.insert("id".to_string(), id.clone());
             }
@@ -768,15 +776,7 @@ fn queue_v2_build_for_platforms(
         for tag in &image_tags {
             let mut meta = HashMap::new();
             meta.insert("tag".to_string(), tag.clone());
-            // `Platforms` is the GR-aligned key (capital P, JSON-array value)
-            // exposed on `DockerImageV2` artifacts as
-            // `extra.Platforms` — custom publishers route on this list.
-            // Mirrors `ExtraPlatforms = "Platforms"` in
-            // `internal/pipe/docker/v2/docker.go`.
-            meta.insert(
-                "Platforms".to_string(),
-                serde_json::to_string(snapshot_plats).unwrap_or_default(),
-            );
+            insert_platforms_meta(&mut meta, snapshot_plats);
             meta.insert("api".to_string(), "v2".to_string());
             meta.insert("use".to_string(), "buildx".to_string());
             if let Some(ref id) = v2_cfg.id {
