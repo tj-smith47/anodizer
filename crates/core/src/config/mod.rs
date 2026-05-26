@@ -828,7 +828,7 @@ pub fn warn_on_submitter_required(config: &Config) {
 
 /// Pure helper: returns the warning strings without emitting them. Exposed
 /// for tests; production callers use [`warn_on_submitter_required`].
-pub fn submitter_required_warnings(config: &Config) -> Vec<String> {
+pub(crate) fn submitter_required_warnings(config: &Config) -> Vec<String> {
     fn submitter_warning(location: &str, name: &str) -> String {
         format!(
             "{location}: publisher '{name}' is a submitter (external moderation queue); \
