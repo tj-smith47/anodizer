@@ -177,8 +177,7 @@ pub(crate) fn resolve_archive_mtime(ctx: &anodizer_core::context::Context) -> Op
     if any_reproducible {
         commit_ts
     } else {
-        std::env::var("SOURCE_DATE_EPOCH")
-            .ok()
+        ctx.env_var("SOURCE_DATE_EPOCH")
             .and_then(|s| s.parse::<u64>().ok())
             .or(commit_ts)
     }
