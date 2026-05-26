@@ -409,6 +409,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `binaries` | list of HomebrewCaskBinary | — | Binary stubs to create in /usr/local/bin.
 
 Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a structured `{ name, target }` object (`{ name: "my-cli", target: "mycli" }` → emits `binary "my-cli", target: "mycli"`). The `target:` form mirrors the Homebrew Ruby cask DSL for binary renames — without it, a wrapped binary installs at the wrong path. Mirrors GoReleaser `internal/pipe/brew/templates/cask.rb.tmpl`. |
+| `binary` | string | — | Deprecated singular spelling of [`Self::binaries`]. GoReleaser v2.12.6 replaced `binary: foo` with `binaries: [foo]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_binary`](super::super::apply_homebrew_cask_legacy_binary) folds the value into [`Self::binaries`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
 | `caveats` | string | — | Custom caveats shown after install. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. Default: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}" |

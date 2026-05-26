@@ -124,6 +124,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
         anodizer_core::config::warn_on_legacy_snapshot_name_template(&raw);
         anodizer_core::config::warn_on_legacy_furies_alias(&raw);
         anodizer_core::config::validate_no_docker_v1(&raw).map_err(anyhow::Error::msg)?;
+        anodizer_core::config::validate_no_mcp_github(&raw).map_err(anyhow::Error::msg)?;
     }
 
     let mut config = match ext {
@@ -140,6 +141,9 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // Emit deprecation warning + ignore any `gobinary:` field on builds
     // (Go-only — anodizer always uses cargo).
     anodizer_core::config::apply_build_legacy_aliases(&mut config);
+    // Fold the singular `binary:` cask field into the canonical `binaries:`
+    // list (GR v2.12.6 rename) and emit a deprecation warning per occurrence.
+    anodizer_core::config::apply_homebrew_cask_legacy_binary(&mut config);
 
     // Validate config schema version
     anodizer_core::config::validate_version(&config).map_err(anyhow::Error::msg)?;
@@ -162,6 +166,9 @@ pub fn load_config(path: &Path) -> Result<Config> {
     anodizer_core::config::validate_changelog_paths(&config).map_err(anyhow::Error::msg)?;
     anodizer_core::config::warn_on_submitter_required(&config);
     anodizer_core::config::warn_on_legacy_homebrew_formula(&config);
+    // GR v2.15.3 deprecated nested `dockers_v2[].retry:` / `docker_manifests[].retry:`
+    // in favour of the top-level `retry:` block.
+    anodizer_core::config::warn_on_legacy_docker_retry(&config);
 
     // source.prefix_template defaults to source.name_template when unset
     // (matches the long-documented behavior — see SourceConfig docs).

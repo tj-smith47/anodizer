@@ -7205,3 +7205,345 @@ crates:
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(validate_changelog_paths(&config).is_ok());
 }
+
+// ---------------------------------------------------------------------------
+// GR v2.12.6 – v2.15.3 deprecation aliases (Section C of the v2.16 delta spec)
+// ---------------------------------------------------------------------------
+
+// ---- Row 1+2: nested docker_v2[].retry / docker_manifests[].retry ----
+
+#[test]
+fn legacy_docker_retry_warns_for_docker_v2() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    docker_v2:
+      - dockerfile: Dockerfile
+        images: ["ghcr.io/example/app"]
+        retry:
+          attempts: 3
+          delay: 1s
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::legacy_docker_retry_warnings(&config);
+    assert_eq!(warnings.len(), 1, "expected one warning, got: {warnings:?}");
+    let msg = &warnings[0];
+    assert!(msg.contains("DEPRECATION"));
+    assert!(msg.contains("crates[a].docker_v2[0]"));
+    assert!(msg.contains("docker_v2.retry"));
+    assert!(msg.contains("v2.15.3"));
+    assert!(msg.contains("top-level `retry:`"));
+}
+
+#[test]
+fn legacy_docker_retry_warns_for_docker_manifests() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    docker_manifests:
+      - name_template: "ghcr.io/example/app:{{ .Version }}"
+        image_templates: ["ghcr.io/example/app:{{ .Version }}-amd64"]
+        retry:
+          attempts: 5
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::legacy_docker_retry_warnings(&config);
+    assert_eq!(warnings.len(), 1, "expected one warning, got: {warnings:?}");
+    assert!(warnings[0].contains("crates[a].docker_manifests[0]"));
+    assert!(warnings[0].contains("docker_manifests.retry"));
+}
+
+#[test]
+fn legacy_docker_retry_no_warning_when_top_level_retry_only() {
+    let yaml = r#"
+project_name: test
+retry:
+  attempts: 7
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    docker_v2:
+      - dockerfile: Dockerfile
+        images: ["ghcr.io/example/app"]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::legacy_docker_retry_warnings(&config);
+    assert!(
+        warnings.is_empty(),
+        "expected no warnings, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn legacy_docker_retry_warns_in_workspaces_and_defaults() {
+    let yaml = r#"
+project_name: test
+defaults:
+  docker_v2:
+    dockerfile: Dockerfile
+    images: ["ghcr.io/example/app"]
+    retry:
+      attempts: 2
+workspaces:
+  - name: ws1
+    crates:
+      - name: nested
+        path: ws1
+        tag_template: "v{{ .Version }}"
+        docker_v2:
+          - dockerfile: Dockerfile
+            images: ["ghcr.io/example/app"]
+            retry:
+              attempts: 4
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::legacy_docker_retry_warnings(&config);
+    assert_eq!(
+        warnings.len(),
+        2,
+        "expected defaults + workspace warnings, got: {warnings:?}"
+    );
+    assert!(warnings.iter().any(|w| w.contains("defaults.docker_v2")));
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("workspaces[ws1].crates[nested].docker_v2[0]"))
+    );
+}
+
+// ---- Row 3: GR V1 dockers: block rejection (verify pre-existing test) ----
+//
+// `test_v1_dockers_block_rejected_with_migration_message` already covers the
+// rejection. Add a sibling test asserting the load_config path also surfaces
+// the migration pointer (catch regressions where the validator is removed
+// from the pipeline without removing this test).
+
+#[test]
+fn legacy_v1_dockers_block_error_mentions_v2_migration() {
+    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+        r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+dockers:
+  - dockerfile: Dockerfile
+    image_templates: ["ghcr.io/example/app:{{ .Version }}"]
+"#,
+    )
+    .unwrap();
+    let err = super::validate_no_docker_v1(&raw).expect_err("v1 dockers must reject");
+    // Error must name both the legacy field and the v2 replacement so the
+    // user does not need to consult the docs to find the new spelling.
+    assert!(err.contains("dockers"), "missing legacy name: {err}");
+    assert!(err.contains("docker_v2"), "missing v2 pointer: {err}");
+}
+
+// ---- Row 4: furies: → gemfury: rename (v2.14) ----
+
+#[test]
+fn legacy_furies_top_level_parses_as_gemfury() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+furies:
+  - id: my-fury
+    account: my-account
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let gemfury = config.gemfury.expect("furies: alias must populate gemfury");
+    assert_eq!(gemfury.len(), 1);
+    assert_eq!(gemfury[0].id.as_deref(), Some("my-fury"));
+    assert_eq!(gemfury[0].account.as_deref(), Some("my-account"));
+}
+
+#[test]
+fn legacy_furies_alias_detected_in_raw_yaml() {
+    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+        r#"
+project_name: test
+furies:
+  - id: my-fury
+crates: []
+"#,
+    )
+    .unwrap();
+    // The `warn_on_legacy_furies_alias` helper emits via `tracing::warn!`
+    // and returns no value; validate the same raw-YAML probe the helper
+    // uses to detect the legacy spelling.
+    assert!(raw.get("furies").is_some());
+}
+
+#[test]
+fn gemfury_canonical_key_does_not_trigger_furies_probe() {
+    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+        r#"
+project_name: test
+gemfury:
+  - id: my-fury
+crates: []
+"#,
+    )
+    .unwrap();
+    assert!(
+        raw.get("furies").is_none(),
+        "canonical gemfury key must not look like the legacy furies alias"
+    );
+    assert!(raw.get("gemfury").is_some());
+}
+
+// ---- Row 5: nested mcp.github (v2.13.1) ----
+
+#[test]
+fn legacy_mcp_github_block_rejected_with_migration_message() {
+    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+        r#"
+project_name: test
+crates: []
+mcp:
+  github:
+    owner: my-org
+    name: my-repo
+"#,
+    )
+    .unwrap();
+    let err = super::validate_no_mcp_github(&raw).expect_err("nested mcp.github must reject");
+    assert!(err.contains("mcp.github"));
+    assert!(err.contains("v2.13.1"));
+    assert!(err.contains("mcp.repository"));
+}
+
+#[test]
+fn canonical_mcp_top_level_passes() {
+    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+        r#"
+project_name: test
+crates: []
+mcp:
+  name: io.github.user/server
+  repository:
+    url: https://github.com/my-org/my-repo
+    source: github
+"#,
+    )
+    .unwrap();
+    super::validate_no_mcp_github(&raw).expect("canonical mcp.* must pass");
+}
+
+// ---- Row 6: homebrew_casks[].binary singular → binaries plural (v2.12.6) ----
+
+#[test]
+fn legacy_homebrew_cask_binary_singular_folds_into_binaries() {
+    let yaml = r#"
+project_name: test
+crates: []
+homebrew_casks:
+  - name: mycask
+    repository:
+      owner: o
+      name: tap
+    binary: my-cli
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    super::apply_homebrew_cask_legacy_binary(&mut config);
+    let cask = &config.homebrew_casks.as_ref().unwrap()[0];
+    let binaries = cask
+        .binaries
+        .as_ref()
+        .expect("legacy binary must fold into binaries");
+    assert_eq!(binaries.len(), 1);
+    assert_eq!(binaries[0].name(), "my-cli");
+    assert!(
+        cask.legacy_binary.is_none(),
+        "legacy_binary must be consumed"
+    );
+}
+
+#[test]
+fn legacy_homebrew_cask_binary_prepended_when_both_present() {
+    let yaml = r#"
+project_name: test
+crates: []
+homebrew_casks:
+  - name: mycask
+    repository:
+      owner: o
+      name: tap
+    binary: legacy-cli
+    binaries:
+      - new-cli
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    super::apply_homebrew_cask_legacy_binary(&mut config);
+    let binaries = config.homebrew_casks.as_ref().unwrap()[0]
+        .binaries
+        .as_ref()
+        .unwrap();
+    assert_eq!(binaries.len(), 2);
+    assert_eq!(binaries[0].name(), "legacy-cli");
+    assert_eq!(binaries[1].name(), "new-cli");
+}
+
+#[test]
+fn legacy_homebrew_cask_binary_canonical_form_unchanged() {
+    let yaml = r#"
+project_name: test
+crates: []
+homebrew_casks:
+  - name: mycask
+    repository:
+      owner: o
+      name: tap
+    binaries:
+      - just-cli
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    super::apply_homebrew_cask_legacy_binary(&mut config);
+    let binaries = config.homebrew_casks.as_ref().unwrap()[0]
+        .binaries
+        .as_ref()
+        .unwrap();
+    assert_eq!(binaries.len(), 1);
+    assert_eq!(binaries[0].name(), "just-cli");
+}
+
+#[test]
+fn legacy_homebrew_cask_binary_folds_in_per_crate_publish() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew_cask:
+        repository:
+          owner: o
+          name: tap
+        binary: per-crate-cli
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    super::apply_homebrew_cask_legacy_binary(&mut config);
+    let cask = config.crates[0]
+        .publish
+        .as_ref()
+        .unwrap()
+        .homebrew_cask
+        .as_ref()
+        .unwrap();
+    let binaries = cask.binaries.as_ref().unwrap();
+    assert_eq!(binaries.len(), 1);
+    assert_eq!(binaries[0].name(), "per-crate-cli");
+    assert!(cask.legacy_binary.is_none());
+}

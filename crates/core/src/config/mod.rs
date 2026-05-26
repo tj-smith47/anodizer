@@ -1131,6 +1131,185 @@ pub fn warn_on_legacy_furies_alias(raw_yaml: &serde_yaml_ng::Value) {
     }
 }
 
+/// Reject the GoReleaser pre-v2.13.1 nested `mcp.github:` block with a
+/// clear migration error.
+///
+/// GR v2.13.1 flattened the registry metadata that used to live under
+/// `mcp.github:` (repository owner/name/url) to the top-level `mcp:` block
+/// (canonical surface: `mcp.repository:`, `mcp.name:`, etc.). Anodizer
+/// never carried the nested shim — its `McpConfig` has `deny_unknown_fields`
+/// so the key would otherwise produce a generic "unknown field" message.
+/// This pre-parse check intercepts the legacy spelling so the user sees a
+/// migration pointer rather than a schema-shape error.
+pub fn validate_no_mcp_github(raw_yaml: &serde_yaml_ng::Value) -> Result<(), String> {
+    if raw_yaml.get("mcp").and_then(|m| m.get("github")).is_some() {
+        return Err(
+            "config: nested `mcp.github:` block is not supported — anodizer mirrors GoReleaser \
+             v2.13.1+ where registry metadata moved to top-level `mcp:` fields (`mcp.name`, \
+             `mcp.repository.url`, `mcp.repository.source`). Port the nested keys to the \
+             canonical surface."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Emit a one-time deprecation warning for each `dockers_v2[].retry:` or
+/// `docker_manifests[].retry:` block at config-load time. The per-pipe
+/// `retry:` field is the legacy shape (GR v2.15.3 moved retry handling to
+/// the top-level `retry:` block); the per-pipe value is still honored at
+/// resolve-time (see `stage-docker::resolve_retry_params`) but a top-level
+/// `retry:` is the canonical surface for retry policy. Warning fires once
+/// per occurrence so users porting from older GR configs see a clear
+/// pointer at load time without waiting for the docker pipe to execute.
+pub fn warn_on_legacy_docker_retry(config: &Config) {
+    for msg in legacy_docker_retry_warnings(config) {
+        tracing::warn!("{}", msg);
+    }
+}
+
+/// Pure helper: returns the warning strings without emitting them. Exposed
+/// for tests; production callers use [`warn_on_legacy_docker_retry`].
+pub(crate) fn legacy_docker_retry_warnings(config: &Config) -> Vec<String> {
+    fn pipe_warning(location: &str, kind: &str) -> String {
+        format!(
+            "DEPRECATION: {location}: nested `{kind}.retry:` is deprecated since GoReleaser \
+             v2.15.3; move retry settings to the top-level `retry:` block. The per-pipe \
+             value still wins at resolve time for back-compat, but the legacy spelling will \
+             be removed in a future release."
+        )
+    }
+
+    let mut warnings = Vec::new();
+
+    let scan_crate = |krate: &CrateConfig, prefix: &str, warnings: &mut Vec<String>| {
+        if let Some(ref v2) = krate.docker_v2 {
+            for (i, cfg) in v2.iter().enumerate() {
+                if cfg.retry.is_some() {
+                    warnings.push(pipe_warning(
+                        &format!("{prefix}.docker_v2[{i}]"),
+                        "docker_v2",
+                    ));
+                }
+            }
+        }
+        if let Some(ref manifests) = krate.docker_manifests {
+            for (i, cfg) in manifests.iter().enumerate() {
+                if cfg.retry.is_some() {
+                    warnings.push(pipe_warning(
+                        &format!("{prefix}.docker_manifests[{i}]"),
+                        "docker_manifests",
+                    ));
+                }
+            }
+        }
+    };
+
+    for krate in &config.crates {
+        scan_crate(krate, &format!("crates[{}]", krate.name), &mut warnings);
+    }
+
+    if let Some(ref workspaces) = config.workspaces {
+        for ws in workspaces {
+            for krate in &ws.crates {
+                scan_crate(
+                    krate,
+                    &format!("workspaces[{}].crates[{}]", ws.name, krate.name),
+                    &mut warnings,
+                );
+            }
+        }
+    }
+
+    if let Some(ref defaults) = config.defaults
+        && let Some(ref v2) = defaults.docker_v2
+        && v2.retry.is_some()
+    {
+        warnings.push(pipe_warning("defaults.docker_v2", "docker_v2"));
+    }
+
+    warnings
+}
+
+/// Fold the deprecated singular `binary:` field on Homebrew Cask configs
+/// into the canonical plural [`HomebrewCaskConfig::binaries`] list and emit
+/// a deprecation warning. GoReleaser v2.12.6 renamed the field from
+/// `binary: <name>` to `binaries: [<name>]`; anodizer accepts both for
+/// back-compat with imported configs.
+///
+/// When both spellings are present the legacy entry is prepended so the
+/// user's explicit ordering in `binaries:` is preserved at the tail. The
+/// captured value is moved out of [`HomebrewCaskConfig::legacy_binary`] so
+/// downstream code only ever reads the canonical field.
+pub fn apply_homebrew_cask_legacy_binary(config: &mut Config) {
+    fn fold_one(location: &str, cask: &mut HomebrewCaskConfig) -> Option<String> {
+        let legacy = cask.legacy_binary.take()?;
+        let entry = HomebrewCaskBinary::Name(legacy.clone());
+        match cask.binaries {
+            Some(ref mut list) => list.insert(0, entry),
+            None => cask.binaries = Some(vec![entry]),
+        }
+        Some(format!(
+            "DEPRECATION: {location}: singular `binary: {legacy}` is deprecated since \
+             GoReleaser v2.12.6; use the plural `binaries: [{legacy}]` form. The legacy \
+             value has been folded into binaries[0]."
+        ))
+    }
+
+    let mut warnings = Vec::new();
+
+    if let Some(ref mut casks) = config.homebrew_casks {
+        for (i, cask) in casks.iter_mut().enumerate() {
+            if let Some(msg) = fold_one(&format!("homebrew_casks[{i}]"), cask) {
+                warnings.push(msg);
+            }
+        }
+    }
+
+    for krate in &mut config.crates {
+        if let Some(ref mut publish) = krate.publish
+            && let Some(ref mut cask) = publish.homebrew_cask
+            && let Some(msg) = fold_one(
+                &format!("crates[{}].publish.homebrew_cask", krate.name),
+                cask,
+            )
+        {
+            warnings.push(msg);
+        }
+    }
+
+    if let Some(ref mut workspaces) = config.workspaces {
+        for ws in workspaces {
+            for krate in &mut ws.crates {
+                if let Some(ref mut publish) = krate.publish
+                    && let Some(ref mut cask) = publish.homebrew_cask
+                    && let Some(msg) = fold_one(
+                        &format!(
+                            "workspaces[{}].crates[{}].publish.homebrew_cask",
+                            ws.name, krate.name
+                        ),
+                        cask,
+                    )
+                {
+                    warnings.push(msg);
+                }
+            }
+        }
+    }
+
+    if let Some(ref mut defaults) = config.defaults
+        && let Some(ref mut publish) = defaults.publish
+        && let Some(ref mut cask) = publish.homebrew_cask
+        && let Some(msg) = fold_one("defaults.publish.homebrew_cask", cask)
+    {
+        warnings.push(msg);
+    }
+
+    for msg in warnings {
+        tracing::warn!("{}", msg);
+    }
+}
+
 /// Emit a deprecation warning for any `builds[].gobinary` field. The field
 /// is captured by [`BuildConfig::legacy_gobinary`] purely for back-compat
 /// YAML import; anodizer's tool is always `cargo` so the value is unused.

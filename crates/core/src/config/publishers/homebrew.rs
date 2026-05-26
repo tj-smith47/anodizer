@@ -195,6 +195,16 @@ pub struct HomebrewCaskConfig {
     /// wrapped binary installs at the wrong path.
     /// Mirrors GoReleaser `internal/pipe/brew/templates/cask.rb.tmpl`.
     pub binaries: Option<Vec<HomebrewCaskBinary>>,
+    /// Deprecated singular spelling of [`Self::binaries`]. GoReleaser v2.12.6
+    /// replaced `binary: foo` with `binaries: [foo]`; this field captures the
+    /// legacy spelling so imported configs keep parsing.
+    /// [`apply_homebrew_cask_legacy_binary`](super::super::apply_homebrew_cask_legacy_binary)
+    /// folds the value into [`Self::binaries`] at config-load time and emits
+    /// a one-time deprecation warning per occurrence. The field is excluded
+    /// from serialization so a round-tripped config emits only the canonical
+    /// plural form.
+    #[serde(default, rename = "binary", skip_serializing)]
+    pub legacy_binary: Option<String>,
 
     // ----- Metadata -----
     /// Cask description.
