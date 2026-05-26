@@ -153,7 +153,8 @@ pub(super) fn run_split(
     log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     // Resolve partial target from env vars / host detection
-    let partial_target = anodizer_core::partial::resolve_partial_target(&config.partial)?;
+    let partial_target =
+        anodizer_core::partial::resolve_partial_target_with_env(&config.partial, ctx.env_source())?;
     let subdir = partial_target.dist_subdir();
 
     log.status(&format!(

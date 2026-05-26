@@ -89,7 +89,7 @@ pub(super) fn run(
              missing credentials will fail mid-pipeline (no idempotent recovery)",
         );
     } else {
-        preflight_credentials(|k| std::env::var(k).ok())?;
+        preflight_credentials(|k| ctx.env_var(k))?;
     }
 
     // ── Suppress binary_signs ─────────────────────────────────────────

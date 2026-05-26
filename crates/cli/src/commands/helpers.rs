@@ -291,12 +291,11 @@ pub fn resolve_git_context(
     // Allow env var overrides for tag discovery. Anodizer-native var wins;
     // the GoReleaser compat alias is checked as a fallback so CI jobs migrating
     // from GoReleaser pick up their existing env vars without rewiring.
-    let tag_override = std::env::var("ANODIZER_CURRENT_TAG")
-        .ok()
+    let tag_override = ctx
+        .env_var("ANODIZER_CURRENT_TAG")
         .filter(|s| !s.is_empty())
         .or_else(|| {
-            std::env::var("GORELEASER_CURRENT_TAG")
-                .ok()
+            ctx.env_var("GORELEASER_CURRENT_TAG")
                 .filter(|s| !s.is_empty())
         });
 
@@ -400,12 +399,11 @@ pub fn resolve_git_context(
 
                 // Allow ANODIZER_PREVIOUS_TAG (or GoReleaser compat
                 // GORELEASER_PREVIOUS_TAG) env override for the previous tag.
-                let prev_override = std::env::var("ANODIZER_PREVIOUS_TAG")
-                    .ok()
+                let prev_override = ctx
+                    .env_var("ANODIZER_PREVIOUS_TAG")
                     .filter(|s| !s.is_empty())
                     .or_else(|| {
-                        std::env::var("GORELEASER_PREVIOUS_TAG")
-                            .ok()
+                        ctx.env_var("GORELEASER_PREVIOUS_TAG")
                             .filter(|s| !s.is_empty())
                     });
                 if let Some(prev_override) = prev_override {
@@ -624,9 +622,9 @@ pub fn setup_env(
     // When multiple SCM tokens are set without force_token, error early.
     if resolved_force.is_none() {
         let has_github =
-            std::env::var("GITHUB_TOKEN").is_ok() || std::env::var("ANODIZER_GITHUB_TOKEN").is_ok();
-        let has_gitlab = std::env::var("GITLAB_TOKEN").is_ok();
-        let has_gitea = std::env::var("GITEA_TOKEN").is_ok();
+            ctx.env_var("GITHUB_TOKEN").is_some() || ctx.env_var("ANODIZER_GITHUB_TOKEN").is_some();
+        let has_gitlab = ctx.env_var("GITLAB_TOKEN").is_some();
+        let has_gitea = ctx.env_var("GITEA_TOKEN").is_some();
         let count = [has_github, has_gitlab, has_gitea]
             .iter()
             .filter(|&&b| b)
