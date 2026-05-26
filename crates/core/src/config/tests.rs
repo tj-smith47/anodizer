@@ -6377,3 +6377,122 @@ workspaces:
     let err = super::validate_id_uniqueness(&config).unwrap_err();
     assert!(err.contains("workspaces[ws1]"), "got: {}", err);
 }
+
+#[test]
+fn submitter_required_true_warns() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey:
+        required: true
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::validate_submitter_required(&config);
+    assert!(
+        !warnings.is_empty(),
+        "expected a warning for chocolatey required: true"
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("chocolatey")),
+        "expected chocolatey in warning, got: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn manager_required_true_no_warning() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew:
+        required: true
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::validate_submitter_required(&config);
+    assert!(
+        warnings.is_empty(),
+        "homebrew (Manager group) should not trigger a warning, got: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn submitter_required_none_no_warning() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey: {}
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::validate_submitter_required(&config);
+    assert!(
+        warnings.is_empty(),
+        "chocolatey with required: None should not warn, got: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn submitter_required_false_no_warning() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      winget:
+        required: false
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::validate_submitter_required(&config);
+    assert!(
+        warnings.is_empty(),
+        "winget with required: false should not warn, got: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn multiple_submitters_required_true_warns_each() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey:
+        required: true
+      winget:
+        required: true
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::validate_submitter_required(&config);
+    assert_eq!(
+        warnings.len(),
+        2,
+        "expected one warning per submitter, got: {:?}",
+        warnings
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("chocolatey")),
+        "missing chocolatey warning"
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("winget")),
+        "missing winget warning"
+    );
+}

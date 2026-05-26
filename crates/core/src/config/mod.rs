@@ -811,6 +811,52 @@ pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+/// Return a warning string for each publisher configured with `required: true`
+/// whose group is Submitter (chocolatey, winget, aur_source).
+///
+/// Submitter publishers push to external moderation queues that do not resolve
+/// within a release window, so `required: true` never has the desired effect
+/// of blocking the release on approval. This function returns warnings — not
+/// errors — because the user may have private-registry semantics where
+/// resolution is fast. Cargo is excluded: its default is already `required:
+/// true` and the warning would be noise.
+pub fn validate_submitter_required(config: &Config) -> Vec<String> {
+    fn warn(name: &str) -> String {
+        format!(
+            "publisher '{name}' is a submitter (external moderation queue); \
+             `required: true` has no meaningful effect — the submitter gate \
+             evaluates at push time, not at approval time."
+        )
+    }
+
+    let mut warnings = Vec::new();
+
+    for krate in &config.crates {
+        if let Some(ref publish) = krate.publish {
+            if publish.chocolatey.as_ref().and_then(|c| c.required) == Some(true) {
+                warnings.push(warn("chocolatey"));
+            }
+            if publish.winget.as_ref().and_then(|w| w.required) == Some(true) {
+                warnings.push(warn("winget"));
+            }
+            if publish.aur_source.as_ref().and_then(|a| a.required) == Some(true) {
+                warnings.push(warn("aur_source"));
+            }
+        }
+    }
+
+    // Top-level aur_sources list (not nested under publish:)
+    if let Some(ref sources) = config.aur_sources {
+        for src in sources {
+            if src.required == Some(true) {
+                warnings.push(warn("aur_source"));
+            }
+        }
+    }
+
+    warnings
+}
+
 /// No-op preserved for API stability; the legacy `format:` and `builds:`
 /// folds happen inline in `<ArchiveConfig as Deserialize>::deserialize` and
 /// `<FormatOverride as Deserialize>::deserialize`. Emits no warning of its

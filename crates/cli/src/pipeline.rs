@@ -148,6 +148,10 @@ pub fn load_config(path: &Path) -> Result<Config> {
         .map_err(anyhow::Error::msg)?;
     // Validate archives[].id and universal_binaries[].id uniqueness.
     anodizer_core::config::validate_id_uniqueness(&config).map_err(anyhow::Error::msg)?;
+    // Warn when required: true is set on a Submitter-group publisher.
+    for msg in anodizer_core::config::validate_submitter_required(&config) {
+        tracing::warn!("{}", msg);
+    }
 
     // source.prefix_template defaults to source.name_template when unset
     // (matches the long-documented behavior — see SourceConfig docs).
