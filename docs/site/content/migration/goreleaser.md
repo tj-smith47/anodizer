@@ -17,7 +17,7 @@ If you're coming from GoReleaser, anodizer will feel familiar. The config struct
 | `checksum` | `defaults.checksum` or `crates[].checksum` | Can be global or per-crate |
 | `changelog` | `changelog` | Same structure |
 | `release` | `crates[].release` | Nested under crate |
-| `brews` | `crates[].publish.homebrew` | Renamed; nested under publish |
+| `brews` | `homebrew_casks:` (top-level) or `crates[].publish.homebrew_cask` | **Deprecated upstream in GoReleaser v2.16.** `publish.homebrew` (Formula) still parses with a deprecation warning; see [the `brews → homebrew_casks` migration](#brews-homebrew_casks) below. |
 | `scoop` | `crates[].publish.scoop` | Nested under publish |
 | `mcp` | `mcp` | Identical top-level key. The deprecated nested `mcp.github:` block from older GoReleaser configs collapses to top-level `mcp.*` fields in anodizer (matches upstream's current recommendation). See [MCP registry](@/docs/publish/mcp-registry.md) |
 | `dockers` | `crates[].docker` | Nested under crate |
@@ -48,7 +48,7 @@ name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 
 3. **Template engine**: GoReleaser uses Go templates. Anodizer uses Tera (Jinja2-like). The GoReleaser `{{ .Field }}` syntax is supported for compatibility, but Tera's native syntax offers more features (pipes, filters, loops).
 
-4. **Package manager names**: `brews` → `publish.homebrew`, `scoop` → `publish.scoop`. MCP keeps the same top-level `mcp:` key — see [MCP registry](@/docs/publish/mcp-registry.md) for the nested `mcp.github:` collapse.
+4. **Package manager names**: `brews` → `homebrew_casks:` (top-level array — Formula is deprecated upstream as of GoReleaser v2.16, see [brews → homebrew_casks](#brews-homebrew_casks) below), `scoop` → `publish.scoop`. MCP keeps the same top-level `mcp:` key — see [MCP registry](@/docs/publish/mcp-registry.md) for the nested `mcp.github:` collapse.
 
 ## Migration steps
 
@@ -84,3 +84,88 @@ The anodizer equivalent is:
 ```
 
 `auto-install: true` parses `.anodizer.yaml` and installs pipeline dependencies (nfpm for linux packages, cosign for signing, zig/cargo-zigbuild for cross-compilation, ...) — the anodizer action's equivalent of GoReleaser's bundled Go-native implementations. See [anodizer-action reference](@/docs/ci/anodizer-action.md) for all inputs.
+
+## `brews` → `homebrew_casks` {#brews-homebrew_casks}
+
+GoReleaser **v2.16** ([release blog](https://goreleaser.com/blog/goreleaser-v2.16/)) deprecated the `brews:` (Homebrew Formula) publisher. Quoting upstream:
+
+> Migrate to `homebrew_casks`, which is the right tool for the job: it's how Homebrew expects pre-compiled binaries to be distributed, and it gets all the new features (completion generation, post-install hooks, and so on).
+
+Anodizer mirrors the deprecation: `publish.homebrew` still parses (so existing configs do not break), but a `DEPRECATION:` warning is emitted at config-load time. New configs should write `homebrew_casks:` (top-level) or `publish.homebrew_cask:` (per-crate) directly.
+
+### Before (Formula — deprecated)
+
+```yaml
+crates:
+  - name: myapp
+    publish:
+      homebrew:
+        repository:
+          owner: myorg
+          name: homebrew-tap
+        directory: Formula           # default for Formula
+        description: "My CLI tool"
+        homepage: https://myapp.io
+        license: MIT
+        dependencies:
+          - name: openssl
+        conflicts:
+          - other-tool
+        caveats: "Run `myapp init` to set up."
+        commit_msg_template: "Brew formula update for {{ ProjectName }} version {{ Tag }}"
+```
+
+### After (Cask — preferred)
+
+```yaml
+homebrew_casks:
+  - name: myapp
+    repository:
+      owner: myorg
+      name: homebrew-tap
+    directory: Casks                 # default for Cask
+    description: "My CLI tool"
+    homepage: https://myapp.io
+    binaries:
+      - name: myapp                  # the binary stub Homebrew symlinks into /usr/local/bin
+    dependencies:
+      - cask: other-cask             # cask: or formula: target
+    conflicts:
+      - cask: other-tool
+    caveats: "Run `myapp init` to set up."
+    commit_msg_template: "Brew cask update for {{ ProjectName }} version {{ Tag }}"
+    # Cask-exclusive surface (no Formula equivalent):
+    completions:
+      bash: "completions/myapp.bash"
+      zsh:  "completions/_myapp"
+      fish: "completions/myapp.fish"
+    hooks:
+      post:
+        install: |
+          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/myapp"]
+    generate_completions_from_executable:
+      executable: "bin/myapp"
+      args: ["completions"]
+      base_name: "myapp"
+      shell_parameter_format: "clap"
+      shells: ["bash", "zsh", "fish"]
+```
+
+### Field mapping
+
+| Formula field (`publish.homebrew`) | Cask field (`homebrew_casks[]` / `publish.homebrew_cask`) | Notes |
+|---|---|---|
+| `repository`, `commit_author`, `commit_msg_template`, `directory`, `name` | Same names | Identical semantics |
+| `description`, `homepage`, `license`, `caveats`, `custom_block`, `service`, `skip_upload` | Same names | Identical semantics |
+| `ids` | `ids` | Same — artifact-id filter |
+| `url_template` | `url_template` (or structured `url:` with `verified`, `using`, `headers`, etc.) | Cask gives a richer structured `url:` block |
+| `url_headers` | `url.headers` | Cask uses the structured form |
+| `download_strategy` | `url.using` | Cask uses the structured form |
+| `dependencies[].name` | `dependencies[].cask` or `dependencies[].formula` | Cask requires the dependency kind |
+| `dependencies[].os`, `dependencies[].type`, `dependencies[].version` | not yet on Cask | Upstream HomebrewCask omits these — see [Homebrew Cask Cookbook depends_on](https://github.com/Homebrew/brew/blob/master/docs/Cask-Cookbook.md#stanza-depends_on) |
+| `conflicts[]` (string or `{name, because}`) | `conflicts[].cask` / `conflicts[].formula` | Cask conflicts use the structured form |
+| `install`, `extra_install`, `post_install`, `test` | `hooks.pre.install`, `hooks.post.install` (preflight / postflight) + `generate_completions_from_executable` | Cask uses Ruby DSL hooks instead of formula install/test blocks |
+| `plist`, `service` | `service` | Cask has no `plist` directive; use `service` |
+| `amd64_variant`, `arm_variant` | _(no upstream equivalent on `homebrew_casks`)_ | Variant filters were Formula-only on GoReleaser |
+| `custom_require` | _(not applicable)_ | Custom Ruby `require` is a Formula download-strategy concern; Casks use `url.using` instead |
+| `cask:` (sub-block under `publish.homebrew`) | _(top-level field — promote the sub-block to its own entry)_ | The legacy `publish.homebrew.cask:` sub-block was a transitional shape; write `homebrew_casks:` or `publish.homebrew_cask:` directly |

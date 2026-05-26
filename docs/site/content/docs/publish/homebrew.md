@@ -5,6 +5,21 @@ weight = 3
 template = "docs.html"
 +++
 
+> **Deprecation:** `publish.homebrew` (Homebrew **Formula**) is deprecated upstream
+> in [GoReleaser v2.16](https://goreleaser.com/blog/goreleaser-v2.16/) and anodizer
+> follows the same deprecation. The replacement is **[Homebrew Casks](./homebrew-casks.md)** —
+> the canonical Homebrew distribution channel for pre-compiled binaries.
+>
+> Quoting upstream: _"Migrate to `homebrew_casks`, which is the right tool for the
+> job: it's how Homebrew expects pre-compiled binaries to be distributed, and it
+> gets all the new features (completion generation, post-install hooks, and so on)."_
+>
+> Anodizer still parses `publish.homebrew` for back-compat; a `DEPRECATION:` warning
+> is emitted at config-load time. New projects should write `homebrew_casks:`
+> (top-level) or `publish.homebrew_cask:` (per-crate) directly. See the
+> [GoReleaser migration guide](../../migration/goreleaser.md#brews-homebrew_casks)
+> for the side-by-side YAML diff.
+
 Anodizer generates Ruby Homebrew formulae with multi-platform support and pushes them to your tap repository.
 
 ## Classification

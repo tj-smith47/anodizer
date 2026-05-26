@@ -5398,7 +5398,7 @@
       "additionalProperties": false
     },
     "HomebrewCaskBinary": {
-      "description": "Cask `binary` stanza entry.\n\nTwo shapes accepted in YAML: - bare string — `\"my-cli\"` → renders `binary \"my-cli\"`. - `{ name, target }` object — `{ name: \"my-cli\", target: \"mycli\" }` → renders `binary \"my-cli\", target: \"mycli\"`. The `target:` form is the Homebrew Ruby cask DSL rename: install the symlink at `/usr/local/bin/<target>` instead of `/usr/local/bin/<name>`.\n\nGR ref: `internal/pipe/brew/templates/cask.rb.tmpl` — search for `binary` to see the canonical Ruby form.",
+      "description": "Cask `binary` stanza entry.\n\nTwo shapes accepted in YAML: - bare string — `\"my-cli\"` → renders `binary \"my-cli\"`. - `{ name, target }` object — `{ name: \"my-cli\", target: \"mycli\" }` → renders `binary \"my-cli\", target: \"mycli\"`. The `target:` form is the Homebrew Ruby cask DSL rename: install the symlink at `/usr/local/bin/<target>` instead of `/usr/local/bin/<name>`.",
       "anyOf": [
         {
           "description": "Bare binary name. Equivalent to `{ name: \"<n>\", target: None }`.",

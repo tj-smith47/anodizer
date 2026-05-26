@@ -900,17 +900,82 @@ pub fn validate_no_docker_v1(raw_yaml: &serde_yaml_ng::Value) -> Result<(), Stri
     Ok(())
 }
 
+/// Emit a `tracing::warn!` for each `publish.homebrew:` (Homebrew Formula)
+/// occurrence in the loaded config. GoReleaser v2.16 deprecated the
+/// Formula publisher in favour of `homebrew_casks:`; anodizer mirrors the
+/// upstream deprecation so users following the GR change-log see the
+/// same migration prompt.
+///
+/// Covers three placement axes (matching how `publish.homebrew` may appear):
+///   * `crates[].publish.homebrew`
+///   * `workspaces[].crates[].publish.homebrew`
+///   * `defaults.publish.homebrew`
+///
+/// There is no top-level `homebrew:` or `brews:` field on anodizer's
+/// `Config` — only `homebrew_casks:` lives at the top level — so this
+/// function does not need a top-level scan.
+pub fn warn_on_legacy_homebrew_formula(config: &Config) {
+    for msg in legacy_homebrew_formula_warnings(config) {
+        tracing::warn!("{}", msg);
+    }
+}
+
+/// Pure helper: returns the warning strings without emitting them.
+/// Exposed for tests; production callers use
+/// [`warn_on_legacy_homebrew_formula`].
+pub(crate) fn legacy_homebrew_formula_warnings(config: &Config) -> Vec<String> {
+    fn formula_warning(location: &str) -> String {
+        format!(
+            "DEPRECATION: {location}: publish.homebrew (Homebrew Formula) is deprecated upstream \
+             in GoReleaser v2.16; migrate to homebrew_casks. Cask is now the canonical Homebrew \
+             distribution channel for pre-compiled binaries. See \
+             https://anodize.dev/docs/publish/homebrew-casks/ for migration."
+        )
+    }
+
+    let mut warnings = Vec::new();
+
+    for krate in &config.crates {
+        if let Some(ref publish) = krate.publish
+            && publish.homebrew.is_some()
+        {
+            warnings.push(formula_warning(&format!("crate '{}'", krate.name)));
+        }
+    }
+
+    if let Some(ref workspaces) = config.workspaces {
+        for ws in workspaces {
+            for krate in &ws.crates {
+                if let Some(ref publish) = krate.publish
+                    && publish.homebrew.is_some()
+                {
+                    warnings.push(formula_warning(&format!(
+                        "workspaces[{}].crates[{}]",
+                        ws.name, krate.name
+                    )));
+                }
+            }
+        }
+    }
+
+    if let Some(ref defaults) = config.defaults
+        && let Some(ref publish) = defaults.publish
+        && publish.homebrew.is_some()
+    {
+        warnings.push(formula_warning("defaults.publish"));
+    }
+
+    warnings
+}
+
 /// Fold the deprecated `snapshot.name_template` alias into `version_template`.
 /// Serde already accepts both spellings via `#[serde(alias = "name_template")]`,
 /// so this function only needs to emit the deprecation warning when the
 /// raw YAML key was the legacy one.
 ///
-/// GR ref: `internal/pipe/snapshot/snapshot.go:25-28`. Because serde collapses
-/// the two spellings to a single field on parse, we lose the information
-/// about which key the user wrote. This function therefore consults the
-/// raw YAML pre-parse value (when supplied) to decide.
-///
-/// F3 — section 1.8 of the build-archive.md audit report.
+/// Because serde collapses the two spellings to a single field on parse, we
+/// lose the information about which key the user wrote. This function
+/// therefore consults the raw YAML pre-parse value (when supplied) to decide.
 pub fn warn_on_legacy_snapshot_name_template(raw_yaml: &serde_yaml_ng::Value) {
     if let Some(snap) = raw_yaml.get("snapshot")
         && snap.get("name_template").is_some()
@@ -926,8 +991,6 @@ pub fn warn_on_legacy_snapshot_name_template(raw_yaml: &serde_yaml_ng::Value) {
 /// Emit a deprecation warning for any `builds[].gobinary` field. The field
 /// is captured by [`BuildConfig::legacy_gobinary`] purely for back-compat
 /// YAML import; anodizer's tool is always `cargo` so the value is unused.
-///
-/// GR ref: `internal/pipe/build/build.go:93-95`.
 pub fn apply_build_legacy_aliases(config: &mut Config) {
     let warn_one = |location: &str, legacy: &mut Option<String>| {
         if let Some(go_bin) = legacy.take() {

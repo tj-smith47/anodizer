@@ -6593,3 +6593,221 @@ crates:
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// warn_on_legacy_homebrew_formula — GR v2.16 deprecation of brews / publish.homebrew
+// ---------------------------------------------------------------------------
+
+#[test]
+fn legacy_homebrew_formula_crate_publish_warns() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew:
+        repository:
+          owner: o
+          name: tap
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::legacy_homebrew_formula_warnings(&config);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected one warning for crate publish.homebrew, got: {:?}",
+        warnings
+    );
+    assert!(
+        warnings[0].contains("crate 'a'"),
+        "expected crate-name prefix, got: {}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn legacy_homebrew_formula_workspace_crate_publish_warns() {
+    let yaml = r#"
+project_name: test
+workspaces:
+  - name: ws1
+    crates:
+      - name: a
+        path: "."
+        tag_template: "v{{ .Version }}"
+        publish:
+          homebrew:
+            repository:
+              owner: o
+              name: tap
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::legacy_homebrew_formula_warnings(&config);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected one warning for workspace crate publish.homebrew, got: {:?}",
+        warnings
+    );
+    assert!(
+        warnings[0].contains("workspaces[ws1].crates[a]"),
+        "expected workspace-crate prefix, got: {}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn legacy_homebrew_formula_defaults_publish_warns() {
+    let yaml = r#"
+project_name: test
+defaults:
+  publish:
+    homebrew:
+      repository:
+        owner: o
+        name: tap
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::legacy_homebrew_formula_warnings(&config);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected one warning for defaults.publish.homebrew, got: {:?}",
+        warnings
+    );
+    assert!(
+        warnings[0].contains("defaults.publish"),
+        "expected defaults.publish prefix, got: {}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn legacy_homebrew_formula_no_warning_when_only_cask() {
+    let yaml = r#"
+project_name: test
+homebrew_casks:
+  - name: a
+    repository:
+      owner: o
+      name: tap
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew_cask:
+        repository:
+          owner: o
+          name: tap
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::legacy_homebrew_formula_warnings(&config);
+    assert!(
+        warnings.is_empty(),
+        "homebrew_casks / publish.homebrew_cask should not warn, got: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn legacy_homebrew_formula_no_warning_when_publish_has_no_homebrew() {
+    // Locks the predicate: a publish block with only non-homebrew publishers
+    // must NOT trigger the deprecation warning.
+    let yaml = r#"
+project_name: x
+crates:
+  - name: x
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      cargo: {}
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::legacy_homebrew_formula_warnings(&config);
+    assert!(
+        warnings.is_empty(),
+        "expected no warning, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn legacy_homebrew_formula_multiple_axes_each_warn() {
+    let yaml = r#"
+project_name: test
+defaults:
+  publish:
+    homebrew:
+      repository:
+        owner: o
+        name: tap
+crates:
+  - name: top
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew:
+        repository:
+          owner: o
+          name: tap
+workspaces:
+  - name: ws1
+    crates:
+      - name: nested
+        path: ws1
+        tag_template: "v{{ .Version }}"
+        publish:
+          homebrew:
+            repository:
+              owner: o
+              name: tap
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::legacy_homebrew_formula_warnings(&config);
+    assert_eq!(
+        warnings.len(),
+        3,
+        "expected three warnings (one per placement axis), got: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn legacy_homebrew_formula_warning_message_includes_migration_pointer() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew:
+        repository:
+          owner: o
+          name: tap
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::legacy_homebrew_formula_warnings(&config);
+    assert_eq!(warnings.len(), 1);
+    let msg = &warnings[0];
+    for clause in [
+        "DEPRECATION",
+        "publish.homebrew",
+        "GoReleaser v2.16",
+        "homebrew_casks",
+        "https://anodize.dev/docs/publish/homebrew-casks/",
+    ] {
+        assert!(
+            msg.contains(clause),
+            "warning missing clause {:?}, got: {}",
+            clause,
+            msg
+        );
+    }
+}

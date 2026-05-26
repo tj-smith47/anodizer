@@ -329,9 +329,6 @@ pub struct HomebrewCaskCompletions {
 ///   → renders `binary "my-cli", target: "mycli"`. The `target:` form is
 ///   the Homebrew Ruby cask DSL rename: install the symlink at
 ///   `/usr/local/bin/<target>` instead of `/usr/local/bin/<name>`.
-///
-/// GR ref: `internal/pipe/brew/templates/cask.rb.tmpl` — search for
-/// `binary` to see the canonical Ruby form.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
 #[serde(untagged)]
 pub enum HomebrewCaskBinary {

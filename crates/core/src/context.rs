@@ -970,6 +970,12 @@ impl Context {
         // template-exposed view is expanded. Matches GoReleaser's
         // ExtraBinaries / ExtraFiles list semantics.
         const CSV_LIST_KEYS: &[&str] = &["extra_binaries", "extra_files"];
+        // JSON-encoded list metadata keys: stored as a JSON-array string in
+        // `HashMap<String,String>`, exposed as a real array on the template
+        // side so `{% for p in .Artifacts[0].metadata.Platforms %}` works.
+        // `Platforms` mirrors GR's `ExtraPlatforms = "Platforms"` slice on
+        // `DockerImageV2` artifacts.
+        const JSON_LIST_KEYS: &[&str] = &["Platforms"];
 
         let artifacts_value: Vec<serde_json::Value> = self
             .artifacts
@@ -988,6 +994,13 @@ impl Context {
                                 .collect()
                         };
                         metadata_map.insert(k.clone(), serde_json::Value::Array(items));
+                    } else if JSON_LIST_KEYS.contains(&k.as_str()) {
+                        // Decode JSON-array string into a real Value::Array;
+                        // a malformed value falls back to the raw string so
+                        // custom publishers can still inspect it.
+                        let parsed = serde_json::from_str::<serde_json::Value>(v)
+                            .unwrap_or_else(|_| serde_json::Value::String(v.clone()));
+                        metadata_map.insert(k.clone(), parsed);
                     } else {
                         metadata_map.insert(k.clone(), serde_json::Value::String(v.clone()));
                     }
