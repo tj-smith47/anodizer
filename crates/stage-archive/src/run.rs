@@ -24,6 +24,16 @@ use crate::{
     default_name_template_multi_crate,
 };
 
+/// Artifact kinds eligible for archiving: binaries, universal binaries,
+/// C headers, C static archives, and C shared libraries.
+const ARCHIVABLE_KINDS: &[ArtifactKind] = &[
+    ArtifactKind::Binary,
+    ArtifactKind::UniversalBinary,
+    ArtifactKind::Header,
+    ArtifactKind::CArchive,
+    ArtifactKind::CShared,
+];
+
 impl Stage for ArchiveStage {
     fn name(&self) -> &str {
         "archive"
@@ -137,14 +147,6 @@ fn collect_archivable_crates(
         .cloned()
         .collect();
 
-    let archivable_kinds = [
-        ArtifactKind::Binary,
-        ArtifactKind::UniversalBinary,
-        ArtifactKind::Header,
-        ArtifactKind::CArchive,
-        ArtifactKind::CShared,
-    ];
-
     let project_root = ctx
         .options
         .project_root
@@ -161,7 +163,7 @@ fn collect_archivable_crates(
                 let has_meta_archive = cfgs.iter().any(|cfg| cfg.meta.unwrap_or(false));
                 let has_existing_artifacts = !ctx
                     .artifacts
-                    .by_kinds_and_crate(&archivable_kinds, &c.name)
+                    .by_kinds_and_crate(ARCHIVABLE_KINDS, &c.name)
                     .is_empty();
                 if !has_builds && !has_meta_archive && !has_existing_artifacts {
                     return None;
@@ -180,15 +182,8 @@ fn collect_archivable_crates(
 
 /// Collect all archivable binary artifacts for a single crate.
 fn collect_crate_archivable_artifacts(ctx: &Context, crate_name: &str) -> Vec<Artifact> {
-    let archivable_kinds = [
-        ArtifactKind::Binary,
-        ArtifactKind::UniversalBinary,
-        ArtifactKind::Header,
-        ArtifactKind::CArchive,
-        ArtifactKind::CShared,
-    ];
     ctx.artifacts
-        .by_kinds_and_crate(&archivable_kinds, crate_name)
+        .by_kinds_and_crate(ARCHIVABLE_KINDS, crate_name)
         .into_iter()
         .cloned()
         .collect()

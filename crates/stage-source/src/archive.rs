@@ -17,6 +17,9 @@ pub(crate) struct SourceArchiveInputs<'a> {
     pub(crate) commit: &'a str,
     pub(crate) log: &'a anodizer_core::log::StageLogger,
     pub(crate) strict: bool,
+    /// Pre-resolved `SOURCE_DATE_EPOCH` mtime. Caller resolves via
+    /// `ctx.env_var` so archive creation stays free of `std::env` calls.
+    pub(crate) sde_mtime: Option<u64>,
 }
 
 /// Extra files are placed under the prefix directory (matching GoReleaser)
@@ -33,6 +36,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
         commit,
         log,
         strict,
+        sde_mtime,
     } = *inputs;
     let (git_format, extension) = match format {
         "tar.gz" | "tgz" => ("tar.gz", "tar.gz"),
@@ -232,14 +236,6 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
             // in inode order which differs between fresh worktrees.
             let mut sorted_extras: Vec<&SourceFileEntry> = extra_files.iter().collect();
             sorted_extras.sort_by(|a, b| a.src.cmp(&b.src));
-
-            // Default mtime: SOURCE_DATE_EPOCH when set (harness /
-            // debian-builder / nix path), else `None` to fall through to
-            // filesystem mtime (preserves prior behavior for ad-hoc
-            // local runs outside any reproducibility contract).
-            let sde_mtime: Option<u64> = std::env::var("SOURCE_DATE_EPOCH")
-                .ok()
-                .and_then(|s| s.parse::<u64>().ok());
 
             // Add extra files with metadata
             for entry in sorted_extras {

@@ -521,7 +521,7 @@ pub fn setup_env(
     log: &anodizer_core::log::StageLogger,
 ) -> anyhow::Result<()> {
     // Load ALL process environment variables first (lowest priority)
-    for (key, value) in std::env::vars() {
+    for (key, value) in ctx.env_source().vars() {
         ctx.template_vars_mut().set_env(&key, &value);
     }
 

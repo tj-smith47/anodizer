@@ -191,6 +191,9 @@ impl SourceStage {
                 resolved_commit.as_str()
             }
         };
+        let sde_mtime = ctx
+            .env_var("SOURCE_DATE_EPOCH")
+            .and_then(|s| s.parse::<u64>().ok());
         let output_path = create_source_archive(&SourceArchiveInputs {
             dist,
             format: &format,
@@ -201,6 +204,7 @@ impl SourceStage {
             commit,
             log: &log,
             strict: ctx.is_strict(),
+            sde_mtime,
         })?;
 
         // GoReleaser sets artifact name to the filename (e.g. "foo-1.0.0.tar.gz").

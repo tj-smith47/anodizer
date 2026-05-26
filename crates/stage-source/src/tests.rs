@@ -1026,6 +1026,7 @@ fn test_source_archive_strip_parent_flattens_nested_file() {
         commit: "HEAD",
         log: &log,
         strict: false,
+        sde_mtime: None,
     });
 
     let archive_path =
@@ -1100,6 +1101,7 @@ fn test_source_archive_strip_parent_with_dst() {
         commit: "HEAD",
         log: &log,
         strict: false,
+        sde_mtime: None,
     });
 
     let archive_path =
@@ -1162,6 +1164,7 @@ fn test_source_archive_no_strip_parent_dst_is_literal_rename() {
         commit: "HEAD",
         log: &log,
         strict: false,
+        sde_mtime: None,
     });
 
     let archive_path =
@@ -1228,6 +1231,7 @@ fn test_source_extra_files_with_info() {
         commit: "HEAD",
         log: &log,
         strict: false,
+        sde_mtime: None,
     });
 
     assert!(result.is_ok(), "failed: {:?}", result.err());
@@ -1346,6 +1350,7 @@ fn test_source_archive_zip_extras_match_source_compression_default_deflated() {
         commit: "HEAD",
         log: &log,
         strict: false,
+        sde_mtime: None,
     })
     .unwrap();
 
