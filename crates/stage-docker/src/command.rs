@@ -18,13 +18,21 @@ use super::detect::docker_supports_provenance;
 ///
 /// When `use_backend` is `None`, the default is `"buildx"` if there are
 /// multiple platforms, otherwise `"docker"`.
+///
+/// The `"podman"` backend is **Linux-only**, matching GoReleaser Pro's
+/// `podman` pipe restriction. Configs that set `use: podman` on macOS or
+/// Windows are rejected here with a clear error so users do not get a
+/// confusing `podman: command not found` later in the pipeline.
 pub fn resolve_backend(
     use_backend: Option<&str>,
     _multi_platform: bool,
 ) -> Result<(&str, Vec<&str>)> {
     match use_backend {
         Some("docker") => Ok(("docker", vec!["build"])),
-        Some("podman") => Ok(("podman", vec!["build"])),
+        Some("podman") => {
+            enforce_podman_linux_only()?;
+            Ok(("podman", vec!["build"]))
+        }
         Some("buildx") => Ok(("docker", vec!["buildx", "build"])),
         Some(other) => {
             anyhow::bail!(
@@ -37,6 +45,75 @@ pub fn resolve_backend(
         // including multi-platform builds.
         None => Ok(("docker", vec!["build"])),
     }
+}
+
+/// Return an error when the current host OS is not Linux. Used to gate the
+/// podman backend (both build and manifest paths) to Linux hosts only.
+///
+/// GoReleaser Pro's docs are explicit: "The Podman backend is exclusively a
+/// GoReleaser Pro feature restricted to Linux environments." A macOS or
+/// Windows user who sets `use: podman` would otherwise get a confusing
+/// `podman: command not found` at build time; failing at config validation
+/// produces an actionable error pointing back at the relevant field.
+pub fn enforce_podman_linux_only() -> Result<()> {
+    let os = std::env::consts::OS;
+    if os != "linux" {
+        anyhow::bail!(
+            "podman backend is supported on Linux only (host OS: {}); \
+             remove `use: podman` or run on a Linux host",
+            os,
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Buildx-only flag validation (for podman backend)
+// ---------------------------------------------------------------------------
+
+/// Flags that ONLY make sense for `docker buildx build` and that plain
+/// `podman build` does not recognise. Configs that opt into the podman
+/// backend via `use: podman` are validated against this list so a typo
+/// or copy-paste from a buildx config fails fast at config-load time
+/// rather than at podman's argv parser with a generic "unknown flag".
+///
+/// The list is conservative: only flags whose presence under podman is a
+/// load-bearing UX bug (`--rewrite-timestamp` for byte-stable layers,
+/// `--sbom` / `--provenance` / `--attest` for attestation, `--output` for
+/// the OCI exporter, `--cache-from` / `--cache-to` for BuildKit cache).
+/// Bare `--build-arg`, `--label`, `--platform`, `--tag` are buildx-aligned
+/// but accepted by plain podman too and intentionally NOT in this list.
+pub const BUILDX_ONLY_FLAGS: &[&str] = &[
+    "--rewrite-timestamp",
+    "--sbom",
+    "--provenance",
+    "--attest",
+    "--output",
+    "--cache-from",
+    "--cache-to",
+];
+
+/// Validate that a rendered flag list does not contain any buildx-only
+/// flags when the configured backend is `podman`. Returns the offending
+/// flag prefix in the error message so users can pinpoint the violation.
+///
+/// Accepts both bare-flag (`--sbom`) and key=value (`--sbom=true`) forms.
+pub fn validate_podman_flag_compat(flags: &[String]) -> Result<()> {
+    for flag in flags {
+        // Normalise: strip any `=value` suffix so we match the flag prefix.
+        let head = flag
+            .split_once('=')
+            .map(|(k, _)| k)
+            .unwrap_or(flag.as_str());
+        if BUILDX_ONLY_FLAGS.contains(&head) {
+            anyhow::bail!(
+                "docker_v2 with `use: podman` is incompatible with buildx-only flag '{}'; \
+                 remove the flag or switch to `use: buildx`",
+                flag,
+            );
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -63,7 +140,11 @@ pub fn resolve_backend(
 pub fn resolve_manifester(use_backend: Option<&str>) -> Result<&'static str> {
     match use_backend.unwrap_or("docker") {
         "docker" => Ok("docker"),
-        "podman" => Ok("podman"),
+        "podman" => {
+            // Mirror the build-path gate: podman is Linux-only.
+            enforce_podman_linux_only()?;
+            Ok("podman")
+        }
         other => {
             anyhow::bail!(
                 "docker manifest: invalid use '{}', valid options are: [docker, podman]",
@@ -244,13 +325,19 @@ pub struct DockerV2Spec<'a> {
     pub labels: &'a [(String, String)],
     /// Arbitrary extra flags passed directly to buildx.
     pub flags: &'a [String],
-    /// When true, adds `--attest=type=sbom`.
+    /// When true, adds `--attest=type=sbom`. Buildx-only — rejected at
+    /// config-validation time when `backend == Some("podman")`.
     pub sbom: bool,
     /// When `true`, adds `--push` to the command.
     pub push: bool,
     /// When `true`, adds `--load` for single-platform non-push builds
     /// (requires a running Docker daemon).
     pub load: bool,
+    /// Backend selector forwarded from `DockerV2Config.use`. `None` and
+    /// `Some("buildx")` use `docker buildx build`; `Some("podman")` swaps
+    /// to `podman build` (Linux-only) and forbids buildx-only flags. Any
+    /// other value is rejected by [`resolve_backend`].
+    pub backend: Option<&'a str>,
 }
 
 /// Construct the docker build command arguments for a Docker V2 config.
@@ -266,11 +353,28 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
         sbom,
         push,
         load,
+        backend,
     } = *spec;
 
-    // V2 always uses buildx when platforms are specified
     let multi_platform = platforms.len() > 1;
-    let (binary, subcommands) = resolve_backend(Some("buildx"), multi_platform)?;
+    // Backend selector: default to buildx (V2's historical behaviour).
+    // `Some("podman")` swaps the binary to `podman build` and is gated
+    // by `resolve_backend` (Linux-only) plus the buildx-only flag guards
+    // applied immediately below.
+    let resolved_backend = backend.unwrap_or("buildx");
+    let is_podman = resolved_backend == "podman";
+    if is_podman {
+        // Guard rails: even if the caller forgot to validate, the build
+        // command must not emit buildx-only flags under podman.
+        validate_podman_flag_compat(flags)?;
+        if sbom {
+            anyhow::bail!(
+                "docker_v2 with `use: podman` cannot enable `sbom: true` \
+                 (buildx-only); set `sbom: false` or switch to `use: buildx`",
+            );
+        }
+    }
+    let (binary, subcommands) = resolve_backend(Some(resolved_backend), multi_platform)?;
 
     let mut cmd: Vec<String> = Vec::new();
     push_backend_prefix(&mut cmd, binary, &subcommands);
@@ -312,18 +416,23 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
     }
 
     // Use --attest=type=sbom for proper OCI attestation (matching GoReleaser v2)
-    // rather than the older --sbom=true flag.
-    if sbom {
+    // rather than the older --sbom=true flag. Buildx-only — already gated by
+    // the `is_podman` check above (sbom forbidden under podman).
+    if sbom && !is_podman {
         cmd.push("--attest=type=sbom".to_string());
     }
 
-    // --push / --load logic
-    if push {
-        cmd.push("--push".to_string());
-    } else if load && !multi_platform {
-        cmd.push("--load".to_string());
+    // --push / --load logic. Both are buildx-only flags: podman build does
+    // not accept them (a separate `podman push` per tag handles publication
+    // for the podman backend, mirroring the V1 plain-docker path).
+    if !is_podman {
+        if push {
+            cmd.push("--push".to_string());
+        } else if load && !multi_platform {
+            cmd.push("--load".to_string());
+        }
+        // When neither push nor load: buildx builds to cache only (no daemon needed)
     }
-    // When neither push nor load: buildx builds to cache only (no daemon needed)
 
     // NOTE: GoReleaser V2 does NOT auto-add --provenance=false or --sbom=false.
     // Only the legacy docker pipe does that. V2 relies on explicit user flags
@@ -331,6 +440,8 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
 
     // Write image digest to file for capture (GoReleaser V2 behavior).
     // This works even without --push (no daemon needed for digest capture).
+    // Podman supports `--iidfile` natively (same flag name), so the digest
+    // capture wiring downstream applies to both backends.
     cmd.push(format!("--iidfile={}/id.txt", staging_dir));
 
     // Build context directory (positional, last argument)

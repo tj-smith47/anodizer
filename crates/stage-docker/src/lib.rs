@@ -26,9 +26,10 @@ pub use retry::{parse_duration_string, resolve_retry_params};
 // ---------------------------------------------------------------------------
 mod command;
 pub use command::{
-    DockerV1Spec, DockerV2Spec, apply_docker_v2_defaults, build_docker_command,
-    build_docker_v2_command, generate_v2_image_tags, is_docker_v2_sbom_enabled,
-    is_docker_v2_skipped, resolve_backend, resolve_skip_push,
+    BUILDX_ONLY_FLAGS, DockerV1Spec, DockerV2Spec, apply_docker_v2_defaults, build_docker_command,
+    build_docker_v2_command, enforce_podman_linux_only, generate_v2_image_tags,
+    is_docker_v2_sbom_enabled, is_docker_v2_skipped, resolve_backend, resolve_skip_push,
+    validate_podman_flag_compat,
 };
 
 // ---------------------------------------------------------------------------

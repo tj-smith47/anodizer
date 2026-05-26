@@ -117,6 +117,22 @@ pub struct DockerV2Config {
     ///   (matches the `BaseImage` / `BaseImageDigest` overlay GR adds in
     ///   `internal/pipe/docker/v2/docker.go`)
     pub hooks: Option<BuildHooksConfig>,
+    /// Docker backend for build commands: `"buildx"` (default) or `"podman"`.
+    ///
+    /// The default `"buildx"` invokes `docker buildx build` with the full set
+    /// of BuildKit features (multi-platform, attestations, `--rewrite-timestamp`,
+    /// SBOM, OCI exporter). Setting `use: podman` swaps the binary to
+    /// `podman build` and disables every buildx-only flag — anodizer rejects
+    /// configs that mix `use: podman` with `sbom: true`, `--rewrite-timestamp`,
+    /// `--provenance`, `--attest`, `--cache-from`, `--cache-to`, `--output`,
+    /// or `--sbom` because plain podman does not recognise them.
+    ///
+    /// **Linux-only.** Matches GoReleaser Pro: the podman backend is
+    /// restricted to Linux hosts. Configs setting `use: podman` on macOS or
+    /// Windows fail at config-validation time with a clear error rather than
+    /// blowing up later when `podman` is not on `PATH`.
+    #[serde(rename = "use")]
+    pub use_backend: Option<String>,
     // No `skip_push` field — use the canonical `skip:` to suppress
     // the publish step (matches every other publisher / pipe in anodizer).
 }
@@ -173,7 +189,11 @@ pub struct DockerManifestConfig {
     pub skip_push: Option<SkipPushConfig>,
     /// Unique identifier for this manifest config.
     pub id: Option<String>,
-    /// Docker backend for manifest commands: "docker" (default) or "podman".
+    /// Docker backend for manifest commands: `"docker"` (default) or
+    /// `"podman"`. The `"podman"` backend is **Linux-only** (mirrors GoReleaser
+    /// Pro): configs on macOS or Windows fail at config-validation time with
+    /// a clear error rather than blowing up later when `podman` is not on
+    /// `PATH`.
     #[serde(rename = "use")]
     pub use_backend: Option<String>,
     /// Retry configuration for manifest push (handles transient registry errors).

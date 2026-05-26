@@ -96,6 +96,15 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
     let child_snapshot =
         resolve_child_snapshot(args.snapshot, args.no_snapshot, head_is_at_tag(&repo_root)?);
 
+    // Inspect the project's docker_v2 configs for a `use: podman` opt-in.
+    // The harness's docker stage shells out to `docker buildx`, which is
+    // not compatible with podman's flag set — propagate the hint so the
+    // harness can skip the docker stage with a clear message instead of
+    // probing reproducibility against a binary the operator will never
+    // ship. Failure to load the config (missing file, parse error) is
+    // soft: the docker stage falls through to its existing buildx path.
+    let docker_backend_hint = detect_docker_backend_hint(&repo_root);
+
     let harness = Harness {
         repo_root: repo_root.clone(),
         commit: commit.clone(),
@@ -109,6 +118,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         preserve_dist,
         version_hint,
         child_snapshot,
+        docker_backend_hint,
     };
 
     let report = harness.run()?;
@@ -284,6 +294,57 @@ fn resolve_child_snapshot(snapshot: bool, no_snapshot: bool, head_at_tag: bool) 
         false
     } else {
         !head_at_tag
+    }
+}
+
+/// Probe the project's `docker_v2[*].use` field for a `"podman"` opt-in.
+///
+/// Returns `Some("podman")` when any `docker_v2` entry under any crate
+/// (or the project-level `defaults.docker_v2`) sets `use: podman`,
+/// `Some("buildx")` when only buildx is configured, and `None` when the
+/// config can't be loaded (missing / parse error) or no `docker_v2`
+/// entries exist. The harness consults the hint to decide whether to
+/// short-circuit its `docker buildx`-based reproducibility probe.
+///
+/// Best-effort: a parse failure here MUST NOT block the harness — config
+/// validation surfaces elsewhere in the pipeline with a more actionable
+/// error. The fallthrough simply runs the legacy buildx probe.
+fn detect_docker_backend_hint(repo_root: &std::path::Path) -> Option<String> {
+    let prev_cwd = std::env::current_dir().ok();
+    std::env::set_current_dir(repo_root).ok()?;
+    let cfg_path = crate::pipeline::find_config(None).ok();
+    let cfg = cfg_path
+        .as_ref()
+        .and_then(|p| crate::pipeline::load_config(p).ok());
+    if let Some(p) = prev_cwd {
+        std::env::set_current_dir(p).ok();
+    }
+    let cfg = cfg?;
+    let mut saw_buildx = false;
+    let mut iter: Vec<&Option<String>> = Vec::new();
+    if let Some(ref defaults) = cfg.defaults
+        && let Some(ref v2) = defaults.docker_v2
+    {
+        iter.push(&v2.use_backend);
+    }
+    for c in &cfg.crates {
+        if let Some(ref v2s) = c.docker_v2 {
+            for v in v2s {
+                iter.push(&v.use_backend);
+            }
+        }
+    }
+    for opt in iter {
+        match opt.as_deref() {
+            Some("podman") => return Some("podman".to_string()),
+            Some("buildx") | None => saw_buildx = true,
+            Some(_) => {}
+        }
+    }
+    if saw_buildx {
+        Some("buildx".to_string())
+    } else {
+        None
     }
 }
 

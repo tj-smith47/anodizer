@@ -699,12 +699,55 @@ fn queue_v2_build_for_platforms(
     // bypasses this by driving its own `docker buildx build --output ...`
     // through `core::docker_build` with the attribute pre-baked.
 
+    // Backend selector: `use: podman` opts into `podman build`, otherwise
+    // V2 invokes `docker buildx build`. Validation here gives a friendlier
+    // error (config path + field name) than the generic resolver bail-out
+    // that would otherwise surface at command construction.
+    let backend = v2_cfg.use_backend.as_deref();
+    match backend {
+        Some("buildx") | Some("podman") | None => {}
+        Some(other) => {
+            anyhow::bail!(
+                "docker_v2[{}]: invalid `use: {}` for crate {} — expected `buildx` or `podman`",
+                idx,
+                other,
+                krate.name
+            );
+        }
+    }
+    let is_podman = backend == Some("podman");
+    if is_podman {
+        // Linux-only enforcement upstream of the resolver so the error
+        // points at the config index, not at a Command::new failure later.
+        crate::command::enforce_podman_linux_only().with_context(|| {
+            format!(
+                "docker_v2[{}]: `use: podman` for crate {} is not supported on this OS",
+                idx, krate.name
+            )
+        })?;
+        crate::command::validate_podman_flag_compat(&rendered_flags).with_context(|| {
+            format!(
+                "docker_v2[{}]: incompatible flag with `use: podman` for crate {}",
+                idx, krate.name
+            )
+        })?;
+    }
+
     // Evaluate sbom — GoReleaser only adds SBOM in the Publish path (not snapshot).
+    // SBOM is a buildx-only attestation; under `use: podman` it must be off.
     let sbom_enabled = if ctx.is_snapshot() {
         false
     } else {
         is_docker_v2_sbom_enabled(&v2_cfg.sbom, ctx)?
     };
+    if is_podman && sbom_enabled {
+        anyhow::bail!(
+            "docker_v2[{}]: `use: podman` for crate {} cannot enable `sbom: true` \
+             (buildx-only attestation); set `sbom: false` or switch to `use: buildx`",
+            idx,
+            krate.name
+        );
+    }
 
     let platform_refs: Vec<&str> = snapshot_plats.iter().map(|s| s.as_str()).collect();
 
@@ -715,8 +758,10 @@ fn queue_v2_build_for_platforms(
 
     // Determine whether --load is safe (requires a running daemon). In
     // snapshot mode, warn if daemon is unavailable and skip --load.
+    // `--load` is buildx-only — podman builds load into local storage by
+    // default, so the flag is suppressed below in the spec.
     let should_load = if ctx.is_snapshot() {
-        let daemon_ok = is_docker_daemon_available();
+        let daemon_ok = is_podman || is_docker_daemon_available();
         if !daemon_ok {
             log.warn(
                 "docker daemon not available; snapshot build will skip --load \
@@ -739,6 +784,7 @@ fn queue_v2_build_for_platforms(
         sbom: sbom_enabled,
         push: should_push,
         load: should_load,
+        backend,
     })?;
 
     // Per-pipe `docker_v2.retry` takes precedence (with deprecation warning)
@@ -778,7 +824,10 @@ fn queue_v2_build_for_platforms(
             meta.insert("tag".to_string(), tag.clone());
             insert_platforms_meta(&mut meta, snapshot_plats);
             meta.insert("api".to_string(), "v2".to_string());
-            meta.insert("use".to_string(), "buildx".to_string());
+            meta.insert(
+                "use".to_string(),
+                if is_podman { "podman" } else { "buildx" }.to_string(),
+            );
             if let Some(ref id) = v2_cfg.id {
                 meta.insert("id".to_string(), id.clone());
             }
@@ -814,9 +863,10 @@ fn queue_v2_build_for_platforms(
                 .or_insert_with(|| det.sde.to_string());
         }
 
+        let backend_label = if is_podman { "podman" } else { "buildx" };
         build_jobs.push(DockerBuildJob {
             cmd_args,
-            backend_label: "buildx".to_string(),
+            backend_label: backend_label.to_string(),
             crate_name: krate.name.clone(),
             idx,
             max_attempts,
@@ -826,7 +876,7 @@ fn queue_v2_build_for_platforms(
             platforms_list: snapshot_plats.to_vec(),
             staging_dir: staging_dir.to_path_buf(),
             id: v2_cfg.id.clone(),
-            use_backend: Some("buildx".to_string()),
+            use_backend: Some(backend_label.to_string()),
             dist: dist.to_path_buf(),
             skip_digest,
             digest_name_template,

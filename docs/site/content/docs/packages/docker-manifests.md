@@ -69,7 +69,7 @@ Not applicable as a config flag — the stage removes any existing manifest befo
 | `push_flags` | list | none | Extra flags for `docker manifest push` (templates) |
 | `skip_push` | string/bool | none | Skip push: `true`, `false`, or `"auto"` (skip for prereleases) |
 | `id` | string | none | Unique identifier |
-| `use` | string | `docker` | Backend: `"docker"` or `"podman"` |
+| `use` | string | `docker` | Backend: `"docker"` or `"podman"`. The `"podman"` backend is **Linux-only** — see [Podman backend](@/docs/packages/podman.md) for the full caveats and flag-compatibility table. |
 | `retry` | object | see below | Retry config for manifest push |
 | `disable` | string/bool | none | Disable this manifest |
 

@@ -4625,7 +4625,7 @@
           ]
         },
         "use": {
-          "description": "Docker backend for manifest commands: \"docker\" (default) or \"podman\".",
+          "description": "Docker backend for manifest commands: `\"docker\"` (default) or `\"podman\"`. The `\"podman\"` backend is **Linux-only** (mirrors GoReleaser Pro): configs on macOS or Windows fail at config-validation time with a clear error rather than blowing up later when `podman` is not on `PATH`.",
           "default": null,
           "type": [
             "string",
@@ -4937,6 +4937,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "use": {
+          "description": "Docker backend for build commands: `\"buildx\"` (default) or `\"podman\"`.\n\nThe default `\"buildx\"` invokes `docker buildx build` with the full set of BuildKit features (multi-platform, attestations, `--rewrite-timestamp`, SBOM, OCI exporter). Setting `use: podman` swaps the binary to `podman build` and disables every buildx-only flag — anodizer rejects configs that mix `use: podman` with `sbom: true`, `--rewrite-timestamp`, `--provenance`, `--attest`, `--cache-from`, `--cache-to`, `--output`, or `--sbom` because plain podman does not recognise them.\n\n**Linux-only.** Matches GoReleaser Pro: the podman backend is restricted to Linux hosts. Configs setting `use: podman` on macOS or Windows fail at config-validation time with a clear error rather than blowing up later when `podman` is not on `PATH`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false

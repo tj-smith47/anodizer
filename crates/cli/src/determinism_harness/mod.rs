@@ -350,6 +350,19 @@ pub struct Harness {
     /// preserved by `--preserve-dist` are immediately shippable via
     /// `anodize release --publish-only`.
     pub child_snapshot: bool,
+    /// Backend hint forwarded from the CLI dispatcher's reading of the
+    /// project's `docker_v2[*].use` field. `Some("podman")` causes
+    /// [`Harness::run_docker_stage`] to short-circuit with an explanatory
+    /// warning — the harness's reproducibility probe shells out to
+    /// `docker buildx`, and BuildKit-only flags such as `--rewrite-timestamp`
+    /// and `--output=type=oci,...` are not recognised by plain `podman
+    /// build`. Operators who want byte-stability for podman-built images
+    /// must verify reproducibility outside the harness (the build path
+    /// itself stays GR-aligned).
+    ///
+    /// `None` / `Some("buildx")` / `Some("docker")` preserve the historical
+    /// behaviour of always invoking `docker buildx build`.
+    pub docker_backend_hint: Option<String>,
 }
 
 impl Harness {
@@ -731,6 +744,23 @@ impl Harness {
         if !dockerfile.exists() {
             return Ok(());
         }
+        // The determinism harness's docker probe shells out to
+        // `docker buildx build --output=type=oci,rewrite-timestamp=true,...`.
+        // Those BuildKit-only flags are not recognised by plain
+        // `podman build`; when the project config opts into `use: podman`
+        // the only honest behaviour is to skip the docker stage with a
+        // clear message, rather than spawn `docker buildx` and hand the
+        // operator a misleading "this image is reproducible" signal that
+        // covers a binary they will never actually publish.
+        if self.docker_backend_hint.as_deref() == Some("podman") {
+            eprintln!(
+                "warn: docker stage requested but project config has `use: podman` \
+                 (Linux-only); the determinism harness only probes BuildKit-based \
+                 builds, so the docker stage is skipped for this run. Verify podman \
+                 image byte-stability outside the harness."
+            );
+            return Ok(());
+        }
         match anodizer_core::docker_detect::buildx_available() {
             Ok(true) => {}
             Ok(false) | Err(_) => {
@@ -927,6 +957,7 @@ mod tests {
             preserve_dist: None,
             version_hint: String::new(),
             child_snapshot: true,
+            docker_backend_hint: None,
         }
     }
 

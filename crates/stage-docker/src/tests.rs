@@ -711,11 +711,23 @@ fn test_resolve_backend_docker_explicit() {
     assert_eq!(subs, vec!["build"]);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn test_resolve_backend_podman_explicit() {
     let (bin, subs) = resolve_backend(Some("podman"), false).unwrap();
     assert_eq!(bin, "podman");
     assert_eq!(subs, vec!["build"]);
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn test_resolve_backend_podman_rejected_on_non_linux() {
+    let err = resolve_backend(Some("podman"), false).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("Linux only"),
+        "non-linux host must surface a Linux-only error: {msg}"
+    );
 }
 
 #[test]
@@ -745,6 +757,7 @@ fn test_resolve_backend_unknown_errors() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn test_build_docker_command_podman_backend() {
     let cmd = build_docker_command(&DockerV1Spec {
@@ -1006,10 +1019,23 @@ fn test_resolve_manifester_docker_default() {
     assert_eq!(resolve_manifester(Some("docker")).unwrap(), "docker");
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn test_resolve_manifester_podman_explicit() {
     use super::command::resolve_manifester;
     assert_eq!(resolve_manifester(Some("podman")).unwrap(), "podman");
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn test_resolve_manifester_podman_rejected_on_non_linux() {
+    use super::command::resolve_manifester;
+    let err = resolve_manifester(Some("podman")).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("Linux only"),
+        "non-linux host must reject podman manifest backend: {msg}"
+    );
 }
 
 #[test]
@@ -1092,6 +1118,7 @@ fn test_build_docker_v2_command_basic() {
         sbom: false,
         push: false,
         load: true,
+        backend: None,
     })
     .unwrap();
 
@@ -1134,6 +1161,7 @@ fn test_build_docker_v2_command_build_args() {
         sbom: false,
         push: false,
         load: true,
+        backend: None,
     })
     .unwrap();
 
@@ -1171,6 +1199,7 @@ fn test_build_docker_v2_command_annotations() {
         sbom: false,
         push: false,
         load: true,
+        backend: None,
     })
     .unwrap();
 
@@ -1204,6 +1233,7 @@ fn test_build_docker_v2_command_labels() {
         sbom: false,
         push: false,
         load: true,
+        backend: None,
     })
     .unwrap();
 
@@ -1224,6 +1254,7 @@ fn test_build_docker_v2_command_sbom_true() {
         sbom: true,
         push: false,
         load: true,
+        backend: None,
     })
     .unwrap();
 
@@ -1245,6 +1276,7 @@ fn test_build_docker_v2_command_sbom_false() {
         sbom: false,
         push: false,
         load: true,
+        backend: None,
     })
     .unwrap();
 
@@ -1268,6 +1300,7 @@ fn test_build_docker_v2_command_flags() {
         sbom: false,
         push: false,
         load: true,
+        backend: None,
     })
     .unwrap();
 
@@ -1288,6 +1321,7 @@ fn test_build_docker_v2_command_push() {
         sbom: false,
         push: true,
         load: true,
+        backend: None,
     })
     .unwrap();
 
@@ -1308,6 +1342,7 @@ fn test_build_docker_v2_command_no_push_single_platform_loads() {
         sbom: false,
         push: false,
         load: true,
+        backend: None,
     })
     .unwrap();
 
@@ -1328,6 +1363,7 @@ fn test_build_docker_v2_command_no_push_multi_platform_no_load() {
         sbom: false,
         push: false,
         load: true,
+        backend: None,
     })
     .unwrap();
 
@@ -1360,6 +1396,7 @@ fn test_build_docker_v2_command_combined() {
         sbom: true,
         push: true,
         load: true,
+        backend: None,
     })
     .unwrap();
 
@@ -1391,6 +1428,7 @@ fn test_build_docker_v2_command_includes_iidfile() {
         sbom: false,
         push: false,
         load: true,
+        backend: None,
     })
     .unwrap();
     assert!(
@@ -2479,6 +2517,7 @@ fn test_sbom_uses_attest_format() {
         sbom: true,
         push: false,
         load: true,
+        backend: None,
     })
     .unwrap();
     assert!(
@@ -2505,6 +2544,7 @@ fn test_annotations_no_prefix_single_platform() {
         sbom: false,
         push: false,
         load: true,
+        backend: None,
     })
     .unwrap();
     assert!(
@@ -2527,6 +2567,7 @@ fn test_annotations_get_index_prefix_multi_platform() {
         sbom: false,
         push: true,
         load: true,
+        backend: None,
     })
     .unwrap();
     assert!(
@@ -2549,6 +2590,7 @@ fn test_annotations_no_double_index_prefix() {
         sbom: false,
         push: true,
         load: true,
+        backend: None,
     })
     .unwrap();
     assert!(
@@ -2779,6 +2821,7 @@ fn test_build_docker_v2_command_no_load_when_disabled() {
         sbom: false,
         push: false,
         load: false,
+        backend: None,
     })
     .unwrap();
     assert!(!cmd.contains(&"--load".to_string()));
@@ -2798,6 +2841,7 @@ fn test_build_docker_v2_command_load_when_enabled() {
         sbom: false,
         push: false,
         load: true,
+        backend: None,
     })
     .unwrap();
     assert!(cmd.contains(&"--load".to_string()));
@@ -2829,6 +2873,7 @@ fn test_build_docker_command_plain_docker_no_push_flag() {
     assert!(!cmd.contains(&"--load".to_string()));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn test_build_docker_command_podman_no_push_flag() {
     // Podman should never get --push in the build command
@@ -4844,4 +4889,163 @@ fn docker_v2_post_hook_template_failure_aborts_stage() {
         res.is_err(),
         "post-hook with undefined template var must propagate as stage error"
     );
+}
+
+// ============================================================================
+// B21 — Podman backend coverage
+// ============================================================================
+
+#[test]
+fn podman_flag_compat_rejects_buildx_only_flags() {
+    use super::command::validate_podman_flag_compat;
+    for flag in [
+        "--rewrite-timestamp",
+        "--rewrite-timestamp=true",
+        "--sbom=true",
+        "--provenance=false",
+        "--attest=type=sbom",
+        "--cache-from=type=gha",
+        "--cache-to=type=gha,mode=max",
+        "--output=type=oci,dest=/tmp/x.tar",
+    ] {
+        let err = validate_podman_flag_compat(&[flag.to_string()])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("buildx-only"),
+            "podman flag guard must reject '{flag}', got: {err}"
+        );
+    }
+}
+
+#[test]
+fn podman_flag_compat_accepts_neutral_flags() {
+    use super::command::validate_podman_flag_compat;
+    validate_podman_flag_compat(&[
+        "--build-arg=FOO=bar".to_string(),
+        "--label=org.opencontainers.image.title=demo".to_string(),
+        "--platform=linux/amd64".to_string(),
+        "--tag=ghcr.io/owner/app:v1".to_string(),
+        "--no-cache".to_string(),
+    ])
+    .expect("non-buildx-only flags must pass under podman");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn build_docker_v2_command_podman_backend_omits_buildx_only_flags() {
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &["ghcr.io/owner/app:v1".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: true,
+        load: true,
+        backend: Some("podman"),
+    })
+    .unwrap();
+    assert_eq!(cmd[0], "podman");
+    assert_eq!(cmd[1], "build");
+    assert!(
+        !cmd.contains(&"--push".to_string()),
+        "podman build must NOT receive --push (buildx-only): {cmd:?}"
+    );
+    assert!(
+        !cmd.contains(&"--load".to_string()),
+        "podman build must NOT receive --load (buildx-only): {cmd:?}"
+    );
+    assert!(
+        !cmd.iter().any(|a| a.starts_with("--attest")),
+        "podman build must NOT receive --attest (buildx-only): {cmd:?}"
+    );
+    assert!(
+        cmd.iter().any(|a| a.starts_with("--iidfile=")),
+        "podman build must still capture --iidfile for digest pinning: {cmd:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn build_docker_v2_command_podman_with_sbom_errors() {
+    let err = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &["ghcr.io/owner/app:v1".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: true,
+        push: false,
+        load: false,
+        backend: Some("podman"),
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("podman") && err.contains("sbom"),
+        "podman+sbom must surface a clear error, got: {err}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn build_docker_v2_command_podman_with_buildx_only_flag_errors() {
+    let err = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &["ghcr.io/owner/app:v1".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &["--cache-from=type=gha".to_string()],
+        sbom: false,
+        push: false,
+        load: false,
+        backend: Some("podman"),
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("buildx-only") && err.contains("--cache-from"),
+        "podman+buildx-only-flag must surface a clear error, got: {err}"
+    );
+}
+
+#[test]
+fn build_docker_v2_command_default_backend_invokes_buildx() {
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &["ghcr.io/owner/app:v1".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: false,
+        load: true,
+        backend: None,
+    })
+    .unwrap();
+    assert_eq!(cmd[0], "docker");
+    assert_eq!(cmd[1], "buildx");
+    assert_eq!(cmd[2], "build");
+}
+
+#[test]
+fn docker_v2_config_use_podman_round_trips_via_yaml() {
+    use anodizer_core::config::DockerV2Config;
+    let yaml = r#"
+images: ["ghcr.io/owner/app"]
+tags: ["v1"]
+dockerfile: Dockerfile
+use: podman
+"#;
+    let cfg: DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert_eq!(cfg.use_backend.as_deref(), Some("podman"));
 }

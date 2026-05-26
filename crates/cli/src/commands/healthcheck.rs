@@ -22,6 +22,10 @@ const TOOLS: &[ToolCheck] = &[
         description: "Container runtime",
     },
     ToolCheck {
+        name: "podman",
+        description: "Container runtime (Linux-only alt backend)",
+    },
+    ToolCheck {
         name: "nfpm",
         description: "Linux package builder (deb/rpm/apk)",
     },
