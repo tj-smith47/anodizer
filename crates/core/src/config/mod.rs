@@ -206,6 +206,9 @@ pub struct Config {
     /// skipped. Mirrors GoReleaser's `mcp:` block.
     #[serde(default)]
     pub mcp: McpConfig,
+    /// NPM package registry publishing configurations. One entry per
+    /// published package. Mirrors GoReleaser Pro's `npms:` block.
+    pub npms: Option<Vec<NpmConfig>>,
 }
 
 /// Helper schema function for the signs field (accepts object or array).
@@ -292,6 +295,7 @@ impl Default for Config {
             aur_sources: None,
             retry: None,
             mcp: McpConfig::default(),
+            npms: None,
         }
     }
 }
@@ -1321,6 +1325,9 @@ pub use aur_source::*;
 
 mod mcp;
 pub use mcp::*;
+
+mod npm;
+pub use npm::*;
 
 // ---------------------------------------------------------------------------
 // Tests

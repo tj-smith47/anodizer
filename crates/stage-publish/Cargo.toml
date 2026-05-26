@@ -20,7 +20,9 @@ test-support = []
 anodizer-core.workspace = true
 anodizer-stage-release.workspace = true
 anyhow.workspace = true
+flate2.workspace = true
 glob.workspace = true
+tar.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_yaml_ng.workspace = true

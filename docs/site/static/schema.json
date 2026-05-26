@@ -340,6 +340,17 @@
         }
       ]
     },
+    "npms": {
+      "description": "NPM package registry publishing configurations. One entry per published package. Mirrors GoReleaser Pro's `npms:` block.",
+      "default": null,
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/definitions/NpmConfig"
+      }
+    },
     "partial": {
       "description": "Partial/split build configuration for fan-out CI pipelines.",
       "default": null,
@@ -9248,6 +9259,234 @@
               "type": "null"
             }
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NpmConfig": {
+      "description": "NPM package registry publisher configuration.\n\nAnodizer generates a `package.json` carrying a `postinstall` script that downloads the matching release archive at `npm i` time. Each `npms[]` entry produces one tarball pushed to the configured registry.",
+      "type": "object",
+      "properties": {
+        "access": {
+          "description": "NPM access level for scoped packages. Accepts `\"public\"` / `\"restricted\"`. Scoped packages on npmjs.org default to `restricted` unless this is set to `public`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "author": {
+          "description": "Templated `author` field for `package.json`. Falls back to `metadata.maintainers[0]` when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bugs": {
+          "description": "Templated bug tracker URL. Emitted as `bugs.url` in `package.json`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "Templated package description. Falls back to the project-level `metadata.description` when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "disable": {
+          "description": "Disable this publisher entry. Mirrors GoReleaser Pro `npms[].disable:`. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "extra": {
+          "description": "Free-form root-level `package.json` fields. Shallow-merged into the generated `package.json`. Useful for `engines`, `mcpName`, or other npm metadata fields anodizer does not surface.",
+          "default": null,
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "extra_files": {
+          "description": "Additional files to include in the tarball alongside `package.json` + the postinstall script. Default `[\"README*\", \"LICENSE*\"]` (applied at `Default` pass).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "format": {
+          "description": "Archive format the `postinstall` script downloads (`tgz`, `tar.gz`, `zip`, `binary`). Default `tgz`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "homepage": {
+          "description": "Templated homepage URL. Falls back to `metadata.homepage` when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Unique identifier for selecting this entry from the CLI (`--id=...`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ids": {
+          "description": "Build IDs filter: only include artifacts whose archive `id` is in this list.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the NPM publisher entry is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `npms[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "keywords": {
+          "description": "NPM `keywords` list.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "license": {
+          "description": "Templated SPDX license identifier (e.g. `MIT`, `Apache-2.0`). Falls back to `metadata.license` when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "NPM package name (required). May be scoped (`@org/foo`) or unscoped (`foo`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "registry": {
+          "description": "Override the registry endpoint (default `https://registry.npmjs.org`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repository": {
+          "description": "Templated repository URL. Emitted as `repository.url` in `package.json` with `type: git`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `true` — NPM is a Manager-group publisher (one-way 72-hour unpublish window), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip this publisher. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tag": {
+          "description": "NPM dist-tag for the publish (default `latest`). Templated.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "templated_extra_files": {
+          "description": "Template-rendered file mappings (`src` may be a glob; rendered contents written to `dst`).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/NpmTemplatedExtraFile"
+          }
+        },
+        "token": {
+          "description": "Auth token for the registry. Falls back to the `NPM_TOKEN` env var when unset. Stored in `.npmrc` as `//<registry>/:_authToken=...` at publish time and never passed via argv.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url_template": {
+          "description": "Override the download URL emitted into the postinstall script (templated). When unset, anodizer derives the URL from the release context.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NpmTemplatedExtraFile": {
+      "description": "Template-rendered file mapping for [`NpmConfig::templated_extra_files`].",
+      "type": "object",
+      "properties": {
+        "dst": {
+          "description": "Destination path inside the published tarball.",
+          "default": "",
+          "type": "string"
+        },
+        "src": {
+          "description": "Source path (may be a glob; relative to the project root).",
+          "default": "",
+          "type": "string"
         }
       },
       "additionalProperties": false
