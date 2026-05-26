@@ -183,6 +183,30 @@ spellings (no migration hint).
 - `defaults.archives` identity key now uses `formats[0]` instead of `format`
   for the archive-merge engine.
 
+## Additive: `required:` on all publishers (2026-05-26, backward-compatible)
+
+Every publisher block now accepts an optional `required: <bool>` field. This is a
+pure addition — no existing config needs to change.
+
+| Field | Type | Default | Effect |
+|-------|------|---------|--------|
+| `required: true` | bool | — | Failure from this publisher fails the overall release. |
+| `required: false` | bool | — | Failure is logged; release continues. |
+| omitted | — | publisher default | Falls through to the publisher's hardcoded default (see below). |
+
+Hardcoded defaults that differ from `false`:
+
+| Publisher | Default |
+|-----------|---------|
+| `release:` (GitHub Releases) | `true` |
+| `publish.cargo` (crates.io) | `true` |
+| All others | `false` |
+
+`Option<bool>` in the config structs means omitting the field is not the same as
+writing `required: false` — omitting falls through to the publisher's constant
+default, so existing configs that relied on crates.io and GitHub Releases being
+required continue to work without any changes.
+
 ## Verification gate
 
 ```bash

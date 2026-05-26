@@ -15,6 +15,24 @@ The release stage creates a GitHub release and uploads all artifacts as assets.
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 
+## The `required:` field
+
+Default: **`true`** — a GitHub Releases failure fails the release.
+
+Set `required: false` to log failures but continue:
+
+```yaml
+crates:
+  - name: myapp
+    release:
+      required: false   # continue release even if GitHub Release upload fails
+      github:
+        owner: myorg
+        name: myapp
+```
+
+See [Publish overview — the `required:` field](../) for the full semantics.
+
 ## Minimal config
 
 ```yaml

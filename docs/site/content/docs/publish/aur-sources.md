@@ -11,9 +11,39 @@ Anodizer can generate and publish source-based AUR packages that build your proj
 
 | Group | Required (default) | Rollback | Token scope |
 |---|---|---|---|
-| Manager | false | git revert + push | `AUR_SSH_KEY write` |
+| Submitter | false | none | `AUR_SSH_KEY write` |
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
+
+## The `required:` field
+
+Default: **`false`** — an AUR Sources submission failure is logged but does not fail the release.
+
+Set `required: true` to make the release exit non-zero if this publisher fails:
+
+```yaml
+aur_sources:
+  - git_url: "ssh://aur@aur.archlinux.org/myapp.git"
+    required: true
+```
+
+> **Warning:** AUR Sources is a _submitter_ publisher — it force-pushes to the upstream
+> Arch User Repository via SSH. The AUR does not perform moderation, but the package is
+> not "approved" by any external gate; the push itself is the final act. Despite this,
+> the publisher is classified as Submitter because it modifies a shared namespace on an
+> external service with no programmatic rollback path.
+>
+> Setting `required: true` has no meaningful effect in the common case because the
+> failure mode it guards against (SSH push rejection) happens at push time — the same
+> moment the publisher either succeeds or fails. However, anodizer still emits a
+> config-validation warning to match the consistent submitter policy:
+>
+> ```
+> <location>: publisher 'aur_source' is a submitter (external moderation queue); `required: true` has no meaningful effect — the submitter gate evaluates at push time, not at approval time.
+> ```
+>
+> See [Publish overview — the `required:` field](../) for the full submitter-publisher
+> semantics.
 
 ## Minimal config
 

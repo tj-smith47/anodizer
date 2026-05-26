@@ -15,6 +15,23 @@ Anodizer generates Scoop JSON manifests and pushes them to your bucket repositor
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 
+## The `required:` field
+
+Default: **`false`** — a Scoop bucket push failure is logged but does not fail the release.
+
+Set `required: true` to make the release exit non-zero if this publisher fails:
+
+```yaml
+publish:
+  scoop:
+    repository:
+      owner: myorg
+      name: scoop-bucket
+    required: true
+```
+
+See [Publish overview — the `required:` field](../) for the full semantics.
+
 ## Minimal config
 
 ```yaml

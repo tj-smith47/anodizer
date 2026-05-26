@@ -15,6 +15,20 @@ Publish your crate to [crates.io](https://crates.io) with dependency-aware order
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 
+## The `required:` field
+
+Default: **`true`** — a crates.io publish failure fails the release.
+
+Set `required: false` to log failures but continue:
+
+```yaml
+publish:
+  cargo:
+    required: false   # continue release even if crates.io publish fails
+```
+
+See [Publish overview — the `required:` field](../) for the full semantics.
+
 ## Minimal config
 
 ```yaml

@@ -15,6 +15,38 @@ Anodizer generates Chocolatey `.nuspec` manifests and `chocolateyInstall.ps1` Po
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 
+## The `required:` field
+
+Default: **`false`** — a Chocolatey submission failure is logged but does not fail the release.
+
+Set `required: true` to make the release exit non-zero if this publisher fails:
+
+```yaml
+publish:
+  chocolatey:
+    repository:
+      owner: myorg
+      name: myapp
+    license: MIT
+    required: true
+```
+
+> **Warning:** Chocolatey is a _submitter_ publisher — it pushes a `.nupkg` to the
+> community moderation queue; that queue resolves hours or days after the release
+> completes. The publisher "succeeds" at queue-acceptance time, not at approval time.
+> Setting `required: true` therefore has no meaningful effect: the failure mode it
+> guards against (queue rejection) happens asynchronously, long after the release
+> exits.
+>
+> Anodizer emits this warning at config-validation time when `required: true` is set:
+>
+> ```
+> <location>: publisher 'chocolatey' is a submitter (external moderation queue); `required: true` has no meaningful effect — the submitter gate evaluates at push time, not at approval time.
+> ```
+>
+> See [Publish overview — the `required:` field](../) for the full submitter-publisher
+> semantics.
+
 ## Minimal config
 
 ```yaml

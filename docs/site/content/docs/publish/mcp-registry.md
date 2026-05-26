@@ -15,6 +15,26 @@ Anodizer publishes a [Model Context Protocol](https://modelcontextprotocol.io/) 
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Manager rollback semantics.
 
+## The `required:` field
+
+Default: **`false`** — an MCP registry publish failure is logged but does not fail the release.
+
+Set `required: true` to make the release exit non-zero if this publisher fails:
+
+```yaml
+mcp:
+  name: io.github.myorg/myapp
+  description: "A fast MCP server"
+  packages:
+    - registry_type: oci
+      identifier: ghcr.io/myorg/myapp
+      transport:
+        type: stdio
+  required: true
+```
+
+See [Publish overview — the `required:` field](../) for the full semantics.
+
 ## Minimal config
 
 ```yaml

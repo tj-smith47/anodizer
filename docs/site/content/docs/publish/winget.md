@@ -15,6 +15,38 @@ Anodizer generates [WinGet](https://learn.microsoft.com/en-us/windows/package-ma
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 
+## The `required:` field
+
+Default: **`false`** — a winget PR submission failure is logged but does not fail the release.
+
+Set `required: true` to make the release exit non-zero if this publisher fails:
+
+```yaml
+publish:
+  winget:
+    package_identifier: "MyOrg.MyApp"
+    publisher: "My Organization"
+    license: MIT
+    required: true
+```
+
+> **Warning:** Winget is a _submitter_ publisher — it opens a pull request against
+> `microsoft/winget-pkgs`; that PR goes through automated validation (SubmitPipelineBot)
+> that takes hours to days. The publisher "succeeds" when the PR is opened, not when
+> it is merged.
+>
+> Setting `required: true` therefore has no meaningful effect: the failure mode it
+> guards against (PR rejection) happens asynchronously, long after the release exits.
+>
+> Anodizer emits this warning at config-validation time when `required: true` is set:
+>
+> ```
+> <location>: publisher 'winget' is a submitter (external moderation queue); `required: true` has no meaningful effect — the submitter gate evaluates at push time, not at approval time.
+> ```
+>
+> See [Publish overview — the `required:` field](../) for the full submitter-publisher
+> semantics.
+
 ## Minimal config
 
 ```yaml

@@ -1177,7 +1177,7 @@
           ]
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
           "type": [
             "boolean",
             "null"
@@ -1448,7 +1448,7 @@
           }
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
           "type": [
             "boolean",
             "null"
@@ -1731,7 +1731,7 @@
           ]
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
           "type": [
             "boolean",
             "null"
@@ -2426,7 +2426,7 @@
           ]
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `true` — a failure here aborts the release. Set to `false` to log failures but continue.",
           "type": [
             "boolean",
             "null"
@@ -3026,7 +3026,7 @@
           ]
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
           "type": [
             "boolean",
             "null"
@@ -3189,7 +3189,7 @@
           ]
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
           "type": [
             "boolean",
             "null"
@@ -4293,7 +4293,7 @@
           }
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
           "type": [
             "boolean",
             "null"
@@ -5659,7 +5659,7 @@
           ]
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
           "type": [
             "boolean",
             "null"
@@ -6234,7 +6234,7 @@
           ]
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
           "type": [
             "boolean",
             "null"
@@ -6558,7 +6558,7 @@
           ]
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
           "type": [
             "boolean",
             "null"
@@ -7346,7 +7346,7 @@
           ]
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
           "type": [
             "boolean",
             "null"
@@ -9023,7 +9023,7 @@
           ]
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
           "type": [
             "boolean",
             "null"
@@ -10114,7 +10114,7 @@
           ]
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `true` — a failure here aborts the release. Set to `false` to log failures but continue.",
           "type": [
             "boolean",
             "null"
@@ -10534,7 +10534,7 @@
           ]
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
           "type": [
             "boolean",
             "null"
@@ -12918,7 +12918,7 @@
           ]
         },
         "required": {
-          "description": "Override whether this publisher failing should fail the overall release. When unset, falls through to the built-in default for this publisher.",
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
           "type": [
             "boolean",
             "null"

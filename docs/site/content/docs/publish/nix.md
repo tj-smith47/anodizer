@@ -15,6 +15,25 @@ The Nix publisher generates a Nix derivation expression for your release and com
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 
+## The `required:` field
+
+Default: **`false`** — a Nix derivation push failure is logged but does not fail the release.
+
+Set `required: true` to make the release exit non-zero if this publisher fails:
+
+```yaml
+publish:
+  nix:
+    repository:
+      owner: my-org
+      name: nixpkgs
+    description: "A fast CLI tool"
+    license: mit
+    required: true
+```
+
+See [Publish overview — the `required:` field](../) for the full semantics.
+
 ## Minimal config
 
 ```yaml

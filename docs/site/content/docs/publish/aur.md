@@ -19,6 +19,21 @@ Anodizer generates Arch Linux `PKGBUILD` and `.SRCINFO` files and pushes them to
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 
+## The `required:` field
+
+Default: **`false`** for both package types — an AUR push failure is logged but does not fail the release.
+
+Set `required: true` to make the release exit non-zero if this publisher fails:
+
+```yaml
+publish:
+  aur:
+    git_url: "ssh://aur@aur.archlinux.org/myapp-bin.git"
+    required: true
+```
+
+See [Publish overview — the `required:` field](../) for the full semantics.
+
 ## Minimal config
 
 Pick one or both. Binary packages distribute prebuilt artifacts; source packages build via `cargo`.

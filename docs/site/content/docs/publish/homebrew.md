@@ -15,6 +15,23 @@ Anodizer generates Ruby Homebrew formulae with multi-platform support and pushes
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 
+## The `required:` field
+
+Default: **`false`** — a Homebrew push failure is logged but does not fail the release.
+
+Set `required: true` to make the release exit non-zero if this publisher fails:
+
+```yaml
+publish:
+  homebrew:
+    repository:
+      owner: myorg
+      name: homebrew-tap
+    required: true
+```
+
+See [Publish overview — the `required:` field](../) for the full semantics.
+
 ## Minimal config
 
 ```yaml

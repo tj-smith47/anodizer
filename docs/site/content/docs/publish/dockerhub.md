@@ -15,6 +15,22 @@ Anodizer can sync short and full descriptions to your Docker Hub repositories. T
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 
+## The `required:` field
+
+Default: **`false`** — a Docker Hub description sync failure is logged but does not fail the release.
+
+Set `required: true` to make the release exit non-zero if this publisher fails:
+
+```yaml
+dockerhub:
+  - username: myuser
+    images:
+      - myorg/myapp
+    required: true
+```
+
+See [Publish overview — the `required:` field](../) for the full semantics.
+
 ## Minimal config
 
 ```yaml

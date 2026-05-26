@@ -15,6 +15,21 @@ Anodizer can upload release artifacts to JFrog Artifactory repositories.
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 
+## The `required:` field
+
+Default: **`false`** — an Artifactory upload failure is logged but does not fail the release.
+
+Set `required: true` to make the release exit non-zero if this publisher fails:
+
+```yaml
+artifactories:
+  - name: production
+    target: "https://artifactory.example.com/repo/path/"
+    required: true
+```
+
+See [Publish overview — the `required:` field](../) for the full semantics.
+
 ## Minimal config
 
 ```yaml
