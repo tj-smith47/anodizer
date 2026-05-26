@@ -54,6 +54,39 @@ impl PartialTarget {
     /// - `OsArch { os: "linux", arch: None }` → `"linux"`
     /// - `OsArch { os: "linux", arch: Some("amd64") }` → `"linux_amd64"`
     /// - `Targets(["x86_64-...", "aarch64-..."])` → `"targets-x86_64-..."` (first triple)
+    ///
+    /// # Divergence from GoReleaser
+    ///
+    /// GoReleaser Pro writes split shards to `dist/$GOOS` (or
+    /// `dist/$GOOS_$GOARCH` when `partial.by: target`). Anodizer
+    /// matches that shape for the `OsArch` variant — `OsArch { os:
+    /// "linux", arch: None }` resolves to `"linux"`, identical to GR's
+    /// `dist/linux` — but the `Exact` variant uses the full Rust target
+    /// triple instead of GR's Go-style `<goos>_<goarch>` (because the
+    /// triple is the natural granularity for Rust toolchains), and the
+    /// `Targets` variant is anodizer-only (drives the determinism
+    /// harness's sharded matrix, not user-facing CI fan-out).
+    ///
+    /// Practical consequence: split shards produced by anodizer cannot
+    /// be merged by `goreleaser` and vice versa. Anodizer's CLI does
+    /// not attempt cross-tool interop; the subdir name is purely
+    /// internal to the per-tool merge step.
+    ///
+    /// ```
+    /// use anodizer_core::partial::PartialTarget;
+    ///
+    /// // OsArch matches GR's `dist/linux` shape exactly.
+    /// assert_eq!(
+    ///     PartialTarget::OsArch { os: "linux".into(), arch: None }.dist_subdir(),
+    ///     "linux",
+    /// );
+    ///
+    /// // Exact uses the full Rust triple (not GR's `linux_amd64`).
+    /// assert_eq!(
+    ///     PartialTarget::Exact("x86_64-unknown-linux-gnu".into()).dist_subdir(),
+    ///     "x86_64-unknown-linux-gnu",
+    /// );
+    /// ```
     pub fn dist_subdir(&self) -> String {
         match self {
             PartialTarget::Exact(t) => t.clone(),
@@ -422,6 +455,30 @@ mod tests {
             arch: Some("amd64".to_string()),
         };
         assert_eq!(target.dist_subdir(), "linux_amd64");
+    }
+
+    /// `OsArch { os: "linux", arch: None }` must spell `"linux"` —
+    /// byte-for-byte the same name GoReleaser writes to `dist/linux`.
+    /// This is the only `dist_subdir` shape that round-trips between
+    /// the two tools and is therefore worth pinning explicitly.
+    #[test]
+    fn dist_subdir_os_only_matches_goreleaser_layout() {
+        let target = PartialTarget::OsArch {
+            os: "linux".to_string(),
+            arch: None,
+        };
+        assert_eq!(target.dist_subdir(), "linux");
+    }
+
+    /// The `Exact` variant uses the full Rust target triple, which
+    /// diverges from GoReleaser's `dist/$GOOS_$GOARCH` shape. Lock
+    /// the anodizer-specific spelling in so the rustdoc-documented
+    /// divergence is also enforced by a test.
+    #[test]
+    fn dist_subdir_exact_uses_full_rust_triple_not_goos_goarch() {
+        let target = PartialTarget::Exact("x86_64-unknown-linux-gnu".to_string());
+        assert_eq!(target.dist_subdir(), "x86_64-unknown-linux-gnu");
+        assert_ne!(target.dist_subdir(), "linux_amd64");
     }
 
     // -----------------------------------------------------------------------

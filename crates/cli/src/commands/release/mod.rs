@@ -2,7 +2,7 @@ mod milestones;
 mod publish_only;
 mod split;
 
-pub use split::run_merge;
+pub use split::{load_split_contexts_into, run_merge};
 
 use super::helpers;
 use crate::pipeline;
@@ -991,6 +991,14 @@ fn run_post_pipeline(
     // `after.post:` spelling is folded into `hooks:` at config-parse
     // time by `HooksConfig::merge_hook_aliases`, so this reader only
     // needs the canonical field.
+    //
+    // Note on `--merge` interaction: `before:` hooks deliberately skip on
+    // merge (see `run_before_hooks`) because the shards already compiled.
+    // `after:` hooks intentionally DO run on merge — the shard pipeline
+    // (`build_split_pipeline`) only executes the build stage and never
+    // reaches `run_post_pipeline`, so the merge step is the only point at
+    // which the user's post-release notifications / cleanup hooks fire.
+    // Skipping them here would mean they never run.
     if let Some(after) = &config.after
         && let Some(ref hooks) = after.hooks
     {

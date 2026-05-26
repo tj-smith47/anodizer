@@ -222,6 +222,7 @@ Run only the publish stages (release, publish, blob) from a completed dist/
 | `--dry-run` | — | — | Run full pipeline without side effects |
 | `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
 | `--dist` | — | — | Custom dist directory (overrides config) |
+| `--merge` | — | — | Merge artifacts from `release --split` workers (dist/<subdir>/context.json) before running the publish-only pipeline. Mirrors `goreleaser publish --merge`. |
 
 
 ### `anodizer bump`
@@ -257,4 +258,5 @@ Run only the announce stage from a completed dist/
 | `--dist` | — | — | Custom dist directory (overrides config) |
 | `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
 | `--skip` | — | — | Skip stages (comma-separated) |
+| `--merge` | — | — | Merge artifact lists from `release --split` workers (dist/<subdir>/context.json) before announcing. Mirrors `goreleaser announce --merge`. |
 

@@ -190,3 +190,54 @@ Use `--skip` to skip individual stages during merge:
 ```
 anodizer continue --merge --skip docker,announce
 ```
+
+## `publish --merge` / `announce --merge`
+
+Beyond `release --merge` / `continue --merge`, anodizer also accepts
+`--merge` on the publish-only and announce-only commands so the merge
+step can be broken into smaller pieces (for example, one machine signs +
+uploads to GitHub, a second machine fan-outs to package managers, a
+third announces). Mirrors GoReleaser Pro's
+`goreleaser publish --merge` / `goreleaser announce --merge`.
+
+```bash
+anodizer publish  --merge   # loads dist/<subdir>/context.json shards, runs publish pipeline
+anodizer announce --merge   # loads dist/<subdir>/context.json shards, runs announce pipeline
+```
+
+Both modes use the same shard-loader (and the same
+worker-completeness + collision checks) as `release --merge`.
+
+## Divergence from GoReleaser
+
+The split layout aligns with GoReleaser's `dist/$GOOS` shape **only for
+`partial.by: goos`** — `dist/linux`, `dist/darwin`, `dist/windows` are
+written byte-for-byte the same in both tools. The other variants
+diverge:
+
+| `partial.by` / variant   | GoReleaser layout       | Anodizer layout                  |
+|--------------------------|-------------------------|----------------------------------|
+| `by: goos` (default)     | `dist/$GOOS`            | `dist/<goos>` (same)             |
+| `by: target`             | `dist/$GOOS_$GOARCH`    | `dist/<rust-triple>` (full triple) |
+| anodizer `--targets=<csv>` | not present             | `dist/targets-<first-triple>` (harness only) |
+
+**Cross-tool migration is one-way:** shards produced by one tool cannot
+be merged by the other. If you are migrating an existing GoReleaser
+project, regenerate shards with anodizer on the next release rather
+than mixing layouts.
+
+## Idempotency
+
+Re-running `anodizer release --split` on the same shard against the
+same source tree writes a byte-identical `dist/<subdir>/context.json`
+(provided the inputs — git HEAD, env vars, timestamps via
+`SOURCE_DATE_EPOCH` or `metadata.mod_timestamp` — are stable). The
+merge step's loader uses sorted shard iteration so the merged artifact
+order is also deterministic.
+
+The `before:` hook list is skipped during `--merge` (mirrors
+GoReleaser's
+[`customization/general/partial/`](https://goreleaser.com/customization/general/partial/)
+contract: "this step will not run anything that the previous step
+already did") so re-running merge after a transient publish failure
+does not re-compile.

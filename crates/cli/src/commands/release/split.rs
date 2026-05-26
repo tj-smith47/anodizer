@@ -3,7 +3,7 @@ use anodizer_core::artifact;
 use anodizer_core::config::Config;
 use anodizer_core::context::Context;
 use anyhow::{Context as _, Result};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 /// Rich artifact format for split/merge serialization.
@@ -39,8 +39,10 @@ pub struct SplitArtifact {
     pub type_s: String,
     /// Crate that produced this artifact.
     pub crate_name: String,
-    /// Rich metadata.
-    pub extra: HashMap<String, serde_json::Value>,
+    /// Rich metadata. Stored as a [`BTreeMap`] so re-serialization is
+    /// byte-stable across `release --split` re-runs (see the
+    /// [`SplitContext`] doc for the broader idempotency contract).
+    pub extra: BTreeMap<String, serde_json::Value>,
     /// SHA256 of the artifact bytes, prefixed `sha256:`. Populated by
     /// the determinism harness's `--preserve-dist` writer; left
     /// `None` by the split/merge writer (which doesn't have hash info
@@ -57,15 +59,25 @@ pub struct SplitArtifact {
 
 /// Full context serialized during split for merge recovery.
 /// Includes config, git info, template vars, and artifacts.
+///
+/// `template_vars`, `env_vars`, and each artifact's `extra` field use
+/// [`BTreeMap`] rather than [`HashMap`] so two `release --split` runs
+/// against the same inputs serialize byte-identically — a hard
+/// requirement for the idempotency contract called out at
+/// <https://goreleaser.com/customization/general/partial/> ("this step
+/// will not run anything that the previous step already did"). With
+/// `HashMap`, key iteration order is randomized per-process and the
+/// resulting `context.json` would drift across re-runs even when the
+/// shard inputs (git HEAD, env, timestamps) are pinned.
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct SplitContext {
     /// The partial target that was used for filtering.
     pub partial_target: String,
     /// Template variables (all resolved values at split time).
-    pub template_vars: HashMap<String, String>,
+    pub template_vars: BTreeMap<String, String>,
     /// Environment variables accessible as {{ Env.VAR }} in templates.
     #[serde(default)]
-    pub env_vars: HashMap<String, String>,
+    pub env_vars: BTreeMap<String, String>,
     /// Git info snapshot.
     pub git_tag: Option<String>,
     pub git_commit: Option<String>,
@@ -135,7 +147,7 @@ fn artifact_to_split(a: &artifact::Artifact) -> SplitArtifact {
             .metadata
             .iter()
             .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-            .collect(),
+            .collect::<BTreeMap<_, _>>(),
         // split/merge path doesn't track per-artifact hashes — those
         // are populated by the determinism harness's preserve-dist
         // writer (which IS hash-aware). `None` here keeps the JSON
@@ -252,10 +264,21 @@ pub(super) fn run_split(
     // project-env-defined tokens would be trivial.
     let env_vars_redacted = redact_secret_env_vars(ctx.template_vars().all_config_env());
 
+    // Funnel template + env maps through `BTreeMap` so the serialized
+    // `context.json` is byte-stable across re-runs (HashMap iteration
+    // is randomized per-process); see [`SplitContext`].
+    let template_vars: BTreeMap<String, String> = ctx
+        .template_vars()
+        .all()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let env_vars: BTreeMap<String, String> = env_vars_redacted.into_iter().collect();
+
     let split_ctx = SplitContext {
         partial_target: subdir.clone(),
-        template_vars: ctx.template_vars().all().clone(),
-        env_vars: env_vars_redacted,
+        template_vars,
+        env_vars,
         git_tag: ctx.template_vars().get("Tag").map(String::from),
         git_commit: ctx.template_vars().get("FullCommit").map(String::from),
         git_branch: ctx.template_vars().get("Branch").map(String::from),
@@ -435,23 +458,52 @@ fn check_split_worker_completeness(
     Ok(())
 }
 
-/// Run in --merge mode: load split contexts, merge artifacts, run post-build stages.
-pub fn run_merge(
-    ctx: &mut Context,
-    config: &Config,
-    log: &anodizer_core::log::StageLogger,
-    dry_run: bool,
-    dist_override: Option<&Path>,
-) -> Result<()> {
-    log.status("running in merge mode (post-build stages)...");
+/// Outcome of a split-context load — flags which loader the caller
+/// hit so downstream behaviour (e.g. metadata-write fall-through) can
+/// branch on legacy-vs-modern shape without a second filesystem walk.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SplitLoadOutcome {
+    /// Loaded artifacts from `dist/<subdir>/context.json` files (modern format).
+    Modern,
+    /// Fell back to the legacy `artifacts.json` format.
+    Legacy,
+}
 
-    let dist = dist_override.unwrap_or(&config.dist);
+/// Load every split-shard `dist/<subdir>/context.json` (or, as a legacy
+/// fallback, every `dist/[<subdir>/]artifacts.json`) into `ctx`. Used by
+/// `release --merge`, `continue --merge`, `publish --merge`, and
+/// `announce --merge` so all four entry points share one loader.
+///
+/// Behaviour:
+/// - sets `ctx.options.merge = true` so any consumer that branches on
+///   merge mode (after-hook skip, metadata writer, etc.) sees the same
+///   state regardless of entry point;
+/// - restores template vars + env vars from the first shard so
+///   downstream stages can render templates without re-running git
+///   probes;
+/// - cross-checks `matrix.json` (when present) against the loaded
+///   shards to surface a missing worker as a hard error;
+/// - bails loudly on per-path collisions across shards (silent dedup
+///   would mask `no_unique_dist_dir` / `split.subdir` config bugs);
+/// - cross-checks the loaded paths against the filesystem before
+///   returning so a missing-upload surfaces as a `dist/`-shaped
+///   diagnostic instead of bubbling up from later stages
+///   (cosign/gpg's less actionable "file not found").
+pub fn load_split_contexts_into(
+    ctx: &mut Context,
+    dist: &Path,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<SplitLoadOutcome> {
+    // Mark the context as merge-mode regardless of which entry point the
+    // caller is (release/continue/publish/announce). Stages branching on
+    // merge mode (e.g. after-hook gate) must see the flag set BEFORE the
+    // pipeline runs.
+    ctx.options.merge = true;
 
     // Find all context.json files in dist/ subdirectories (new format).
     // Fall back to artifacts.json for backward compat with old split format.
     let context_files = find_split_contexts(dist)?;
     if context_files.is_empty() {
-        // Try legacy artifacts.json format
         let artifact_files = find_split_artifacts(dist)?;
         if artifact_files.is_empty() {
             anyhow::bail!(
@@ -460,7 +512,8 @@ pub fn run_merge(
                 dist.display()
             );
         }
-        return run_merge_legacy(ctx, config, log, dry_run, &artifact_files);
+        load_legacy_artifacts(ctx, log, &artifact_files)?;
+        return Ok(SplitLoadOutcome::Legacy);
     }
 
     // Worker-completeness pre-flight: matrix.json (written by `release --split`)
@@ -478,13 +531,12 @@ pub fn run_merge(
     // missing-half of the symmetry.
     check_split_worker_completeness(dist, &context_files, log)?;
 
-    // Load and merge all split contexts
     let mut total_loaded = 0;
     // Map path -> first (ctx_file, crate_name, target) that claimed it, so we
     // can surface the actual pair of conflicting split jobs on collision.
     let mut seen_paths: std::collections::HashMap<String, (PathBuf, String, Option<String>)> =
         std::collections::HashMap::new();
-    let mut first_vars: Option<HashMap<String, String>> = None;
+    let mut first_vars: Option<BTreeMap<String, String>> = None;
 
     for ctx_file in &context_files {
         let content = std::fs::read_to_string(ctx_file)
@@ -492,7 +544,6 @@ pub fn run_merge(
         let split_ctx: SplitContext = serde_json::from_str(&content)
             .with_context(|| format!("parse split context: {}", ctx_file.display()))?;
 
-        // Restore template vars and env vars from first split context
         if first_vars.is_none() {
             for (key, value) in &split_ctx.template_vars {
                 ctx.template_vars_mut().set(key, value);
@@ -505,7 +556,7 @@ pub fn run_merge(
 
         for sa in &split_ctx.artifacts {
             if let Some((prior_ctx, prior_crate, prior_target)) = seen_paths.get(&sa.path) {
-                // A2 W3 fix: silent dedup masked config bugs where two split
+                // Silent dedup historically masked config bugs where two split
                 // jobs produced artifacts at the same path. Error loudly so
                 // the operator can see which per-target subdir rule broke.
                 anyhow::bail!(
@@ -537,7 +588,6 @@ pub fn run_merge(
                     continue;
                 }
             };
-            // Convert extra back to flat string metadata
             let metadata: HashMap<String, String> = sa
                 .extra
                 .iter()
@@ -562,46 +612,30 @@ pub fn run_merge(
         context_files.len()
     ));
 
-    // Filesystem vs manifest cross-check. Every artifact path the
-    // merged contexts reference must exist on disk under `dist/`;
-    // missing files mean a split worker uploaded a context.json whose
-    // referenced binary didn't make it into the dist tree (transient
-    // CI upload failure, partial restore, etc.). Surface as a
-    // manifest-shaped diagnostic before SignStage / ChecksumStage
-    // bails with cosign / gpg's less actionable "file not found".
+    // Filesystem vs manifest cross-check. Every artifact path the merged
+    // contexts reference must exist on disk under `dist/`; missing files
+    // mean a split worker uploaded a context.json whose referenced binary
+    // didn't make it into the dist tree (transient CI upload failure,
+    // partial restore, etc.). Surface as a manifest-shaped diagnostic
+    // before SignStage / ChecksumStage bails with cosign / gpg's less
+    // actionable "file not found".
     crate::commands::helpers::detect_missing_files(
         ctx.artifacts.all().iter().map(|a| a.path.as_path()),
         dist,
     )?;
 
-    // Run post-build pipeline
-    let p = pipeline::build_merge_pipeline();
-    let result = p.run(ctx, log);
-
-    if result.is_ok() {
-        super::run_post_pipeline(ctx, config, dry_run, log)?;
-    }
-
-    // See `release::gate_required_failures` for rationale: per-publisher
-    // failures are intentionally non-fatal inside the pipeline body, but
-    // the CLI's final exit code MUST reflect them. `--merge` runs the
-    // same post-build / publish stages as a normal release so the same
-    // gate applies.
-    if result.is_ok() {
-        super::gate_required_failures(ctx)?;
-    }
-
-    result
+    Ok(SplitLoadOutcome::Modern)
 }
 
-/// Legacy merge from old-format artifacts.json files.
-fn run_merge_legacy(
+/// Load every legacy `artifacts.json` shard into `ctx`. Split out from
+/// [`load_split_contexts_into`] so the modern path can fall through here
+/// when no `context.json` is present (older splits or non-anodizer
+/// producers).
+fn load_legacy_artifacts(
     ctx: &mut Context,
-    config: &Config,
     log: &anodizer_core::log::StageLogger,
-    dry_run: bool,
     artifact_files: &[PathBuf],
-) -> Result<()> {
+) -> Result<usize> {
     #[derive(serde::Deserialize)]
     struct LegacyOutput {
         artifacts: Vec<LegacyArtifact>,
@@ -650,6 +684,54 @@ fn run_merge_legacy(
         artifact_files.len()
     ));
 
+    Ok(total_loaded)
+}
+
+/// Run in --merge mode: load split contexts, merge artifacts, run post-build stages.
+pub fn run_merge(
+    ctx: &mut Context,
+    config: &Config,
+    log: &anodizer_core::log::StageLogger,
+    dry_run: bool,
+    dist_override: Option<&Path>,
+) -> Result<()> {
+    log.status("running in merge mode (post-build stages)...");
+
+    let dist = dist_override.unwrap_or(&config.dist);
+
+    let outcome = load_split_contexts_into(ctx, dist, log)?;
+    if outcome == SplitLoadOutcome::Legacy {
+        return run_merge_legacy_tail(ctx, config, log, dry_run);
+    }
+
+    let p = pipeline::build_merge_pipeline();
+    let result = p.run(ctx, log);
+
+    if result.is_ok() {
+        super::run_post_pipeline(ctx, config, dry_run, log)?;
+    }
+
+    // See `release::gate_required_failures` for rationale: per-publisher
+    // failures are intentionally non-fatal inside the pipeline body, but
+    // the CLI's final exit code MUST reflect them. `--merge` runs the
+    // same post-build / publish stages as a normal release so the same
+    // gate applies.
+    if result.is_ok() {
+        super::gate_required_failures(ctx)?;
+    }
+
+    result
+}
+
+/// Run the post-load tail of the legacy merge path (artifacts already
+/// rehydrated into `ctx` by [`load_split_contexts_into`]'s legacy
+/// branch).
+fn run_merge_legacy_tail(
+    ctx: &mut Context,
+    config: &Config,
+    log: &anodizer_core::log::StageLogger,
+    dry_run: bool,
+) -> Result<()> {
     let p = pipeline::build_merge_pipeline();
     let result = p.run(ctx, log);
     if result.is_ok() {
@@ -673,7 +755,11 @@ fn collect_build_targets(config: &Config, ctx: &Context) -> Vec<String> {
 }
 
 /// Find all context.json files in dist/ subdirectories (new split format).
-fn find_split_contexts(dist: &Path) -> Result<Vec<PathBuf>> {
+///
+/// Returns the list sorted by path so two merge runs on the same on-disk
+/// layout observe shards in the same order (artifact iteration order
+/// would otherwise depend on `readdir`'s undefined ordering).
+pub fn find_split_contexts(dist: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
     if dist.is_dir()
@@ -690,10 +776,14 @@ fn find_split_contexts(dist: &Path) -> Result<Vec<PathBuf>> {
         }
     }
 
+    files.sort();
     Ok(files)
 }
 
 /// Find all artifacts.json files in dist/ (legacy split format).
+///
+/// Returns the list sorted by path for the same reason as
+/// [`find_split_contexts`].
 fn find_split_artifacts(dist: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
@@ -716,6 +806,7 @@ fn find_split_artifacts(dist: &Path) -> Result<Vec<PathBuf>> {
         }
     }
 
+    files.sort();
     Ok(files)
 }
 
@@ -727,7 +818,7 @@ fn find_split_artifacts(dist: &Path) -> Result<Vec<PathBuf>> {
 mod tests {
     use super::*;
     use anodizer_core::config::CrateConfig;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     fn make_split_artifact(kind: &str, path: &str, target: Option<&str>) -> SplitArtifact {
         SplitArtifact {
@@ -743,7 +834,7 @@ mod tests {
             kind: kind.to_string(),
             type_s: kind.to_string(),
             crate_name: "myapp".to_string(),
-            extra: HashMap::new(),
+            extra: BTreeMap::new(),
             sha256: None,
             size: None,
         }
@@ -771,11 +862,11 @@ mod tests {
     fn test_split_context_serialization_roundtrip() {
         let ctx = SplitContext {
             partial_target: "linux".to_string(),
-            template_vars: HashMap::from([
+            template_vars: BTreeMap::from([
                 ("Tag".to_string(), "v1.0.0".to_string()),
                 ("ProjectName".to_string(), "myapp".to_string()),
             ]),
-            env_vars: HashMap::from([("GITHUB_TOKEN".to_string(), "ghp_secret".to_string())]),
+            env_vars: BTreeMap::from([("GITHUB_TOKEN".to_string(), "ghp_secret".to_string())]),
             git_tag: Some("v1.0.0".to_string()),
             git_commit: Some("abc123".to_string()),
             git_branch: Some("main".to_string()),
@@ -799,8 +890,8 @@ mod tests {
     fn test_split_context_empty() {
         let ctx = SplitContext {
             partial_target: "linux".to_string(),
-            template_vars: HashMap::new(),
-            env_vars: HashMap::new(),
+            template_vars: BTreeMap::new(),
+            env_vars: BTreeMap::new(),
             git_tag: None,
             git_commit: None,
             git_branch: None,
@@ -1095,8 +1186,8 @@ mod tests {
         let path = dir.join("context.json");
         let ctx = SplitContext {
             partial_target: partial_target.to_string(),
-            template_vars: HashMap::new(),
-            env_vars: HashMap::new(),
+            template_vars: BTreeMap::new(),
+            env_vars: BTreeMap::new(),
             git_tag: None,
             git_commit: None,
             git_branch: None,
@@ -1210,5 +1301,274 @@ mod tests {
 
         check_split_worker_completeness(dist, &ctx_files, &null_logger())
             .expect("absent matrix.json must skip the check, not error");
+    }
+
+    /// `find_split_contexts` must return shards in a stable, sorted order
+    /// so the merge step iterates them deterministically. Without this,
+    /// `readdir`'s undefined ordering would let the same on-disk layout
+    /// produce different artifact-list orderings across runs.
+    #[test]
+    fn find_split_contexts_returns_sorted_order() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        // Create out-of-alphabetical-order to provoke readdir ordering.
+        for sub in ["windows", "linux", "darwin", "freebsd"] {
+            let dir = dist.join(sub);
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join("context.json"), "{}").unwrap();
+        }
+
+        let files = find_split_contexts(dist).unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| {
+                p.parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(names, vec!["darwin", "freebsd", "linux", "windows"]);
+    }
+
+    /// `find_split_artifacts` must also be sorted so the legacy merge
+    /// path agrees with the modern path's iteration order.
+    #[test]
+    fn find_split_artifacts_returns_sorted_order() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        for sub in ["windows", "linux", "darwin"] {
+            let dir = dist.join(sub);
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join("artifacts.json"), "{}").unwrap();
+        }
+        let files = find_split_artifacts(dist).unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| {
+                p.parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(names, vec!["darwin", "linux", "windows"]);
+    }
+
+    /// Writing the same `SplitContext` to disk twice must produce
+    /// byte-identical output. The map fields use [`BTreeMap`] so
+    /// `serde_json::to_string_pretty` emits keys in sorted order; an
+    /// earlier `HashMap`-backed implementation produced drifting bytes
+    /// across re-runs (HashMap iteration is randomized per-process),
+    /// breaking `release --split`'s idempotency contract. This test
+    /// regresses any reintroduction of an unordered map for those
+    /// fields.
+    #[test]
+    fn split_context_serialization_is_byte_stable_across_runs() {
+        let make_ctx = || SplitContext {
+            partial_target: "linux".to_string(),
+            template_vars: BTreeMap::from([
+                ("Tag".to_string(), "v1.0.0".to_string()),
+                ("ProjectName".to_string(), "myapp".to_string()),
+                ("Version".to_string(), "1.0.0".to_string()),
+            ]),
+            env_vars: BTreeMap::from([("GITHUB_TOKEN".to_string(), "[redacted]".to_string())]),
+            git_tag: Some("v1.0.0".to_string()),
+            git_commit: Some("abc123".to_string()),
+            git_branch: Some("main".to_string()),
+            artifacts: vec![make_split_artifact(
+                "binary",
+                "/tmp/myapp",
+                Some("x86_64-unknown-linux-gnu"),
+            )],
+        };
+
+        // Two from-clean serializations must produce equal bytes. This
+        // pins the surface that `release --split` re-runs against —
+        // `cmp -s dist/<subdir>/context.json{,.prev}` would pass.
+        let first = serde_json::to_string_pretty(&make_ctx()).unwrap();
+        let second = serde_json::to_string_pretty(&make_ctx()).unwrap();
+        assert_eq!(
+            first, second,
+            "split context serialization must be byte-stable across re-runs"
+        );
+    }
+
+    /// Helper for building an in-memory `Context` with no git / template
+    /// setup — enough for the loader tests below to drive artifact
+    /// rehydration without dragging in the full release pipeline.
+    fn make_bare_context() -> Context {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::ContextOptions;
+        let config = Config {
+            project_name: "test".to_string(),
+            crates: vec![CrateConfig {
+                name: "test".to_string(),
+                path: ".".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        Context::new(config, ContextOptions::default())
+    }
+
+    fn write_split_context_full(
+        dist: &Path,
+        subdir: &str,
+        partial_target: &str,
+        artifacts: Vec<SplitArtifact>,
+    ) -> PathBuf {
+        let dir = dist.join(subdir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("context.json");
+        let ctx = SplitContext {
+            partial_target: partial_target.to_string(),
+            template_vars: BTreeMap::new(),
+            env_vars: BTreeMap::new(),
+            git_tag: None,
+            git_commit: None,
+            git_branch: None,
+            artifacts,
+        };
+        std::fs::write(&path, serde_json::to_string(&ctx).unwrap()).unwrap();
+        path
+    }
+
+    /// Loading the same shard set twice into independent contexts must
+    /// produce the same artifact order. Catches any reintroduction of
+    /// readdir-based shard ordering.
+    #[test]
+    fn load_split_contexts_into_yields_deterministic_artifact_order() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+
+        // Files must exist on disk so the loader's filesystem
+        // cross-check (detect_missing_files) passes.
+        let mk_artifact = |name: &str, target: &str| {
+            let file = dist.join(name);
+            std::fs::write(&file, b"x").unwrap();
+            SplitArtifact {
+                name: name.to_string(),
+                path: file.to_string_lossy().into_owned(),
+                goos: Some(anodizer_core::target::map_target(target).0),
+                goarch: Some(anodizer_core::target::map_target(target).1),
+                target: Some(target.to_string()),
+                kind: "binary".to_string(),
+                type_s: "binary".to_string(),
+                crate_name: "test".to_string(),
+                extra: BTreeMap::new(),
+                sha256: None,
+                size: None,
+            }
+        };
+
+        write_split_context_full(
+            dist,
+            "windows",
+            "windows",
+            vec![mk_artifact("test.exe", "x86_64-pc-windows-msvc")],
+        );
+        write_split_context_full(
+            dist,
+            "darwin",
+            "darwin",
+            vec![mk_artifact("test-mac", "x86_64-apple-darwin")],
+        );
+        write_split_context_full(
+            dist,
+            "linux",
+            "linux",
+            vec![mk_artifact("test-lin", "x86_64-unknown-linux-gnu")],
+        );
+
+        let mut ctx_a = make_bare_context();
+        load_split_contexts_into(&mut ctx_a, dist, &null_logger()).unwrap();
+        let order_a: Vec<String> = ctx_a
+            .artifacts
+            .all()
+            .iter()
+            .map(|a| a.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+
+        let mut ctx_b = make_bare_context();
+        load_split_contexts_into(&mut ctx_b, dist, &null_logger()).unwrap();
+        let order_b: Vec<String> = ctx_b
+            .artifacts
+            .all()
+            .iter()
+            .map(|a| a.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(
+            order_a, order_b,
+            "two from-clean loads of the same shard set must yield the same artifact order"
+        );
+        // And the order must match the sorted shard names (darwin → linux → windows).
+        assert_eq!(order_a, vec!["test-mac", "test-lin", "test.exe"]);
+    }
+
+    /// The loader sets `ctx.options.merge = true` regardless of which
+    /// entry point invoked it. Stages branching on merge mode (e.g. the
+    /// after-hook contract documented in the partial-build rule) must
+    /// see the flag set BEFORE the pipeline runs.
+    #[test]
+    fn load_split_contexts_into_marks_context_as_merge_mode() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        write_split_context_full(dist, "linux", "linux", vec![]);
+
+        let mut ctx = make_bare_context();
+        assert!(!ctx.options.merge, "precondition: fresh ctx is not merge");
+        load_split_contexts_into(&mut ctx, dist, &null_logger()).unwrap();
+        assert!(
+            ctx.options.merge,
+            "loader must mark context as merge-mode so downstream stages see the flag"
+        );
+    }
+
+    /// Re-running the loader against a dist that already had a shard
+    /// loaded must not double-count artifacts. Each shard claims a
+    /// distinct artifact path so the collision check is the
+    /// idempotency guard: a second loader invocation against the same
+    /// dist must fail loudly rather than silently merging duplicates.
+    #[test]
+    fn load_split_contexts_into_rejects_duplicate_artifact_paths() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+
+        let dup = dist.join("dup");
+        std::fs::write(&dup, b"x").unwrap();
+        let make_dup = || SplitArtifact {
+            name: "dup".to_string(),
+            path: dup.to_string_lossy().into_owned(),
+            goos: Some("linux".to_string()),
+            goarch: Some("amd64".to_string()),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            kind: "binary".to_string(),
+            type_s: "binary".to_string(),
+            crate_name: "test".to_string(),
+            extra: BTreeMap::new(),
+            sha256: None,
+            size: None,
+        };
+
+        // Two shards claim the same artifact path — emulates a
+        // misconfigured `no_unique_dist_dir` per the audit's
+        // cross-shard collision concern.
+        write_split_context_full(dist, "shard-a", "linux", vec![make_dup()]);
+        write_split_context_full(dist, "shard-b", "linux", vec![make_dup()]);
+
+        let mut ctx = make_bare_context();
+        let err = load_split_contexts_into(&mut ctx, dist, &null_logger())
+            .expect_err("colliding artifact paths must error");
+        assert!(
+            err.to_string().contains("artifact path collision"),
+            "expected collision diagnostic, got: {}",
+            err
+        );
     }
 }

@@ -436,6 +436,7 @@ fn main() {
             dry_run,
             token,
             dist,
+            merge,
         } => commands::publish_cmd::run(commands::publish_cmd::PublishOpts {
             dry_run,
             token,
@@ -444,6 +445,7 @@ fn main() {
             verbose: cli.verbose,
             debug: cli.debug,
             quiet: cli.quiet,
+            merge,
         }),
         Commands::Bump {
             level_or_version,
@@ -484,6 +486,7 @@ fn main() {
             dist,
             token,
             skip,
+            merge,
         } => commands::announce_cmd::run(commands::announce_cmd::AnnounceOpts {
             dry_run,
             dist,
@@ -493,6 +496,7 @@ fn main() {
             verbose: cli.verbose,
             debug: cli.debug,
             quiet: cli.quiet,
+            merge,
         }),
     };
     if let Err(e) = result {

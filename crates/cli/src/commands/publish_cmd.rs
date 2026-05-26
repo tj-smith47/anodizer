@@ -1,10 +1,10 @@
 //! `anodizer publish` command.
 //! Runs only the publish stages (release, publish, blob) from a completed dist/.
-//! Equivalent to GoReleaser Pro's `goreleaser publish`.
+//! Equivalent to GoReleaser Pro's `goreleaser publish` (and `publish --merge`).
 
 use super::helpers;
 use crate::pipeline;
-use anodizer_core::context::ContextOptions;
+use anodizer_core::context::{Context, ContextOptions};
 use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::Result;
 use std::path::PathBuf;
@@ -17,6 +17,13 @@ pub struct PublishOpts {
     pub verbose: bool,
     pub debug: bool,
     pub quiet: bool,
+    /// When true, load `dist/<subdir>/context.json` artifacts emitted by
+    /// `release --split` workers (instead of `dist/artifacts.json`) and
+    /// then run the publish-only pipeline. Mirrors GR Pro's
+    /// `goreleaser publish --merge` — lets operators break the merge
+    /// step into smaller pieces (one machine merges + signs, another
+    /// publishes).
+    pub merge: bool,
 }
 
 pub fn run(opts: PublishOpts) -> Result<()> {
@@ -31,8 +38,30 @@ pub fn run(opts: PublishOpts) -> Result<()> {
         verbose: opts.verbose,
         debug: opts.debug,
         token: opts.token,
+        merge: opts.merge,
         ..Default::default()
     };
+
+    if opts.merge {
+        // Merge-mode prelude mirrors `continue --merge`: build the context
+        // manually (no `dist/artifacts.json` exists yet) so the per-shard
+        // loader can populate it from `dist/<subdir>/context.json` files.
+        let config_path =
+            pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(&log))?;
+        let mut config = pipeline::load_config(&config_path)?;
+        helpers::infer_project_name(&mut config, &log);
+        helpers::auto_detect_github(&mut config, &log);
+        let mut ctx = Context::new(config.clone(), ctx_opts);
+        helpers::setup_context(&mut ctx, &config, &log)?;
+        ctx.populate_metadata_var()?;
+
+        let dist = opts.dist.as_deref().unwrap_or(&config.dist).to_path_buf();
+        super::release::load_split_contexts_into(&mut ctx, &dist, &log)?;
+
+        let p = pipeline::build_publish_pipeline();
+        return p.run(&mut ctx, &log);
+    }
+
     let (_config, mut ctx, _dist) = helpers::init_publish_stage_ctx(
         opts.config_override.as_deref(),
         ctx_opts,
@@ -41,7 +70,6 @@ pub fn run(opts: PublishOpts) -> Result<()> {
         &log,
     )?;
 
-    // Run publish-only pipeline
     let p = pipeline::build_publish_pipeline();
     p.run(&mut ctx, &log)
 }
@@ -78,6 +106,7 @@ crates:
             verbose: false,
             debug: false,
             quiet: true,
+            merge: false,
         })
         .unwrap_err()
         .to_string();
@@ -107,8 +136,30 @@ crates:
             verbose: false,
             debug: false,
             quiet: true,
+            merge: false,
         });
         assert!(result.is_err(), "must fail with no manifest / no git");
+    }
+
+    /// `publish --merge` reaches `find_config` first; an absent config must
+    /// surface as the find-config error, identical to the no-merge path.
+    #[test]
+    #[serial]
+    fn merge_missing_config_bails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = run(PublishOpts {
+            dry_run: true,
+            token: None,
+            dist: None,
+            config_override: Some(tmp.path().join("nope.yaml")),
+            verbose: false,
+            debug: false,
+            quiet: true,
+            merge: true,
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("config file not found"), "{err}");
     }
 
     #[test]
@@ -123,9 +174,26 @@ crates:
             verbose: false,
             debug: false,
             quiet: true,
+            merge: false,
         };
         assert!(opts.dry_run);
         assert!(opts.quiet);
         assert_eq!(opts.token.as_deref(), Some("tok"));
+        assert!(!opts.merge);
+    }
+
+    #[test]
+    fn publish_opts_merge_flag_round_trips() {
+        let opts = PublishOpts {
+            dry_run: true,
+            token: None,
+            dist: None,
+            config_override: None,
+            verbose: false,
+            debug: false,
+            quiet: true,
+            merge: true,
+        };
+        assert!(opts.merge);
     }
 }

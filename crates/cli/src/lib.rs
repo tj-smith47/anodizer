@@ -389,6 +389,11 @@ pub enum Commands {
         token: Option<String>,
         #[arg(long, help = "Custom dist directory (overrides config)")]
         dist: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Merge artifacts from `release --split` workers (dist/<subdir>/context.json) before running the publish-only pipeline. Mirrors `goreleaser publish --merge`."
+        )]
+        merge: bool,
     },
     /// Bump crate versions (Conventional Commits → semver level)
     ///
@@ -462,6 +467,11 @@ pub enum Commands {
         token: Option<String>,
         #[arg(long, value_delimiter = ',', help = "Skip stages (comma-separated)")]
         skip: Vec<String>,
+        #[arg(
+            long,
+            help = "Merge artifact lists from `release --split` workers (dist/<subdir>/context.json) before announcing. Mirrors `goreleaser announce --merge`."
+        )]
+        merge: bool,
     },
 }
 
