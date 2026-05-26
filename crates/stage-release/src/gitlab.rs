@@ -1464,4 +1464,105 @@ mod tests {
             "error must include an actionable hint, got: {chain}"
         );
     }
+
+    /// When `replace_existing` is true and the release-link POST returns 422
+    /// (duplicate), the function must: list existing links, DELETE the
+    /// conflicting one, then retry the POST. Exercises the full
+    /// delete-and-retry code path in `gitlab_upload_asset`.
+    #[tokio::test]
+    async fn gitlab_upload_asset_replace_existing_422_deletes_and_retries() {
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+
+        let version_body = r#"{"version":"17.0.0"}"#;
+        let version_len = version_body.len();
+        let version_resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/json\r\n\
+                 Content-Length: {version_len}\r\n\r\n\
+                 {version_body}"
+            )
+            .into_boxed_str(),
+        );
+
+        let links_body = r#"[{"id":42,"name":"asset.tar.gz","url":"https://example.com/old"}]"#;
+        let links_len = links_body.len();
+        let links_resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/json\r\n\
+                 Content-Length: {links_len}\r\n\r\n\
+                 {links_body}"
+            )
+            .into_boxed_str(),
+        );
+
+        // Sequence:
+        //   1. PUT upload to package registry → 200
+        //   2. GET /version → 200 (v17 detection)
+        //   3. POST create link → 422 (duplicate)
+        //   4. GET list links → 200 with matching link id=42
+        //   5. DELETE link/42 → 200
+        //   6. POST create link retry → 201
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+            version_resp,
+            "HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: 0\r\n\r\n",
+            links_resp,
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+        ]);
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 2,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let api_url = format!("http://{addr}");
+
+        let ctx = GitlabCtx {
+            client: &client,
+            api_url: &api_url,
+            project_id: "myorg/myproj",
+            policy: &policy,
+        };
+
+        let tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        std::fs::write(tmp.path(), b"fake-asset-bytes").expect("write temp file");
+
+        let asset = GitlabAssetSpec {
+            file_path: tmp.path(),
+            file_name: "asset.tar.gz",
+        };
+        let pkg = GitlabPackageRegistrySpec {
+            project_name: "myproj",
+            version: "1.0.0",
+        };
+
+        let result = gitlab_upload_asset(
+            &ctx,
+            "v1.0.0",
+            &asset,
+            Some(&pkg),
+            "https://gitlab.com/myorg/myproj",
+            true,
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "expected success after 422 delete-and-retry, got: {:?}",
+            result.err().map(|e| format!("{e:#}"))
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            6,
+            "expected 6 connections (PUT upload, GET version, POST 422, GET links, DELETE, POST retry)"
+        );
+    }
 }
