@@ -292,7 +292,15 @@ fn execute_jobs_and_register(
         for tag in &job.rendered_tags {
             let mut meta = HashMap::new();
             meta.insert("tag".to_string(), tag.clone());
-            meta.insert("platforms".to_string(), job.platforms_str.clone());
+            // `Platforms` is the GR-aligned key (capital P, JSON-array value)
+            // exposed on `DockerImageV2` artifacts as
+            // `extra.Platforms` — custom publishers route on this list.
+            // Mirrors `ExtraPlatforms = "Platforms"` in
+            // `internal/pipe/docker/v2/docker.go`.
+            meta.insert(
+                "Platforms".to_string(),
+                serde_json::to_string(&job.platforms_list).unwrap_or_default(),
+            );
             if let Some(ref id) = job.id {
                 meta.insert("id".to_string(), id.clone());
             }
@@ -760,7 +768,15 @@ fn queue_v2_build_for_platforms(
         for tag in &image_tags {
             let mut meta = HashMap::new();
             meta.insert("tag".to_string(), tag.clone());
-            meta.insert("platforms".to_string(), snapshot_plats.join(","));
+            // `Platforms` is the GR-aligned key (capital P, JSON-array value)
+            // exposed on `DockerImageV2` artifacts as
+            // `extra.Platforms` — custom publishers route on this list.
+            // Mirrors `ExtraPlatforms = "Platforms"` in
+            // `internal/pipe/docker/v2/docker.go`.
+            meta.insert(
+                "Platforms".to_string(),
+                serde_json::to_string(snapshot_plats).unwrap_or_default(),
+            );
             meta.insert("api".to_string(), "v2".to_string());
             meta.insert("use".to_string(), "buildx".to_string());
             if let Some(ref id) = v2_cfg.id {
@@ -807,7 +823,7 @@ fn queue_v2_build_for_platforms(
             base_delay,
             max_delay,
             rendered_tags: image_tags,
-            platforms_str: snapshot_plats.join(","),
+            platforms_list: snapshot_plats.to_vec(),
             staging_dir: staging_dir.to_path_buf(),
             id: v2_cfg.id.clone(),
             use_backend: Some("buildx".to_string()),

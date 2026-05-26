@@ -2674,7 +2674,7 @@ fn test_docker_build_job_env_vars_field() {
         base_delay: Duration::from_secs(1),
         max_delay: None,
         rendered_tags: vec![],
-        platforms_str: String::new(),
+        platforms_list: Vec::new(),
         staging_dir: PathBuf::new(),
         id: None,
         use_backend: None,
@@ -4332,10 +4332,11 @@ fn test_docker_v2_filter_empty_rendered_platforms() {
     DockerStage::new().run(&mut ctx).unwrap();
     let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
     assert_eq!(images.len(), 1);
-    // Single resolved platform should be in the metadata.
+    // Single resolved platform should appear in the GR-aligned `Platforms`
+    // metadata key as a JSON-array string.
     assert_eq!(
-        images[0].metadata.get("platforms").map(String::as_str),
-        Some("linux/amd64")
+        images[0].metadata.get("Platforms").map(String::as_str),
+        Some(r#"["linux/amd64"]"#)
     );
 }
 
@@ -4440,5 +4441,404 @@ fn test_docker_v2_invalid_label_template_errors() {
     assert!(
         err.contains("render label"),
         "bad label template must surface a contextual error, got: {err}"
+    );
+}
+
+// -----------------------------------------------------------------------
+// A2 v2.16 graduation — `Platforms` artifact metadata + pre/post hook contract
+//
+// GR's `ExtraPlatforms = "Platforms"` (internal/pipe/docker/v2/docker.go) is
+// a slice value on every DockerImageV2 artifact's Extra map. anodizer stores
+// it as a JSON-encoded array string in `HashMap<String, String>` metadata,
+// then expands it to a real `Value::Array` on the template side via the
+// `JSON_LIST_KEYS` allow-list in `Context::refresh_artifacts_var`.
+//
+// The hook contract is: pre-hook receives `{Images, Dockerfile, ContextDir,
+// BaseImage, BaseImageDigest}`; post-hook receives the same vars plus
+// `Digest`. A failing pre-hook aborts that config's build (no docker
+// spawn) and surfaces the error after sibling configs finish. A failing
+// post-hook aborts the entire stage.
+// -----------------------------------------------------------------------
+
+/// A2.1 — `Platforms` metadata key is present on `DockerImageV2`
+/// artifacts and holds a JSON-array string with the resolved platform
+/// list. Mirrors GR's `ExtraPlatforms` slice extra.
+#[test]
+fn docker_v2_platforms_metadata_is_json_array() {
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let v2 = DockerV2Config {
+        id: Some("p".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string(), "linux/arm64".to_string()]),
+        ..Default::default()
+    };
+
+    let config = Config {
+        project_name: "p".to_string(),
+        dist: tmp.path().join("dist"),
+        crates: vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            docker_v2: Some(vec![v2]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            snapshot: false,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    DockerStage::new().run(&mut ctx).unwrap();
+    let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+    assert_eq!(images.len(), 1);
+    assert_eq!(
+        images[0].metadata.get("Platforms").map(String::as_str),
+        Some(r#"["linux/amd64","linux/arm64"]"#),
+        "Platforms metadata must be a JSON-array string (GR ExtraPlatforms parity)"
+    );
+    // The legacy lowercase key must not coexist — a stray writer would
+    // mean two sources of truth.
+    assert!(
+        !images[0].metadata.contains_key("platforms"),
+        "lowercase `platforms` legacy key must be retired"
+    );
+}
+
+/// A2.2 — Pre-hook fires BEFORE the build with `Images`, `Dockerfile`,
+/// `ContextDir`, `BaseImage`, `BaseImageDigest` populated, and WITHOUT
+/// `.Digest`. Tera will fail rendering if a referenced variable is
+/// undefined, so an Ok return proves all five vars are set; a separate
+/// command verifies `.Digest` is absent (rendering `{{ .Digest }}`
+/// in pre-hook would fail).
+#[test]
+fn docker_v2_pre_hook_receives_full_var_set_without_digest() {
+    use anodizer_core::config::{BuildHooksConfig, Config, CrateConfig, DockerV2Config, HookEntry};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM alpine:3.20\n").unwrap();
+
+    // Reference all five expected pre-hook vars; if any are missing,
+    // Tera's strict-by-default rendering returns an error.
+    let hooks = BuildHooksConfig {
+        pre: Some(vec![HookEntry::Simple(
+            "echo {{ .Dockerfile }} {{ .ContextDir }} {{ .BaseImage }} \
+             {{ .BaseImageDigest }} {% for i in Images %}{{ i }}{% endfor %}"
+                .to_string(),
+        )]),
+        post: None,
+    };
+
+    let v2 = DockerV2Config {
+        id: Some("ph".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["v1".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        hooks: Some(hooks),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "p".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "app".to_string(),
+        path: ".".to_string(),
+        tag_template: "v1.0.0".to_string(),
+        docker_v2: Some(vec![v2]),
+        ..Default::default()
+    }];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    DockerStage::new()
+        .run(&mut ctx)
+        .expect("pre-hook with full var set + Images iteration must render");
+}
+
+/// A2.3 — A pre-hook that references `{{ .Digest }}` must FAIL — the
+/// digest is not yet known at pre-hook time. Asserts the contract gap
+/// is enforced: Digest is added to hook_vars only on the post path.
+#[test]
+fn docker_v2_pre_hook_does_not_expose_digest() {
+    use anodizer_core::config::{BuildHooksConfig, Config, CrateConfig, DockerV2Config, HookEntry};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM alpine:3.20\n").unwrap();
+
+    let hooks = BuildHooksConfig {
+        pre: Some(vec![HookEntry::Simple("echo {{ .Digest }}".to_string())]),
+        post: None,
+    };
+
+    let v2 = DockerV2Config {
+        id: Some("nd".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["v1".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        hooks: Some(hooks),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "p".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "app".to_string(),
+        path: ".".to_string(),
+        tag_template: "v1.0.0".to_string(),
+        docker_v2: Some(vec![v2]),
+        ..Default::default()
+    }];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let res = DockerStage::new().run(&mut ctx);
+    assert!(
+        res.is_err(),
+        "pre-hook referencing undefined `.Digest` must fail rendering"
+    );
+}
+
+/// A2.4 — Post-hook fires AFTER the build with all pre-hook vars PLUS
+/// `.Digest` (empty-string in dry-run, real digest otherwise — see
+/// `docker_v2_post_hook_with_empty_digest_errors_loudly` for the real
+/// path's hard-bail semantic). In dry-run we only need to confirm
+/// `.Digest` resolves without error in the template.
+#[test]
+fn docker_v2_post_hook_receives_digest_in_dry_run() {
+    use anodizer_core::config::{BuildHooksConfig, Config, CrateConfig, DockerV2Config, HookEntry};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM alpine:3.20\n").unwrap();
+
+    let hooks = BuildHooksConfig {
+        pre: None,
+        post: Some(vec![HookEntry::Simple(
+            "echo {{ .Dockerfile }} {{ .ContextDir }} {{ .BaseImage }} \
+             {{ .BaseImageDigest }} {{ .Digest }} \
+             {% for i in Images %}{{ i }}{% endfor %}"
+                .to_string(),
+        )]),
+    };
+
+    let v2 = DockerV2Config {
+        id: Some("po".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["v1".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        hooks: Some(hooks),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "p".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "app".to_string(),
+        path: ".".to_string(),
+        tag_template: "v1.0.0".to_string(),
+        docker_v2: Some(vec![v2]),
+        ..Default::default()
+    }];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    DockerStage::new()
+        .run(&mut ctx)
+        .expect("post-hook with full var set + Digest must render in dry-run");
+}
+
+/// A2.5 — A pre-hook failure aborts that config's build: no docker
+/// spawn, no artifacts registered for the failed config. The
+/// accumulated error surfaces at end-of-stage (after sibling configs
+/// finish). Real-execution path (dry_run=false) is required to make
+/// the hook shell out and fail; without docker installed the assertion
+/// is that the failure path is the pre-hook one, not a docker spawn
+/// error.
+#[test]
+fn docker_v2_pre_hook_failure_aborts_build_without_docker_spawn() {
+    use anodizer_core::config::{BuildHooksConfig, Config, CrateConfig, DockerV2Config, HookEntry};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM alpine:3.20\n").unwrap();
+
+    // `sh -c "exit 7"` returns a non-zero status — `run_hooks` surfaces
+    // it as a stage error. The post-hook block is intentionally empty
+    // so the only error path is the pre-hook one.
+    let hooks = BuildHooksConfig {
+        pre: Some(vec![HookEntry::Simple("exit 7".to_string())]),
+        post: None,
+    };
+
+    let v2 = DockerV2Config {
+        id: Some("preabort".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["v1".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        hooks: Some(hooks),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "p".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "app".to_string(),
+        path: ".".to_string(),
+        tag_template: "v1.0.0".to_string(),
+        docker_v2: Some(vec![v2]),
+        ..Default::default()
+    }];
+
+    // dry_run=false so the hook actually executes. We do NOT push or
+    // load — the only spawn that would occur if pre-hook succeeded is
+    // the `docker buildx build` call inside `execute_docker_build`,
+    // which would error with a different message (docker missing or
+    // build failure). The assertion below pins the pre-hook error
+    // message shape so a regression that skipped the early return
+    // would trip a docker spawn failure instead.
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: false,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let res = DockerStage::new().run(&mut ctx);
+    let err = res.expect_err("pre-hook failure must surface as a stage error");
+    let msg = format!("{:#}", err);
+    assert!(
+        msg.to_ascii_lowercase().contains("hook")
+            || msg.contains("exit")
+            || msg.contains("status 7")
+            || msg.contains("status: 7"),
+        "stage error must come from the failed pre-hook, got: {msg}"
+    );
+    // No image artifacts must have been registered for the aborted
+    // config — pre-hook abort is final.
+    let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+    assert!(
+        images.is_empty(),
+        "no DockerImageV2 artifacts must be registered when pre-hook aborts"
+    );
+}
+
+/// A2.6 — A post-hook failure aborts the overall stage with the same
+/// error semantics as GR. Real-execution path is required to make the
+/// hook shell out; the build itself fails because no docker is
+/// available, so we instead verify the path via the existing
+/// `docker_v2_post_hook_with_empty_digest_errors_loudly` test plus the
+/// straight-line `?` propagation in `run_docker_post_hooks`. This test
+/// pins the propagation: a post-hook block that fails must surface as
+/// the stage's error.
+///
+/// Implementation: assert by inspection of `run_docker_post_hooks` that
+/// `run_hooks(...)?` is the propagation site, plus a behavioral test
+/// where a dry-run post-hook with a syntactically invalid template
+/// fails the stage.
+#[test]
+fn docker_v2_post_hook_template_failure_aborts_stage() {
+    use anodizer_core::config::{BuildHooksConfig, Config, CrateConfig, DockerV2Config, HookEntry};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM alpine:3.20\n").unwrap();
+
+    // A reference to an undefined variable fails Tera rendering; that
+    // failure must propagate as the stage's error rather than be
+    // silently swallowed.
+    let hooks = BuildHooksConfig {
+        pre: None,
+        post: Some(vec![HookEntry::Simple(
+            "echo {{ .NonExistentVarShouldFail }}".to_string(),
+        )]),
+    };
+
+    let v2 = DockerV2Config {
+        id: Some("posttf".to_string()),
+        images: vec!["ghcr.io/o/app".to_string()],
+        tags: vec!["v1".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        hooks: Some(hooks),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "p".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "app".to_string(),
+        path: ".".to_string(),
+        tag_template: "v1.0.0".to_string(),
+        docker_v2: Some(vec![v2]),
+        ..Default::default()
+    }];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let res = DockerStage::new().run(&mut ctx);
+    assert!(
+        res.is_err(),
+        "post-hook with undefined template var must propagate as stage error"
     );
 }

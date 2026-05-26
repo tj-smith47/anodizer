@@ -81,8 +81,11 @@ pub(crate) struct DockerBuildJob {
     pub(crate) max_delay: Option<Duration>,
     /// Rendered image tags — used for digest capture and artifact registration.
     pub(crate) rendered_tags: Vec<String>,
-    /// Docker platforms string (comma-separated, for artifact metadata).
-    pub(crate) platforms_str: String,
+    /// Docker platforms for this job. Used by the artifact-metadata
+    /// `Platforms` key (JSON-array encoded). Matches GR's
+    /// `ExtraPlatforms = "Platforms"` slice in
+    /// `internal/pipe/docker/v2/docker.go`.
+    pub(crate) platforms_list: Vec<String>,
     /// Staging directory path.
     pub(crate) staging_dir: PathBuf,
     /// Optional docker config id.
