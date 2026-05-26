@@ -763,7 +763,12 @@ fn apply_nightly_template_vars(
         .unwrap_or("nightly");
     let nightly_tag = template::render(tag_tmpl, ctx.template_vars())
         .with_context(|| format!("failed to render nightly tag_name: {tag_tmpl}"))?;
-    if nightly_tag.trim().is_empty() {
+    // Trim before both the empty-check and the `Tag` set: a template
+    // rendering to whitespace (e.g. `"  edge  "`) would otherwise pass
+    // the gate AND store padded whitespace into `Tag`, which GitHub's
+    // Releases API rejects.
+    let nightly_tag = nightly_tag.trim().to_string();
+    if nightly_tag.is_empty() {
         anyhow::bail!(
             "nightly tag_name rendered to an empty string (template: {tag_tmpl}). \
              An empty tag would be rejected by GitHub's Releases API."
@@ -1151,7 +1156,7 @@ fn topo_sort_selected(all_crates: &[CrateConfig], selected: &[String]) -> Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodizer_core::config::{CrateConfig, WorkspaceConfig};
+    use anodizer_core::config::{CrateConfig, NightlyConfig, WorkspaceConfig};
 
     fn make_crate(name: &str, deps: Option<Vec<&str>>) -> CrateConfig {
         CrateConfig {
@@ -1770,16 +1775,29 @@ mod tests {
         StageLogger::new("test-nightly", anodizer_core::log::Verbosity::Quiet)
     }
 
-    #[test]
-    fn nightly_tag_name_default_is_literal_nightly() {
-        let mut config = Config {
+    /// Shared scaffolding for the `apply_nightly_template_vars` tests:
+    /// `project_name="myproj"` config (with the caller-supplied
+    /// `tag_name`, or no `nightly` block at all when `tag_name` is
+    /// `None`), a fresh `Context`, and `Version` / `ProjectName`
+    /// pre-populated.
+    fn setup_nightly_ctx(tag_name: Option<&str>, version: &str) -> (Config, Context) {
+        let config = Config {
             project_name: "myproj".to_string(),
+            nightly: tag_name.map(|t| NightlyConfig {
+                tag_name: Some(t.to_string()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
-        config.nightly = None;
         let mut ctx = Context::new(config.clone(), ContextOptions::default());
-        ctx.template_vars_mut().set("Version", "1.2.3");
+        ctx.template_vars_mut().set("Version", version);
         ctx.template_vars_mut().set("ProjectName", "myproj");
+        (config, ctx)
+    }
+
+    #[test]
+    fn nightly_tag_name_default_is_literal_nightly() {
+        let (config, mut ctx) = setup_nightly_ctx(None, "1.2.3");
         apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
         assert_eq!(
             ctx.template_vars().get("Tag").map(String::as_str),
@@ -1789,18 +1807,7 @@ mod tests {
 
     #[test]
     fn nightly_tag_name_renders_version_template() {
-        use anodizer_core::config::NightlyConfig;
-        let mut config = Config {
-            project_name: "myproj".to_string(),
-            ..Default::default()
-        };
-        config.nightly = Some(NightlyConfig {
-            tag_name: Some("nightly-{{ .Version }}".to_string()),
-            ..Default::default()
-        });
-        let mut ctx = Context::new(config.clone(), ContextOptions::default());
-        ctx.template_vars_mut().set("Version", "1.2.3");
-        ctx.template_vars_mut().set("ProjectName", "myproj");
+        let (config, mut ctx) = setup_nightly_ctx(Some("nightly-{{ .Version }}"), "1.2.3");
         apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
         // `{{ .Version }}` resolves to the nightly-overridden value (which
         // is "1.2.3-nightly.<YYYYMMDD>"), not the base "1.2.3" — proving the
@@ -1814,18 +1821,10 @@ mod tests {
 
     #[test]
     fn nightly_tag_name_can_use_is_nightly_branch() {
-        use anodizer_core::config::NightlyConfig;
-        let mut config = Config {
-            project_name: "myproj".to_string(),
-            ..Default::default()
-        };
-        config.nightly = Some(NightlyConfig {
-            tag_name: Some("{{ if .IsNightly }}edge{{ else }}stable{{ end }}".to_string()),
-            ..Default::default()
-        });
-        let mut ctx = Context::new(config.clone(), ContextOptions::default());
-        ctx.template_vars_mut().set("Version", "0.1.0");
-        ctx.template_vars_mut().set("ProjectName", "myproj");
+        let (config, mut ctx) = setup_nightly_ctx(
+            Some("{{ if .IsNightly }}edge{{ else }}stable{{ end }}"),
+            "0.1.0",
+        );
         apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
         assert_eq!(
             ctx.template_vars().get("Tag").map(String::as_str),
@@ -1835,18 +1834,7 @@ mod tests {
 
     #[test]
     fn nightly_tag_name_empty_render_bails() {
-        use anodizer_core::config::NightlyConfig;
-        let mut config = Config {
-            project_name: "myproj".to_string(),
-            ..Default::default()
-        };
-        config.nightly = Some(NightlyConfig {
-            tag_name: Some("   ".to_string()),
-            ..Default::default()
-        });
-        let mut ctx = Context::new(config.clone(), ContextOptions::default());
-        ctx.template_vars_mut().set("Version", "0.1.0");
-        ctx.template_vars_mut().set("ProjectName", "myproj");
+        let (config, mut ctx) = setup_nightly_ctx(Some("   "), "0.1.0");
         let err = apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log())
             .expect_err("blank tag_name must bail");
         assert!(
