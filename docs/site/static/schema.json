@@ -5426,7 +5426,7 @@
         }
       ]
     },
-    "HomebrewCaskCompletion": {
+    "HomebrewCaskCompletions": {
       "description": "Shell completion file paths for Homebrew Cask.",
       "type": "object",
       "properties": {
@@ -5518,12 +5518,12 @@
             "null"
           ]
         },
-        "completion": {
+        "completions": {
           "description": "Shell completion definitions.",
           "default": null,
           "anyOf": [
             {
-              "$ref": "#/definitions/HomebrewCaskCompletion"
+              "$ref": "#/definitions/HomebrewCaskCompletions"
             },
             {
               "type": "null"

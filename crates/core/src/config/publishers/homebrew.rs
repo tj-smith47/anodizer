@@ -210,7 +210,7 @@ pub struct HomebrewCaskConfig {
     /// Manual page references to install.
     pub manpages: Option<Vec<String>>,
     /// Shell completion definitions.
-    pub completion: Option<HomebrewCaskCompletion>,
+    pub completions: Option<HomebrewCaskCompletions>,
     /// Auto-generate shell completions from an executable.
     pub generate_completions_from_executable: Option<HomebrewCaskGeneratedCompletions>,
 
@@ -312,7 +312,7 @@ pub struct HomebrewCaskHook {
 /// Shell completion file paths for Homebrew Cask.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
-pub struct HomebrewCaskCompletion {
+pub struct HomebrewCaskCompletions {
     /// Path to bash completion file.
     pub bash: Option<String>,
     /// Path to zsh completion file.
