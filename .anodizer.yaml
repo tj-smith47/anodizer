@@ -324,31 +324,7 @@ crates:
     publish:
       # `cargo:` inherits from defaults.publish.cargo (= {} → presence-as-opt-in).
       # Other publishers below are CLI-only, so they live per-crate.
-      homebrew:
-        repository:
-          owner: tj-smith47
-          name: homebrew-tap
-        directory: Formula
-        ids:
-          - default
-        description: "A Rust-native release automation tool"
-        homepage: "https://github.com/tj-smith47/anodizer"
-        license: MIT
-        install: |
-          bin.install "anodizer"
-        post_install: |
-          generate_completions_from_executable(bin/"anodizer", "completion")
-        test: |
-          system "#{bin}/anodizer", "--version"
-        caveats: |
-          Run `anodizer init` to scaffold a config in your repo.
-        dependencies:
-          - name: git
-            type: required
-        commit_msg_template: "anodizer {{ .Tag }}"
-        commit_author:
-          name: TJ Smith
-          email: tj@jarvispro.io
+      # Homebrew is handled exclusively via the top-level `homebrew_casks:` block.
       scoop:
         repository:
           owner: tj-smith47
@@ -583,8 +559,7 @@ crates:
 # GoReleaser v2.16 fully deprecated `brews:` (Formula). This block uses the
 # structured `homebrew_casks:` surface, which unlocks completions, manpages,
 # binaries, caveats, uninstall, and zap as first-class fields instead of raw
-# Ruby strings in post_install. The old `publish.homebrew:` block is kept in
-# place below while anodizer tracks GR's multi-version deprecation lifecycle.
+# Ruby strings in post_install.
 homebrew_casks:
   - repository:
       owner: tj-smith47
