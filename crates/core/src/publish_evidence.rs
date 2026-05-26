@@ -316,6 +316,45 @@ pub struct NpmExtra {
     pub npm_targets: Vec<NpmTargetSnapshot>,
 }
 
+/// Operator-public snapshot of a single GemFury push of one artifact file.
+/// Stored in [`GemFuryExtra::gemfury_targets`] so a later
+/// `--rollback-only --from-run` has the exact coordinates required to
+/// issue `DELETE https://api.fury.io/<account>/packages/<name>/versions/<version>`
+/// against the Fury delete API.
+///
+/// **CREDENTIAL CONTRACT**: no token fields — push and delete tokens are
+/// resolved at publish/rollback time from the env vars named by
+/// `push_token_env_var` (default `FURY_TOKEN`) and `api_token_env_var`
+/// (default `FURY_API_TOKEN`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct GemFuryTargetSnapshot {
+    /// Per-target label — `<account>/<package>` for log lines.
+    pub target: String,
+    /// GemFury account name (operator-public; the `<account>` segment of
+    /// `https://push.fury.io/<account>`).
+    pub account: String,
+    /// Package basename pushed (e.g. `mytool_1.2.3_amd64.deb`).
+    pub package: String,
+    /// Published version (semver string, no `v` prefix).
+    pub version: String,
+    /// Artifact format as detected from the filename extension
+    /// (`deb` / `rpm` / `apk`).
+    pub format: String,
+    /// Env var NAME the rollback path consults to re-resolve the push
+    /// token. NEVER the token VALUE.
+    pub push_token_env_var: String,
+    /// Env var NAME the rollback path consults to re-resolve the API
+    /// (delete) token. NEVER the token VALUE.
+    pub api_token_env_var: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct GemFuryExtra {
+    pub gemfury_targets: Vec<GemFuryTargetSnapshot>,
+}
+
 /// Typed `extra` payload for [`PublishEvidence`]. Untagged on the wire —
 /// each variant's JSON shape matches the prior free-form
 /// `serde_json::json!({"<publisher>_targets": [...]})` form so existing
@@ -354,6 +393,7 @@ pub enum PublishEvidenceExtra {
     Snapcraft(SnapcraftExtra),
     GithubRelease(GithubReleaseExtra),
     Npm(NpmExtra),
+    GemFury(GemFuryExtra),
     /// Default for publishers with no per-evidence operator-public fields,
     /// or for runs that no-op'd. Serializes as JSON `null`.
     #[default]

@@ -11,67 +11,109 @@ Anodizer can push deb, rpm, and apk packages to [Gemfury](https://fury.io/) repo
 
 | Group | Required (default) | Rollback | Token scope |
 |---|---|---|---|
-| Assets | false | warn-only (no programmatic delete API; manual via Gemfury UI) | `FURY_TOKEN` push |
+| Manager | true | per-version `DELETE` via the Fury API | `FURY_TOKEN` push + `FURY_API_TOKEN` delete |
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 
 ## Minimal config
 
 ```yaml
-fury:
+gemfury:
   - account: myorg
+```
+
+`FURY_TOKEN` must be exported in the publish environment (or set
+`gemfury[].token` to a templated value). The token is sent as the HTTP
+Basic auth username (empty password) — the conventional Fury push
+surface.
+
+## Deprecation: `furies:` → `gemfury:`
+
+GoReleaser Pro v2.14 renamed the top-level key from `furies:` to
+`gemfury:`. Anodizer accepts both spellings via a serde alias and emits
+a one-time deprecation warning when the legacy spelling is detected:
+
+```text
+DEPRECATION: the top-level `furies:` config key is deprecated since GoReleaser
+Pro v2.14; rename it to `gemfury:`. Both spellings are accepted but the legacy
+key will be removed in a future release.
 ```
 
 ## Full config reference
 
 ```yaml
-fury:
-  - account: myorg                   # required; Gemfury account name (template)
-    ids: []                          # optional; filter by build IDs
-    formats:                         # optional; defaults to ["apk", "deb", "rpm"]
-      - deb
-      - rpm
-      - apk
-    secret_name: FURY_TOKEN          # optional; env var name for the push token
-    disable: false                   # optional; skip this entry
+gemfury:
+  - id: primary                       # optional; selector for --id=...
+    account: myorg                    # required; Gemfury account (templated)
+    ids: [demo]                       # optional; filter by build IDs
+    formats: [deb, rpm, apk]          # optional; default ["apk","deb","rpm"]
+    secret_name: FURY_TOKEN           # optional; env var for the push token
+    api_secret_name: FURY_API_TOKEN   # optional; env var for the delete token
+    token: "{{ .Env.MY_FURY_PUSH }}"  # optional; cfg-level templated push token
+    api_token: "{{ .Env.MY_FURY_API }}" # optional; cfg-level templated API token
+    skip: false                       # optional; skip this entry (bool/template)
+    disable: false                    # optional; disable this entry (bool/template)
+    required: true                    # optional; override required-default
+    if: "{{ ne .Prerelease \"\" }}"   # optional; template-conditional gate
 ```
 
 ## Authentication
 
 | Variable | Description |
 |----------|-------------|
-| `FURY_TOKEN` | Gemfury push token (or custom name via `secret_name`) |
+| `FURY_TOKEN` | Push token, sent as HTTP Basic auth username. Override the env-var name via `secret_name`. |
+| `FURY_API_TOKEN` | API token for the rollback `DELETE` endpoint. Override the env-var name via `api_secret_name`. |
+
+The push and API tokens are usually different on Fury (push tokens are
+repo-scoped; API tokens have account-wide privileges). Anodizer keeps
+them separate so a workflow can grant push-only credentials by default
+and only require the wider API token in the rollback flow.
+
+## Behavior
+
+- Pushes matching `linux_package` and `archive` artifacts via `POST https://push.fury.io/<account>` with multipart `package=<bytes>`.
+- Authenticates with HTTP Basic auth (token as username, empty password).
+- Format detection is by file extension: `.deb`, `.rpm`, `.apk`.
+- Idempotency probe: `GET https://api.fury.io/<account>/packages/<name>/versions/<version>` before push; if already present, the push is skipped (matches the immutable-releases policy).
+- Multi-format archive guard: when an `archives:` block declares
+  multiple formats AND more than one extension lands in the configured
+  gemfury formats filter, the publisher hard-errors with the offending
+  crate name + format list so the operator narrows `formats:`.
+- Retry: transient `5xx`/`429` failures retry with exponential backoff
+  per the top-level `retry:` block. Non-transient failures break out
+  immediately.
+- Rollback: per uploaded artifact, issue `DELETE https://api.fury.io/<account>/packages/<name>/versions/<version>`. When the API token is unavailable, rollback emits a manual-cleanup warn instead of erroring.
 
 ## Common gotchas
 
-- Gemfury's push endpoint (`https://push.fury.io/v1/{account}/`) accepts packages by file extension. Ensure `formats` matches the package types your build actually produces.
-- Format detection is by file extension: `.apk` maps to `alpine` in the format filter list.
-- Gemfury has no programmatic delete API; rollback is warn-only. Use the Gemfury web UI to remove a version if needed.
+- Push tokens cannot delete — set `FURY_API_TOKEN` (or `gemfury[].api_token`) if you want rollback to fire programmatically.
+- `formats:` matches by filename extension; multi-format archives need a narrowed filter to avoid pushing both `.deb` and `.rpm` (or set the corresponding archive block's `formats:` to one entry).
 
 ## Gemfury config fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `account` | string | **required** | Gemfury account name (template) |
-| `ids` | list | none | Filter by build IDs |
+| `id` | string | none | CLI selector (`--id=...`) |
+| `account` | string | **required** | Gemfury account name (templated) |
+| `ids` | list | none | Build-ID filter |
 | `formats` | list | `["apk", "deb", "rpm"]` | Package format filter |
-| `secret_name` | string | `FURY_TOKEN` | Environment variable name for the API token |
-| `disable` | string/bool | none | Disable this config |
-
-## Behavior
-
-- Pushes matching `linux_package` and `archive` artifacts via HTTP PUT to `https://push.fury.io/v1/{account}/`
-- Authenticates with Bearer token
-- Matches artifacts by file extension against the format filter
-- Supports multiple entries and ID filtering
+| `secret_name` | string | `FURY_TOKEN` | Env var name for the push token |
+| `api_secret_name` | string | `FURY_API_TOKEN` | Env var name for the delete token |
+| `token` | string | none | Cfg-supplied push token (templated) |
+| `api_token` | string | none | Cfg-supplied API/delete token (templated) |
+| `skip` | string/bool | none | Skip this entry |
+| `disable` | string/bool | none | Disable this entry |
+| `required` | bool | `true` | Override required-default |
+| `if` | string | none | Template-conditional gate |
 
 ## Full example
 
 ```yaml
-fury:
+gemfury:
   - account: myorg
     formats:
       - deb
       - rpm
     secret_name: MY_FURY_TOKEN
+    api_secret_name: MY_FURY_API_TOKEN
 ```

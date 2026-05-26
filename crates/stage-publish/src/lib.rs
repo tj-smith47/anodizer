@@ -12,6 +12,7 @@ pub mod chocolatey;
 pub mod cloudsmith;
 pub mod dispatch;
 pub mod dockerhub;
+pub mod gemfury;
 pub mod homebrew;
 pub(crate) mod http_upload;
 pub mod krew;

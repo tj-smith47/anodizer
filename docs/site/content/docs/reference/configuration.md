@@ -31,6 +31,7 @@ Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root.
 List of `KEY=VALUE` strings (matches GoReleaser): `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Order is preserved so chained env applications (sign + sbom + notarize) see entries in declared order. Values are rendered through the template engine before being set, so expressions like `{{ .Tag }}` or `{{ .Date }}` are expanded. |
 | `env_files` | EnvFilesConfig | — | Environment file configuration. Accepts either: - A list of `.env` file paths: `[".env", ".release.env"]` - A struct with token file paths: `{ github_token: "~/.config/goreleaser/github_token" }` |
 | `force_token` | ForceTokenKind | — | Force a specific token type for authentication. When set, overrides automatic token detection from environment variables. |
+| `gemfury` | list of GemFuryConfig | — | GemFury (fury.io) deb/rpm/apk publishing configurations. Mirrors GoReleaser Pro's `gemfury:` block. The pre-GR-v2.14 spelling `furies:` is accepted via serde alias; a one-time deprecation warning is emitted by [`warn_on_legacy_furies_alias`]. |
 | `git` | GitConfig | — | Git-level tag discovery and sorting settings. |
 | `gitea_urls` | GiteaUrlsConfig | — | Custom Gitea API/download URLs for self-hosted Gitea installations. |
 | `github_urls` | GitHubUrlsConfig | — | Custom GitHub API/upload/download URLs for GitHub Enterprise installations. |
@@ -317,6 +318,27 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `secret_name` | string | — | Environment variable name containing the DockerHub token. |
 | `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. |
 | `username` | string | — | DockerHub username for authentication. |
+
+## `gemfury`
+GemFury package registry publisher configuration.
+
+Pushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`. Authenticates via HTTP Basic auth using the push token as the username (empty password) — the conventional Fury push surface.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `account` | string | — | GemFury account name. Required; rendered through the template engine so `account: "{{ .Env.MY_FURY_ACCOUNT }}"` works. |
+| `api_secret_name` | string | — | Environment variable name carrying the API (delete) token. Default `FURY_API_TOKEN`. |
+| `api_token` | string | — | Optional API token used by rollback to issue `DELETE /<account>/packages/<name>/versions/<version>`. When unset, the env var named by `api_secret_name` (default `FURY_API_TOKEN`) is consulted at rollback time. If both are absent at rollback time, the publisher falls back to a manual-cleanup warn. |
+| `disable` | StringOrBool | — | Disable this publisher entry. Mirrors GoReleaser Pro `gemfury[].disable:`. Accepts bool or template string. |
+| `formats` | list of string | — | Package format filter: only push artifacts matching these formats. Defaults to `["apk", "deb", "rpm"]` (GR v2.7+ adds `apk`). |
+| `id` | string | — | Unique identifier for selecting this entry from the CLI (`--id=...`). |
+| `ids` | list of string | — | Build IDs filter: only include artifacts whose archive `id` is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the GemFury publisher entry is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `gemfury[].if:`. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.
+
+Default: `true` — GemFury is a Manager-group publisher (mutable but reversible via the delete API), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue. |
+| `secret_name` | string | — | Environment variable name carrying the push token. Default `FURY_TOKEN`. The actual token VALUE is read from this env var at publish/rollback time. |
+| `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher entry. Accepts bool or template string. |
+| `token` | string | — | Push token used as the HTTP Basic auth username (empty password). When unset, the env var named by `secret_name` (default `FURY_TOKEN`) is consulted at publish time. NEVER logged. |
 
 ## `git`
 Git-level tag discovery and sorting settings.

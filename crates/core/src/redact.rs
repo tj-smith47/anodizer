@@ -125,6 +125,10 @@ pub fn redact_url_credentials(input: &str) -> String {
 ///     A "Bearer" match requires the keyword to appear at the start of
 ///     the input OR immediately after one of `[ \t:,;("'<\n\r]` so that
 ///     prose words like "bearer of bad news" do not match.
+///   - `Basic <b64>` → `Basic <redacted>` (case-insensitive on the
+///     keyword; same boundary rule as `Bearer`). Covers HTTP Basic
+///     auth headers like the GemFury push token (`Authorization:
+///     Basic <token-as-username:>` base64).
 ///   - `Authorization:` followed by any value through end-of-line →
 ///     `Authorization: <redacted>` (case-insensitive on the header name).
 ///     The entire header value is consumed so `Authorization: Bearer X`
@@ -169,6 +173,14 @@ pub fn redact_bearer_tokens(input: &str) -> String {
             }
             continue;
         }
+        if preceded_by_boundary && let Some(kw_len) = match_basic_prefix(&bytes[i..]) {
+            out.push_str("Basic <redacted>");
+            i += kw_len;
+            while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            continue;
+        }
         // Emit one byte verbatim and advance.
         out.push(bytes[i] as char);
         i += 1;
@@ -180,6 +192,23 @@ pub fn redact_bearer_tokens(input: &str) -> String {
 /// "Bearer " (the trailing space is required so we don't match "Bearertown").
 fn match_bearer_prefix(bytes: &[u8]) -> Option<usize> {
     const KW: &[u8] = b"Bearer ";
+    if bytes.len() < KW.len() {
+        return None;
+    }
+    for (i, kw_byte) in KW.iter().enumerate() {
+        if !bytes[i].eq_ignore_ascii_case(kw_byte) {
+            return None;
+        }
+    }
+    Some(KW.len())
+}
+
+/// Returns Some(prefix_len) if `bytes` starts with case-insensitive
+/// "Basic " (the trailing space is required so we don't match "Basics" or
+/// "Basically"). Covers HTTP Basic auth headers used by GemFury and other
+/// publishers that pass the token as the Basic-auth username.
+fn match_basic_prefix(bytes: &[u8]) -> Option<usize> {
+    const KW: &[u8] = b"Basic ";
     if bytes.len() < KW.len() {
         return None;
     }
@@ -514,6 +543,20 @@ mod tests {
     #[test]
     fn test_redact_bearer_tokens_empty_input() {
         assert_eq!(redact_bearer_tokens(""), "");
+    }
+
+    #[test]
+    fn test_redact_basic_token_redacts_b64_payload() {
+        let input = "auth: Basic ZnVyeXRva2VuOg== rest";
+        let result = redact_bearer_tokens(input);
+        assert_eq!(result, "auth: Basic <redacted> rest");
+        assert!(!result.contains("ZnVyeXRva2VuOg=="));
+    }
+
+    #[test]
+    fn test_redact_basic_token_case_insensitive() {
+        let input = "auth: basic ZnVyeXRva2VuOg==";
+        assert_eq!(redact_bearer_tokens(input), "auth: Basic <redacted>");
     }
 
     #[test]

@@ -175,6 +175,17 @@
         }
       ]
     },
+    "gemfury": {
+      "description": "GemFury (fury.io) deb/rpm/apk publishing configurations. Mirrors GoReleaser Pro's `gemfury:` block. The pre-GR-v2.14 spelling `furies:` is accepted via serde alias; a one-time deprecation warning is emitted by [`warn_on_legacy_furies_alias`].",
+      "default": null,
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/definitions/GemFuryConfig"
+      }
+    },
     "git": {
       "description": "Git-level tag discovery and sorting settings.",
       "default": null,
@@ -5306,6 +5317,122 @@
           "type": "string"
         }
       }
+    },
+    "GemFuryConfig": {
+      "description": "GemFury package registry publisher configuration.\n\nPushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`. Authenticates via HTTP Basic auth using the push token as the username (empty password) — the conventional Fury push surface.",
+      "type": "object",
+      "properties": {
+        "account": {
+          "description": "GemFury account name. Required; rendered through the template engine so `account: \"{{ .Env.MY_FURY_ACCOUNT }}\"` works.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_secret_name": {
+          "description": "Environment variable name carrying the API (delete) token. Default `FURY_API_TOKEN`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_token": {
+          "description": "Optional API token used by rollback to issue `DELETE /<account>/packages/<name>/versions/<version>`. When unset, the env var named by `api_secret_name` (default `FURY_API_TOKEN`) is consulted at rollback time. If both are absent at rollback time, the publisher falls back to a manual-cleanup warn.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "disable": {
+          "description": "Disable this publisher entry. Mirrors GoReleaser Pro `gemfury[].disable:`. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "formats": {
+          "description": "Package format filter: only push artifacts matching these formats. Defaults to `[\"apk\", \"deb\", \"rpm\"]` (GR v2.7+ adds `apk`).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "description": "Unique identifier for selecting this entry from the CLI (`--id=...`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ids": {
+          "description": "Build IDs filter: only include artifacts whose archive `id` is in this list.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the GemFury publisher entry is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `gemfury[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `true` — GemFury is a Manager-group publisher (mutable but reversible via the delete API), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "secret_name": {
+          "description": "Environment variable name carrying the push token. Default `FURY_TOKEN`. The actual token VALUE is read from this env var at publish/rollback time.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skip": {
+          "description": "Template-conditional skip: if rendered result is `\"true\"`, skip this publisher entry. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "token": {
+          "description": "Push token used as the HTTP Basic auth username (empty password). When unset, the env var named by `secret_name` (default `FURY_TOKEN`) is consulted at publish time. NEVER logged.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "GitConfig": {
       "description": "Git-level tag discovery and sorting settings.\n\nControls how anodizer discovers and orders tags when determining the current and previous versions. This is separate from `TagConfig`, which controls version *bumping* logic.",

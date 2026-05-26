@@ -209,6 +209,12 @@ pub struct Config {
     /// NPM package registry publishing configurations. One entry per
     /// published package. Mirrors GoReleaser Pro's `npms:` block.
     pub npms: Option<Vec<NpmConfig>>,
+    /// GemFury (fury.io) deb/rpm/apk publishing configurations. Mirrors
+    /// GoReleaser Pro's `gemfury:` block. The pre-GR-v2.14 spelling
+    /// `furies:` is accepted via serde alias; a one-time deprecation
+    /// warning is emitted by [`warn_on_legacy_furies_alias`].
+    #[serde(alias = "furies")]
+    pub gemfury: Option<Vec<GemFuryConfig>>,
 }
 
 /// Helper schema function for the signs field (accepts object or array).
@@ -296,6 +302,7 @@ impl Default for Config {
             retry: None,
             mcp: McpConfig::default(),
             npms: None,
+            gemfury: None,
         }
     }
 }
@@ -999,6 +1006,22 @@ pub fn warn_on_legacy_snapshot_name_template(raw_yaml: &serde_yaml_ng::Value) {
     }
 }
 
+/// Emit a one-time deprecation warning when a config uses the legacy
+/// `furies:` top-level key. Serde transparently folds `furies:` into
+/// `gemfury:` via `#[serde(alias)]`, so this function consults the raw YAML
+/// pre-parse value to detect the legacy spelling.
+///
+/// Matches GoReleaser Pro v2.14's `furies → gemfury` rename messaging.
+pub fn warn_on_legacy_furies_alias(raw_yaml: &serde_yaml_ng::Value) {
+    if raw_yaml.get("furies").is_some() {
+        tracing::warn!(
+            "DEPRECATION: the top-level `furies:` config key is deprecated since GoReleaser \
+             Pro v2.14; rename it to `gemfury:`. Both spellings are accepted but the legacy \
+             key will be removed in a future release."
+        );
+    }
+}
+
 /// Emit a deprecation warning for any `builds[].gobinary` field. The field
 /// is captured by [`BuildConfig::legacy_gobinary`] purely for back-compat
 /// YAML import; anodizer's tool is always `cargo` so the value is unused.
@@ -1328,6 +1351,13 @@ pub use mcp::*;
 
 mod npm;
 pub use npm::*;
+
+// ---------------------------------------------------------------------------
+// GemFuryConfig (Gemfury / fury.io publisher)
+// ---------------------------------------------------------------------------
+
+mod gemfury;
+pub use gemfury::*;
 
 // ---------------------------------------------------------------------------
 // Tests

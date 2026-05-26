@@ -169,6 +169,17 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
             .and_then(|v| v.iter().find_map(|c| c.required));
         v.push(Box::new(crate::npm::NpmPublisher::with_required(req)));
     }
+    if is_gemfury_configured(ctx) {
+        // First non-None across `gemfury:` entries wins.
+        let req = ctx
+            .config
+            .gemfury
+            .as_ref()
+            .and_then(|v| v.iter().find_map(|c| c.required));
+        v.push(Box::new(crate::gemfury::GemFuryPublisher::with_required(
+            req,
+        )));
+    }
     // Submitter group (no programmatic rollback — warn-only).
     if is_chocolatey_configured(ctx) {
         // First non-None across crates wins.
@@ -288,6 +299,13 @@ fn is_krew_configured(ctx: &Context) -> bool {
 /// True when the top-level `npms:` block has at least one entry.
 fn is_npm_configured(ctx: &Context) -> bool {
     crate::publisher_helpers::is_top_level_block_configured(ctx.config.npms.as_ref())
+}
+
+/// True when the top-level `gemfury:` (or legacy `furies:`) block has at
+/// least one entry. The alias collapse happens in serde — by the time we
+/// reach this predicate the field is normalized to `gemfury:`.
+fn is_gemfury_configured(ctx: &Context) -> bool {
+    crate::publisher_helpers::is_top_level_block_configured(ctx.config.gemfury.as_ref())
 }
 
 /// True when the top-level `mcp.name` is set and non-empty. Mirrors

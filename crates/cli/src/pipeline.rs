@@ -122,6 +122,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
         && let Ok(raw) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&content)
     {
         anodizer_core::config::warn_on_legacy_snapshot_name_template(&raw);
+        anodizer_core::config::warn_on_legacy_furies_alias(&raw);
         anodizer_core::config::validate_no_docker_v1(&raw).map_err(anyhow::Error::msg)?;
     }
 
