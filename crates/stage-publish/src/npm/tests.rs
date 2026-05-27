@@ -556,7 +556,9 @@ fn resolve_token_prefers_cfg_token() {
 fn publish_errors_when_token_missing_and_not_dry_run() {
     // Empty env, no cfg.token — publishing should bail with a clear
     // "NPM_TOKEN required" message.
-    let ctx = ctx_with_archives();
+    let mut ctx = ctx_with_archives();
+    // Isolates from process NPM_TOKEN leaked by serial(npm_path_shim) siblings.
+    ctx.set_env_source(anodizer_core::MapEnvSource::new());
     let cfg = npm_cfg();
     let log = ctx.logger("publish");
     let err = publish_to_npm(&ctx, &cfg, "demo", &log).expect_err("must err");

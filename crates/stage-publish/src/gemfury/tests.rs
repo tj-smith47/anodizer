@@ -225,6 +225,8 @@ fn resolve_api_token_independent_from_push_token() {
 #[test]
 fn publish_errors_when_token_missing_and_not_dry_run() {
     let mut ctx = ctx_with_packages();
+    // Isolates from process FURY_TOKEN in case a future sibling sets it globally.
+    ctx.set_env_source(anodizer_core::MapEnvSource::new());
     ctx.config.gemfury = Some(vec![basic_cfg()]);
     let log = ctx.logger("publish");
     let err = publish_to_gemfury(&ctx, &log).expect_err("missing token must err");
