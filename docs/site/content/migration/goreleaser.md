@@ -50,6 +50,8 @@ name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 
 4. **Package manager names**: `brews` → `homebrew_casks:` (top-level array — Formula is deprecated upstream as of GoReleaser v2.16, see [brews → homebrew_casks](#brews-homebrew_casks) below), `scoop` → `publish.scoop`. MCP keeps the same top-level `mcp:` key — see [MCP registry](@/docs/publish/mcp-registry.md) for the nested `mcp.github:` collapse.
 
+5. **Tag sorting**: Anodizer adds a `smartsemver` mode for `git.tag_sort` that automatically filters prerelease tags when computing the previous tag for changelogs. This prevents the empty-changelog problem that occurs when shipping `v1.0.0` after `v1.0.0-rc.1` — GoReleaser would see `v1.0.0-rc.1` as the previous tag and produce an empty diff. Set `git.tag_sort: smartsemver` to opt in.
+
 ## Migration steps
 
 1. Install anodizer: `cargo install anodizer`
@@ -84,6 +86,29 @@ The anodizer equivalent is:
 ```
 
 `auto-install: true` parses `.anodizer.yaml` and installs pipeline dependencies (nfpm for linux packages, cosign for signing, zig/cargo-zigbuild for cross-compilation, ...) — the anodizer action's equivalent of GoReleaser's bundled Go-native implementations. See [anodizer-action reference](@/docs/ci/anodizer-action.md) for all inputs.
+
+## v0.5.x → v0.6.x: installer default name template changed {#v05x-v06x-installer-name}
+
+The `pkg`, `nsis`, `msi`, and `dmg` stages now default to
+`'{{ ProjectName }}_{{ Arch }}'` (matching GoReleaser's convention) instead of
+the prior `'{{ ProjectName }}_{{ Version }}_{{ Arch }}.<ext>'`. If you relied on
+the version being part of the installer filename, pin `name:` explicitly in each
+stage config block:
+
+```yaml
+# Pin to preserve the old naming:
+pkgs:
+  - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}"
+
+msis:
+  - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}"
+
+nsis:
+  - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}"
+
+dmgs:
+  - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}"
+```
 
 ## `brews` → `homebrew_casks` {#brews-homebrew_casks}
 

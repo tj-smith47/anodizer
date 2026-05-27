@@ -25,7 +25,27 @@ No YAML changes required for the default behavior.
 nightly:
   name_template: "{{ .ProjectName }}-nightly"  # optional; release-name template
   tag_name: nightly                            # optional; the rolling tag to replace each night
+  publish_release: true       # default true — create a GitHub Release for each nightly run
+  keep_single_release: false  # default false — set true to delete prior release before recreating
+  draft: false                # optional — override release.draft for nightly runs only
 ```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `nightly.publish_release` | `bool` | `true` | Whether to create a GitHub Release at all. |
+| `nightly.keep_single_release` | `bool` | `false` | Delete the prior nightly release before creating a new one, keeping only the latest. |
+| `nightly.draft` | `bool` | (inherits `release.draft`) | Override the draft flag for nightly runs only. |
+
+## Publisher skip behavior
+
+Most package-manager publishers skip on nightly runs to avoid polluting stable
+indexes. The following skip automatically: `homebrew`, `homebrew_casks`, `scoop`,
+`aur`, `aur_source`, `krew`, `nix`, `cargo`, `npm`, `chocolatey`, `winget`.
+
+Docker and private registry publishers (`dockerhub`, `docker_v2`, `cloudsmith`,
+`artifactory`, `blob`, `mcp`) do not skip — they accept clobber by design.
+
+To override, set `skips_on_nightly: false` in the publisher block.
 
 ## Authentication
 

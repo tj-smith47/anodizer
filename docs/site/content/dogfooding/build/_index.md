@@ -91,7 +91,7 @@ sboms:
 | `builds[].overrides` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`format_overrides` for windows zip) |
 | `builds[].hooks.pre` / `post` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (archive `hooks.before` / `hooks.after`) |
 | `builds[].mod_timestamp` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`metadata.mod_timestamp: "{{ CommitTimestamp }}"`) |
-| `builds[].builder: prebuilt` | ✅ Verified | [`crates/stage-build/src/tests.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-build/src/tests.rs) |
+| `builds[].builder: prebuilt` | 🤝 Help wanted | [`crates/stage-build/src/tests.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-build/src/tests.rs) covers unit paths; no production `.anodizer.yaml` uses `builder: prebuilt` yet |
 | `builds[].buildmode` (no-compile) | ✅ Verified | [`crates/stage-build/src/run.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-build/src/run.rs) |
 | `report_sizes` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`report_sizes: true`) |
 
@@ -156,7 +156,7 @@ before these can ship live. Implementation is complete and unit-tested.
 | `docker_v2.sbom: true` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`sbom: true` on all three `docker_v2` images) |
 | `docker_digest.name_template` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`docker_digest.name_template: "cfgd_{{ .Tag }}.digest"`) |
 | `dockers[].use: buildx` | ✅ Verified | [`crates/stage-docker/src/detect.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-docker/src/detect.rs) (buildx is the default backend) |
-| `docker_manifests[].use: docker` / `podman` | 🤝 Help wanted | Backend selector for `docker manifest create / push`. cfgd configures `docker_manifests[]` but the entries are bypassed because `docker_v2` already pushes multi-arch indexes (`docker: skipping manifest ... already pushed as multi-arch by docker_v2`). No live release exercises the non-buildx backend |
+| `docker_manifests[].use: docker` / `podman` | 🤝 Help wanted | Backend selector for `docker manifest create / push`. cfgd configures `docker_manifests[]` but the entries are bypassed because `docker_v2` already pushes multi-arch indexes (`docker: skipping manifest ... already pushed as multi-arch by docker_v2`). No live release exercises the non-buildx manifest backend. Note: `docker_v2[].use: podman` (image build path) is a separate surface — also no live dogfood yet |
 | `docker_hub.description` | 🤝 Help wanted | We use ghcr; needs a Docker Hub-anchored release |
 
 ## Signing
