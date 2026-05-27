@@ -62,10 +62,10 @@ impl Stage for super::ReleaseStage {
 /// Emit once-per-run warnings about workspace-level nightly configuration
 /// combinations that are technically valid but operationally surprising.
 ///
-/// Currently surfaces the GoReleaser-documented gotcha that `nightly.draft =
-/// true` combined with `nightly.keep_single_release = true` leaves no
-/// published nightly release in a non-draft state, because each run replaces
-/// the prior draft before it can be promoted.
+/// Surfaces the GoReleaser-documented gotcha that `nightly.draft = true`
+/// combined with `nightly.keep_single_release = true` leaves no published
+/// nightly release in a non-draft state, because each run replaces the prior
+/// draft before it can be promoted.
 fn validate_nightly_config(ctx: &Context, log: &anodizer_core::log::StageLogger) {
     if !ctx.is_nightly() {
         return;
@@ -1102,8 +1102,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_nightly_config_is_noop_when_only_one_of_draft_or_ksr_set() {
-        // draft=true alone — no warning.
+    fn validate_nightly_config_noop_when_only_draft_set() {
         let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
         ctx.options.nightly = true;
         ctx.config.nightly = Some(NightlyConfig {
@@ -1112,7 +1111,12 @@ mod tests {
             ..Default::default()
         });
         validate_nightly_config(&ctx, &quiet_log());
-        // keep_single_release=true alone — no warning.
+    }
+
+    #[test]
+    fn validate_nightly_config_noop_when_only_keep_single_release_set() {
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        ctx.options.nightly = true;
         ctx.config.nightly = Some(NightlyConfig {
             draft: None,
             keep_single_release: Some(true),
