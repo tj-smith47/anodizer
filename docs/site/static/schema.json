@@ -4421,6 +4421,14 @@
             "string",
             "null"
           ]
+        },
+        "volume_name": {
+          "description": "Volume label shown in Finder when the image is mounted.\n\nSupports template variables. Defaults to the project name.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },

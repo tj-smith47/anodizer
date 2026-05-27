@@ -43,6 +43,10 @@ pub struct DmgConfig {
     /// or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
+    /// Volume label shown in Finder when the image is mounted.
+    ///
+    /// Supports template variables. Defaults to the project name.
+    pub volume_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

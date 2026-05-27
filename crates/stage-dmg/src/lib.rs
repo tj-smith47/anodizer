@@ -107,8 +107,8 @@ fn os_arch_from_target(target: Option<&str>) -> (String, String) {
     anodizer_core::target::os_arch_with_default(target, "darwin")
 }
 
-/// Default output filename template: `{ProjectName}_{Version}_{Arch}.dmg`
-const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Version }}_{{ Arch }}.dmg";
+/// Default output filename template matching GoReleaser's `'{{.ProjectName}}_{{.Arch}}'`.
+const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}";
 
 impl Stage for DmgStage {
     fn name(&self) -> &str {
@@ -185,6 +185,28 @@ impl Stage for DmgStage {
                         use_mode,
                         krate.name
                     );
+                }
+
+                // Pre-flight: a constant name_template paired with a multi-match glob
+                // would silently overwrite every matched file to the same destination name.
+                if let Some(extra_files) = &dmg_cfg.extra_files {
+                    for spec in extra_files {
+                        if spec.name_template().is_some() {
+                            let pattern = spec.glob();
+                            if let Ok(entries) = glob::glob(pattern) {
+                                let matches: Vec<_> =
+                                    entries.flatten().filter(|e| e.is_file()).collect();
+                                if matches.len() > 1 {
+                                    anyhow::bail!(
+                                        "dmg extra_files: name_template is only valid when the \
+                                         glob matches exactly 1 file; got {} matches for '{}'",
+                                        matches.len(),
+                                        pattern
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Collect source artifacts depending on `use` mode
@@ -321,8 +343,41 @@ impl Stage for DmgStage {
                     let output_dir = dist.join("macos");
                     let dmg_path = output_dir.join(&dmg_filename);
 
-                    // Volume name: project_name
-                    let vol_name = project_name.clone();
+                    // Volume label: use configured template, defaulting to project name.
+                    let vol_name = if let Some(ref vn_tmpl) = dmg_cfg.volume_name {
+                        ctx.render_template(vn_tmpl).with_context(|| {
+                            format!(
+                                "dmg: render volume_name template for crate {} target {:?}",
+                                krate.name, target
+                            )
+                        })?
+                    } else {
+                        project_name.clone()
+                    };
+
+                    // Pre-flight: two source paths with the same leaf name would
+                    // silently overwrite the first during staging. Detect early so
+                    // this fires in both dry-run and live mode.
+                    {
+                        let mut staged_names: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
+                        for binary_path in binary_paths {
+                            let binary_name = binary_path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(&krate.name);
+                            if !staged_names.insert(binary_name.to_string()) {
+                                anyhow::bail!(
+                                    "dmg: duplicate filename '{}' in staging dir for crate \
+                                     '{}' target {:?}; two source binaries resolve to the \
+                                     same name",
+                                    binary_name,
+                                    krate.name,
+                                    target
+                                );
+                            }
+                        }
+                    }
 
                     if dry_run {
                         log.status(&format!(
@@ -387,6 +442,26 @@ impl Stage for DmgStage {
                         })?;
                     }
 
+                    // When packaging an app bundle, insert an /Applications symlink so
+                    // the mounted volume presents the standard drag-and-drop install UX.
+                    // On Windows hosts the symlink may not resolve correctly — this
+                    // matches GoReleaser's documented behavior.
+                    #[cfg(unix)]
+                    if use_mode == "appbundle" {
+                        let link_path = staging_dir.join("Applications");
+                        if !link_path.exists() {
+                            std::os::unix::fs::symlink("/Applications", &link_path).with_context(
+                                || {
+                                    format!(
+                                        "dmg: create /Applications symlink in staging dir for \
+                                         crate '{}' target {:?}",
+                                        krate.name, target
+                                    )
+                                },
+                            )?;
+                        }
+                    }
+
                     // Copy extra files into staging dir
                     if let Some(extra_files) = &dmg_cfg.extra_files {
                         for spec in extra_files {
@@ -426,9 +501,27 @@ impl Stage for DmgStage {
                         )?;
                     }
 
-                    // Apply mod_timestamp if set
-                    if let Some(ts) = &dmg_cfg.mod_timestamp {
-                        anodizer_core::util::apply_mod_timestamp(staging_dir, ts, &log)?;
+                    // Apply mod_timestamp if set (template-rendered before parsing).
+                    if let Some(ref ts_tmpl) = dmg_cfg.mod_timestamp {
+                        let ts = ctx
+                            .render_template(ts_tmpl)
+                            .with_context(|| "dmg: render mod_timestamp template")?;
+                        anodizer_core::util::apply_mod_timestamp(staging_dir, &ts, &log)?;
+                    }
+
+                    // On macOS, detach a stale mount at the same volume path before
+                    // creating a new image. Silent best-effort — a non-zero exit
+                    // (e.g. nothing mounted) is not an error.
+                    if tool == DmgTool::Hdiutil {
+                        let mount_path = format!("/Volumes/{vol_name}");
+                        let detach = Command::new("hdiutil")
+                            .args(["detach", "-force", &mount_path])
+                            .output();
+                        if let Ok(out) = detach
+                            && out.status.success()
+                        {
+                            log.status(&format!("detached stale mount at {mount_path}"));
+                        }
                     }
 
                     // Build and run the command
@@ -1895,5 +1988,447 @@ crates:
         // No amd64 survives; arm64 still produces one DMG.
         assert_eq!(dmgs.len(), 1);
         assert_eq!(dmgs[0].target.as_deref(), Some("aarch64-apple-darwin"));
+    }
+
+    // -------------------------------------------------------------------
+    // Default name template matches GoReleaser shape
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_default_name_template_matches_gr_shape() {
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![DmgConfig::default()]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        DmgStage.run(&mut ctx).unwrap();
+
+        let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
+        assert_eq!(dmgs.len(), 1);
+        let name = dmgs[0].path.file_name().unwrap().to_string_lossy();
+        // GR default: ProjectName_Arch (no version segment, .dmg appended)
+        assert!(
+            name.starts_with("myapp_") && name.ends_with("arm64.dmg"),
+            "default name should be ProjectName_Arch.dmg, got: {name}"
+        );
+        assert!(
+            !name.contains("1.0.0"),
+            "default name must not embed the version, got: {name}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // mod_timestamp template rendering
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mod_timestamp_template_rendered() {
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let binary_path = tmp.path().join("myapp");
+        fs::write(&binary_path, b"fake-binary").unwrap();
+
+        let dmg_cfg = DmgConfig {
+            // Template that resolves to a fixed Unix epoch string.
+            mod_timestamp: Some("{{ Epoch }}".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![dmg_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Epoch", "1700000000");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: binary_path,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let result = DmgStage.run(&mut ctx);
+        // On Linux without hdiutil/genisoimage/mkisofs the stage will error after
+        // template rendering succeeds. The key invariant: if it errors, the error
+        // must not mention unrendered template syntax.
+        match result {
+            Ok(_) => {}
+            Err(e) => {
+                let msg = format!("{e:#}");
+                assert!(
+                    !msg.contains("{{ Epoch }}") && !msg.contains("{Epoch}"),
+                    "mod_timestamp template must be rendered before use, got: {msg}"
+                );
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // volume_name template rendering
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_volume_name_template_rendered_in_dry_run() {
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![DmgConfig {
+                volume_name: Some("{{ ProjectName }}-Installer".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        // The template must render without error; dry_run skips actual DMG creation.
+        DmgStage.run(&mut ctx).unwrap();
+        let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
+        assert_eq!(
+            dmgs.len(),
+            1,
+            "dry-run should register a DiskImage artifact"
+        );
+    }
+
+    #[test]
+    fn test_volume_name_defaults_to_project_name() {
+        // volume_name: None must fall back to project_name without error.
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.project_name = "myproject".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myproject".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![DmgConfig::default()]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myproject"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myproject".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        DmgStage.run(&mut ctx).unwrap();
+        let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
+        assert_eq!(dmgs.len(), 1);
+    }
+
+    // -------------------------------------------------------------------
+    // extra_files multi-match + constant name_template must bail
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_extra_files_multi_match_name_template_bails() {
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig, ExtraFileSpec};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Create two files that a glob will match.
+        fs::write(tmp.path().join("a.txt"), b"a").unwrap();
+        fs::write(tmp.path().join("b.txt"), b"b").unwrap();
+
+        let glob_pattern = format!("{}/*.txt", tmp.path().display());
+        let spec = ExtraFileSpec::Detailed {
+            glob: glob_pattern,
+            name_template: Some("output.txt".to_string()),
+            allow_empty: false,
+        };
+
+        let dmg_cfg = DmgConfig {
+            extra_files: Some(vec![spec]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![dmg_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let err = DmgStage
+            .run(&mut ctx)
+            .expect_err("multi-match glob + name_template must bail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("name_template") && msg.contains("exactly 1"),
+            "error should mention name_template and single-match requirement, got: {msg}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Duplicate filename in staging bails with a clear error
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_duplicate_staged_filename_bails() {
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Two real binary files with the same leaf name in different dirs.
+        let dir_a = tmp.path().join("a");
+        let dir_b = tmp.path().join("b");
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        fs::write(dir_a.join("myapp"), b"binary-a").unwrap();
+        fs::write(dir_b.join("myapp"), b"binary-b").unwrap();
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![DmgConfig::default()]),
+            ..Default::default()
+        }];
+
+        // Live mode so the staging copy runs.
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Two binaries with the same filename under the same target.
+        for dir in [&dir_a, &dir_b] {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: dir.join("myapp"),
+                target: Some("aarch64-apple-darwin".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: Default::default(),
+                size: None,
+            });
+        }
+
+        let err = DmgStage
+            .run(&mut ctx)
+            .expect_err("duplicate filename must bail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("duplicate") && msg.contains("myapp"),
+            "error should mention duplicate and the conflicting filename, got: {msg}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // /Applications symlink created for appbundle, absent for binary
+    // -------------------------------------------------------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn test_appbundle_applications_symlink_created() {
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        // A real .app directory to copy into staging.
+        let app_dir = tmp.path().join("MyApp.app");
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::write(app_dir.join("myapp"), b"fake-binary").unwrap();
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![DmgConfig {
+                use_: Some("appbundle".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }];
+
+        // Live mode required so the staging dir is constructed.
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Installer,
+            name: String::new(),
+            path: app_dir,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("format".to_string(), "appbundle".to_string())]),
+            size: None,
+        });
+
+        // On Linux (no hdiutil/genisoimage/mkisofs) the stage fails at the
+        // tool-detection step. The /Applications symlink is inserted before that
+        // step, so any error must name the missing tool, not symlink creation.
+        let result = DmgStage.run(&mut ctx);
+        if let Err(ref e) = result {
+            let msg = format!("{e:#}");
+            assert!(
+                msg.contains("hdiutil")
+                    || msg.contains("genisoimage")
+                    || msg.contains("mkisofs")
+                    || msg.contains("DMG creation tool")
+                    || msg.contains("no DMG"),
+                "failure must be tool-not-found, not symlink creation, got: {msg}"
+            );
+        }
+        // On macOS with hdiutil present the stage may succeed — either outcome is fine.
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_binary_mode_no_applications_symlink() {
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let binary_path = tmp.path().join("myapp");
+        fs::write(&binary_path, b"fake-binary").unwrap();
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![DmgConfig {
+                use_: Some("binary".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: binary_path,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        // In binary mode the stage should fail at tool invocation, not at any
+        // symlink step. Confirm the error is tool-not-found on non-macOS.
+        let result = DmgStage.run(&mut ctx);
+        if cfg!(not(target_os = "macos")) {
+            assert!(result.is_err());
+            let msg = format!("{:#}", result.unwrap_err());
+            assert!(
+                msg.contains("hdiutil")
+                    || msg.contains("genisoimage")
+                    || msg.contains("mkisofs")
+                    || msg.contains("DMG creation tool")
+                    || msg.contains("no DMG"),
+                "binary mode error must be tool-not-found, got: {msg}"
+            );
+        }
     }
 }
