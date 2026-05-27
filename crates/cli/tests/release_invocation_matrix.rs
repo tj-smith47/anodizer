@@ -449,16 +449,15 @@ fn announce_merge_flag_parses() {
 }
 
 // ---------------------------------------------------------------------------
-// W-3: docs-table rows that previously had no direct matrix test
+// Additional rows covering `release` (snapshot mode's release stage),
+// `release --publish-only`, and `continue --merge`.
 // ---------------------------------------------------------------------------
 
-/// Row: `anodizer release` (no flags) skips nothing. Every stage in the
-/// pipeline is eligible to run. The test uses `--dry-run` to stay cheap
-/// and skips the heavy build chain explicitly; the invariant is that the
-/// auto-skip mechanism does NOT inject any extra stage skips when no
-/// mode flags are set.
+/// Snapshot mode auto-skips the publish/blob/announce chain but the
+/// `release` (GitHub release creation) stage itself stays in the pipeline.
+/// Pins the negative invariant: snapshot does NOT touch the release stage.
 #[test]
-fn release_default_skips_nothing_extra() {
+fn release_snapshot_does_not_skip_release_stage() {
     let tmp = TempDir::new().unwrap();
     setup_fixture(tmp.path());
     let out = run_anodizer(
@@ -472,22 +471,17 @@ fn release_default_skips_nothing_extra() {
             "2m",
         ],
     );
-    // Success or failure is irrelevant; what matters is no mode-driven
-    // stage is auto-skipped beyond the explicit --skip list.
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // Snapshot auto-skips publish/blob/announce; baseline release (no extra
-    // flags) must NOT additionally skip the release stage itself.
-    assert_skip_matrix(&stderr, &[], &["release"], "release (default)");
+    assert_skip_matrix(&stderr, &[], &["release"], "release --snapshot");
 }
 
-/// Row: `anodizer release --publish-only` skips build/archive/nfpm/sbom/checksum
-/// and runs the sign + publish chain. The publish-only branch bails early on a
-/// missing context.json before the pipeline emits per-stage skip lines, so this
-/// test pins dispatch correctness rather than skip-set: the error must come from
-/// the publish-only branch ("no context.json"), not from the full-release dist
-/// pre-check ("dist directory … not empty").
+/// `release --publish-only` must bypass the full-release "dist not empty"
+/// pre-check (the publish-only branch consumes a preserved dist) AND must
+/// fail with the publish-only "no context.json" error when none is present.
+/// Pins dispatch correctness via these two assertions because the
+/// publish-only branch bails before the pipeline emits per-stage skip lines.
 #[test]
-fn release_publish_only_dispatches_to_publish_branch() {
+fn publish_only_bypasses_dist_precheck_requires_context_json() {
     let tmp = TempDir::new().unwrap();
     setup_fixture(tmp.path());
     fs::create_dir_all(tmp.path().join("dist")).unwrap();
@@ -497,9 +491,6 @@ fn release_publish_only_dispatches_to_publish_branch() {
         &["release", "--publish-only", "--dry-run", "--timeout", "2m"],
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // Must fail with the publish-only "no context.json" error, not the
-    // full-release "dist directory not empty" pre-check — that pre-check
-    // is bypassed when --publish-only is set.
     assert!(
         !out.status.success(),
         "release --publish-only must fail without a preserved dist tree"
@@ -514,14 +505,12 @@ fn release_publish_only_dispatches_to_publish_branch() {
     );
 }
 
-/// Row: `anodizer continue --merge` is the split-merge resume path.
-/// Clap-level check: the flag combination parses, and the subcommand
-/// dispatches to the merge branch (not the full rebuild pipeline).
-/// The skip invariant — build/archive/nfpm skipped, sign/publish not — is
-/// covered by the merge branch's own integration tests; here we pin the
-/// dispatch surface so a future rename doesn't silently regress.
+/// `continue --merge` is the split-merge resume path: it consumes a preserved
+/// dist tree rather than recompiling. Pins the negative invariant — no build,
+/// archive, or nfpm banner appears — and confirms dispatch lands on the merge
+/// branch rather than the full-release dist pre-check.
 #[test]
-fn continue_merge_flag_parses_and_dispatches() {
+fn continue_merge_does_not_trigger_build_pipeline() {
     let tmp = TempDir::new().unwrap();
     setup_fixture(tmp.path());
     fs::create_dir_all(tmp.path().join("dist")).unwrap();
@@ -533,8 +522,6 @@ fn continue_merge_flag_parses_and_dispatches() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let merged = format!("{stdout}\n{stderr}");
-    // `continue --merge` must not recompile; the merge branch consumes a
-    // preserved dist tree rather than running the build stage.
     for forbidden in &["building binaries", "archiving", "building nfpm"] {
         assert!(
             !merged.contains(forbidden),
@@ -542,8 +529,6 @@ fn continue_merge_flag_parses_and_dispatches() {
              saw `{forbidden}` in:\n{merged}"
         );
     }
-    // Dispatch correctness: merge missing config is the expected failure mode
-    // (no split artifacts present), not the full-release dist-not-empty check.
     assert!(
         !merged.contains("dist directory") || !merged.contains("not empty"),
         "continue --merge must not trip the full-release dist pre-check"

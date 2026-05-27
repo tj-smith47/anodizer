@@ -148,7 +148,9 @@ pub struct ReleaseOpts {
 ///
 /// Note: this is the implicit-run decision. `--preflight` (the explicit
 /// check-only mode) gates separately in the call site and always runs the
-/// check independently of this predicate.
+/// check independently of this predicate. `--announce-only` is handled by
+/// an earlier short-circuit in `run_publisher_preflight` and so is not a
+/// parameter here.
 pub(crate) fn should_run_preflight_auto(
     no_preflight: bool,
     snapshot: bool,
@@ -156,15 +158,8 @@ pub(crate) fn should_run_preflight_auto(
     split: bool,
     publish_only: bool,
     publish_skipped: bool,
-    announce_only: bool,
 ) -> bool {
-    !no_preflight
-        && !snapshot
-        && !dry_run
-        && !split
-        && !publish_only
-        && !announce_only
-        && !publish_skipped
+    !no_preflight && !snapshot && !dry_run && !split && !publish_only && !publish_skipped
 }
 
 /// GoReleaser Pro `--prepare`: runs local build/archive/sign/checksum/sbom stages
@@ -892,7 +887,6 @@ fn run_publisher_preflight(
         opts.split,
         opts.publish_only,
         ctx.should_skip("publish"),
-        opts.announce_only,
     );
     if !(opts.preflight || should_run_preflight) {
         return Ok(false);
@@ -1639,35 +1633,35 @@ mod tests {
     fn should_run_preflight_auto_default_runs() {
         // No flag set → run.
         assert!(should_run_preflight_auto(
-            false, false, false, false, false, false, false
+            false, false, false, false, false, false
         ));
     }
 
     #[test]
     fn should_run_preflight_auto_no_preflight_skips() {
         assert!(!should_run_preflight_auto(
-            true, false, false, false, false, false, false
+            true, false, false, false, false, false
         ));
     }
 
     #[test]
     fn should_run_preflight_auto_snapshot_skips() {
         assert!(!should_run_preflight_auto(
-            false, true, false, false, false, false, false
+            false, true, false, false, false, false
         ));
     }
 
     #[test]
     fn should_run_preflight_auto_dry_run_skips() {
         assert!(!should_run_preflight_auto(
-            false, false, true, false, false, false, false
+            false, false, true, false, false, false
         ));
     }
 
     #[test]
     fn should_run_preflight_auto_split_skips() {
         assert!(!should_run_preflight_auto(
-            false, false, false, true, false, false, false
+            false, false, false, true, false, false
         ));
     }
 
@@ -1678,24 +1672,14 @@ mod tests {
         // `publish_only::run`) gets first crack at bailing before any
         // network call.
         assert!(!should_run_preflight_auto(
-            false, false, false, false, true, false, false
+            false, false, false, false, true, false
         ));
     }
 
     #[test]
     fn should_run_preflight_auto_publish_skipped_skips() {
         assert!(!should_run_preflight_auto(
-            false, false, false, false, false, true, false
-        ));
-    }
-
-    #[test]
-    fn should_run_preflight_auto_announce_only_skips() {
-        // `--announce-only` re-fires announcers against a prior
-        // report.json; it MUST NOT re-probe publisher state since the
-        // publish phase already happened.
-        assert!(!should_run_preflight_auto(
-            false, false, false, false, false, false, true
+            false, false, false, false, false, true
         ));
     }
 
