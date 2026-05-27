@@ -105,26 +105,39 @@ pub struct PkgConfig {
     /// Build IDs to include. Empty means all builds.
     pub ids: Option<Vec<String>>,
     /// Package identifier in reverse-domain notation (e.g. com.example.myapp). Required.
+    /// Templates allowed (e.g. `com.example.{{ ProjectName }}`).
     pub identifier: Option<String>,
     /// Output PKG filename (supports templates).
+    /// Default: `{{ ProjectName }}_{{ Arch }}` (no extension enforced; user controls it).
     pub name: Option<String>,
-    /// Installation path. Default: /usr/local/bin.
+    /// Installation path. Default: /usr/local/bin. Templates allowed.
     pub install_location: Option<String>,
-    /// Path to scripts directory containing preinstall/postinstall scripts.
+    /// Path to scripts directory containing preinstall/postinstall scripts. Templates allowed.
     pub scripts: Option<String>,
     /// Additional files to include in the package (glob or {glob, name_template}).
+    /// Anodizer-additive: not present in GoReleaser Pro pkg.
     pub extra_files: Option<Vec<ExtraFileSpec>>,
+    /// Extra files whose contents are rendered through the template engine before inclusion.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
+    /// Anodizer-additive: not present in GoReleaser Pro pkg.
+    pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Remove source archives from artifacts, keeping only PKG.
     pub replace: Option<bool>,
-    /// Output timestamp for reproducible builds.
+    /// Output timestamp for reproducible builds. Templates allowed (e.g. `{{ CommitTimestamp }}`).
     pub mod_timestamp: Option<String>,
     /// Which artifact type to package: "binary" (default) or "appbundle".
     #[serde(rename = "use")]
     pub use_: Option<String>,
-    /// Minimum macOS version (e.g. "10.13"). Forwarded to `productbuild --min-os-version`.
+    /// Minimum macOS version (e.g. "10.13"). Forwarded to `pkgbuild --min-os-version`.
     pub min_os_version: Option<String>,
     /// Skip this PKG config. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat
+    /// with imported GoReleaser configs.
+    #[serde(
+        default,
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt"
+    )]
     pub skip: Option<StringOrBool>,
     /// Template-conditional: skip this PKG config if rendered result is "false"
     /// or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).

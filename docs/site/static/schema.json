@@ -9919,7 +9919,7 @@
       "type": "object",
       "properties": {
         "extra_files": {
-          "description": "Additional files to include in the package (glob or {glob, name_template}).",
+          "description": "Additional files to include in the package (glob or {glob, name_template}). Anodizer-additive: not present in GoReleaser Pro pkg.",
           "default": null,
           "type": [
             "array",
@@ -9938,7 +9938,7 @@
           ]
         },
         "identifier": {
-          "description": "Package identifier in reverse-domain notation (e.g. com.example.myapp). Required.",
+          "description": "Package identifier in reverse-domain notation (e.g. com.example.myapp). Required. Templates allowed (e.g. `com.example.{{ ProjectName }}`).",
           "default": null,
           "type": [
             "string",
@@ -9965,7 +9965,7 @@
           ]
         },
         "install_location": {
-          "description": "Installation path. Default: /usr/local/bin.",
+          "description": "Installation path. Default: /usr/local/bin. Templates allowed.",
           "default": null,
           "type": [
             "string",
@@ -9973,7 +9973,7 @@
           ]
         },
         "min_os_version": {
-          "description": "Minimum macOS version (e.g. \"10.13\"). Forwarded to `productbuild --min-os-version`.",
+          "description": "Minimum macOS version (e.g. \"10.13\"). Forwarded to `pkgbuild --min-os-version`.",
           "default": null,
           "type": [
             "string",
@@ -9981,7 +9981,7 @@
           ]
         },
         "mod_timestamp": {
-          "description": "Output timestamp for reproducible builds.",
+          "description": "Output timestamp for reproducible builds. Templates allowed (e.g. `{{ CommitTimestamp }}`).",
           "default": null,
           "type": [
             "string",
@@ -9989,7 +9989,7 @@
           ]
         },
         "name": {
-          "description": "Output PKG filename (supports templates).",
+          "description": "Output PKG filename (supports templates). Default: `{{ ProjectName }}_{{ Arch }}` (no extension enforced; user controls it).",
           "default": null,
           "type": [
             "string",
@@ -10005,7 +10005,7 @@
           ]
         },
         "scripts": {
-          "description": "Path to scripts directory containing preinstall/postinstall scripts.",
+          "description": "Path to scripts directory containing preinstall/postinstall scripts. Templates allowed.",
           "default": null,
           "type": [
             "string",
@@ -10013,7 +10013,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this PKG config. Accepts bool or template string.",
+          "description": "Skip this PKG config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs.",
           "default": null,
           "anyOf": [
             {
@@ -10023,6 +10023,17 @@
               "type": "null"
             }
           ]
+        },
+        "templated_extra_files": {
+          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Anodizer-additive: not present in GoReleaser Pro pkg.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/TemplatedExtraFile"
+          }
         },
         "use": {
           "description": "Which artifact type to package: \"binary\" (default) or \"appbundle\".",

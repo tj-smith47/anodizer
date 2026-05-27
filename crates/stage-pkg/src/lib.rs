@@ -55,8 +55,12 @@ pub fn pkgbuild_command(
 // PkgStage
 // ---------------------------------------------------------------------------
 
-/// Default output filename template: `{ProjectName}_{Version}_{Arch}.pkg`
-const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Version }}_{{ Arch }}.pkg";
+/// Default output filename template.
+///
+/// Matches GoReleaser Pro's default (`{{.ProjectName}}_{{.Arch}}`): no version
+/// component and no forced extension. The user controls the extension entirely
+/// by including it in the `name:` field (e.g. `{{ ProjectName }}_{{ Arch }}.pkg`).
+const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}";
 
 pub struct PkgStage;
 
@@ -220,8 +224,9 @@ impl Stage for PkgStage {
                     .map(|b| (b.target.clone(), b.path.clone()))
                     .collect();
 
-                // Validate identifier is present
-                let identifier = pkg_cfg.identifier.as_deref().ok_or_else(|| {
+                // Validate identifier is present (template render happens inside the
+                // per-binary loop below so Os/Arch vars are set first).
+                let identifier_template = pkg_cfg.identifier.as_deref().ok_or_else(|| {
                     anyhow::anyhow!(
                         "pkg: missing required `identifier` for crate `{}`. \
                          Set a reverse-domain identifier (e.g. com.example.myapp)",
@@ -229,11 +234,21 @@ impl Stage for PkgStage {
                     )
                 })?;
 
-                let install_location = pkg_cfg
-                    .install_location
-                    .as_deref()
-                    .unwrap_or("/usr/local/bin");
+                // Probe pkgbuild once per config entry before entering the per-binary
+                // loop so the error surfaces early with an actionable install hint.
+                if !dry_run && !anodizer_core::util::find_binary("pkgbuild") {
+                    anyhow::bail!(
+                        "pkgbuild not found on PATH; install Xcode Command Line Tools \
+                         with `xcode-select --install`"
+                    );
+                }
 
+                // One .pkg is produced per binary — pkg installers are single-binary
+                // by design. Unlike DMG (which groups multiple binaries into one
+                // container image), each pkg wraps exactly one payload binary so that
+                // Homebrew formula installers and macOS Installer.app each target a
+                // discrete, independently versionable package. Multi-binary crates
+                // therefore emit N packages per target triple.
                 for (target, binary_path) in &effective_binaries {
                     // Derive Os/Arch from the target triple for template rendering
                     let (os, arch) = target
@@ -247,6 +262,42 @@ impl Stage for PkgStage {
                     ctx.template_vars_mut()
                         .set("Target", target.as_deref().unwrap_or(""));
 
+                    // Render identifier template (e.g. `com.example.{{ ProjectName }}`).
+                    let identifier =
+                        ctx.render_template(identifier_template).with_context(|| {
+                            format!(
+                                "pkg: render identifier template for crate {} target {:?}",
+                                krate.name, target
+                            )
+                        })?;
+
+                    // Render install_location template (default /usr/local/bin).
+                    let install_location_raw = pkg_cfg
+                        .install_location
+                        .as_deref()
+                        .unwrap_or("/usr/local/bin");
+                    let install_location =
+                        ctx.render_template(install_location_raw).with_context(|| {
+                            format!(
+                                "pkg: render install_location template for crate {} target {:?}",
+                                krate.name, target
+                            )
+                        })?;
+
+                    // Render scripts path template if set.
+                    let scripts_rendered = pkg_cfg
+                        .scripts
+                        .as_deref()
+                        .map(|s| {
+                            ctx.render_template(s).with_context(|| {
+                                format!(
+                                    "pkg: render scripts template for crate {} target {:?}",
+                                    krate.name, target
+                                )
+                            })
+                        })
+                        .transpose()?;
+
                     // Determine output filename
                     let name_template = pkg_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
 
@@ -257,14 +308,7 @@ impl Stage for PkgStage {
                         )
                     })?;
 
-                    // Ensure .pkg extension (case-insensitive)
-                    let pkg_filename = if pkg_filename.to_lowercase().ends_with(".pkg") {
-                        pkg_filename
-                    } else {
-                        format!("{pkg_filename}.pkg")
-                    };
-
-                    // Output path
+                    // Output path (user controls the extension via the name template)
                     let output_dir = dist.join("macos");
                     let pkg_path = output_dir.join(&pkg_filename);
 
@@ -351,9 +395,29 @@ impl Stage for PkgStage {
                         }
                     }
 
-                    // Apply mod_timestamp if set
-                    if let Some(ts) = &pkg_cfg.mod_timestamp {
-                        anodizer_core::util::apply_mod_timestamp(staging_dir, ts, &log)?;
+                    // Render and copy templated_extra_files into the staging directory
+                    if let Some(ref tpl_specs) = pkg_cfg.templated_extra_files
+                        && !tpl_specs.is_empty()
+                    {
+                        anodizer_core::templated_files::process_templated_extra_files(
+                            tpl_specs,
+                            ctx,
+                            staging_dir,
+                            "pkg",
+                        )?;
+                    }
+
+                    // Apply mod_timestamp if set; render templates first so values
+                    // like `{{ CommitTimestamp }}` expand to a valid RFC3339 string
+                    // before being handed to parse_mod_timestamp.
+                    if let Some(ts_raw) = &pkg_cfg.mod_timestamp {
+                        let ts = ctx.render_template(ts_raw).with_context(|| {
+                            format!(
+                                "pkg: render mod_timestamp template for crate {} target {:?}",
+                                krate.name, target
+                            )
+                        })?;
+                        anodizer_core::util::apply_mod_timestamp(staging_dir, &ts, &log)?;
                     }
 
                     // Ensure output directory exists
@@ -363,10 +427,10 @@ impl Stage for PkgStage {
 
                     let cmd_args = pkgbuild_command(
                         &staging_dir.to_string_lossy(),
-                        identifier,
+                        &identifier,
                         &version,
-                        install_location,
-                        pkg_cfg.scripts.as_deref(),
+                        &install_location,
+                        scripts_rendered.as_deref(),
                         pkg_cfg.min_os_version.as_deref(),
                         &pkg_path.to_string_lossy(),
                     );
@@ -668,7 +732,7 @@ mod tests {
 
         let pkg_cfg = PkgConfig {
             identifier: Some("com.example.myapp".to_string()),
-            name: Some("{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}".to_string()),
+            name: Some("{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}.pkg".to_string()),
             ..Default::default()
         };
 
@@ -1695,6 +1759,143 @@ crates:
         assert!(
             msg.contains("`if` template render failed"),
             "error should name `if` render failure, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_config_parse_pkg_disable_alias() {
+        // The docs show `disable: false`; this must parse without error.
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    pkgs:
+      - identifier: com.example.test
+        disable: false
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let pkgs = config.crates[0].pkgs.as_ref().unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].skip, Some(StringOrBool::Bool(false)));
+    }
+
+    #[test]
+    fn test_config_parse_pkg_disable_true_alias() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    pkgs:
+      - identifier: com.example.test
+        disable: true
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let pkgs = config.crates[0].pkgs.as_ref().unwrap();
+        assert_eq!(pkgs[0].skip, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn test_identifier_template_renders() {
+        let tmp = TempDir::new().unwrap();
+
+        let pkg_cfg = PkgConfig {
+            identifier: Some("com.example.{{ ProjectName }}".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![pkg_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("/build/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        PkgStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::MacOsPackage);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(
+            pkgs[0].metadata.get("identifier").map(|s| s.as_str()),
+            Some("com.example.myapp"),
+            "identifier template should be rendered"
+        );
+    }
+
+    #[test]
+    fn test_default_name_template_no_version_no_extension() {
+        // Default template is `{{ ProjectName }}_{{ Arch }}` — no version, no .pkg.
+        let tmp = TempDir::new().unwrap();
+
+        let pkg_cfg = PkgConfig {
+            identifier: Some("com.example.myapp".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![pkg_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("/build/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        PkgStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::MacOsPackage);
+        assert_eq!(pkgs.len(), 1);
+        let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            filename, "myapp_arm64",
+            "default name template should be ProjectName_Arch with no version or extension"
         );
     }
 }
