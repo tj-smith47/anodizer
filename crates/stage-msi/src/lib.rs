@@ -447,6 +447,7 @@ fn build_msi_target(
             crate_name,
             target.as_deref(),
             msi_cfg,
+            rendered_mod_timestamp.as_deref(),
             &rendered_extensions,
         );
         new_artifacts.push(make_msi_artifact(
@@ -613,7 +614,7 @@ fn filter_msi_binaries(
 }
 
 /// Populate per-binary template variables. `BinaryPath` exposes the path
-/// to user `.wxs` templates (I3).
+/// to user `.wxs` templates.
 fn set_msi_template_vars(
     ctx: &mut Context,
     target: Option<&str>,
@@ -719,6 +720,10 @@ fn render_msi_extensions(
 /// Emit the dry-run logging for a planned MSI build: the headline build
 /// line, any `mod_timestamp:`, `extra_files:`, and `extensions:` entries
 /// that would be applied.
+///
+/// `rendered_mod_timestamp` must already be template-rendered by the caller
+/// so the logged value shows the resolved timestamp, not the raw template.
+#[allow(clippy::too_many_arguments)]
 fn log_msi_dry_run(
     log: &anodizer_core::log::StageLogger,
     msi_filename: &str,
@@ -726,13 +731,14 @@ fn log_msi_dry_run(
     crate_name: &str,
     target: Option<&str>,
     msi_cfg: &anodizer_core::config::MsiConfig,
+    rendered_mod_timestamp: Option<&str>,
     rendered_extensions: &[String],
 ) {
     log.status(&format!(
         "(dry-run) would build MSI: {} (WiX {:?}) for crate {} target {:?}",
         msi_filename, wix_version, crate_name, target
     ));
-    if let Some(ts) = &msi_cfg.mod_timestamp {
+    if let Some(ts) = rendered_mod_timestamp {
         log.status(&format!("(dry-run) would apply mod_timestamp={ts}"));
     }
     if let Some(ref extras) = msi_cfg.extra_files {
@@ -916,7 +922,6 @@ fn run_msi_hook(
 /// `ArtifactName` (filename only), and `ArtifactExt` (`.msi`). These are
 /// injected into a clone of the current vars so global state is not mutated.
 /// A failing hook aborts the stage.
-#[allow(clippy::too_many_arguments)]
 fn run_msi_post_hook(
     ctx: &Context,
     hook: Option<&Vec<anodizer_core::config::HookEntry>>,
@@ -929,15 +934,7 @@ fn run_msi_post_hook(
     let Some(hook) = hook else {
         return Ok(());
     };
-    let mut tmpl_vars = ctx.template_vars().clone();
-    let abs_path = msi_path.to_string_lossy();
-    let filename = msi_path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    tmpl_vars.set("ArtifactPath", &abs_path);
-    tmpl_vars.set("ArtifactName", &filename);
-    tmpl_vars.set("ArtifactExt", ".msi");
+    let tmpl_vars = build_post_hook_template_vars(ctx, msi_path);
     anodizer_core::hooks::run_hooks(hook, "post-msi", dry_run, log, Some(&tmpl_vars)).with_context(
         || {
             format!(
@@ -948,12 +945,45 @@ fn run_msi_post_hook(
     )
 }
 
+/// Build the per-target post-hook template-var snapshot.
+///
+/// Clones the stage's current vars and overlays `ArtifactPath` (absolute,
+/// canonicalized when the file exists; otherwise resolved against the
+/// current working directory so dry-run paths are still absolute),
+/// `ArtifactName` (filename), and `ArtifactExt` (`.msi`).
+fn build_post_hook_template_vars(
+    ctx: &Context,
+    msi_path: &std::path::Path,
+) -> anodizer_core::template::TemplateVars {
+    let mut tmpl_vars = ctx.template_vars().clone();
+    let abs_path: PathBuf = std::fs::canonicalize(msi_path).unwrap_or_else(|_| {
+        if msi_path.is_absolute() {
+            msi_path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(msi_path))
+                .unwrap_or_else(|_| msi_path.to_path_buf())
+        }
+    });
+    let abs_path_str = abs_path.to_string_lossy();
+    let filename = msi_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    tmpl_vars.set("ArtifactPath", &abs_path_str);
+    tmpl_vars.set("ArtifactName", &filename);
+    tmpl_vars.set("ArtifactExt", ".msi");
+    tmpl_vars
+}
+
 /// Clear the per-target template vars on stage exit so they don't leak
 /// into downstream stages (`announce`, `publish`).
 fn clear_msi_template_vars(ctx: &mut Context) {
     ctx.template_vars_mut().set("Os", "");
     ctx.template_vars_mut().set("Arch", "");
     ctx.template_vars_mut().set("Target", "");
+    ctx.template_vars_mut().set("MsiArch", "");
+    ctx.template_vars_mut().set("BinaryPath", "");
 }
 
 // ---------------------------------------------------------------------------
@@ -1558,7 +1588,7 @@ crates:
     }
 
     // -----------------------------------------------------------------------
-    // No binaries — warns and skips (I1)
+    // No binaries — warns and skips
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1610,7 +1640,7 @@ crates:
     }
 
     // -----------------------------------------------------------------------
-    // ids filtering (C2)
+    // ids filtering
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1743,7 +1773,7 @@ crates:
     }
 
     // -----------------------------------------------------------------------
-    // S2: id stored in artifact metadata
+    // id stored in artifact metadata
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1940,18 +1970,16 @@ crates:
     }
 
     // -----------------------------------------------------------------------
-    // BinaryPath template variable is set
+    // Per-target template vars are cleared on stage exit
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_binary_path_template_var_set() {
+    fn test_per_target_template_vars_cleared_after_stage() {
         use anodizer_core::artifact::Artifact;
         use anodizer_core::config::{Config, CrateConfig, MsiConfig};
         use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
-
-        // Write a .wxs that uses {{ .BinaryPath }}
         let wxs_path = tmp.path().join("app.wxs");
         fs::write(&wxs_path, "<Wix/>").unwrap();
 
@@ -1980,28 +2008,26 @@ crates:
         );
         ctx.template_vars_mut().set("Version", "1.0.0");
 
-        let binary_path_str = "dist/myapp.exe";
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
             name: String::new(),
-            path: PathBuf::from(binary_path_str),
+            path: PathBuf::from("dist/myapp.exe"),
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
             size: None,
         });
 
-        let stage = MsiStage;
-        stage.run(&mut ctx).unwrap();
+        MsiStage.run(&mut ctx).unwrap();
 
-        // After run, the BinaryPath template var should have been set to the
-        // last processed binary's path
-        let bp = ctx.template_vars().get("BinaryPath").cloned();
-        assert_eq!(
-            bp,
-            Some(binary_path_str.to_string()),
-            "BinaryPath template variable should be set to the binary's path"
-        );
+        // Per-target vars must not leak into downstream stages.
+        for key in ["Os", "Arch", "Target", "MsiArch", "BinaryPath"] {
+            assert_eq!(
+                ctx.template_vars().get(key).map(String::as_str),
+                Some(""),
+                "per-target var {key} should be cleared on stage exit"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2526,7 +2552,7 @@ crates:
     }
 
     // -------------------------------------------------------------------
-    // M8 — `msi.goamd64` filter (GR Pro `msi.goamd64: string`)
+    // `msi.goamd64` filter (GoReleaser Pro `msi.goamd64: string`)
     // -------------------------------------------------------------------
 
     /// Build a context with three windows/amd64 binaries (variants v1/v2/v3)
@@ -2636,7 +2662,7 @@ crates:
     }
 
     // -----------------------------------------------------------------------
-    // B-1: post-hook receives ArtifactPath / ArtifactName / ArtifactExt
+    // post-hook artifact var injection
     // -----------------------------------------------------------------------
 
     #[test]
@@ -2699,8 +2725,66 @@ crates:
     }
 
     #[test]
-    fn test_run_msi_post_hook_injects_artifact_vars() {
-        use anodizer_core::config::HookEntry;
+    fn test_build_post_hook_template_vars_injects_artifact_keys() {
+        use anodizer_core::context::{Context, ContextOptions};
+
+        // A real on-disk file so canonicalize() returns an absolute path
+        // rather than falling back to the cwd-join branch.
+        let tmp = TempDir::new().unwrap();
+        let msi_path = tmp.path().join("myapp_x64.msi");
+        fs::write(&msi_path, b"fake-msi").unwrap();
+
+        let mut config = anodizer_core::config::Config::default();
+        config.project_name = "myapp".to_string();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.2.3");
+
+        let vars = build_post_hook_template_vars(&ctx, &msi_path);
+
+        let artifact_path = vars.get("ArtifactPath").expect("ArtifactPath set");
+        assert!(
+            std::path::Path::new(artifact_path).is_absolute(),
+            "ArtifactPath must be absolute, got: {artifact_path}"
+        );
+        assert!(
+            artifact_path.ends_with("myapp_x64.msi"),
+            "ArtifactPath should resolve to the .msi, got: {artifact_path}"
+        );
+        assert_eq!(
+            vars.get("ArtifactName").map(String::as_str),
+            Some("myapp_x64.msi")
+        );
+        assert_eq!(vars.get("ArtifactExt").map(String::as_str), Some(".msi"));
+        // Pre-existing vars must still be present in the cloned snapshot.
+        assert_eq!(vars.get("Version").map(String::as_str), Some("1.2.3"));
+    }
+
+    #[test]
+    fn test_build_post_hook_template_vars_resolves_relative_path() {
+        use anodizer_core::context::{Context, ContextOptions};
+
+        // Path that does not exist — canonicalize() fails; the relative
+        // fallback should still produce an absolute path via cwd.
+        let msi_path = PathBuf::from("dist/windows/nonexistent_x64.msi");
+
+        let mut config = anodizer_core::config::Config::default();
+        config.project_name = "myapp".to_string();
+        let ctx = Context::new(config, ContextOptions::default());
+
+        let vars = build_post_hook_template_vars(&ctx, &msi_path);
+        let artifact_path = vars.get("ArtifactPath").expect("ArtifactPath set");
+        assert!(
+            std::path::Path::new(artifact_path).is_absolute(),
+            "relative msi_path should be resolved to an absolute path, got: {artifact_path}"
+        );
+        assert!(
+            artifact_path.ends_with("nonexistent_x64.msi"),
+            "ArtifactPath should still end with the filename, got: {artifact_path}"
+        );
+    }
+
+    #[test]
+    fn test_run_msi_post_hook_none_hook_is_noop() {
         use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
@@ -2709,7 +2793,6 @@ crates:
         let config = anodizer_core::config::Config::default();
         let ctx = Context::new(config, ContextOptions::default());
 
-        // Verify: calling run_msi_post_hook with None hook is a no-op (no panic).
         run_msi_post_hook(
             &ctx,
             None,
@@ -2720,26 +2803,10 @@ crates:
             &ctx.logger("msi"),
         )
         .unwrap();
-
-        // Verify: ArtifactExt is ".msi" — build a hook entry that would fail
-        // if ArtifactPath is still the un-set empty string.
-        let _hook_entries: Vec<HookEntry> =
-            vec![HookEntry::Simple("echo {{ ArtifactExt }}".to_string())];
-        // (execution would require a shell; dry_run=true skips actual exec)
-        run_msi_post_hook(
-            &ctx,
-            Some(&_hook_entries),
-            &msi_path,
-            "default",
-            "myapp",
-            true,
-            &ctx.logger("msi"),
-        )
-        .unwrap();
     }
 
     // -----------------------------------------------------------------------
-    // B-3: mod_timestamp is template-rendered before use
+    // mod_timestamp template rendering
     // -----------------------------------------------------------------------
 
     #[test]
@@ -2752,11 +2819,12 @@ crates:
         let wxs_path = tmp.path().join("app.wxs");
         fs::write(&wxs_path, "<Wix/>").unwrap();
 
-        // A literal timestamp — verifies no render error occurs when the
-        // template contains a plain value (no {{ }}).
+        // The raw template references a custom env var. If the stage forwarded
+        // the raw string to `parse_mod_timestamp` (the pre-fix bug), the
+        // unrendered `{{ ... }}` would be unparseable and the run would fail.
         let msi_cfg = MsiConfig {
             wxs: Some(wxs_path.to_string_lossy().into_owned()),
-            mod_timestamp: Some("2024-01-01T00:00:00Z".to_string()),
+            mod_timestamp: Some("{{ Env.SOURCE_DATE_EPOCH }}".to_string()),
             ..Default::default()
         };
 
@@ -2779,6 +2847,9 @@ crates:
             },
         );
         ctx.template_vars_mut().set("Version", "1.0.0");
+        // SOURCE_DATE_EPOCH expands to a valid unix epoch via the Env. namespace.
+        ctx.template_vars_mut()
+            .set_env("SOURCE_DATE_EPOCH", "1704067200");
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
             name: String::new(),
@@ -2789,9 +2860,16 @@ crates:
             size: None,
         });
 
-        // Must not error — the literal timestamp is valid after rendering.
+        // Stage must succeed — proves the raw `{{ Env.SOURCE_DATE_EPOCH }}`
+        // was rendered to `"1704067200"` before reaching parse_mod_timestamp.
         MsiStage.run(&mut ctx).unwrap();
         assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Installer).len(), 1);
+
+        // Belt-and-braces: confirm the template engine resolves the var to
+        // a parseable timestamp on its own, pinning the contract.
+        let rendered = ctx.render_template("{{ Env.SOURCE_DATE_EPOCH }}").unwrap();
+        assert_eq!(rendered, "1704067200");
+        anodizer_core::util::parse_mod_timestamp(&rendered).unwrap();
     }
 
     #[test]
@@ -2849,7 +2927,7 @@ crates:
     }
 
     // -----------------------------------------------------------------------
-    // W-5: wxs path is template-rendered
+    // wxs path template rendering
     // -----------------------------------------------------------------------
 
     #[test]
@@ -2907,7 +2985,7 @@ crates:
     }
 
     // -----------------------------------------------------------------------
-    // RW-6: default name matches GoReleaser's {{ ProjectName }}_{{ MsiArch }}
+    // default name matches GoReleaser shape
     // -----------------------------------------------------------------------
 
     #[test]
