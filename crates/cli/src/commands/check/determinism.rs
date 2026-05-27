@@ -315,18 +315,6 @@ fn resolve_child_snapshot(snapshot: bool, no_snapshot: bool, head_at_tag: bool) 
     }
 }
 
-/// Probe the project's `docker_v2[*].use` field for a `"podman"` opt-in.
-///
-/// Returns `Some("podman")` when any `docker_v2` entry under any crate
-/// (or the project-level `defaults.docker_v2`) sets `use: podman`,
-/// `Some("buildx")` when only buildx is configured, and `None` when the
-/// config can't be loaded (missing / parse error) or no `docker_v2`
-/// entries exist. The harness consults the hint to decide whether to
-/// short-circuit its `docker buildx`-based reproducibility probe.
-///
-/// Best-effort: a parse failure here MUST NOT block the harness — config
-/// validation surfaces elsewhere in the pipeline with a more actionable
-/// error. The fallthrough simply runs the legacy buildx probe.
 /// Returns `true` when every configured build entry on every crate uses
 /// `builder: prebuilt`. The harness short-circuits in that case because
 /// there is nothing to rebuild — re-stat()-ing the same staged file twice
@@ -351,6 +339,18 @@ fn all_builds_prebuilt_in_repo(repo_root: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Probe the project's `docker_v2[*].use` field for a `"podman"` opt-in.
+///
+/// Returns `Some("podman")` when any `docker_v2` entry under any crate
+/// (or the project-level `defaults.docker_v2`) sets `use: podman`,
+/// `Some("buildx")` when only buildx is configured, and `None` when the
+/// config can't be loaded (missing / parse error) or no `docker_v2`
+/// entries exist. The harness consults the hint to decide whether to
+/// short-circuit its `docker buildx`-based reproducibility probe.
+///
+/// Best-effort: a parse failure here MUST NOT block the harness — config
+/// validation surfaces elsewhere in the pipeline with a more actionable
+/// error. The fallthrough simply runs the legacy buildx probe.
 fn detect_docker_backend_hint(repo_root: &std::path::Path) -> Option<String> {
     let prev_cwd = std::env::current_dir().ok();
     std::env::set_current_dir(repo_root).ok()?;

@@ -95,8 +95,16 @@ pub struct PrebuiltConfig {
     ///   `windows`, ...).
     /// - `{{ .Arch }}` — the GoReleaser-style architecture slug (`amd64`,
     ///   `arm64`, `armv7`, ...).
-    /// - `{{ .Amd64 }}` — the AMD64 micro-architecture variant
-    ///   (`v1` / `v2` / `v3` / `v4`) when the triple is an x86_64 family.
+    /// - `{{ .Amd64 }}` — AMD64 micro-architecture variant
+    ///   (`v1` / `v2` / `v3` / `v4`); set for `x86_64-*` triples.
+    /// - `{{ .Arm64 }}` — ARM64 micro-architecture variant (`v8`); set for
+    ///   `aarch64-*` triples.
+    /// - `{{ .Arm }}` — ARM micro-architecture variant (`6` / `7`); set for
+    ///   `armv6*` / `armv7*` triples.
+    /// - `{{ .I386 }}` — i386 micro-architecture variant (`sse2`); set for
+    ///   `i686-*` / `i386-*` / `i586-*` triples.
+    /// - `{{ .ArtifactExt }}` — `.exe` on Windows targets, empty elsewhere.
+    /// - `{{ .ArtifactID }}` — the build entry's `id:` (empty when unset).
     ///
     /// The rendered path is `stat()`-ed before the import. A missing file,
     /// a permission error, or any other I/O failure aborts the build with

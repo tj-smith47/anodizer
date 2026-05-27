@@ -70,8 +70,12 @@ globals like `{{ .Version }}` and `{{ .ProjectName }}`):
 | `{{ .Target }}` | `x86_64-unknown-linux-gnu` | Full Rust target triple. |
 | `{{ .Os }}` | `linux` | GoReleaser-style OS slug (`linux`, `darwin`, `windows`, …). |
 | `{{ .Arch }}` | `amd64` | GoReleaser-style arch slug (`amd64`, `arm64`, `armv7`, …). |
-| `{{ .Amd64 }}` | `v1` | AMD64 micro-arch variant, present for `x86_64-*` triples. |
-| `{{ .Arm64 }}` | `v8` | ARM64 micro-arch variant, present for `aarch64-*` triples. |
+| `{{ .Amd64 }}` | `v1` | AMD64 micro-arch variant; set for `x86_64-*` triples. |
+| `{{ .Arm64 }}` | `v8` | ARM64 micro-arch variant; set for `aarch64-*` triples. |
+| `{{ .Arm }}` | `7` | ARM micro-arch variant; set for `armv6*` / `armv7*` triples. |
+| `{{ .I386 }}` | `sse2` | i386 micro-arch variant; set for `i686-*` / `i386-*` / `i586-*` triples. |
+| `{{ .ArtifactExt }}` | `.exe` | `.exe` on Windows targets, empty elsewhere. |
+| `{{ .ArtifactID }}` | `mybuild` | The build entry's `id:` value (empty when unset). |
 
 Examples:
 
@@ -260,5 +264,6 @@ crates:
       enabled: false  # cargo-binstall is incompatible with prebuilt imports
 ```
 
-A future revision may auto-generate the binstall block from the imported
-artifacts directly; for now the integration is opt-out per crate.
+anodizer does not derive `cargo publish` metadata for prebuilt imports;
+disable binstall per-crate via `binstall: { enabled: false }` if you do not
+want a placeholder metadata block written into the crate's `Cargo.toml`.

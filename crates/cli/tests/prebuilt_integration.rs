@@ -380,3 +380,47 @@ crates:
         "build should succeed when `prebuilt.path` template renders correctly:\n{stderr}"
     );
 }
+
+#[test]
+fn prebuilt_dry_run_skips_stat_when_binary_absent() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    // Intentionally DO NOT stage the binary; dry-run must still succeed
+    // because it validates config + template rendering without touching disk.
+
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: test-project
+        builder: prebuilt
+        prebuilt:
+          path: "output/test-project_{{ .Target }}"
+        targets:
+          - x86_64-unknown-linux-gnu
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--snapshot", "--dry-run", "--single-target"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "dry-run release with prebuilt must NOT require the binary on disk.\nstderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    let combined = format!("{stderr}{stdout}");
+    assert!(
+        combined.contains("(dry-run) would import prebuilt"),
+        "dry-run status line should announce the would-import action:\n{combined}"
+    );
+}

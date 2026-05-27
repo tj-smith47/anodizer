@@ -908,14 +908,17 @@ fn plan_prebuilt_build(
         ctx.template_vars_mut().set("ArtifactID", "");
 
         let staged_path = std::path::PathBuf::from(&rendered_path);
-        std::fs::metadata(&staged_path).with_context(|| {
-            format!(
-                "prebuilt: failed to stat imported binary at '{}' (rendered from \
-                 `prebuilt.path: {}`) for target '{}'. Stage the binary before running \
-                 `anodize build`, or check the path template renders to a real file.",
-                rendered_path, path_template, target
-            )
-        })?;
+        let dry_run = ctx.options.dry_run;
+        if !dry_run {
+            std::fs::metadata(&staged_path).with_context(|| {
+                format!(
+                    "prebuilt: failed to stat imported binary at '{}' (rendered from \
+                     `prebuilt.path: {}`) for target '{}'. Stage the binary before running \
+                     `anodize build`, or check the path template renders to a real file.",
+                    rendered_path, path_template, target
+                )
+            })?;
+        }
 
         let amd64_variant = if first_component == "x86_64" {
             Some("v1".to_string())
@@ -927,7 +930,7 @@ fn plan_prebuilt_build(
         crate::run_helpers::add_artifact(
             ctx,
             &dist_dir,
-            ctx.options.dry_run,
+            dry_run,
             &staged_path,
             ArtifactKind::Binary,
             target,
@@ -938,13 +941,23 @@ fn plan_prebuilt_build(
             &amd64_variant,
         )?;
 
-        log.status(&format!(
-            "imported prebuilt {}/{} ({}) from {}",
-            crate_cfg.name,
-            binary_name,
-            target,
-            staged_path.display()
-        ));
+        if dry_run {
+            log.status(&format!(
+                "(dry-run) would import prebuilt {}/{} ({}) from {}",
+                crate_cfg.name,
+                binary_name,
+                target,
+                staged_path.display()
+            ));
+        } else {
+            log.status(&format!(
+                "imported prebuilt {}/{} ({}) from {}",
+                crate_cfg.name,
+                binary_name,
+                target,
+                staged_path.display()
+            ));
+        }
     }
 
     Ok(())
