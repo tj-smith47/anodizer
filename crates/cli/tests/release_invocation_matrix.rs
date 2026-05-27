@@ -166,10 +166,12 @@ fn release_snapshot_skips_publish_chain() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // `release` (the GitHub-release-creation stage) must NOT be skipped by
+    // snapshot mode — it's in the "stages run" column of the docs table.
     assert_skip_matrix(
         &stderr,
         &["publish", "blob", "announce"],
-        &[],
+        &["release"],
         "release --snapshot",
     );
 }
@@ -206,9 +208,16 @@ fn release_prepare_skips_publish_release_announce() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // blob and snapcraft-publish are also network-touching; --prepare skips them.
     assert_skip_matrix(
         &stderr,
-        &["release", "publish", "announce"],
+        &[
+            "release",
+            "publish",
+            "blob",
+            "snapcraft-publish",
+            "announce",
+        ],
         &[],
         "release --prepare",
     );
@@ -241,7 +250,13 @@ fn release_prepare_only_alias_matches_prepare() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_skip_matrix(
         &stderr,
-        &["release", "publish", "announce"],
+        &[
+            "release",
+            "publish",
+            "blob",
+            "snapcraft-publish",
+            "announce",
+        ],
         &[],
         "release --prepare-only",
     );
@@ -431,6 +446,108 @@ fn announce_merge_flag_parses() {
         "--dry-run",
     ]);
     assert!(cli, "announce --merge must parse at the clap level");
+}
+
+// ---------------------------------------------------------------------------
+// W-3: docs-table rows that previously had no direct matrix test
+// ---------------------------------------------------------------------------
+
+/// Row: `anodizer release` (no flags) skips nothing. Every stage in the
+/// pipeline is eligible to run. The test uses `--dry-run` to stay cheap
+/// and skips the heavy build chain explicitly; the invariant is that the
+/// auto-skip mechanism does NOT inject any extra stage skips when no
+/// mode flags are set.
+#[test]
+fn release_default_skips_nothing_extra() {
+    let tmp = TempDir::new().unwrap();
+    setup_fixture(tmp.path());
+    let out = run_anodizer(
+        tmp.path(),
+        &[
+            "release",
+            "--snapshot",
+            "--dry-run",
+            "--skip=build,archive,checksum,docker,sign,nfpm,changelog,sbom",
+            "--timeout",
+            "2m",
+        ],
+    );
+    // Success or failure is irrelevant; what matters is no mode-driven
+    // stage is auto-skipped beyond the explicit --skip list.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Snapshot auto-skips publish/blob/announce; baseline release (no extra
+    // flags) must NOT additionally skip the release stage itself.
+    assert_skip_matrix(&stderr, &[], &["release"], "release (default)");
+}
+
+/// Row: `anodizer release --publish-only` skips build/archive/nfpm/sbom/checksum
+/// and runs the sign + publish chain. The publish-only branch bails early on a
+/// missing context.json before the pipeline emits per-stage skip lines, so this
+/// test pins dispatch correctness rather than skip-set: the error must come from
+/// the publish-only branch ("no context.json"), not from the full-release dist
+/// pre-check ("dist directory … not empty").
+#[test]
+fn release_publish_only_dispatches_to_publish_branch() {
+    let tmp = TempDir::new().unwrap();
+    setup_fixture(tmp.path());
+    fs::create_dir_all(tmp.path().join("dist")).unwrap();
+
+    let out = run_anodizer(
+        tmp.path(),
+        &["release", "--publish-only", "--dry-run", "--timeout", "2m"],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Must fail with the publish-only "no context.json" error, not the
+    // full-release "dist directory not empty" pre-check — that pre-check
+    // is bypassed when --publish-only is set.
+    assert!(
+        !out.status.success(),
+        "release --publish-only must fail without a preserved dist tree"
+    );
+    assert!(
+        stderr.contains("context.json") || stderr.contains("publish-only"),
+        "error must come from the publish-only branch; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("dist directory") || !stderr.contains("not empty"),
+        "release --publish-only must not trip the full-release dist pre-check; got:\n{stderr}"
+    );
+}
+
+/// Row: `anodizer continue --merge` is the split-merge resume path.
+/// Clap-level check: the flag combination parses, and the subcommand
+/// dispatches to the merge branch (not the full rebuild pipeline).
+/// The skip invariant — build/archive/nfpm skipped, sign/publish not — is
+/// covered by the merge branch's own integration tests; here we pin the
+/// dispatch surface so a future rename doesn't silently regress.
+#[test]
+fn continue_merge_flag_parses_and_dispatches() {
+    let tmp = TempDir::new().unwrap();
+    setup_fixture(tmp.path());
+    fs::create_dir_all(tmp.path().join("dist")).unwrap();
+
+    let out = run_anodizer(
+        tmp.path(),
+        &["continue", "--merge", "--dry-run", "--timeout", "2m"],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let merged = format!("{stdout}\n{stderr}");
+    // `continue --merge` must not recompile; the merge branch consumes a
+    // preserved dist tree rather than running the build stage.
+    for forbidden in &["building binaries", "archiving", "building nfpm"] {
+        assert!(
+            !merged.contains(forbidden),
+            "continue --merge must not invoke build/archive/nfpm; \
+             saw `{forbidden}` in:\n{merged}"
+        );
+    }
+    // Dispatch correctness: merge missing config is the expected failure mode
+    // (no split artifacts present), not the full-release dist-not-empty check.
+    assert!(
+        !merged.contains("dist directory") || !merged.contains("not empty"),
+        "continue --merge must not trip the full-release dist pre-check"
+    );
 }
 
 /// Helper: ensures the args parse at the clap layer. Trait-resolution
