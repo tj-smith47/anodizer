@@ -870,8 +870,6 @@ mod tests {
         StageLogger::new("test", Verbosity::Quiet)
     }
 
-    // W4 — should_skip_release nightly publish_release gate
-
     #[test]
     fn should_skip_release_returns_true_when_nightly_and_publish_release_false() {
         let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
@@ -923,8 +921,6 @@ mod tests {
             "absent nightly.publish_release must default to run (not skip)"
         );
     }
-
-    // W5 — resolve_release_flags nightly draft override + keep_single_release gate
 
     #[test]
     fn resolve_release_flags_nightly_draft_some_overrides_release_draft() {
