@@ -76,14 +76,14 @@ Both `ignore_tags` and `ignore_tag_prefixes` support template rendering, so you 
 
 ## Pre-release suffix
 
-When set, tags ending with this suffix are treated as pre-releases and sorted accordingly:
+When set, influences how prerelease tags are identified for sort ordering:
 
 ```yaml
 git:
   prerelease_suffix: "-rc"
 ```
 
-For the legacy `-version:*` modes, setting `prerelease_suffix` forces git-delegated sorting (via `git -c versionsort.suffix=<suffix>`) so the suffix takes effect. For `semver` and `smartsemver`, the suffix is consulted Rust-side: a tag ending with the suffix is treated as a prerelease by the smartsemver filter even when its version string lacks a SemVer prerelease component (e.g. `v1.2.3-rc1` with `prerelease_suffix: "-rc"`).
+For the legacy `-version:*` modes, setting `prerelease_suffix` forces git-delegated sorting (via `git -c versionsort.suffix=<suffix>`) so the suffix takes effect natively. For `semver` and `smartsemver`, prerelease detection uses the SemVer parser directly: any tag with a `-`-separated prerelease component (e.g. `v1.2.3-rc.1`, `v1.2.3-beta`, `v1.2.3-rc1`) is classified as a prerelease.
 
 ## Detected git info
 

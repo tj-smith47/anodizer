@@ -2,7 +2,7 @@ use super::remote::{parse_github_remote, parse_remote_owner_repo};
 use super::semver::{compare_prerelease, parse_semver, parse_semver_tag};
 use super::tags::{
     find_latest_tag_matching, find_latest_tag_matching_with_prefix, find_previous_tag,
-    get_all_semver_tags, strip_monorepo_prefix,
+    find_previous_tag_with_prefix, get_all_semver_tags, strip_monorepo_prefix,
 };
 use crate::redact::redact_url_credentials;
 
@@ -1228,7 +1228,11 @@ fn test_find_latest_tag_semver_mode_ignores_prerelease_suffix_setting() {
 
 #[test]
 #[serial]
-fn test_find_latest_tag_smartsemver_skips_prereleases_for_release_target() {
+fn test_find_latest_tag_smartsemver_returns_semver_highest() {
+    // find_latest_tag_matching with smartsemver performs pure SemVer ordering
+    // without prerelease filtering. The filter applies only to the
+    // previous-tag lookup (find_previous_tag*), where current_tag determines
+    // whether prereleases should be excluded.
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v1.1.0-rc.1", "v1.1.0", "v1.2.0-beta.1"]);
@@ -1240,15 +1244,10 @@ fn test_find_latest_tag_smartsemver_skips_prereleases_for_release_target() {
         tag_sort: Some("smartsemver".to_string()),
         ..Default::default()
     };
-    let mut vars = crate::template::TemplateVars::new();
-    vars.set("Version", "v1.2.0");
 
-    let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), Some(&vars)).unwrap();
-    assert_eq!(
-        result,
-        Some("v1.1.0".to_string()),
-        "smartsemver must drop v1.2.0-beta.1 and v1.1.0-rc.1 when current is release"
-    );
+    let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
+    // v1.2.0-beta.1 has the highest M.m.p tuple; no prerelease filtering here.
+    assert_eq!(result, Some("v1.2.0-beta.1".to_string()));
 
     std::env::set_current_dir(orig).unwrap();
 }
@@ -1276,28 +1275,6 @@ fn test_find_latest_tag_smartsemver_keeps_prereleases_for_prerelease_target() {
         Some("v1.2.0-beta.1".to_string()),
         "smartsemver with prerelease target keeps all candidates"
     );
-
-    std::env::set_current_dir(orig).unwrap();
-}
-
-#[test]
-#[serial]
-fn test_find_latest_tag_smartsemver_no_version_keeps_all() {
-    // Without a Version template var, smartsemver cannot decide what to
-    // filter — behave as plain semver and keep every tag.
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path();
-    init_repo_with_tags(dir, &["v1.0.0", "v1.1.0-rc.1"]);
-
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
-
-    let gc = crate::config::GitConfig {
-        tag_sort: Some("smartsemver".to_string()),
-        ..Default::default()
-    };
-    let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
-    assert_eq!(result, Some("v1.1.0-rc.1".to_string()));
 
     std::env::set_current_dir(orig).unwrap();
 }
@@ -1339,6 +1316,9 @@ fn test_find_previous_tag_smartsemver_skips_prerelease_predecessor() {
     // GoReleaser's canonical bug fix: shipping v0.2.0 after a v0.2.0-beta.3
     // tag must surface v0.1.0 as the predecessor (not the beta) so the
     // changelog has real commits to enumerate.
+    //
+    // Signal comes from current_tag itself — no pre-populated template vars
+    // are required, so this works correctly in the production call path.
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     init_repo_with_tagged_commits(dir, &["v0.1.0", "v0.2.0-beta.3", "v0.2.0"]);
@@ -1350,10 +1330,9 @@ fn test_find_previous_tag_smartsemver_skips_prerelease_predecessor() {
         tag_sort: Some("smartsemver".to_string()),
         ..Default::default()
     };
-    let mut vars = crate::template::TemplateVars::new();
-    vars.set("Version", "v0.2.0");
 
-    let result = find_previous_tag("v0.2.0", Some(&gc), Some(&vars)).unwrap();
+    // No template vars — signal is derived from current_tag "v0.2.0" (release).
+    let result = find_previous_tag("v0.2.0", Some(&gc), None).unwrap();
     assert_eq!(result, Some("v0.1.0".to_string()));
 
     std::env::set_current_dir(orig).unwrap();
@@ -1373,10 +1352,9 @@ fn test_find_previous_tag_smartsemver_keeps_prerelease_when_current_is_prereleas
         tag_sort: Some("smartsemver".to_string()),
         ..Default::default()
     };
-    let mut vars = crate::template::TemplateVars::new();
-    vars.set("Version", "v0.2.0-beta.2");
 
-    let result = find_previous_tag("v0.2.0-beta.2", Some(&gc), Some(&vars)).unwrap();
+    // current_tag is a prerelease → filter is off → v0.2.0-beta.1 is found.
+    let result = find_previous_tag("v0.2.0-beta.2", Some(&gc), None).unwrap();
     assert_eq!(result, Some("v0.2.0-beta.1".to_string()));
 
     std::env::set_current_dir(orig).unwrap();
@@ -1384,7 +1362,10 @@ fn test_find_previous_tag_smartsemver_keeps_prerelease_when_current_is_prereleas
 
 #[test]
 #[serial]
-fn test_find_previous_tag_smartsemver_without_template_vars_falls_back_to_semver_sort() {
+fn test_find_previous_tag_smartsemver_release_tag_filters_prereleases() {
+    // Regression: production call sites pass None for template_vars because
+    // populate_git_vars() hasn't run yet. The filter must engage via
+    // current_tag, not via template_vars.
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     init_repo_with_tagged_commits(dir, &["v0.1.0", "v0.2.0-beta.3", "v0.2.0"]);
@@ -1396,11 +1377,63 @@ fn test_find_previous_tag_smartsemver_without_template_vars_falls_back_to_semver
         tag_sort: Some("smartsemver".to_string()),
         ..Default::default()
     };
-    // No template_vars supplied: smartsemver filter is dormant, but the
-    // list+sort path still excludes `current_tag` and returns the semver-
-    // highest remainder. v0.2.0-beta.3 ranks above v0.1.0 with no filter.
+    // No template_vars at all; current_tag "v0.2.0" (release) drives the filter.
     let result = find_previous_tag("v0.2.0", Some(&gc), None).unwrap();
-    assert_eq!(result, Some("v0.2.0-beta.3".to_string()));
+    assert_eq!(
+        result,
+        Some("v0.1.0".to_string()),
+        "smartsemver must skip v0.2.0-beta.3 without pre-populated template vars"
+    );
+
+    std::env::set_current_dir(orig).unwrap();
+}
+
+#[test]
+#[serial]
+fn test_find_previous_tag_smartsemver_monorepo_prefix() {
+    // Monorepo: tags "svc/v0.1.0", "svc/v0.2.0-beta.3", "svc/v0.2.0".
+    // With current_tag "svc/v0.2.0" (release), smartsemver must return
+    // "svc/v0.1.0", not "svc/v0.2.0-beta.3".
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tagged_commits(dir, &["svc/v0.1.0", "svc/v0.2.0-beta.3", "svc/v0.2.0"]);
+
+    let orig = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir).unwrap();
+
+    let gc = crate::config::GitConfig {
+        tag_sort: Some("smartsemver".to_string()),
+        ..Default::default()
+    };
+    let result =
+        find_previous_tag_with_prefix("svc/v0.2.0", Some(&gc), None, Some("svc/")).unwrap();
+    assert_eq!(
+        result,
+        Some("svc/v0.1.0".to_string()),
+        "smartsemver must skip svc/v0.2.0-beta.3 in monorepo mode"
+    );
+
+    std::env::set_current_dir(orig).unwrap();
+}
+
+#[test]
+#[serial]
+fn test_find_previous_tag_smartsemver_early_dev_no_panic() {
+    // Fresh repo with only v0.0.0-style tags must not panic and must return
+    // None when no previous non-prerelease tag exists.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tagged_commits(dir, &["v0.0.0"]);
+
+    let orig = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir).unwrap();
+
+    let gc = crate::config::GitConfig {
+        tag_sort: Some("smartsemver".to_string()),
+        ..Default::default()
+    };
+    let result = find_previous_tag("v0.0.0", Some(&gc), None).unwrap();
+    assert_eq!(result, None);
 
     std::env::set_current_dir(orig).unwrap();
 }

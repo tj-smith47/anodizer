@@ -669,6 +669,25 @@ fn find_previous_tag(
         "branch" => git::get_branch_semver_tags(&cfg.tag_prefix, git_config, None)?,
         _ => git::get_all_semver_tags(&cfg.tag_prefix, git_config, None)?,
     };
+
+    let tag_sort = git_config
+        .and_then(|gc| gc.tag_sort.as_deref())
+        .unwrap_or("-version:refname");
+    if tag_sort == "smartsemver" && !cfg.prerelease {
+        // When targeting a non-prerelease version, skip prerelease candidates
+        // so the changelog base points at the previous stable release rather
+        // than an intervening beta or RC.
+        let prerelease_suffix = git_config.and_then(|gc| gc.prerelease_suffix.as_deref());
+        for tag in tags {
+            if let Ok(sv) = git::parse_semver_tag(&tag)
+                && !git::tag_is_prerelease(&sv, &tag, prerelease_suffix)
+            {
+                return Ok(Some(tag));
+            }
+        }
+        return Ok(None);
+    }
+
     Ok(tags.into_iter().next())
 }
 
