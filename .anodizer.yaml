@@ -26,7 +26,7 @@ variables:
 
 # Git tag discovery settings
 git:
-  tag_sort: "-version:refname"
+  tag_sort: "smartsemver"
   ignore_tags:
     - "nightly"
   ignore_tag_prefixes:
@@ -93,7 +93,8 @@ defaults:
   # for that crate (DEC-9). `index_timeout` defaults to 300s in the publisher,
   # so it is omitted here (keeping the empty `{}` is the explicit opt-in).
   publish:
-    cargo: {}
+    cargo:
+      required: true
 
 before:
   hooks:
@@ -326,6 +327,7 @@ crates:
       # Other publishers below are CLI-only, so they live per-crate.
       # Homebrew is handled exclusively via the top-level `homebrew_casks:` block.
       scoop:
+        required: false
         repository:
           owner: tj-smith47
           name: scoop-bucket
@@ -343,6 +345,7 @@ crates:
           name: TJ Smith
           email: tj@jarvispro.io
       chocolatey:
+        required: false
         repository:
           owner: tj-smith47
           name: anodizer
@@ -366,6 +369,7 @@ crates:
           - rust
         republish_in_moderation: true
       winget:
+        required: false
         repository:
           owner: tj-smith47
           name: winget-pkgs
@@ -398,6 +402,7 @@ crates:
           email: tj@jarvispro.io
         update_existing_pr: true
       aur:
+        required: false
         skip: true  # no AUR account registered yet
         git_url: "ssh://aur@aur.archlinux.org/anodizer-bin.git"
         name: anodizer-bin
@@ -409,6 +414,7 @@ crates:
           name: TJ Smith
           email: tj@jarvispro.io
       nix:
+        required: false
         name: anodizer
         repository:
           owner: tj-smith47
@@ -427,6 +433,7 @@ crates:
           name: TJ Smith
           email: tj@jarvispro.io
       krew:
+        required: false
         skip: true  # anodizer is not a kubectl plugin — krew is not an appropriate channel
         repository:
           owner: tj-smith47
@@ -561,7 +568,8 @@ crates:
 # binaries, caveats, uninstall, and zap as first-class fields instead of raw
 # Ruby strings in post_install.
 homebrew_casks:
-  - repository:
+  - required: false
+    repository:
       owner: tj-smith47
       name: homebrew-tap
     directory: Casks
@@ -702,6 +710,8 @@ upx:
 nightly:
   name_template: "{{ ProjectName }}-nightly"
   tag_name: nightly
+  publish_release: true
+  keep_single_release: true
 
 snapshot:
   version_template: "{{ Tag | trimprefix(prefix='v') }}-SNAPSHOT-{{ ShortCommit }}"
