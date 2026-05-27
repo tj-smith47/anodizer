@@ -1,59 +1,20 @@
 //! Tests for the `changelog.ai` enhancement pipeline.
 //!
 //! Each provider's HTTP base URL is overridable via an `ANODIZER_*_ENDPOINT`
-//! env var so tests can point them at a [`spawn_scripted_responder`] running
-//! on `127.0.0.1`. Tests are `#[serial]` because they mutate process env.
-
-use std::sync::Mutex;
+//! env var, and providers read all env (endpoint + API key) through the
+//! injected `EnvSource`. Tests therefore inject a `MapEnvSource` via
+//! `Context::set_env_source(...)` instead of mutating the process env —
+//! no `ENV_LOCK`, no `#[serial]`, fully parallel-safe.
 
 use anodizer_core::config::{
     ChangelogAiConfig, ChangelogAiPrompt, ChangelogAiPromptSource, Config, ContentFromFile,
     ContentFromUrl,
 };
 use anodizer_core::context::{Context, ContextOptions};
+use anodizer_core::env_source::MapEnvSource;
 use anodizer_core::test_helpers::scripted_responder::{ScriptedRoute, spawn_scripted_responder};
-use serial_test::serial;
 
 use super::enhance_with_ai;
-
-// ---------------------------------------------------------------------------
-// Env-mutex: serialise tests that touch the same env keys (every test in this
-// module reads/writes `*_ENDPOINT` / `*_API_KEY`).
-// ---------------------------------------------------------------------------
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-/// RAII helper that sets a process env var on construction and restores
-/// (or unsets) it on drop. Avoids leaking test fixtures into sibling tests
-/// when an assertion panics mid-test.
-struct EnvGuard {
-    key: String,
-    prev: Option<String>,
-}
-
-impl EnvGuard {
-    fn set(key: &str, value: &str) -> Self {
-        let prev = std::env::var(key).ok();
-        // SAFETY: tests serialise on ENV_LOCK; no other thread mutates env.
-        unsafe { std::env::set_var(key, value) };
-        Self {
-            key: key.to_string(),
-            prev,
-        }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        // SAFETY: tests serialise on ENV_LOCK.
-        unsafe {
-            match self.prev {
-                Some(ref v) => std::env::set_var(&self.key, v),
-                None => std::env::remove_var(&self.key),
-            }
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -74,6 +35,17 @@ fn make_ctx(allow_ai_failure: bool) -> Context {
     )
 }
 
+/// Build a `Context` whose `EnvSource` carries the given `(key, value)` pairs.
+fn ctx_with_env(allow_ai_failure: bool, env: &[(&str, &str)]) -> Context {
+    let mut ctx = make_ctx(allow_ai_failure);
+    let mut src = MapEnvSource::new();
+    for (k, v) in env {
+        src.set(*k, *v);
+    }
+    ctx.set_env_source(src);
+    ctx
+}
+
 /// Build a canned `200 OK` JSON response with the given body.
 fn json_200(body: &'static str) -> String {
     format!(
@@ -88,9 +60,7 @@ fn json_200(body: &'static str) -> String {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[serial]
 fn no_provider_returns_body_unchanged() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let ctx = make_ctx(false);
     let log = ctx.logger("changelog");
     let cfg = ChangelogAiConfig {
@@ -103,9 +73,7 @@ fn no_provider_returns_body_unchanged() {
 }
 
 #[test]
-#[serial]
 fn empty_provider_string_returns_body_unchanged() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let ctx = make_ctx(false);
     let log = ctx.logger("changelog");
     let cfg = ChangelogAiConfig {
@@ -117,15 +85,26 @@ fn empty_provider_string_returns_body_unchanged() {
     assert_eq!(out, body);
 }
 
+#[test]
+fn whitespace_only_provider_string_returns_body_unchanged() {
+    let ctx = make_ctx(false);
+    let log = ctx.logger("changelog");
+    let cfg = ChangelogAiConfig {
+        provider: Some("   \t  ".to_string()),
+        ..Default::default()
+    };
+    let body = "## Changes\n* x\n";
+    let out =
+        enhance_with_ai(&ctx, &cfg, body, &log).expect("whitespace-only provider should no-op");
+    assert_eq!(out, body);
+}
+
 // ---------------------------------------------------------------------------
 // Anthropic — 200 OK replaces the body
 // ---------------------------------------------------------------------------
 
 #[test]
-#[serial]
 fn anthropic_200_replaces_body() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-
     let body = "{\"content\":[{\"type\":\"text\",\"text\":\"# v1.0.0\\n\\nEnhanced notes.\"}]}";
     let response: &'static str = Box::leak(json_200(body).into_boxed_str());
     let (addr, _calls) = spawn_scripted_responder(vec![ScriptedRoute {
@@ -135,10 +114,14 @@ fn anthropic_200_replaces_body() {
         times: Some(1),
     }]);
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_ENDPOINT", &base);
-    let _g_key = EnvGuard::set("ANTHROPIC_API_KEY", "sk-ant-test-1234");
 
-    let ctx = make_ctx(false);
+    let ctx = ctx_with_env(
+        false,
+        &[
+            ("ANODIZER_ANTHROPIC_ENDPOINT", &base),
+            ("ANTHROPIC_API_KEY", "sk-ant-test-1234"),
+        ],
+    );
     let log = ctx.logger("changelog");
     let cfg = ChangelogAiConfig {
         provider: Some("anthropic".to_string()),
@@ -156,10 +139,7 @@ fn anthropic_200_replaces_body() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[serial]
 fn openai_200_replaces_body() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-
     let body = "{\"choices\":[{\"message\":{\"content\":\"# Enhanced via OpenAI\"}}]}";
     let response: &'static str = Box::leak(json_200(body).into_boxed_str());
     let (addr, _calls) = spawn_scripted_responder(vec![ScriptedRoute {
@@ -169,10 +149,14 @@ fn openai_200_replaces_body() {
         times: Some(1),
     }]);
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_OPENAI_ENDPOINT", &base);
-    let _g_key = EnvGuard::set("OPENAI_API_KEY", "sk-test-abc");
 
-    let ctx = make_ctx(false);
+    let ctx = ctx_with_env(
+        false,
+        &[
+            ("ANODIZER_OPENAI_ENDPOINT", &base),
+            ("OPENAI_API_KEY", "sk-test-abc"),
+        ],
+    );
     let log = ctx.logger("changelog");
     let cfg = ChangelogAiConfig {
         provider: Some("openai".to_string()),
@@ -190,10 +174,7 @@ fn openai_200_replaces_body() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[serial]
 fn ollama_200_replaces_body() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-
     let body = "{\"response\":\"# Local Llama notes\"}";
     let response: &'static str = Box::leak(json_200(body).into_boxed_str());
     let (addr, _calls) = spawn_scripted_responder(vec![ScriptedRoute {
@@ -203,9 +184,8 @@ fn ollama_200_replaces_body() {
         times: Some(1),
     }]);
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_OLLAMA_ENDPOINT", &base);
 
-    let ctx = make_ctx(false);
+    let ctx = ctx_with_env(false, &[("ANODIZER_OLLAMA_ENDPOINT", &base)]);
     let log = ctx.logger("changelog");
     let cfg = ChangelogAiConfig {
         provider: Some("ollama".to_string()),
@@ -223,10 +203,7 @@ fn ollama_200_replaces_body() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[serial]
 fn anthropic_401_aborts_and_redacts() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-
     let body = r#"{"error":"unauthorised"}"#;
     let response: &'static str = Box::leak(
         format!(
@@ -244,10 +221,14 @@ fn anthropic_401_aborts_and_redacts() {
     }]);
     let base = format!("http://{addr}");
     let secret = "sk-ant-very-secret-do-not-leak-9999";
-    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_ENDPOINT", &base);
-    let _g_key = EnvGuard::set("ANTHROPIC_API_KEY", secret);
 
-    let ctx = make_ctx(false);
+    let ctx = ctx_with_env(
+        false,
+        &[
+            ("ANODIZER_ANTHROPIC_ENDPOINT", &base),
+            ("ANTHROPIC_API_KEY", secret),
+        ],
+    );
     let log = ctx.logger("changelog");
     let cfg = ChangelogAiConfig {
         provider: Some("anthropic".to_string()),
@@ -271,10 +252,7 @@ fn anthropic_401_aborts_and_redacts() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[serial]
 fn anthropic_503_aborts_when_fail_closed() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-
     let response = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
     let (addr, _calls) = spawn_scripted_responder(vec![ScriptedRoute {
         method: "POST",
@@ -283,10 +261,14 @@ fn anthropic_503_aborts_when_fail_closed() {
         times: Some(1),
     }]);
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_ENDPOINT", &base);
-    let _g_key = EnvGuard::set("ANTHROPIC_API_KEY", "sk-ant-test");
 
-    let ctx = make_ctx(false);
+    let ctx = ctx_with_env(
+        false,
+        &[
+            ("ANODIZER_ANTHROPIC_ENDPOINT", &base),
+            ("ANTHROPIC_API_KEY", "sk-ant-test"),
+        ],
+    );
     let log = ctx.logger("changelog");
     let cfg = ChangelogAiConfig {
         provider: Some("anthropic".to_string()),
@@ -302,10 +284,7 @@ fn anthropic_503_aborts_when_fail_closed() {
 }
 
 #[test]
-#[serial]
 fn anthropic_503_degrades_with_allow_ai_failure() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-
     let response = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
     let (addr, _calls) = spawn_scripted_responder(vec![ScriptedRoute {
         method: "POST",
@@ -314,10 +293,14 @@ fn anthropic_503_degrades_with_allow_ai_failure() {
         times: Some(1),
     }]);
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_ENDPOINT", &base);
-    let _g_key = EnvGuard::set("ANTHROPIC_API_KEY", "sk-ant-test");
 
-    let ctx = make_ctx(true);
+    let ctx = ctx_with_env(
+        true,
+        &[
+            ("ANODIZER_ANTHROPIC_ENDPOINT", &base),
+            ("ANTHROPIC_API_KEY", "sk-ant-test"),
+        ],
+    );
     let log = ctx.logger("changelog");
     let cfg = ChangelogAiConfig {
         provider: Some("anthropic".to_string()),
@@ -335,10 +318,7 @@ fn anthropic_503_degrades_with_allow_ai_failure() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[serial]
 fn prompt_from_file_is_used() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-
     let tmp = tempfile::tempdir().expect("tempdir");
     let prompt_path = tmp.path().join("prompt.txt");
     std::fs::write(
@@ -356,10 +336,14 @@ fn prompt_from_file_is_used() {
         times: Some(1),
     }]);
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_ENDPOINT", &base);
-    let _g_key = EnvGuard::set("ANTHROPIC_API_KEY", "sk-ant-test");
 
-    let ctx = make_ctx(false);
+    let ctx = ctx_with_env(
+        false,
+        &[
+            ("ANODIZER_ANTHROPIC_ENDPOINT", &base),
+            ("ANTHROPIC_API_KEY", "sk-ant-test"),
+        ],
+    );
     let log = ctx.logger("changelog");
     let cfg = ChangelogAiConfig {
         provider: Some("anthropic".to_string()),
@@ -389,14 +373,11 @@ fn prompt_from_file_is_used() {
 }
 
 // ---------------------------------------------------------------------------
-// from_url — `${TOKEN}` env-expanded in headers, then provider called
+// from_url — `${TOKEN}` env-expanded in headers via the injected EnvSource
 // ---------------------------------------------------------------------------
 
 #[test]
-#[serial]
 fn prompt_from_url_expands_env_in_headers() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-
     // Two routes: one serves the prompt with an auth header echo, the second
     // is the Anthropic provider call that consumes it.
     let prompt_body = "URL-PROMPT-MARKER: {{ ReleaseNotes }}";
@@ -428,10 +409,6 @@ fn prompt_from_url_expands_env_in_headers() {
     ]);
 
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_ENDPOINT", &base);
-    let _g_key = EnvGuard::set("ANTHROPIC_API_KEY", "sk-ant-test");
-    let _g_tok = EnvGuard::set("MY_PROMPT_TOKEN", "secret-token-xyz");
-
     let prompt_url = format!("{base}/prompt.txt");
     let mut headers = std::collections::HashMap::new();
     headers.insert(
@@ -439,7 +416,14 @@ fn prompt_from_url_expands_env_in_headers() {
         "Bearer ${MY_PROMPT_TOKEN}".to_string(),
     );
 
-    let ctx = make_ctx(false);
+    let ctx = ctx_with_env(
+        false,
+        &[
+            ("ANODIZER_ANTHROPIC_ENDPOINT", &base),
+            ("ANTHROPIC_API_KEY", "sk-ant-test"),
+            ("MY_PROMPT_TOKEN", "secret-token-xyz"),
+        ],
+    );
     let log = ctx.logger("changelog");
     let cfg = ChangelogAiConfig {
         provider: Some("anthropic".to_string()),
@@ -473,13 +457,32 @@ fn prompt_from_url_expands_env_in_headers() {
 }
 
 // ---------------------------------------------------------------------------
+// Missing API key — bails with a clear error, no panic, no leak
+// ---------------------------------------------------------------------------
+
+#[test]
+fn missing_api_key_bails_cleanly() {
+    let ctx = ctx_with_env(false, &[]); // no env entries at all
+    let log = ctx.logger("changelog");
+    let cfg = ChangelogAiConfig {
+        provider: Some("anthropic".to_string()),
+        model: None,
+        prompt: Some(ChangelogAiPrompt::Inline("p".to_string())),
+    };
+    let err = enhance_with_ai(&ctx, &cfg, "raw", &log).expect_err("missing key must bail");
+    let formatted = format!("{err:#}");
+    assert!(
+        formatted.contains("ANTHROPIC_API_KEY"),
+        "error should name the missing variable: {formatted}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Unknown provider name — bails with the valid options
 // ---------------------------------------------------------------------------
 
 #[test]
-#[serial]
 fn unknown_provider_lists_valid_options() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let ctx = make_ctx(false);
     let log = ctx.logger("changelog");
     let cfg = ChangelogAiConfig {
@@ -502,13 +505,10 @@ fn unknown_provider_lists_valid_options() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[serial]
 fn snapshot_mode_skips_ai() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-
     // No env or responder needed — the snapshot guard short-circuits before
     // any provider construction. If the guard regresses the test fails
-    // because `enhance` will try to read ANTHROPIC_API_KEY.
+    // because `enhance` will try to read ANTHROPIC_API_KEY (which is unset).
     let config = Config {
         project_name: "myapp".to_string(),
         ..Config::default()
@@ -537,13 +537,12 @@ fn snapshot_mode_skips_ai() {
 //
 // When `changelog.ai.use` is set the stage clears `opts.groups` BEFORE the
 // per-crate render (`run.rs::run`). The render therefore emits a flat
-// bullet list with no `### <group-title>` headings, and that flat string
+// bullet list with no `## <group-title>` headings, and that flat string
 // is what flows into `enhance_with_ai`. This test pins the property by
 // rendering both shapes and confirming the flat one (what AI receives)
 // has no group headings while the grouped one does.
 
 #[test]
-#[serial]
 fn ai_receives_flat_commit_list_not_grouped() {
     use crate::group::{CommitInfo, GroupedCommits};
     use crate::render::{ChangelogRenderOpts, render_changelog_with_provider};
@@ -658,10 +657,14 @@ fn ai_receives_flat_commit_list_not_grouped() {
         times: Some(1),
     }]);
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_ENDPOINT", &base);
-    let _g_key = EnvGuard::set("ANTHROPIC_API_KEY", "sk-ant-test");
 
-    let ctx = make_ctx(false);
+    let ctx = ctx_with_env(
+        false,
+        &[
+            ("ANODIZER_ANTHROPIC_ENDPOINT", &base),
+            ("ANTHROPIC_API_KEY", "sk-ant-test"),
+        ],
+    );
     let log = ctx.logger("changelog");
     let cfg = ChangelogAiConfig {
         provider: Some("anthropic".to_string()),

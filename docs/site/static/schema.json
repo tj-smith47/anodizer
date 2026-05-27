@@ -2627,7 +2627,7 @@
       "type": "object",
       "properties": {
         "model": {
-          "description": "Model name (e.g. \"gpt-4\", \"claude-sonnet-4-20250514\"). Defaults to provider's default.",
+          "description": "Model name (e.g. \"claude-sonnet-4-6\", \"gpt-4o-mini\", \"llama3.1\"). Defaults to the provider's default model when unset.",
           "default": null,
           "type": [
             "string",

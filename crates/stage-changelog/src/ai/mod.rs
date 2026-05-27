@@ -12,16 +12,19 @@ mod openai;
 #[cfg(test)]
 mod tests;
 
+use std::sync::Arc;
+
 use anodizer_core::config::{ChangelogAiConfig, ChangelogAiPrompt};
 use anodizer_core::context::Context;
-use anodizer_core::env_expand::expand_env;
+use anodizer_core::env_expand::expand_with;
+use anodizer_core::env_source::EnvSource;
 use anodizer_core::http::blocking_client;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
 
-pub use anthropic::AnthropicProvider;
-pub use ollama::OllamaProvider;
-pub use openai::OpenAiProvider;
+pub(crate) use anthropic::AnthropicProvider;
+pub(crate) use ollama::OllamaProvider;
+pub(crate) use openai::OpenAiProvider;
 
 // ---------------------------------------------------------------------------
 // Default prompt
@@ -54,7 +57,7 @@ Here's the changelog:
 ///
 /// Each impl handles auth, endpoint selection, request serialization, and
 /// response extraction for one backend (Anthropic, OpenAI, Ollama).
-pub trait AiProvider {
+pub(crate) trait AiProvider {
     /// Send `prompt` (which already contains the rendered release notes) to
     /// the provider and return the enhanced text.
     ///
@@ -71,12 +74,17 @@ pub trait AiProvider {
 
 /// Construct the appropriate [`AiProvider`] for `provider_name`.
 ///
+/// `env` is the injected environment source — providers use it for both
+/// the endpoint override (`ANODIZER_<PROVIDER>_ENDPOINT`) and the API
+/// key lookup, so test contexts can drive every branch via
+/// `Context::set_env_source` without mutating the process environment.
+///
 /// Returns an error with a helpful list of valid names on an unrecognised value.
-fn make_provider(provider_name: &str) -> Result<Box<dyn AiProvider>> {
+fn make_provider(provider_name: &str, env: Arc<dyn EnvSource>) -> Result<Box<dyn AiProvider>> {
     match provider_name {
-        "anthropic" => Ok(Box::new(AnthropicProvider::from_env())),
-        "openai" => Ok(Box::new(OpenAiProvider::from_env())),
-        "ollama" => Ok(Box::new(OllamaProvider::from_env())),
+        "anthropic" => Ok(Box::new(AnthropicProvider::from_env(env))),
+        "openai" => Ok(Box::new(OpenAiProvider::from_env(env))),
+        "ollama" => Ok(Box::new(OllamaProvider::from_env(env))),
         other => bail!(
             "changelog.ai: unknown provider {:?} (valid: anthropic, openai, ollama)",
             other
@@ -92,8 +100,8 @@ fn make_provider(provider_name: &str) -> Result<Box<dyn AiProvider>> {
 ///
 /// Priority: `from_file` > `from_url` > inline string > default prompt.
 /// Header values in `from_url` are `${VAR}` / `$VAR` expanded from the
-/// process environment before the request is sent.
-fn resolve_raw_prompt(cfg: &ChangelogAiConfig) -> Result<String> {
+/// injected environment source before the request is sent.
+fn resolve_raw_prompt(cfg: &ChangelogAiConfig, env: &dyn EnvSource) -> Result<String> {
     let Some(ref prompt_cfg) = cfg.prompt else {
         return Ok(DEFAULT_PROMPT.to_owned());
     };
@@ -124,10 +132,13 @@ fn resolve_raw_prompt(cfg: &ChangelogAiConfig) -> Result<String> {
 
                 let mut req = client.get(url.as_str());
 
-                // Expand ${VAR} / $VAR in header values before sending.
+                // Expand ${VAR} / $VAR in header values via the injected
+                // env source so tests can drive header expansion without
+                // mutating the process env.
                 if let Some(ref headers) = url_cfg.headers {
                     for (key, value) in headers {
-                        req = req.header(key.as_str(), expand_env(value));
+                        let expanded = expand_with(value, |name| env.var(name));
+                        req = req.header(key.as_str(), expanded);
                     }
                 }
 
@@ -135,7 +146,9 @@ fn resolve_raw_prompt(cfg: &ChangelogAiConfig) -> Result<String> {
                     .send()
                     .with_context(|| format!("changelog.ai: GET prompt from {url}"))?;
                 let status = resp.status();
-                let text = resp.text().unwrap_or_default();
+                let text = resp
+                    .text()
+                    .unwrap_or_else(|e| format!("<body decode error: {e}>"));
                 if !status.is_success() {
                     bail!("changelog.ai: prompt URL {url} returned {status}: {text}");
                 }
@@ -173,14 +186,14 @@ fn render_prompt(template: &str, notes: &str, ctx: &Context) -> Result<String> {
 /// `ctx.options.allow_ai_failure`:
 /// - `false` (default): propagate the error and abort the release.
 /// - `true`: log a warning and return `body` unchanged.
-pub fn enhance_with_ai(
+pub(crate) fn enhance_with_ai(
     ctx: &Context,
     ai_cfg: &ChangelogAiConfig,
     body: &str,
     log: &StageLogger,
 ) -> Result<String> {
     let provider_name = match ai_cfg.provider.as_deref() {
-        Some(p) if !p.is_empty() => p,
+        Some(p) if !p.trim().is_empty() => p.trim(),
         _ => return Ok(body.to_owned()),
     };
 
@@ -190,12 +203,15 @@ pub fn enhance_with_ai(
         return Ok(body.to_owned());
     }
 
-    let raw_prompt = resolve_raw_prompt(ai_cfg).context("changelog.ai: resolve prompt")?;
+    let env = ctx.env_source_arc();
+
+    let raw_prompt =
+        resolve_raw_prompt(ai_cfg, env.as_ref()).context("changelog.ai: resolve prompt")?;
 
     let rendered_prompt =
         render_prompt(&raw_prompt, body, ctx).context("changelog.ai: render prompt")?;
 
-    let provider = make_provider(provider_name)?;
+    let provider = make_provider(provider_name, env)?;
 
     log.status(&format!(
         "changelog.ai: enhancing release notes via {} (model: {})",
@@ -207,8 +223,9 @@ pub fn enhance_with_ai(
         Ok(enhanced) => Ok(enhanced),
         Err(err) => {
             if ctx.options.allow_ai_failure {
+                let redacted = log.redact(&format!("{err:#}"));
                 log.warn(&format!(
-                    "changelog.ai: provider error (--allow-ai-failure set, keeping original notes): {err:#}"
+                    "changelog.ai: provider error (--allow-ai-failure set, keeping original notes): {redacted}"
                 ));
                 Ok(body.to_owned())
             } else {

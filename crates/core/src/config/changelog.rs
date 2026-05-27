@@ -187,7 +187,8 @@ pub struct ChangelogAiConfig {
     /// Empty disables the feature.
     #[serde(rename = "use")]
     pub provider: Option<String>,
-    /// Model name (e.g. "gpt-4", "claude-sonnet-4-20250514"). Defaults to provider's default.
+    /// Model name (e.g. "claude-sonnet-4-6", "gpt-4o-mini", "llama3.1").
+    /// Defaults to the provider's default model when unset.
     pub model: Option<String>,
     /// Prompt template for the AI. Can be a string, or use `from_url`/`from_file`.
     /// Template variable `.ReleaseNotes` contains the current changelog.

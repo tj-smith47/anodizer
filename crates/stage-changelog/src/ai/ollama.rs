@@ -1,7 +1,9 @@
 //! Ollama local inference provider for AI changelog enhancement.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use anodizer_core::env_source::EnvSource;
 use anodizer_core::http::blocking_client;
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
@@ -9,7 +11,7 @@ use serde_json::{Value, json};
 use super::AiProvider;
 
 /// Default model for the Ollama provider.
-pub const DEFAULT_MODEL: &str = "llama3.1";
+pub(crate) const DEFAULT_MODEL: &str = "llama3.1";
 
 /// HTTP request timeout for Ollama API calls (longer to accommodate local inference).
 const TIMEOUT: Duration = Duration::from_secs(300);
@@ -19,21 +21,22 @@ const TIMEOUT: Duration = Duration::from_secs(300);
 /// No auth by default. Endpoint base from `ANODIZER_OLLAMA_ENDPOINT`,
 /// then `OLLAMA_HOST` (the upstream Ollama convention), then defaults
 /// to `http://localhost:11434`. Default model: `llama3.1`.
-pub struct OllamaProvider {
+pub(crate) struct OllamaProvider {
     /// Base URL for the Ollama API.
     base_url: String,
 }
 
 impl OllamaProvider {
-    /// Construct from environment.
+    /// Construct from the injected environment source.
     ///
     /// Precedence: `ANODIZER_OLLAMA_ENDPOINT` (anodizer-namespaced
     /// override for proxy / remote-Ollama setups) → `OLLAMA_HOST` (the
     /// upstream Ollama convention) → `http://localhost:11434`.
-    pub fn from_env() -> Self {
-        let base_url = std::env::var("ANODIZER_OLLAMA_ENDPOINT")
-            .or_else(|_| std::env::var("OLLAMA_HOST"))
-            .unwrap_or_else(|_| "http://localhost:11434".to_string());
+    pub(crate) fn from_env(env: Arc<dyn EnvSource>) -> Self {
+        let base_url = env
+            .var("ANODIZER_OLLAMA_ENDPOINT")
+            .or_else(|| env.var("OLLAMA_HOST"))
+            .unwrap_or_else(|| "http://localhost:11434".to_string());
         Self { base_url }
     }
 }
@@ -57,7 +60,9 @@ impl AiProvider for OllamaProvider {
             .context("ollama: POST /api/generate")?;
 
         let status = resp.status();
-        let text = resp.text().unwrap_or_default();
+        let text = resp
+            .text()
+            .unwrap_or_else(|e| format!("<body decode error: {e}>"));
 
         if !status.is_success() {
             anyhow::bail!("ollama: request failed ({status}): {text}");

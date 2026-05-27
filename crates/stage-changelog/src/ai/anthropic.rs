@@ -1,7 +1,9 @@
 //! Anthropic Messages API provider for AI changelog enhancement.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use anodizer_core::env_source::EnvSource;
 use anodizer_core::http::blocking_client;
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
@@ -9,7 +11,7 @@ use serde_json::{Value, json};
 use super::AiProvider;
 
 /// Default model for the Anthropic provider.
-pub const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
+pub(crate) const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 
 /// HTTP request timeout for Anthropic API calls.
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -20,32 +22,41 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 /// `https://api.anthropic.com/v1/messages` by default, overridable via
 /// `ANODIZER_ANTHROPIC_ENDPOINT` to route through a corporate proxy,
 /// regional mirror, or private gateway. Default model: `claude-sonnet-4-6`.
-pub struct AnthropicProvider {
+pub(crate) struct AnthropicProvider {
     /// Base URL for the Anthropic API (default `https://api.anthropic.com`).
     base_url: String,
+    /// Injected environment-variable source used for the API key lookup
+    /// at `enhance` time. Routing through the source instead of
+    /// `std::env::var` keeps the provider testable via
+    /// `Context::set_env_source` and aligns with the rest of the
+    /// codebase's env-handling convention.
+    env: Arc<dyn EnvSource>,
 }
 
 impl AnthropicProvider {
-    /// Construct from environment.
+    /// Construct from the injected environment source.
     ///
     /// `ANODIZER_ANTHROPIC_ENDPOINT` overrides the default
     /// `https://api.anthropic.com` base URL. Use this to point at a
     /// corporate proxy, regional mirror, or private gateway that
     /// re-exposes the Anthropic Messages API.
-    pub fn from_env() -> Self {
-        let base_url = std::env::var("ANODIZER_ANTHROPIC_ENDPOINT")
-            .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
-        Self { base_url }
+    pub(crate) fn from_env(env: Arc<dyn EnvSource>) -> Self {
+        let base_url = env
+            .var("ANODIZER_ANTHROPIC_ENDPOINT")
+            .unwrap_or_else(|| "https://api.anthropic.com".to_string());
+        Self { base_url, env }
     }
 }
 
 impl AiProvider for AnthropicProvider {
     fn enhance(&self, prompt: &str, model: Option<&str>) -> Result<String> {
-        let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .context("ANTHROPIC_API_KEY is not set; required for the anthropic provider")?;
-        if api_key.is_empty() {
-            bail!("ANTHROPIC_API_KEY is empty; required for the anthropic provider");
-        }
+        let api_key = self
+            .env
+            .var("ANTHROPIC_API_KEY")
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!("ANTHROPIC_API_KEY is not set; required for the anthropic provider")
+            })?;
 
         let model = model.unwrap_or(DEFAULT_MODEL);
         let body = json!({
@@ -66,7 +77,9 @@ impl AiProvider for AnthropicProvider {
             .context("anthropic: POST /v1/messages")?;
 
         let status = resp.status();
-        let text = resp.text().unwrap_or_default();
+        let text = resp
+            .text()
+            .unwrap_or_else(|e| format!("<body decode error: {e}>"));
 
         if !status.is_success() {
             bail!("anthropic: request failed ({status}): {text}");

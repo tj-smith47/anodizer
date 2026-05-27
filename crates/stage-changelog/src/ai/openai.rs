@@ -1,7 +1,9 @@
 //! OpenAI Chat Completions API provider for AI changelog enhancement.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use anodizer_core::env_source::EnvSource;
 use anodizer_core::http::blocking_client;
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
@@ -9,7 +11,7 @@ use serde_json::{Value, json};
 use super::AiProvider;
 
 /// Default model for the OpenAI provider.
-pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
+pub(crate) const DEFAULT_MODEL: &str = "gpt-4o-mini";
 
 /// HTTP request timeout for OpenAI API calls.
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -21,32 +23,39 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 /// via `ANODIZER_OPENAI_ENDPOINT` to route through a corporate proxy,
 /// Azure OpenAI gateway, or any OpenAI-compatible inference server.
 /// Default model: `gpt-4o-mini`.
-pub struct OpenAiProvider {
+pub(crate) struct OpenAiProvider {
     /// Base URL for the OpenAI API (default `https://api.openai.com`).
     base_url: String,
+    /// Injected environment-variable source used for the API key lookup
+    /// at `enhance` time. See [`AnthropicProvider`](super::AnthropicProvider)
+    /// for the rationale.
+    env: Arc<dyn EnvSource>,
 }
 
 impl OpenAiProvider {
-    /// Construct from environment.
+    /// Construct from the injected environment source.
     ///
     /// `ANODIZER_OPENAI_ENDPOINT` overrides the default
     /// `https://api.openai.com` base URL. Use this to point at a
     /// corporate proxy, an Azure OpenAI gateway, or any OpenAI-API-
     /// compatible inference server.
-    pub fn from_env() -> Self {
-        let base_url = std::env::var("ANODIZER_OPENAI_ENDPOINT")
-            .unwrap_or_else(|_| "https://api.openai.com".to_string());
-        Self { base_url }
+    pub(crate) fn from_env(env: Arc<dyn EnvSource>) -> Self {
+        let base_url = env
+            .var("ANODIZER_OPENAI_ENDPOINT")
+            .unwrap_or_else(|| "https://api.openai.com".to_string());
+        Self { base_url, env }
     }
 }
 
 impl AiProvider for OpenAiProvider {
     fn enhance(&self, prompt: &str, model: Option<&str>) -> Result<String> {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .context("OPENAI_API_KEY is not set; required for the openai provider")?;
-        if api_key.is_empty() {
-            bail!("OPENAI_API_KEY is empty; required for the openai provider");
-        }
+        let api_key = self
+            .env
+            .var("OPENAI_API_KEY")
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!("OPENAI_API_KEY is not set; required for the openai provider")
+            })?;
 
         let model = model.unwrap_or(DEFAULT_MODEL);
         let body = json!({
@@ -65,7 +74,9 @@ impl AiProvider for OpenAiProvider {
             .context("openai: POST /v1/chat/completions")?;
 
         let status = resp.status();
-        let text = resp.text().unwrap_or_default();
+        let text = resp
+            .text()
+            .unwrap_or_else(|e| format!("<body decode error: {e}>"));
 
         if !status.is_success() {
             bail!("openai: request failed ({status}): {text}");

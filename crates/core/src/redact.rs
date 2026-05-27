@@ -6,16 +6,15 @@
 
 /// Key suffixes that indicate a secret value.
 ///
-/// `_KEY` matches `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` (consumed by
-/// the `changelog.ai` enhancement step) in addition to the historical
-/// signing / publisher key vars.
+/// `_KEY` covers AI provider API keys (`ANTHROPIC_API_KEY`,
+/// `OPENAI_API_KEY`) alongside signing-key and other historical
+/// secret-bearing variable names.
 const SECRET_KEY_SUFFIXES: &[&str] = &["_KEY", "_SECRET", "_PASSWORD", "_TOKEN"];
 
 /// Value prefixes that indicate a secret regardless of key name.
 ///
-/// `sk-` catches OpenAI / Anthropic API keys (`sk-...` and `sk-ant-...`)
-/// even when a user exports them under a non-standard variable name that
-/// the `_KEY` suffix rule would miss.
+/// Catches provider API keys (`sk-...`, `sk-ant-...`) regardless of the
+/// variable name they happen to be exported under.
 const SECRET_VALUE_PREFIXES: &[&str] = &[
     "sk-",
     "ghp_",

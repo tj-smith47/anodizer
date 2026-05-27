@@ -162,13 +162,15 @@ impl Stage for super::ChangelogStage {
 
 /// Whether AI enhancement is active for this run.
 ///
-/// Returns `true` only when `changelog.ai.use` is set to a non-empty
-/// provider name. Empty / missing values keep the native rendering
-/// pipeline intact.
+/// Returns `true` only when `changelog.ai.use` is set to a name that
+/// contains at least one non-whitespace character. Empty / missing /
+/// whitespace-only values keep the native rendering pipeline intact —
+/// suppressing groups and then failing inside `make_provider` would be
+/// wasteful and surprising.
 fn ai_provider_active(ai_cfg: Option<&anodizer_core::config::ChangelogAiConfig>) -> bool {
     ai_cfg
         .and_then(|a| a.provider.as_deref())
-        .is_some_and(|p| !p.is_empty())
+        .is_some_and(|p| !p.trim().is_empty())
 }
 
 /// Honour `--release-notes <path>`: read the file, fan it out to every
@@ -790,6 +792,20 @@ mod ai_suppression_tests {
             assert!(
                 ai_provider_active(Some(&cfg)),
                 "{name} should activate the AI path"
+            );
+        }
+    }
+
+    #[test]
+    fn whitespace_only_provider_is_inactive() {
+        for name in ["   ", "\t", " \n ", ""] {
+            let cfg = ChangelogAiConfig {
+                provider: Some(name.to_string()),
+                ..Default::default()
+            };
+            assert!(
+                !ai_provider_active(Some(&cfg)),
+                "{name:?} should NOT activate the AI path"
             );
         }
     }
