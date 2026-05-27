@@ -247,6 +247,11 @@ impl anodizer_core::Publisher for McpPublisher {
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
     }
+
+    fn skips_on_nightly(&self) -> bool {
+        // MCP registries accept version overwrites; nightly publishes are allowed.
+        false
+    }
 }
 
 #[cfg(test)]

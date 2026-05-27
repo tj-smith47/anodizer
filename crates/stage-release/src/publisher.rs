@@ -499,6 +499,12 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
     }
+
+    fn skips_on_nightly(&self) -> bool {
+        // GitHub Releases accepts overwrites; nightly re-cuts are the primary
+        // use-case for keep_single_release, so nightly runs are allowed.
+        false
+    }
 }
 
 /// Canonical wording for a per-target rollback failure warn line. Keeps

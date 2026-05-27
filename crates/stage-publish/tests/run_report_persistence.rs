@@ -33,6 +33,9 @@ impl Publisher for SuccessPublisher {
     fn required(&self) -> bool {
         false
     }
+    fn skips_on_nightly(&self) -> bool {
+        false
+    }
     fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
         Ok(PublishEvidence::new(self.name))
     }

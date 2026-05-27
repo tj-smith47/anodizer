@@ -220,6 +220,12 @@ impl anodizer_core::Publisher for BlobPublisher {
     fn rollback_scope_needed(&self) -> Option<&'static str> {
         Some("provider credentials delete-object")
     }
+
+    fn skips_on_nightly(&self) -> bool {
+        // Object-store blobs support versioned paths; nightly re-uploads are
+        // handled via keep_single_release semantics at the release layer.
+        false
+    }
 }
 
 /// Group structured `BlobTarget`s by their `(provider, bucket, region,

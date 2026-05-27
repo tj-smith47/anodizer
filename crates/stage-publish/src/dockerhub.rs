@@ -726,6 +726,11 @@ impl anodizer_core::Publisher for DockerhubPublisher {
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
     }
+
+    fn skips_on_nightly(&self) -> bool {
+        // Docker registries accept tag rewrites; nightly clobber is intentional.
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------

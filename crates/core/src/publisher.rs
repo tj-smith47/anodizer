@@ -107,13 +107,12 @@ pub trait Publisher: Send + Sync {
     /// Whether this publisher opts out of nightly runs (matches the GR
     /// `customization/publish/nightlies.md` skip-list).
     ///
-    /// Default is `false`. Override to `true` for publishers that push to
-    /// long-lived registries where a nightly clobber is either disruptive
-    /// (homebrew taps, scoop buckets, AUR, krew-index, nix overlays) or
-    /// outright forbidden by registry policy.
-    fn skips_on_nightly(&self) -> bool {
-        false
-    }
+    /// Each `Publisher` must declare its nightly behavior explicitly — there
+    /// is no default — so adding a new publisher forces a deliberate decision.
+    /// Return `true` for publishers that push to long-lived registries where a
+    /// nightly clobber is either disruptive (homebrew taps, scoop buckets,
+    /// AUR, krew-index, nix overlays) or outright forbidden by registry policy.
+    fn skips_on_nightly(&self) -> bool;
 }
 
 /// The exact warn message a publisher emits when `rollback()` is invoked
@@ -148,6 +147,9 @@ mod tests {
             PublisherGroup::Manager
         }
         fn required(&self) -> bool {
+            false
+        }
+        fn skips_on_nightly(&self) -> bool {
             false
         }
     }

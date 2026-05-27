@@ -1067,6 +1067,12 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
     }
+
+    fn skips_on_nightly(&self) -> bool {
+        // Cloudsmith supports versioned packages; nightly uploads do not
+        // clobber stable content and are allowed.
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------

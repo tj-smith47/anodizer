@@ -1539,6 +1539,9 @@ mod tests {
         fn required(&self) -> bool {
             false
         }
+        fn skips_on_nightly(&self) -> bool {
+            false
+        }
         fn preflight(
             &self,
             _ctx: &anodizer_core::context::Context,

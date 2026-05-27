@@ -1006,6 +1006,12 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
     }
+
+    fn skips_on_nightly(&self) -> bool {
+        // Artifact repositories support versioned paths; nightly re-uploads
+        // do not clobber stable content and are allowed.
+        false
+    }
 }
 
 /// One rollback DELETE job: target URL + the auth to send with it.

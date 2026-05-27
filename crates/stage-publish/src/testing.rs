@@ -138,6 +138,9 @@ impl Publisher for FakeCountingPublisher {
     fn required(&self) -> bool {
         self.required
     }
+    fn skips_on_nightly(&self) -> bool {
+        false
+    }
     fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
         Ok(PublishEvidence::new(self.name.clone()))
     }
@@ -188,6 +191,9 @@ impl Publisher for FakeOutcomePublisher {
     }
     fn required(&self) -> bool {
         self.required
+    }
+    fn skips_on_nightly(&self) -> bool {
+        false
     }
     fn run(&self, ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
         ctx.record_publisher_outcome(self.pending_outcome.clone());
