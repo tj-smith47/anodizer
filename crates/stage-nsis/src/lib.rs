@@ -70,7 +70,7 @@ fn os_arch_from_target(target: Option<&str>) -> (String, String) {
 ///
 /// GoReleaser Pro documents these values at `nsis.md:93`:
 /// `x86` for 32-bit, `x64` for 64-bit AMD, `arm64` for ARM 64-bit.
-pub fn map_arch_to_nsis(arch: &str) -> &str {
+pub(crate) fn map_arch_to_nsis(arch: &str) -> &str {
     match arch {
         "amd64" | "x86_64" => "x64",
         "386" | "i386" | "i586" | "i686" | "x86" => "x86",
@@ -84,7 +84,7 @@ pub fn map_arch_to_nsis(arch: &str) -> &str {
 /// 64-bit targets use `$PROGRAMFILES64`; all others use `$PROGRAMFILES`.
 /// This prevents installers from landing in the WOW6432-redirected path
 /// (`Program Files (x86)`) on 64-bit Windows.
-pub fn program_files_for_arch(nsis_arch: &str) -> &str {
+pub(crate) fn program_files_for_arch(nsis_arch: &str) -> &str {
     if nsis_arch == "x64" || nsis_arch == "arm64" {
         "$PROGRAMFILES64"
     } else {
@@ -290,7 +290,6 @@ impl Stage for NsisStage {
                         .and_then(|n| n.to_str())
                         .unwrap_or(&krate.name);
 
-                    // `Binary` is the binary filename with .exe (GR nsis.md:119)
                     let binary_val = binary_name_raw.to_string();
 
                     // Determine output filename using the one-shot vars so `Arch`
@@ -302,8 +301,8 @@ impl Stage for NsisStage {
                     name_vars.set("ProgramFiles", program_files);
                     name_vars.set("Binary", &binary_val);
 
-                    // Render the name first so we can inject `Name` into the
-                    // script context (without the .exe suffix, per GR convention).
+                    // Render the name first so it can be re-injected as `Name`
+                    // for the script context.
                     let rendered_name = anodizer_core::template::render(name_template, &name_vars)
                         .with_context(|| {
                             format!(
@@ -312,11 +311,9 @@ impl Stage for NsisStage {
                             )
                         })?;
 
-                    // `Name` is the output stem without .exe (GR nsis.md:92-93).
-                    // Scripts use `OutFile "{{ Name }}.exe"`.
                     name_vars.set("Name", &rendered_name);
 
-                    let exe_filename = rendered_name.clone();
+                    let exe_filename = rendered_name;
 
                     // Output goes in dist/windows/
                     let output_dir = dist.join("windows");
