@@ -163,6 +163,7 @@ pub enum Commands {
         #[arg(
             long = "rollback-only",
             requires = "from_run",
+            conflicts_with = "clean",
             help = "Skip publish; re-attempt rollback from a prior run report. Requires --from-run=<id>."
         )]
         rollback_only: bool,
@@ -215,7 +216,7 @@ pub enum Commands {
         merge: bool,
         #[arg(
             long = "publish-only",
-            conflicts_with_all = ["split", "merge", "prepare", "announce_only", "snapshot", "rollback_only"],
+            conflicts_with_all = ["split", "merge", "prepare", "announce_only", "snapshot", "rollback_only", "clean"],
             help = "Load artifacts from dist/ (preserved by `anodize check determinism --preserve-dist`) and run only the sign + publish pipeline. Skips build/archive/nfpm/sbom/checksum — those stages' outputs must already be present in dist/."
         )]
         publish_only: bool,
@@ -228,7 +229,7 @@ pub enum Commands {
         prepare: bool,
         #[arg(
             long = "announce-only",
-            conflicts_with_all = ["prepare", "publish_only", "snapshot", "rollback_only", "split", "merge"],
+            conflicts_with_all = ["prepare", "publish_only", "snapshot", "rollback_only", "split", "merge", "clean"],
             help = "Re-fire announcers only. Loads `<dist>/run-<id>/report.json` written by a prior run, skips every pipeline stage except announce (which itself short-circuits on nightly), then runs after-hooks. Use this to retry a transient announcer failure (Slack 502, Discord 5xx) without re-creating the GitHub release or re-publishing to package managers. Fails fast when no `<dist>/run-<id>/report.json` is present."
         )]
         announce_only: bool,

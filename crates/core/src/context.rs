@@ -436,8 +436,11 @@ impl Context {
         self.publish_report.as_ref()
     }
 
-    /// Store the publisher dispatch report. Overwrites any prior report;
-    /// the publish stage is the single writer.
+    /// Store the publisher dispatch report. Overwrites any prior value.
+    ///
+    /// Written by the publish stage during a normal release run; rehydrated by
+    /// `--announce-only` from the on-disk `<dist>/run-<id>/report.json` so the
+    /// announce stage sees an equivalent context without re-publishing.
     pub fn set_publish_report(&mut self, r: PublishReport) {
         self.publish_report = Some(r);
     }

@@ -177,7 +177,13 @@ pub(crate) fn should_run_preflight_auto(
 /// Useful for generating pre-release archives in PR CI without needing a real
 /// tag or release. `--prepare` without `--snapshot` requires a real tag.
 pub(crate) fn apply_prepare_mode_to_skip(skip: &mut Vec<String>) {
-    for stage in ["release", "publish", "announce"] {
+    for stage in [
+        "release",
+        "publish",
+        "blob",
+        "snapcraft-publish",
+        "announce",
+    ] {
         if !skip.iter().any(|s| s == stage) {
             skip.push(stage.to_string());
         }
@@ -873,6 +879,12 @@ fn run_publisher_preflight(
     opts: &ReleaseOpts,
     log: &StageLogger,
 ) -> Result<bool> {
+    // Preflight probes publisher state ahead of a publish; an already-published
+    // release has no pending one-way-door transitions to guard against.
+    if opts.announce_only {
+        log.status("preflight skipped: --announce-only does not publish");
+        return Ok(false);
+    }
     let should_run_preflight = should_run_preflight_auto(
         opts.no_preflight,
         opts.snapshot,
@@ -1546,9 +1558,11 @@ mod tests {
             vec![
                 "release".to_string(),
                 "publish".to_string(),
-                "announce".to_string()
+                "blob".to_string(),
+                "snapcraft-publish".to_string(),
+                "announce".to_string(),
             ],
-            "--prepare on empty skip should add all three upstream stages"
+            "--prepare on empty skip should add all network-touching upstream stages"
         );
     }
 
@@ -1560,23 +1574,35 @@ mod tests {
             skip.contains(&"docker".to_string()) && skip.contains(&"sign".to_string()),
             "existing user skips must be preserved"
         );
-        assert!(
-            skip.contains(&"release".to_string())
-                && skip.contains(&"publish".to_string())
-                && skip.contains(&"announce".to_string()),
-            "--prepare adds release/publish/announce alongside user skips"
-        );
+        for stage in [
+            "release",
+            "publish",
+            "blob",
+            "snapcraft-publish",
+            "announce",
+        ] {
+            assert!(
+                skip.contains(&stage.to_string()),
+                "--prepare must add {stage} alongside user skips"
+            );
+        }
     }
 
     #[test]
     fn test_apply_prepare_mode_to_skip_composes_with_snapshot_marker() {
-        // A5-S6: `--prepare --snapshot` must produce a skip list that still
-        // includes release/publish/announce, independent of any snapshot-only
-        // entries a caller may have pre-added. The augmentation is purely
-        // additive — snapshot semantics remain owned by the snapshot flag.
+        // `--prepare --snapshot` must produce a skip list that includes all
+        // network-touching stages, independent of any snapshot-only entries a
+        // caller may have pre-added. The augmentation is purely additive —
+        // snapshot semantics remain owned by the snapshot flag.
         let mut skip = vec!["sign".to_string()];
         apply_prepare_mode_to_skip(&mut skip);
-        for stage in ["release", "publish", "announce"] {
+        for stage in [
+            "release",
+            "publish",
+            "blob",
+            "snapcraft-publish",
+            "announce",
+        ] {
             assert!(
                 skip.iter().any(|s| s == stage),
                 "--prepare must add {stage} regardless of snapshot composition"
@@ -1590,14 +1616,21 @@ mod tests {
 
     #[test]
     fn test_apply_prepare_mode_to_skip_is_idempotent() {
-        let mut skip = vec!["release".to_string(), "publish".to_string()];
+        let mut skip = vec![
+            "release".to_string(),
+            "publish".to_string(),
+            "blob".to_string(),
+        ];
         apply_prepare_mode_to_skip(&mut skip);
-        // No duplicate "release" or "publish" — only "announce" added.
+        // No duplicates for stages that were pre-populated.
         let release_count = skip.iter().filter(|s| s.as_str() == "release").count();
         let publish_count = skip.iter().filter(|s| s.as_str() == "publish").count();
+        let blob_count = skip.iter().filter(|s| s.as_str() == "blob").count();
         assert_eq!(release_count, 1, "no duplicate release");
         assert_eq!(publish_count, 1, "no duplicate publish");
+        assert_eq!(blob_count, 1, "no duplicate blob");
         assert!(skip.contains(&"announce".to_string()));
+        assert!(skip.contains(&"snapcraft-publish".to_string()));
     }
 
     // ---- preflight auto-run gating ---------------------------------------
