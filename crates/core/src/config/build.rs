@@ -106,10 +106,12 @@ pub struct PrebuiltConfig {
     /// - `{{ .ArtifactExt }}` — `.exe` on Windows targets, empty elsewhere.
     /// - `{{ .ArtifactID }}` — the build entry's `id:` (empty when unset).
     ///
-    /// The rendered path is `stat()`-ed before the import. A missing file,
-    /// a permission error, or any other I/O failure aborts the build with
-    /// a message that names both the rendered path and the originating
-    /// target triple, matching GoReleaser's "GoReleaser will fail" contract.
+    /// The rendered path is `stat()`-ed before the import, unless
+    /// `--dry-run` is active, in which case the stat is skipped and the
+    /// path is accepted as given. A missing file, a permission error, or
+    /// any other I/O failure aborts the build with a message that names
+    /// both the rendered path and the originating target triple, matching
+    /// GoReleaser's "GoReleaser will fail" contract.
     ///
     /// Recommendation: place the staged binaries OUTSIDE `dist/`. The
     /// release pipeline removes `dist/` on every run; pointing `path:` at
