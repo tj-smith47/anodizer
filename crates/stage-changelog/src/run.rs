@@ -119,9 +119,14 @@ impl Stage for super::ChangelogStage {
             .cloned()
             .collect();
 
+        let ai_cfg = changelog_cfg.as_ref().and_then(|c| c.ai.clone());
+
         let mut combined_markdown = String::new();
         for crate_cfg in &crates {
-            let markdown = render_crate_changelog(ctx, &log, crate_cfg, &opts, &use_source)?;
+            let mut markdown = render_crate_changelog(ctx, &log, crate_cfg, &opts, &use_source)?;
+            if let Some(ref ai) = ai_cfg {
+                markdown = crate::ai::enhance_with_ai(ctx, ai, &markdown, &log)?;
+            }
             ctx.stage_outputs
                 .changelogs
                 .insert(crate_cfg.name.clone(), markdown.clone());

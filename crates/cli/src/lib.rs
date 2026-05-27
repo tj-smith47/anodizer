@@ -203,6 +203,11 @@ pub enum Commands {
         )]
         summary_json: Option<PathBuf>,
         #[arg(
+            long = "allow-ai-failure",
+            help = "If `changelog.ai` is configured and the AI provider fails, log a warning and keep the pre-AI release notes instead of aborting the release."
+        )]
+        allow_ai_failure: bool,
+        #[arg(
             long,
             conflicts_with = "merge",
             help = "Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/)"

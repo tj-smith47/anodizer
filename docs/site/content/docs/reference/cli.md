@@ -63,6 +63,7 @@ Run the full release pipeline
 | `--allow-rerun` | — | — | DANGEROUS: force publish to proceed even when a prior dist/run-<id>/report.json exists for this tag. PR-based publishers (homebrew, scoop, nix, krew, MCP) will open DUPLICATE pull requests. Recover from partial failures with --rollback-only --from-run=<id> first. Cannot be combined with --rollback-only (which has its own idempotency). |
 | `--allow-nondeterministic` | — | — | Runtime non-determinism opt-out for a specific artifact (repeatable). Mutually exclusive with --strict. |
 | `--summary-json` | — | — | Write the per-publisher run summary JSON to this path. |
+| `--allow-ai-failure` | — | — | If `changelog.ai` is configured and the AI provider fails, log a warning and keep the pre-AI release notes instead of aborting the release. |
 | `--split` | — | — | Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/) |
 | `--merge` | — | — | Merge artifacts from split build jobs and resume the pipeline from post-build stages |
 | `--publish-only` | — | — | Load artifacts from dist/ (preserved by `anodize check determinism --preserve-dist`) and run only the sign + publish pipeline. Skips build/archive/nfpm/sbom/checksum — those stages' outputs must already be present in dist/. |

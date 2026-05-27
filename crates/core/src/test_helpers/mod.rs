@@ -416,6 +416,7 @@ impl TestContextBuilder {
             from_run: None,
             runtime_nondeterministic_allowlist: Vec::new(),
             summary_json_path: None,
+            allow_ai_failure: false,
         };
 
         let mut ctx = Context::new(config, options);

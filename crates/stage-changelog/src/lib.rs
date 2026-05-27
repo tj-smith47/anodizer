@@ -5,6 +5,7 @@
 //! entry point used by `anodizer bump --commit` to bundle a changelog edit
 //! alongside the version bump in a single commit.
 
+mod ai;
 mod fetch;
 mod github_native;
 mod group;

@@ -215,6 +215,13 @@ pub struct ContextOptions {
     /// summary is written to this path. Consumed by the run-summary
     /// task.
     pub summary_json_path: Option<PathBuf>,
+    /// `--allow-ai-failure`: when true, a failure inside the
+    /// `changelog.ai` enhancement step (transport, non-2xx, parse) is
+    /// logged as a warning and the pre-AI release notes are kept
+    /// verbatim. Default `false` (fail-closed) mirrors GoReleaser's
+    /// "any hook failure aborts" pattern: a silent fall-back to the
+    /// raw notes ships the wrong body without the operator noticing.
+    pub allow_ai_failure: bool,
 }
 
 impl Default for ContextOptions {
@@ -249,6 +256,7 @@ impl Default for ContextOptions {
             from_run: None,
             runtime_nondeterministic_allowlist: Vec::new(),
             summary_json_path: None,
+            allow_ai_failure: false,
         }
     }
 }

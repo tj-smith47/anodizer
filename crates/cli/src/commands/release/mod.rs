@@ -128,6 +128,11 @@ pub struct ReleaseOpts {
     /// `--summary-json=<path>`: when set, the per-publisher run
     /// summary is written here.
     pub summary_json: Option<PathBuf>,
+    /// `--allow-ai-failure`: opt-in to degraded behaviour when
+    /// `changelog.ai` is configured and the provider fails. Default
+    /// (fail-closed) aborts the release on any provider error so the
+    /// operator notices instead of shipping the pre-AI body silently.
+    pub allow_ai_failure: bool,
 }
 
 /// Decide whether the pre-flight publisher-state check should run.
@@ -639,6 +644,7 @@ fn build_context_options(
         from_run: opts.from_run.clone(),
         runtime_nondeterministic_allowlist,
         summary_json_path: opts.summary_json.clone(),
+        allow_ai_failure: opts.allow_ai_failure,
     }
 }
 

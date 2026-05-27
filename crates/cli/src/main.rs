@@ -223,6 +223,7 @@ fn main() {
             allow_rerun,
             allow_nondeterministic,
             summary_json,
+            allow_ai_failure,
         } => {
             let duration = parse_timeout_or_exit(&timeout);
 
@@ -305,6 +306,7 @@ fn main() {
                     allow_rerun,
                     allow_nondeterministic,
                     summary_json,
+                    allow_ai_failure,
                 })
             })
         }
