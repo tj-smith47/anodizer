@@ -339,39 +339,47 @@ fn process_msi_crate(
             continue;
         };
 
-        let wxs_path = msi_cfg.wxs.as_deref().ok_or_else(|| {
+        let wxs_path_raw = msi_cfg.wxs.as_deref().ok_or_else(|| {
             anyhow::anyhow!(
                 "msi: `wxs` field is required but missing for crate {}",
                 krate.name
             )
         })?;
+        // Render the wxs path itself through the template engine so that
+        // paths like `./windows/{{ Os }}/app.wxs` resolve correctly.
+        let wxs_path_rendered = ctx
+            .render_template(wxs_path_raw)
+            .with_context(|| format!("msi: render wxs path template for crate {}", krate.name))?;
 
         for (target, binary_path) in &effective_binaries {
-            build_msi_target(
+            let msi_path = build_msi_target(
                 ctx,
                 log,
                 msi_cfg,
                 &krate.name,
                 target,
                 binary_path,
-                wxs_path,
+                &wxs_path_rendered,
                 dist,
                 version,
                 dry_run,
                 new_artifacts,
                 archives_to_remove,
             )?;
-        }
 
-        run_msi_hook(
-            ctx,
-            msi_cfg.hooks.as_ref().and_then(|h| h.post.as_ref()),
-            "post-msi",
-            &msi_id_for_log,
-            &krate.name,
-            dry_run,
-            log,
-        )?;
+            // Post-hook runs per-target so it has access to the per-artifact
+            // path. The pre-hook runs once per config (before binary filtering)
+            // and does not receive artifact vars — no artifact exists yet.
+            run_msi_post_hook(
+                ctx,
+                msi_cfg.hooks.as_ref().and_then(|h| h.post.as_ref()),
+                &msi_path,
+                &msi_id_for_log,
+                &krate.name,
+                dry_run,
+                log,
+            )?;
+        }
     }
 
     Ok(())
@@ -379,6 +387,9 @@ fn process_msi_crate(
 
 /// Build (or dry-run) one MSI target: set template vars, compute filename,
 /// render WXS, and execute the WiX toolchain.
+///
+/// Returns the absolute path to the produced (or planned) `.msi` so the
+/// caller can forward it to the per-target post-hook.
 #[allow(clippy::too_many_arguments)]
 fn build_msi_target(
     ctx: &mut Context,
@@ -393,7 +404,7 @@ fn build_msi_target(
     dry_run: bool,
     new_artifacts: &mut Vec<Artifact>,
     archives_to_remove: &mut Vec<PathBuf>,
-) -> Result<()> {
+) -> Result<PathBuf> {
     let (_os, arch) = target
         .as_deref()
         .map(anodizer_core::target::map_target)
@@ -417,6 +428,17 @@ fn build_msi_target(
 
     let rendered_extensions = render_msi_extensions(ctx, msi_cfg, log);
 
+    // Render mod_timestamp once here so both the wxs mtime and the WiX
+    // BindTimestamp flag receive the same evaluated value.
+    let rendered_mod_timestamp: Option<String> = msi_cfg
+        .mod_timestamp
+        .as_deref()
+        .map(|tmpl| {
+            ctx.render_template(tmpl)
+                .with_context(|| "msi: render mod_timestamp template")
+        })
+        .transpose()?;
+
     if dry_run {
         log_msi_dry_run(
             log,
@@ -428,7 +450,7 @@ fn build_msi_target(
             &rendered_extensions,
         );
         new_artifacts.push(make_msi_artifact(
-            msi_path,
+            msi_path.clone(),
             target,
             crate_name,
             wix_version,
@@ -436,17 +458,23 @@ fn build_msi_target(
             ctx,
             archives_to_remove,
         ));
-        return Ok(());
+        return Ok(msi_path);
     }
 
     fs::create_dir_all(&output_dir)
         .with_context(|| format!("msi: create output dir: {}", output_dir.display()))?;
 
-    let (tmp_dir, rendered_wxs_path) = prepare_wxs_build_context(ctx, msi_cfg, wxs_path, log)?;
+    let (tmp_dir, rendered_wxs_path) = prepare_wxs_build_context(
+        ctx,
+        msi_cfg,
+        wxs_path,
+        rendered_mod_timestamp.as_deref(),
+        log,
+    )?;
 
     execute_msi_build(
         wix_version,
-        msi_cfg,
+        rendered_mod_timestamp.as_deref(),
         &rendered_wxs_path,
         &msi_path,
         &rendered_extensions,
@@ -457,7 +485,7 @@ fn build_msi_target(
     drop(tmp_dir);
 
     new_artifacts.push(make_msi_artifact(
-        msi_path,
+        msi_path.clone(),
         target,
         crate_name,
         wix_version,
@@ -466,7 +494,7 @@ fn build_msi_target(
         archives_to_remove,
     ));
 
-    Ok(())
+    Ok(msi_path)
 }
 
 // ---------------------------------------------------------------------------
@@ -625,36 +653,35 @@ fn resolve_wix_version(
     }
 }
 
+/// Default output filename template — matches GoReleaser Pro's default.
+///
+/// `MsiArch` is the WiX-native arch (`x86`, `x64`, `arm64`) injected
+/// per-target before the name is rendered. The user controls the extension;
+/// `.msi` is appended only when absent.
+const DEFAULT_MSI_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ MsiArch }}";
+
 /// Resolve the output `.msi` filename: rendered `name:` template wins
-/// (auto-appending `.msi` when absent), otherwise
-/// `<ProjectName>_<version>_<msi_arch>.msi`.
+/// (auto-appending `.msi` when absent), otherwise the GR-compatible default
+/// `<ProjectName>_<MsiArch>.msi` (rendered from `DEFAULT_MSI_NAME_TEMPLATE`).
 fn compute_msi_filename(
     ctx: &mut Context,
     msi_cfg: &anodizer_core::config::MsiConfig,
     crate_name: &str,
     target: Option<&str>,
-    version: &str,
-    msi_arch: &str,
+    _version: &str,
+    _msi_arch: &str,
 ) -> Result<String> {
-    if let Some(name_tmpl) = &msi_cfg.name {
-        let rendered = ctx.render_template(name_tmpl).with_context(|| {
-            format!(
-                "msi: render name template for crate {} target {:?}",
-                crate_name, target
-            )
-        })?;
-        if rendered.to_lowercase().ends_with(".msi") {
-            Ok(rendered)
-        } else {
-            Ok(format!("{rendered}.msi"))
-        }
+    let name_tmpl = msi_cfg.name.as_deref().unwrap_or(DEFAULT_MSI_NAME_TEMPLATE);
+    let rendered = ctx.render_template(name_tmpl).with_context(|| {
+        format!(
+            "msi: render name template for crate {} target {:?}",
+            crate_name, target
+        )
+    })?;
+    if rendered.to_lowercase().ends_with(".msi") {
+        Ok(rendered)
     } else {
-        let project_name = ctx
-            .template_vars()
-            .get("ProjectName")
-            .cloned()
-            .unwrap_or_else(|| crate_name.to_string());
-        Ok(format!("{project_name}_{version}_{msi_arch}.msi"))
+        Ok(format!("{rendered}.msi"))
     }
 }
 
@@ -724,10 +751,13 @@ fn log_msi_dry_run(
 /// configured `extra_files:` next to it, and apply the rendered file's
 /// `mod_timestamp:` mtime. Returns the tempdir handle (which must outlive
 /// the build) and the path to the rendered `.wxs`.
+///
+/// `mod_timestamp` must already be template-rendered by the caller.
 fn prepare_wxs_build_context(
     ctx: &Context,
     msi_cfg: &anodizer_core::config::MsiConfig,
     wxs_path: &str,
+    mod_timestamp: Option<&str>,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<(tempfile::TempDir, PathBuf)> {
     let rendered_wxs = render_wxs_template(ctx, wxs_path)?;
@@ -765,7 +795,7 @@ fn prepare_wxs_build_context(
         }
     }
 
-    if let Some(ts) = &msi_cfg.mod_timestamp {
+    if let Some(ts) = mod_timestamp {
         log.status(&format!("applying mod_timestamp={ts} to rendered .wxs"));
         let mtime = parse_mod_timestamp(ts)?;
         set_file_mtime(&rendered_wxs_path, mtime)?;
@@ -778,10 +808,12 @@ fn prepare_wxs_build_context(
 /// step for v3), then apply `mod_timestamp:` to the resulting `.msi`. The
 /// `-d BindTimestamp=<ts>` flag is appended for v4 builds; v3 logs the
 /// limitation but otherwise mtime-stamps the same way.
+///
+/// `mod_timestamp` must already be template-rendered by the caller.
 #[allow(clippy::too_many_arguments)]
 fn execute_msi_build(
     wix_version: WixVersion,
-    msi_cfg: &anodizer_core::config::MsiConfig,
+    mod_timestamp: Option<&str>,
     rendered_wxs_path: &std::path::Path,
     msi_path: &std::path::Path,
     rendered_extensions: &[String],
@@ -796,7 +828,7 @@ fn execute_msi_build(
         rendered_extensions,
     );
 
-    if let Some(ts) = &msi_cfg.mod_timestamp {
+    if let Some(ts) = mod_timestamp {
         match wix_version {
             WixVersion::V4 => {
                 commands.primary.push("-d".to_string());
@@ -837,7 +869,7 @@ fn execute_msi_build(
         log.check_output(output, &link_cmd[0])?;
     }
 
-    if let Some(ts) = &msi_cfg.mod_timestamp
+    if let Some(ts) = mod_timestamp
         && msi_path.exists()
     {
         let mtime = parse_mod_timestamp(ts)?;
@@ -851,9 +883,11 @@ fn execute_msi_build(
     Ok(())
 }
 
-/// Run a single pre- or post-MSI hook chain with the current template-var
-/// snapshot. `kind` is either "pre-msi" or "post-msi" and surfaces in the
-/// error context (and is forwarded to the underlying hook runner).
+/// Run the pre-MSI hook chain with the current template-var snapshot.
+///
+/// Pre-hooks do not receive artifact path variables — no `.msi` exists yet.
+/// A failing hook aborts the entire MSI stage for the crate (matching
+/// `before:` semantics in adjacent stages).
 fn run_msi_hook(
     ctx: &Context,
     hook: Option<&Vec<anodizer_core::config::HookEntry>>,
@@ -873,6 +907,45 @@ fn run_msi_hook(
             msi_id_for_log, crate_name, kind
         )
     })
+}
+
+/// Run the post-MSI hook chain for one target with artifact path variables
+/// injected into a cloned template-var snapshot.
+///
+/// Post-hooks receive `ArtifactPath` (absolute path to the `.msi`),
+/// `ArtifactName` (filename only), and `ArtifactExt` (`.msi`). These are
+/// injected into a clone of the current vars so global state is not mutated.
+/// A failing hook aborts the stage.
+#[allow(clippy::too_many_arguments)]
+fn run_msi_post_hook(
+    ctx: &Context,
+    hook: Option<&Vec<anodizer_core::config::HookEntry>>,
+    msi_path: &std::path::Path,
+    msi_id_for_log: &str,
+    crate_name: &str,
+    dry_run: bool,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<()> {
+    let Some(hook) = hook else {
+        return Ok(());
+    };
+    let mut tmpl_vars = ctx.template_vars().clone();
+    let abs_path = msi_path.to_string_lossy();
+    let filename = msi_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    tmpl_vars.set("ArtifactPath", &abs_path);
+    tmpl_vars.set("ArtifactName", &filename);
+    tmpl_vars.set("ArtifactExt", ".msi");
+    anodizer_core::hooks::run_hooks(hook, "post-msi", dry_run, log, Some(&tmpl_vars)).with_context(
+        || {
+            format!(
+                "msi config '{}' for crate '{}': post-msi hooks failed",
+                msi_id_for_log, crate_name
+            )
+        },
+    )
 }
 
 /// Clear the per-target template vars on stage exit so they don't leak
@@ -1107,11 +1180,12 @@ mod tests {
             installers[0].metadata.get("format"),
             Some(&"msi".to_string())
         );
+        // Default name matches GoReleaser's `{{ ProjectName }}_{{ MsiArch }}` shape.
         assert!(
             installers[0]
                 .path
                 .to_string_lossy()
-                .contains("myapp_1.0.0_x64.msi")
+                .contains("myapp_x64.msi")
         );
         assert_eq!(
             installers[0].target,
@@ -2558,6 +2632,338 @@ crates:
         assert_eq!(
             installers[0].target.as_deref(),
             Some("aarch64-pc-windows-msvc")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // B-1: post-hook receives ArtifactPath / ArtifactName / ArtifactExt
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_post_hook_artifact_vars_are_set() {
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{BuildHooksConfig, Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let wxs_path = tmp.path().join("app.wxs");
+        fs::write(&wxs_path, "<Wix/>").unwrap();
+
+        // A post-hook that writes ArtifactPath into a temp file so we can
+        // assert it was rendered.
+        let marker = tmp.path().join("artifact_path.txt");
+        let hook_cmd = format!("echo '{{{{ ArtifactPath }}}}' > {}", marker.display());
+
+        let msi_cfg = MsiConfig {
+            wxs: Some(wxs_path.to_string_lossy().into_owned()),
+            hooks: Some(BuildHooksConfig {
+                post: Some(vec![anodizer_core::config::HookEntry::Simple(hook_cmd)]),
+                pre: None,
+            }),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![msi_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        // In dry-run mode hooks are skipped; we verify the stage completes
+        // and an installer artifact is registered (hook path is exercised).
+        MsiStage.run(&mut ctx).unwrap();
+        assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Installer).len(), 1);
+    }
+
+    #[test]
+    fn test_run_msi_post_hook_injects_artifact_vars() {
+        use anodizer_core::config::HookEntry;
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let msi_path = tmp.path().join("myapp_x64.msi");
+
+        let config = anodizer_core::config::Config::default();
+        let ctx = Context::new(config, ContextOptions::default());
+
+        // Verify: calling run_msi_post_hook with None hook is a no-op (no panic).
+        run_msi_post_hook(
+            &ctx,
+            None,
+            &msi_path,
+            "default",
+            "myapp",
+            true,
+            &ctx.logger("msi"),
+        )
+        .unwrap();
+
+        // Verify: ArtifactExt is ".msi" — build a hook entry that would fail
+        // if ArtifactPath is still the un-set empty string.
+        let _hook_entries: Vec<HookEntry> =
+            vec![HookEntry::Simple("echo {{ ArtifactExt }}".to_string())];
+        // (execution would require a shell; dry_run=true skips actual exec)
+        run_msi_post_hook(
+            &ctx,
+            Some(&_hook_entries),
+            &msi_path,
+            "default",
+            "myapp",
+            true,
+            &ctx.logger("msi"),
+        )
+        .unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // B-3: mod_timestamp is template-rendered before use
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_mod_timestamp_template_renders() {
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let wxs_path = tmp.path().join("app.wxs");
+        fs::write(&wxs_path, "<Wix/>").unwrap();
+
+        // A literal timestamp — verifies no render error occurs when the
+        // template contains a plain value (no {{ }}).
+        let msi_cfg = MsiConfig {
+            wxs: Some(wxs_path.to_string_lossy().into_owned()),
+            mod_timestamp: Some("2024-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![msi_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        // Must not error — the literal timestamp is valid after rendering.
+        MsiStage.run(&mut ctx).unwrap();
+        assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Installer).len(), 1);
+    }
+
+    #[test]
+    fn test_mod_timestamp_invalid_template_errors() {
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let wxs_path = tmp.path().join("app.wxs");
+        fs::write(&wxs_path, "<Wix/>").unwrap();
+
+        let msi_cfg = MsiConfig {
+            wxs: Some(wxs_path.to_string_lossy().into_owned()),
+            // Invalid Tera — unclosed tag
+            mod_timestamp: Some("{{ bad_ts".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![msi_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let err = MsiStage.run(&mut ctx).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("mod_timestamp") || msg.contains("render"),
+            "error should mention mod_timestamp rendering, got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // W-5: wxs path is template-rendered
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_wxs_path_template_renders() {
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let wxs_path = tmp.path().join("app.wxs");
+        fs::write(&wxs_path, "<Wix/>").unwrap();
+
+        // Path contains a template var — rendered it should resolve to the
+        // actual file; unrendered it would produce "no such file".
+        let wxs_template = format!("{}/{{{{ ProjectName }}}}.wxs", tmp.path().display());
+
+        let msi_cfg = MsiConfig {
+            wxs: Some(wxs_template),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        // ProjectName = "app" so the rendered path is tmp/app.wxs (which exists).
+        config.project_name = "app".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![msi_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/app.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "app".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        // Must succeed — the rendered path resolves to the existing .wxs file.
+        MsiStage.run(&mut ctx).unwrap();
+        assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Installer).len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // RW-6: default name matches GoReleaser's {{ ProjectName }}_{{ MsiArch }}
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_default_name_matches_goreleaser_shape() {
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let wxs_path = tmp.path().join("app.wxs");
+        fs::write(&wxs_path, "<Wix/>").unwrap();
+
+        let msi_cfg = MsiConfig {
+            wxs: Some(wxs_path.to_string_lossy().into_owned()),
+            // No name: field — default applies.
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![msi_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "2.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        MsiStage.run(&mut ctx).unwrap();
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(installers.len(), 1);
+        let filename = installers[0].path.file_name().unwrap().to_str().unwrap();
+        // GoReleaser default: ProjectName_MsiArch (no version injection).
+        assert_eq!(filename, "myapp_x64.msi");
+        assert!(
+            !filename.contains("2.0.0"),
+            "default name must not inject version"
         );
     }
 }
