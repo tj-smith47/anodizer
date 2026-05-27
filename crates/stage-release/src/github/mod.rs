@@ -104,6 +104,41 @@ pub(crate) async fn find_draft_by_name(
     Ok(None)
 }
 
+/// Look up the single release that points at `tag` via the GitHub Releases API.
+///
+/// Returns `Ok(Some(release))` when a release exists for the tag,
+/// `Ok(None)` when the tag has no associated release (HTTP 404), and
+/// `Err(_)` when any other error surfaces (auth, validation, exhausted retries
+/// on 5xx / 429) so the caller sees the real GitHub error rather than silently
+/// treating a failed lookup as "no existing release".
+async fn find_release_by_tag(
+    octo: &Arc<octocrab::Octocrab>,
+    policy: &anodizer_core::retry::RetryPolicy,
+    retry_after: Option<&RetryAfterCapture>,
+    label: &'static str,
+    owner: &str,
+    repo: &str,
+    tag: &str,
+) -> Result<Option<octocrab::models::repos::Release>> {
+    let owner = owner.to_string();
+    let repo = repo.to_string();
+    let tag = tag.to_string();
+    let result: Result<octocrab::models::repos::Release, octocrab::Error> =
+        retry_octocrab_call(policy, label, retry_after, || {
+            let octo = octo.clone();
+            let owner = owner.clone();
+            let repo = repo.clone();
+            let tag = tag.clone();
+            async move { octo.repos(&owner, &repo).releases().get_by_tag(&tag).await }
+        })
+        .await;
+    match result {
+        Ok(release) => Ok(Some(release)),
+        Err(err) if is_octocrab_404(&err) => Ok(None),
+        Err(err) => Err(anyhow::Error::new(err)),
+    }
+}
+
 /// Resolve the upload retry loop's per-iteration locals from a [`RetryPolicy`].
 ///
 /// Returns `(max_upload_attempts, initial_retry_delay, max_retry_delay)` in
@@ -179,6 +214,10 @@ pub(crate) struct UploadOpts {
     /// nightly tag always resolves to a single live release. Destructive —
     /// the prior release (and any unique assets the user uploaded out-of-band)
     /// is removed via the GitHub Releases API.
+    ///
+    /// Best-effort delete: a concurrent process that already removed the
+    /// release between our lookup and delete is treated as success, since
+    /// the post-condition (no prior release at this tag) is satisfied.
     pub keep_single_release: bool,
 }
 
@@ -412,59 +451,58 @@ pub(crate) fn run_github_backend(
         // same tag, so GitHub reuses the ref instead of leaving a
         // dangling tag.
         if keep_single_release && existing_draft.is_none() {
-            let owner = github.owner.clone();
-            let repo = github.name.clone();
-            let tag_owned = tag.to_string();
-            let lookup: Result<octocrab::models::repos::Release, octocrab::Error> =
-                retry_octocrab_call(&policy, "get release by tag (keep_single_release)", Some(&retry_after_capture), || {
+            let prior = find_release_by_tag(
+                &octo,
+                &policy,
+                Some(&retry_after_capture),
+                "get release by tag (keep_single_release)",
+                &github.owner,
+                &github.name,
+                tag,
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "release: look up existing nightly release by tag '{}' on {}/{}",
+                    tag, github.owner, github.name
+                )
+            })?;
+            if let Some(existing) = prior {
+                let existing_id = existing.id.into_inner();
+                log.status(&format!(
+                    "nightly: keep_single_release — deleting prior release for tag '{}' (id={})",
+                    tag, existing_id
+                ));
+                let delete_result = retry_octocrab_call(&policy, "delete release (keep_single_release)", Some(&retry_after_capture), || {
                     let octo = octo.clone();
-                    let owner = owner.clone();
-                    let repo = repo.clone();
-                    let tag_owned = tag_owned.clone();
+                    let owner = github.owner.clone();
+                    let repo = github.name.clone();
                     async move {
                         octo.repos(&owner, &repo)
                             .releases()
-                            .get_by_tag(&tag_owned)
+                            .delete(existing_id)
                             .await
                     }
                 })
                 .await;
-            match lookup {
-                Ok(existing) => {
-                    let existing_id = existing.id.into_inner();
-                    log.status(&format!(
-                        "nightly: keep_single_release — deleting prior release for tag '{}' (id={})",
-                        tag, existing_id
-                    ));
-                    retry_octocrab_call(&policy, "delete release (keep_single_release)", Some(&retry_after_capture), || {
-                        let octo = octo.clone();
-                        let owner = github.owner.clone();
-                        let repo = github.name.clone();
-                        async move {
-                            octo.repos(&owner, &repo)
-                                .releases()
-                                .delete(existing_id)
-                                .await
-                        }
-                    })
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "release: delete prior nightly release for tag '{}' on {}/{}",
-                            tag, github.owner, github.name
-                        )
-                    })?;
-                }
-                Err(err) if is_octocrab_404(&err) => {
-                    // No prior release at this tag — nothing to delete.
-                }
-                Err(err) => {
-                    return Err(anyhow::Error::new(err)).with_context(|| {
-                        format!(
-                            "release: look up existing nightly release by tag '{}' on {}/{}",
-                            tag, github.owner, github.name
-                        )
-                    });
+                match delete_result {
+                    Ok(()) => {}
+                    Err(ref err) if is_octocrab_404(err) => {
+                        // A concurrent process already removed the release;
+                        // post-condition (no prior release at this tag) is satisfied.
+                        log.status(&format!(
+                            "nightly: keep_single_release — prior release for tag '{}' (id={}) already deleted by concurrent process",
+                            tag, existing_id
+                        ));
+                    }
+                    Err(err) => {
+                        return Err(anyhow::Error::new(err)).with_context(|| {
+                            format!(
+                                "release: delete prior nightly release for tag '{}' on {}/{}",
+                                tag, github.owner, github.name
+                            )
+                        });
+                    }
                 }
             }
         }
@@ -494,47 +532,30 @@ pub(crate) fn run_github_backend(
                 // runs. Any other error (auth, validation, exhausted retries
                 // on 5xx) propagates with `with_context` so the user sees the
                 // real GitHub error instead of a downstream 422.
-                let owner = github.owner.clone();
-                let repo = github.name.clone();
-                let tag_owned = tag.to_string();
-                let lookup: Result<octocrab::models::repos::Release, octocrab::Error> =
-                    retry_octocrab_call(&policy, "get release by tag", Some(&retry_after_capture), || {
-                        let octo = octo.clone();
-                        let owner = owner.clone();
-                        let repo = repo.clone();
-                        let tag_owned = tag_owned.clone();
-                        async move {
-                            octo.repos(&owner, &repo)
-                                .releases()
-                                .get_by_tag(&tag_owned)
-                                .await
-                        }
-                    })
-                    .await;
-                match lookup {
-                    Ok(existing) => {
+                let existing = find_release_by_tag(
+                    &octo,
+                    &policy,
+                    Some(&retry_after_capture),
+                    "get release by tag",
+                    &github.owner,
+                    &github.name,
+                    tag,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "release: look up existing release by tag '{}' on {}/{}",
+                        tag, github.owner, github.name
+                    )
+                })?;
+                match existing {
+                    Some(existing) => {
                         let existing_body = existing.body.as_deref();
                         let body =
                             compose_body_for_mode(release_mode, existing_body, release_body);
                         (body, Some(existing))
                     }
-                    Err(err) if is_octocrab_404(&err) => {
-                        // A real 404 is the only non-error fall-through: no
-                        // release exists for that tag, so the create-release
-                        // POST below is the right next step. Every other
-                        // status (auth, validation, exhausted retries on 5xx)
-                        // propagates so the user sees the real GitHub error
-                        // instead of a downstream 422 "tag already exists".
-                        (release_body.to_string(), None)
-                    }
-                    Err(err) => {
-                        return Err(anyhow::Error::new(err)).with_context(|| {
-                            format!(
-                                "release: look up existing release by tag '{}' on {}/{}",
-                                tag, github.owner, github.name
-                            )
-                        });
-                    }
+                    None => (release_body.to_string(), None),
                 }
             } else {
                 (release_body.to_string(), None)

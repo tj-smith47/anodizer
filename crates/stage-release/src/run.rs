@@ -49,6 +49,7 @@ impl Stage for super::ReleaseStage {
             if should_skip_release(ctx, release_cfg, &crate_cfg.name, &log)? {
                 continue;
             }
+            validate_release_flags(release_cfg, &crate_cfg.name)?;
             release_one_crate(ctx, &log, &rt, &token, crate_cfg, release_cfg, dry_run)?;
         }
 
@@ -56,10 +57,26 @@ impl Stage for super::ReleaseStage {
     }
 }
 
+/// Validate release flag combinations that are mutually exclusive and would
+/// produce undefined behavior if both are set.
+///
+/// Returns `Err` when the combination is invalid; `Ok(())` otherwise.
+fn validate_release_flags(
+    release_cfg: &anodizer_core::config::ReleaseConfig,
+    crate_name: &str,
+) -> Result<()> {
+    if release_cfg.resolved_replace_existing_draft() && release_cfg.resolved_use_existing_draft() {
+        bail!(
+            "release: crate '{}': cannot set both replace_existing_draft and \
+             use_existing_draft — replace deletes drafts that use_existing_draft needs",
+            crate_name
+        );
+    }
+    Ok(())
+}
+
 /// Check whether a crate's release should be skipped: evaluates the `skip`
-/// template, honours `nightly.publish_release: false` on nightly runs, and
-/// validates that `replace_existing_draft` and `use_existing_draft` are
-/// not both set.
+/// template and honours `nightly.publish_release: false` on nightly runs.
 fn should_skip_release(
     ctx: &Context,
     release_cfg: &anodizer_core::config::ReleaseConfig,
@@ -83,13 +100,6 @@ fn should_skip_release(
             crate_name
         ));
         return Ok(true);
-    }
-    if release_cfg.resolved_replace_existing_draft() && release_cfg.resolved_use_existing_draft() {
-        bail!(
-            "release: crate '{}': cannot set both replace_existing_draft and \
-             use_existing_draft — replace deletes drafts that use_existing_draft needs",
-            crate_name
-        );
     }
     Ok(false)
 }
@@ -143,7 +153,7 @@ fn release_one_crate(
 
     let release_name = resolve_release_name(ctx, release_cfg, &crate_cfg.name)?;
 
-    let flags = resolve_release_flags(ctx, release_cfg, &crate_name, &tag)?;
+    let flags = resolve_release_flags(ctx, release_cfg, &crate_name, &tag, log)?;
     let ids_filter = release_cfg.ids.as_ref();
 
     let artifact_entries = assemble_artifact_entries(
@@ -169,6 +179,7 @@ fn release_one_crate(
                 prerelease: flags.prerelease,
                 release_mode: &release_mode,
                 skip_upload: flags.skip_upload,
+                keep_single_release: flags.keep_single_release,
                 artifact_entries: &artifact_entries,
             },
         )?;
@@ -480,6 +491,7 @@ fn resolve_release_flags(
     release_cfg: &anodizer_core::config::ReleaseConfig,
     crate_name: &str,
     tag: &str,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<ResolvedReleaseFlags> {
     let skip_upload = resolve_skip_upload(ctx, release_cfg, crate_name)?;
     let target_commitish = release_cfg
@@ -507,6 +519,12 @@ fn resolve_release_flags(
         && nightly_cfg
             .and_then(|n| n.keep_single_release)
             .unwrap_or(false);
+    if ctx.is_nightly() && draft && keep_single_release {
+        log.warn(
+            "release: nightly with both draft=true and keep_single_release=true \
+             — no published nightly release will exist (each run replaces a prior draft)",
+        );
+    }
     Ok(ResolvedReleaseFlags {
         draft,
         prerelease: should_mark_prerelease(&release_cfg.prerelease, tag),
@@ -650,6 +668,7 @@ struct DryRunSummary<'a> {
     prerelease: bool,
     release_mode: &'a str,
     skip_upload: bool,
+    keep_single_release: bool,
     artifact_entries: &'a [(std::path::PathBuf, Option<String>)],
 }
 
@@ -776,6 +795,12 @@ fn handle_dry_run(
         s.release_mode,
         s.crate_name,
     ));
+    if s.keep_single_release {
+        log.status(&format!(
+            "(dry-run)   would delete existing release at tag '{}' before recreating (nightly.keep_single_release)",
+            s.tag,
+        ));
+    }
     if s.skip_upload {
         log.status("(dry-run)   skip_upload is set, would skip artifact uploads");
     } else {
@@ -935,7 +960,7 @@ mod tests {
             draft: Some(false),
             ..Default::default()
         };
-        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly")
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly", &quiet_log())
             .expect("resolve_release_flags returns Ok");
         assert!(
             flags.draft,
@@ -956,7 +981,7 @@ mod tests {
             draft: Some(true),
             ..Default::default()
         };
-        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly")
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly", &quiet_log())
             .expect("resolve_release_flags returns Ok");
         assert!(
             flags.draft,
@@ -974,7 +999,7 @@ mod tests {
             ..Default::default()
         });
         let release_cfg = ReleaseConfig::default();
-        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "v1.0.0")
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "v1.0.0", &quiet_log())
             .expect("resolve_release_flags returns Ok");
         assert!(
             !flags.keep_single_release,
@@ -992,11 +1017,80 @@ mod tests {
             ..Default::default()
         });
         let release_cfg = ReleaseConfig::default();
-        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly")
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly", &quiet_log())
             .expect("resolve_release_flags returns Ok");
         assert!(
             flags.keep_single_release,
             "keep_single_release must be true when nightly and nightly.keep_single_release=Some(true)"
+        );
+    }
+
+    #[test]
+    fn validate_release_flags_rejects_replace_and_use_existing_draft_together() {
+        // Both flags set simultaneously is always an error.
+        let release_cfg = ReleaseConfig {
+            replace_existing_draft: Some(true),
+            use_existing_draft: Some(true),
+            ..Default::default()
+        };
+        let result = validate_release_flags(&release_cfg, "demo");
+        assert!(
+            result.is_err(),
+            "replace_existing_draft + use_existing_draft must be rejected"
+        );
+        let msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            msg.contains("replace_existing_draft") && msg.contains("use_existing_draft"),
+            "error must name both conflicting flags; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_release_flags_accepts_replace_existing_draft_alone() {
+        let release_cfg = ReleaseConfig {
+            replace_existing_draft: Some(true),
+            use_existing_draft: Some(false),
+            ..Default::default()
+        };
+        assert!(
+            validate_release_flags(&release_cfg, "demo").is_ok(),
+            "replace_existing_draft=true alone must not error"
+        );
+    }
+
+    #[test]
+    fn validate_release_flags_accepts_use_existing_draft_alone() {
+        let release_cfg = ReleaseConfig {
+            replace_existing_draft: Some(false),
+            use_existing_draft: Some(true),
+            ..Default::default()
+        };
+        assert!(
+            validate_release_flags(&release_cfg, "demo").is_ok(),
+            "use_existing_draft=true alone must not error"
+        );
+    }
+
+    #[test]
+    fn resolve_release_flags_warns_when_nightly_draft_and_keep_single_release() {
+        // draft=true + keep_single_release=true on a nightly run is a GoReleaser-
+        // documented gotcha: no published release ever exists because each run
+        // replaces a prior draft. Must succeed (warn, not error).
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        ctx.options.nightly = true;
+        ctx.config.nightly = Some(NightlyConfig {
+            draft: Some(true),
+            keep_single_release: Some(true),
+            ..Default::default()
+        });
+        let release_cfg = ReleaseConfig::default();
+        // Must succeed (warn, not error).
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly", &quiet_log())
+            .expect("nightly + draft + keep_single_release must not error");
+        assert!(flags.draft, "draft must be true");
+        assert!(
+            flags.keep_single_release,
+            "keep_single_release must be true"
         );
     }
 }
