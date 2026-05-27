@@ -208,7 +208,10 @@ pub struct AppBundleConfig {
     pub name: Option<String>,
     /// Path to .icns icon file for the app bundle (supports templates).
     pub icon: Option<String>,
-    /// Bundle identifier in reverse-DNS notation (e.g. com.example.myapp). Required.
+    /// Bundle identifier in reverse-DNS notation (e.g. `com.example.myapp`). Required.
+    ///
+    /// Must be set explicitly; there is no default. A missing value is caught at
+    /// validation time with an actionable error message.
     pub bundle: Option<String>,
     /// Additional files to include in the bundle (src/dst/info objects or glob strings).
     pub extra_files: Option<Vec<ArchiveFileSpec>>,
@@ -219,7 +222,13 @@ pub struct AppBundleConfig {
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
     /// Remove source archives from artifacts, keeping only the app bundle.
+    ///
+    /// Anodizer-additive: GoReleaser Pro does not expose `replace:` on `app_bundles`.
     pub replace: Option<bool>,
+    /// Minimum macOS version written to `LSMinimumSystemVersion` in `Info.plist`.
+    ///
+    /// Defaults to `"10.13"` when unset. Symmetry with `PkgConfig.min_os_version`.
+    pub min_os_version: Option<String>,
     /// Skip this app bundle config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,

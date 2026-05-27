@@ -110,6 +110,36 @@ fn os_arch_from_target(target: Option<&str>) -> (String, String) {
 /// Default output filename template matching GoReleaser's `'{{.ProjectName}}_{{.Arch}}'`.
 const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}";
 
+/// Copy `binary_path` into `staging_dir` and, when `use_mode == "binary"` on
+/// Unix, force the destination to mode `0o755`.
+///
+/// `fs::copy` preserves source permissions, so a binary unpacked from an
+/// archive that stripped the execute bit would otherwise ship inside the DMG
+/// as non-executable. App bundles already chmod their own binary inside
+/// `Contents/MacOS/`, so this helper is a no-op when `use_mode == "appbundle"`.
+pub(crate) fn stage_binary_into(
+    staging_dir: &std::path::Path,
+    binary_path: &std::path::Path,
+    binary_name: &str,
+    use_mode: &str,
+) -> Result<std::path::PathBuf> {
+    let staged_binary = staging_dir.join(binary_name);
+    std::fs::copy(binary_path, &staged_binary)
+        .with_context(|| format!("copy binary {} to staging dir", binary_path.display()))?;
+    #[cfg(unix)]
+    if use_mode == "binary" {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&staged_binary, perms).with_context(|| {
+            format!(
+                "dmg: set executable permission on {}",
+                staged_binary.display()
+            )
+        })?;
+    }
+    Ok(staged_binary)
+}
+
 /// Insert an `/Applications` symlink into the staging directory when
 /// packaging an app bundle, giving mounted DMGs the standard drag-and-drop
 /// install UX. No-op for any other `use_mode`.
@@ -475,10 +505,7 @@ impl Stage for DmgStage {
                             .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or(&krate.name);
-                        let staged_binary = staging_dir.join(binary_name);
-                        fs::copy(binary_path, &staged_binary).with_context(|| {
-                            format!("copy binary {} to staging dir", binary_path.display())
-                        })?;
+                        stage_binary_into(staging_dir, binary_path, binary_name, use_mode)?;
                     }
 
                     #[cfg(unix)]
@@ -2319,6 +2346,55 @@ crates:
         assert_eq!(
             std::fs::read_link(&link).unwrap(),
             std::path::Path::new("/Applications")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_stage_binary_into_chmods_binary_use_mode_to_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("payload");
+        std::fs::write(&src, b"not really a binary").unwrap();
+        // Strip the executable bit on the source to simulate an artifact unpacked
+        // from a tarball that did not preserve perms.
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let staging = tmp.path().join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+
+        let staged = stage_binary_into(&staging, &src, "payload", "binary").unwrap();
+        let mode = std::fs::metadata(&staged).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o755,
+            "binary use_mode must produce a 0o755 file, got 0o{mode:o}"
+        );
+        assert!(
+            mode & 0o111 != 0,
+            "binary in DMG must be executable, got 0o{mode:o}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_stage_binary_into_preserves_perms_for_appbundle_use_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("payload");
+        std::fs::write(&src, b"appbundle dir contents (synthetic)").unwrap();
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let staging = tmp.path().join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+
+        let staged = stage_binary_into(&staging, &src, "payload", "appbundle").unwrap();
+        let mode = std::fs::metadata(&staged).unwrap().permissions().mode() & 0o777;
+        // appbundle mode must NOT chmod 755 (the .app handles its own perms).
+        assert_eq!(
+            mode, 0o644,
+            "appbundle use_mode must preserve source perms, got 0o{mode:o}"
         );
     }
 }

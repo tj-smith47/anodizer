@@ -13,21 +13,29 @@ use anodizer_core::stage::Stage;
 // Info.plist generation
 // ---------------------------------------------------------------------------
 
+/// The fallback `LSMinimumSystemVersion` written to `Info.plist` when the
+/// config does not set `min_os_version`.
+const DEFAULT_MIN_OS_VERSION: &str = "10.13";
+
 /// Generate a macOS `Info.plist` XML string.
 ///
-/// If `icon_filename` is `None`, the `CFBundleIconFile` key is omitted.
+/// `min_os_version` is written to `LSMinimumSystemVersion`; pass `None` to
+/// get the default (`10.13`). If `icon_filename` is `None`, the
+/// `CFBundleIconFile` key is omitted.
 pub fn generate_info_plist(
     binary_name: &str,
     bundle_id: &str,
     project_name: &str,
     version: &str,
     icon_filename: Option<&str>,
+    min_os_version: Option<&str>,
 ) -> String {
     let icon_entry = if let Some(icon) = icon_filename {
         format!("\n    <key>CFBundleIconFile</key>\n    <string>{icon}</string>")
     } else {
         String::new()
     };
+    let min_os = min_os_version.unwrap_or(DEFAULT_MIN_OS_VERSION);
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -51,7 +59,7 @@ pub fn generate_info_plist(
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
-    <string>10.13</string>{icon_entry}
+    <string>{min_os}</string>{icon_entry}
 </dict>
 </plist>
 "#
@@ -78,12 +86,17 @@ const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}.app";
 /// Copy extra files specified by `ArchiveFileSpec` entries into the app bundle.
 ///
 /// - `Glob(s)`: resolve the glob and copy each match into `Contents/Resources/`.
-/// - `Detailed { src, dst, .. }`: resolve `src` as a glob and copy matches to
-///   `{app_dir}/{dst}` if `dst` is provided, otherwise into `Contents/Resources/`.
+/// - `Detailed { src, dst, info, .. }`: resolve `src` as a glob and copy matches
+///   to `{app_dir}/{dst}` if `dst` is provided, otherwise into
+///   `Contents/Resources/`. When `dst` is set and the glob matches more than one
+///   file the call fails pre-flight because every match would be written to the
+///   same destination path. Per-file `info.mtime` is applied after copying;
+///   `info.mode`/`info.owner`/`info.group` are not used and emit warnings.
 fn copy_extra_files(
     specs: &[ArchiveFileSpec],
     app_dir: &Path,
     log: &anodizer_core::log::StageLogger,
+    render: &dyn Fn(&str) -> Result<String>,
 ) -> Result<()> {
     for spec in specs {
         match spec {
@@ -112,8 +125,8 @@ fn copy_extra_files(
             ArchiveFileSpec::Detailed {
                 src,
                 dst,
+                info,
                 strip_parent,
-                ..
             } => {
                 if strip_parent == &Some(true) {
                     log.warn(&format!(
@@ -122,11 +135,59 @@ fn copy_extra_files(
                     ));
                 }
 
+                // Warn for file metadata fields that macOS .app bundles do not use.
+                if let Some(info) = info {
+                    if info.mode.is_some() {
+                        log.warn(&format!(
+                            "app_bundles: extra_files info.mode is not used for app bundles (ignored for src '{src}')"
+                        ));
+                    }
+                    if info.owner.is_some() {
+                        log.warn(&format!(
+                            "app_bundles: extra_files info.owner is not used for app bundles (ignored for src '{src}')"
+                        ));
+                    }
+                    if info.group.is_some() {
+                        log.warn(&format!(
+                            "app_bundles: extra_files info.group is not used for app bundles (ignored for src '{src}')"
+                        ));
+                    }
+                }
+
                 let dest_base = if let Some(dst_path) = dst {
                     app_dir.join(dst_path)
                 } else {
                     app_dir.join("Contents/Resources")
                 };
+
+                // Pre-flight: a rename dst paired with multiple glob matches would
+                // silently overwrite every earlier copy with the last one.
+                if dst.is_some()
+                    && let Ok(entries) = glob::glob(src)
+                {
+                    let matches: Vec<_> = entries.flatten().filter(|e| e.is_file()).collect();
+                    if matches.len() > 1 {
+                        anyhow::bail!(
+                            "app_bundles extra_files: dst rename only valid for glob \
+                             matching exactly 1 file; got {} matches for '{}'",
+                            matches.len(),
+                            src
+                        );
+                    }
+                }
+
+                // Per-file mtime from info.mtime; None means "do not override".
+                let per_file_mtime: Option<std::time::SystemTime> =
+                    if let Some(mtime_tmpl) = info.as_ref().and_then(|i| i.mtime.as_deref()) {
+                        let rendered = render(mtime_tmpl).with_context(|| {
+                        format!(
+                            "app_bundles extra_files: render info.mtime template for src '{src}'"
+                        )
+                    })?;
+                        Some(anodizer_core::util::parse_mod_timestamp(&rendered)?)
+                    } else {
+                        None
+                    };
 
                 match glob::glob(src) {
                     Ok(entries) => {
@@ -145,14 +206,19 @@ fn copy_extra_files(
                                         )
                                     })?;
                                 }
-                                let dst = dest_base.join(dst_name);
-                                fs::copy(&entry, &dst).with_context(|| {
+                                let dst_path = dest_base.join(dst_name);
+                                fs::copy(&entry, &dst_path).with_context(|| {
                                     format!(
                                         "copy extra file {} to {}",
                                         entry.display(),
-                                        dst.display()
+                                        dst_path.display()
                                     )
                                 })?;
+                                // Per-file mtime wins over the bundle-level mod_timestamp
+                                // because it is the more specific knob.
+                                if let Some(mtime) = per_file_mtime {
+                                    anodizer_core::util::set_file_mtime(&dst_path, mtime)?;
+                                }
                             }
                         }
                     }
@@ -366,14 +432,20 @@ impl Stage for AppBundleStage {
                         .and_then(|n| n.to_str())
                         .unwrap_or(&krate.name);
 
-                    // Determine the bundle identifier (template-rendered)
-                    let bundle_id = if let Some(ref bundle_tmpl) = bundle_cfg.bundle {
-                        ctx.render_template(bundle_tmpl).with_context(|| {
-                            format!("appbundle: render bundle template for {}", krate.name)
-                        })?
-                    } else {
-                        format!("com.anodizer.{project_name}")
-                    };
+                    // Require an explicit bundle identifier; there is no safe default
+                    // because an auto-generated ID would be registered under
+                    // com.anodizer.* which the user does not own.
+                    let bundle_tmpl = bundle_cfg.bundle.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "app_bundles: 'bundle' (reverse-DNS identifier) is required when \
+                             creating a .app bundle for crate '{}'. \
+                             Set it to a value you own (e.g. com.example.myapp).",
+                            krate.name
+                        )
+                    })?;
+                    let bundle_id = ctx.render_template(bundle_tmpl).with_context(|| {
+                        format!("appbundle: render bundle template for {}", krate.name)
+                    })?;
 
                     // Render icon path and extract filename (if icon is configured)
                     let rendered_icon_path = if let Some(icon_tmpl) = &bundle_cfg.icon {
@@ -484,6 +556,7 @@ impl Stage for AppBundleStage {
                         &project_name,
                         &version,
                         icon_filename.as_deref(),
+                        bundle_cfg.min_os_version.as_deref(),
                     );
                     let plist_path = app_dir.join("Contents/Info.plist");
                     fs::write(&plist_path, &plist_content)
@@ -491,7 +564,7 @@ impl Stage for AppBundleStage {
 
                     // Copy extra files
                     if let Some(extra_files) = &bundle_cfg.extra_files {
-                        copy_extra_files(extra_files, &app_dir, &log)?;
+                        copy_extra_files(extra_files, &app_dir, &log, &|t| ctx.render_template(t))?;
                     }
 
                     // Process templated_extra_files: render and copy into the app bundle
@@ -586,6 +659,7 @@ mod tests {
             "MyApp",
             "1.2.3",
             Some("app.icns"),
+            None,
         );
 
         // Verify XML structure
@@ -618,7 +692,7 @@ mod tests {
 
     #[test]
     fn test_info_plist_without_icon() {
-        let plist = generate_info_plist("myapp", "com.example.myapp", "MyApp", "1.0.0", None);
+        let plist = generate_info_plist("myapp", "com.example.myapp", "MyApp", "1.0.0", None, None);
 
         // CFBundleIconFile key should be omitted
         assert!(
@@ -655,19 +729,13 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Default bundle ID
+    // Bundle ID in plist
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_default_bundle_id() {
-        // When no bundle ID is provided, should default to com.anodizer.{project_name}
-        let project_name = "myapp";
-        let default_id = format!("com.anodizer.{project_name}");
-        assert_eq!(default_id, "com.anodizer.myapp");
-
-        // Verify this appears in the plist
-        let plist = generate_info_plist("myapp", &default_id, project_name, "1.0.0", None);
-        assert!(plist.contains("<string>com.anodizer.myapp</string>"));
+    fn test_bundle_id_in_plist() {
+        let plist = generate_info_plist("myapp", "com.example.myapp", "myapp", "1.0.0", None, None);
+        assert!(plist.contains("<string>com.example.myapp</string>"));
     }
 
     // -----------------------------------------------------------------------
@@ -832,6 +900,7 @@ mod tests {
 
         let bundle_cfg = AppBundleConfig {
             name: Some("{{ ProjectName }}-{{ Version }}-{{ Arch }}.app".to_string()),
+            bundle: Some("com.example.myapp".to_string()),
             ..Default::default()
         };
 
@@ -890,6 +959,7 @@ mod tests {
         // Name template without .app extension
         let bundle_cfg = AppBundleConfig {
             name: Some("{{ ProjectName }}_{{ Version }}_{{ Arch }}".to_string()),
+            bundle: Some("com.example.myapp".to_string()),
             ..Default::default()
         };
 
@@ -949,6 +1019,7 @@ mod tests {
 
         let bundle_cfg = AppBundleConfig {
             ids: Some(vec!["build-darwin-arm64".to_string()]),
+            bundle: Some("com.example.myapp".to_string()),
             ..Default::default()
         };
 
@@ -1010,13 +1081,13 @@ mod tests {
     }
 
     #[test]
-    fn test_stage_default_bundle_id_in_dry_run() {
+    fn test_stage_missing_bundle_bails() {
         use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
         use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
-        // No bundle ID specified — should default to com.anodizer.{project_name}
+        // bundle: not set — must produce an error with an actionable message
         let bundle_cfg = AppBundleConfig::default();
 
         let mut config = Config::default();
@@ -1049,13 +1120,14 @@ mod tests {
             size: None,
         });
 
-        let stage = AppBundleStage;
-        stage.run(&mut ctx).unwrap();
-
-        // Verify an artifact was produced (the default bundle ID is used internally)
-        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
-        assert_eq!(installers.len(), 1);
-        assert_eq!(installers[0].metadata.get("format").unwrap(), "appbundle");
+        let err = AppBundleStage
+            .run(&mut ctx)
+            .expect_err("missing bundle should error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("'bundle'") && msg.contains("required"),
+            "error should name the missing field, got: {msg}"
+        );
     }
 
     #[test]
@@ -1351,11 +1423,13 @@ crates:
         let bundle_cfg_1 = AppBundleConfig {
             id: Some("standard".to_string()),
             name: Some("{{ ProjectName }}-standard-{{ Arch }}.app".to_string()),
+            bundle: Some("com.example.myapp.standard".to_string()),
             ..Default::default()
         };
         let bundle_cfg_2 = AppBundleConfig {
             id: Some("pro".to_string()),
             name: Some("{{ ProjectName }}-pro-{{ Arch }}.app".to_string()),
+            bundle: Some("com.example.myapp.pro".to_string()),
             ..Default::default()
         };
 
@@ -1438,11 +1512,13 @@ crates:
         let enabled_cfg = AppBundleConfig {
             id: Some("enabled".to_string()),
             name: Some("{{ ProjectName }}-enabled-{{ Arch }}.app".to_string()),
+            bundle: Some("com.example.myapp.enabled".to_string()),
             ..Default::default()
         };
         let disabled_cfg = AppBundleConfig {
             id: Some("disabled".to_string()),
             name: Some("{{ ProjectName }}-disabled-{{ Arch }}.app".to_string()),
+            bundle: Some("com.example.myapp.disabled".to_string()),
             skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         };
@@ -1742,6 +1818,237 @@ crates:
         assert!(
             msg.contains("`if` template render failed"),
             "error should name `if` render failure, got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // min_os_version wired to Info.plist
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_info_plist_min_os_version_default() {
+        let plist = generate_info_plist("myapp", "com.example.myapp", "MyApp", "1.0.0", None, None);
+        assert!(
+            plist.contains("<string>10.13</string>"),
+            "default min_os_version should be 10.13"
+        );
+    }
+
+    #[test]
+    fn test_info_plist_min_os_version_custom() {
+        let plist = generate_info_plist(
+            "myapp",
+            "com.example.myapp",
+            "MyApp",
+            "1.0.0",
+            None,
+            Some("12.0"),
+        );
+        assert!(
+            plist.contains("<string>12.0</string>"),
+            "custom min_os_version should appear in plist"
+        );
+        assert!(
+            !plist.contains("<string>10.13</string>"),
+            "default should not appear when overridden"
+        );
+    }
+
+    #[test]
+    fn test_stage_live_min_os_version_in_plist() {
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let binary_path = tmp.path().join("myapp");
+        fs::write(&binary_path, b"fake-binary").unwrap();
+
+        let bundle_cfg = AppBundleConfig {
+            bundle: Some("com.test.myapp".to_string()),
+            min_os_version: Some("13.0".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            app_bundles: Some(vec![bundle_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: binary_path,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        AppBundleStage.run(&mut ctx).unwrap();
+
+        let app_dir = tmp.path().join("dist/macos/myapp_arm64.app");
+        let plist = fs::read_to_string(app_dir.join("Contents/Info.plist")).unwrap();
+        assert!(
+            plist.contains("<string>13.0</string>"),
+            "configured min_os_version should appear in Info.plist"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-file info.mtime applied after copy
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_stage_live_extra_file_per_file_mtime() {
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use std::time::{Duration, SystemTime};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let binary_path = tmp.path().join("myapp");
+        fs::write(&binary_path, b"fake-binary").unwrap();
+        let extra_path = tmp.path().join("extra.txt");
+        fs::write(&extra_path, b"extra-content").unwrap();
+
+        let bundle_cfg = AppBundleConfig {
+            bundle: Some("com.test.myapp".to_string()),
+            extra_files: Some(vec![ArchiveFileSpec::Detailed {
+                src: extra_path.to_string_lossy().into_owned(),
+                dst: None,
+                info: Some(anodizer_core::config::ArchiveFileInfo {
+                    mtime: Some("2024-01-01T00:00:00Z".to_string()),
+                    ..Default::default()
+                }),
+                strip_parent: None,
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            app_bundles: Some(vec![bundle_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: binary_path,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        AppBundleStage.run(&mut ctx).unwrap();
+
+        let app_dir = tmp.path().join("dist/macos/myapp_arm64.app");
+        let extra_dst = app_dir.join("Contents/Resources/extra.txt");
+        assert!(extra_dst.exists(), "extra file should be present");
+
+        // 2024-01-01T00:00:00Z = epoch 1704067200
+        let expected = SystemTime::UNIX_EPOCH + Duration::from_secs(1704067200);
+        let actual = fs::metadata(&extra_dst).unwrap().modified().unwrap();
+        assert_eq!(
+            actual, expected,
+            "per-file info.mtime must be applied to the copied file"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // info.mode / info.owner / info.group warnings
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_copy_extra_files_warns_for_unused_info_fields() {
+        use anodizer_core::config::ArchiveFileInfo;
+        use anodizer_core::config::StringOrU32;
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let extra_path = tmp.path().join("extra.txt");
+        fs::write(&extra_path, b"content").unwrap();
+
+        let app_dir = tmp.path().join("app.app");
+        fs::create_dir_all(app_dir.join("Contents/Resources")).unwrap();
+
+        let (log, capture) = StageLogger::with_capture("appbundle", Verbosity::Normal);
+
+        let specs = vec![ArchiveFileSpec::Detailed {
+            src: extra_path.to_string_lossy().into_owned(),
+            dst: None,
+            info: Some(ArchiveFileInfo {
+                mode: Some(StringOrU32(0o644)),
+                owner: Some("root".to_string()),
+                group: Some("wheel".to_string()),
+                mtime: None,
+            }),
+            strip_parent: None,
+        }];
+
+        copy_extra_files(&specs, &app_dir, &log, &|t| Ok(t.to_string())).unwrap();
+
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("info.mode")),
+            "should warn about info.mode: {warns:?}"
+        );
+        assert!(
+            warns.iter().any(|m| m.contains("info.owner")),
+            "should warn about info.owner: {warns:?}"
+        );
+        assert!(
+            warns.iter().any(|m| m.contains("info.group")),
+            "should warn about info.group: {warns:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-match glob with dst rename bails pre-flight
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_copy_extra_files_multiglob_with_dst_bails() {
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(tmp.path().join("a.txt"), b"a").unwrap();
+        fs::write(tmp.path().join("b.txt"), b"b").unwrap();
+
+        let app_dir = tmp.path().join("app.app");
+        fs::create_dir_all(app_dir.join("Contents/Resources")).unwrap();
+
+        let (log, _) = StageLogger::with_capture("appbundle", Verbosity::Normal);
+        let pattern = tmp.path().join("*.txt").to_string_lossy().into_owned();
+
+        let specs = vec![ArchiveFileSpec::Detailed {
+            src: pattern,
+            dst: Some("Contents/Resources/renamed.txt".to_string()),
+            info: None,
+            strip_parent: None,
+        }];
+
+        let err = copy_extra_files(&specs, &app_dir, &log, &|t| Ok(t.to_string()))
+            .expect_err("multi-match + dst rename should bail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("dst rename only valid for glob matching exactly 1 file"),
+            "error should describe the constraint: {msg}"
         );
     }
 }
