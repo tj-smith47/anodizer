@@ -92,12 +92,18 @@ const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}.app";
 ///   file the call fails pre-flight because every match would be written to the
 ///   same destination path. Per-file `info.mtime` is applied after copying;
 ///   `info.mode`/`info.owner`/`info.group` are not used and emit warnings.
+///
+/// Returns one `(dst_path, mtime)` entry for every extra-file copy that carried
+/// `info.mtime`. The caller must re-apply these timestamps after any
+/// directory-wide mtime sweep (e.g. `mod_timestamp`) so the more-specific
+/// per-file value wins.
 fn copy_extra_files(
     specs: &[ArchiveFileSpec],
     app_dir: &Path,
     log: &anodizer_core::log::StageLogger,
     render: &dyn Fn(&str) -> Result<String>,
-) -> Result<()> {
+) -> Result<Vec<(PathBuf, std::time::SystemTime)>> {
+    let mut per_file_mtimes: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
     for spec in specs {
         match spec {
             ArchiveFileSpec::Glob(pattern) => match glob::glob(pattern) {
@@ -215,9 +221,12 @@ fn copy_extra_files(
                                     )
                                 })?;
                                 // Per-file mtime wins over the bundle-level mod_timestamp
-                                // because it is the more specific knob.
+                                // because it is the more specific knob. Set it now AND
+                                // record it so the caller can re-apply after any
+                                // directory-wide mtime sweep.
                                 if let Some(mtime) = per_file_mtime {
                                     anodizer_core::util::set_file_mtime(&dst_path, mtime)?;
+                                    per_file_mtimes.push((dst_path, mtime));
                                 }
                             }
                         }
@@ -232,7 +241,7 @@ fn copy_extra_files(
             }
         }
     }
-    Ok(())
+    Ok(per_file_mtimes)
 }
 
 /// Recursively apply a mod_timestamp to all files in a directory tree.
@@ -562,10 +571,13 @@ impl Stage for AppBundleStage {
                     fs::write(&plist_path, &plist_content)
                         .with_context(|| format!("write Info.plist to {}", plist_path.display()))?;
 
-                    // Copy extra files
-                    if let Some(extra_files) = &bundle_cfg.extra_files {
-                        copy_extra_files(extra_files, &app_dir, &log, &|t| ctx.render_template(t))?;
-                    }
+                    // Copy extra files, capturing any per-file mtime overrides so
+                    // they can survive the recursive mod_timestamp sweep below.
+                    let per_file_mtimes = if let Some(extra_files) = &bundle_cfg.extra_files {
+                        copy_extra_files(extra_files, &app_dir, &log, &|t| ctx.render_template(t))?
+                    } else {
+                        Vec::new()
+                    };
 
                     // Process templated_extra_files: render and copy into the app bundle
                     if let Some(ref tpl_specs) = bundle_cfg.templated_extra_files
@@ -580,12 +592,17 @@ impl Stage for AppBundleStage {
                         )?;
                     }
 
-                    // Apply mod_timestamp if set (template-rendered)
+                    // Apply mod_timestamp if set (template-rendered). Re-apply any
+                    // per-file info.mtime values afterward so the more-specific
+                    // override is not clobbered by the directory-wide sweep.
                     if let Some(ref ts_tmpl) = bundle_cfg.mod_timestamp {
                         let ts = ctx
                             .render_template(ts_tmpl)
                             .with_context(|| "appbundle: render mod_timestamp template")?;
                         apply_mod_timestamp_recursive(&app_dir, &ts, &log)?;
+                        for (path, mtime) in &per_file_mtimes {
+                            anodizer_core::util::set_file_mtime(path, *mtime)?;
+                        }
                     }
 
                     log.status(&format!(
@@ -2037,7 +2054,7 @@ crates:
         let pattern = tmp.path().join("*.txt").to_string_lossy().into_owned();
 
         let specs = vec![ArchiveFileSpec::Detailed {
-            src: pattern,
+            src: pattern.clone(),
             dst: Some("Contents/Resources/renamed.txt".to_string()),
             info: None,
             strip_parent: None,
@@ -2049,6 +2066,97 @@ crates:
         assert!(
             msg.contains("dst rename only valid for glob matching exactly 1 file"),
             "error should describe the constraint: {msg}"
+        );
+        assert!(
+            msg.contains("got 2 matches"),
+            "error should include the match count, got: {msg}"
+        );
+        assert!(
+            msg.contains(&pattern),
+            "error should echo the glob pattern '{pattern}', got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-file info.mtime survives the bundle-level mod_timestamp sweep
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_per_file_mtime_survives_bundle_mod_timestamp() {
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use std::time::{Duration, SystemTime};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let binary_path = tmp.path().join("myapp");
+        fs::write(&binary_path, b"fake-binary").unwrap();
+        let fixture_path = tmp.path().join("fixture.txt");
+        fs::write(&fixture_path, b"fixture-content").unwrap();
+
+        let bundle_cfg = AppBundleConfig {
+            bundle: Some("com.test.myapp".to_string()),
+            // Bundle-level sweep — would clobber the per-file value if not re-applied.
+            mod_timestamp: Some("2020-06-15T12:00:00Z".to_string()),
+            extra_files: Some(vec![ArchiveFileSpec::Detailed {
+                src: fixture_path.to_string_lossy().into_owned(),
+                dst: None,
+                info: Some(anodizer_core::config::ArchiveFileInfo {
+                    mtime: Some("2024-01-01T00:00:00Z".to_string()),
+                    ..Default::default()
+                }),
+                strip_parent: None,
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            app_bundles: Some(vec![bundle_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: binary_path,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        AppBundleStage.run(&mut ctx).unwrap();
+
+        let app_dir = tmp.path().join("dist/macos/myapp_arm64.app");
+        let fixture_dst = app_dir.join("Contents/Resources/fixture.txt");
+        assert!(fixture_dst.exists(), "fixture file should be present");
+
+        // 2024-01-01T00:00:00Z = epoch 1704067200 (per-file wins).
+        let per_file = SystemTime::UNIX_EPOCH + Duration::from_secs(1704067200);
+        let actual = fs::metadata(&fixture_dst).unwrap().modified().unwrap();
+        assert_eq!(
+            actual, per_file,
+            "per-file info.mtime must beat the bundle-level mod_timestamp"
+        );
+
+        // 2020-06-15T12:00:00Z = epoch 1592222400 (bundle-level applies elsewhere).
+        let bundle_level = SystemTime::UNIX_EPOCH + Duration::from_secs(1592222400);
+        let binary_meta = fs::metadata(app_dir.join("Contents/MacOS/myapp")).unwrap();
+        assert_eq!(
+            binary_meta.modified().unwrap(),
+            bundle_level,
+            "the binary (no per-file mtime) must receive the bundle-level value"
+        );
+        assert_ne!(
+            actual, bundle_level,
+            "regression guard: per-file mtime must not equal bundle-level value"
         );
     }
 }
