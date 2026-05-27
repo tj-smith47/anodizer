@@ -1281,31 +1281,32 @@ fn test_find_latest_tag_smartsemver_keeps_prereleases_for_prerelease_target() {
 
 #[test]
 #[serial]
-fn test_find_latest_tag_smartsemver_prerelease_suffix_marks_non_semver_tags() {
-    // A tag like `v1.1.0-rc1` has no SemVer prerelease component (the regex
-    // requires `-<id>(.<id>)*`-style identifiers). The `prerelease_suffix`
-    // hint must still flag it as a prerelease for the smartsemver filter.
+fn test_find_previous_tag_smartsemver_rc1_classified_as_prerelease() {
+    // The SemVer regex captures everything after the first `-` as the prerelease
+    // identifier, so `v1.1.0-rc1` (no dot separator) is still flagged as a
+    // prerelease and dropped by the smartsemver filter when current is a
+    // release. No prerelease_suffix config is required.
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
-    init_repo_with_tags(dir, &["v1.0.0", "v1.1.0"]);
+    init_repo_with_tagged_commits(dir, &["v1.0.0", "v1.1.0-rc1", "v1.1.0"]);
 
     let orig = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         tag_sort: Some("smartsemver".to_string()),
-        prerelease_suffix: Some("-rc".to_string()),
         ..Default::default()
     };
-    let mut vars = crate::template::TemplateVars::new();
-    vars.set("Version", "v1.1.0");
-
-    let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), Some(&vars)).unwrap();
+    let result = find_previous_tag("v1.1.0", Some(&gc), None).unwrap();
     assert_eq!(
         result,
-        Some("v1.1.0".to_string()),
-        "release v1.1.0 wins; suffix-flagged prereleases would be filtered if present"
+        Some("v1.0.0".to_string()),
+        "v1.1.0-rc1 must be classified as prerelease via SemVer parsing alone"
     );
+
+    // Confirm the parser agrees: v1.1.0-rc1 has prerelease = Some("rc1").
+    let sv = parse_semver_tag("v1.1.0-rc1").unwrap();
+    assert!(sv.is_prerelease());
 
     std::env::set_current_dir(orig).unwrap();
 }
@@ -1317,8 +1318,7 @@ fn test_find_previous_tag_smartsemver_skips_prerelease_predecessor() {
     // tag must surface v0.1.0 as the predecessor (not the beta) so the
     // changelog has real commits to enumerate.
     //
-    // Signal comes from current_tag itself — no pre-populated template vars
-    // are required, so this works correctly in the production call path.
+    // No template_vars are needed — current_tag carries the signal.
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     init_repo_with_tagged_commits(dir, &["v0.1.0", "v0.2.0-beta.3", "v0.2.0"]);
@@ -1363,9 +1363,7 @@ fn test_find_previous_tag_smartsemver_keeps_prerelease_when_current_is_prereleas
 #[test]
 #[serial]
 fn test_find_previous_tag_smartsemver_release_tag_filters_prereleases() {
-    // Regression: production call sites pass None for template_vars because
-    // populate_git_vars() hasn't run yet. The filter must engage via
-    // current_tag, not via template_vars.
+    // No template_vars supplied; filter must engage from current_tag alone.
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     init_repo_with_tagged_commits(dir, &["v0.1.0", "v0.2.0-beta.3", "v0.2.0"]);
@@ -1377,12 +1375,11 @@ fn test_find_previous_tag_smartsemver_release_tag_filters_prereleases() {
         tag_sort: Some("smartsemver".to_string()),
         ..Default::default()
     };
-    // No template_vars at all; current_tag "v0.2.0" (release) drives the filter.
     let result = find_previous_tag("v0.2.0", Some(&gc), None).unwrap();
     assert_eq!(
         result,
         Some("v0.1.0".to_string()),
-        "smartsemver must skip v0.2.0-beta.3 without pre-populated template vars"
+        "smartsemver must skip v0.2.0-beta.3 with current_tag v0.2.0"
     );
 
     std::env::set_current_dir(orig).unwrap();
@@ -1419,8 +1416,7 @@ fn test_find_previous_tag_smartsemver_monorepo_prefix() {
 #[test]
 #[serial]
 fn test_find_previous_tag_smartsemver_early_dev_no_panic() {
-    // Fresh repo with only v0.0.0-style tags must not panic and must return
-    // None when no previous non-prerelease tag exists.
+    // Only tag is the current one; after excluding current_tag, no candidates remain.
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     init_repo_with_tagged_commits(dir, &["v0.0.0"]);

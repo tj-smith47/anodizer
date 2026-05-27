@@ -677,10 +677,9 @@ fn find_previous_tag(
         // When targeting a non-prerelease version, skip prerelease candidates
         // so the changelog base points at the previous stable release rather
         // than an intervening beta or RC.
-        let prerelease_suffix = git_config.and_then(|gc| gc.prerelease_suffix.as_deref());
         for tag in tags {
             if let Ok(sv) = git::parse_semver_tag(&tag)
-                && !git::tag_is_prerelease(&sv, &tag, prerelease_suffix)
+                && !sv.is_prerelease()
             {
                 return Ok(Some(tag));
             }

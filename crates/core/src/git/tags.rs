@@ -196,9 +196,8 @@ pub fn find_latest_tag_matching_with_prefix_in(
     let prerelease_suffix = git_config.and_then(|gc| gc.prerelease_suffix.as_deref());
     let is_rust_semver_mode = matches!(tag_sort, "semver" | "smartsemver");
 
-    // git-delegated sort applies only to the legacy `-version:*` modes.
-    // `semver`/`smartsemver` are pure Rust-side; `prerelease_suffix` is
-    // consulted via [`tag_is_prerelease`] rather than `versionsort.suffix=`.
+    // For semver/smartsemver, prerelease detection is handled Rust-side via
+    // SemVer parsing only; prerelease_suffix has no effect on these modes.
     let use_git_sort =
         !is_rust_semver_mode && (tag_sort == "-version:creatordate" || prerelease_suffix.is_some());
 
@@ -276,16 +275,6 @@ pub fn find_latest_tag_matching_with_prefix_in(
         matching.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(matching.last().map(|(_, tag)| tag.clone()))
     }
-}
-
-/// Whether a tag should be treated as a prerelease for `smartsemver` filtering.
-///
-/// Returns `true` when the parsed SemVer carries a prerelease component.
-/// The SemVer regex captures everything after the first `-` as the prerelease
-/// identifier, so any tag with a dash-separated suffix (e.g. `v1.2.3-rc.1`,
-/// `v1.2.3-rc1`, `v1.2.3-beta`) is already flagged by `sv.is_prerelease()`.
-pub fn tag_is_prerelease(sv: &SemVer, _tag: &str, _prerelease_suffix: Option<&str>) -> bool {
-    sv.is_prerelease()
 }
 
 /// Collect semver tags from the output of the given `git` arguments, filtered

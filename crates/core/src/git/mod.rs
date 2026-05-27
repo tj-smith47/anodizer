@@ -51,8 +51,7 @@ pub use tags::{
     find_previous_tag_with_prefix, find_previous_tag_with_prefix_in, get_all_semver_tags,
     get_all_semver_tags_in, get_branch_semver_tags, get_branch_semver_tags_in, get_first_commit,
     get_first_commit_in, has_version_placeholder, head_is_at_tag, list_tags_with_prefix,
-    render_ignore_patterns, strip_monorepo_prefix, tag_is_prerelease, tag_points_at_head,
-    tag_points_at_head_in,
+    render_ignore_patterns, strip_monorepo_prefix, tag_points_at_head, tag_points_at_head_in,
 };
 pub use worktree::Worktree;
 
