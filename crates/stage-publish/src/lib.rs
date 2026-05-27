@@ -86,7 +86,7 @@ use std::path::PathBuf;
 /// snapshot / dry-run mode, so callers that derive the id outside of
 /// the write path should also gate on `ctx.is_snapshot()` /
 /// `ctx.is_dry_run()` if they want the same behavior.
-pub(crate) fn derive_run_id(ctx: &Context) -> String {
+pub fn derive_run_id(ctx: &Context) -> String {
     if let Some(info) = ctx.git_info.as_ref() {
         if !info.tag.is_empty() && rollback_only::validate_run_id(&info.tag).is_ok() {
             return info.tag.clone();
@@ -98,6 +98,49 @@ pub(crate) fn derive_run_id(ctx: &Context) -> String {
         }
     }
     "local".to_string()
+}
+
+/// Resolve `<dist>/run-<id>/report.json` for a derived `run_id`. Pure
+/// path helper kept alongside [`derive_run_id`] so consumers driving
+/// the announce-only flow share the same path-shape contract as the
+/// writer in [`write_report_to_run_dir`] and the reader in
+/// [`rollback_only::run`].
+pub fn report_path_for(ctx: &Context, run_id: &str) -> PathBuf {
+    ctx.config
+        .dist
+        .join(format!("run-{}", run_id))
+        .join("report.json")
+}
+
+/// Load the prior run's `<dist>/run-<id>/report.json` into a
+/// [`anodizer_core::publish_report::PublishReport`].
+///
+/// Errors when the file is missing or unparseable. The recovery hint
+/// mirrors the message [`rollback_only::run`] produces because the two
+/// share the same `dist/run-<id>/` contract.
+pub fn load_prior_report(
+    ctx: &Context,
+    run_id: &str,
+) -> Result<anodizer_core::publish_report::PublishReport> {
+    use anyhow::Context as _;
+    let path = report_path_for(ctx, run_id);
+    let raw = std::fs::read_to_string(&path).with_context(|| {
+        format!(
+            "no prior report found at {} (run_id={}). The announce-only \
+             flow consumes a `report.json` written by a successful prior \
+             release run; re-run `anodize release` end-to-end first or \
+             pass `--from-run=<id>` to point at an existing run dir.",
+            path.display(),
+            run_id,
+        )
+    })?;
+    serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "failed to parse prior report at {} (run_id={})",
+            path.display(),
+            run_id,
+        )
+    })
 }
 
 /// Persist `ctx.publish_report` to `<config.dist>/run-<run_id>/report.json`

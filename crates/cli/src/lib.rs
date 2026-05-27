@@ -215,15 +215,23 @@ pub enum Commands {
         merge: bool,
         #[arg(
             long = "publish-only",
-            conflicts_with_all = ["split", "merge"],
+            conflicts_with_all = ["split", "merge", "prepare", "announce_only", "snapshot", "rollback_only"],
             help = "Load artifacts from dist/ (preserved by `anodize check determinism --preserve-dist`) and run only the sign + publish pipeline. Skips build/archive/nfpm/sbom/checksum — those stages' outputs must already be present in dist/."
         )]
         publish_only: bool,
         #[arg(
             long,
-            help = "Run local build + archive + sign + checksum + sbom stages but skip release / publish / announce (GoReleaser Pro parity). Artifacts stay in dist/ for inspection."
+            alias = "prepare-only",
+            conflicts_with_all = ["publish_only", "announce_only", "rollback_only"],
+            help = "Run local build + archive + sign + checksum + sbom stages but skip release / publish / announce (GoReleaser Pro parity). Artifacts stay in dist/ for inspection. `--prepare-only` is accepted as an alias for GR-imported scripts."
         )]
         prepare: bool,
+        #[arg(
+            long = "announce-only",
+            conflicts_with_all = ["prepare", "publish_only", "snapshot", "rollback_only", "split", "merge"],
+            help = "Re-fire announcers only. Loads `<dist>/run-<id>/report.json` written by a prior run, skips every pipeline stage except announce (which itself short-circuits on nightly), then runs after-hooks. Use this to retry a transient announcer failure (Slack 502, Discord 5xx) without re-creating the GitHub release or re-publishing to package managers. Fails fast when no `<dist>/run-<id>/report.json` is present."
+        )]
+        announce_only: bool,
         #[arg(
             long,
             help = "Resume into an existing release left over from a prior failed attempt; bypasses the safety check that bails on partial assets."
@@ -356,6 +364,15 @@ pub enum Commands {
     /// publish-only pipeline (release / publish / blob). Use this to resume
     /// a single-host release that stalled during publish (e.g. expired
     /// token, transient 5xx) without rebuilding.
+    ///
+    /// `continue` vs `publish`: both consume a populated `dist/` and run
+    /// the release / publish / blob chain. `continue` is the recommended
+    /// alias for "resume a stalled single-host release" — it matches GR
+    /// Pro's `goreleaser continue` and the in-repo `--prepare` → `continue`
+    /// flow. `publish` is the lower-level entry point that does the same
+    /// thing without the resume framing; prefer `continue` unless you're
+    /// invoking the publish chain on a dist that was never paused. Neither
+    /// is being deprecated.
     Continue {
         #[arg(
             long,
@@ -379,6 +396,17 @@ pub enum Commands {
         token: Option<String>,
     },
     /// Run only the publish stages (release, publish, blob) from a completed dist/
+    ///
+    /// `publish` vs `continue`: both consume a populated `dist/` and run
+    /// the same release / publish / blob chain. `publish` is the
+    /// lower-level entry point — no resume framing, no after-hooks /
+    /// milestone closure. `continue` is the recommended alias when
+    /// resuming a stalled single-host release (matches GR Pro's
+    /// `goreleaser continue`); it additionally invokes the announce
+    /// stage and treats the dist as a paused-release surface. Prefer
+    /// `continue` unless you specifically want the unframed publish
+    /// chain. `--dist` overrides the configured dist directory;
+    /// `release` has no `--dist` because it produces dist.
     Publish {
         #[arg(long, help = "Run full pipeline without side effects")]
         dry_run: bool,
@@ -455,6 +483,13 @@ pub enum Commands {
         output: String,
     },
     /// Run only the announce stage from a completed dist/
+    ///
+    /// Counterpart to `release --announce-only`: both re-fire announcers
+    /// against a populated dist without re-publishing. The subcommand
+    /// form (`anodizer announce`) accepts `--dist` to point at a
+    /// non-default tree (e.g. preserved by `--preserve-dist`); the flag
+    /// form (`release --announce-only`) operates on the dist configured
+    /// in `.anodizer.yaml`. Both honor nightly short-circuit.
     Announce {
         #[arg(long, help = "Run full pipeline without side effects")]
         dry_run: bool,

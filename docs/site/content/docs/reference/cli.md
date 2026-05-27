@@ -66,7 +66,8 @@ Run the full release pipeline
 | `--split` | — | — | Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/) |
 | `--merge` | — | — | Merge artifacts from split build jobs and resume the pipeline from post-build stages |
 | `--publish-only` | — | — | Load artifacts from dist/ (preserved by `anodize check determinism --preserve-dist`) and run only the sign + publish pipeline. Skips build/archive/nfpm/sbom/checksum — those stages' outputs must already be present in dist/. |
-| `--prepare` | — | — | Run local build + archive + sign + checksum + sbom stages but skip release / publish / announce (GoReleaser Pro parity). Artifacts stay in dist/ for inspection. |
+| `--prepare` | — | — | Run local build + archive + sign + checksum + sbom stages but skip release / publish / announce (GoReleaser Pro parity). Artifacts stay in dist/ for inspection. `--prepare-only` is accepted as an alias for GR-imported scripts. |
+| `--announce-only` | — | — | Re-fire announcers only. Loads `<dist>/run-<id>/report.json` written by a prior run, skips every pipeline stage except announce (which itself short-circuits on nightly), then runs after-hooks. Use this to retry a transient announcer failure (Slack 502, Discord 5xx) without re-creating the GitHub release or re-publishing to package managers. Fails fast when no `<dist>/run-<id>/report.json` is present. |
 | `--resume-release` | — | — | Resume into an existing release left over from a prior failed attempt; bypasses the safety check that bails on partial assets. |
 | `--replace-existing` | — | — | Force release.replace_existing_artifacts: true regardless of config (overwrite conflicting assets on retry). |
 | `--no-post-publish-poll` | — | — | Skip post-publish polling for chocolatey moderation / winget PR validation; report NotPolled for affected publishers. |

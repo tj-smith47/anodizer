@@ -1,3 +1,4 @@
+mod announce_only;
 mod milestones;
 mod publish_only;
 mod split;
@@ -61,6 +62,13 @@ pub struct ReleaseOpts {
     /// stages but NOT release/publish/announce. Implemented by augmenting `skip` with
     /// those three stages at the top of `run()`; artifacts still land under `dist/`.
     pub prepare: bool,
+    /// `--announce-only`: re-fire the announce stage after loading a
+    /// prior run's `<dist>/run-<id>/report.json`. Use case: a
+    /// transient announcer failure (Slack 502, Discord 5xx) after a
+    /// successful publish — operator wants to retry notifications
+    /// without re-creating the GitHub release or re-uploading
+    /// archives. Skips every other stage in the pipeline.
+    pub announce_only: bool,
     /// `--resume-release`: continue into an existing release rather than
     /// bailing on the leftover-assets pre-check. Plumbed into
     /// `ContextOptions::resume_release`.
@@ -148,8 +156,15 @@ pub(crate) fn should_run_preflight_auto(
     split: bool,
     publish_only: bool,
     publish_skipped: bool,
+    announce_only: bool,
 ) -> bool {
-    !no_preflight && !snapshot && !dry_run && !split && !publish_only && !publish_skipped
+    !no_preflight
+        && !snapshot
+        && !dry_run
+        && !split
+        && !publish_only
+        && !announce_only
+        && !publish_skipped
 }
 
 /// GoReleaser Pro `--prepare`: runs local build/archive/sign/checksum/sbom stages
@@ -249,6 +264,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     helpers::write_effective_config(&config, &log)?;
 
     if !opts.split
+        && !opts.announce_only
         && let Some(ref milestones) = config.milestones
     {
         milestones::preflight_milestones(milestones, &mut ctx, &log)?;
@@ -268,6 +284,10 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
                 no_preflight: opts.no_preflight,
             },
         );
+    }
+
+    if opts.announce_only {
+        return announce_only::run(&mut ctx, &config, &log, opts.dry_run);
     }
 
     if opts.split {
@@ -412,7 +432,12 @@ fn enforce_dist_state(config: &Config, opts: &ReleaseOpts, log: &StageLogger) ->
         log.status("(dry-run) would clean dist directory");
     }
 
-    if !opts.clean && !opts.merge && !opts.publish_only && !opts.rollback_only {
+    if !opts.clean
+        && !opts.merge
+        && !opts.publish_only
+        && !opts.rollback_only
+        && !opts.announce_only
+    {
         let dist = &config.dist;
         if dist.exists()
             && let Ok(mut entries) = dist.read_dir()
@@ -654,6 +679,7 @@ fn run_before_hooks(
     if !opts.merge
         && !opts.split
         && !opts.publish_only
+        && !opts.announce_only
         && !ctx.should_skip("before")
         && let Some(before) = &config.before
         && let Some(ref hooks) = before.hooks
@@ -686,6 +712,7 @@ fn render_release_notes_tmpl(
     log: &StageLogger,
 ) -> Result<()> {
     if !opts.publish_only
+        && !opts.announce_only
         && let Some((tmpl_path, raw_content)) = release_notes_path
     {
         let rendered = template::render(&raw_content, ctx.template_vars()).with_context(|| {
@@ -853,6 +880,7 @@ fn run_publisher_preflight(
         opts.split,
         opts.publish_only,
         ctx.should_skip("publish"),
+        opts.announce_only,
     );
     if !(opts.preflight || should_run_preflight) {
         return Ok(false);
@@ -997,20 +1025,32 @@ fn run_post_pipeline(
         }
     }
 
-    // Run after hooks.
-    //
-    // Canonical key is `after.hooks:` (GoReleaser Pro). The legacy
-    // `after.post:` spelling is folded into `hooks:` at config-parse
-    // time by `HooksConfig::merge_hook_aliases`, so this reader only
-    // needs the canonical field.
-    //
-    // Note on `--merge` interaction: `before:` hooks deliberately skip on
-    // merge (see `run_before_hooks`) because the shards already compiled.
-    // `after:` hooks intentionally DO run on merge — the shard pipeline
-    // (`build_split_pipeline`) only executes the build stage and never
-    // reaches `run_post_pipeline`, so the merge step is the only point at
-    // which the user's post-release notifications / cleanup hooks fire.
-    // Skipping them here would mean they never run.
+    run_post_pipeline_after_hooks_only(ctx, config, dry_run, log)
+}
+
+/// Run only the user-defined `after:` hooks. Extracted so
+/// `--announce-only` can fire them post-announce without re-running
+/// custom publishers / milestones / metadata writes (which already
+/// fired during the prior end-to-end run).
+///
+/// Canonical key is `after.hooks:` (GoReleaser Pro). The legacy
+/// `after.post:` spelling is folded into `hooks:` at config-parse
+/// time by `HooksConfig::merge_hook_aliases`, so this reader only
+/// needs the canonical field.
+///
+/// Note on `--merge` interaction: `before:` hooks deliberately skip on
+/// merge (see `run_before_hooks`) because the shards already compiled.
+/// `after:` hooks intentionally DO run on merge — the shard pipeline
+/// (`build_split_pipeline`) only executes the build stage and never
+/// reaches `run_post_pipeline`, so the merge step is the only point at
+/// which the user's post-release notifications / cleanup hooks fire.
+/// Skipping them here would mean they never run.
+pub(super) fn run_post_pipeline_after_hooks_only(
+    ctx: &Context,
+    config: &Config,
+    dry_run: bool,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<()> {
     if let Some(after) = &config.after
         && let Some(ref hooks) = after.hooks
     {
@@ -1566,35 +1606,35 @@ mod tests {
     fn should_run_preflight_auto_default_runs() {
         // No flag set → run.
         assert!(should_run_preflight_auto(
-            false, false, false, false, false, false
+            false, false, false, false, false, false, false
         ));
     }
 
     #[test]
     fn should_run_preflight_auto_no_preflight_skips() {
         assert!(!should_run_preflight_auto(
-            true, false, false, false, false, false
+            true, false, false, false, false, false, false
         ));
     }
 
     #[test]
     fn should_run_preflight_auto_snapshot_skips() {
         assert!(!should_run_preflight_auto(
-            false, true, false, false, false, false
+            false, true, false, false, false, false, false
         ));
     }
 
     #[test]
     fn should_run_preflight_auto_dry_run_skips() {
         assert!(!should_run_preflight_auto(
-            false, false, true, false, false, false
+            false, false, true, false, false, false, false
         ));
     }
 
     #[test]
     fn should_run_preflight_auto_split_skips() {
         assert!(!should_run_preflight_auto(
-            false, false, false, true, false, false
+            false, false, false, true, false, false, false
         ));
     }
 
@@ -1605,14 +1645,24 @@ mod tests {
         // `publish_only::run`) gets first crack at bailing before any
         // network call.
         assert!(!should_run_preflight_auto(
-            false, false, false, false, true, false
+            false, false, false, false, true, false, false
         ));
     }
 
     #[test]
     fn should_run_preflight_auto_publish_skipped_skips() {
         assert!(!should_run_preflight_auto(
-            false, false, false, false, false, true
+            false, false, false, false, false, true, false
+        ));
+    }
+
+    #[test]
+    fn should_run_preflight_auto_announce_only_skips() {
+        // `--announce-only` re-fires announcers against a prior
+        // report.json; it MUST NOT re-probe publisher state since the
+        // publish phase already happened.
+        assert!(!should_run_preflight_auto(
+            false, false, false, false, false, false, true
         ));
     }
 
