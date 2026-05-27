@@ -39,6 +39,9 @@ pub struct FakePublisher {
     /// rollback dispatcher checks for the corresponding env var before
     /// invoking `rollback()`.
     pub rollback_scope: Option<&'static str>,
+    /// Mirrors [`Publisher::skips_on_nightly`]. When `true`, the dispatch
+    /// loop records `Skipped(Nightly)` without invoking `run`.
+    pub skips_on_nightly: bool,
 }
 
 impl Publisher for FakePublisher {
@@ -50,6 +53,9 @@ impl Publisher for FakePublisher {
     }
     fn required(&self) -> bool {
         self.required
+    }
+    fn skips_on_nightly(&self) -> bool {
+        self.skips_on_nightly
     }
     fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
         match &self.outcome {
@@ -85,6 +91,7 @@ pub fn fake(
         outcome,
         rollback_outcome: FakeRollback::Succeed,
         rollback_scope: None,
+        skips_on_nightly: false,
     })
 }
 
@@ -106,6 +113,7 @@ pub fn fake_with_rollback(
         outcome,
         rollback_outcome,
         rollback_scope: None,
+        skips_on_nightly: false,
     })
 }
 
@@ -222,6 +230,26 @@ pub fn fake_with_scope(
         outcome,
         rollback_outcome: FakeRollback::Succeed,
         rollback_scope: Some(rollback_scope),
+        skips_on_nightly: false,
+    })
+}
+
+/// Like [`fake`] but sets `skips_on_nightly` to `true`. Use for tests that
+/// exercise the nightly skip-list gate in the dispatch loop.
+pub fn fake_with_nightly_skip(
+    name: &str,
+    group: PublisherGroup,
+    required: bool,
+    outcome: FakeOutcome,
+) -> Box<dyn Publisher> {
+    Box::new(FakePublisher {
+        name: name.to_string(),
+        group,
+        required,
+        outcome,
+        rollback_outcome: FakeRollback::Succeed,
+        rollback_scope: None,
+        skips_on_nightly: true,
     })
 }
 

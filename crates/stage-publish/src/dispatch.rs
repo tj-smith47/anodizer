@@ -483,4 +483,74 @@ mod tests {
         // here the report should mark `any_failed(Manager, true)`.
         assert!(report.any_failed(PublisherGroup::Manager, true));
     }
+
+    #[test]
+    fn dispatch_skips_publisher_marked_skips_on_nightly_when_nightly() {
+        let mut ctx = Context::test_fixture();
+        ctx.options.nightly = true;
+        let publishers = vec![
+            fake_with_nightly_skip(
+                "skipper",
+                PublisherGroup::Manager,
+                false,
+                FakeOutcome::Succeed,
+            ),
+            fake(
+                "runner",
+                PublisherGroup::Manager,
+                false,
+                FakeOutcome::Succeed,
+            ),
+        ];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        let skipper = report
+            .results
+            .iter()
+            .find(|r| r.name == "skipper")
+            .expect("skipper entry present");
+        assert!(
+            matches!(
+                skipper.outcome,
+                PublisherOutcome::Skipped(SkipReason::Nightly)
+            ),
+            "expected Skipped(Nightly), got {:?}",
+            skipper.outcome
+        );
+        assert!(skipper.evidence.is_none());
+        let runner = report
+            .results
+            .iter()
+            .find(|r| r.name == "runner")
+            .expect("runner entry present");
+        assert!(
+            matches!(runner.outcome, PublisherOutcome::Succeeded),
+            "runner should not be skipped; got {:?}",
+            runner.outcome
+        );
+    }
+
+    #[test]
+    fn dispatch_runs_publisher_marked_skips_on_nightly_when_not_nightly() {
+        let mut ctx = Context::test_fixture();
+        // options.nightly defaults to false
+        let publishers = vec![fake_with_nightly_skip(
+            "would_skip_on_nightly",
+            PublisherGroup::Manager,
+            false,
+            FakeOutcome::Succeed,
+        )];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        let entry = report
+            .results
+            .iter()
+            .find(|r| r.name == "would_skip_on_nightly")
+            .expect("entry present");
+        assert!(
+            matches!(entry.outcome, PublisherOutcome::Succeeded),
+            "publisher with skips_on_nightly=true must still run when !is_nightly(); got {:?}",
+            entry.outcome
+        );
+    }
 }

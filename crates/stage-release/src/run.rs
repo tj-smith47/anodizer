@@ -858,3 +858,149 @@ pub(crate) fn collect_release_upload_candidates(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::config::{NightlyConfig, ReleaseConfig};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    fn quiet_log() -> StageLogger {
+        StageLogger::new("test", Verbosity::Quiet)
+    }
+
+    // W4 — should_skip_release nightly publish_release gate
+
+    #[test]
+    fn should_skip_release_returns_true_when_nightly_and_publish_release_false() {
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        ctx.options.nightly = true;
+        ctx.config.nightly = Some(NightlyConfig {
+            publish_release: Some(false),
+            ..Default::default()
+        });
+        let release_cfg = ReleaseConfig::default();
+        let log = quiet_log();
+        let result = should_skip_release(&ctx, &release_cfg, "demo", &log)
+            .expect("should_skip_release returns Ok");
+        assert!(
+            result,
+            "publish_release: false must cause skip on nightly run"
+        );
+    }
+
+    #[test]
+    fn should_skip_release_returns_false_when_not_nightly_even_with_publish_release_false() {
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        // options.nightly defaults to false
+        ctx.config.nightly = Some(NightlyConfig {
+            publish_release: Some(false),
+            ..Default::default()
+        });
+        let release_cfg = ReleaseConfig::default();
+        let log = quiet_log();
+        let result = should_skip_release(&ctx, &release_cfg, "demo", &log)
+            .expect("should_skip_release returns Ok");
+        assert!(
+            !result,
+            "publish_release: false must only skip on nightly; non-nightly must run"
+        );
+    }
+
+    #[test]
+    fn should_skip_release_returns_false_when_nightly_and_publish_release_default() {
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        ctx.options.nightly = true;
+        // config.nightly absent — default is publish_release: true
+        ctx.config.nightly = None;
+        let release_cfg = ReleaseConfig::default();
+        let log = quiet_log();
+        let result = should_skip_release(&ctx, &release_cfg, "demo", &log)
+            .expect("should_skip_release returns Ok");
+        assert!(
+            !result,
+            "absent nightly.publish_release must default to run (not skip)"
+        );
+    }
+
+    // W5 — resolve_release_flags nightly draft override + keep_single_release gate
+
+    #[test]
+    fn resolve_release_flags_nightly_draft_some_overrides_release_draft() {
+        // nightly.draft = Some(true) wins over release.draft = false when is_nightly().
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        ctx.options.nightly = true;
+        ctx.config.nightly = Some(NightlyConfig {
+            draft: Some(true),
+            ..Default::default()
+        });
+        let release_cfg = ReleaseConfig {
+            draft: Some(false),
+            ..Default::default()
+        };
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly")
+            .expect("resolve_release_flags returns Ok");
+        assert!(
+            flags.draft,
+            "nightly.draft=Some(true) must override release.draft=false"
+        );
+    }
+
+    #[test]
+    fn resolve_release_flags_nightly_draft_none_preserves_release_draft() {
+        // nightly.draft = None falls through to release.draft when is_nightly().
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        ctx.options.nightly = true;
+        ctx.config.nightly = Some(NightlyConfig {
+            draft: None,
+            ..Default::default()
+        });
+        let release_cfg = ReleaseConfig {
+            draft: Some(true),
+            ..Default::default()
+        };
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly")
+            .expect("resolve_release_flags returns Ok");
+        assert!(
+            flags.draft,
+            "nightly.draft=None must fall through to release.draft=true"
+        );
+    }
+
+    #[test]
+    fn resolve_release_flags_keep_single_release_ignored_when_not_nightly() {
+        // nightly.keep_single_release = Some(true) must be ignored outside nightly runs.
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        // options.nightly defaults to false
+        ctx.config.nightly = Some(NightlyConfig {
+            keep_single_release: Some(true),
+            ..Default::default()
+        });
+        let release_cfg = ReleaseConfig::default();
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "v1.0.0")
+            .expect("resolve_release_flags returns Ok");
+        assert!(
+            !flags.keep_single_release,
+            "keep_single_release must be false outside nightly runs"
+        );
+    }
+
+    #[test]
+    fn resolve_release_flags_keep_single_release_honored_when_nightly() {
+        // nightly.keep_single_release = Some(true) must propagate to flags when is_nightly().
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        ctx.options.nightly = true;
+        ctx.config.nightly = Some(NightlyConfig {
+            keep_single_release: Some(true),
+            ..Default::default()
+        });
+        let release_cfg = ReleaseConfig::default();
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly")
+            .expect("resolve_release_flags returns Ok");
+        assert!(
+            flags.keep_single_release,
+            "keep_single_release must be true when nightly and nightly.keep_single_release=Some(true)"
+        );
+    }
+}

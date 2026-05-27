@@ -924,6 +924,7 @@ mod tests {
                 "rollback() must not be called".into(),
             ),
             rollback_scope: Some("ROLLBACK_ONLY_SCOPE_GUARD_TOKEN write"),
+            skips_on_nightly: false,
         })];
 
         let updated = run_with_publishers(&mut ctx, "fixt", &publishers).expect("replay");
