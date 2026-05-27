@@ -44,7 +44,7 @@ pub struct NightlyConfig {
     /// Delete the prior release that points at the same tag before
     /// creating the new one. Default: `false`. Set `true` to maintain a
     /// single rolling nightly release on GitHub. Destructive: deletes a
-    /// published release via the GitHub Releases API.
+    /// published release via the GitHub Releases API. GitHub-only (GoReleaser parity).
     pub keep_single_release: Option<bool>,
     /// Override `release.draft` for nightly runs only (GoReleaser v2.12+).
     /// `None` falls through to `release.draft`; `Some(v)` overrides it.

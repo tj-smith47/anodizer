@@ -1035,6 +1035,10 @@ impl anodizer_core::Publisher for CargoPublisher {
         self.required_override.unwrap_or(true)
     }
 
+    fn skips_on_nightly(&self) -> bool {
+        true
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let selected = ctx.options.selected_crates.clone();

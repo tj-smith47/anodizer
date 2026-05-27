@@ -1475,6 +1475,10 @@ impl anodizer_core::Publisher for WingetPublisher {
         Self::ROLLBACK_SCOPE
     }
 
+    fn skips_on_nightly(&self) -> bool {
+        true
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let mut targets: Vec<WingetTarget> = Vec::new();

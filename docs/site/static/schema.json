@@ -9188,7 +9188,7 @@
           ]
         },
         "keep_single_release": {
-          "description": "Delete the prior release that points at the same tag before creating the new one. Default: `false`. Set `true` to maintain a single rolling nightly release on GitHub. Destructive: deletes a published release via the GitHub Releases API.",
+          "description": "Delete the prior release that points at the same tag before creating the new one. Default: `false`. Set `true` to maintain a single rolling nightly release on GitHub. Destructive: deletes a published release via the GitHub Releases API. GitHub-only (GoReleaser parity).",
           "default": null,
           "type": [
             "boolean",
