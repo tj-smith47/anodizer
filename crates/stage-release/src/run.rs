@@ -42,6 +42,8 @@ impl Stage for super::ReleaseStage {
         let rt =
             tokio::runtime::Runtime::new().context("release: failed to create tokio runtime")?;
 
+        validate_nightly_config(ctx, &log);
+
         for crate_cfg in &crates {
             let Some(release_cfg) = crate_cfg.release.as_ref() else {
                 continue;
@@ -57,8 +59,30 @@ impl Stage for super::ReleaseStage {
     }
 }
 
+/// Emit once-per-run warnings about workspace-level nightly configuration
+/// combinations that are technically valid but operationally surprising.
+///
+/// Currently surfaces the GoReleaser-documented gotcha that `nightly.draft =
+/// true` combined with `nightly.keep_single_release = true` leaves no
+/// published nightly release in a non-draft state, because each run replaces
+/// the prior draft before it can be promoted.
+fn validate_nightly_config(ctx: &Context, log: &anodizer_core::log::StageLogger) {
+    if !ctx.is_nightly() {
+        return;
+    }
+    let Some(nightly_cfg) = ctx.config.nightly.as_ref() else {
+        return;
+    };
+    if nightly_cfg.draft == Some(true) && nightly_cfg.keep_single_release == Some(true) {
+        log.warn(
+            "release: nightly with both draft=true and keep_single_release=true \
+             — no published nightly release will exist (each run replaces a prior draft)",
+        );
+    }
+}
+
 /// Validate release flag combinations that are mutually exclusive and would
-/// produce undefined behavior if both are set.
+/// produce conflicting behavior if both are set.
 ///
 /// Returns `Err` when the combination is invalid; `Ok(())` otherwise.
 fn validate_release_flags(
@@ -153,7 +177,7 @@ fn release_one_crate(
 
     let release_name = resolve_release_name(ctx, release_cfg, &crate_cfg.name)?;
 
-    let flags = resolve_release_flags(ctx, release_cfg, &crate_name, &tag, log)?;
+    let flags = resolve_release_flags(ctx, release_cfg, &crate_name, &tag)?;
     let ids_filter = release_cfg.ids.as_ref();
 
     let artifact_entries = assemble_artifact_entries(
@@ -491,7 +515,6 @@ fn resolve_release_flags(
     release_cfg: &anodizer_core::config::ReleaseConfig,
     crate_name: &str,
     tag: &str,
-    log: &anodizer_core::log::StageLogger,
 ) -> Result<ResolvedReleaseFlags> {
     let skip_upload = resolve_skip_upload(ctx, release_cfg, crate_name)?;
     let target_commitish = release_cfg
@@ -519,12 +542,6 @@ fn resolve_release_flags(
         && nightly_cfg
             .and_then(|n| n.keep_single_release)
             .unwrap_or(false);
-    if ctx.is_nightly() && draft && keep_single_release {
-        log.warn(
-            "release: nightly with both draft=true and keep_single_release=true \
-             — no published nightly release will exist (each run replaces a prior draft)",
-        );
-    }
     Ok(ResolvedReleaseFlags {
         draft,
         prerelease: should_mark_prerelease(&release_cfg.prerelease, tag),
@@ -960,7 +977,7 @@ mod tests {
             draft: Some(false),
             ..Default::default()
         };
-        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly", &quiet_log())
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly")
             .expect("resolve_release_flags returns Ok");
         assert!(
             flags.draft,
@@ -981,7 +998,7 @@ mod tests {
             draft: Some(true),
             ..Default::default()
         };
-        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly", &quiet_log())
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly")
             .expect("resolve_release_flags returns Ok");
         assert!(
             flags.draft,
@@ -999,7 +1016,7 @@ mod tests {
             ..Default::default()
         });
         let release_cfg = ReleaseConfig::default();
-        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "v1.0.0", &quiet_log())
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "v1.0.0")
             .expect("resolve_release_flags returns Ok");
         assert!(
             !flags.keep_single_release,
@@ -1017,7 +1034,7 @@ mod tests {
             ..Default::default()
         });
         let release_cfg = ReleaseConfig::default();
-        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly", &quiet_log())
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly")
             .expect("resolve_release_flags returns Ok");
         assert!(
             flags.keep_single_release,
@@ -1072,10 +1089,43 @@ mod tests {
     }
 
     #[test]
-    fn resolve_release_flags_warns_when_nightly_draft_and_keep_single_release() {
-        // draft=true + keep_single_release=true on a nightly run is a GoReleaser-
-        // documented gotcha: no published release ever exists because each run
-        // replaces a prior draft. Must succeed (warn, not error).
+    fn validate_nightly_config_is_noop_when_not_nightly() {
+        let ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        validate_nightly_config(&ctx, &quiet_log());
+    }
+
+    #[test]
+    fn validate_nightly_config_is_noop_when_nightly_block_absent() {
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        ctx.options.nightly = true;
+        validate_nightly_config(&ctx, &quiet_log());
+    }
+
+    #[test]
+    fn validate_nightly_config_is_noop_when_only_one_of_draft_or_ksr_set() {
+        // draft=true alone — no warning.
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        ctx.options.nightly = true;
+        ctx.config.nightly = Some(NightlyConfig {
+            draft: Some(true),
+            keep_single_release: None,
+            ..Default::default()
+        });
+        validate_nightly_config(&ctx, &quiet_log());
+        // keep_single_release=true alone — no warning.
+        ctx.config.nightly = Some(NightlyConfig {
+            draft: None,
+            keep_single_release: Some(true),
+            ..Default::default()
+        });
+        validate_nightly_config(&ctx, &quiet_log());
+    }
+
+    #[test]
+    fn validate_nightly_config_warns_when_nightly_draft_and_keep_single_release_both_true() {
+        // draft=true + keep_single_release=true on a nightly run is the
+        // GoReleaser-documented gotcha. The function must run without
+        // panicking (the warn-emission path is exercised end-to-end).
         let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
         ctx.options.nightly = true;
         ctx.config.nightly = Some(NightlyConfig {
@@ -1083,14 +1133,6 @@ mod tests {
             keep_single_release: Some(true),
             ..Default::default()
         });
-        let release_cfg = ReleaseConfig::default();
-        // Must succeed (warn, not error).
-        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly", &quiet_log())
-            .expect("nightly + draft + keep_single_release must not error");
-        assert!(flags.draft, "draft must be true");
-        assert!(
-            flags.keep_single_release,
-            "keep_single_release must be true"
-        );
+        validate_nightly_config(&ctx, &quiet_log());
     }
 }

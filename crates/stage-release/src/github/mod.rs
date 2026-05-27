@@ -113,12 +113,12 @@ pub(crate) async fn find_draft_by_name(
 /// treating a failed lookup as "no existing release".
 async fn find_release_by_tag(
     octo: &Arc<octocrab::Octocrab>,
-    policy: &anodizer_core::retry::RetryPolicy,
-    retry_after: Option<&RetryAfterCapture>,
-    label: &'static str,
     owner: &str,
     repo: &str,
     tag: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+    retry_after: Option<&RetryAfterCapture>,
+    label: &'static str,
 ) -> Result<Option<octocrab::models::repos::Release>> {
     let owner = owner.to_string();
     let repo = repo.to_string();
@@ -453,12 +453,12 @@ pub(crate) fn run_github_backend(
         if keep_single_release && existing_draft.is_none() {
             let prior = find_release_by_tag(
                 &octo,
-                &policy,
-                Some(&retry_after_capture),
-                "get release by tag (keep_single_release)",
                 &github.owner,
                 &github.name,
                 tag,
+                &policy,
+                Some(&retry_after_capture),
+                "get release by tag (keep_single_release)",
             )
             .await
             .with_context(|| {
@@ -534,12 +534,12 @@ pub(crate) fn run_github_backend(
                 // real GitHub error instead of a downstream 422.
                 let existing = find_release_by_tag(
                     &octo,
-                    &policy,
-                    Some(&retry_after_capture),
-                    "get release by tag",
                     &github.owner,
                     &github.name,
                     tag,
+                    &policy,
+                    Some(&retry_after_capture),
+                    "get release by tag",
                 )
                 .await
                 .with_context(|| {
