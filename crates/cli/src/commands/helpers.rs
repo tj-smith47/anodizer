@@ -290,13 +290,30 @@ pub fn resolve_git_context(
 
     // Allow env var overrides for tag discovery. Anodizer-native var wins;
     // the GoReleaser compat alias is checked as a fallback so CI jobs migrating
-    // from GoReleaser pick up their existing env vars without rewiring.
+    // from GoReleaser pick up their existing env vars without rewiring. As a
+    // last resort, GitHub Actions exposes the triggering tag as GITHUB_REF_NAME
+    // when GITHUB_REF_TYPE=tag — use that so workflows that didn't explicitly
+    // export ANODIZER_CURRENT_TAG (e.g. `Release.yml` jobs dispatched by a tag
+    // push) still resolve the correct tag instead of falling through to
+    // per-crate-template latest-tag scanning (which can mis-resolve when the
+    // triggering tag's prefix doesn't match the first crate's tag_template).
     let tag_override = ctx
         .env_var("ANODIZER_CURRENT_TAG")
         .filter(|s| !s.is_empty())
         .or_else(|| {
             ctx.env_var("GORELEASER_CURRENT_TAG")
                 .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            let is_tag = ctx
+                .env_var("GITHUB_REF_TYPE")
+                .filter(|s| s == "tag")
+                .is_some();
+            if is_tag {
+                ctx.env_var("GITHUB_REF_NAME").filter(|s| !s.is_empty())
+            } else {
+                None
+            }
         });
 
     // Resolve a crate to derive the tag from. Selection order:
