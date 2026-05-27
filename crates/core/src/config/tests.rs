@@ -4153,6 +4153,85 @@ fn test_validate_tag_sort_invalid_rejected() {
     );
 }
 
+#[test]
+fn test_validate_tag_sort_valid_semver() {
+    let config = Config {
+        git: Some(GitConfig {
+            tag_sort: Some("semver".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(validate_tag_sort(&config).is_ok());
+}
+
+#[test]
+fn test_validate_tag_sort_valid_smartsemver() {
+    let config = Config {
+        git: Some(GitConfig {
+            tag_sort: Some("smartsemver".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(validate_tag_sort(&config).is_ok());
+}
+
+#[test]
+fn test_validate_tag_sort_invalid_lists_semver_modes() {
+    let config = Config {
+        git: Some(GitConfig {
+            tag_sort: Some("bogus".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let err = validate_tag_sort(&config).unwrap_err();
+    assert!(err.contains("semver"), "error should mention semver: {err}");
+    assert!(
+        err.contains("smartsemver"),
+        "error should mention smartsemver: {err}"
+    );
+}
+
+#[test]
+fn test_git_config_yaml_accepts_semver() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+git:
+  tag_sort: "semver"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert_eq!(
+        config.git.as_ref().unwrap().tag_sort.as_deref(),
+        Some("semver")
+    );
+    assert!(validate_tag_sort(&config).is_ok());
+}
+
+#[test]
+fn test_git_config_yaml_accepts_smartsemver() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+git:
+  tag_sort: "smartsemver"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert_eq!(
+        config.git.as_ref().unwrap().tag_sort.as_deref(),
+        Some("smartsemver")
+    );
+    assert!(validate_tag_sort(&config).is_ok());
+}
+
 // ---- defaults axis-mismatch validation tests ----
 
 #[test]

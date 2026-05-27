@@ -455,6 +455,11 @@ pub fn validate_version(config: &Config) -> Result<(), String> {
 /// Validate `git.tag_sort` if present. Accepted values:
 /// - `"-version:refname"` (default, lexicographic version sort)
 /// - `"-version:creatordate"` (sort by tag creation date, newest first)
+/// - `"semver"` (Rust-side strict SemVer 2.0.0 ordering, prereleases sort
+///   below their release per spec section 11)
+/// - `"smartsemver"` (same ordering as `semver`, but when the current version
+///   is non-prerelease, prerelease tags are skipped when picking the previous
+///   tag — avoids selecting `v0.2.0-beta.3` as the predecessor of `v0.2.0`)
 ///
 /// Returns an error for unrecognized values.
 pub fn validate_tag_sort(config: &Config) -> Result<(), String> {
@@ -462,11 +467,12 @@ pub fn validate_tag_sort(config: &Config) -> Result<(), String> {
         && let Some(ref sort) = git.tag_sort
     {
         match sort.as_str() {
-            "-version:refname" | "-version:creatordate" => {}
+            "-version:refname" | "-version:creatordate" | "semver" | "smartsemver" => {}
             other => {
                 return Err(format!(
                     "unsupported git.tag_sort value: \"{}\". \
-                     Accepted values: \"-version:refname\", \"-version:creatordate\".",
+                     Accepted values: \"-version:refname\", \"-version:creatordate\", \
+                     \"semver\", \"smartsemver\".",
                     other
                 ));
             }

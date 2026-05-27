@@ -18,19 +18,44 @@ git:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `tag_sort` | string | `-version:refname` | How to sort tags: `"-version:refname"` (semver-aware sort) or `"-version:creatordate"` (by creation date) |
+| `tag_sort` | string | `-version:refname` | How to sort tags. See [Tag sorting](#tag-sorting) below. Accepted: `-version:refname`, `-version:creatordate`, `semver`, `smartsemver` |
 | `ignore_tags` | list | none | Glob patterns for tags to exclude from version detection (supports templates) |
 | `ignore_tag_prefixes` | list | none | Prefixes for tags to exclude from version detection (supports templates) |
 | `prerelease_suffix` | string | none | Suffix identifying pre-release tags for sort ordering |
 
 ## Tag sorting
 
-The default `"-version:refname"` sorts tags using Rust-side semver-aware comparison. Use `"-version:creatordate"` to sort by the tag's creation date instead (newest first):
+Four sort modes are accepted:
+
+| Value | Sort surface | When to use |
+|-------|--------------|-------------|
+| `-version:refname` (default) | git-delegated lexicographic version sort | The historical default; matches GoReleaser OSS |
+| `-version:creatordate` | git-delegated by tag creation date, newest first | When tags are created out of version order and creation order is the source of truth |
+| `semver` | Rust-side strict SemVer 2.0.0 sort | When you want pure-spec ordering with no shell-out; prereleases sort below their release per section 11 |
+| `smartsemver` | Rust-side SemVer + prerelease filter | When you ship release tags after prerelease tags and want changelogs to skip the prereleases automatically |
+
+Creation-date sort:
 
 ```yaml
 git:
   tag_sort: "-version:creatordate"
 ```
+
+Strict SemVer sort (bypasses git's native sort):
+
+```yaml
+git:
+  tag_sort: "semver"
+```
+
+Smart SemVer sort — when the current run's `Version` is non-prerelease, prerelease tags are filtered out of the candidate list before picking the latest or previous tag:
+
+```yaml
+git:
+  tag_sort: "smartsemver"
+```
+
+`smartsemver` prevents the common pitfall where shipping `v0.2.0` after a `v0.2.0-beta.3` tag would pick the beta as the previous tag and produce an empty changelog.
 
 ## Ignoring tags
 
@@ -58,7 +83,7 @@ git:
   prerelease_suffix: "-rc"
 ```
 
-Setting `prerelease_suffix` also forces git-delegated sorting (via `git -c versionsort.suffix=<suffix>`) rather than Rust-side semver sorting.
+For the legacy `-version:*` modes, setting `prerelease_suffix` forces git-delegated sorting (via `git -c versionsort.suffix=<suffix>`) so the suffix takes effect. For `semver` and `smartsemver`, the suffix is consulted Rust-side: a tag ending with the suffix is treated as a prerelease by the smartsemver filter even when its version string lacks a SemVer prerelease component (e.g. `v1.2.3-rc1` with `prerelease_suffix: "-rc"`).
 
 ## Detected git info
 

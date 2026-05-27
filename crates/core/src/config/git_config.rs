@@ -18,6 +18,13 @@ pub struct GitConfig {
     /// Accepted values:
     /// - `"-version:refname"` (default) — lexicographic version sort on the tag name.
     /// - `"-version:creatordate"` — sort by the tag's creation date (newest first).
+    /// - `"semver"` — strict SemVer 2.0.0 ordering computed in Rust; prereleases
+    ///   sort below their release per spec section 11. Bypasses git's native sort.
+    /// - `"smartsemver"` — same ordering as `"semver"`, but when the current
+    ///   version (resolved from the template `Version` variable) is non-prerelease,
+    ///   prerelease tags are filtered out before previous-tag selection. Prevents
+    ///   `v0.2.0-beta.3` from being picked as the predecessor of `v0.2.0` (which
+    ///   would otherwise produce an empty changelog).
     pub tag_sort: Option<String>,
     /// Tag patterns to ignore during version detection (supports templates).
     /// Tags matching any pattern in this list are excluded from version

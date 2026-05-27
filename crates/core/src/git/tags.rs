@@ -99,13 +99,21 @@ pub fn strip_monorepo_prefix<'a>(tag: &'a str, prefix: &str) -> &'a str {
 ///   template engine first (matching GoReleaser's behavior).
 /// - `ignore_tag_prefixes`: tags starting with any prefix are excluded.
 ///   Also template-rendered when `template_vars` is provided.
-/// - `tag_sort` set to `"-version:creatordate"`: delegates ordering to git
-///   instead of Rust-side SemVer sort (the default `"-version:refname"` is
-///   equivalent to SemVer sort, so Rust-side sort is kept).
-/// - `prerelease_suffix`: always passed as `-c versionsort.suffix=<suffix>` to
-///   git, regardless of `tag_sort` value. When using the default refname sort
-///   and `prerelease_suffix` is set, git-delegated sort with
-///   `--sort=-version:refname` is used so the suffix takes effect.
+/// - `tag_sort` controls ordering:
+///   - `"-version:refname"` (default): Rust-side SemVer sort.
+///   - `"-version:creatordate"`: git-delegated sort by tag creation date.
+///   - `"semver"`: Rust-side strict SemVer 2.0.0 sort; bypasses git sort even
+///     when `prerelease_suffix` is set.
+///   - `"smartsemver"`: same as `"semver"`, but when `template_vars` carries a
+///     `Version` that is itself non-prerelease, prerelease tags are filtered
+///     out of the candidate list. Prevents `v0.2.0-beta.3` from winning when
+///     the current run is shipping `v0.2.0`.
+/// - `prerelease_suffix`: for the legacy `-version:*` modes, passed as
+///   `-c versionsort.suffix=<suffix>` to git; setting it forces git-delegated
+///   sort so the suffix takes effect. For `"semver"`/`"smartsemver"`, the
+///   suffix is consulted Rust-side: a tag ending with the suffix is treated as
+///   a prerelease by the smartsemver filter even when its version string lacks
+///   a SemVer prerelease component.
 pub fn find_latest_tag_matching(
     tag_template: &str,
     git_config: Option<&GitConfig>,
@@ -189,14 +197,15 @@ pub fn find_latest_tag_matching_with_prefix_in(
         .and_then(|gc| gc.tag_sort.as_deref())
         .unwrap_or("-version:refname");
     let prerelease_suffix = git_config.and_then(|gc| gc.prerelease_suffix.as_deref());
+    let is_rust_semver_mode = matches!(tag_sort, "semver" | "smartsemver");
 
-    // When prerelease_suffix is set, always use git-delegated sort so that
-    // `-c versionsort.suffix=<suffix>` takes effect. This matches GoReleaser's
-    // behavior of always passing the suffix regardless of sort mode.
-    let use_git_sort = tag_sort == "-version:creatordate" || prerelease_suffix.is_some();
+    // git-delegated sort applies only to the legacy `-version:*` modes.
+    // `semver`/`smartsemver` are pure Rust-side; `prerelease_suffix` is
+    // consulted via [`tag_is_prerelease`] rather than `versionsort.suffix=`.
+    let use_git_sort =
+        !is_rust_semver_mode && (tag_sort == "-version:creatordate" || prerelease_suffix.is_some());
 
     let tags_output = if use_git_sort {
-        // Build args with optional versionsort.suffix config.
         let suffix_cfg;
         let mut args: Vec<&str> = Vec::new();
         if let Some(suffix) = prerelease_suffix {
@@ -261,6 +270,15 @@ pub fn find_latest_tag_matching_with_prefix_in(
         })
         .collect();
 
+    if tag_sort == "smartsemver" && smartsemver_should_skip_prereleases(template_vars) {
+        matching.retain(|(sv, tag)| {
+            let stripped = monorepo_prefix
+                .map(|pfx| strip_monorepo_prefix(tag, pfx))
+                .unwrap_or(tag);
+            !tag_is_prerelease(sv, stripped, prerelease_suffix)
+        });
+    }
+
     if use_git_sort {
         // Git already sorted; the first entry in --sort=-version:* output is
         // the newest, so take the first after filtering.
@@ -269,6 +287,43 @@ pub fn find_latest_tag_matching_with_prefix_in(
         // Rust-side SemVer sort (ascending), pick the last (highest).
         matching.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(matching.last().map(|(_, tag)| tag.clone()))
+    }
+}
+
+/// Whether a tag should be treated as a prerelease for `smartsemver` filtering.
+///
+/// Returns `true` when the parsed SemVer carries a prerelease component OR the
+/// raw tag string ends with the user-configured `prerelease_suffix` (so non-
+/// SemVer-spec prerelease markers like `v1.2.3-rc1` without dot-separators are
+/// still recognised).
+pub(super) fn tag_is_prerelease(sv: &SemVer, tag: &str, prerelease_suffix: Option<&str>) -> bool {
+    if sv.is_prerelease() {
+        return true;
+    }
+    if let Some(suffix) = prerelease_suffix
+        && !suffix.is_empty()
+        && tag.ends_with(suffix)
+    {
+        return true;
+    }
+    false
+}
+
+/// `smartsemver` filters prereleases out of the candidate list when the
+/// current run targets a non-prerelease version. The signal comes from the
+/// `Version` template variable: when it parses as a release (no prerelease
+/// component), filtering is enabled; when absent or itself a prerelease,
+/// the full candidate list is kept.
+pub(super) fn smartsemver_should_skip_prereleases(template_vars: Option<&TemplateVars>) -> bool {
+    let Some(vars) = template_vars else {
+        return false;
+    };
+    let Some(current) = vars.get("Version") else {
+        return false;
+    };
+    match parse_semver_tag(current) {
+        Ok(sv) => !sv.is_prerelease(),
+        Err(_) => false,
     }
 }
 
@@ -427,6 +482,12 @@ pub fn create_and_push_tag_in(
 /// `ignore_tags` patterns and `ignore_tag_prefixes` (converted to `<prefix>*`
 /// globs), so git handles all filtering natively in a single call.
 ///
+/// When `git_config.tag_sort == "smartsemver"`, the lookup switches to a
+/// `git tag --list` + Rust-side SemVer sort path so prerelease tags can be
+/// filtered out when the current run targets a non-prerelease version.
+/// Without this, `git describe --abbrev=0` would return the literal previous
+/// tag and an `v0.2.0` release would point its changelog at `v0.2.0-beta.3`.
+///
 /// Both `ignore_tags` and `ignore_tag_prefixes` are rendered through the
 /// template engine when `template_vars` is provided.
 ///
@@ -487,6 +548,17 @@ pub fn find_previous_tag_with_prefix_in(
     template_vars: Option<&TemplateVars>,
     monorepo_prefix: Option<&str>,
 ) -> Result<Option<String>> {
+    let tag_sort = git_config.and_then(|gc| gc.tag_sort.as_deref());
+    if tag_sort == Some("smartsemver") {
+        return smartsemver_previous_tag_in(
+            cwd,
+            current_tag,
+            git_config,
+            template_vars,
+            monorepo_prefix,
+        );
+    }
+
     let parent_ref = format!("{}^", current_tag);
 
     // Use the shared helper to render both ignore_tags and ignore_tag_prefixes.
@@ -522,6 +594,79 @@ pub fn find_previous_tag_with_prefix_in(
         Ok(tag) if !tag.is_empty() => Ok(Some(tag)),
         _ => Ok(None),
     }
+}
+
+/// `smartsemver` previous-tag lookup: list all candidate tags, drop
+/// `current_tag` itself, filter ignored entries, optionally drop prereleases
+/// when the current version is non-prerelease, and return the SemVer-newest
+/// remaining tag.
+///
+/// `current_tag` is removed regardless of how the SemVer comparison would
+/// rank it so callers always get the *previous* tag, not the input one.
+fn smartsemver_previous_tag_in(
+    cwd: &Path,
+    current_tag: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+    monorepo_prefix: Option<&str>,
+) -> Result<Option<String>> {
+    let tags_output = git_output_in(cwd, &["tag", "--list"])?;
+    if tags_output.is_empty() {
+        return Ok(None);
+    }
+
+    let (rendered_ignore_tags, rendered_ignore_prefixes) =
+        render_ignore_patterns(git_config, template_vars);
+    let ignore_tag_globs: Vec<glob::Pattern> = rendered_ignore_tags
+        .iter()
+        .filter_map(|pat| glob::Pattern::new(pat).ok())
+        .collect();
+    let prerelease_suffix = git_config.and_then(|gc| gc.prerelease_suffix.as_deref());
+    let skip_prereleases = smartsemver_should_skip_prereleases(template_vars);
+
+    let mut candidates: Vec<(SemVer, String)> = tags_output
+        .lines()
+        .filter(|t| *t != current_tag)
+        .filter(|t| {
+            monorepo_prefix
+                .map(|pfx| t.starts_with(pfx))
+                .unwrap_or(true)
+        })
+        .filter(|t| {
+            let stripped = monorepo_prefix
+                .map(|pfx| strip_monorepo_prefix(t, pfx))
+                .unwrap_or(t);
+            !ignore_tag_globs.iter().any(|g| g.matches(stripped))
+        })
+        .filter(|t| {
+            let stripped = monorepo_prefix
+                .map(|pfx| strip_monorepo_prefix(t, pfx))
+                .unwrap_or(t);
+            !rendered_ignore_prefixes
+                .iter()
+                .any(|p| !p.is_empty() && stripped.starts_with(p.as_str()))
+        })
+        .filter_map(|t| {
+            let stripped = monorepo_prefix
+                .map(|pfx| strip_monorepo_prefix(t, pfx))
+                .unwrap_or(t);
+            parse_semver_tag(stripped)
+                .ok()
+                .map(|sv| (sv, t.to_string()))
+        })
+        .filter(|(sv, t)| {
+            if !skip_prereleases {
+                return true;
+            }
+            let stripped = monorepo_prefix
+                .map(|pfx| strip_monorepo_prefix(t, pfx))
+                .unwrap_or(t);
+            !tag_is_prerelease(sv, stripped, prerelease_suffix)
+        })
+        .collect();
+
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(candidates.into_iter().next().map(|(_, tag)| tag))
 }
 
 /// Return the SHA of the very first commit in the repository.
