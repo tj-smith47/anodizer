@@ -1516,6 +1516,7 @@ mod tests {
 
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
+            .pool_idle_timeout(Duration::ZERO)
             .build()
             .expect("client");
         let policy = RetryPolicy {

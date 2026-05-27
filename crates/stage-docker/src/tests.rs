@@ -4892,7 +4892,7 @@ fn docker_v2_post_hook_template_failure_aborts_stage() {
 }
 
 // ============================================================================
-// B21 — Podman backend coverage
+// Podman backend coverage
 // ============================================================================
 
 #[test]

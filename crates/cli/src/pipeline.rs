@@ -3407,7 +3407,7 @@ before_publish:
     }
 
     // -----------------------------------------------------------------------
-    // B30 — monorepo defaults
+    // monorepo defaults
     // -----------------------------------------------------------------------
 
     fn monorepo_config_with_archive_files(extra: &str) -> anodizer_core::config::Config {

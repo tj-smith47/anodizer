@@ -4628,7 +4628,7 @@ fn archive_byte_differs_for_different_sde() {
 }
 
 // ---------------------------------------------------------------------------
-// B31 — archive before/after hooks
+// archive before/after hooks
 // ---------------------------------------------------------------------------
 
 /// Drive ArchiveStage with a configured `hooks.before` + `hooks.after`
