@@ -106,7 +106,7 @@ impl Stage for super::ChangelogStage {
             );
         }
 
-        let opts = resolve_changelog_opts(ctx, &log, changelog_cfg.as_ref())?;
+        let mut opts = resolve_changelog_opts(ctx, &log, changelog_cfg.as_ref())?;
 
         let selected = ctx.options.selected_crates.clone();
         let dist = ctx.config.dist.clone();
@@ -120,6 +120,16 @@ impl Stage for super::ChangelogStage {
             .collect();
 
         let ai_cfg = changelog_cfg.as_ref().and_then(|c| c.ai.clone());
+
+        // Enabling AI disables changelog grouping: the model receives the
+        // flat commit list and produces its own structure. Operators who
+        // want both can instruct the prompt to emit group headings.
+        if ai_provider_active(ai_cfg.as_ref()) && !opts.groups.is_empty() {
+            log.status(
+                "changelog.ai: enabled — `changelog.groups` is ignored; the AI prompt drives the structure",
+            );
+            opts.groups.clear();
+        }
 
         let mut combined_markdown = String::new();
         for crate_cfg in &crates {
@@ -149,6 +159,17 @@ impl Stage for super::ChangelogStage {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Whether AI enhancement is active for this run.
+///
+/// Returns `true` only when `changelog.ai.use` is set to a non-empty
+/// provider name. Empty / missing values keep the native rendering
+/// pipeline intact.
+fn ai_provider_active(ai_cfg: Option<&anodizer_core::config::ChangelogAiConfig>) -> bool {
+    ai_cfg
+        .and_then(|a| a.provider.as_deref())
+        .is_some_and(|p| !p.is_empty())
+}
 
 /// Honour `--release-notes <path>`: read the file, fan it out to every
 /// selected crate, and write `dist/CHANGELOG.md`. Returns `true` when the
@@ -729,4 +750,47 @@ fn write_changelog_dist(log: &StageLogger, dist: &PathBuf, markdown: &str) -> Re
         .with_context(|| format!("changelog: write {}", notes_path.display()))?;
     log.status(&format!("wrote {}", notes_path.display()));
     Ok(())
+}
+
+#[cfg(test)]
+mod ai_suppression_tests {
+    use super::ai_provider_active;
+    use anodizer_core::config::ChangelogAiConfig;
+
+    #[test]
+    fn no_ai_cfg_is_inactive() {
+        assert!(!ai_provider_active(None));
+    }
+
+    #[test]
+    fn empty_provider_is_inactive() {
+        let cfg = ChangelogAiConfig {
+            provider: Some(String::new()),
+            ..Default::default()
+        };
+        assert!(!ai_provider_active(Some(&cfg)));
+    }
+
+    #[test]
+    fn missing_provider_is_inactive() {
+        let cfg = ChangelogAiConfig {
+            provider: None,
+            ..Default::default()
+        };
+        assert!(!ai_provider_active(Some(&cfg)));
+    }
+
+    #[test]
+    fn non_empty_provider_is_active() {
+        for name in ["anthropic", "openai", "ollama"] {
+            let cfg = ChangelogAiConfig {
+                provider: Some(name.to_string()),
+                ..Default::default()
+            };
+            assert!(
+                ai_provider_active(Some(&cfg)),
+                "{name} should activate the AI path"
+            );
+        }
+    }
 }

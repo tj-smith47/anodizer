@@ -17,17 +17,23 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 /// Anthropic Messages API provider.
 ///
 /// Reads auth from `ANTHROPIC_API_KEY`. Endpoint:
-/// `https://api.anthropic.com/v1/messages`. Default model: `claude-sonnet-4-6`.
+/// `https://api.anthropic.com/v1/messages` by default, overridable via
+/// `ANODIZER_ANTHROPIC_ENDPOINT` to route through a corporate proxy,
+/// regional mirror, or private gateway. Default model: `claude-sonnet-4-6`.
 pub struct AnthropicProvider {
-    /// Base URL for the Anthropic API (overridable for tests via `ANODIZER_ANTHROPIC_API_BASE`).
+    /// Base URL for the Anthropic API (default `https://api.anthropic.com`).
     base_url: String,
 }
 
 impl AnthropicProvider {
-    /// Construct from environment. Reads `ANODIZER_ANTHROPIC_API_BASE` for
-    /// test overrides; production callers get `https://api.anthropic.com`.
+    /// Construct from environment.
+    ///
+    /// `ANODIZER_ANTHROPIC_ENDPOINT` overrides the default
+    /// `https://api.anthropic.com` base URL. Use this to point at a
+    /// corporate proxy, regional mirror, or private gateway that
+    /// re-exposes the Anthropic Messages API.
     pub fn from_env() -> Self {
-        let base_url = std::env::var("ANODIZER_ANTHROPIC_API_BASE")
+        let base_url = std::env::var("ANODIZER_ANTHROPIC_ENDPOINT")
             .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
         Self { base_url }
     }

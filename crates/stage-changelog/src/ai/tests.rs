@@ -1,6 +1,6 @@
 //! Tests for the `changelog.ai` enhancement pipeline.
 //!
-//! Each provider's HTTP base URL is overridable via an `ANODIZER_*_API_BASE`
+//! Each provider's HTTP base URL is overridable via an `ANODIZER_*_ENDPOINT`
 //! env var so tests can point them at a [`spawn_scripted_responder`] running
 //! on `127.0.0.1`. Tests are `#[serial]` because they mutate process env.
 
@@ -18,7 +18,7 @@ use super::enhance_with_ai;
 
 // ---------------------------------------------------------------------------
 // Env-mutex: serialise tests that touch the same env keys (every test in this
-// module reads/writes `*_API_BASE` / `*_API_KEY`).
+// module reads/writes `*_ENDPOINT` / `*_API_KEY`).
 // ---------------------------------------------------------------------------
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -135,7 +135,7 @@ fn anthropic_200_replaces_body() {
         times: Some(1),
     }]);
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_API_BASE", &base);
+    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_ENDPOINT", &base);
     let _g_key = EnvGuard::set("ANTHROPIC_API_KEY", "sk-ant-test-1234");
 
     let ctx = make_ctx(false);
@@ -169,7 +169,7 @@ fn openai_200_replaces_body() {
         times: Some(1),
     }]);
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_OPENAI_API_BASE", &base);
+    let _g_base = EnvGuard::set("ANODIZER_OPENAI_ENDPOINT", &base);
     let _g_key = EnvGuard::set("OPENAI_API_KEY", "sk-test-abc");
 
     let ctx = make_ctx(false);
@@ -203,7 +203,7 @@ fn ollama_200_replaces_body() {
         times: Some(1),
     }]);
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_OLLAMA_API_BASE", &base);
+    let _g_base = EnvGuard::set("ANODIZER_OLLAMA_ENDPOINT", &base);
 
     let ctx = make_ctx(false);
     let log = ctx.logger("changelog");
@@ -244,7 +244,7 @@ fn anthropic_401_aborts_and_redacts() {
     }]);
     let base = format!("http://{addr}");
     let secret = "sk-ant-very-secret-do-not-leak-9999";
-    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_API_BASE", &base);
+    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_ENDPOINT", &base);
     let _g_key = EnvGuard::set("ANTHROPIC_API_KEY", secret);
 
     let ctx = make_ctx(false);
@@ -283,7 +283,7 @@ fn anthropic_503_aborts_when_fail_closed() {
         times: Some(1),
     }]);
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_API_BASE", &base);
+    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_ENDPOINT", &base);
     let _g_key = EnvGuard::set("ANTHROPIC_API_KEY", "sk-ant-test");
 
     let ctx = make_ctx(false);
@@ -314,7 +314,7 @@ fn anthropic_503_degrades_with_allow_ai_failure() {
         times: Some(1),
     }]);
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_API_BASE", &base);
+    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_ENDPOINT", &base);
     let _g_key = EnvGuard::set("ANTHROPIC_API_KEY", "sk-ant-test");
 
     let ctx = make_ctx(true);
@@ -356,7 +356,7 @@ fn prompt_from_file_is_used() {
         times: Some(1),
     }]);
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_API_BASE", &base);
+    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_ENDPOINT", &base);
     let _g_key = EnvGuard::set("ANTHROPIC_API_KEY", "sk-ant-test");
 
     let ctx = make_ctx(false);
@@ -428,7 +428,7 @@ fn prompt_from_url_expands_env_in_headers() {
     ]);
 
     let base = format!("http://{addr}");
-    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_API_BASE", &base);
+    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_ENDPOINT", &base);
     let _g_key = EnvGuard::set("ANTHROPIC_API_KEY", "sk-ant-test");
     let _g_tok = EnvGuard::set("MY_PROMPT_TOKEN", "secret-token-xyz");
 
@@ -529,4 +529,162 @@ fn snapshot_mode_skips_ai() {
     let original = "## snapshot body\n";
     let out = enhance_with_ai(&ctx, &cfg, original, &log).expect("snapshot skips ai");
     assert_eq!(out, original);
+}
+
+// ---------------------------------------------------------------------------
+// Body passed to the AI provider is the flat (ungrouped) commit list
+// ---------------------------------------------------------------------------
+//
+// When `changelog.ai.use` is set the stage clears `opts.groups` BEFORE the
+// per-crate render (`run.rs::run`). The render therefore emits a flat
+// bullet list with no `### <group-title>` headings, and that flat string
+// is what flows into `enhance_with_ai`. This test pins the property by
+// rendering both shapes and confirming the flat one (what AI receives)
+// has no group headings while the grouped one does.
+
+#[test]
+#[serial]
+fn ai_receives_flat_commit_list_not_grouped() {
+    use crate::group::{CommitInfo, GroupedCommits};
+    use crate::render::{ChangelogRenderOpts, render_changelog_with_provider};
+    use anodizer_core::config::ChangelogGroup;
+
+    fn commit(raw: &str, kind: &str, desc: &str) -> CommitInfo {
+        CommitInfo {
+            raw_message: raw.to_string(),
+            kind: kind.to_string(),
+            description: desc.to_string(),
+            hash: "abc1234".to_string(),
+            full_hash: "abc1234abc1234abc1234abc1234abc1234abcd".to_string(),
+            author_name: "Alice".to_string(),
+            author_email: "alice@example.com".to_string(),
+            login: "alice".to_string(),
+            co_authors: Vec::new(),
+        }
+    }
+
+    let commits = vec![
+        commit("feat: add login", "feat", "add login"),
+        commit("fix: resolve crash", "fix", "resolve crash"),
+    ];
+
+    // Grouped render — what the stage produces WITHOUT AI.
+    let groups = vec![
+        ChangelogGroup {
+            title: "Features".into(),
+            regexp: Some("^feat".into()),
+            order: Some(0),
+            groups: None,
+        },
+        ChangelogGroup {
+            title: "Bug Fixes".into(),
+            regexp: Some("^fix".into()),
+            order: Some(1),
+            groups: None,
+        },
+    ];
+    let log =
+        anodizer_core::log::StageLogger::new("changelog", anodizer_core::log::Verbosity::Normal);
+    let grouped = crate::group::group_commits(&commits, &groups, &log).expect("group commits");
+    let grouped_body = render_changelog_with_provider(
+        &grouped,
+        ChangelogRenderOpts {
+            abbrev: 7,
+            format_template: None,
+            logins: "",
+            use_source: "git",
+            title: None,
+            divider: None,
+            scm_provider: None,
+        },
+    )
+    .expect("grouped render");
+
+    // Flat render — what the stage produces WITH AI (groups cleared).
+    let flat = vec![GroupedCommits {
+        title: String::new(),
+        commits: commits.clone(),
+        subgroups: Vec::new(),
+    }];
+    let flat_body = render_changelog_with_provider(
+        &flat,
+        ChangelogRenderOpts {
+            abbrev: 7,
+            format_template: None,
+            logins: "",
+            use_source: "git",
+            title: None,
+            divider: None,
+            scm_provider: None,
+        },
+    )
+    .expect("flat render");
+
+    // The grouped body carries section headings; the flat one does not.
+    assert!(
+        grouped_body.contains("## Features"),
+        "grouped body should have section heading: {grouped_body}"
+    );
+    assert!(
+        grouped_body.contains("## Bug Fixes"),
+        "grouped body should have section heading: {grouped_body}"
+    );
+    assert!(
+        !flat_body.contains("## Features"),
+        "flat body must NOT have group headings: {flat_body}"
+    );
+    assert!(
+        !flat_body.contains("## Bug Fixes"),
+        "flat body must NOT have group headings: {flat_body}"
+    );
+    // Both bodies must still contain the commit descriptions.
+    assert!(
+        flat_body.contains("add login"),
+        "commit text preserved: {flat_body}"
+    );
+    assert!(
+        flat_body.contains("resolve crash"),
+        "commit text preserved: {flat_body}"
+    );
+
+    // Now drive enhance_with_ai with the flat body and confirm the AI
+    // sees that exact string (no internal regrouping in enhance_with_ai).
+    let echo_body: &'static str = "{\"content\":[{\"type\":\"text\",\"text\":\"echoed: ok\"}]}";
+    let response: &'static str = Box::leak(json_200(echo_body).into_boxed_str());
+    let (addr, calls) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "POST",
+        path_pattern: "/v1/messages",
+        response,
+        times: Some(1),
+    }]);
+    let base = format!("http://{addr}");
+    let _g_base = EnvGuard::set("ANODIZER_ANTHROPIC_ENDPOINT", &base);
+    let _g_key = EnvGuard::set("ANTHROPIC_API_KEY", "sk-ant-test");
+
+    let ctx = make_ctx(false);
+    let log = ctx.logger("changelog");
+    let cfg = ChangelogAiConfig {
+        provider: Some("anthropic".to_string()),
+        model: None,
+        prompt: Some(ChangelogAiPrompt::Inline(
+            "polish: {{ ReleaseNotes }}".to_string(),
+        )),
+    };
+    let _ = enhance_with_ai(&ctx, &cfg, &flat_body, &log).expect("ai call");
+
+    let entries = calls.lock().unwrap();
+    assert_eq!(entries.len(), 1);
+    let req_body = &entries[0].body;
+    assert!(
+        !req_body.contains("## Features"),
+        "AI request body must not carry group headings: {req_body}"
+    );
+    assert!(
+        !req_body.contains("## Bug Fixes"),
+        "AI request body must not carry group headings: {req_body}"
+    );
+    assert!(
+        req_body.contains("add login"),
+        "AI request body should carry the flat commit text: {req_body}"
+    );
 }

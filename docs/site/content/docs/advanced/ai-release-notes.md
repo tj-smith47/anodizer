@@ -49,8 +49,18 @@ The flow:
 | `ollama`     | `llama3.1`       | none                | `${OLLAMA_HOST:-http://localhost:11434}` |
 
 Override the model per release with `model:`. Override the endpoint
-base in tests with `ANODIZER_ANTHROPIC_API_BASE`,
-`ANODIZER_OPENAI_API_BASE`, or `ANODIZER_OLLAMA_API_BASE`.
+base via `ANODIZER_ANTHROPIC_ENDPOINT`, `ANODIZER_OPENAI_ENDPOINT`,
+or `ANODIZER_OLLAMA_ENDPOINT`. Use cases:
+
+- Routing traffic through a corporate proxy that fronts the upstream API.
+- Pointing at a regional / private mirror that re-exposes the same
+  contract (Azure OpenAI gateway, internal Anthropic relay, etc.).
+- Pointing at an OpenAI-API-compatible inference server (vLLM, LiteLLM)
+  for the `openai` provider.
+- Pointing `ollama` at a remote Ollama host on another machine.
+
+The Ollama provider also honours the upstream-standard `OLLAMA_HOST`
+when `ANODIZER_OLLAMA_ENDPOINT` is unset.
 
 ## Prompt sources
 
@@ -121,18 +131,65 @@ changelog:
       {{ ReleaseNotes }}
 ```
 
-## Precedence with `--release-notes-tmpl`
+## Interaction with `--release-notes` / `--release-notes-tmpl`
 
-When both `--release-notes-tmpl <path>` and `changelog.ai` are
-configured:
+`--release-notes <path>` and `--release-notes-tmpl <path>` short-circuit
+the entire changelog stage: the file (rendered through Tera, for the
+`-tmpl` variant) becomes the release body verbatim, and no further
+processing runs. **AI enhancement is bypassed when either flag is set.**
 
-1. `--release-notes-tmpl` replaces the SCM-rendered body with the
-   template's output (existing behaviour).
-2. `changelog.ai` then enhances THAT body — same flow it would apply
-   to the SCM body, just with a different input.
+The rationale: an operator who hands anodizer a pre-written release
+body has already decided what should ship. Quietly handing it to a
+model for "improvement" would mutate the operator's text without an
+opt-in.
 
-In other words, the body flowing into the AI provider is whatever the
-prior step produced, regardless of which step that was.
+If you want template-driven enhancement (project-aware sections, custom
+intro paragraphs, etc.), bake the template logic into the AI prompt
+itself rather than into a separate notes file:
+
+```yaml
+changelog:
+  ai:
+    use: anthropic
+    prompt: |
+      You are writing the release notes for {{ .ProjectName }} {{ .Tag }}.
+      Start with a one-paragraph intro mentioning the project name.
+      Then polish the changelog below.
+
+      {{ ReleaseNotes }}
+```
+
+The prompt has the full template context, so you can drive the same
+shape as a `--release-notes-tmpl` file from inside the AI flow.
+
+## Interaction with `changelog.groups`
+
+**Enabling AI disables changelog grouping** (parity with GoReleaser).
+When `changelog.ai.use` is set, `changelog.groups` is ignored and the
+AI provider receives a flat commit list, leaving the structural
+decisions (sections, ordering, grouping by topic) to the model.
+
+If you need both grouping AND AI polish, instruct the model to produce
+its own group headings in the prompt:
+
+```yaml
+changelog:
+  ai:
+    use: anthropic
+    prompt: |
+      Group these commits under "### Features", "### Bug Fixes",
+      and "### Dependencies updated" headings.
+
+      {{ ReleaseNotes }}
+  groups:
+    - title: Features
+      regexp: "^feat"
+```
+
+The `groups:` block above is parsed but ignored at render time when
+`ai.use` is set. Leaving it in place lets you toggle AI off (clear
+`ai.use`) and immediately get the grouped output back without
+re-authoring the section list.
 
 ## Error policy
 

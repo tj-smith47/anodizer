@@ -16,19 +16,22 @@ const TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Ollama local inference provider.
 ///
-/// No auth by default. Endpoint base from `OLLAMA_HOST` env var
-/// (default: `http://localhost:11434`). Default model: `llama3.1`.
+/// No auth by default. Endpoint base from `ANODIZER_OLLAMA_ENDPOINT`,
+/// then `OLLAMA_HOST` (the upstream Ollama convention), then defaults
+/// to `http://localhost:11434`. Default model: `llama3.1`.
 pub struct OllamaProvider {
     /// Base URL for the Ollama API.
     base_url: String,
 }
 
 impl OllamaProvider {
-    /// Construct from environment. Reads `OLLAMA_HOST` (default:
-    /// `http://localhost:11434`). Falls back to `ANODIZER_OLLAMA_API_BASE`
-    /// for test overrides.
+    /// Construct from environment.
+    ///
+    /// Precedence: `ANODIZER_OLLAMA_ENDPOINT` (anodizer-namespaced
+    /// override for proxy / remote-Ollama setups) → `OLLAMA_HOST` (the
+    /// upstream Ollama convention) → `http://localhost:11434`.
     pub fn from_env() -> Self {
-        let base_url = std::env::var("ANODIZER_OLLAMA_API_BASE")
+        let base_url = std::env::var("ANODIZER_OLLAMA_ENDPOINT")
             .or_else(|_| std::env::var("OLLAMA_HOST"))
             .unwrap_or_else(|_| "http://localhost:11434".to_string());
         Self { base_url }

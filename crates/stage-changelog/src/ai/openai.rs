@@ -17,17 +17,24 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 /// OpenAI Chat Completions API provider.
 ///
 /// Reads auth from `OPENAI_API_KEY`. Endpoint:
-/// `https://api.openai.com/v1/chat/completions`. Default model: `gpt-4o-mini`.
+/// `https://api.openai.com/v1/chat/completions` by default, overridable
+/// via `ANODIZER_OPENAI_ENDPOINT` to route through a corporate proxy,
+/// Azure OpenAI gateway, or any OpenAI-compatible inference server.
+/// Default model: `gpt-4o-mini`.
 pub struct OpenAiProvider {
-    /// Base URL (overridable for tests via `ANODIZER_OPENAI_API_BASE`).
+    /// Base URL for the OpenAI API (default `https://api.openai.com`).
     base_url: String,
 }
 
 impl OpenAiProvider {
-    /// Construct from environment. Reads `ANODIZER_OPENAI_API_BASE` for
-    /// test overrides; production callers get `https://api.openai.com`.
+    /// Construct from environment.
+    ///
+    /// `ANODIZER_OPENAI_ENDPOINT` overrides the default
+    /// `https://api.openai.com` base URL. Use this to point at a
+    /// corporate proxy, an Azure OpenAI gateway, or any OpenAI-API-
+    /// compatible inference server.
     pub fn from_env() -> Self {
-        let base_url = std::env::var("ANODIZER_OPENAI_API_BASE")
+        let base_url = std::env::var("ANODIZER_OPENAI_ENDPOINT")
             .unwrap_or_else(|_| "https://api.openai.com".to_string());
         Self { base_url }
     }
