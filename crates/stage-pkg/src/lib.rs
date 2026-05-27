@@ -62,6 +62,83 @@ pub fn pkgbuild_command(
 /// by including it in the `name:` field (e.g. `{{ ProjectName }}_{{ Arch }}.pkg`).
 const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}";
 
+/// Rendered per-binary field values resolved from a [`PkgConfig`].
+///
+/// Produced by [`render_pkg_fields`] for one (config, target) pairing
+/// after `Os`/`Arch`/`Target` template vars are set, so every template
+/// expansion sees the binary's effective target triple.
+pub struct RenderedPkgFields {
+    pub identifier: String,
+    pub install_location: String,
+    pub scripts: Option<String>,
+    pub mod_timestamp: Option<String>,
+}
+
+/// Render the four template-bearing `PkgConfig` fields against `ctx`.
+///
+/// `identifier_template` must already be unwrapped from
+/// `pkg_cfg.identifier` (which is required at validation time); the rest
+/// are resolved against `pkg_cfg`. `crate_name` and `target` are used
+/// only to build error context.
+pub fn render_pkg_fields(
+    ctx: &mut Context,
+    pkg_cfg: &anodizer_core::config::PkgConfig,
+    identifier_template: &str,
+    crate_name: &str,
+    target: Option<&str>,
+) -> Result<RenderedPkgFields> {
+    let identifier = ctx.render_template(identifier_template).with_context(|| {
+        format!(
+            "pkg: render identifier template for crate {} target {:?}",
+            crate_name, target
+        )
+    })?;
+
+    let install_location_raw = pkg_cfg
+        .install_location
+        .as_deref()
+        .unwrap_or("/usr/local/bin");
+    let install_location = ctx.render_template(install_location_raw).with_context(|| {
+        format!(
+            "pkg: render install_location template for crate {} target {:?}",
+            crate_name, target
+        )
+    })?;
+
+    let scripts = pkg_cfg
+        .scripts
+        .as_deref()
+        .map(|s| {
+            ctx.render_template(s).with_context(|| {
+                format!(
+                    "pkg: render scripts template for crate {} target {:?}",
+                    crate_name, target
+                )
+            })
+        })
+        .transpose()?;
+
+    let mod_timestamp = pkg_cfg
+        .mod_timestamp
+        .as_deref()
+        .map(|ts| {
+            ctx.render_template(ts).with_context(|| {
+                format!(
+                    "pkg: render mod_timestamp template for crate {} target {:?}",
+                    crate_name, target
+                )
+            })
+        })
+        .transpose()?;
+
+    Ok(RenderedPkgFields {
+        identifier,
+        install_location,
+        scripts,
+        mod_timestamp,
+    })
+}
+
 pub struct PkgStage;
 
 impl Stage for PkgStage {
@@ -262,41 +339,17 @@ impl Stage for PkgStage {
                     ctx.template_vars_mut()
                         .set("Target", target.as_deref().unwrap_or(""));
 
-                    // Render identifier template (e.g. `com.example.{{ ProjectName }}`).
-                    let identifier =
-                        ctx.render_template(identifier_template).with_context(|| {
-                            format!(
-                                "pkg: render identifier template for crate {} target {:?}",
-                                krate.name, target
-                            )
-                        })?;
-
-                    // Render install_location template (default /usr/local/bin).
-                    let install_location_raw = pkg_cfg
-                        .install_location
-                        .as_deref()
-                        .unwrap_or("/usr/local/bin");
-                    let install_location =
-                        ctx.render_template(install_location_raw).with_context(|| {
-                            format!(
-                                "pkg: render install_location template for crate {} target {:?}",
-                                krate.name, target
-                            )
-                        })?;
-
-                    // Render scripts path template if set.
-                    let scripts_rendered = pkg_cfg
-                        .scripts
-                        .as_deref()
-                        .map(|s| {
-                            ctx.render_template(s).with_context(|| {
-                                format!(
-                                    "pkg: render scripts template for crate {} target {:?}",
-                                    krate.name, target
-                                )
-                            })
-                        })
-                        .transpose()?;
+                    let rendered = render_pkg_fields(
+                        ctx,
+                        pkg_cfg,
+                        identifier_template,
+                        &krate.name,
+                        target.as_deref(),
+                    )?;
+                    let identifier = rendered.identifier;
+                    let install_location = rendered.install_location;
+                    let scripts_rendered = rendered.scripts;
+                    let mod_timestamp_rendered = rendered.mod_timestamp;
 
                     // Determine output filename
                     let name_template = pkg_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
@@ -407,17 +460,12 @@ impl Stage for PkgStage {
                         )?;
                     }
 
-                    // Apply mod_timestamp if set; render templates first so values
-                    // like `{{ CommitTimestamp }}` expand to a valid RFC3339 string
-                    // before being handed to parse_mod_timestamp.
-                    if let Some(ts_raw) = &pkg_cfg.mod_timestamp {
-                        let ts = ctx.render_template(ts_raw).with_context(|| {
-                            format!(
-                                "pkg: render mod_timestamp template for crate {} target {:?}",
-                                krate.name, target
-                            )
-                        })?;
-                        anodizer_core::util::apply_mod_timestamp(staging_dir, &ts, &log)?;
+                    // Apply mod_timestamp if set. Templates were already expanded
+                    // upstream via render_pkg_fields, so values like
+                    // `{{ CommitTimestamp }}` reach parse_mod_timestamp as a
+                    // valid RFC3339 string rather than the literal template.
+                    if let Some(ts) = &mod_timestamp_rendered {
+                        anodizer_core::util::apply_mod_timestamp(staging_dir, ts, &log)?;
                     }
 
                     // Ensure output directory exists
@@ -1845,6 +1893,121 @@ crates:
             pkgs[0].metadata.get("identifier").map(|s| s.as_str()),
             Some("com.example.myapp"),
             "identifier template should be rendered"
+        );
+    }
+
+    /// Build a minimal `Context` with `Version`, `Os`, `Arch`, and `Target` set
+    /// so per-binary template renders behave the same as they do inside the
+    /// stage loop.
+    fn render_fields_test_ctx() -> Context {
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Os", "darwin");
+        ctx.template_vars_mut().set("Arch", "arm64");
+        ctx.template_vars_mut()
+            .set("Target", "aarch64-apple-darwin");
+        ctx
+    }
+
+    #[test]
+    fn test_install_location_template_renders() {
+        let mut ctx = render_fields_test_ctx();
+        let pkg_cfg = PkgConfig {
+            identifier: Some("com.example.myapp".to_string()),
+            install_location: Some("/opt/{{ ProjectName }}/bin".to_string()),
+            ..Default::default()
+        };
+
+        let rendered = render_pkg_fields(
+            &mut ctx,
+            &pkg_cfg,
+            pkg_cfg.identifier.as_deref().unwrap(),
+            "myapp",
+            Some("aarch64-apple-darwin"),
+        )
+        .unwrap();
+
+        assert_eq!(rendered.install_location, "/opt/myapp/bin");
+
+        let cmd = pkgbuild_command(
+            "/tmp/staging",
+            &rendered.identifier,
+            "1.0.0",
+            &rendered.install_location,
+            rendered.scripts.as_deref(),
+            None,
+            "/tmp/out.pkg",
+        );
+        let loc_idx = cmd.iter().position(|a| a == "--install-location").unwrap();
+        assert_eq!(cmd[loc_idx + 1], "/opt/myapp/bin");
+    }
+
+    #[test]
+    fn test_scripts_template_renders() {
+        let mut ctx = render_fields_test_ctx();
+        let pkg_cfg = PkgConfig {
+            identifier: Some("com.example.myapp".to_string()),
+            scripts: Some("scripts/{{ Os }}".to_string()),
+            ..Default::default()
+        };
+
+        let rendered = render_pkg_fields(
+            &mut ctx,
+            &pkg_cfg,
+            pkg_cfg.identifier.as_deref().unwrap(),
+            "myapp",
+            Some("aarch64-apple-darwin"),
+        )
+        .unwrap();
+
+        assert_eq!(rendered.scripts.as_deref(), Some("scripts/darwin"));
+
+        let cmd = pkgbuild_command(
+            "/tmp/staging",
+            &rendered.identifier,
+            "1.0.0",
+            &rendered.install_location,
+            rendered.scripts.as_deref(),
+            None,
+            "/tmp/out.pkg",
+        );
+        let scripts_idx = cmd.iter().position(|a| a == "--scripts").unwrap();
+        assert_eq!(cmd[scripts_idx + 1], "scripts/darwin");
+    }
+
+    #[test]
+    fn test_mod_timestamp_template_renders() {
+        let mut ctx = render_fields_test_ctx();
+        ctx.template_vars_mut()
+            .set("CommitTimestamp", "2024-06-15T12:34:56Z");
+
+        let pkg_cfg = PkgConfig {
+            identifier: Some("com.example.myapp".to_string()),
+            mod_timestamp: Some("{{ CommitTimestamp }}".to_string()),
+            ..Default::default()
+        };
+
+        let rendered = render_pkg_fields(
+            &mut ctx,
+            &pkg_cfg,
+            pkg_cfg.identifier.as_deref().unwrap(),
+            "myapp",
+            Some("aarch64-apple-darwin"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            rendered.mod_timestamp.as_deref(),
+            Some("2024-06-15T12:34:56Z"),
+            "mod_timestamp template should expand to the CommitTimestamp value, \
+             not be passed literally to parse_mod_timestamp"
+        );
+        assert_ne!(
+            rendered.mod_timestamp.as_deref(),
+            Some("{{ CommitTimestamp }}"),
+            "literal template string must not reach apply_mod_timestamp"
         );
     }
 
