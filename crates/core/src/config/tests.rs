@@ -16,6 +16,7 @@ use super::{
 use super::GitConfig;
 use super::HookEntry;
 use super::{ArchivesConfig, ChecksumConfig, ContentSource, ExtraFileSpec};
+use super::{BuilderKind, all_builds_prebuilt, validate_builds};
 use super::{ChangelogConfig, MilestoneConfig, SbomConfig};
 use super::{CrateConfig, CrossStrategy};
 use super::{
@@ -7625,4 +7626,310 @@ crates:
     assert_eq!(binaries.len(), 1);
     assert_eq!(binaries[0].name(), "per-crate-cli");
     assert!(cask.legacy_binary.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// `builder: prebuilt` config surface
+// ---------------------------------------------------------------------------
+
+#[test]
+fn builder_field_defaults_to_none_serde() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let build = &cfg.crates[0].builds.as_ref().unwrap()[0];
+    assert!(build.builder.is_none());
+    assert!(build.prebuilt.is_none());
+}
+
+#[test]
+fn builder_kind_prebuilt_parses_lowercase() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        builder: prebuilt
+        prebuilt:
+          path: "output/app_{{ .Target }}"
+        targets: ["x86_64-unknown-linux-gnu"]
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let build = &cfg.crates[0].builds.as_ref().unwrap()[0];
+    assert!(matches!(build.builder, Some(BuilderKind::Prebuilt)));
+    assert_eq!(
+        build.prebuilt.as_ref().unwrap().path,
+        "output/app_{{ .Target }}"
+    );
+}
+
+#[test]
+fn validate_builds_accepts_default_cargo() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        targets: ["x86_64-unknown-linux-gnu"]
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    validate_builds(&cfg).expect("default cargo build must validate cleanly");
+}
+
+#[test]
+fn validate_builds_rejects_prebuilt_without_path() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        builder: prebuilt
+        targets: ["x86_64-unknown-linux-gnu"]
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_builds(&cfg).unwrap_err();
+    assert!(
+        err.contains("`builder: prebuilt` requires a non-empty `prebuilt.path`"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn validate_builds_rejects_prebuilt_with_empty_path() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        builder: prebuilt
+        prebuilt:
+          path: "   "
+        targets: ["x86_64-unknown-linux-gnu"]
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_builds(&cfg).unwrap_err();
+    assert!(
+        err.contains("non-empty `prebuilt.path`"),
+        "unexpected: {err}"
+    );
+}
+
+#[test]
+fn validate_builds_rejects_prebuilt_without_targets() {
+    let yaml = r#"
+project_name: test
+defaults:
+  targets: ["x86_64-unknown-linux-gnu"]
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        builder: prebuilt
+        prebuilt:
+          path: "output/app_{{ .Target }}"
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_builds(&cfg).unwrap_err();
+    assert!(
+        err.contains("no explicit `targets:`"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn validate_builds_rejects_prebuilt_with_cross_tool() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        builder: prebuilt
+        cross_tool: "/usr/local/bin/my-cross"
+        prebuilt:
+          path: "output/app_{{ .Target }}"
+        targets: ["x86_64-unknown-linux-gnu"]
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_builds(&cfg).unwrap_err();
+    assert!(err.contains("`cross_tool`") && err.contains("mutually exclusive"));
+}
+
+#[test]
+fn validate_builds_rejects_prebuilt_with_command_override() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        builder: prebuilt
+        command: "auditable build"
+        prebuilt:
+          path: "output/app_{{ .Target }}"
+        targets: ["x86_64-unknown-linux-gnu"]
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_builds(&cfg).unwrap_err();
+    assert!(err.contains("`command:` override"));
+}
+
+#[test]
+fn validate_builds_rejects_prebuilt_with_features() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        builder: prebuilt
+        features: ["foo"]
+        prebuilt:
+          path: "output/app_{{ .Target }}"
+        targets: ["x86_64-unknown-linux-gnu"]
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_builds(&cfg).unwrap_err();
+    assert!(err.contains("`features:`"));
+}
+
+#[test]
+fn validate_builds_rejects_prebuilt_with_no_default_features() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        builder: prebuilt
+        no_default_features: true
+        prebuilt:
+          path: "output/app_{{ .Target }}"
+        targets: ["x86_64-unknown-linux-gnu"]
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_builds(&cfg).unwrap_err();
+    assert!(err.contains("`no_default_features:`"));
+}
+
+#[test]
+fn validate_builds_rejects_crate_cross_with_prebuilt_build() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    cross: zigbuild
+    builds:
+      - binary: app
+        builder: prebuilt
+        prebuilt:
+          path: "output/app_{{ .Target }}"
+        targets: ["x86_64-unknown-linux-gnu"]
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_builds(&cfg).unwrap_err();
+    assert!(err.contains("crate-level `cross:`") && err.contains("builder: prebuilt"));
+}
+
+#[test]
+fn validate_builds_accepts_prebuilt_minimal() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        builder: prebuilt
+        prebuilt:
+          path: "output/app_{{ .Target }}"
+        targets: ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    validate_builds(&cfg).expect("minimal prebuilt config should validate");
+}
+
+#[test]
+fn all_builds_prebuilt_true_when_every_build_is_prebuilt() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        builder: prebuilt
+        prebuilt:
+          path: "output/app_{{ .Target }}"
+        targets: ["x86_64-unknown-linux-gnu"]
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(all_builds_prebuilt(&cfg));
+}
+
+#[test]
+fn all_builds_prebuilt_false_when_any_build_is_cargo() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        builder: prebuilt
+        prebuilt:
+          path: "output/app_{{ .Target }}"
+        targets: ["x86_64-unknown-linux-gnu"]
+      - binary: app
+        targets: ["x86_64-unknown-linux-gnu"]
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(!all_builds_prebuilt(&cfg));
+}
+
+#[test]
+fn all_builds_prebuilt_false_when_no_builds_declared() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(!all_builds_prebuilt(&cfg));
 }

@@ -2146,6 +2146,18 @@
             "null"
           ]
         },
+        "builder": {
+          "description": "Builder to use for this entry. `cargo` (the default when omitted) runs `cargo build`. `prebuilt` skips compilation and imports a binary the operator already produced via the `prebuilt:` block.\n\nWhen `builder: prebuilt`, `targets:` MUST be set explicitly — no `defaults.targets` fallback — and the `prebuilt.path` template is rendered per target then stat()-ed before the import.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BuilderKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "command": {
           "description": "Override the cargo subcommand (default: auto-detected \"build\" or \"zigbuild\"). Enables e.g. `cargo auditable build` by setting `command: \"auditable build\"`.",
           "default": null,
@@ -2284,6 +2296,18 @@
             "$ref": "#/definitions/BuildOverride"
           }
         },
+        "prebuilt": {
+          "description": "Options for the `prebuilt` builder. Required when `builder: prebuilt`; ignored (with a config-load warning) otherwise.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PrebuiltConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "reproducible": {
           "description": "When true, enable reproducible builds by stripping timestamps.",
           "default": null,
@@ -2409,6 +2433,25 @@
           }
         }
       }
+    },
+    "BuilderKind": {
+      "description": "Selects which builder a `builds[]` entry uses. `Cargo` (the default) runs `cargo build` and discovers the resulting binary under `target/<triple>/<profile>/`. `Prebuilt` skips compilation entirely and imports a binary the operator already placed on disk via the per-build `prebuilt:` block.",
+      "oneOf": [
+        {
+          "description": "Build the binary by invoking `cargo build` (or `cross` / `zigbuild` per the `cross:` strategy). Default when no `builder:` is set.",
+          "type": "string",
+          "enum": [
+            "cargo"
+          ]
+        },
+        {
+          "description": "Import a binary already staged on disk instead of compiling. Pairs with the `prebuilt:` block on the same build entry.",
+          "type": "string",
+          "enum": [
+            "prebuilt"
+          ]
+        }
+      ]
     },
     "CargoPublishConfig": {
       "description": "`cargo publish` flag surface.\n\nPresence under `publish:` opts the crate in; use `skip: true` (or a truthy template) to opt out. There is no `enabled` field — presence is the on-switch.\n\nFields intentionally omitted because anodizer owns them: - `--package` / `--workspace` / `--exclude`: the top-level `crates[]` axis owns crate selection. - `--dry-run`: pipeline-level CLI ergonomics (`anodizer release --dry-run`). - `-v` / `-q` / `--color`: CLI ergonomics, not config. - `--config` / `-Z`: cargo CLI escape hatches; out of scope.",
@@ -10020,6 +10063,17 @@
         }
       },
       "additionalProperties": false
+    },
+    "PrebuiltConfig": {
+      "description": "Per-build options for `builder: prebuilt`. Required when `builder: prebuilt` is set on the same `builds[]` entry.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Template path to the imported binary on disk. Rendered once per target with these template variables available in addition to the project-wide globals (`Version`, `ProjectName`, ...):\n\n- `{{ .Target }}` — the full Rust target triple (e.g. `x86_64-unknown-linux-gnu`). - `{{ .Os }}` — the GoReleaser-style OS slug (`linux`, `darwin`, `windows`, ...). - `{{ .Arch }}` — the GoReleaser-style architecture slug (`amd64`, `arm64`, `armv7`, ...). - `{{ .Amd64 }}` — the AMD64 micro-architecture variant (`v1` / `v2` / `v3` / `v4`) when the triple is an x86_64 family.\n\nThe rendered path is `stat()`-ed before the import. A missing file, a permission error, or any other I/O failure aborts the build with a message that names both the rendered path and the originating target triple, matching GoReleaser's \"GoReleaser will fail\" contract.\n\nRecommendation: place the staged binaries OUTSIDE `dist/`. The release pipeline removes `dist/` on every run; pointing `path:` at `dist/...` will resolve against an empty directory.",
+          "default": "",
+          "type": "string"
+        }
+      }
     },
     "PublishConfig": {
       "type": "object",

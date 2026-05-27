@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::{Context as _, Result};
 
 use anodizer_core::artifact::ArtifactKind;
-use anodizer_core::config::{BuildConfig, BuildIgnore, BuildOverride, CrossStrategy};
+use anodizer_core::config::{BuildConfig, BuildIgnore, BuildOverride, BuilderKind, CrossStrategy};
 use anodizer_core::context::Context;
 use anodizer_core::env_expand::expand_env as expand_env_vars;
 use anodizer_core::stage::Stage;
@@ -242,6 +242,18 @@ fn plan_build_jobs(
         );
 
         for build in &builds {
+            // `builder: prebuilt` imports a binary the operator staged on
+            // disk instead of running `cargo build`. The cargo-targeted
+            // checks below (binary-target detection, workspace `--package`
+            // validation, cross-tool resolution, env cascading) all skip
+            // when the planner is just importing bytes; the prebuilt
+            // helper renders `prebuilt.path` per target, stat()s it, and
+            // registers an `ArtifactKind::Binary` directly.
+            if matches!(build.builder, Some(BuilderKind::Prebuilt)) {
+                plan_prebuilt_build(ctx, log, crate_cfg, build, inputs)?;
+                continue;
+            }
+
             // If this build has no explicit `binary:` and the crate has
             // no binary target on disk (no `src/main.rs`, no `[[bin]]`),
             // skip it. This protects library-only crates that inherited
@@ -740,4 +752,200 @@ fn plan_build_jobs(
     }
 
     Ok((build_jobs, copy_jobs))
+}
+
+/// Plan a single `builder: prebuilt` build by rendering its
+/// `prebuilt.path` template per target, stat()-ing the rendered path,
+/// and registering an `ArtifactKind::Binary` directly in `ctx.artifacts`.
+///
+/// No `BuildJob` is emitted — the cargo runner has nothing to do for an
+/// imported binary. Hooks (`pre`/`post`), `skip:`, target filters
+/// (`--single-target`, `--split`, `ignore`), and the per-target
+/// template-var lifecycle (Os, Arch, Target, Amd64, ArtifactExt,
+/// ArtifactID) are all honoured the same way as the cargo path so
+/// downstream stages see a uniform artifact shape regardless of which
+/// builder produced the bytes.
+///
+/// Cargo-only knobs (`features`, `no_default_features`, `command`,
+/// `cross_tool`, `flags`, `reproducible`) are rejected at config-load
+/// time by [`anodizer_core::config::validate_builds`]; the planner can
+/// therefore assume the build entry is well-formed by the time it gets
+/// here. `targets:` is also required-explicit by that validator.
+fn plan_prebuilt_build(
+    ctx: &mut Context,
+    log: &anodizer_core::log::StageLogger,
+    crate_cfg: &anodizer_core::config::CrateConfig,
+    build: &BuildConfig,
+    inputs: &PlanInputs<'_>,
+) -> Result<()> {
+    let binary_field: String = build
+        .binary
+        .clone()
+        .unwrap_or_else(|| crate_cfg.name.clone());
+
+    let should_skip = match build.skip.as_ref() {
+        Some(s) => s
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| {
+                format!(
+                    "build: render skip template for prebuilt build '{}'",
+                    build.id.as_deref().unwrap_or(&binary_field)
+                )
+            })?,
+        None => false,
+    };
+    if should_skip {
+        log.status(&format!(
+            "skipping prebuilt build '{}' (skip: true)",
+            build.id.as_deref().unwrap_or(&binary_field)
+        ));
+        return Ok(());
+    }
+
+    let prebuilt = build.prebuilt.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "internal: prebuilt build '{}' reached the planner without a `prebuilt:` block \
+             (validate_builds should have rejected this at config-load)",
+            build.id.as_deref().unwrap_or(&binary_field)
+        )
+    })?;
+    let path_template = prebuilt.path.clone();
+
+    // `targets:` is required-explicit for prebuilt builds (enforced by
+    // validate_builds). Honour `--single-target` / `--split` the same
+    // way the cargo path does so operators can shard prebuilt imports.
+    let mut targets: Vec<String> = build.targets.clone().unwrap_or_default();
+    if let Some(ref single) = ctx.options.single_target {
+        let original = targets.clone();
+        targets.retain(|t| t == single);
+        if targets.is_empty()
+            && let Some(matched) = anodizer_core::partial::find_runtime_target(single, &original)
+        {
+            log.verbose(&format!(
+                "--single-target: host '{}' matched configured prebuilt target '{}' via alias table",
+                single, matched
+            ));
+            targets.push(matched);
+        }
+        if targets.is_empty() {
+            anyhow::bail!(
+                "--single-target: host triple '{}' is not in configured prebuilt targets for {}/{} \
+                 (configured: [{}]).",
+                single,
+                crate_cfg.name,
+                binary_field,
+                original.join(", ")
+            );
+        }
+    }
+    if let Some(ref partial) = ctx.options.partial_target {
+        targets = partial.filter_targets(&targets);
+        if targets.is_empty() {
+            log.verbose(&format!(
+                "split: no prebuilt targets match partial filter for {}/{}, skipping",
+                crate_cfg.name, binary_field
+            ));
+            return Ok(());
+        }
+    }
+
+    let build_ignores: Vec<BuildIgnore> = build
+        .ignore
+        .clone()
+        .unwrap_or_else(|| inputs.default_ignores.to_vec());
+
+    for target in &targets {
+        if is_target_ignored(target, &build_ignores) {
+            log.verbose(&format!(
+                "ignoring prebuilt target {} (matched ignore rule)",
+                target
+            ));
+            continue;
+        }
+
+        let (os, arch) = map_target(target);
+
+        ctx.template_vars_mut().set("Target", target);
+        ctx.template_vars_mut().set("Os", &os);
+        ctx.template_vars_mut().set("Arch", &arch);
+        let first_component = target.split('-').next().unwrap_or("");
+        match first_component {
+            "aarch64" => ctx.template_vars_mut().set("Arm64", "v8"),
+            "armv7" | "armv7l" => ctx.template_vars_mut().set("Arm", "7"),
+            "armv6" | "armv6l" | "arm" => ctx.template_vars_mut().set("Arm", "6"),
+            "x86_64" => ctx.template_vars_mut().set("Amd64", "v1"),
+            "i686" | "i386" | "i586" => ctx.template_vars_mut().set("I386", "sse2"),
+            _ => {}
+        }
+        let artifact_ext = if os == "windows" { ".exe" } else { "" };
+        ctx.template_vars_mut().set("ArtifactExt", artifact_ext);
+        ctx.template_vars_mut()
+            .set("ArtifactID", build.id.as_deref().unwrap_or(""));
+
+        let binary_name = ctx.render_template(&binary_field).unwrap_or_else(|e| {
+            log.warn(&format!(
+                "failed to render binary template '{}': {}, using raw value",
+                binary_field, e
+            ));
+            binary_field.clone()
+        });
+
+        let rendered_path = ctx.render_template(&path_template).with_context(|| {
+            format!(
+                "build: render prebuilt.path template '{}' for target {}",
+                path_template, target
+            )
+        })?;
+
+        ctx.template_vars_mut().set("Target", "");
+        ctx.template_vars_mut().set("Os", "");
+        ctx.template_vars_mut().set("Arch", "");
+        ctx.template_vars_mut().set("Arm64", "");
+        ctx.template_vars_mut().set("Arm", "");
+        ctx.template_vars_mut().set("Amd64", "");
+        ctx.template_vars_mut().set("I386", "");
+        ctx.template_vars_mut().set("ArtifactExt", "");
+        ctx.template_vars_mut().set("ArtifactID", "");
+
+        let staged_path = std::path::PathBuf::from(&rendered_path);
+        std::fs::metadata(&staged_path).with_context(|| {
+            format!(
+                "prebuilt: failed to stat imported binary at '{}' (rendered from \
+                 `prebuilt.path: {}`) for target '{}'. Stage the binary before running \
+                 `anodize build`, or check the path template renders to a real file.",
+                rendered_path, path_template, target
+            )
+        })?;
+
+        let amd64_variant = if first_component == "x86_64" {
+            Some("v1".to_string())
+        } else {
+            None
+        };
+
+        let dist_dir = ctx.config.dist.clone();
+        crate::run_helpers::add_artifact(
+            ctx,
+            &dist_dir,
+            ctx.options.dry_run,
+            &staged_path,
+            ArtifactKind::Binary,
+            target,
+            &crate_cfg.name,
+            &binary_name,
+            &build.id,
+            false,
+            &amd64_variant,
+        )?;
+
+        log.status(&format!(
+            "imported prebuilt {}/{} ({}) from {}",
+            crate_cfg.name,
+            binary_name,
+            target,
+            staged_path.display()
+        ));
+    }
+
+    Ok(())
 }

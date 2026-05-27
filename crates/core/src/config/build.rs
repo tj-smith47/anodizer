@@ -56,6 +56,60 @@ pub enum CrossStrategy {
 }
 
 // ---------------------------------------------------------------------------
+// BuilderKind — `cargo` (compile from source) vs `prebuilt` (import binary)
+// ---------------------------------------------------------------------------
+
+/// Selects which builder a `builds[]` entry uses. `Cargo` (the default) runs
+/// `cargo build` and discovers the resulting binary under
+/// `target/<triple>/<profile>/`. `Prebuilt` skips compilation entirely and
+/// imports a binary the operator already placed on disk via the per-build
+/// `prebuilt:` block.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum BuilderKind {
+    /// Build the binary by invoking `cargo build` (or `cross` / `zigbuild`
+    /// per the `cross:` strategy). Default when no `builder:` is set.
+    #[default]
+    Cargo,
+    /// Import a binary already staged on disk instead of compiling. Pairs
+    /// with the `prebuilt:` block on the same build entry.
+    Prebuilt,
+}
+
+// ---------------------------------------------------------------------------
+// PrebuiltConfig — path template for the `prebuilt` builder
+// ---------------------------------------------------------------------------
+
+/// Per-build options for `builder: prebuilt`. Required when `builder: prebuilt`
+/// is set on the same `builds[]` entry.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct PrebuiltConfig {
+    /// Template path to the imported binary on disk. Rendered once per
+    /// target with these template variables available in addition to the
+    /// project-wide globals (`Version`, `ProjectName`, ...):
+    ///
+    /// - `{{ .Target }}` — the full Rust target triple
+    ///   (e.g. `x86_64-unknown-linux-gnu`).
+    /// - `{{ .Os }}` — the GoReleaser-style OS slug (`linux`, `darwin`,
+    ///   `windows`, ...).
+    /// - `{{ .Arch }}` — the GoReleaser-style architecture slug (`amd64`,
+    ///   `arm64`, `armv7`, ...).
+    /// - `{{ .Amd64 }}` — the AMD64 micro-architecture variant
+    ///   (`v1` / `v2` / `v3` / `v4`) when the triple is an x86_64 family.
+    ///
+    /// The rendered path is `stat()`-ed before the import. A missing file,
+    /// a permission error, or any other I/O failure aborts the build with
+    /// a message that names both the rendered path and the originating
+    /// target triple, matching GoReleaser's "GoReleaser will fail" contract.
+    ///
+    /// Recommendation: place the staged binaries OUTSIDE `dist/`. The
+    /// release pipeline removes `dist/` on every run; pointing `path:` at
+    /// `dist/...` will resolve against an empty directory.
+    pub path: String,
+}
+
+// ---------------------------------------------------------------------------
 // CrateConfig
 // ---------------------------------------------------------------------------
 
@@ -272,6 +326,17 @@ pub struct BuildConfig {
     /// time. GR ref: `internal/pipe/build/build.go:93-95`.
     #[serde(default, rename = "gobinary")]
     pub legacy_gobinary: Option<String>,
+    /// Builder to use for this entry. `cargo` (the default when omitted)
+    /// runs `cargo build`. `prebuilt` skips compilation and imports a
+    /// binary the operator already produced via the `prebuilt:` block.
+    ///
+    /// When `builder: prebuilt`, `targets:` MUST be set explicitly — no
+    /// `defaults.targets` fallback — and the `prebuilt.path` template is
+    /// rendered per target then stat()-ed before the import.
+    pub builder: Option<BuilderKind>,
+    /// Options for the `prebuilt` builder. Required when
+    /// `builder: prebuilt`; ignored (with a config-load warning) otherwise.
+    pub prebuilt: Option<PrebuiltConfig>,
 }
 
 /// Pre/post hook configuration shared across multiple stages. Despite the

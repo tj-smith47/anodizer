@@ -848,6 +848,161 @@ pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate `builds[]` entries that opt into `builder: prebuilt`.
+///
+/// `builder: prebuilt` skips `cargo build` and imports a binary the
+/// operator staged elsewhere. The validation rules below mirror GoReleaser's
+/// `prebuilt` builder contract (`/customization/builds/builders/prebuilt.md`):
+///
+/// 1. `prebuilt:` block MUST be set and `prebuilt.path` MUST be non-empty.
+/// 2. `targets:` MUST be explicit on the build entry — no `defaults.targets`
+///    fallback. Without this rule the build matrix has no rows.
+/// 3. Cargo-only knobs are rejected as mutually exclusive: `cross_tool`,
+///    `features`, `no_default_features`, `command`. The crate-level
+///    `cross:` strategy is also rejected when any build on the crate is
+///    prebuilt (the strategy has no meaning when nothing is being
+///    compiled).
+/// 4. `builder: cargo` (the default) with a `prebuilt:` block set warns —
+///    the block has no effect and likely indicates a forgotten
+///    `builder: prebuilt`.
+pub fn validate_builds(config: &Config) -> Result<(), String> {
+    let check_crate = |location: &str, krate: &CrateConfig| -> Result<(), String> {
+        let Some(ref builds) = krate.builds else {
+            return Ok(());
+        };
+        let crate_is_prebuilt = builds
+            .iter()
+            .any(|b| matches!(b.builder, Some(BuilderKind::Prebuilt)));
+        if crate_is_prebuilt && krate.cross.is_some() {
+            return Err(format!(
+                "{location}: crate-level `cross:` strategy is set but at least one \
+                 build uses `builder: prebuilt`; remove `cross:` (prebuilt imports a \
+                 binary instead of compiling) or change the build's builder to `cargo`."
+            ));
+        }
+        for (idx, build) in builds.iter().enumerate() {
+            match build.builder {
+                Some(BuilderKind::Prebuilt) => {
+                    let path = build.prebuilt.as_ref().map(|p| p.path.trim()).unwrap_or("");
+                    if path.is_empty() {
+                        return Err(format!(
+                            "{location}.builds[{idx}]: `builder: prebuilt` requires a non-empty \
+                             `prebuilt.path` template. Example: \
+                             `prebuilt: {{ path: \"output/mybin_{{{{ .Target }}}}\" }}`"
+                        ));
+                    }
+                    let targets_explicit = build.targets.as_ref().is_some_and(|t| !t.is_empty());
+                    if !targets_explicit {
+                        return Err(format!(
+                            "{location}.builds[{idx}] has `builder: prebuilt` but no explicit \
+                             `targets:` — the prebuilt builder requires per-build target triples \
+                             (no `defaults.targets:` fallback). Add `targets: [<triple>, ...]`."
+                        ));
+                    }
+                    if build.cross_tool.as_ref().is_some_and(|s| !s.is_empty()) {
+                        return Err(format!(
+                            "{location}.builds[{idx}]: `cross_tool` is set with \
+                             `builder: prebuilt` — the two are mutually exclusive. \
+                             `cross_tool` controls how cargo cross-compiles; `prebuilt` \
+                             imports an already-built binary. Drop `cross_tool` or use \
+                             `builder: cargo`."
+                        ));
+                    }
+                    if build.command.as_ref().is_some_and(|s| !s.is_empty()) {
+                        return Err(format!(
+                            "{location}.builds[{idx}]: `command:` override is set with \
+                             `builder: prebuilt` — the override selects the cargo \
+                             subcommand, which is not invoked under the prebuilt \
+                             builder. Drop `command:` or use `builder: cargo`."
+                        ));
+                    }
+                    if build.features.as_ref().is_some_and(|f| !f.is_empty()) {
+                        return Err(format!(
+                            "{location}.builds[{idx}]: `features:` is set with \
+                             `builder: prebuilt` — Cargo features are evaluated at \
+                             compile time, which the prebuilt builder skips. \
+                             Drop `features:` or use `builder: cargo`."
+                        ));
+                    }
+                    if build.no_default_features.is_some() {
+                        return Err(format!(
+                            "{location}.builds[{idx}]: `no_default_features:` is set with \
+                             `builder: prebuilt` — Cargo feature flags are evaluated at \
+                             compile time, which the prebuilt builder skips. \
+                             Drop the flag or use `builder: cargo`."
+                        ));
+                    }
+                }
+                Some(BuilderKind::Cargo) | None => {
+                    if build.prebuilt.is_some() {
+                        tracing::warn!(
+                            location = %location,
+                            index = idx,
+                            "build has a `prebuilt:` block but `builder:` is not `prebuilt`; \
+                             the block is ignored. Set `builder: prebuilt` or remove the block.",
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    };
+
+    for krate in &config.crates {
+        check_crate(&format!("crates[{}]", krate.name), krate)?;
+    }
+    if let Some(ws_list) = config.workspaces.as_ref() {
+        for ws in ws_list {
+            for krate in &ws.crates {
+                check_crate(
+                    &format!("workspaces[{}].crates[{}]", ws.name, krate.name),
+                    krate,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Returns `true` if every build entry on every crate has
+/// `builder: prebuilt`. Used by the determinism harness to short-circuit:
+/// when no target compiles, there is nothing for the harness to rebuild
+/// and compare across runs.
+pub fn all_builds_prebuilt(config: &Config) -> bool {
+    let crate_all_prebuilt = |krate: &CrateConfig| -> Option<bool> {
+        let builds = krate.builds.as_ref()?;
+        if builds.is_empty() {
+            return None;
+        }
+        Some(
+            builds
+                .iter()
+                .all(|b| matches!(b.builder, Some(BuilderKind::Prebuilt))),
+        )
+    };
+
+    let mut saw_any = false;
+    for krate in &config.crates {
+        match crate_all_prebuilt(krate) {
+            Some(true) => saw_any = true,
+            Some(false) => return false,
+            None => {}
+        }
+    }
+    if let Some(ws_list) = config.workspaces.as_ref() {
+        for ws in ws_list {
+            for krate in &ws.crates {
+                match crate_all_prebuilt(krate) {
+                    Some(true) => saw_any = true,
+                    Some(false) => return false,
+                    None => {}
+                }
+            }
+        }
+    }
+    saw_any
+}
+
 /// Validate the depth of `changelog.groups[].groups`.
 ///
 /// GoReleaser Pro caps subgroups at ONE level

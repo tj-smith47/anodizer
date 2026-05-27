@@ -96,6 +96,24 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
     let child_snapshot =
         resolve_child_snapshot(args.snapshot, args.no_snapshot, head_is_at_tag(&repo_root)?);
 
+    // All-prebuilt short-circuit: when every `builds[]` entry uses
+    // `builder: prebuilt`, no target compiles and the harness has nothing
+    // to rebuild. Re-running the import twice would just stat the same
+    // staged path twice; the bytes are guaranteed identical by
+    // construction. Emit a status line and return without spawning the
+    // harness so CI doesn't churn on an empty matrix.
+    //
+    // Mixed configs (some prebuilt + some cargo) still run the harness —
+    // the cargo targets need the rebuild, and the prebuilt artifacts
+    // appear in both runs at the same staged path with identical bytes
+    // (so they fall through the diff cleanly).
+    if all_builds_prebuilt_in_repo(&repo_root) {
+        eprintln!(
+            "determinism harness skipped: no buildable targets (all builds use `builder: prebuilt`)"
+        );
+        return Ok(());
+    }
+
     // Inspect the project's docker_v2 configs for a `use: podman` opt-in.
     // The harness's docker stage shells out to `docker buildx`, which is
     // not compatible with podman's flag set — propagate the hint so the
@@ -309,6 +327,30 @@ fn resolve_child_snapshot(snapshot: bool, no_snapshot: bool, head_at_tag: bool) 
 /// Best-effort: a parse failure here MUST NOT block the harness — config
 /// validation surfaces elsewhere in the pipeline with a more actionable
 /// error. The fallthrough simply runs the legacy buildx probe.
+/// Returns `true` when every configured build entry on every crate uses
+/// `builder: prebuilt`. The harness short-circuits in that case because
+/// there is nothing to rebuild — re-stat()-ing the same staged file twice
+/// would just produce two identical hashes.
+///
+/// Soft on errors: a missing or unparseable config falls through to
+/// `false` so the existing harness flow surfaces the real error.
+fn all_builds_prebuilt_in_repo(repo_root: &std::path::Path) -> bool {
+    let prev_cwd = std::env::current_dir().ok();
+    if std::env::set_current_dir(repo_root).is_err() {
+        return false;
+    }
+    let cfg_path = crate::pipeline::find_config(None).ok();
+    let cfg = cfg_path
+        .as_ref()
+        .and_then(|p| crate::pipeline::load_config(p).ok());
+    if let Some(p) = prev_cwd {
+        std::env::set_current_dir(p).ok();
+    }
+    cfg.as_ref()
+        .map(anodizer_core::config::all_builds_prebuilt)
+        .unwrap_or(false)
+}
+
 fn detect_docker_backend_hint(repo_root: &std::path::Path) -> Option<String> {
     let prev_cwd = std::env::current_dir().ok();
     std::env::set_current_dir(repo_root).ok()?;
