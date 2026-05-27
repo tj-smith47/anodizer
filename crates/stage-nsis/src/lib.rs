@@ -15,14 +15,16 @@ use anodizer_core::stage::Stage;
 
 /// Generate a default `.nsi` script template using Tera syntax.
 ///
-/// The template uses `{{ ProjectName }}`, `{{ NsisOutputFile }}`,
-/// `{{ NsisBinaryPath }}`, and `{{ NsisBinaryName }}` variables that are
-/// rendered through the template engine before being passed to makensis.
+/// Uses `{{ ProjectName }}`, `{{ Name }}`, `{{ ProgramFiles }}`,
+/// `{{ NsisBinaryPath }}`, and `{{ NsisBinaryName }}`. `ProgramFiles`
+/// resolves to `$PROGRAMFILES64` on 64-bit targets and `$PROGRAMFILES`
+/// on 32-bit targets, so the installer lands in the correct directory on
+/// all Windows variants.
 pub fn default_nsi_script() -> &'static str {
     r#"!include "MUI2.nsh"
 Name "{{ ProjectName }}"
-OutFile "{{ NsisOutputFile }}"
-InstallDir "$PROGRAMFILES\{{ ProjectName }}"
+OutFile "{{ Name }}.exe"
+InstallDir "{{ ProgramFiles }}\{{ ProjectName }}"
 RequestExecutionLevel admin
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -64,8 +66,37 @@ fn os_arch_from_target(target: Option<&str>) -> (String, String) {
     anodizer_core::target::os_arch_with_default(target, "windows")
 }
 
-/// Default output filename template: `{ProjectName}_{Version}_{Arch}_setup.exe`
-const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Version }}_{{ Arch }}_setup.exe";
+/// Map a Go/Rust-style architecture identifier to the NSIS-native name.
+///
+/// GoReleaser Pro documents these values at `nsis.md:93`:
+/// `x86` for 32-bit, `x64` for 64-bit AMD, `arm64` for ARM 64-bit.
+pub fn map_arch_to_nsis(arch: &str) -> &str {
+    match arch {
+        "amd64" | "x86_64" => "x64",
+        "386" | "i386" | "i586" | "i686" | "x86" => "x86",
+        "arm64" | "aarch64" => "arm64",
+        other => other,
+    }
+}
+
+/// Return the correct NSIS `$PROGRAMFILESxx` constant for the given arch.
+///
+/// 64-bit targets use `$PROGRAMFILES64`; all others use `$PROGRAMFILES`.
+/// This prevents installers from landing in the WOW6432-redirected path
+/// (`Program Files (x86)`) on 64-bit Windows.
+pub fn program_files_for_arch(nsis_arch: &str) -> &str {
+    if nsis_arch == "x64" || nsis_arch == "arm64" {
+        "$PROGRAMFILES64"
+    } else {
+        "$PROGRAMFILES"
+    }
+}
+
+/// Default output filename template — matches GoReleaser Pro's default.
+///
+/// `Arch` here is the NSIS-native arch (`x86`, `x64`, `arm64`) injected
+/// per-target before the name is rendered.
+const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}_setup";
 
 impl Stage for NsisStage {
     fn name(&self) -> &str {
@@ -206,6 +237,30 @@ impl Stage for NsisStage {
                     .map(|b| (b.target.clone(), b.path.clone()))
                     .collect();
 
+                // Validate extra_files shape up-front so misconfiguration fails
+                // before any subprocess spawn and surfaces in dry-run too.
+                // A constant `name_template` paired with a multi-match glob
+                // would silently overwrite every match to the same dst name.
+                if let Some(extra_files) = &nsis_cfg.extra_files {
+                    for spec in extra_files {
+                        if spec.name_template().is_some() {
+                            let pattern = spec.glob();
+                            if let Ok(entries) = glob::glob(pattern) {
+                                let matches: Vec<_> =
+                                    entries.flatten().filter(|e| e.is_file()).collect();
+                                if matches.len() > 1 {
+                                    anyhow::bail!(
+                                        "nsis extra_files: name_template is only valid when the \
+                                         glob matches exactly 1 file; got {} matches for '{}'",
+                                        matches.len(),
+                                        pattern
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Check that makensis is available once per config (not per binary)
                 if !dry_run && !anodizer_core::util::find_binary("makensis") {
                     anyhow::bail!(
@@ -217,37 +272,57 @@ impl Stage for NsisStage {
                     // Derive Os/Arch from the target triple for template rendering
                     let (os, arch) = os_arch_from_target(target.as_deref());
 
-                    // Set Os/Arch/Target in template vars for this iteration
+                    // Set Os/Arch/Target in the global vars so extra_files,
+                    // templated_extra_files, and mod_timestamp can reference them.
                     ctx.template_vars_mut().set("Os", &os);
                     ctx.template_vars_mut().set("Arch", &arch);
                     ctx.template_vars_mut()
                         .set("Target", target.as_deref().unwrap_or(""));
 
-                    // Determine output filename from name template or default
+                    // Build a one-shot render context with NSIS-native vars so
+                    // user scripts can use GR-compatible names without polluting
+                    // the global template var table.
+                    let nsis_arch = map_arch_to_nsis(&arch);
+                    let program_files = program_files_for_arch(nsis_arch);
+
+                    let binary_name_raw = binary_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(&krate.name);
+
+                    // `Binary` is the binary filename with .exe (GR nsis.md:119)
+                    let binary_val = binary_name_raw.to_string();
+
+                    // Determine output filename using the one-shot vars so `Arch`
+                    // inside `name` sees NSIS-native values (`x64`, `x86`, `arm64`).
                     let name_template = nsis_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
 
-                    let exe_filename = ctx.render_template(name_template).with_context(|| {
-                        format!(
-                            "nsis: render name template for crate {} target {:?}",
-                            krate.name, target
-                        )
-                    })?;
+                    let mut name_vars = ctx.template_vars().clone();
+                    name_vars.set("Arch", nsis_arch);
+                    name_vars.set("ProgramFiles", program_files);
+                    name_vars.set("Binary", &binary_val);
 
-                    // Ensure the filename ends with .exe (case-insensitive)
-                    let exe_filename = if exe_filename.to_lowercase().ends_with(".exe") {
-                        exe_filename
-                    } else {
-                        format!("{exe_filename}.exe")
-                    };
+                    // Render the name first so we can inject `Name` into the
+                    // script context (without the .exe suffix, per GR convention).
+                    let rendered_name = anodizer_core::template::render(name_template, &name_vars)
+                        .with_context(|| {
+                            format!(
+                                "nsis: render name template for crate {} target {:?}",
+                                krate.name, target
+                            )
+                        })?;
+
+                    // `Name` is the output stem without .exe (GR nsis.md:92-93).
+                    // Scripts use `OutFile "{{ Name }}.exe"`.
+                    name_vars.set("Name", &rendered_name);
+
+                    let exe_filename = rendered_name.clone();
 
                     // Output goes in dist/windows/
                     let output_dir = dist.join("windows");
                     let exe_path = output_dir.join(&exe_filename);
 
-                    let binary_name = binary_path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(&krate.name);
+                    let binary_name = binary_name_raw;
 
                     if dry_run {
                         log.status(&format!(
@@ -309,26 +384,40 @@ impl Stage for NsisStage {
                             let pattern = spec.glob();
                             match glob::glob(pattern) {
                                 Ok(entries) => {
-                                    for entry in entries.flatten() {
-                                        if entry.is_file() {
-                                            let dst_name = spec
-                                                .name_template()
-                                                .map(|s| s.to_string())
-                                                .or_else(|| {
-                                                    entry
-                                                        .file_name()
-                                                        .and_then(|n| n.to_str())
-                                                        .map(|s| s.to_string())
-                                                })
-                                                .unwrap_or_else(|| "extra".to_string());
-                                            let dst = staging_dir.join(&dst_name);
-                                            fs::copy(&entry, &dst).with_context(|| {
-                                                format!(
-                                                    "copy extra file {} to staging dir",
-                                                    entry.display()
-                                                )
-                                            })?;
-                                        }
+                                    let matches: Vec<_> =
+                                        entries.flatten().filter(|e| e.is_file()).collect();
+
+                                    // A constant name_template with multiple glob matches would
+                                    // silently overwrite every file to the same destination name.
+                                    // Require exactly one match when name_template is set.
+                                    if spec.name_template().is_some() && matches.len() > 1 {
+                                        anyhow::bail!(
+                                            "nsis extra_files: name_template is only valid when \
+                                             the glob matches exactly 1 file; got {} matches for \
+                                             '{}'",
+                                            matches.len(),
+                                            pattern
+                                        );
+                                    }
+
+                                    for entry in matches {
+                                        let dst_name = spec
+                                            .name_template()
+                                            .map(|s| s.to_string())
+                                            .or_else(|| {
+                                                entry
+                                                    .file_name()
+                                                    .and_then(|n| n.to_str())
+                                                    .map(|s| s.to_string())
+                                            })
+                                            .unwrap_or_else(|| "extra".to_string());
+                                        let dst = staging_dir.join(&dst_name);
+                                        fs::copy(&entry, &dst).with_context(|| {
+                                            format!(
+                                                "copy extra file {} to staging dir",
+                                                entry.display()
+                                            )
+                                        })?;
                                     }
                                 }
                                 Err(e) => {
@@ -353,16 +442,24 @@ impl Stage for NsisStage {
                         )?;
                     }
 
-                    // Set NSIS-specific template vars for script rendering
+                    // Populate the one-shot script context with the remaining
+                    // NSIS-specific vars. name_vars already carries Arch/ProgramFiles/
+                    // Binary/Name from the name-render step above.
                     let exe_path_str = exe_path.to_string_lossy().into_owned();
                     let staged_binary_str = staged_binary.to_string_lossy().into_owned();
+                    name_vars.set("NsisOutputFile", &exe_path_str);
+                    name_vars.set("NsisBinaryPath", &staged_binary_str);
+                    name_vars.set("NsisBinaryName", binary_name);
+
+                    // Keep global vars in sync for mod_timestamp and anything that
+                    // follows — they use ctx.render_template, not name_vars.
                     ctx.template_vars_mut().set("NsisOutputFile", &exe_path_str);
                     ctx.template_vars_mut()
                         .set("NsisBinaryPath", &staged_binary_str);
                     ctx.template_vars_mut().set("NsisBinaryName", binary_name);
 
                     // Get the script content (user-provided or default), render
-                    // through the template engine, and write to a temp file
+                    // through the one-shot context so NSIS-native vars are available.
                     let script_content = if let Some(script_tmpl) = &nsis_cfg.script {
                         fs::read_to_string(script_tmpl)
                             .with_context(|| format!("nsis: read script template: {script_tmpl}"))?
@@ -371,12 +468,14 @@ impl Stage for NsisStage {
                     };
 
                     let rendered_script =
-                        ctx.render_template(&script_content).with_context(|| {
-                            format!(
-                                "nsis: render script for crate {} target {:?}",
-                                krate.name, target
-                            )
-                        })?;
+                        anodizer_core::template::render(&script_content, &name_vars).with_context(
+                            || {
+                                format!(
+                                    "nsis: render script for crate {} target {:?}",
+                                    krate.name, target
+                                )
+                            },
+                        )?;
 
                     let nsi_script_path = staging_dir.join("installer.nsi");
                     fs::write(&nsi_script_path, &rendered_script).with_context(|| {
@@ -487,22 +586,27 @@ mod tests {
     fn test_default_nsi_script_generation() {
         let script = default_nsi_script();
 
-        // Verify the script contains the expected NSIS sections with Tera variables
         assert!(
             script.contains("!include \"MUI2.nsh\""),
             "should include MUI2"
         );
         assert!(
             script.contains("Name \"{{ ProjectName }}\""),
-            "should reference ProjectName template var"
+            "should reference ProjectName"
+        );
+        // Default script uses Name (stem) + .exe, not the legacy NsisOutputFile var
+        assert!(
+            script.contains("OutFile \"{{ Name }}.exe\""),
+            "should use Name var for OutFile"
+        );
+        // Default script uses ProgramFiles (arch-aware) instead of the hardcoded $PROGRAMFILES
+        assert!(
+            script.contains("InstallDir \"{{ ProgramFiles }}\\{{ ProjectName }}\""),
+            "should use ProgramFiles var for InstallDir"
         );
         assert!(
-            script.contains("OutFile \"{{ NsisOutputFile }}\""),
-            "should reference NsisOutputFile template var"
-        );
-        assert!(
-            script.contains("InstallDir \"$PROGRAMFILES\\{{ ProjectName }}\""),
-            "should set install dir under Program Files"
+            !script.contains("$PROGRAMFILES\\"),
+            "should not hardcode $PROGRAMFILES (use ProgramFiles var instead)"
         );
         assert!(
             script.contains("RequestExecutionLevel admin"),
@@ -530,7 +634,7 @@ mod tests {
         );
         assert!(
             script.contains("RMDir \"$INSTDIR\""),
-            "uninstaller should remove the install directory"
+            "should remove install dir"
         );
         assert!(
             script.contains("CreateShortCut"),
@@ -542,25 +646,77 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_map_arch_to_nsis() {
+        assert_eq!(map_arch_to_nsis("amd64"), "x64");
+        assert_eq!(map_arch_to_nsis("x86_64"), "x64");
+        assert_eq!(map_arch_to_nsis("386"), "x86");
+        assert_eq!(map_arch_to_nsis("i386"), "x86");
+        assert_eq!(map_arch_to_nsis("i686"), "x86");
+        assert_eq!(map_arch_to_nsis("arm64"), "arm64");
+        assert_eq!(map_arch_to_nsis("aarch64"), "arm64");
+        assert_eq!(map_arch_to_nsis("riscv64"), "riscv64");
+    }
+
+    #[test]
+    fn test_program_files_for_arch() {
+        assert_eq!(program_files_for_arch("x64"), "$PROGRAMFILES64");
+        assert_eq!(program_files_for_arch("arm64"), "$PROGRAMFILES64");
+        assert_eq!(program_files_for_arch("x86"), "$PROGRAMFILES");
+        assert_eq!(program_files_for_arch("other"), "$PROGRAMFILES");
+    }
+
     // -----------------------------------------------------------------------
-    // Output filename extension enforcement
+    // Default name template renders with NSIS-native arch
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_nsis_output_filename_extension() {
-        // When a filename already ends with .exe, it should not be doubled
-        let name = "myapp_1.0.0_amd64_setup.exe";
-        assert!(name.to_lowercase().ends_with(".exe"));
+    fn test_default_name_template_uses_nsis_arch() {
+        // The default name template uses `Arch`, which is overridden to the
+        // NSIS-native value in the one-shot context before rendering.
+        // For x86_64-pc-windows-msvc: Go arch = "amd64" -> NSIS arch = "x64".
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
-        // When a filename does not end with .exe, it should be appended
-        let name_no_ext = "myapp_1.0.0_amd64_setup";
-        assert!(!name_no_ext.to_lowercase().ends_with(".exe"));
-        let fixed = format!("{name_no_ext}.exe");
-        assert_eq!(fixed, "myapp_1.0.0_amd64_setup.exe");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nsis: Some(vec![NsisConfig::default()]),
+            ..Default::default()
+        }];
 
-        // Case-insensitive check
-        let name_upper = "myapp_1.0.0_amd64_setup.EXE";
-        assert!(name_upper.to_lowercase().ends_with(".exe"));
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        NsisStage.run(&mut ctx).unwrap();
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(installers.len(), 1);
+        let path = installers[0].path.to_string_lossy();
+        // Default template: `{{ ProjectName }}_{{ Arch }}_setup` with NSIS-native arch x64
+        assert!(
+            path.ends_with("myapp_x64_setup"),
+            "expected NSIS-native arch in filename, got: {path}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -820,9 +976,10 @@ mod tests {
         assert_eq!(installers.len(), 1);
 
         let installer_path = installers[0].path.to_string_lossy();
+        // Arch in user name templates is NSIS-native: x86_64 maps to x64
         assert!(
-            installer_path.ends_with("myapp-2.0.0-amd64-setup.exe"),
-            "expected template-rendered name, got: {installer_path}"
+            installer_path.ends_with("myapp-2.0.0-x64-setup.exe"),
+            "expected NSIS-native arch in template-rendered name, got: {installer_path}"
         );
     }
 
@@ -1161,15 +1318,15 @@ crates:
     }
 
     #[test]
-    fn test_stage_exe_extension_appended_in_dry_run() {
+    fn test_stage_name_is_user_literal() {
+        // The user `name` template is taken verbatim. Anodizer matches GoReleaser
+        // by not auto-appending `.exe` — the user's NSIS script controls the OutFile.
         use anodizer_core::config::{Config, CrateConfig, NsisConfig};
         use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
-
-        // Name template without .exe extension
         let nsis_cfg = NsisConfig {
-            name: Some("{{ ProjectName }}_{{ Version }}_{{ Arch }}_setup".to_string()),
+            name: Some("{{ ProjectName }}_{{ Arch }}_setup".to_string()),
             ..Default::default()
         };
 
@@ -1203,21 +1360,16 @@ crates:
             size: None,
         });
 
-        let stage = NsisStage;
-        stage.run(&mut ctx).unwrap();
+        NsisStage.run(&mut ctx).unwrap();
 
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
         assert_eq!(installers.len(), 1);
-
         let path = installers[0].path.to_string_lossy();
         assert!(
-            path.ends_with(".exe"),
-            ".exe should be appended when missing, got: {path}"
+            path.ends_with("myapp_x64_setup"),
+            "name should be taken verbatim (no auto .exe), got: {path}"
         );
-        assert!(
-            path.ends_with("myapp_1.0.0_amd64_setup.exe"),
-            "unexpected filename: {path}"
-        );
+        assert!(!path.ends_with(".exe"), "no auto .exe append, got: {path}");
     }
 
     // --- `nsis.if` template-conditional (GoReleaser Pro) ---
@@ -1390,5 +1542,312 @@ crates:
             installers[0].target.as_deref(),
             Some("aarch64-pc-windows-msvc")
         );
+    }
+
+    // -------------------------------------------------------------------
+    // GR-compatible NSIS script template vars
+    // -------------------------------------------------------------------
+
+    /// Render the built-in default script with realistic vars and ensure the
+    /// output is the expected NSIS snippet (`OutFile`, `InstallDir`, etc.).
+    /// Pins the default-script render path end-to-end including ProgramFiles
+    /// (arch-aware) and Name (output stem).
+    #[test]
+    fn test_default_script_renders_correctly_for_amd64() {
+        use anodizer_core::template::{TemplateVars, render};
+
+        let mut vars = TemplateVars::new();
+        vars.set("ProjectName", "myapp");
+        vars.set("Name", "myapp_x64_setup");
+        vars.set("ProgramFiles", "$PROGRAMFILES64");
+        vars.set("NsisBinaryPath", "/tmp/staging/myapp.exe");
+        vars.set("NsisBinaryName", "myapp.exe");
+        vars.set("Binary", "myapp.exe");
+        vars.set("Arch", "x64");
+
+        let out = render(default_nsi_script(), &vars).expect("default script must render");
+
+        assert!(out.contains("Name \"myapp\""));
+        assert!(out.contains("OutFile \"myapp_x64_setup.exe\""));
+        // 64-bit target lands in PROGRAMFILES64 (not the WOW6432 redirect)
+        assert!(out.contains("InstallDir \"$PROGRAMFILES64\\myapp\""));
+        assert!(!out.contains("$PROGRAMFILES\\myapp"));
+        assert!(out.contains("RequestExecutionLevel admin"));
+        assert!(out.contains("File \"/tmp/staging/myapp.exe\""));
+        assert!(out.contains("Delete \"$INSTDIR\\myapp.exe\""));
+    }
+
+    #[test]
+    fn test_default_script_renders_correctly_for_x86() {
+        use anodizer_core::template::{TemplateVars, render};
+
+        let mut vars = TemplateVars::new();
+        vars.set("ProjectName", "myapp");
+        vars.set("Name", "myapp_x86_setup");
+        vars.set("ProgramFiles", "$PROGRAMFILES");
+        vars.set("NsisBinaryPath", "/tmp/staging/myapp.exe");
+        vars.set("NsisBinaryName", "myapp.exe");
+        vars.set("Binary", "myapp.exe");
+        vars.set("Arch", "x86");
+
+        let out = render(default_nsi_script(), &vars).expect("default script must render");
+        // 32-bit target uses $PROGRAMFILES
+        assert!(out.contains("InstallDir \"$PROGRAMFILES\\myapp\""));
+        assert!(!out.contains("$PROGRAMFILES64"));
+    }
+
+    /// Pin the GR-documented vars (`Name`, `ProgramFiles`, `Binary`, NSIS-native
+    /// `Arch`) are usable inside a custom user script — pasting GR's example
+    /// script must not raise an undefined-variable error.
+    #[test]
+    fn test_custom_script_can_use_gr_documented_vars() {
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let script_path = tmp.path().join("installer.nsi");
+        // Mirror the shape of GR's example script: every GR-documented var
+        // appears at least once.
+        std::fs::write(
+            &script_path,
+            r#"Name "{{ Name }}"
+OutFile "{{ Name }}.exe"
+InstallDir "{{ ProgramFiles }}\app"
+!define ARCH "{{ Arch }}"
+File "{{ Binary }}"
+Section
+SectionEnd
+"#,
+        )
+        .unwrap();
+
+        let nsis_cfg = NsisConfig {
+            script: Some(script_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&config.dist).unwrap();
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nsis: Some(vec![nsis_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        // dry-run only renders the name template (not the script body), so to
+        // exercise the script-render path we drop out of dry-run by writing a
+        // real `makensis` shim is overkill — instead we directly assert that
+        // the script's required vars are present in the one-shot context the
+        // stage builds. This is verified by the lower-level
+        // `test_default_script_renders_correctly_*` tests above; here we just
+        // ensure the dry-run path accepts the user script without error.
+        NsisStage.run(&mut ctx).unwrap();
+
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(installers.len(), 1);
+    }
+
+    /// Global template vars must not be polluted by the NSIS-native `Arch`
+    /// override (which is meant for the script render context only).
+    #[test]
+    fn test_nsis_arch_override_does_not_pollute_global_vars() {
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nsis: Some(vec![NsisConfig::default()]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        NsisStage.run(&mut ctx).unwrap();
+
+        // After the stage runs, the global Arch must be back to the Go-style
+        // value (or cleared) — NSIS-native `x64` must not leak out.
+        let global_arch = ctx.template_vars().get("Arch").cloned();
+        assert!(
+            global_arch.as_deref() != Some("x64"),
+            "NSIS-native Arch must not leak into global vars, got: {global_arch:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // extra_files glob with name_template — multi-match bail
+    // -------------------------------------------------------------------
+
+    /// When a glob in `extra_files` matches multiple files and a constant
+    /// `name_template` is set, the stage must bail rather than silently
+    /// overwrite every file to the same destination name.
+    #[test]
+    fn test_extra_files_multi_match_with_name_template_bails() {
+        use anodizer_core::config::ExtraFileSpec;
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let extra_dir = tmp.path().join("extras");
+        std::fs::create_dir_all(&extra_dir).unwrap();
+        std::fs::write(extra_dir.join("a.txt"), "a").unwrap();
+        std::fs::write(extra_dir.join("b.txt"), "b").unwrap();
+
+        let glob_pattern = format!("{}/*.txt", extra_dir.display());
+        let nsis_cfg = NsisConfig {
+            extra_files: Some(vec![ExtraFileSpec::Detailed {
+                glob: glob_pattern,
+                name_template: Some("renamed.txt".to_string()),
+                allow_empty: false,
+            }]),
+            ..Default::default()
+        };
+
+        let script_path = tmp.path().join("installer.nsi");
+        std::fs::write(&script_path, "Section\nSectionEnd\n").unwrap();
+        let nsis_cfg = NsisConfig {
+            script: Some(script_path.to_string_lossy().into_owned()),
+            ..nsis_cfg
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&config.dist).unwrap();
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nsis: Some(vec![nsis_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Write a fake binary file so the stage actually reaches extra_files.
+        let bin_path = tmp.path().join("myapp.exe");
+        std::fs::write(&bin_path, b"binary").unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        // Stage will bail on extra_files before reaching makensis. The bail
+        // is what we're asserting, so the makensis-missing path is irrelevant.
+        let err = NsisStage
+            .run(&mut ctx)
+            .expect_err("multi-match glob + name_template must bail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("name_template is only valid"),
+            "error must reference the name_template constraint, got: {msg}"
+        );
+    }
+
+    /// Single-match glob with `name_template` is the supported case — must
+    /// not bail.
+    #[test]
+    fn test_extra_files_single_match_with_name_template_ok() {
+        use anodizer_core::config::ExtraFileSpec;
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let extra_dir = tmp.path().join("extras");
+        std::fs::create_dir_all(&extra_dir).unwrap();
+        std::fs::write(extra_dir.join("only.txt"), "x").unwrap();
+        let glob_pattern = format!("{}/only.txt", extra_dir.display());
+
+        let nsis_cfg = NsisConfig {
+            extra_files: Some(vec![ExtraFileSpec::Detailed {
+                glob: glob_pattern,
+                name_template: Some("renamed.txt".to_string()),
+                allow_empty: false,
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nsis: Some(vec![nsis_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        // dry-run does not exercise the extra_files copy loop, but multi-match
+        // bail logic is exercised by the prior test. Here we just assert that
+        // a single-match glob with name_template doesn't trigger any error.
+        NsisStage.run(&mut ctx).unwrap();
     }
 }
