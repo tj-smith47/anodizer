@@ -137,6 +137,8 @@ pub(crate) fn stage_binary_into(
             )
         })?;
     }
+    #[cfg(not(unix))]
+    let _ = use_mode;
     Ok(staged_binary)
 }
 
