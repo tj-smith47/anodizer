@@ -526,7 +526,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
             }
             let _ = git::stage_and_commit(
                 &files_to_stage,
-                &format!("chore: bump {} to {}", path, new_version),
+                &format!("chore: bump {} to {} [skip ci]", path, new_version),
             );
         }
     }
@@ -654,7 +654,7 @@ fn apply_workspace_bump(
 
     git::stage_and_commit(
         &staged_refs,
-        &format!("chore(release): bump workspace → {}", new_version),
+        &format!("chore(release): bump workspace → {} [skip ci]", new_version),
     )?;
 
     log.status(&format!("workspace version-sync: bumped → {}", new_version));
@@ -975,7 +975,7 @@ fn run_per_crate_tag(
         };
         git::stage_and_commit(
             &staged_refs,
-            &format!("chore(release): bump {}", bump_summary),
+            &format!("chore(release): bump {} [skip ci]", bump_summary),
         )?;
 
         // Create all tags locally; push happens atomically below.
