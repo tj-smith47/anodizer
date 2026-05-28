@@ -78,6 +78,7 @@ When a tag-triggered workflow runs, the action can resolve the triggering tag to
 | Input | Default | Description |
 |-------|---------|-------------|
 | `resolve-workspace` | `false` | Run `anodizer resolve-tag $GITHUB_REF_NAME` and expose the result as the `workspace`, `crate-path`, and `has-builds` outputs. Fails the workflow if no crate matches the tag. |
+| `determinism-crate` | | When set alongside `determinism: true`, runs the harness scoped to a single crate (e.g. `core`). Use this as the matrix dimension in Strategy C1/C-hybrid to shard determinism checks per crate rather than running all crates in each shard. |
 
 ### Execution
 
@@ -98,6 +99,8 @@ When a tag-triggered workflow runs, the action can resolve the triggering tag to
 | `crate-path` | Path to the resolved crate directory (e.g. `crates/my-lib`). Set only when `resolve-workspace: true`. |
 | `has-builds` | `true` or `false` — whether the resolved crate has binary builds configured. Useful for conditionally skipping archive/docker stages for library-only crates. Set only when `resolve-workspace: true`. |
 | `split-matrix` | JSON matrix for `strategy.matrix` covering all configured build targets, derived from `.anodizer.yaml` via `anodizer targets --json`. Each entry has `os`, `target`, and `artifact` fields. Set only when `install-only: true`. |
+| `crates` | JSON array of crate names that received a new tag (e.g. `["core","bin-a"]`). Set when `args: tag` is used. Empty array (`[]`) means nothing changed and downstream jobs should be skipped via `if: needs.<job>.outputs.crates != '[]'`. |
+| `versions` | JSON object mapping crate name to its new version string (e.g. `{"core":"1.2.0","bin-a":"0.5.1"}`). Set when `args: tag` is used. |
 
 ## Common patterns
 

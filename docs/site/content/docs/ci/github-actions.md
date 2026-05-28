@@ -212,6 +212,7 @@ If you can't use the action (e.g., a self-hosted environment that can't pull fro
 
 ## See also
 
+- [Release Workflow Strategies](@/docs/ci/release-workflows.md) — decision tree + canonical YAML for single-crate, lockstep workspace, per-crate workspace, and split-CI governance shapes
 - [anodizer-action reference](@/docs/ci/anodizer-action.md) — every input and output
 - [Split/Merge](@/docs/advanced/split-merge.md) — fan-out cross-platform builds
 - [Auto-Tagging](@/docs/advanced/auto-tagging.md) — commit-message-driven version bumps
