@@ -78,11 +78,24 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
     // is `current_dir`, so a relative `--preserve-dist=./preserved-dist`
     // lands at `<cwd>/preserved-dist` — what a CI step expects when
     // passing the flag verbatim.
+    //
+    // When `--crate <name>` is also set, append `/<name>` so a
+    // multi-crate workspace running per-crate harness shards (e.g. cfgd
+    // matrixing over `tag.outputs.crates`) lands each crate's
+    // preserved tree in a distinct subdir of the shared preserve root.
+    // Without this, every crate writes `context.json` at the same
+    // flat path; uploaded as `dist-<crate>-<shard>` artifacts and
+    // downstream-merged with `merge-multiple: true`, they collide and
+    // `release --publish-only` can't recover per-crate layout.
     let preserve_dist = args.preserve_dist.as_ref().map(|p| {
-        if p.is_absolute() {
+        let base = if p.is_absolute() {
             p.clone()
         } else {
             repo_root.join(p)
+        };
+        match args.crate_name.as_deref() {
+            Some(name) if !name.is_empty() => base.join(name),
+            _ => base,
         }
     });
 
