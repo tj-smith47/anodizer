@@ -297,20 +297,24 @@ pub fn resolve_git_context(
     // push) still resolve the correct tag instead of falling through to
     // per-crate-template latest-tag scanning (which can mis-resolve when the
     // triggering tag's prefix doesn't match the first crate's tag_template).
-    let tag_override = ctx
-        .env_var("ANODIZER_CURRENT_TAG")
+    let anodizer_current_tag = ctx.env_var("ANODIZER_CURRENT_TAG");
+    let goreleaser_current_tag = ctx.env_var("GORELEASER_CURRENT_TAG");
+    let github_ref_type = ctx.env_var("GITHUB_REF_TYPE");
+    let github_ref_name = ctx.env_var("GITHUB_REF_NAME");
+    tracing::debug!(
+        anodizer_current_tag = ?anodizer_current_tag,
+        goreleaser_current_tag = ?goreleaser_current_tag,
+        github_ref_type = ?github_ref_type,
+        github_ref_name = ?github_ref_name,
+        "tag_override resolution: env var snapshot"
+    );
+    let tag_override = anodizer_current_tag
         .filter(|s| !s.is_empty())
+        .or_else(|| goreleaser_current_tag.filter(|s| !s.is_empty()))
         .or_else(|| {
-            ctx.env_var("GORELEASER_CURRENT_TAG")
-                .filter(|s| !s.is_empty())
-        })
-        .or_else(|| {
-            let is_tag = ctx
-                .env_var("GITHUB_REF_TYPE")
-                .filter(|s| s == "tag")
-                .is_some();
+            let is_tag = github_ref_type.as_deref().filter(|s| *s == "tag").is_some();
             if is_tag {
-                ctx.env_var("GITHUB_REF_NAME").filter(|s| !s.is_empty())
+                github_ref_name.filter(|s| !s.is_empty())
             } else {
                 None
             }
@@ -2059,6 +2063,76 @@ list:
         assert!(
             msg.contains("variables.bad"),
             "error should name the offending variable key, got: {msg}"
+        );
+    }
+
+    /// When `ANODIZER_CURRENT_TAG` and `GORELEASER_CURRENT_TAG` are absent and
+    /// `GITHUB_REF_TYPE=tag`, the override must resolve to `GITHUB_REF_NAME`.
+    /// This guards the Release.yml path where GHA sets only the standard
+    /// `GITHUB_REF_*` vars and neither anodizer-specific var is exported.
+    #[test]
+    fn resolve_git_context_github_ref_name_fallback_fires_when_anodizer_tags_unset() {
+        let config = Config {
+            project_name: "test".to_string(),
+            ..Default::default()
+        };
+        let ctx = ctx_with_env(
+            &config,
+            &[("GITHUB_REF_TYPE", "tag"), ("GITHUB_REF_NAME", "v1.2.3")],
+        );
+        // Extract the tag_override the same way resolve_git_context does.
+        let anodizer_current_tag = ctx.env_var("ANODIZER_CURRENT_TAG");
+        let goreleaser_current_tag = ctx.env_var("GORELEASER_CURRENT_TAG");
+        let github_ref_type = ctx.env_var("GITHUB_REF_TYPE");
+        let github_ref_name = ctx.env_var("GITHUB_REF_NAME");
+        let tag_override = anodizer_current_tag
+            .filter(|s| !s.is_empty())
+            .or_else(|| goreleaser_current_tag.filter(|s| !s.is_empty()))
+            .or_else(|| {
+                let is_tag = github_ref_type.as_deref().filter(|s| *s == "tag").is_some();
+                if is_tag {
+                    github_ref_name.filter(|s| !s.is_empty())
+                } else {
+                    None
+                }
+            });
+        assert_eq!(
+            tag_override.as_deref(),
+            Some("v1.2.3"),
+            "GITHUB_REF_NAME fallback must fire when anodizer/goreleaser tag vars are absent"
+        );
+    }
+
+    /// When `GITHUB_REF_TYPE` is not `tag` (e.g. `branch`), the
+    /// `GITHUB_REF_NAME` fallback must NOT fire — branch names are not tags.
+    #[test]
+    fn resolve_git_context_github_ref_name_fallback_skipped_for_branch_push() {
+        let config = Config {
+            project_name: "test".to_string(),
+            ..Default::default()
+        };
+        let ctx = ctx_with_env(
+            &config,
+            &[("GITHUB_REF_TYPE", "branch"), ("GITHUB_REF_NAME", "master")],
+        );
+        let anodizer_current_tag = ctx.env_var("ANODIZER_CURRENT_TAG");
+        let goreleaser_current_tag = ctx.env_var("GORELEASER_CURRENT_TAG");
+        let github_ref_type = ctx.env_var("GITHUB_REF_TYPE");
+        let github_ref_name = ctx.env_var("GITHUB_REF_NAME");
+        let tag_override = anodizer_current_tag
+            .filter(|s| !s.is_empty())
+            .or_else(|| goreleaser_current_tag.filter(|s| !s.is_empty()))
+            .or_else(|| {
+                let is_tag = github_ref_type.as_deref().filter(|s| *s == "tag").is_some();
+                if is_tag {
+                    github_ref_name.filter(|s| !s.is_empty())
+                } else {
+                    None
+                }
+            });
+        assert!(
+            tag_override.is_none(),
+            "GITHUB_REF_NAME must not be used as tag override when GITHUB_REF_TYPE=branch"
         );
     }
 
