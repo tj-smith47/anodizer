@@ -74,7 +74,17 @@ pub(crate) fn git_output_in(cwd: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git").current_dir(cwd).args(args).output()?;
     if !output.status.success() {
         let stderr_raw = String::from_utf8_lossy(&output.stderr);
-        let raw = format!("git {} failed: {}", args.join(" "), stderr_raw.trim());
+        let stderr_trim = stderr_raw.trim();
+        // Some git failure paths print only on stdout (notably `git commit`
+        // with "nothing to commit, working tree clean"). When stderr is
+        // empty, fall back to stdout so the bail message is diagnostic
+        // instead of `failed: ` with no further detail.
+        let detail = if stderr_trim.is_empty() {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        } else {
+            stderr_trim.to_string()
+        };
+        let raw = format!("git {} failed: {}", args.join(" "), detail);
         bail!("{}", crate::redact::redact_process_env(&raw));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())

@@ -373,17 +373,36 @@ pub fn get_commit_messages_between_path_in(
 }
 
 /// Stage specific files and create a commit.
-pub fn stage_and_commit(files: &[&str], message: &str) -> Result<()> {
+///
+/// Returns `Ok(true)` when a commit was created, `Ok(false)` when staging
+/// produced no diff (e.g. files are already at the target state) — callers
+/// that need idempotent bump-then-tag flows can use the boolean to decide
+/// whether to skip downstream commit-dependent work without inspecting git
+/// state separately.
+pub fn stage_and_commit(files: &[&str], message: &str) -> Result<bool> {
     stage_and_commit_in(&cwd_or_dot(), files, message)
 }
 
 /// Path-taking sibling of [`stage_and_commit`].
-pub fn stage_and_commit_in(cwd: &Path, files: &[&str], message: &str) -> Result<()> {
+pub fn stage_and_commit_in(cwd: &Path, files: &[&str], message: &str) -> Result<bool> {
     let mut args = vec!["add", "--"];
     args.extend(files.iter().copied());
     git_output_in(cwd, &args)?;
+    // Idempotency guard: `git add` happily stages nothing when the working
+    // tree already matches HEAD for the given paths. Running `git commit`
+    // after would fail with "nothing to commit" (printed to stdout, not
+    // stderr) and surface a confusing empty-stderr error. Detect the
+    // no-diff case here so callers can re-run safely.
+    let diff = Command::new("git")
+        .current_dir(cwd)
+        .args(["diff", "--cached", "--quiet", "--"])
+        .args(files)
+        .status()?;
+    if diff.success() {
+        return Ok(false);
+    }
     git_output_in(cwd, &["commit", "-m", message])?;
-    Ok(())
+    Ok(true)
 }
 
 /// `git -C <workspace_root> -c log.showSignature=false log
@@ -671,6 +690,61 @@ mod tests {
         assert_eq!(
             branch, "master",
             "detached HEAD pointing at master must resolve to master, not literal HEAD"
+        );
+    }
+
+    #[test]
+    fn stage_and_commit_in_returns_false_when_no_diff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_commits(dir, &["a"]);
+        // File is committed and unchanged — staging it should not produce
+        // a diff, and stage_and_commit must report Ok(false) instead of
+        // bailing on the "nothing to commit" path.
+        let created = stage_and_commit_in(dir, &["a"], "chore: should be a no-op").unwrap();
+        assert!(!created, "no diff → no commit should be created");
+        let log = Command::new("git")
+            .args(["log", "--oneline"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let log_text = String::from_utf8_lossy(&log.stdout);
+        assert!(
+            !log_text.contains("should be a no-op"),
+            "stage_and_commit_in must not create a commit when no diff: {log_text}"
+        );
+    }
+
+    #[test]
+    fn stage_and_commit_in_returns_true_when_file_changed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_commits(dir, &["a"]);
+        std::fs::write(dir.join("a"), "changed").unwrap();
+        let created = stage_and_commit_in(dir, &["a"], "chore: real change").unwrap();
+        assert!(created, "real change → commit must be created");
+        let log = Command::new("git")
+            .args(["log", "-1", "--pretty=%s"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let subject = String::from_utf8_lossy(&log.stdout).trim().to_string();
+        assert_eq!(subject, "chore: real change");
+    }
+
+    #[test]
+    fn git_output_in_error_falls_back_to_stdout_when_stderr_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_commits(dir, &["a"]);
+        // `git commit -m ...` with an unchanged tree prints "nothing to
+        // commit" to STDOUT (not stderr); the error message must surface
+        // that detail instead of `failed: ` with nothing after.
+        let err = git_output_in(dir, &["commit", "-m", "no-op"]).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("nothing to commit") || msg.contains("clean"),
+            "error must include stdout detail when stderr is empty: {msg}"
         );
     }
 }
