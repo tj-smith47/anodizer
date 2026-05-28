@@ -78,13 +78,13 @@ tasks:
     desc: Run all tests (default members)
     deps: [_check:tmp-headroom]
     cmds:
-      - cargo test
+      - cargo nextest run --workspace --no-fail-fast
 
   test:lib:
     desc: Run unit tests only (no integration/doc tests)
     deps: [_check:tmp-headroom]
     cmds:
-      - cargo test --lib
+      - cargo nextest run --workspace --no-fail-fast --lib
 
   docs:
     desc: Generate reference docs (CLI + configuration)
