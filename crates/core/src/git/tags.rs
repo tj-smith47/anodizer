@@ -799,6 +799,31 @@ pub fn push_branch_and_tags_atomic_in(
         return Ok(());
     }
 
+    // Nothing to push atomically when tags list is empty — fall back to a
+    // plain branch push. --atomic with no tags is valid git syntax but
+    // misleading in log output and unnecessary for atomicity guarantees.
+    if tags.is_empty() {
+        log.verbose(&format!(
+            "no tags to push; pushing branch '{}' without --atomic",
+            branch
+        ));
+        let has_remote = Command::new("git")
+            .current_dir(cwd)
+            .args(["remote", "get-url", "origin"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !has_remote {
+            if strict {
+                anyhow::bail!("no 'origin' remote found, cannot push (strict mode)");
+            }
+            log.warn("no 'origin' remote found, skipping push");
+            return Ok(());
+        }
+        git_output_in(cwd, &["push", "origin", branch])?;
+        return Ok(());
+    }
+
     let has_remote = Command::new("git")
         .current_dir(cwd)
         .args(["remote", "get-url", "origin"])
