@@ -311,16 +311,34 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                 let mut header = tar::Header::new_gnu();
                 header.set_size(file_data.len() as u64);
 
-                // Default mode from filesystem
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    header.set_mode(metadata.permissions().mode());
-                }
-                #[cfg(not(unix))]
-                {
-                    header.set_mode(0o644);
-                }
+                // Default mode: normalize to 0o644 when SDE is set
+                // (deterministic build mode). Filesystem-derived mode bits
+                // are cross-platform divergent: Linux/macOS's
+                // `PermissionsExt::mode()` returns the full `st_mode`
+                // (S_IFREG | perms — e.g. 0o100644 for a regular file with
+                // 0o644 perms), while Windows hardcodes 0o644. tar headers
+                // store whatever value is passed verbatim, so the same file
+                // produces different tar bytes (and therefore different
+                // SHAs) across OS shards — breaking publish-only's
+                // cross-shard hash-verify even though every shard produced
+                // the "same" archive content. Forcing 0o644 under SDE
+                // matches Windows's hardcode and GoReleaser's source-stage
+                // default; users needing exec bits inside the source
+                // archive should use the `info.mode:` override.
+                let default_mode: u32 = if sde_mtime.is_some() {
+                    0o644
+                } else {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        metadata.permissions().mode()
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        0o644
+                    }
+                };
+                header.set_mode(default_mode);
 
                 // Mtime: SDE if pinned (reproducibility), else
                 // filesystem mtime (legacy).
