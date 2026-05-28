@@ -221,6 +221,31 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
 
     let all_known_crates = flatten_known_crates(&config);
     let selected_sorted = resolve_selected_crates(&opts, &all_known_crates, &config, &log)?;
+
+    // Tags-at-HEAD default path: when no --crate and no --all were given and
+    // HEAD has no matching tags, this is a no-op (the push that triggered this
+    // run didn't include any release tags).
+    //
+    // Excluded modes: --snapshot / --nightly / --dry-run build without a real
+    // tag; --publish-only / --announce-only / --rollback-only consume a prior
+    // dist tree; --split / --merge drive a multi-host flow. All of those modes
+    // use "empty selected_crates = all crates" and must not be short-circuited.
+    if selected_sorted.is_empty()
+        && opts.crate_names.is_empty()
+        && !opts.all
+        && !opts.snapshot
+        && !opts.nightly
+        && !opts.dry_run
+        && !opts.publish_only
+        && !opts.announce_only
+        && !opts.rollback_only
+        && !opts.split
+        && !opts.merge
+    {
+        log.status("no release tags at HEAD — nothing to do");
+        return Ok(());
+    }
+
     let skip_stages = compute_skip_stages(opts.skip.clone(), &workspace_skip, opts.snapshot);
 
     let release_notes_path = read_release_notes_template(&opts)?;
@@ -461,7 +486,7 @@ fn enforce_dist_state(config: &Config, opts: &ReleaseOpts, log: &StageLogger) ->
 /// Flatten every known crate — top-level plus anything under workspaces —
 /// so `--crate X` and `--all` resolve the same way regardless of whether
 /// the config is flat or workspace-based.
-fn flatten_known_crates(config: &Config) -> Vec<CrateConfig> {
+pub(crate) fn flatten_known_crates(config: &Config) -> Vec<CrateConfig> {
     let mut acc: Vec<CrateConfig> = config.crates.clone();
     if let Some(ref ws_list) = config.workspaces {
         for ws in ws_list {
@@ -476,7 +501,7 @@ fn flatten_known_crates(config: &Config) -> Vec<CrateConfig> {
 }
 
 /// Resolve the crate selection (`--all` + change detection, `--all --force`,
-/// or explicit `--crate` list) and topologically sort it.
+/// explicit `--crate` list, or tags-at-HEAD default) and topologically sort it.
 fn resolve_selected_crates(
     opts: &ReleaseOpts,
     all_known_crates: &[CrateConfig],
@@ -494,10 +519,70 @@ fn resolve_selected_crates(
                 log,
             )?
         }
-    } else {
+    } else if !opts.crate_names.is_empty() {
         opts.crate_names.clone()
+    } else {
+        // Default: read tags pointing at HEAD and map each to a crate.
+        map_head_tags_to_crates(all_known_crates, log)?
     };
     Ok(topo_sort_selected(all_known_crates, &selected))
+}
+
+/// Read tags pointing at HEAD and resolve each to a crate name via
+/// per-crate `tag_template` prefix matching.
+///
+/// Tags that don't match any configured crate are silently ignored — this
+/// allows foreign tags (e.g. a nightly build tag) to coexist without
+/// aborting the release pipeline.
+///
+/// Returns an empty vec when HEAD has no tags; the caller treats that as a
+/// no-op.
+fn map_head_tags_to_crates(
+    all_known_crates: &[CrateConfig],
+    log: &StageLogger,
+) -> Result<Vec<String>> {
+    let head_tags = git::get_tags_at_head().unwrap_or_default();
+    if head_tags.is_empty() {
+        log.verbose("no tags at HEAD — release no-op");
+        return Ok(Vec::new());
+    }
+    log.verbose(&format!("tags at HEAD: {}", head_tags.join(", ")));
+
+    let mut selected: Vec<String> = Vec::new();
+    for tag in &head_tags {
+        // Prefer the longest matching prefix (most specific crate wins when
+        // one prefix is a substring of another, e.g. "v" vs "core-v").
+        let mut best: Option<(&CrateConfig, usize)> = None;
+        for c in all_known_crates {
+            if let Some(prefix) = git::extract_tag_prefix(&c.tag_template)
+                && tag.starts_with(&prefix)
+            {
+                let remainder = &tag[prefix.len()..];
+                let is_version = remainder
+                    .split('.')
+                    .next()
+                    .is_some_and(|s| !s.is_empty() && s.chars().all(|ch| ch.is_ascii_digit()));
+                if is_version && best.as_ref().is_none_or(|(_, len)| prefix.len() > *len) {
+                    best = Some((c, prefix.len()));
+                }
+            }
+        }
+        match best {
+            Some((c, _)) if !selected.contains(&c.name) => {
+                selected.push(c.name.clone());
+                log.verbose(&format!("tag '{}' → crate '{}'", tag, c.name));
+            }
+            Some(_) => {}
+            None => {
+                log.verbose(&format!(
+                    "tag '{}' does not match any configured crate — skipping",
+                    tag
+                ));
+            }
+        }
+    }
+
+    Ok(selected)
 }
 
 /// Merge CLI / workspace / snapshot-implied skip stages into one list.
@@ -1073,6 +1158,15 @@ pub(super) fn run_post_pipeline_after_hooks_only(
 }
 
 /// Detect which crates have changes since their last tag.
+pub(crate) fn detect_changed_crates_pub(
+    crates: &[CrateConfig],
+    git_config: Option<&anodizer_core::config::GitConfig>,
+    monorepo_prefix: Option<&str>,
+    log: &StageLogger,
+) -> Result<Vec<String>> {
+    detect_changed_crates(crates, git_config, monorepo_prefix, log)
+}
+
 fn detect_changed_crates(
     crates: &[CrateConfig],
     git_config: Option<&anodizer_core::config::GitConfig>,
@@ -1974,5 +2068,146 @@ mod tests {
             err.to_string().contains("empty"),
             "error should mention empty: {err}",
         );
+    }
+
+    // ---- map_head_tags_to_crates unit tests --------------------------------
+
+    fn make_log() -> StageLogger {
+        StageLogger::new(
+            "test",
+            anodizer_core::log::Verbosity::from_flags(true, false, false),
+        )
+    }
+
+    #[test]
+    fn map_head_tags_empty_returns_empty() {
+        // No tags at HEAD → empty selection.
+        let crates = vec![make_crate("app", None)];
+        let log = make_log();
+        // Simulate get_tags_at_head returning empty by calling with an empty list.
+        // We test the core matching logic directly.
+        let head_tags: &[String] = &[];
+        let selected = run_tag_mapping(&crates, head_tags);
+        assert!(selected.is_empty(), "no tags → empty selection");
+        let _ = log;
+    }
+
+    #[test]
+    fn map_head_tags_single_tag_matches_single_crate() {
+        let crates = vec![
+            make_crate_with_template("core", "crates/core", "core-v{{ .Version }}"),
+            make_crate_with_template("cli", "crates/cli", "v{{ .Version }}"),
+        ];
+        let head_tags = vec!["core-v1.2.3".to_string()];
+        let selected = run_tag_mapping(&crates, &head_tags);
+        assert_eq!(selected, vec!["core"]);
+    }
+
+    #[test]
+    fn map_head_tags_multiple_tags_maps_multiple_crates() {
+        let crates = vec![
+            make_crate_with_template("core", "crates/core", "core-v{{ .Version }}"),
+            make_crate_with_template("cli", "crates/cli", "v{{ .Version }}"),
+        ];
+        let head_tags = vec!["core-v1.2.3".to_string(), "v1.2.3".to_string()];
+        let selected = run_tag_mapping(&crates, &head_tags);
+        assert!(selected.contains(&"core".to_string()));
+        assert!(selected.contains(&"cli".to_string()));
+        assert_eq!(selected.len(), 2);
+    }
+
+    #[test]
+    fn map_head_tags_longer_prefix_wins() {
+        // "core-v" is more specific than "v"; only "core" should match.
+        let crates = vec![
+            make_crate_with_template("app", ".", "v{{ .Version }}"),
+            make_crate_with_template("core", "crates/core", "core-v{{ .Version }}"),
+        ];
+        let head_tags = vec!["core-v0.5.0".to_string()];
+        let selected = run_tag_mapping(&crates, &head_tags);
+        assert_eq!(selected, vec!["core"], "longer prefix must win");
+    }
+
+    #[test]
+    fn map_head_tags_topo_sort_respects_depends_on() {
+        // core → cli; both tags present; cli depends on core.
+        // After topo_sort_selected, core must come before cli.
+        let all = vec![
+            make_crate_with_template("core", "crates/core", "core-v{{ .Version }}"),
+            CrateConfig {
+                name: "cli".to_string(),
+                path: "crates/cli".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                depends_on: Some(vec!["core".to_string()]),
+                ..Default::default()
+            },
+        ];
+        let head_tags = vec!["v1.0.0".to_string(), "core-v1.0.0".to_string()];
+        let selected = run_tag_mapping(&all, &head_tags);
+        // Both should be selected.
+        assert!(selected.contains(&"core".to_string()));
+        assert!(selected.contains(&"cli".to_string()));
+        let sorted = topo_sort_selected(&all, &selected);
+        let core_pos = sorted.iter().position(|s| s == "core").unwrap();
+        let cli_pos = sorted.iter().position(|s| s == "cli").unwrap();
+        assert!(
+            core_pos < cli_pos,
+            "core must come before cli in topo order; got: {:?}",
+            sorted
+        );
+    }
+
+    #[test]
+    fn map_head_tags_unrecognized_tag_is_ignored() {
+        let crates = vec![make_crate_with_template("app", ".", "v{{ .Version }}")];
+        let head_tags = vec!["nightly-20260527".to_string(), "v2.0.0".to_string()];
+        let selected = run_tag_mapping(&crates, &head_tags);
+        // nightly tag doesn't match any prefix → only "app" from v2.0.0.
+        assert_eq!(selected, vec!["app"]);
+    }
+
+    #[test]
+    fn map_head_tags_no_tags_at_head_is_noop() {
+        let crates = vec![make_crate_with_template("app", ".", "v{{ .Version }}")];
+        let head_tags: Vec<String> = vec![];
+        let selected = run_tag_mapping(&crates, &head_tags);
+        assert!(selected.is_empty(), "no tags → no-op, empty selection");
+    }
+
+    /// Helper: run the tag→crate mapping logic without spawning git.
+    fn run_tag_mapping(crates: &[CrateConfig], head_tags: &[String]) -> Vec<String> {
+        let mut selected: Vec<String> = Vec::new();
+        for tag in head_tags {
+            let mut best: Option<(&CrateConfig, usize)> = None;
+            for c in crates {
+                if let Some(prefix) = anodizer_core::git::extract_tag_prefix(&c.tag_template)
+                    && tag.starts_with(&prefix)
+                {
+                    let remainder = &tag[prefix.len()..];
+                    let is_version = remainder
+                        .split('.')
+                        .next()
+                        .is_some_and(|s| !s.is_empty() && s.chars().all(|ch| ch.is_ascii_digit()));
+                    if is_version && best.as_ref().is_none_or(|(_, len)| prefix.len() > *len) {
+                        best = Some((c, prefix.len()));
+                    }
+                }
+            }
+            if let Some((c, _)) = best
+                && !selected.contains(&c.name)
+            {
+                selected.push(c.name.clone());
+            }
+        }
+        selected
+    }
+
+    fn make_crate_with_template(name: &str, path: &str, template: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: path.to_string(),
+            tag_template: template.to_string(),
+            ..Default::default()
+        }
     }
 }

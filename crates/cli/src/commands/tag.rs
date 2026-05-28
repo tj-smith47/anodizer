@@ -1,4 +1,4 @@
-use anodizer_core::config::{GitConfig, TagConfig};
+use anodizer_core::config::{CrateConfig, GitConfig, TagConfig};
 use anodizer_core::git;
 use anodizer_core::hooks::run_hooks;
 use anodizer_core::log::{StageLogger, Verbosity};
@@ -112,6 +112,32 @@ pub fn run(opts: TagOpts) -> Result<()> {
         cfg.tag_prefix = info.tag_prefix;
         crate_path = Some(info.path);
         version_sync_enabled = info.version_sync;
+    }
+
+    // Per-crate / hybrid-workspace dispatch: when no --crate is given and the
+    // repository has per-crate versions (anodizer workspaces: or multiple crates:
+    // entries without a lockstep [workspace.package].version), delegate to the
+    // multi-crate handler which runs change detection, bumps all selected crates
+    // in one commit, creates per-crate tags, and pushes atomically.
+    if opts.crate_name.is_none() {
+        match detect_repo_shape(&opts) {
+            RepoShape::PerCrate(groups) => {
+                // Build log early so status messages are consistent.
+                let config_verbose = tag_config.verbose.unwrap_or(false);
+                let effective_verbose = opts.verbose || (config_verbose && !opts.quiet);
+                let log = StageLogger::new(
+                    "tag",
+                    Verbosity::from_flags(opts.quiet, effective_verbose, opts.debug),
+                );
+                log.status(&format!(
+                    "running auto-tag (per-crate){}",
+                    if opts.dry_run { " (dry-run)" } else { "" }
+                ));
+                return run_per_crate_tag(groups, &opts, &cfg, git_config.as_ref(), &log);
+            }
+            // Single or Lockstep fall through to existing paths below.
+            RepoShape::Single | RepoShape::Lockstep => {}
+        }
     }
 
     // Workspace-mode: with no --crate, treat a Cargo workspace whose members
@@ -602,6 +628,307 @@ fn resolve_config_path(opts: &TagOpts) -> Option<std::path::PathBuf> {
         .filter(|p| p.exists())
         .map(|p| p.to_path_buf())
         .or_else(|| crate::pipeline::find_config(None).ok())
+}
+
+/// Repository shape as detected from Cargo.toml + `.anodizer.yaml`.
+pub(crate) enum RepoShape {
+    /// Single crate or no config — use single-crate path unchanged.
+    Single,
+    /// `[workspace.package].version` is set — lockstep workspace, existing path.
+    Lockstep,
+    /// Each member has its own `[package].version` (no `[workspace.package].version`)
+    /// AND the anodizer config has a per-crate/workspace definition.
+    /// Carries the groups to iterate: each `Vec<CrateConfig>` is one lockstep
+    /// group (singleton = independent release).
+    PerCrate(Vec<Vec<CrateConfig>>),
+}
+
+/// Detect the repository shape for default (no `--crate`) tag behaviour.
+///
+/// Reads the Cargo workspace and anodizer config. Precedence:
+/// 1. If lockstep workspace → `Lockstep`.
+/// 2. If anodizer config has `workspaces:` with multiple groups → `PerCrate` (hybrid).
+/// 3. If anodizer config has `crates:` with >1 entry → `PerCrate` (flat multi-crate).
+/// 4. Otherwise → `Single`.
+fn detect_repo_shape(opts: &TagOpts) -> RepoShape {
+    let workspace_root = match std::env::current_dir().ok() {
+        Some(p) => p,
+        None => return RepoShape::Single,
+    };
+
+    // Lockstep check: [workspace.package].version is authoritative.
+    if let Ok(ws) = load_workspace(&workspace_root)
+        && ws.workspace_package_version.is_some()
+    {
+        return RepoShape::Lockstep;
+    }
+
+    // Load anodizer config.
+    let config = match resolve_config_path(opts).and_then(|p| crate::pipeline::load_config(&p).ok())
+    {
+        Some(c) => c,
+        None => return RepoShape::Single,
+    };
+
+    // Multiple workspaces groups → hybrid per-crate mode.
+    if let Some(ref ws_list) = config.workspaces
+        && !ws_list.is_empty()
+    {
+        let groups: Vec<Vec<CrateConfig>> = ws_list.iter().map(|ws| ws.crates.clone()).collect();
+        return RepoShape::PerCrate(groups);
+    }
+
+    // Flat crates list with more than one entry → per-crate mode.
+    if config.crates.len() > 1 {
+        let groups: Vec<Vec<CrateConfig>> = config.crates.iter().map(|c| vec![c.clone()]).collect();
+        return RepoShape::PerCrate(groups);
+    }
+
+    RepoShape::Single
+}
+
+/// Result of per-crate tag computation for one group.
+struct GroupTagResult {
+    /// Crate names in this group.
+    crate_names: Vec<String>,
+    /// New tags to create (one per crate in the group).
+    new_tags: Vec<(String, String)>,
+    /// Bump commit paths that need version updates.
+    version_updates: Vec<(String, String)>,
+}
+
+/// Compute tag results for all per-crate groups, performing change detection.
+///
+/// Returns the list of groups that need tagging, skipping groups with no
+/// changes.
+fn compute_per_crate_tags(
+    groups: &[Vec<CrateConfig>],
+    opts: &TagOpts,
+    cfg: &ResolvedConfig,
+    git_config: Option<&GitConfig>,
+    log: &StageLogger,
+) -> Result<Vec<GroupTagResult>> {
+    // Run change detection across ALL crates so depends_on propagation works.
+    let anodizer_config = resolve_config_path(opts)
+        .and_then(|p| crate::pipeline::load_config(&p).ok())
+        .unwrap_or_default();
+
+    use crate::commands::release::{detect_changed_crates_pub, flatten_known_crates};
+
+    let all_known = flatten_known_crates(&anodizer_config);
+    let changed_names = detect_changed_crates_pub(
+        &all_known,
+        anodizer_config.git.as_ref(),
+        anodizer_config.monorepo_tag_prefix(),
+        log,
+    )?;
+
+    if changed_names.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Build a set for quick lookup.
+    use std::collections::HashSet;
+    let changed_set: HashSet<&str> = changed_names.iter().map(|s| s.as_str()).collect();
+
+    let mut results: Vec<GroupTagResult> = Vec::new();
+
+    for group in groups {
+        // A group is selected if any of its crates appears in changed_names.
+        let group_selected = group.iter().any(|c| changed_set.contains(c.name.as_str()));
+        if !group_selected {
+            continue;
+        }
+
+        let first = &group[0];
+        let tag_prefix =
+            git::extract_tag_prefix(&first.tag_template).unwrap_or_else(|| cfg.tag_prefix.clone());
+
+        // Determine the previous tag for this group (use first crate's template).
+        let group_cfg = ResolvedConfig {
+            tag_prefix: tag_prefix.clone(),
+            default_bump: cfg.default_bump.clone(),
+            tag_context: cfg.tag_context.clone(),
+            branch_history: cfg.branch_history.clone(),
+            initial_version: cfg.initial_version.clone(),
+            prerelease: cfg.prerelease,
+            prerelease_suffix: cfg.prerelease_suffix.clone(),
+            force_without_changes: cfg.force_without_changes,
+            force_without_changes_pre: cfg.force_without_changes_pre,
+            major_string_token: cfg.major_string_token.clone(),
+            minor_string_token: cfg.minor_string_token.clone(),
+            patch_string_token: cfg.patch_string_token.clone(),
+            none_string_token: cfg.none_string_token.clone(),
+            release_branches: cfg.release_branches.clone(),
+            custom_tag: None,
+            git_api_tagging: cfg.git_api_tagging,
+        };
+
+        let prev_tag = find_previous_tag(&group_cfg, git_config)?;
+
+        // Scan commits across all paths in the group.
+        let mut all_messages: Vec<String> = Vec::new();
+        for crate_cfg in group {
+            let msgs = get_messages_for_bump(cfg, prev_tag.as_deref(), Some(&crate_cfg.path))
+                .unwrap_or_default();
+            all_messages.extend(msgs);
+        }
+        let bump = detect_bump(&all_messages, &group_cfg);
+
+        if bump == BumpKind::None {
+            log.verbose(&format!(
+                "group {:?}: no bump signal — skipping",
+                group.iter().map(|c| c.name.as_str()).collect::<Vec<_>>()
+            ));
+            continue;
+        }
+
+        let (new_major, new_minor, new_patch, old_tag_str) = if let Some(ref prev) = prev_tag {
+            let base = git::parse_semver_tag(prev)?;
+            let (maj, min, pat) = apply_bump(base.major, base.minor, base.patch, &bump);
+            (maj, min, pat, prev.as_str())
+        } else {
+            let base = git::parse_semver_tag(&format!("{}{}", tag_prefix, cfg.initial_version))
+                .unwrap_or(git::SemVer {
+                    major: 0,
+                    minor: 1,
+                    patch: 0,
+                    prerelease: None,
+                    build_metadata: None,
+                });
+            (base.major, base.minor, base.patch, "")
+        };
+
+        let mut new_version = format!("{}.{}.{}", new_major, new_minor, new_patch);
+        if cfg.prerelease {
+            new_version = format!("{}-{}", new_version, cfg.prerelease_suffix);
+        }
+
+        log.verbose(&format!(
+            "group {:?}: {} -> {}{}",
+            group.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            old_tag_str,
+            tag_prefix,
+            new_version
+        ));
+
+        // Build per-crate tags and version updates.
+        let mut new_tags: Vec<(String, String)> = Vec::new();
+        let mut version_updates: Vec<(String, String)> = Vec::new();
+        for crate_cfg in group {
+            let crate_prefix = git::extract_tag_prefix(&crate_cfg.tag_template)
+                .unwrap_or_else(|| tag_prefix.clone());
+            let new_tag = format!("{}{}", crate_prefix, new_version);
+            let message = format!("Release {}", new_tag);
+            new_tags.push((new_tag, message));
+            version_updates.push((crate_cfg.path.clone(), new_version.clone()));
+        }
+
+        results.push(GroupTagResult {
+            crate_names: group.iter().map(|c| c.name.clone()).collect(),
+            new_tags,
+            version_updates,
+        });
+    }
+
+    Ok(results)
+}
+
+/// Execute per-crate / hybrid-workspace tagging when no `--crate` is given
+/// and the repository has per-crate versions (not lockstep).
+///
+/// Runs change detection → computes new tags for changed groups → writes one
+/// bump commit for all changed crates → creates all tags → pushes commit and
+/// tags atomically → emits `anodizer-output crates=[...]` line.
+fn run_per_crate_tag(
+    groups: Vec<Vec<CrateConfig>>,
+    opts: &TagOpts,
+    cfg: &ResolvedConfig,
+    git_config: Option<&GitConfig>,
+    log: &StageLogger,
+) -> Result<()> {
+    let tag_results = compute_per_crate_tags(&groups, opts, cfg, git_config, log)?;
+
+    if tag_results.is_empty() {
+        log.verbose("no changed crates — nothing to tag");
+        println!("anodizer-output crates=[]");
+        return Ok(());
+    }
+
+    // Collect all new crate names for output.
+    let all_tagged_crates: Vec<String> = tag_results
+        .iter()
+        .flat_map(|r| r.crate_names.iter().cloned())
+        .collect();
+
+    // Collect all version updates for the bump commit.
+    let all_version_updates: Vec<(String, String)> = tag_results
+        .iter()
+        .flat_map(|r| r.version_updates.iter().cloned())
+        .collect();
+
+    // Collect all new tags.
+    let all_new_tags: Vec<String> = tag_results
+        .iter()
+        .flat_map(|r| r.new_tags.iter().map(|(t, _)| t.clone()))
+        .collect();
+
+    if !opts.dry_run {
+        // Apply version bumps across all changed crates in a single commit.
+        for (path, new_version) in &all_version_updates {
+            anodizer_stage_build::version_sync::sync_version(path, new_version, false, log)?;
+        }
+
+        // Update Cargo.lock to match bumped manifests.
+        match anodizer_core::cargo_lock::cargo_update_workspace(None) {
+            Ok(_) => {}
+            Err(e) => log.warn(&format!(
+                "version-sync: could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
+            )),
+        }
+
+        // Stage all bumped Cargo.toml files + Cargo.lock.
+        let mut files_to_stage: Vec<String> = all_version_updates
+            .iter()
+            .map(|(path, _)| format!("{}/Cargo.toml", path))
+            .collect();
+        files_to_stage.push("Cargo.lock".to_string());
+        let staged_refs: Vec<&str> = files_to_stage.iter().map(|s| s.as_str()).collect();
+
+        let crate_label = all_tagged_crates.join(", ");
+        let bump_version = &tag_results[0].version_updates[0].1;
+        git::stage_and_commit(
+            &staged_refs,
+            &format!("chore(release): bump [{}] → {}", crate_label, bump_version),
+        )?;
+
+        // Create all tags locally; push happens atomically below.
+        let cwd = std::env::current_dir()?;
+        for group_result in &tag_results {
+            for (tag, message) in &group_result.new_tags {
+                git::create_tag_local_only(&cwd, tag, message, false, log)?;
+            }
+        }
+    }
+
+    // Emit structured output. In dry-run the line still appears so CI can
+    // observe what would be tagged.
+    let crates_json =
+        serde_json::to_string(&all_tagged_crates).unwrap_or_else(|_| "[]".to_string());
+    println!("anodizer-output crates={}", crates_json);
+
+    if !opts.dry_run {
+        // Push the bump commit and all tags atomically.
+        let current_branch = git::get_current_branch()?;
+        git::push_branch_and_tags_atomic(&current_branch, &all_new_tags, false, log, opts.strict)?;
+    } else {
+        log.status(&format!(
+            "(dry-run) would push tags: {}",
+            all_new_tags.join(", ")
+        ));
+    }
+
+    Ok(())
 }
 
 fn load_tag_config(opts: &TagOpts) -> TagConfig {
@@ -1474,5 +1801,129 @@ tag_post_hooks:
         let (maj, min, pat) = apply_bump(1, 2, 3, &bump);
         let version = format!("{}.{}.{}-beta", maj, min, pat);
         assert_eq!(version, "1.3.0-beta");
+    }
+
+    // ---- detect_repo_shape unit tests ----
+
+    #[test]
+    fn detect_repo_shape_single_returns_single_for_empty_config() {
+        // A config with one crate and no workspaces → Single.
+        let config = anodizer_core::config::Config {
+            project_name: "app".to_string(),
+            crates: vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        // No workspaces, one crate → not PerCrate.
+        assert!(config.workspaces.is_none());
+        assert_eq!(config.crates.len(), 1);
+    }
+
+    #[test]
+    fn detect_repo_shape_flat_multi_crate_groups_correctly() {
+        // A config with two flat crates and no workspaces should produce
+        // two singleton groups.
+        let crates = [
+            CrateConfig {
+                name: "core".to_string(),
+                path: "crates/core".to_string(),
+                tag_template: "core-v{{ .Version }}".to_string(),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "cli".to_string(),
+                path: "crates/cli".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            },
+        ];
+        // Validate the grouping logic: each crate becomes its own singleton group.
+        let groups: Vec<Vec<CrateConfig>> = crates.iter().map(|c| vec![c.clone()]).collect();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0][0].name, "core");
+        assert_eq!(groups[1][0].name, "cli");
+    }
+
+    #[test]
+    fn detect_repo_shape_workspace_groups_correctly() {
+        // A workspaces: config with two groups — one singleton, one lockstep pair.
+        let ws1 = anodizer_core::config::WorkspaceConfig {
+            name: "group-a".to_string(),
+            crates: vec![CrateConfig {
+                name: "core".to_string(),
+                path: "crates/core".to_string(),
+                tag_template: "core-v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ws2 = anodizer_core::config::WorkspaceConfig {
+            name: "group-b".to_string(),
+            crates: vec![
+                CrateConfig {
+                    name: "bin-a".to_string(),
+                    path: "crates/bin-a".to_string(),
+                    tag_template: "bin-a-v{{ .Version }}".to_string(),
+                    ..Default::default()
+                },
+                CrateConfig {
+                    name: "bin-b".to_string(),
+                    path: "crates/bin-b".to_string(),
+                    tag_template: "bin-b-v{{ .Version }}".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let config = anodizer_core::config::Config {
+            project_name: "myproj".to_string(),
+            workspaces: Some(vec![ws1, ws2]),
+            ..Default::default()
+        };
+        let ws_list = config.workspaces.as_ref().unwrap();
+        assert_eq!(ws_list.len(), 2);
+        // Group 0: singleton.
+        assert_eq!(ws_list[0].crates.len(), 1);
+        // Group 1: lockstep pair.
+        assert_eq!(ws_list[1].crates.len(), 2);
+
+        let groups: Vec<Vec<CrateConfig>> = ws_list.iter().map(|ws| ws.crates.clone()).collect();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].len(), 1);
+        assert_eq!(groups[1].len(), 2);
+    }
+
+    // ---- anodizer-output line format tests ----
+
+    #[test]
+    fn anodizer_output_format_empty() {
+        let crates: Vec<String> = vec![];
+        let json = serde_json::to_string(&crates).unwrap();
+        assert_eq!(json, "[]");
+        let line = format!("anodizer-output crates={}", json);
+        assert_eq!(line, "anodizer-output crates=[]");
+    }
+
+    #[test]
+    fn anodizer_output_format_single_crate() {
+        let crates = vec!["myproj-core".to_string()];
+        let json = serde_json::to_string(&crates).unwrap();
+        let line = format!("anodizer-output crates={}", json);
+        assert_eq!(line, "anodizer-output crates=[\"myproj-core\"]");
+    }
+
+    #[test]
+    fn anodizer_output_format_multi_crate() {
+        let crates = vec!["core".to_string(), "bin-a".to_string(), "bin-b".to_string()];
+        let json = serde_json::to_string(&crates).unwrap();
+        let line = format!("anodizer-output crates={}", json);
+        assert_eq!(
+            line,
+            "anodizer-output crates=[\"core\",\"bin-a\",\"bin-b\"]"
+        );
     }
 }

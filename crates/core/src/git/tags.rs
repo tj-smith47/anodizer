@@ -425,6 +425,29 @@ pub fn create_and_push_tag_in(
     Ok(())
 }
 
+/// Create an annotated tag locally without pushing.
+///
+/// Writes `git tag -a <tag> -m <message>` in `cwd`. Does NOT push. The caller
+/// is responsible for pushing all tags (typically atomically via
+/// [`push_branch_and_tags_atomic`]).
+pub fn create_tag_local_only(
+    cwd: &Path,
+    tag: &str,
+    message: &str,
+    dry_run: bool,
+    log: &crate::log::StageLogger,
+) -> Result<()> {
+    if dry_run {
+        log.status(&format!(
+            "(dry-run) would create local tag: {} (\"{}\")",
+            tag, message
+        ));
+        return Ok(());
+    }
+    git_output_in(cwd, &["tag", "-a", tag, "-m", message])?;
+    Ok(())
+}
+
 /// Find the tag immediately before `current_tag` in commit history.
 ///
 /// Uses `git describe --tags --abbrev=0 {current_tag}^` to locate the previous
@@ -707,4 +730,94 @@ pub fn list_tags_with_prefix(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect())
+}
+
+/// Return all tags that point at the current HEAD commit.
+///
+/// Runs `git tag --points-at HEAD`. An empty repository or a HEAD with no
+/// tags returns `Ok(vec![])` rather than an error.
+pub fn get_tags_at_head() -> Result<Vec<String>> {
+    get_tags_at_head_in(&std::env::current_dir()?)
+}
+
+/// Path-taking sibling of [`get_tags_at_head`].
+pub fn get_tags_at_head_in(cwd: &Path) -> Result<Vec<String>> {
+    let out = Command::new("git")
+        .current_dir(cwd)
+        .args(["tag", "--points-at", "HEAD"])
+        .output()
+        .map_err(|e| anyhow::anyhow!("failed to invoke git tag --points-at HEAD: {e}"))?;
+    if !out.status.success() {
+        return Ok(Vec::new());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(text
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
+}
+
+/// Push `branch` and all `tags` to `origin` in a single atomic operation.
+///
+/// Uses `git push --atomic origin <branch> <tag1> <tag2> …`. When
+/// `dry_run` is true, logs what would happen without executing. When no
+/// origin remote exists and `strict` is true, returns an error; otherwise
+/// logs a warning and returns `Ok(())`.
+pub fn push_branch_and_tags_atomic(
+    branch: &str,
+    tags: &[String],
+    dry_run: bool,
+    log: &crate::log::StageLogger,
+    strict: bool,
+) -> Result<()> {
+    push_branch_and_tags_atomic_in(
+        &std::env::current_dir()?,
+        branch,
+        tags,
+        dry_run,
+        log,
+        strict,
+    )
+}
+
+/// Path-taking sibling of [`push_branch_and_tags_atomic`].
+pub fn push_branch_and_tags_atomic_in(
+    cwd: &Path,
+    branch: &str,
+    tags: &[String],
+    dry_run: bool,
+    log: &crate::log::StageLogger,
+    strict: bool,
+) -> Result<()> {
+    if dry_run {
+        let tag_list = tags.join(", ");
+        log.status(&format!(
+            "(dry-run) would push branch '{}' + tags [{}] atomically",
+            branch, tag_list
+        ));
+        return Ok(());
+    }
+
+    let has_remote = Command::new("git")
+        .current_dir(cwd)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !has_remote {
+        if strict {
+            anyhow::bail!("no 'origin' remote found, cannot push (strict mode)");
+        }
+        log.warn("no 'origin' remote found, skipping push");
+        return Ok(());
+    }
+
+    let mut args: Vec<&str> = vec!["push", "--atomic", "origin", branch];
+    for tag in tags {
+        args.push(tag.as_str());
+    }
+    git_output_in(cwd, &args)?;
+    Ok(())
 }
