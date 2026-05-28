@@ -820,7 +820,8 @@ pub fn push_branch_and_tags_atomic_in(
             log.warn("no 'origin' remote found, skipping push");
             return Ok(());
         }
-        git_output_in(cwd, &["push", "origin", branch])?;
+        let head_refspec = format!("HEAD:refs/heads/{}", branch);
+        git_output_in(cwd, &["push", "origin", &head_refspec])?;
         return Ok(());
     }
 
@@ -839,7 +840,13 @@ pub fn push_branch_and_tags_atomic_in(
         return Ok(());
     }
 
-    let mut args: Vec<&str> = vec!["push", "--atomic", "origin", branch];
+    // Push HEAD to refs/heads/<branch> rather than `<branch>` alone so
+    // detached-HEAD checkouts (notably `actions/checkout@v4` with `ref:
+    // <sha>`) work without a local branch ref. `git push origin <branch>`
+    // requires `refs/heads/<branch>` to resolve locally, which doesn't
+    // exist when the workflow checks out a SHA directly.
+    let head_refspec = format!("HEAD:refs/heads/{}", branch);
+    let mut args: Vec<&str> = vec!["push", "--atomic", "origin", head_refspec.as_str()];
     for tag in tags {
         args.push(tag.as_str());
     }
