@@ -699,6 +699,20 @@ fn detect_repo_shape(
         None => return RepoShape::Single,
     };
 
+    // `.anodizer.yaml`'s `workspaces:` block is an explicit operator
+    // declaration of per-crate-with-grouping intent and takes precedence
+    // over `[workspace.package].version`, which is often default cruft
+    // from `cargo init` that survives even when each crate sets its own
+    // `version =`. A repo that genuinely wants lockstep should leave
+    // `workspaces:` unset and let the Cargo-level signal speak.
+    if let Some(config) = preloaded_config
+        && let Some(ref ws_list) = config.workspaces
+        && !ws_list.is_empty()
+    {
+        let groups: Vec<Vec<CrateConfig>> = ws_list.iter().map(|ws| ws.crates.clone()).collect();
+        return RepoShape::PerCrate(groups);
+    }
+
     let lockstep = if let Some(ws) = preloaded_workspace {
         ws.workspace_package_version.is_some()
     } else {
@@ -715,14 +729,6 @@ fn detect_repo_shape(
         None => return RepoShape::Single,
     };
 
-    if let Some(ref ws_list) = config.workspaces
-        && !ws_list.is_empty()
-    {
-        let groups: Vec<Vec<CrateConfig>> = ws_list.iter().map(|ws| ws.crates.clone()).collect();
-        return RepoShape::PerCrate(groups);
-    }
-
-    // Flat crates list with more than one entry → per-crate mode.
     if config.crates.len() > 1 {
         let groups: Vec<Vec<CrateConfig>> = config.crates.iter().map(|c| vec![c.clone()]).collect();
         return RepoShape::PerCrate(groups);
@@ -1988,8 +1994,7 @@ tag_post_hooks:
     }
 
     #[test]
-    fn detect_repo_shape_workspaces_with_lockstep_workspace_returns_lockstep() {
-        // Hybrid config but Cargo says lockstep — Cargo wins.
+    fn detect_repo_shape_workspaces_block_wins_over_workspace_package_version() {
         let ws1 = anodizer_core::config::WorkspaceConfig {
             name: "group".to_string(),
             crates: vec![
@@ -2008,7 +2013,16 @@ tag_post_hooks:
             members: vec![],
         };
         let shape = detect_repo_shape(Some(&config), Some(&ws));
-        assert!(matches!(shape, RepoShape::Lockstep));
+        match shape {
+            RepoShape::PerCrate(groups) => {
+                assert_eq!(groups.len(), 1);
+                assert_eq!(groups[0].len(), 2);
+            }
+            other => panic!(
+                "expected PerCrate (workspaces: declaration wins over [workspace.package].version), got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
     }
 
     #[test]
