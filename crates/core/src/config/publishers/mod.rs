@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::aur_source::AurSourceConfig;
+use super::string_or_bool::HumanDuration;
 use super::{StringOrBool, deserialize_string_or_bool_opt};
 
 mod homebrew;
@@ -199,6 +200,16 @@ pub struct CargoPublishConfig {
     /// before its dependents are pushed (anodizer-original — no `cargo
     /// publish` equivalent).
     pub index_timeout: Option<u64>,
+    /// Pre-publish gate that polls crates.io for every workspace-internal
+    /// dep of the crate being published, blocking until each is queryable
+    /// at its expected version. Required for multi-tag-multi-crate
+    /// workspaces (e.g. cfgd) where per-crate tags fire independent
+    /// `Release.yml` runs that would otherwise race the sparse-index
+    /// propagation.
+    ///
+    /// Single-crate workspaces and lockstep-bumped monorepos (anodizer
+    /// itself) leave this off — there is no inter-tag race to gate on.
+    pub wait_for_workspace_deps: Option<WaitForWorkspaceDepsConfig>,
 
     // ----- Verify / dirty -----
     /// Skip the local `cargo build --release` verification step (`--no-verify`).
@@ -251,4 +262,75 @@ pub struct CargoPublishConfig {
     /// publisher `if:` semantics.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
+}
+
+/// Pre-publish polling gate for `cargo publish`. When `enabled`, the cargo
+/// publisher reads its crate's manifest, identifies every dep that points
+/// at another crate in the same anodize workspace, and polls
+/// `https://index.crates.io/<prefix>/<name>` until each `(name, version)`
+/// pair is queryable. Only then does `cargo publish` run.
+///
+/// Default: disabled. Anodize's own workspaces publish lockstep with one
+/// tag; this feature only kicks in for multi-tag-multi-crate workspaces
+/// like cfgd where downstream crates can otherwise race the sparse-index
+/// propagation of their upstream deps.
+///
+/// Complementary to `cargo.index_timeout`: this gate runs BEFORE publish
+/// (waits for *upstream* deps to land), while `index_timeout` runs AFTER
+/// publish (waits for the *just-published* crate to land before the next
+/// dependent in the same run starts).
+///
+/// ```yaml
+/// publish:
+///   cargo:
+///     wait_for_workspace_deps:
+///       enabled: true
+///       poll_interval: 5s
+///       max_wait: 5m
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct WaitForWorkspaceDepsConfig {
+    /// Master switch. Default `false` preserves today's behavior for
+    /// single-crate workspaces and lockstep monorepos.
+    pub enabled: Option<bool>,
+    /// Time between successive index probes. Humantime-style string
+    /// (e.g. `"5s"`, `"500ms"`, `"1m"`). Default: `"5s"`.
+    pub poll_interval: Option<HumanDuration>,
+    /// Hard ceiling on the total wait. The publisher bails with a clear
+    /// error once `max_wait` elapses without every dep appearing.
+    /// Humantime-style string (e.g. `"5m"`, `"30s"`). Default: `"5m"`.
+    pub max_wait: Option<HumanDuration>,
+}
+
+impl WaitForWorkspaceDepsConfig {
+    /// Default poll interval — short enough to feel snappy when the
+    /// upstream's publish lands quickly, long enough that a 5-minute
+    /// wait window costs at most 60 HTTP probes.
+    pub const DEFAULT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Default ceiling — five minutes matches the historical
+    /// `index_timeout` default and covers the worst-case sparse-index
+    /// CDN propagation window observed in practice.
+    pub const DEFAULT_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+
+    /// Resolve `enabled`, defaulting to `false` (master switch off).
+    pub fn resolved_enabled(&self) -> bool {
+        self.enabled.unwrap_or(false)
+    }
+
+    /// Resolve `poll_interval`, falling back to
+    /// [`Self::DEFAULT_POLL_INTERVAL`].
+    pub fn resolved_poll_interval(&self) -> std::time::Duration {
+        self.poll_interval
+            .map(|d| d.duration())
+            .unwrap_or(Self::DEFAULT_POLL_INTERVAL)
+    }
+
+    /// Resolve `max_wait`, falling back to [`Self::DEFAULT_MAX_WAIT`].
+    pub fn resolved_max_wait(&self) -> std::time::Duration {
+        self.max_wait
+            .map(|d| d.duration())
+            .unwrap_or(Self::DEFAULT_MAX_WAIT)
+    }
 }

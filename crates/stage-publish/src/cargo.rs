@@ -1,4 +1,4 @@
-use anodizer_core::config::{CargoPublishConfig, CrateConfig};
+use anodizer_core::config::{CargoPublishConfig, CrateConfig, WaitForWorkspaceDepsConfig};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
@@ -368,6 +368,256 @@ fn poll_crates_io_index(
         std::thread::sleep(backoff);
         backoff = (backoff * 2).min(MAX_POLL_DELAY);
     }
+}
+
+// ---------------------------------------------------------------------------
+// wait_for_workspace_deps — pre-publish polling gate
+// ---------------------------------------------------------------------------
+
+/// Parse a crate's `Cargo.toml` for workspace-internal deps that resolve
+/// to a literal version pin, filtered to the set of crate names known to
+/// the anodize workspace.
+///
+/// Scans `[dependencies]`, `[dev-dependencies]`, and `[build-dependencies]`
+/// (plus their target-specific variants under `[target.*.dependencies]`,
+/// etc.). For each entry whose key is in `workspace_crate_names`, the
+/// extracted `(name, version)` pair captures the version cargo will
+/// resolve against the crates.io index at publish time. Entries without a
+/// literal `version` string (workspace-inherited inherits, git deps, or
+/// path-only inline tables) are skipped — there is nothing for the gate
+/// to poll for.
+///
+/// Returns an empty Vec if the manifest can't be read or parsed; the
+/// caller logs the case via [`wait_for_workspace_deps`] so the gate
+/// degrades to a no-op instead of erroring out a publish that would
+/// otherwise have succeeded.
+fn workspace_deps_for_crate(
+    manifest_path: &std::path::Path,
+    workspace_crate_names: &HashSet<&str>,
+) -> Vec<(String, String)> {
+    let content = match std::fs::read_to_string(manifest_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let doc = match content.parse::<toml_edit::DocumentMut>() {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    // Visit a `[<section>]` table at any depth and append matching deps.
+    // Honours `target.*.dependencies` variants by recursing into table
+    // values whose key matches one of the three section names.
+    fn visit(
+        item: &toml_edit::Item,
+        workspace_crate_names: &HashSet<&str>,
+        out: &mut Vec<(String, String)>,
+        seen: &mut HashSet<String>,
+    ) {
+        let Some(table) = item.as_table_like() else {
+            return;
+        };
+        for (key, value) in table.iter() {
+            // dep_key inside [dependencies] / [dev-dependencies] /
+            // [build-dependencies] — `key` is the dep name, `value`
+            // is its spec (literal string or inline-table).
+            if !workspace_crate_names.contains(key) {
+                continue;
+            }
+            if let Some(ver) = extract_version_pin(value)
+                && seen.insert(key.to_string())
+            {
+                out.push((key.to_string(), ver));
+            }
+        }
+    }
+
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        if let Some(item) = doc.get(section) {
+            visit(item, workspace_crate_names, &mut out, &mut seen);
+        }
+    }
+    // `[target.'cfg(...)'.dependencies]` and friends.
+    if let Some(target_item) = doc.get("target")
+        && let Some(target_tbl) = target_item.as_table_like()
+    {
+        for (_cfg, target_value) in target_tbl.iter() {
+            let Some(target_table) = target_value.as_table_like() else {
+                continue;
+            };
+            for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                if let Some(item) = target_table.get(section) {
+                    visit(item, workspace_crate_names, &mut out, &mut seen);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Extract a literal `version = "X.Y.Z"` from a dep value, handling the
+/// three shapes cargo accepts:
+///
+/// - `name = "1.2.3"` — bare string value.
+/// - `name = { version = "1.2.3", ... }` — inline table.
+/// - `[dependencies.name]\nversion = "1.2.3"` — standard table.
+///
+/// Returns `None` for `workspace = true` inherits, `git = ...` deps, and
+/// path-only entries — none of those produce a crates.io-queryable pin.
+fn extract_version_pin(item: &toml_edit::Item) -> Option<String> {
+    if let Some(v) = item.as_value() {
+        // Bare-string form (`name = "1.2.3"`).
+        if let Some(s) = v.as_str() {
+            return Some(s.to_string());
+        }
+        // Inline-table form (`name = { version = "..." }`).
+        if let Some(tbl) = v.as_inline_table() {
+            // `workspace = true` inherits resolve via the workspace
+            // root — no per-dep version pin to poll for here. The
+            // sync_workspace_deps path always writes a literal version
+            // alongside the inherit when a workspace dep needs pinning,
+            // so this branch only fires for inherits with no override.
+            if tbl
+                .get("workspace")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                return None;
+            }
+            return tbl
+                .get("version")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+        }
+    }
+    // Standard-table form (`[dependencies.name]` with subkeys).
+    if let Some(tbl) = item.as_table() {
+        if tbl
+            .get("workspace")
+            .and_then(|i| i.as_value())
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        return tbl
+            .get("version")
+            .and_then(|i| i.as_value())
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+    }
+    None
+}
+
+/// Probe the sparse index for `(crate_name, version)` once. Returns
+/// `Ok(true)` when the version line is present, `Ok(false)` for any
+/// non-success status (treated as "not yet"), `Err` on transport
+/// failures the caller should surface.
+///
+/// Uses the same blocking HTTP client + JSONL parser as
+/// [`is_already_published_at`] — the wait-for-deps gate and the
+/// already-published short-circuit query the same endpoint, so sharing
+/// the parser keeps the two paths byte-identical.
+fn probe_dep_on_index(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    version: &str,
+) -> Result<bool> {
+    let resp = client
+        .get(url)
+        .send()
+        .with_context(|| format!("publish: wait_for_workspace_deps GET {url}"))?;
+    if !resp.status().is_success() {
+        return Ok(false);
+    }
+    let body = anodizer_core::http::body_of_blocking(resp);
+    Ok(parse_index_cksum_for_version(&body, version).is_some())
+}
+
+/// Pre-publish gate: poll crates.io for every workspace-internal dep at
+/// its expected version, blocking until each is queryable. Bails with a
+/// loud error after `cfg.resolved_max_wait()` elapses.
+///
+/// `crate_name` is the crate about to be published (used purely for log
+/// context); `deps` is the `(name, version)` set returned by
+/// [`workspace_deps_for_crate`] filtered to the anodize workspace.
+///
+/// No-op when `cfg.resolved_enabled()` is false or `deps` is empty.
+fn wait_for_workspace_deps_to_appear(
+    crate_name: &str,
+    deps: &[(String, String)],
+    cfg: &WaitForWorkspaceDepsConfig,
+    log: &StageLogger,
+) -> Result<()> {
+    use std::time::{Duration, Instant};
+
+    if !cfg.resolved_enabled() || deps.is_empty() {
+        return Ok(());
+    }
+
+    let poll_interval = cfg.resolved_poll_interval();
+    let max_wait = cfg.resolved_max_wait();
+    let deadline = Instant::now() + max_wait;
+
+    let client = anodizer_core::http::blocking_client(Duration::from_secs(10))
+        .context("publish: wait_for_workspace_deps build HTTP client")?;
+
+    log.status(&format!(
+        "wait_for_workspace_deps: gating publish of '{}' on {} workspace dep(s)",
+        crate_name,
+        deps.len()
+    ));
+
+    // Process deps sequentially — the typical fan-in is small (1–3 deps),
+    // so per-dep waits compose without needing parallelism. Each dep is
+    // polled until found OR the shared deadline elapses, so a slow first
+    // dep doesn't extend the total wait beyond `max_wait`.
+    for (name, version) in deps {
+        let url = sparse_index_url(name);
+        log.status(&format!(
+            "wait_for_workspace_deps: waiting for {name}@{version} on crates.io (timeout {}s)",
+            max_wait.as_secs()
+        ));
+        loop {
+            match probe_dep_on_index(&client, &url, version) {
+                Ok(true) => {
+                    log.status(&format!(
+                        "wait_for_workspace_deps: {name}@{version} available — \
+                         continuing publish of '{crate_name}'"
+                    ));
+                    break;
+                }
+                Ok(false) => {
+                    log.verbose(&format!(
+                        "wait_for_workspace_deps: {name}@{version} not yet on index — retrying"
+                    ));
+                }
+                Err(e) => {
+                    log.verbose(&format!(
+                        "wait_for_workspace_deps: probe error for {name}@{version}: {e:#} — retrying"
+                    ));
+                }
+            }
+            if Instant::now() >= deadline {
+                anyhow::bail!(
+                    "publish: wait_for_workspace_deps timed out after {}s waiting for \
+                     {}@{} (dep of '{}') to appear on crates.io. Either the upstream \
+                     publish has not yet landed, or the version pin in {}'s Cargo.toml \
+                     does not match what was published. Raise `wait_for_workspace_deps.max_wait` \
+                     or verify the upstream Release.yml run completed.",
+                    max_wait.as_secs(),
+                    name,
+                    version,
+                    crate_name,
+                    crate_name,
+                );
+            }
+            std::thread::sleep(poll_interval);
+        }
+    }
+    Ok(())
 }
 
 /// Heuristic: does this cargo-publish stderr look like it failed because
@@ -880,6 +1130,43 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
         }
 
         let cargo_cfg = cargo_cfgs.get(name);
+
+        // Pre-publish gate: in multi-tag-multi-crate workspaces (e.g. cfgd)
+        // per-crate tags fire independent Release.yml runs, so the upstream
+        // crate's publish may not have landed on crates.io by the time this
+        // downstream's publish starts. The wait_for_workspace_deps block,
+        // when enabled, polls crates.io for every workspace-internal dep at
+        // its pinned version and blocks until each appears. Disabled by
+        // default — anodize's own workspace publishes lockstep within one
+        // Release.yml run, where in-loop topological order + the post-
+        // publish poll_crates_io_index call below already cover the race.
+        let wait_cfg = cargo_cfg
+            .and_then(|c| c.wait_for_workspace_deps.as_ref())
+            .cloned()
+            .unwrap_or_default();
+        if wait_cfg.resolved_enabled() {
+            let crate_path = crate_paths
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| ".".to_string());
+            let manifest_path = std::path::Path::new(&crate_path).join("Cargo.toml");
+            // Workspace-internal dep set: every crate in the same anodize
+            // config (top-level + workspaces overlay). External crates.io
+            // deps (serde, tokio, ...) get filtered out by the name check.
+            let workspace_names: HashSet<&str> =
+                all_crates.iter().map(|c| c.name.as_str()).collect();
+            let deps = workspace_deps_for_crate(&manifest_path, &workspace_names);
+            if deps.is_empty() {
+                log.verbose(&format!(
+                    "wait_for_workspace_deps: '{name}' has no workspace-internal deps with \
+                     a literal version pin — gate is a no-op"
+                ));
+            } else {
+                wait_for_workspace_deps_to_appear(name, &deps, &wait_cfg, log)
+                    .with_context(|| format!("publish: wait_for_workspace_deps for '{name}'"))?;
+            }
+        }
+
         let cmd = publish_command(name, cargo_cfg);
         log.status(&format!("running: {}", cmd.join(" ")));
 
@@ -2412,5 +2699,269 @@ fn main() {
             .parse()
             .expect("u32");
         assert_eq!(n, 1, "non-propagation failure must NOT retry");
+    }
+
+    // -----------------------------------------------------------------------
+    // wait_for_workspace_deps — pre-publish gate
+    //
+    // Pin the manifest parser shape and the polling-success path. The
+    // sparse-index URL math is exercised by `test_sparse_index_url_shape`
+    // above; the gate reuses that helper unchanged.
+    // -----------------------------------------------------------------------
+
+    fn write_manifest(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+        let p = dir.join("Cargo.toml");
+        std::fs::write(&p, body).expect("write Cargo.toml");
+        p
+    }
+
+    /// Bare-string dep (`name = "1.2.3"`) and inline-table dep
+    /// (`name = { path = "...", version = "..." }`) are both parsed as
+    /// version pins; deps not in the workspace name set are filtered out.
+    #[test]
+    fn workspace_deps_for_crate_picks_up_pinned_workspace_deps() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manifest = write_manifest(
+            tmp.path(),
+            r#"
+[package]
+name = "cfgd-operator"
+version = "1.0.0"
+
+[dependencies]
+cfgd-core = { path = "../core", version = "0.4.0" }
+cfgd-shared = "0.5.0"
+serde = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+"#,
+        );
+        let ws_names: HashSet<&str> = ["cfgd-core", "cfgd-shared", "cfgd-operator"]
+            .iter()
+            .copied()
+            .collect();
+        let mut deps = workspace_deps_for_crate(&manifest, &ws_names);
+        deps.sort();
+        assert_eq!(
+            deps,
+            vec![
+                ("cfgd-core".to_string(), "0.4.0".to_string()),
+                ("cfgd-shared".to_string(), "0.5.0".to_string()),
+            ]
+        );
+    }
+
+    /// `dev-dependencies` and `build-dependencies` participate alongside
+    /// `dependencies` — version_sync rewrites all three, and a downstream
+    /// publish of an integration-test fixture would race the same way.
+    #[test]
+    fn workspace_deps_for_crate_includes_dev_and_build_sections() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manifest = write_manifest(
+            tmp.path(),
+            r#"
+[package]
+name = "leaf"
+version = "1.0.0"
+
+[dependencies]
+core-lib = { path = "../core", version = "0.4.0" }
+
+[dev-dependencies]
+test-fixtures = { path = "../fixtures", version = "0.2.0" }
+
+[build-dependencies]
+build-tools = { path = "../build", version = "0.3.0" }
+"#,
+        );
+        let ws_names: HashSet<&str> = ["core-lib", "test-fixtures", "build-tools", "leaf"]
+            .iter()
+            .copied()
+            .collect();
+        let mut deps = workspace_deps_for_crate(&manifest, &ws_names);
+        deps.sort();
+        assert_eq!(
+            deps,
+            vec![
+                ("build-tools".to_string(), "0.3.0".to_string()),
+                ("core-lib".to_string(), "0.4.0".to_string()),
+                ("test-fixtures".to_string(), "0.2.0".to_string()),
+            ]
+        );
+    }
+
+    /// `target.'cfg(...)'.dependencies` (and dev/build target variants)
+    /// must also be scanned — version_sync rewrites them; missing them
+    /// would leave a publish racing the index on platform-specific deps.
+    #[test]
+    fn workspace_deps_for_crate_scans_target_specific_sections() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manifest = write_manifest(
+            tmp.path(),
+            r#"
+[package]
+name = "leaf"
+version = "1.0.0"
+
+[target.'cfg(unix)'.dependencies]
+unix-helper = { path = "../unix", version = "0.1.0" }
+
+[target.'cfg(windows)'.build-dependencies]
+win-build = { path = "../win", version = "0.2.0" }
+"#,
+        );
+        let ws_names: HashSet<&str> = ["unix-helper", "win-build", "leaf"]
+            .iter()
+            .copied()
+            .collect();
+        let mut deps = workspace_deps_for_crate(&manifest, &ws_names);
+        deps.sort();
+        assert_eq!(
+            deps,
+            vec![
+                ("unix-helper".to_string(), "0.1.0".to_string()),
+                ("win-build".to_string(), "0.2.0".to_string()),
+            ]
+        );
+    }
+
+    /// `workspace = true` inherits and git/path-only deps have no
+    /// crates.io-queryable pin to gate on — they must be silently
+    /// skipped (returning them would either timeout or false-confirm
+    /// against an unrelated version).
+    #[test]
+    fn workspace_deps_for_crate_skips_workspace_inherits_and_unpinned() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manifest = write_manifest(
+            tmp.path(),
+            r#"
+[package]
+name = "leaf"
+version = "1.0.0"
+
+[dependencies]
+inherited = { workspace = true }
+git-only = { git = "https://example.com/foo" }
+path-only = { path = "../foo" }
+pinned = { path = "../bar", version = "0.5.0" }
+"#,
+        );
+        let ws_names: HashSet<&str> = ["inherited", "git-only", "path-only", "pinned", "leaf"]
+            .iter()
+            .copied()
+            .collect();
+        let deps = workspace_deps_for_crate(&manifest, &ws_names);
+        assert_eq!(deps, vec![("pinned".to_string(), "0.5.0".to_string())]);
+    }
+
+    /// Standard-table form (`[dependencies.name]\nversion = "..."`) is
+    /// accepted alongside inline-table / bare-string forms.
+    #[test]
+    fn workspace_deps_for_crate_handles_standard_table_form() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manifest = write_manifest(
+            tmp.path(),
+            r#"
+[package]
+name = "leaf"
+version = "1.0.0"
+
+[dependencies.cfgd-core]
+path = "../core"
+version = "0.4.0"
+features = ["extra"]
+"#,
+        );
+        let ws_names: HashSet<&str> = ["cfgd-core", "leaf"].iter().copied().collect();
+        let deps = workspace_deps_for_crate(&manifest, &ws_names);
+        assert_eq!(deps, vec![("cfgd-core".to_string(), "0.4.0".to_string())]);
+    }
+
+    /// Disabled gate is a no-op even when deps are present — the master
+    /// switch protects single-crate workspaces (anodize itself) from the
+    /// always-on polling cost.
+    #[test]
+    fn wait_for_workspace_deps_no_op_when_disabled() {
+        let cfg = WaitForWorkspaceDepsConfig {
+            enabled: Some(false),
+            ..Default::default()
+        };
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-test",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        let deps = vec![("would-block".to_string(), "9.9.9".to_string())];
+        wait_for_workspace_deps_to_appear("dummy", &deps, &cfg, &log)
+            .expect("disabled gate must short-circuit before any HTTP");
+    }
+
+    /// Empty dep list is a no-op even when the gate is enabled — keeps
+    /// the publisher from paying HTTP-client-construction cost on every
+    /// crate even after deps have been filtered down to zero.
+    #[test]
+    fn wait_for_workspace_deps_no_op_when_no_deps() {
+        let cfg = WaitForWorkspaceDepsConfig {
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-test",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        wait_for_workspace_deps_to_appear("dummy", &[], &cfg, &log)
+            .expect("empty deps must short-circuit");
+    }
+
+    /// End-to-end: a local HTTP responder serves a populated sparse-index
+    /// response on first call, so the gate breaks out of its poll loop
+    /// after exactly one probe. Exercises `probe_dep_on_index` +
+    /// `parse_index_cksum_for_version` integration without hitting the
+    /// real crates.io.
+    #[test]
+    fn probe_dep_on_index_returns_true_when_version_present() {
+        let body = r#"{"name":"cfgd-core","vers":"0.4.0","cksum":"abc","yanked":false}"#;
+        let body_len = body.len();
+        let resp: &'static str = Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{body}").into_boxed_str(),
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp]);
+        let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(2))
+            .expect("client");
+        let url = format!("http://{addr}/cf/gd/cfgd-core");
+        let found = probe_dep_on_index(&client, &url, "0.4.0").expect("probe ok");
+        assert!(found, "version should be detected as present");
+    }
+
+    /// A 200 with a body that lacks the requested version returns
+    /// false — the gate must loop and retry, not treat any 2xx as
+    /// "dep present."
+    #[test]
+    fn probe_dep_on_index_returns_false_when_version_absent() {
+        // Index has 0.3.0 but we're waiting for 0.4.0.
+        let body = r#"{"name":"cfgd-core","vers":"0.3.0","cksum":"old","yanked":false}"#;
+        let body_len = body.len();
+        let resp: &'static str = Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{body}").into_boxed_str(),
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp]);
+        let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(2))
+            .expect("client");
+        let url = format!("http://{addr}/cf/gd/cfgd-core");
+        let found = probe_dep_on_index(&client, &url, "0.4.0").expect("probe ok");
+        assert!(!found, "missing version must return false, not error");
+    }
+
+    /// A 404 response (crate has never been published) returns false —
+    /// the gate keeps polling rather than bailing, because the dep's
+    /// upstream Release.yml run may still be in flight.
+    #[test]
+    fn probe_dep_on_index_returns_false_on_404() {
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(2))
+            .expect("client");
+        let url = format!("http://{addr}/cf/gd/cfgd-core");
+        let found = probe_dep_on_index(&client, &url, "0.4.0").expect("404 is not an error");
+        assert!(!found);
     }
 }

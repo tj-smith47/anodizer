@@ -35,6 +35,7 @@ reqwest.workspace = true
 sha2.workspace = true
 md-5.workspace = true
 schemars.workspace = true
+toml_edit.workspace = true
 
 [dev-dependencies]
 anodizer-core = { workspace = true, features = ["test-helpers"] }

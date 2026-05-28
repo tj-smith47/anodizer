@@ -353,6 +353,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tera",
+ "toml_edit",
  "zip",
 ]
 
