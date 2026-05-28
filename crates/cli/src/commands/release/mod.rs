@@ -306,6 +306,13 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     }
 
     if opts.publish_only {
+        // --publish-only consumes the preserved dist tree (artifacts.json /
+        // context.json) rather than git tags-at-HEAD. Crate selection comes
+        // from what the harness built (recorded in <dist>/context.json), not
+        // from `selected_sorted`, so the tags-at-HEAD no-op guard above is
+        // intentionally bypassed for this mode. When no --crate is given,
+        // publish_only::run reads context.json and self-limits to whatever
+        // crates the preserved dist actually contains.
         return publish_only::run(
             &mut ctx,
             &config,
@@ -541,7 +548,7 @@ fn map_head_tags_to_crates(
     all_known_crates: &[CrateConfig],
     log: &StageLogger,
 ) -> Result<Vec<String>> {
-    let head_tags = git::get_tags_at_head().unwrap_or_default();
+    let head_tags = git::get_tags_at_head().with_context(|| "failed to read tags at HEAD")?;
     if head_tags.is_empty() {
         log.verbose("no tags at HEAD — release no-op");
         return Ok(Vec::new());
@@ -550,25 +557,8 @@ fn map_head_tags_to_crates(
 
     let mut selected: Vec<String> = Vec::new();
     for tag in &head_tags {
-        // Prefer the longest matching prefix (most specific crate wins when
-        // one prefix is a substring of another, e.g. "v" vs "core-v").
-        let mut best: Option<(&CrateConfig, usize)> = None;
-        for c in all_known_crates {
-            if let Some(prefix) = git::extract_tag_prefix(&c.tag_template)
-                && tag.starts_with(&prefix)
-            {
-                let remainder = &tag[prefix.len()..];
-                let is_version = remainder
-                    .split('.')
-                    .next()
-                    .is_some_and(|s| !s.is_empty() && s.chars().all(|ch| ch.is_ascii_digit()));
-                if is_version && best.as_ref().is_none_or(|(_, len)| prefix.len() > *len) {
-                    best = Some((c, prefix.len()));
-                }
-            }
-        }
-        match best {
-            Some((c, _)) if !selected.contains(&c.name) => {
+        match resolve_tag_to_crate(tag, all_known_crates) {
+            Some(c) if !selected.contains(&c.name) => {
                 selected.push(c.name.clone());
                 log.verbose(&format!("tag '{}' → crate '{}'", tag, c.name));
             }
@@ -583,6 +573,38 @@ fn map_head_tags_to_crates(
     }
 
     Ok(selected)
+}
+
+/// Resolve a single tag to a crate by longest-matching `tag_template` prefix.
+///
+/// Returns `Some(crate)` when the tag's prefix matches one of the configured
+/// crates and the remainder is a numeric version (so `v1.0` matches but
+/// `vendor-branch` would not). Prefers the longest matching prefix so a more
+/// specific crate (`core-v`) wins over a shorter sibling (`v`).
+///
+/// Returns `None` for tags that don't match any configured crate — these are
+/// silently ignored at the caller (e.g. nightly build tags coexist with
+/// release tags without aborting the pipeline).
+pub(crate) fn resolve_tag_to_crate<'a>(
+    tag: &str,
+    crates: &'a [CrateConfig],
+) -> Option<&'a CrateConfig> {
+    let mut best: Option<(&CrateConfig, usize)> = None;
+    for c in crates {
+        if let Some(prefix) = git::extract_tag_prefix(&c.tag_template)
+            && tag.starts_with(&prefix)
+        {
+            let remainder = &tag[prefix.len()..];
+            let is_version = remainder
+                .split('.')
+                .next()
+                .is_some_and(|s| !s.is_empty() && s.chars().all(|ch| ch.is_ascii_digit()));
+            if is_version && best.as_ref().is_none_or(|(_, len)| prefix.len() > *len) {
+                best = Some((c, prefix.len()));
+            }
+        }
+    }
+    best.map(|(c, _)| c)
 }
 
 /// Merge CLI / workspace / snapshot-implied skip stages into one list.
@@ -2178,22 +2200,7 @@ mod tests {
     fn run_tag_mapping(crates: &[CrateConfig], head_tags: &[String]) -> Vec<String> {
         let mut selected: Vec<String> = Vec::new();
         for tag in head_tags {
-            let mut best: Option<(&CrateConfig, usize)> = None;
-            for c in crates {
-                if let Some(prefix) = anodizer_core::git::extract_tag_prefix(&c.tag_template)
-                    && tag.starts_with(&prefix)
-                {
-                    let remainder = &tag[prefix.len()..];
-                    let is_version = remainder
-                        .split('.')
-                        .next()
-                        .is_some_and(|s| !s.is_empty() && s.chars().all(|ch| ch.is_ascii_digit()));
-                    if is_version && best.as_ref().is_none_or(|(_, len)| prefix.len() > *len) {
-                        best = Some((c, prefix.len()));
-                    }
-                }
-            }
-            if let Some((c, _)) = best
+            if let Some(c) = resolve_tag_to_crate(tag, crates)
                 && !selected.contains(&c.name)
             {
                 selected.push(c.name.clone());
