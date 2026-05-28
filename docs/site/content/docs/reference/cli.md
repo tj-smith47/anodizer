@@ -119,6 +119,7 @@ Run the determinism harness (build pipeline twice, diff artifacts)
 | `--snapshot` | — | — | Force snapshot mode on the child release subprocess (artifacts get a `-SNAPSHOT-<sha>` suffix). Default: auto — snapshot off when HEAD is at a tag, on otherwise. |
 | `--no-snapshot` | — | — | Force snapshot mode OFF on the child release subprocess (artifacts emit the actual release version). Default: auto — see --snapshot. |
 | `--preserve-dist` | — | — | When the harness greens, copy run-0's `<worktree>/dist/**` to <path> and emit `<path>/context.json` describing the artifact set. The release workflow's publish-only path consumes this to ship the determinism step's output directly (eliminates the redundant `build:` recompilation). Local operators can pass this too — useful for inspecting a hermetic dist tree without re-running the release pipeline. |
+| `--crate` | — | — | When --preserve-dist is set, write the preserved dist tree to <dest>/<name>/ instead of directly into <dest>/. Used by the sharded matrix to produce per-crate subdirectories so a `release --publish-only` job can merge all crates into a single dist/ without context.json collision. |
 
 
 ### `anodizer init`

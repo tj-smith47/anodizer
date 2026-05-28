@@ -583,6 +583,16 @@ pub struct CheckDeterminismArgs {
         help = "When the harness greens, copy run-0's `<worktree>/dist/**` to <path> and emit `<path>/context.json` describing the artifact set. The release workflow's publish-only path consumes this to ship the determinism step's output directly (eliminates the redundant `build:` recompilation). Local operators can pass this too — useful for inspecting a hermetic dist tree without re-running the release pipeline."
     )]
     pub preserve_dist: Option<PathBuf>,
+    #[arg(
+        long = "crate",
+        value_name = "name",
+        help = "When --preserve-dist is set, write the preserved dist tree to \
+                <dest>/<name>/ instead of directly into <dest>/. Used by the \
+                sharded matrix to produce per-crate subdirectories so a \
+                `release --publish-only` job can merge all crates into a single \
+                dist/ without context.json collision."
+    )]
+    pub crate_name: Option<String>,
 }
 
 /// Clap `value_parser` for `--from-run=<id>`.

@@ -310,18 +310,42 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         // context.json) rather than git tags-at-HEAD. Crate selection comes
         // from what the harness built (recorded in <dist>/context.json), not
         // from `selected_sorted`, so the tags-at-HEAD no-op guard above is
-        // intentionally bypassed for this mode. When no --crate is given,
-        // publish_only::run reads context.json and self-limits to whatever
-        // crates the preserved dist actually contains.
-        return publish_only::run(
-            &mut ctx,
-            &config,
-            &log,
-            publish_only::RunOpts {
-                dry_run: opts.dry_run,
-                no_preflight: opts.no_preflight,
-            },
-        );
+        // intentionally bypassed for this mode.
+        let dist = config.dist.clone();
+        let run_opts = publish_only::RunOpts {
+            dry_run: opts.dry_run,
+            no_preflight: opts.no_preflight,
+        };
+        // When --crate is given, always use the flat path regardless of
+        // layout. Per-crate auto-iteration is a no-crate-flag feature.
+        if !opts.crate_names.is_empty() {
+            return publish_only::run(&mut ctx, &config, &log, run_opts);
+        }
+        // Detect layout and dispatch.
+        match publish_only::detect_dist_layout(&dist)? {
+            publish_only::DistLayout::Flat => {
+                return publish_only::run(&mut ctx, &config, &log, run_opts);
+            }
+            publish_only::DistLayout::PerCrate(subdirs) => {
+                // Topo-sort discovered crate names so depends_on ordering
+                // is respected. Fall back to alphabetical when none of the
+                // discovered names match any configured crate.
+                let all_known = flatten_known_crates(&config);
+                let sorted = topo_sort_selected(&all_known, &subdirs);
+                let order = if sorted.is_empty() { subdirs } else { sorted };
+                return publish_only::run_per_crate(&mut ctx, &config, &log, run_opts, dist, order);
+            }
+            publish_only::DistLayout::Ambiguous { crate_subdirs } => {
+                anyhow::bail!(
+                    "publish-only: ambiguous dist layout at {} — found both a flat \
+                     context.json at the root AND per-crate subdirectories ({}). \
+                     Delete one or the other, or pass --crate <name> to select a \
+                     specific crate.",
+                    dist.display(),
+                    crate_subdirs.join(", ")
+                );
+            }
+        }
     }
 
     if opts.announce_only {

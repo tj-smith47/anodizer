@@ -137,6 +137,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         version_hint,
         child_snapshot,
         docker_backend_hint,
+        crate_name: args.crate_name.clone(),
     };
 
     let report = harness.run()?;
@@ -627,6 +628,7 @@ mod tests {
             no_snapshot: false,
             inject_drift: None,
             preserve_dist: None,
+            crate_name: None,
         };
     }
 

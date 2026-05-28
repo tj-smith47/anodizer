@@ -363,6 +363,14 @@ pub struct Harness {
     /// `None` / `Some("buildx")` / `Some("docker")` preserve the historical
     /// behaviour of always invoking `docker buildx build`.
     pub docker_backend_hint: Option<String>,
+    /// When set alongside `preserve_dist`, the preserved dist tree is
+    /// written to `<preserve_dist>/<crate_name>/` rather than directly
+    /// into `<preserve_dist>/`. This prevents context.json collision when
+    /// multiple crates release in parallel and their dist trees are merged
+    /// by `download-artifact merge-multiple: true`.
+    ///
+    /// When `preserve_dist` is `None`, this field has no effect.
+    pub crate_name: Option<String>,
 }
 
 impl Harness {
@@ -453,6 +461,20 @@ impl Harness {
         // unique because git worktree add refuses a populated target.
         let worktree_path =
             worktree_root.join(format!("anodize-determinism-{}", std::process::id()));
+
+        // When crate_name is set, write the preserved dist into a per-crate
+        // subdir so parallel crate releases can merge into one dist/ without
+        // context.json collision. The flat base is still used for the
+        // preserve_dist_tree copy (which copies run-0's whole dist/**);
+        // write_preserved_dist_context handles the subdir internally.
+        let effective_preserve_dest: Option<std::path::PathBuf> =
+            self.preserve_dist.as_ref().map(|base| {
+                if let Some(ref name) = self.crate_name {
+                    base.join(name)
+                } else {
+                    base.clone()
+                }
+            });
 
         for run_idx in 0..self.runs {
             // Defensive: prior aborted runs may have left the dir behind;
@@ -550,7 +572,7 @@ impl Harness {
             // after all runs finish, we delete the preserved dir below
             // so shippable bytes never escape a failed determinism run.
             if run_idx == 0
-                && let Some(dest) = self.preserve_dist.as_ref()
+                && let Some(dest) = effective_preserve_dest.as_ref()
             {
                 preserve_dist_tree(worktree.path(), dest).with_context(|| {
                     format!(
@@ -582,7 +604,7 @@ impl Harness {
         // determinism run, never a drifted one. Drift → remove the
         // tree; green → write `<dest>/context.json` so the publish-
         // only path can rehydrate.
-        if let Some(dest) = self.preserve_dist.as_ref() {
+        if let Some(dest) = effective_preserve_dest.as_ref() {
             if report.drift_count > 0 {
                 remove_preserved_on_drift(dest);
             } else {
@@ -958,6 +980,7 @@ mod tests {
             version_hint: String::new(),
             child_snapshot: true,
             docker_backend_hint: None,
+            crate_name: None,
         }
     }
 

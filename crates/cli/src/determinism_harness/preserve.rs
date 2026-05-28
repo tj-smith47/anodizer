@@ -897,4 +897,71 @@ mod tests {
         h.update(&body);
         assert_eq!(sha, format!("sha256:{:x}", h.finalize()));
     }
+
+    // ── Per-crate subdir layout tests ─────────────────────────────────────────
+
+    /// When the harness computes an effective_preserve_dest of `<base>/<crate>/`
+    /// and calls write_preserved_dist_context with that dest, context.json
+    /// must land in `<base>/<crate>/context.json` (not at the flat root).
+    /// This test simulates that call — the subdir computation is in mod.rs;
+    /// here we verify the write itself lands in whatever dest is passed.
+    #[test]
+    fn write_context_in_subdir_when_called_with_subdir_dest() {
+        let tmp = TempDir::new().unwrap();
+        let dest = tmp.path();
+        let subdir = dest.join("my-crate");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join("foo.tar.gz"), b"artifact").unwrap();
+        let report = empty_report("abc123");
+
+        write_preserved_dist_context(
+            &subdir,
+            ContextInputs {
+                report: &report,
+                harness_targets: None,
+                version_hint: "1.0.0",
+            },
+        )
+        .expect("write_preserved_dist_context into subdir");
+
+        let subdir_context = subdir.join("context.json");
+        assert!(
+            subdir_context.exists(),
+            "context.json must be written into the subdir passed as dest"
+        );
+        assert!(
+            !dest.join("context.json").exists(),
+            "context.json must NOT appear at the flat root when dest is a subdir"
+        );
+
+        let ctx: PreservedDistContext =
+            serde_json::from_slice(&std::fs::read(&subdir_context).unwrap()).unwrap();
+        assert_eq!(ctx.version, "1.0.0");
+        assert_eq!(ctx.commit, "abc123");
+    }
+
+    /// When called with the flat base dest (no crate_name subdir), context.json
+    /// lands at the flat root as before.
+    #[test]
+    fn write_context_flat_when_called_with_base_dest() {
+        let tmp = TempDir::new().unwrap();
+        let dest = tmp.path();
+        std::fs::write(dest.join("foo.tar.gz"), b"artifact").unwrap();
+        let report = empty_report("deadbeef");
+
+        write_preserved_dist_context(
+            dest,
+            ContextInputs {
+                report: &report,
+                harness_targets: None,
+                version_hint: "2.0.0",
+            },
+        )
+        .expect("write_preserved_dist_context at flat root");
+
+        assert!(
+            dest.join("context.json").exists(),
+            "context.json must be at flat root when dest is the base"
+        );
+    }
 }
