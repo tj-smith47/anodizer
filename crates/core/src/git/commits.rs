@@ -192,8 +192,52 @@ pub fn get_current_branch() -> Result<String> {
 }
 
 /// Path-taking sibling of [`get_current_branch`].
+///
+/// Handles detached-HEAD checkouts (e.g. `actions/checkout@v4` with `ref:`)
+/// by resolving the branch HEAD points at via `for-each-ref`, falling back
+/// to the remote's default branch and finally `GITHUB_REF_NAME` when set —
+/// so downstream `git push origin <branch>` produces a valid refspec
+/// instead of a literal `HEAD` that git can't auto-qualify.
 pub fn get_current_branch_in(cwd: &Path) -> Result<String> {
-    git_output_in(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])
+    if let Ok(name) = git_output_in(cwd, &["symbolic-ref", "--short", "HEAD"]) {
+        return Ok(name);
+    }
+    if let Ok(out) = git_output_in(
+        cwd,
+        &[
+            "for-each-ref",
+            "--points-at",
+            "HEAD",
+            "--format=%(refname:short)",
+            "refs/heads/",
+        ],
+    ) && !out.is_empty()
+    {
+        let branches: Vec<&str> = out.lines().collect();
+        for preferred in ["master", "main"] {
+            if branches.contains(&preferred) {
+                return Ok(preferred.to_string());
+            }
+        }
+        if let Some(first) = branches.first() {
+            return Ok((*first).to_string());
+        }
+    }
+    if let Ok(out) = git_output_in(
+        cwd,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    ) && let Some(name) = out.strip_prefix("origin/")
+    {
+        return Ok(name.to_string());
+    }
+    if let Ok(name) = std::env::var("GITHUB_REF_NAME")
+        && !name.is_empty()
+    {
+        return Ok(name);
+    }
+    anyhow::bail!(
+        "could not resolve current branch: HEAD is detached and no fallback (points-at-HEAD branches, origin/HEAD, GITHUB_REF_NAME) succeeded"
+    )
 }
 
 /// Check if there are any commits since a given tag.
@@ -597,5 +641,36 @@ mod tests {
         run(&["commit", "-m", "c1"]);
         let branch = get_current_branch_in(dir).unwrap();
         assert_eq!(branch, "t1-test-branch");
+    }
+
+    #[test]
+    fn get_current_branch_in_resolves_detached_head_via_points_at() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run(&["-c", "init.defaultBranch=master", "init"]);
+        run(&["config", "user.email", "t@t.com"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("a"), "1").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "c1"]);
+        let sha = get_head_commit_in(dir).unwrap();
+        run(&["checkout", "--detach", &sha]);
+        let branch = get_current_branch_in(dir).unwrap();
+        assert_eq!(
+            branch, "master",
+            "detached HEAD pointing at master must resolve to master, not literal HEAD"
+        );
     }
 }
