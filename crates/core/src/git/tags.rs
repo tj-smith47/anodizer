@@ -411,6 +411,8 @@ pub fn create_and_push_tag_in(
     let has_remote = std::process::Command::new("git")
         .current_dir(cwd)
         .args(["remote", "get-url", "origin"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -700,6 +702,8 @@ pub fn head_is_at_tag(repo: &std::path::Path) -> Result<bool> {
         .arg("-C")
         .arg(repo)
         .args(["describe", "--tags", "--exact-match", "HEAD"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .output()
         .map_err(|e| {
             anyhow::anyhow!("failed to invoke git describe --tags --exact-match HEAD: {e}")
@@ -720,6 +724,8 @@ pub fn list_tags_with_prefix(
         .arg(workspace_root)
         .args(["tag", "--list", "--sort=-v:refname"])
         .arg(format!("{prefix}*"))
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .output()?;
     if !out.status.success() {
         return Ok(Vec::new());
@@ -754,6 +760,8 @@ pub fn get_tags_at_sha_in(cwd: &Path, sha: &str) -> Result<Vec<String>> {
     let out = Command::new("git")
         .current_dir(cwd)
         .args(["tag", "--points-at", sha])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .output()
         .map_err(|e| anyhow::anyhow!("failed to invoke git tag --points-at {sha}: {e}"))?;
     if !out.status.success() {
@@ -769,10 +777,16 @@ pub fn get_tags_at_sha_in(cwd: &Path, sha: &str) -> Result<Vec<String>> {
 
 /// Delete a local tag (`git tag -d <tag>`). Returns `Ok(())` even when the
 /// tag is missing so callers can run the delete idempotently.
+///
+/// `LC_ALL=C` is pinned on the spawn so the "tag not found" substring
+/// match is locale-stable; a non-C locale would translate the message
+/// and the idempotency check would silently degrade to bail-on-rerun.
 pub fn delete_local_tag_in(cwd: &Path, tag: &str) -> Result<()> {
     let out = Command::new("git")
         .current_dir(cwd)
         .args(["tag", "-d", tag])
+        .env("LC_ALL", "C")
+        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|e| anyhow::anyhow!("failed to invoke git tag -d {tag}: {e}"))?;
     if !out.status.success() {
@@ -788,18 +802,36 @@ pub fn delete_local_tag_in(cwd: &Path, tag: &str) -> Result<()> {
 
 /// Delete a tag on the `origin` remote (`git push origin :refs/tags/<tag>`).
 ///
-/// Errors propagate so callers (notably `tag rollback`) can warn-and-continue
-/// per tag without aborting the whole pass.
+/// Idempotent: when the remote tag is already absent, git exits non-zero
+/// with `"remote ref does not exist"` on stderr — that case is treated as
+/// success so a rollback re-run after a partially-completed previous pass
+/// doesn't surface alarming WARN noise. Any other non-zero exit bubbles
+/// up so callers (notably `tag rollback`) can warn-and-continue per tag
+/// without aborting the whole pass.
+///
+/// `LC_ALL=C` is pinned on the spawn so the substring match is
+/// locale-stable.
 pub fn delete_remote_tag_in(cwd: &Path, tag: &str) -> Result<()> {
     let refspec = format!(":refs/tags/{}", tag);
     let out = Command::new("git")
         .current_dir(cwd)
         .args(["push", "origin", &refspec])
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .output()
         .map_err(|e| anyhow::anyhow!("failed to invoke git push origin {refspec}: {e}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
+        // Already-absent on the remote → treat as success. Covers both
+        // `"remote ref does not exist"` (modern git) and the older
+        // `"unable to delete '<refspec>': remote ref does not exist"`
+        // wording — substring match catches both.
+        if stderr.contains("remote ref does not exist") {
+            eprintln!(
+                "remote tag {tag} already absent on origin — treating as deleted (idempotent)"
+            );
+            return Ok(());
+        }
         let raw = format!("git push origin {} failed: {}", refspec, stderr.trim());
         anyhow::bail!("{}", crate::redact::redact_process_env(&raw));
     }
@@ -858,6 +890,8 @@ pub fn push_branch_and_tags_atomic_in(
         let has_remote = Command::new("git")
             .current_dir(cwd)
             .args(["remote", "get-url", "origin"])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("LC_ALL", "C")
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
@@ -876,6 +910,8 @@ pub fn push_branch_and_tags_atomic_in(
     let has_remote = Command::new("git")
         .current_dir(cwd)
         .args(["remote", "get-url", "origin"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -900,4 +936,87 @@ pub fn push_branch_and_tags_atomic_in(
     }
     git_output_in(cwd, &args)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod delete_tag_tests {
+    use super::*;
+
+    /// Build a `<bare-repo>` + working clone pair so we can drive
+    /// `delete_remote_tag_in` against a real "origin" without hitting the
+    /// network. Returns `(bare, work)`; the working clone has `origin`
+    /// pointing at the bare repo.
+    fn init_clone_pair() -> (tempfile::TempDir, tempfile::TempDir) {
+        let bare = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let run = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(bare.path(), &["init", "--bare", "-b", "master"]);
+        run(work.path(), &["init", "-b", "master"]);
+        run(work.path(), &["config", "user.email", "t@t.com"]);
+        run(work.path(), &["config", "user.name", "t"]);
+        run(
+            work.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                bare.path().to_str().expect("tempdir path utf-8"),
+            ],
+        );
+        std::fs::write(work.path().join("a"), "0").unwrap();
+        run(work.path(), &["add", "."]);
+        run(work.path(), &["commit", "-m", "initial"]);
+        run(work.path(), &["push", "origin", "master"]);
+        (bare, work)
+    }
+
+    /// B-R3: deleting a remote tag that doesn't exist must succeed
+    /// (idempotent). The git output for that case contains
+    /// `"remote ref does not exist"`; the helper must absorb it.
+    #[test]
+    fn delete_remote_tag_in_is_idempotent_when_remote_tag_missing() {
+        let (_bare, work) = init_clone_pair();
+        // Tag was never created on the remote — first delete must succeed.
+        delete_remote_tag_in(work.path(), "v0.0.0-never-existed")
+            .expect("missing remote tag must be treated as already-deleted");
+    }
+
+    /// B-R3 follow-on: a real delete still works, and a second delete
+    /// of the same tag remains idempotent.
+    #[test]
+    fn delete_remote_tag_in_succeeds_then_is_idempotent_on_second_call() {
+        let (_bare, work) = init_clone_pair();
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(work.path())
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run(&["tag", "v1.2.3"]);
+        run(&["push", "origin", "v1.2.3"]);
+        delete_remote_tag_in(work.path(), "v1.2.3").expect("first remote delete must succeed");
+        delete_remote_tag_in(work.path(), "v1.2.3")
+            .expect("second remote delete must be a no-op (idempotent)");
+    }
 }

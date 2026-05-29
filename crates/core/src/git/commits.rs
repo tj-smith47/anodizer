@@ -397,6 +397,8 @@ pub fn stage_and_commit_in(cwd: &Path, files: &[&str], message: &str) -> Result<
         .current_dir(cwd)
         .args(["diff", "--cached", "--quiet", "--"])
         .args(files)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .status()?;
     if diff.success() {
         return Ok(false);
@@ -432,6 +434,8 @@ pub fn log_subjects_for_range(
             "--",
             rel_path,
         ])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .output()?;
     if !out.status.success() {
         // Range may not exist yet (no last_tag, path not in history).
@@ -452,6 +456,8 @@ pub fn add_path_in(workspace_root: &std::path::Path, rel: &std::path::Path) -> R
         .arg(workspace_root)
         .arg("add")
         .arg(rel)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .output()
         .context("failed to invoke git add")?;
     if !out.status.success() {
@@ -470,7 +476,10 @@ pub fn commit_in(workspace_root: &std::path::Path, message: &str, sign: bool) ->
     if sign {
         cmd.arg("-S");
     }
-    cmd.arg("-m").arg(message);
+    cmd.arg("-m")
+        .arg(message)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C");
     let out = cmd.output().context("failed to invoke git commit")?;
     if !out.status.success() {
         let stderr_raw = String::from_utf8_lossy(&out.stderr);
@@ -503,6 +512,8 @@ pub fn paths_changed_since_tag_in(cwd: &Path, tag: &str, paths: &[&str]) -> Resu
     let output = Command::new("git")
         .current_dir(cwd)
         .args(&arg_refs)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .output()?;
     if output.status.success() {
         Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
@@ -520,6 +531,8 @@ pub fn head_commit_hash_in(repo: &std::path::Path) -> Result<String> {
         .arg("-C")
         .arg(repo)
         .args(["rev-parse", "HEAD"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .output()
         .context("failed to invoke git rev-parse HEAD")?;
     if !out.status.success() {
@@ -568,20 +581,162 @@ pub fn commit_subject_in(cwd: &Path, sha: &str) -> Result<String> {
     )
 }
 
-/// Run `git revert --no-edit <sha>` in `cwd`.
+/// `git log --format=%H%x1f%s <sha>..HEAD` — return every `(full_sha, subject)`
+/// pair in the range in one subprocess. Used by the rollback safety check so
+/// classifying N intervening commits is a single `git` spawn rather than
+/// `1 + N` (one `rev-list` plus one `log -1` per commit).
+///
+/// Empty range (sha IS HEAD) returns an empty vec.
+pub fn commits_with_subjects_in(cwd: &Path, sha: &str) -> Result<Vec<(String, String)>> {
+    let range = format!("{}..HEAD", sha);
+    let out = git_output_in(
+        cwd,
+        &[
+            "-c",
+            "log.showSignature=false",
+            "log",
+            "--format=%H%x1f%s",
+            &range,
+        ],
+    )?;
+    if out.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(out
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(2, '\x1f');
+            let sha = parts.next()?.trim().to_string();
+            let subj = parts.next().unwrap_or("").to_string();
+            if sha.is_empty() {
+                None
+            } else {
+                Some((sha, subj))
+            }
+        })
+        .collect())
+}
+
+/// Committer identity (author + committer name/email) for the rare path
+/// where a git invocation lands on a host with no `user.email` /
+/// `user.name` configured — notably `actions/checkout@v6`, which does
+/// NOT set committer identity for the workflow runner. Resolved once per
+/// caller and threaded through to [`revert_commit_in`] so the CLI never
+/// mutates the repo's git config (env-only, scoped to the single spawn).
+///
+/// Convention: when both `name` and `email` are populated, the values
+/// are exported as `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` AND
+/// `GIT_COMMITTER_NAME` / `GIT_COMMITTER_EMAIL` on the git child
+/// processes (revert + amend). When `None`, the child inherits whatever
+/// the parent / repo config provides.
+#[derive(Debug, Clone, Default)]
+pub struct CommitterIdentity {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+impl CommitterIdentity {
+    /// Return a default committer identity to use when `user.email` and
+    /// `user.name` are both unset on the host. Email uses the
+    /// short-hostname (best-effort; falls back to `"localhost"`) so a
+    /// reviewer can tell at a glance which machine emitted the
+    /// rollback commit.
+    pub fn default_for_rollback() -> Self {
+        let host = std::env::var("HOSTNAME")
+            .ok()
+            .or_else(|| std::env::var("COMPUTERNAME").ok())
+            .and_then(|h| h.split('.').next().map(str::to_string))
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| "localhost".to_string());
+        Self {
+            name: Some("anodize-rollback".to_string()),
+            email: Some(format!("anodize-rollback@{host}")),
+        }
+    }
+
+    fn apply_to(&self, cmd: &mut Command) {
+        if let Some(n) = &self.name {
+            cmd.env("GIT_AUTHOR_NAME", n).env("GIT_COMMITTER_NAME", n);
+        }
+        if let Some(e) = &self.email {
+            cmd.env("GIT_AUTHOR_EMAIL", e).env("GIT_COMMITTER_EMAIL", e);
+        }
+    }
+}
+
+/// Read `git config user.email` / `user.name` in `cwd`. Returns
+/// `(name, email)`, each `Some(value)` when configured (and non-empty)
+/// or `None` when unset. Used by [`revert_commit_in`] to detect the
+/// CI-checkout case where neither identity is configured and the
+/// committer env fallback must fire.
+fn read_git_identity(cwd: &Path) -> (Option<String>, Option<String>) {
+    let one = |key: &str| -> Option<String> {
+        let out = Command::new("git")
+            .current_dir(cwd)
+            .args(["config", "--get", key])
+            .env("LC_ALL", "C")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if value.is_empty() { None } else { Some(value) }
+    };
+    (one("user.name"), one("user.email"))
+}
+
+/// Resolve the committer identity to use for a rollback-style commit.
+/// When the host already has `user.name` AND `user.email` configured
+/// (or `GIT_AUTHOR_*` / `GIT_COMMITTER_*` are set in the parent env),
+/// returns an empty identity so the child inherits the existing
+/// values. Otherwise returns a synthetic identity so the commit
+/// doesn't fail with "Author identity unknown" on bare-CI hosts.
+pub fn resolve_rollback_identity(cwd: &Path) -> CommitterIdentity {
+    let env_author_set =
+        std::env::var("GIT_AUTHOR_EMAIL").is_ok() && std::env::var("GIT_AUTHOR_NAME").is_ok();
+    let env_committer_set =
+        std::env::var("GIT_COMMITTER_EMAIL").is_ok() && std::env::var("GIT_COMMITTER_NAME").is_ok();
+    if env_author_set && env_committer_set {
+        return CommitterIdentity::default();
+    }
+    let (name, email) = read_git_identity(cwd);
+    if name.is_some() && email.is_some() {
+        return CommitterIdentity::default();
+    }
+    CommitterIdentity::default_for_rollback()
+}
+
+/// Run `git revert --no-edit <sha>` in `cwd`, optionally followed by
+/// `git commit --amend -m <message>`.
 ///
 /// Refuses against a dirty working tree (`git revert` would surface a
 /// less actionable "your local changes would be overwritten" message
 /// otherwise). Mirrors the dirty-tree guard used by
 /// `stage-publish/src/util/git_revert.rs`.
 ///
-/// When `message` is `Some`, follows up with `git commit --amend -m <message>`
-/// so the rollback commit's subject lists the deleted tags / `[skip ci]`
-/// without needing a separate amend in the caller.
-pub fn revert_commit_in(cwd: &Path, sha: &str, message: Option<&str>) -> Result<()> {
+/// On revert failure (typically a merge conflict against later commits
+/// on top of the bump), runs `git revert --abort` to restore the
+/// working tree before bubbling the error — otherwise the next
+/// rollback attempt would trip the dirty-tree guard and the operator
+/// would be stuck.
+///
+/// `identity` is threaded through as committer env vars so the call
+/// works on bare-CI hosts where the workflow checkout doesn't set
+/// `user.email` / `user.name`. The env is scoped to the spawn; the
+/// repo's git config is never mutated.
+pub fn revert_commit_in(
+    cwd: &Path,
+    sha: &str,
+    message: Option<&str>,
+    identity: &CommitterIdentity,
+) -> Result<()> {
     let status = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(cwd)
+        .env("LC_ALL", "C")
+        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .with_context(|| format!("revert_commit_in: git status in {}", cwd.display()))?;
     if !status.status.success() {
@@ -597,9 +752,50 @@ pub fn revert_commit_in(cwd: &Path, sha: &str, message: Option<&str>) -> Result<
         );
     }
 
-    git_output_in(cwd, &["revert", "--no-edit", sha])?;
+    let mut revert_cmd = Command::new("git");
+    revert_cmd
+        .current_dir(cwd)
+        .args(["revert", "--no-edit", sha])
+        .env("LC_ALL", "C")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    identity.apply_to(&mut revert_cmd);
+    let out = revert_cmd
+        .output()
+        .with_context(|| format!("revert_commit_in: git revert in {}", cwd.display()))?;
+    if !out.status.success() {
+        let stderr_raw = String::from_utf8_lossy(&out.stderr);
+        // Restore the working tree before bubbling — otherwise the dirty-tree
+        // guard above traps a subsequent rollback retry forever.
+        let _ = Command::new("git")
+            .current_dir(cwd)
+            .args(["revert", "--abort"])
+            .env("LC_ALL", "C")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output();
+        let raw = format!(
+            "git revert {sha} hit conflicts and was aborted (working tree restored). \
+             The bump commit overlaps with later changes — resolve manually, \
+             or re-run with --mode=reset to force.\nstderr: {}",
+            stderr_raw.trim()
+        );
+        bail!("{}", crate::redact::redact_process_env(&raw));
+    }
     if let Some(msg) = message {
-        git_output_in(cwd, &["commit", "--amend", "-m", msg])?;
+        let mut amend_cmd = Command::new("git");
+        amend_cmd
+            .current_dir(cwd)
+            .args(["commit", "--amend", "-m", msg])
+            .env("LC_ALL", "C")
+            .env("GIT_TERMINAL_PROMPT", "0");
+        identity.apply_to(&mut amend_cmd);
+        let out = amend_cmd.output().with_context(|| {
+            format!("revert_commit_in: git commit --amend in {}", cwd.display())
+        })?;
+        if !out.status.success() {
+            let stderr_raw = String::from_utf8_lossy(&out.stderr);
+            let raw = format!("git commit --amend failed: {}", stderr_raw.trim());
+            bail!("{}", crate::redact::redact_process_env(&raw));
+        }
     }
     Ok(())
 }
@@ -619,6 +815,8 @@ pub fn push_branch_in(cwd: &Path, branch: &str) -> Result<()> {
     let has_remote = Command::new("git")
         .current_dir(cwd)
         .args(["remote", "get-url", "origin"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -630,6 +828,7 @@ pub fn push_branch_in(cwd: &Path, branch: &str) -> Result<()> {
         .current_dir(cwd)
         .args(["push", "origin", &refspec])
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .output()
         .with_context(|| format!("push_branch_in: git push origin {refspec}"))?;
     if !out.status.success() {
@@ -648,6 +847,8 @@ pub fn head_commit_timestamp_in(repo: &std::path::Path) -> Result<i64> {
         .arg("-C")
         .arg(repo)
         .args(["log", "-1", "--format=%ct", "HEAD"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .output()
         .context("failed to invoke git log -1 --format=%ct HEAD")?;
     if !out.status.success() {
@@ -856,5 +1057,216 @@ mod tests {
             msg.contains("nothing to commit") || msg.contains("clean"),
             "error must include stdout detail when stderr is empty: {msg}"
         );
+    }
+
+    /// `CommitterIdentity::default_for_rollback` produces a populated
+    /// (name + email) identity. The exact host-derived suffix isn't
+    /// load-bearing — what matters is that both fields are present so
+    /// `apply_to` produces all four `GIT_AUTHOR_*` / `GIT_COMMITTER_*`
+    /// envs on the spawn.
+    #[test]
+    fn default_for_rollback_populates_both_name_and_email() {
+        let id = CommitterIdentity::default_for_rollback();
+        assert_eq!(id.name.as_deref(), Some("anodize-rollback"));
+        let email = id.email.expect("email must be Some");
+        assert!(
+            email.starts_with("anodize-rollback@"),
+            "email must use the anodize-rollback@<host> shape; got {email}"
+        );
+        assert!(!email.ends_with('@'), "host portion must not be empty");
+    }
+
+    /// `revert_commit_in` with an injected `CommitterIdentity` writes a
+    /// commit whose author/committer match the identity. Exercises the
+    /// env-injection path end-to-end against a real fixture repo whose
+    /// only configured identity is the override — so a future regression
+    /// that drops the env threading would show up as the commit
+    /// inheriting the host's `user.email` instead.
+    #[test]
+    fn revert_commit_in_uses_injected_identity_envs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run_env = |args: &[&str], extra: &[(&str, &str)]| {
+            let mut cmd = Command::new("git");
+            cmd.args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "bootstrap")
+                .env("GIT_AUTHOR_EMAIL", "bootstrap@b.com")
+                .env("GIT_COMMITTER_NAME", "bootstrap")
+                .env("GIT_COMMITTER_EMAIL", "bootstrap@b.com");
+            for (k, v) in extra {
+                cmd.env(k, v);
+            }
+            let out = cmd.output().unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run_env(&["init", "-b", "master"], &[]);
+        std::fs::write(dir.join("a"), "0").unwrap();
+        run_env(&["add", "."], &[]);
+        run_env(&["commit", "-m", "initial"], &[]);
+        std::fs::write(dir.join("a"), "1").unwrap();
+        run_env(&["add", "."], &[]);
+        run_env(&["commit", "-m", "chore(release): v1.0.0"], &[]);
+        let bump_sha = get_head_commit_in(dir).unwrap();
+
+        // Inject a distinct identity so the resulting revert commit can
+        // be attributed unambiguously to the env path (the bootstrap
+        // commits used a different identity above).
+        let identity = CommitterIdentity {
+            name: Some("rollback-bot".to_string()),
+            email: Some("rollback-bot@anodize.test".to_string()),
+        };
+        revert_commit_in(dir, &bump_sha, Some("chore(release): rollback"), &identity)
+            .expect("revert with injected identity must succeed");
+
+        // The new HEAD commit's author email must be the injected one,
+        // proving the env threading reached the git child.
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(["log", "-1", "--format=%ae"])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("LC_ALL", "C")
+            .output()
+            .unwrap();
+        let author_email = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert_eq!(
+            author_email, "rollback-bot@anodize.test",
+            "revert commit must carry the injected committer identity"
+        );
+
+        // Repo config must remain unchanged — env-only fallback, no
+        // `git config user.email ...` mutation.
+        let cfg = Command::new("git")
+            .current_dir(dir)
+            .args(["config", "--local", "--get", "user.email"])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("LC_ALL", "C")
+            .output()
+            .unwrap();
+        assert!(
+            !cfg.status.success() || cfg.stdout.is_empty(),
+            "revert must not write user.email into the repo's local config; got: {}",
+            String::from_utf8_lossy(&cfg.stdout)
+        );
+    }
+
+    /// B-R4: a revert that hits conflicts (because later commits overlap
+    /// with the bump) must run `git revert --abort`, restoring the working
+    /// tree so the operator isn't trapped by the dirty-tree guard on the
+    /// next attempt. Bail message must mention "aborted".
+    #[test]
+    fn revert_commit_in_aborts_on_conflict_and_leaves_tree_clean() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init", "-b", "master"]);
+        run(&["config", "user.email", "t@t.com"]);
+        run(&["config", "user.name", "t"]);
+        // Initial commit: file `x` with line "v1".
+        std::fs::write(dir.join("x"), "v1\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "initial"]);
+        // "Bump" commit: change to "v2".
+        std::fs::write(dir.join("x"), "v2\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "chore(release): v2"]);
+        let bump_sha = get_head_commit_in(dir).unwrap();
+        // Later overlapping commit: change to "v3". A revert of the bump
+        // would try to restore "v1" from a base of "v2", but HEAD is now
+        // "v3" — that's the canonical revert-conflict shape.
+        std::fs::write(dir.join("x"), "v3\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "feat: overlap"]);
+
+        let identity = CommitterIdentity::default();
+        let err = revert_commit_in(dir, &bump_sha, None, &identity)
+            .expect_err("revert against overlapping HEAD must conflict and bail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("aborted"),
+            "bail message must mention abort recovery: {msg}"
+        );
+
+        // Working tree must be clean post-bail: no REVERT_HEAD, no
+        // unmerged paths. The next rollback attempt must NOT hit the
+        // dirty-tree guard.
+        assert!(
+            !dir.join(".git/REVERT_HEAD").exists(),
+            ".git/REVERT_HEAD must be cleaned up after --abort"
+        );
+        let status_out = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            status_out.stdout.is_empty(),
+            "working tree must be clean after revert --abort; got:\n{}",
+            String::from_utf8_lossy(&status_out.stdout)
+        );
+    }
+
+    /// S-R7: `commits_with_subjects_in` returns every (sha, subject)
+    /// pair in one git spawn. Asserts both correctness (matches per-commit
+    /// `commit_subject_in`) and that the range bound is exclusive on the
+    /// `<sha>` side.
+    #[test]
+    fn commits_with_subjects_in_returns_all_pairs_in_one_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-b", "master"]);
+        run(&["config", "user.email", "t@t.com"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("a"), "0").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "initial"]);
+        let base = get_head_commit_in(dir).unwrap();
+        std::fs::write(dir.join("a"), "1").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "feat: A with extra detail"]);
+        std::fs::write(dir.join("a"), "2").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "fix: B"]);
+
+        let pairs = commits_with_subjects_in(dir, &base).unwrap();
+        assert_eq!(pairs.len(), 2, "two commits sit on top of base");
+        // Newest-first ordering (matches `git log` default).
+        assert_eq!(pairs[0].1, "fix: B");
+        assert_eq!(pairs[1].1, "feat: A with extra detail");
+
+        // Empty range (sha IS HEAD) → empty vec.
+        let head = get_head_commit_in(dir).unwrap();
+        assert!(commits_with_subjects_in(dir, &head).unwrap().is_empty());
     }
 }

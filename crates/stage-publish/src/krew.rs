@@ -1076,6 +1076,15 @@ pub fn publish_to_krew(
 /// - `Err(_)`: file existed but the read failed (permissions, transient io
 ///   error, etc.). Bubbles up so the publisher hard-fails rather than
 ///   silently shipping without rollback drift coverage.
+///
+/// NOTE: the returned SHA is paired (at the call site) with the
+/// canonicalized template path and recorded in
+/// [`KrewExtra::bot_template_pre_image_shas`]. That map is keyed by the
+/// publishing host's canonicalized path; same-machine rollback (the
+/// dominant case) always finds a match. Cross-machine evidence transfer
+/// may produce a stale key — the rollback consumer reports those as
+/// `Missing` rather than matching them against an on-disk file (see
+/// `KrewExtra::bot_template_pre_image_shas` doc).
 fn read_pre_image_sha(template_path: &Path) -> Result<Option<String>> {
     match std::fs::read(template_path) {
         Ok(bytes) => Ok(Some(sha256_hex(&bytes))),

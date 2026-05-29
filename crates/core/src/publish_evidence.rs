@@ -132,19 +132,30 @@ pub struct KrewExtra {
     pub krew_targets: Vec<KrewTargetSnapshot>,
     /// SHA-256s of each bot-template file's content as it stood BEFORE
     /// the krew-release-bot publish run overwrote it. Keyed by the
-    /// absolute template path (stable across same-machine rollback;
-    /// the rollback consumer re-reads each path and compares against
-    /// the recorded digest to detect drift). Populated only in
+    /// canonicalized (absolute, symlink-resolved) template path; the
+    /// rollback consumer re-reads each path and compares against the
+    /// recorded digest to detect drift. Populated only in
     /// `KrewMode::BotTemplate` runs; an empty map means the run never
     /// took a BotTemplate path. PR-direct modes leave the map empty
-    /// even when `krew_targets` is non-empty (no local template
-    /// exists to checksum).
+    /// even when `krew_targets` is non-empty (no local template exists
+    /// to checksum).
     ///
     /// A `BTreeMap` rather than a single value because a workspace can
     /// declare multiple bot-templated krew plugins; the per-crate loop
     /// in the publisher must record one entry per plugin or rollback
     /// drift detection would lie about which template a digest belongs
     /// to.
+    ///
+    /// NOTE: keys are canonicalized at publish time on the publishing
+    /// host. Same-machine rollback (the dominant case — publish and
+    /// rollback both run from the CI runner) always finds a match.
+    /// Cross-machine evidence transfer (rare: e.g. evidence written
+    /// on CI, rollback re-run from a developer laptop) may produce a
+    /// canonicalized key that doesn't resolve on the rollback host —
+    /// the consumer (`run_bot_template_drift_check`) reports those
+    /// entries as `Missing` rather than matching them against the
+    /// on-disk file. No data corruption; the operator sees a drift
+    /// warning instead of a silent pass.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bot_template_pre_image_shas: BTreeMap<String, String>,
 }

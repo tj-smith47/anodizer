@@ -16,9 +16,10 @@ pub mod worktree;
 mod tests;
 
 pub use commits::{
-    Commit, SHORT_COMMIT_LEN, add_path_in, commit_in, commit_subject_in, commits_between_in,
-    get_all_commits, get_all_commits_in, get_all_commits_paths, get_all_commits_paths_in,
-    get_commit_messages_between, get_commit_messages_between_in, get_commit_messages_between_path,
+    Commit, CommitterIdentity, SHORT_COMMIT_LEN, add_path_in, commit_in, commit_subject_in,
+    commits_between_in, commits_with_subjects_in, get_all_commits, get_all_commits_in,
+    get_all_commits_paths, get_all_commits_paths_in, get_commit_messages_between,
+    get_commit_messages_between_in, get_commit_messages_between_path,
     get_commit_messages_between_path_in, get_commits_between, get_commits_between_in,
     get_commits_between_paths, get_commits_between_paths_in, get_current_branch,
     get_current_branch_in, get_head_commit, get_head_commit_in, get_last_commit_messages,
@@ -26,8 +27,8 @@ pub use commits::{
     get_short_commit, get_short_commit_in, has_changes_since, has_changes_since_in,
     has_commits_since_tag, has_commits_since_tag_in, head_commit_hash_in, head_commit_timestamp_in,
     log_subjects_for_range, paths_changed_since_tag, paths_changed_since_tag_in, push_branch_in,
-    reset_hard_in, rev_parse_in, revert_commit_in, short_commit_str, stage_and_commit,
-    stage_and_commit_in,
+    reset_hard_in, resolve_rollback_identity, rev_parse_in, revert_commit_in, short_commit_str,
+    stage_and_commit, stage_and_commit_in,
 };
 pub use detect::{GitInfo, detect_git_info, detect_git_info_in};
 pub use github_api::{
@@ -73,7 +74,18 @@ pub use worktree::Worktree;
 /// `https://ghp_xxx@github.com/...` produced by an `extraHeader` config
 /// leak) is scrubbed in the bail message.
 pub(crate) fn git_output_in(cwd: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git").current_dir(cwd).args(args).output()?;
+    // `GIT_TERMINAL_PROMPT=0` + `LC_ALL=C` pinned on every spawn so:
+    //   - a credential helper / nested config can't hang the wrapper
+    //     waiting for interactive input (unattended CI hosts),
+    //   - locale-sensitive stderr / stdout messages (e.g. "not found",
+    //     "remote ref does not exist") stay in English so substring
+    //     matching in caller code is stable.
+    let output = Command::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .output()?;
     if !output.status.success() {
         let stderr_raw = String::from_utf8_lossy(&output.stderr);
         let stderr_trim = stderr_raw.trim();

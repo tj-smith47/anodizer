@@ -174,7 +174,7 @@ pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()
 /// includes it without `include-hidden-files: true`, while still being
 /// distinctive enough that a user's archive template writing to
 /// `dist/bin/**` won't collide.
-const PRESERVED_BIN_SUBDIR: &str = "_preserved-bin";
+pub(crate) const PRESERVED_BIN_SUBDIR: &str = "_preserved-bin";
 
 /// Mirror raw cargo build outputs into the preserved tree so the
 /// publish-only `SignStage` can re-sign them under production keys.

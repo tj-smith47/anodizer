@@ -20,7 +20,6 @@ use anodizer_core::git;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::{Result, bail};
 use regex::Regex;
-use std::path::PathBuf;
 
 /// Scope filter for which tag shape(s) to operate on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,14 +82,14 @@ pub struct RollbackOpts {
 }
 
 /// Strict semver-ish per-crate tag pattern: `<crate>-v<MAJOR>.<MINOR>.<PATCH>[-pre][+build]`.
-/// The crate-name portion accepts ASCII letters, digits, `_` and `-`; we
-/// then assert the suffix is anodize's `v<semver>` form so a tag like
+/// The crate-name portion accepts ASCII letters, `_` and `-` as the
+/// first char (cargo crate names must start with a letter — digits are
+/// rejected), then letters/digits/`_`/`-` for the remainder; we then
+/// assert the suffix is anodize's `v<semver>` form so a tag like
 /// `foo-bar` (no `-v` suffix) doesn't accidentally match.
 fn per_crate_tag_re() -> Regex {
-    Regex::new(
-        r"^[A-Za-z0-9_][A-Za-z0-9_-]*-v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$",
-    )
-    .expect("static regex compiles")
+    Regex::new(r"^[A-Za-z_][A-Za-z0-9_-]*-v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$")
+        .expect("static regex compiles")
 }
 
 /// Lockstep tag pattern: `v<MAJOR>.<MINOR>.<PATCH>[-pre][+build]`.
@@ -132,9 +131,13 @@ fn scope_includes(scope: Scope, kind: TagKind) -> bool {
     )
 }
 
-/// Build the rollback commit subject line. The deleted-tags list goes in
-/// the body so a long per-crate batch doesn't blow past 72 chars.
-fn build_revert_message(target_sha: &str, deleted_tags: &[String]) -> String {
+/// Build the rollback commit subject line. The tags list goes in the
+/// body so a long per-crate batch doesn't blow past 72 chars. When
+/// `dry_run` is true, the tag list is prefixed with "WOULD be" to
+/// signal that the preview commit message describes pending (not
+/// actually applied) state — otherwise a `--dry-run` printout reads
+/// identically to a real-run one and fools the operator.
+fn build_revert_message(target_sha: &str, deleted_tags: &[String], dry_run: bool) -> String {
     let primary = deleted_tags
         .iter()
         .find(|t| lockstep_tag_re().is_match(t))
@@ -152,10 +155,22 @@ fn build_revert_message(target_sha: &str, deleted_tags: &[String]) -> String {
     };
     let mut body = format!("chore(release): rollback {primary} [skip ci]\n\nReverts {short}.",);
     if !deleted_tags.is_empty() {
-        body.push_str(&format!("\nTags deleted: {}", deleted_tags.join(", ")));
+        let label = if dry_run {
+            "Tags that WOULD be deleted"
+        } else {
+            "Tags deleted"
+        };
+        body.push_str(&format!("\n{label}: {}", deleted_tags.join(", ")));
     }
     body
 }
+
+/// Prefix that anodize's own `build_revert_message` always produces.
+/// Used by the rollback safety check to recognise its own prior revert
+/// commit (so re-runs are idempotent) without absorbing unrelated
+/// `Revert "<...>"` commits that GitHub's "Revert this PR" button emits
+/// with arbitrary upstream subjects.
+const ANODIZE_REVERT_SUBJECT_PREFIX: &str = "Revert \"chore(release): ";
 
 pub fn run(opts: RollbackOpts) -> Result<()> {
     let cwd = std::env::current_dir()?;
@@ -164,27 +179,19 @@ pub fn run(opts: RollbackOpts) -> Result<()> {
         Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),
     );
 
-    // 1. Resolve target SHA (canonicalize to a full hash so log output
-    //    is stable even when the user passed a short SHA / ref name).
     let raw_target = opts.sha.as_deref().unwrap_or("HEAD");
     let target_sha = git::rev_parse_in(&cwd, raw_target)?;
     log.status(&format!("target: {} ({})", raw_target, short(&target_sha)));
 
-    // 2. Enumerate tags at that SHA.
     let all_tags_at_sha = git::get_tags_at_sha_in(&cwd, &target_sha)?;
     if all_tags_at_sha.is_empty() {
         log.warn(&format!("no tags found at {}", short(&target_sha)));
-        // Nothing to delete; the revert step is still meaningful only if
-        // there's a bump commit to undo. Without tags pointing at it the
-        // operator is almost certainly running this against the wrong
-        // SHA — bail rather than silently revert a random commit.
         bail!(
             "refusing to roll back: no tags point at {} — pass the bumped commit's SHA explicitly",
             short(&target_sha)
         );
     }
 
-    // 3. Filter: anodize-shaped + matches --scope.
     let mut deletable: Vec<String> = Vec::new();
     for tag in &all_tags_at_sha {
         match classify_tag(tag) {
@@ -206,22 +213,23 @@ pub fn run(opts: RollbackOpts) -> Result<()> {
         return Ok(());
     }
 
-    // 4. Safety check (--mode=revert only). Non-bump commits on top of
-    //    the target SHA mean someone landed unrelated work since the
-    //    bump; reverting blindly would lose it.
+    // Safety check (--mode=revert only). Non-bump commits on top of
+    // the target SHA mean someone landed unrelated work since the
+    // bump; reverting blindly would lose it. Tolerate only anodize's
+    // OWN prior revert commit so re-runs are idempotent — a generic
+    // `"Revert "<...>"` prefix would silently absorb GitHub's
+    // "Revert this PR" button output (e.g. an unrelated feature
+    // revert) and disable the safety net.
     if opts.mode == Mode::Revert {
-        let intervening = git::commits_between_in(&cwd, &target_sha)?;
-        // The bump commit IS the target SHA (revert of <sha> undoes it).
-        // Anything strictly newer than <sha> is "on top of the bump".
-        // Tolerate a single auto-generated `Revert "<sha>"` commit so
-        // the operator can re-run the rollback idempotently.
+        let intervening = git::commits_with_subjects_in(&cwd, &target_sha)?;
         let mut suspicious: Vec<(String, String)> = Vec::new();
-        for sha in &intervening {
-            let subject = git::commit_subject_in(&cwd, sha).unwrap_or_default();
-            if subject.starts_with("Revert ") || subject.starts_with("chore(release): rollback") {
+        for (sha, subject) in &intervening {
+            if subject.starts_with(ANODIZE_REVERT_SUBJECT_PREFIX)
+                || subject.starts_with("chore(release): rollback")
+            {
                 continue;
             }
-            suspicious.push((sha.clone(), subject));
+            suspicious.push((sha.clone(), subject.clone()));
         }
         if !suspicious.is_empty() {
             let mut msg = format!(
@@ -237,37 +245,15 @@ pub fn run(opts: RollbackOpts) -> Result<()> {
         }
     }
 
-    // 5. Delete each anodize-shaped tag (best-effort: warn-and-continue
-    //    per tag so a single remote-delete failure doesn't abandon the
-    //    revert step).
-    let mut deleted: Vec<String> = Vec::new();
-    for tag in &deletable {
-        if opts.dry_run {
-            log.status(&format!("(dry-run) would delete tag: {tag} (remote+local)"));
-            deleted.push(tag.clone());
-            continue;
-        }
-        if !opts.no_push {
-            match git::delete_remote_tag_in(&cwd, tag) {
-                Ok(()) => log.status(&format!("deleted remote tag: {tag}")),
-                Err(e) => log.warn(&format!(
-                    "remote tag delete failed for {tag}: {e} (continuing)"
-                )),
-            }
-        } else {
-            log.status(&format!("--no-push: skipping remote delete for {tag}"));
-        }
-        match git::delete_local_tag_in(&cwd, tag) {
-            Ok(()) => log.status(&format!("deleted local tag: {tag}")),
-            Err(e) => log.warn(&format!(
-                "local tag delete failed for {tag}: {e} (continuing)"
-            )),
-        }
-        deleted.push(tag.clone());
-    }
+    // Local mutation runs FIRST so a failed revert / reset leaves the
+    // remote tags intact. Operator can retry without staring down a
+    // half-rolled-back remote (tag gone) + intact local (tag still
+    // present + bump commit still HEAD). Per-tag remote delete happens
+    // after the local mutation succeeds — if a single remote-delete
+    // glitches, the revert is already on disk and ready to push.
 
-    // 6. Mode=reset short-circuits revert+push entirely. Print a loud
-    //    warning so the operator knows they own the force-push.
+    // Mode=reset short-circuits revert+push entirely. Print a loud
+    // warning so the operator knows they own the force-push.
     if opts.mode == Mode::Reset {
         let parent = format!("{}~1", target_sha);
         if opts.dry_run {
@@ -282,6 +268,7 @@ pub fn run(opts: RollbackOpts) -> Result<()> {
                 short(&target_sha)
             ));
         }
+        delete_tags(&cwd, &deletable, &opts, &log);
         log.warn(
             "--mode=reset rewrote local history. Push with \
              `git push --force-with-lease origin <branch>` when ready.",
@@ -289,9 +276,10 @@ pub fn run(opts: RollbackOpts) -> Result<()> {
         return Ok(());
     }
 
-    // 7. Mode=revert: create the revert commit (dry-run prints what
-    //    would be committed without invoking git).
-    let message = build_revert_message(&target_sha, &deleted);
+    // Mode=revert: create the revert commit FIRST, then delete tags,
+    // then push. The commit message lists the tags that WILL be
+    // deleted (or under --dry-run, that WOULD be deleted).
+    let message = build_revert_message(&target_sha, &deletable, opts.dry_run);
     if opts.dry_run {
         log.status(&format!(
             "(dry-run) would: git revert --no-edit {} && git commit --amend -m {:?}",
@@ -299,11 +287,13 @@ pub fn run(opts: RollbackOpts) -> Result<()> {
             message
         ));
     } else {
-        git::revert_commit_in(&cwd, &target_sha, Some(&message))?;
+        let identity = git::resolve_rollback_identity(&cwd);
+        git::revert_commit_in(&cwd, &target_sha, Some(&message), &identity)?;
         log.status(&format!("created revert commit: {}", first_line(&message)));
     }
 
-    // 8. Push the revert (skip on --no-push).
+    delete_tags(&cwd, &deletable, &opts, &log);
+
     if opts.no_push {
         log.status("--no-push: skipping branch push");
         return Ok(());
@@ -318,6 +308,40 @@ pub fn run(opts: RollbackOpts) -> Result<()> {
     Ok(())
 }
 
+/// Per-tag delete pass: warn-and-continue per tag so a single
+/// remote-delete glitch doesn't abandon the surrounding mutation.
+/// `dry_run` short-circuits to a status line per tag; `no_push`
+/// skips the remote leg.
+fn delete_tags(
+    cwd: &std::path::Path,
+    deletable: &[String],
+    opts: &RollbackOpts,
+    log: &StageLogger,
+) {
+    for tag in deletable {
+        if opts.dry_run {
+            log.status(&format!("(dry-run) would delete tag: {tag} (remote+local)"));
+            continue;
+        }
+        if !opts.no_push {
+            match git::delete_remote_tag_in(cwd, tag) {
+                Ok(()) => log.status(&format!("deleted remote tag: {tag}")),
+                Err(e) => log.warn(&format!(
+                    "remote tag delete failed for {tag}: {e} (continuing)"
+                )),
+            }
+        } else {
+            log.status(&format!("--no-push: skipping remote delete for {tag}"));
+        }
+        match git::delete_local_tag_in(cwd, tag) {
+            Ok(()) => log.status(&format!("deleted local tag: {tag}")),
+            Err(e) => log.warn(&format!(
+                "local tag delete failed for {tag}: {e} (continuing)"
+            )),
+        }
+    }
+}
+
 /// Trim a SHA to the canonical 7-char short form for log output.
 fn short(sha: &str) -> &str {
     if sha.len() > 7 { &sha[..7] } else { sha }
@@ -326,14 +350,6 @@ fn short(sha: &str) -> &str {
 /// First line of a multi-line commit message, for compact status lines.
 fn first_line(msg: &str) -> &str {
     msg.lines().next().unwrap_or(msg)
-}
-
-// Re-export the path-bearing PathBuf import in this file so the clap
-// surface in `lib.rs` can stay PathBuf-typed without adding a stray
-// dependency.
-#[allow(dead_code)]
-fn _path_marker() -> Option<PathBuf> {
-    None
 }
 
 #[cfg(test)]
@@ -425,6 +441,7 @@ mod tests {
                 "v1.0.0".into(),
                 "other-v1.0.0".into(),
             ],
+            false,
         );
         assert!(msg.starts_with("chore(release): rollback v1.0.0 [skip ci]"));
         assert!(msg.contains("Reverts abcdef1."));
@@ -436,8 +453,48 @@ mod tests {
         let msg = build_revert_message(
             "abcdef1234567890",
             &["mycrate-v1.0.0".into(), "other-v1.0.0".into()],
+            false,
         );
         assert!(msg.starts_with("chore(release): rollback mycrate-v1.0.0 [skip ci]"));
+    }
+
+    #[test]
+    fn revert_message_dry_run_marks_pending_tag_deletion() {
+        let msg = build_revert_message("abcdef1234567890", &["v1.0.0".into()], true);
+        assert!(
+            msg.contains("Tags that WOULD be deleted: v1.0.0"),
+            "dry-run preview must distinguish pending deletion: {msg}"
+        );
+        assert!(
+            !msg.contains("\nTags deleted:"),
+            "dry-run preview must NOT emit the real-run label: {msg}"
+        );
+    }
+
+    #[test]
+    fn per_crate_regex_rejects_leading_digit() {
+        // Cargo crate names must start with a letter; the rollback
+        // regex must not accept `9-foo-v1.2.3` as a per-crate tag.
+        assert_eq!(classify_tag("9-foo-v1.2.3"), None);
+        assert_eq!(classify_tag("0bad-v1.0.0"), None);
+        // Underscore-leading is still accepted (matches cargo identifier rules).
+        assert_eq!(classify_tag("_foo-v1.2.3"), Some(TagKind::PerCrate));
+    }
+
+    #[test]
+    fn safety_check_prefix_admits_anodize_revert_only() {
+        // anodize's own prior revert subject — admissible.
+        let anodize_subject = "Revert \"chore(release): rollback v1.2.3 [skip ci]\"";
+        assert!(
+            anodize_subject.starts_with(ANODIZE_REVERT_SUBJECT_PREFIX),
+            "anodize-generated revert must be recognised"
+        );
+        // GitHub's "Revert this PR" button subject — must NOT be admitted.
+        let github_subject = "Revert \"feat: add new flag\"";
+        assert!(
+            !github_subject.starts_with(ANODIZE_REVERT_SUBJECT_PREFIX),
+            "unrelated revert PR subjects must NOT be admitted as anodize-shaped"
+        );
     }
 
     // -----------------------------------------------------------------

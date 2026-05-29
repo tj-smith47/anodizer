@@ -430,12 +430,17 @@ const MAX_RESPONSE_SNIPPET_BYTES: usize = 512;
 
 /// Return `(snippet, truncated_suffix)` for a scrubbed HTTP response
 /// body. When the body fits inside [`MAX_RESPONSE_SNIPPET_BYTES`] the
-/// snippet is the input verbatim and the suffix is empty; otherwise the
-/// snippet is the input truncated at the nearest UTF-8 char boundary at
-/// or below the byte cap and the suffix is `"...[truncated]"`.
-fn truncate_response_snippet(scrubbed: &str) -> (String, &'static str) {
+/// snippet borrows the input verbatim and the suffix is empty;
+/// otherwise the snippet owns a copy truncated at the nearest UTF-8
+/// char boundary at or below the byte cap and the suffix is
+/// `"...[truncated]"`.
+///
+/// `Cow` over `String` so the dominant short-body case (most registry
+/// responses are well under 512 B) avoids an allocation — the formatter
+/// at the call site handles both shapes transparently.
+fn truncate_response_snippet(scrubbed: &str) -> (std::borrow::Cow<'_, str>, &'static str) {
     if scrubbed.len() <= MAX_RESPONSE_SNIPPET_BYTES {
-        return (scrubbed.to_string(), "");
+        return (std::borrow::Cow::Borrowed(scrubbed), "");
     }
     let mut cut = MAX_RESPONSE_SNIPPET_BYTES;
     // UTF-8 multi-byte chars must not be split; `is_char_boundary(0)` is
@@ -443,7 +448,10 @@ fn truncate_response_snippet(scrubbed: &str) -> (String, &'static str) {
     while !scrubbed.is_char_boundary(cut) {
         cut -= 1;
     }
-    (scrubbed[..cut].to_string(), "...[truncated]")
+    (
+        std::borrow::Cow::Owned(scrubbed[..cut].to_string()),
+        "...[truncated]",
+    )
 }
 
 fn publish_payload(

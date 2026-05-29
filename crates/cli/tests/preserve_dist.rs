@@ -259,13 +259,26 @@ fn preserve_dist_bytes_match_determinism_report_hashes() {
             expected_misses += 1;
             continue;
         }
-        let expected = by_name.get(basename.as_str()).unwrap_or_else(|| {
+        // Files copied by preserve_raw_binaries land at
+        // `_preserved-bin/<triple>/<basename>`, but determinism.json records
+        // them under the cargo `target/<triple>/release/<basename>` shape.
+        // Map back so the hash lookup hits.
+        let lookup_key: String = if let Some(rest) = rel.strip_prefix("_preserved-bin/") {
+            match rest.split_once('/') {
+                Some((triple, name)) => format!("target/{triple}/release/{name}"),
+                None => basename.clone(),
+            }
+        } else {
+            basename.clone()
+        };
+        let expected = by_name.get(lookup_key.as_str()).unwrap_or_else(|| {
             panic!(
-                "preserved file {} (basename {}) has no matching entry in determinism.json; \
-                 expected one of the bounded EXPECTED_MISSES set or a hashed artifact. \
-                 Preserved tree: {:?}\nReport artifacts: {:?}",
+                "preserved file {} (basename {}, lookup_key {}) has no matching entry in \
+                 determinism.json; expected one of the bounded EXPECTED_MISSES set or a \
+                 hashed artifact. Preserved tree: {:?}\nReport artifacts: {:?}",
                 rel,
                 basename,
+                lookup_key,
                 walk_files(&preserved)
                     .iter()
                     .map(|(r, _)| r)

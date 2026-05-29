@@ -314,6 +314,16 @@ impl<'a> PerCrateOverlayGuard<'a> {
 }
 
 impl Drop for PerCrateOverlayGuard<'_> {
+    /// Restore the pre-overlay `ctx` state by *moving* each captured
+    /// value back into the context via `std::mem::take`. After the
+    /// move the guard's own fields hold defaulted (empty / zero-sized)
+    /// stand-ins — that's intentional: a hypothetical second drop would
+    /// only re-assign those defaults to the context, not corrupt it
+    /// with stale data. But the inverse — wrapping the guard in
+    /// `ManuallyDrop` or `mem::forget`ing it — would skip the restore
+    /// entirely and leak the per-iteration overlay into the next
+    /// iteration's `ctx`, so neither is supported. The standard RAII
+    /// drop path is the only sound consumption.
     fn drop(&mut self) {
         self.ctx.config.dist = std::mem::take(&mut self.saved_dist);
         self.ctx.options.selected_crates = std::mem::take(&mut self.saved_selected_crates);
