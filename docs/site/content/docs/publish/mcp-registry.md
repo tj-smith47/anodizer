@@ -50,6 +50,54 @@ mcp:
 
 This publishes anonymously (`auth.type: none`) to the default registry. For server names under the `io.github.<owner>` namespace you almost always want `auth.type: github-oidc` so the registry can verify ownership of the GitHub repo. See [Authentication](#authentication).
 
+## Wiring the OCI image
+
+When `packages[].registry_type: oci`, the MCP manifest *references* an image
+but does not build one — anodize publishes the manifest, then MCP clients
+`docker pull` the image at the referenced coordinate (`ghcr.io/myorg/myapp:<ver>`).
+The image itself comes from `docker_v2:`:
+
+```yaml
+crates:
+  - name: myapp
+    docker_v2:
+      - dockerfile: Dockerfile
+        images: ["ghcr.io/myorg/myapp"]
+        tags: ["{{ .Version }}", "latest"]
+        platforms: [linux/amd64, linux/arm64]
+        labels:
+          io.modelcontextprotocol.server.name: io.github.myorg/myapp   # REQUIRED — must equal mcp.name
+
+mcp:
+  name: io.github.myorg/myapp
+  packages:
+    - registry_type: oci
+      identifier: ghcr.io/myorg/myapp     # matches docker_v2[].images
+      transport:
+        type: stdio
+  auth:
+    type: github-oidc
+```
+
+> **Required OCI label.** The registry's OCI validator reads the image-config
+> label `io.modelcontextprotocol.server.name` (i.e. `Config.Labels`) and
+> **rejects the publish** if it is missing or does not equal `mcp.name`. It
+> MUST be set as a `docker_v2[].labels` entry — the registry **ignores**
+> `annotations:`, so an annotation will not satisfy the check.
+
+The release-workflow permissions must cover both:
+
+```yaml
+permissions:
+  contents: write
+  packages: write    # docker_v2 push to ghcr.io
+  id-token: write    # mcp.auth.type: github-oidc
+```
+
+See [Docker (`docker_v2:`)](../packages/docker.md) for the image build
+surface and the Dockerfile pattern that makes the container speak MCP over
+stdio out of the box (`ENTRYPOINT ["/usr/local/bin/myapp"] / CMD ["mcp"]`).
+
 ## Full config reference
 
 ```yaml
@@ -204,6 +252,12 @@ packages:
 | `transport.type` | string | `stdio`, `streamable-http`, or `sse` |
 
 When `registry_type: oci`, the published manifest carries an empty `version` field on the package entry (the registry resolves the image tag itself). Other registry types receive the release version verbatim. This mirrors GoReleaser's `mcp_registries` behavior.
+
+The OCI image referenced by `identifier` MUST carry the image-config label
+`io.modelcontextprotocol.server.name` set to the value of `mcp.name`. The
+registry's OCI validator reads `Config.Labels` and rejects the publish without
+it. Set it via `docker_v2[].labels` (NOT `annotations:`, which the registry
+ignores) — see [Wiring the OCI image](#wiring-the-oci-image).
 
 ### Top-level transports
 

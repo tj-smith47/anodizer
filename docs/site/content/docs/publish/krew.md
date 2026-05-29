@@ -55,6 +55,7 @@ Both `repository` and `short_description` are required. The publisher will error
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | string | crate name | Override the plugin name in the manifest |
+| `mode` | string | `auto` | Submission path: one of `auto` \| `bot` \| `pr-direct`. See [How mode selection works](#how-mode-selection-works) |
 | `ids` | list of strings | all | Build IDs filter: only include artifacts whose `id` is in this list |
 | `repository` | object | **required** | Unified repository config — supports `owner`, `name`, `token`, `branch`, `git`, and `pull_request` |
 | `commit_author` | object | none | Commit author name, email, and optional signing config |
