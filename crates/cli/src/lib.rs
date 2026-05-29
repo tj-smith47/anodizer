@@ -558,6 +558,12 @@ pub enum TagSub {
             help = "Rollback strategy: revert (default; history-preserving) | reset (opt-in; rewrites history, requires --force-with-lease to push)"
         )]
         mode: String,
+        #[arg(
+            long,
+            value_name = "name",
+            help = "Branch name to push the revert commit to. Required when HEAD is detached and no local branch points at it (typical CI tag-push context, where GITHUB_REF_NAME is the tag — not the bump-commit branch). Pass --branch master (or whichever branch the bump commit was created on)."
+        )]
+        branch: Option<String>,
     },
 }
 

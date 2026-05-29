@@ -416,6 +416,7 @@ fn main() {
                 no_push,
                 scope,
                 mode,
+                branch,
             }) => {
                 use commands::tag::rollback::{Mode, RollbackOpts, Scope};
                 (|| -> anyhow::Result<()> {
@@ -427,6 +428,7 @@ fn main() {
                         no_push,
                         scope,
                         mode,
+                        branch,
                         verbose: cli.verbose,
                         debug: cli.debug,
                         quiet: cli.quiet,
@@ -859,6 +861,8 @@ mod tests {
             "lockstep",
             "--mode",
             "reset",
+            "--branch",
+            "master",
         ]);
         assert!(
             cli.is_ok(),
@@ -873,6 +877,7 @@ mod tests {
                     no_push,
                     scope,
                     mode,
+                    branch,
                 }),
             ..
         }) = cli.unwrap().command
@@ -882,6 +887,7 @@ mod tests {
             assert!(no_push);
             assert_eq!(scope, "lockstep");
             assert_eq!(mode, "reset");
+            assert_eq!(branch.as_deref(), Some("master"));
         } else {
             panic!("expected Tag command with Rollback sub");
         }

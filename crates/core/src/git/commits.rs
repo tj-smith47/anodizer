@@ -191,6 +191,25 @@ pub fn get_current_branch() -> Result<String> {
     get_current_branch_in(&cwd_or_dot())
 }
 
+/// Return `true` when `name` looks like a branch (NOT an anodize-shaped
+/// release tag). Tag shapes: `^v\d+\.\d+\.\d+` (lockstep
+/// `v1.2.3[-pre][+build]`) or any name containing `-v\d+\.\d+\.\d+`
+/// (per-crate `mycrate-v1.2.3[...]`).
+///
+/// Guards the `GITHUB_REF_NAME` fallback in [`get_current_branch_in`]: on
+/// a `push: tags:` workflow trigger, `GITHUB_REF_NAME` is the TAG name
+/// (e.g. `v0.4.5`), and accepting it would make `git push origin v0.4.5`
+/// from detached HEAD silently create a branch named after the tag.
+pub fn is_branchlike(name: &str) -> bool {
+    use regex::Regex;
+    use std::sync::OnceLock;
+    static LOCKSTEP: OnceLock<Regex> = OnceLock::new();
+    static PER_CRATE: OnceLock<Regex> = OnceLock::new();
+    let lockstep = LOCKSTEP.get_or_init(|| Regex::new(r"^v\d+\.\d+\.\d+").expect("static regex"));
+    let per_crate = PER_CRATE.get_or_init(|| Regex::new(r"-v\d+\.\d+\.\d+").expect("static regex"));
+    !(lockstep.is_match(name) || per_crate.is_match(name))
+}
+
 /// Path-taking sibling of [`get_current_branch`].
 ///
 /// Handles detached-HEAD checkouts (e.g. `actions/checkout@v4` with `ref:`)
@@ -198,6 +217,12 @@ pub fn get_current_branch() -> Result<String> {
 /// to the remote's default branch and finally `GITHUB_REF_NAME` when set —
 /// so downstream `git push origin <branch>` produces a valid refspec
 /// instead of a literal `HEAD` that git can't auto-qualify.
+///
+/// The `GITHUB_REF_NAME` fallback is guarded by [`is_branchlike`]: on a
+/// `push: tags:` trigger, `GITHUB_REF_NAME` is the TAG name, and accepting
+/// it would push to a branch named after the tag. Tag-shaped values fall
+/// through to the bail at the end so callers hard-fail and prompt the
+/// operator for `--branch <name>` explicitly.
 pub fn get_current_branch_in(cwd: &Path) -> Result<String> {
     if let Ok(name) = git_output_in(cwd, &["symbolic-ref", "--short", "HEAD"]) {
         return Ok(name);
@@ -232,12 +257,36 @@ pub fn get_current_branch_in(cwd: &Path) -> Result<String> {
     }
     if let Ok(name) = std::env::var("GITHUB_REF_NAME")
         && !name.is_empty()
+        && is_branchlike(&name)
     {
         return Ok(name);
     }
     anyhow::bail!(
         "could not resolve current branch: HEAD is detached and no fallback (points-at-HEAD branches, origin/HEAD, GITHUB_REF_NAME) succeeded"
     )
+}
+
+/// Return remote branch short names that contain `sha` (e.g. `master`,
+/// `release/v1`). The bump commit's SHA is the deterministic anchor of
+/// the tag, so deriving the push branch from it is race-immune to the
+/// default branch moving between bump and rollback. Empty `Vec` when
+/// the SHA is not on any remote branch (orphan / not-yet-pushed).
+pub fn branches_containing_sha_in(cwd: &Path, sha: &str) -> Result<Vec<String>> {
+    let out = git_output_in(
+        cwd,
+        &[
+            "branch",
+            "-r",
+            "--contains",
+            sha,
+            "--format=%(refname:short)",
+        ],
+    )?;
+    Ok(out
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("origin/").map(str::to_string))
+        .filter(|name| !name.is_empty() && name != "HEAD")
+        .collect())
 }
 
 /// Check if there are any commits since a given tag.
@@ -1002,6 +1051,168 @@ mod tests {
             branch, "master",
             "detached HEAD pointing at master must resolve to master, not literal HEAD"
         );
+    }
+
+    #[test]
+    fn is_branchlike_rejects_lockstep_tag_shapes() {
+        assert!(!is_branchlike("v0.4.5"));
+        assert!(!is_branchlike("v1.2.3"));
+        assert!(!is_branchlike("v10.20.30"));
+        assert!(!is_branchlike("v1.2.3-rc.1"));
+        assert!(!is_branchlike("v1.2.3+build.42"));
+    }
+
+    #[test]
+    fn is_branchlike_rejects_per_crate_tag_shapes() {
+        assert!(!is_branchlike("mycrate-v1.2.3"));
+        assert!(!is_branchlike("cfgd-operator-v0.4.0"));
+        assert!(!is_branchlike("anodize-core-v1.2.3-rc.1"));
+    }
+
+    #[test]
+    fn is_branchlike_accepts_real_branch_names() {
+        assert!(is_branchlike("master"));
+        assert!(is_branchlike("main"));
+        assert!(is_branchlike("publisher-required-config"));
+        assert!(is_branchlike("release/v1.2.3-prep"));
+        assert!(is_branchlike("dependabot/cargo/serde-1.0.200"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn get_current_branch_in_rejects_tag_shaped_github_ref_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        // Build a repo whose HEAD is detached AND no local branch points
+        // at it, so every fallback BEFORE GITHUB_REF_NAME fails. The only
+        // way the fallback chain produces a value is via the env var.
+        run(&["-c", "init.defaultBranch=master", "init"]);
+        run(&["config", "user.email", "t@t.com"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("a"), "1").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "c1"]);
+        let sha = get_head_commit_in(dir).unwrap();
+        // Move master forward so the detached HEAD has no branch
+        // pointing at it; for-each-ref --points-at HEAD returns empty.
+        std::fs::write(dir.join("a"), "2").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "c2"]);
+        run(&["checkout", "--detach", &sha]);
+
+        // Restore env on every exit path — set/remove in a guard so a
+        // panic doesn't leak state across the serial-test queue.
+        struct EnvGuard(&'static str, Option<String>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.1 {
+                    Some(v) => unsafe { std::env::set_var(self.0, v) },
+                    None => unsafe { std::env::remove_var(self.0) },
+                }
+            }
+        }
+        let _g = EnvGuard("GITHUB_REF_NAME", std::env::var("GITHUB_REF_NAME").ok());
+
+        // Tag-shaped: must NOT be accepted; bail surfaces.
+        unsafe { std::env::set_var("GITHUB_REF_NAME", "v0.4.5") };
+        let err = get_current_branch_in(dir).unwrap_err();
+        assert!(
+            err.to_string().contains("could not resolve current branch"),
+            "tag-shaped GITHUB_REF_NAME must trigger bail: {err}"
+        );
+
+        // Per-crate-shaped: must NOT be accepted either.
+        unsafe { std::env::set_var("GITHUB_REF_NAME", "mycrate-v1.2.3") };
+        let err = get_current_branch_in(dir).unwrap_err();
+        assert!(
+            err.to_string().contains("could not resolve current branch"),
+            "per-crate tag GITHUB_REF_NAME must trigger bail: {err}"
+        );
+
+        // Real branch name: accepted.
+        unsafe { std::env::set_var("GITHUB_REF_NAME", "master") };
+        let branch = get_current_branch_in(dir).unwrap();
+        assert_eq!(branch, "master");
+    }
+
+    #[test]
+    fn branches_containing_sha_in_returns_empty_without_remote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run(&["-c", "init.defaultBranch=master", "init"]);
+        run(&["config", "user.email", "t@t.com"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("a"), "1").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "c1"]);
+        let sha = get_head_commit_in(dir).unwrap();
+        // No remote configured → `git branch -r --contains` returns
+        // empty, which the helper surfaces as `Vec::new()` so the
+        // caller can fall back to local branch resolution.
+        let branches = branches_containing_sha_in(dir, &sha).unwrap();
+        assert!(branches.is_empty(), "no remote → no remote branches");
+    }
+
+    #[test]
+    fn branches_containing_sha_in_finds_remote_branch_after_push() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run_in = |cwd: &Path, args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run_in(
+            bare.path(),
+            &["-c", "init.defaultBranch=master", "init", "--bare"],
+        );
+        run_in(dir, &["-c", "init.defaultBranch=master", "init"]);
+        run_in(dir, &["config", "user.email", "t@t.com"]);
+        run_in(dir, &["config", "user.name", "t"]);
+        run_in(
+            dir,
+            &["remote", "add", "origin", bare.path().to_str().unwrap()],
+        );
+        std::fs::write(dir.join("a"), "1").unwrap();
+        run_in(dir, &["add", "."]);
+        run_in(dir, &["commit", "-m", "c1"]);
+        let sha = get_head_commit_in(dir).unwrap();
+        run_in(dir, &["push", "-u", "origin", "master"]);
+
+        let branches = branches_containing_sha_in(dir, &sha).unwrap();
+        assert_eq!(branches, vec!["master".to_string()]);
     }
 
     #[test]

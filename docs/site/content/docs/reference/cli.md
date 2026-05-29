@@ -213,6 +213,7 @@ Rollback anodize-managed tags at a SHA, then revert (or reset past) the bump com
 | `--no-push` | — | — | Skip remote tag delete and branch push (local-only) |
 | `--scope` | — | `all` | Tag-shape filter: all | lockstep | per-crate |
 | `--mode` | — | `revert` | Rollback strategy: revert (default; history-preserving) | reset (opt-in; rewrites history, requires --force-with-lease to push) |
+| `--branch` | — | — | Branch name to push the revert commit to. Required when HEAD is detached and no local branch points at it (typical CI tag-push context, where GITHUB_REF_NAME is the tag — not the bump-commit branch). Pass --branch master (or whichever branch the bump commit was created on). |
 
 
 ### `anodizer continue`

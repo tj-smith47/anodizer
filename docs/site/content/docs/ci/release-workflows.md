@@ -65,7 +65,7 @@ jobs:
     outputs:
       crates: ${{ steps.t.outputs.crates }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
@@ -85,7 +85,7 @@ jobs:
     if: needs.tag.outputs.crates != '[]'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -143,7 +143,7 @@ jobs:
     outputs:
       crates: ${{ steps.t.outputs.crates }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
@@ -163,7 +163,7 @@ jobs:
     if: needs.tag.outputs.crates != '[]'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -220,7 +220,7 @@ jobs:
     outputs:
       crates: ${{ steps.t.outputs.crates }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
@@ -245,7 +245,7 @@ jobs:
         shard: [linux, macos, windows-x86_64, windows-aarch64]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -262,7 +262,7 @@ jobs:
     if: needs.tag.outputs.crates != '[]'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -331,7 +331,7 @@ jobs:
     outputs:
       crates: ${{ steps.t.outputs.crates }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
@@ -356,7 +356,7 @@ jobs:
         shard: [linux, macos, windows-x86_64, windows-aarch64]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -373,7 +373,7 @@ jobs:
     if: needs.tag.outputs.crates != '[]'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -437,7 +437,7 @@ jobs:
       crate: ${{ steps.r.outputs.workspace }}
       has-builds: ${{ steps.r.outputs.has-builds }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -450,7 +450,7 @@ jobs:
     needs: resolve
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -495,7 +495,7 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
@@ -508,7 +508,7 @@ jobs:
     needs: build-test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release -p anodizer
@@ -546,7 +546,7 @@ jobs:
     outputs:
       crates: ${{ steps.t.outputs.crates }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
@@ -572,7 +572,7 @@ jobs:
     # Optional: require manual approval before this job runs.
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -652,7 +652,7 @@ jobs:
     outputs:
       crate: ${{ steps.r.outputs.workspace }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -665,7 +665,7 @@ jobs:
     needs: resolve
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -721,7 +721,7 @@ jobs:
     outputs:
       crates: ${{ steps.t.outputs.crates }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
@@ -741,7 +741,7 @@ jobs:
     if: needs.tag.outputs.crates != '[]'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1

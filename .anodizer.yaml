@@ -260,6 +260,17 @@ crates:
       - binary: anodizer
         features: []
         no_default_features: false
+    docker_v2:
+      - id: anodizer
+        dockerfile: Dockerfile
+        images:
+          - ghcr.io/tj-smith47/anodizer
+        tags:
+          - "{{ .Version }}"
+          - latest
+        platforms:
+          - linux/amd64
+          - linux/arm64
     archives:
       # `formats: [tar.gz]` mirrors the defaults identity key so this entry
       # deep-merges with the defaults archive (picking up format_overrides)
@@ -794,10 +805,6 @@ cloudsmiths:
 # requires `id-token: write` on the publishing workflow — anodizer.yml's release
 # job already grants this.
 #
-# Skip until Plan A's MCP server image ships under ghcr.io/tj-smith47/anodizer.
-# Wire `dockers:` first (or pivot the package to an npm/pypi distribution that
-# the project actually publishes), then drop this skip. Publishing the current
-# manifest at release time would point clients at a 404.
 mcp:
   name: io.github.tj-smith47/anodizer
   title: Anodizer

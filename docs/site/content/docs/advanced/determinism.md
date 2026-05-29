@@ -336,7 +336,7 @@ jobs:
           - { os: windows-latest, shard: windows-aarch64,  targets: 'aarch64-pc-windows-msvc' }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: tj-smith47/anodizer-action@v1
         with:
           determinism: true
@@ -363,7 +363,7 @@ jobs:
     needs: determinism-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with: { fetch-depth: 0 }
       - uses: actions/download-artifact@v4
         with:

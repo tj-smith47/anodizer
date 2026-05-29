@@ -92,12 +92,21 @@ jobs:
       contents: write
       actions: read
       id-token: write
+      packages: write
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Download every shard's preserved dist into dist/. `merge-multiple:
       # true` flattens them on top of each other; the action renames each
@@ -160,12 +169,11 @@ jobs:
           CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
 
       - name: Rollback on release failure
-        if: failure() && steps.release.outcome == 'failure'
+        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          anodizer tag rollback "$GITHUB_SHA"
+        run: anodizer tag rollback "$GITHUB_SHA"
 
       - name: Upload run summary
         if: always()

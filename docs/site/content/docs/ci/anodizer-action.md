@@ -119,7 +119,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -147,7 +147,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           # PAT so the pushed tag triggers downstream release.yml.
@@ -204,7 +204,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -237,7 +237,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -253,7 +253,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -274,7 +274,7 @@ When your `ci.yml` builds and uploads the anodizer binary once per commit, downs
 
 ```yaml
 # ci.yml
-- uses: actions/checkout@v4
+- uses: actions/checkout@v6
 - uses: dtolnay/rust-toolchain@stable
 - run: cargo build --release -p anodizer
 - uses: actions/upload-artifact@v4
@@ -307,7 +307,7 @@ jobs:
     outputs:
       matrix: ${{ steps.setup.outputs.split-matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: tj-smith47/anodizer-action@v1
         id: setup
         with:
@@ -319,7 +319,7 @@ jobs:
       matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -349,7 +349,7 @@ jobs:
 For integration testing a downstream project against an in-flight anodizer PR — or dogfooding a feature branch before it lands — use `from-branch`. The action shallow-clones `tj-smith47/anodizer` at the branch you name, builds it from source, and puts it on `PATH`:
 
 ```yaml
-- uses: actions/checkout@v4
+- uses: actions/checkout@v6
 - uses: tj-smith47/anodizer-action@v1
   with:
     from-branch: my-feature        # branch on tj-smith47/anodizer

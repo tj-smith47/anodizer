@@ -76,6 +76,11 @@ pub struct RollbackOpts {
     pub no_push: bool,
     pub scope: Scope,
     pub mode: Mode,
+    /// Branch to push the revert commit to. `None` triggers
+    /// auto-resolution via [`git::get_current_branch_in`]; a hard
+    /// failure surfaces when HEAD is detached and no local branch
+    /// points at it (the operator must pass `--branch` explicitly).
+    pub branch: Option<String>,
     pub verbose: bool,
     pub debug: bool,
     pub quiet: bool,
@@ -298,7 +303,7 @@ pub fn run(opts: RollbackOpts) -> Result<()> {
         log.status("--no-push: skipping branch push");
         return Ok(());
     }
-    let branch = git::get_current_branch_in(&cwd)?;
+    let branch = resolve_push_branch(&cwd, &target_sha, opts.branch.as_deref())?;
     if opts.dry_run {
         log.status(&format!("(dry-run) would: git push origin {branch}"));
     } else {
@@ -339,6 +344,49 @@ fn delete_tags(
                 "local tag delete failed for {tag}: {e} (continuing)"
             )),
         }
+    }
+}
+
+/// Resolve the branch to push the revert commit to.
+///
+/// Resolution order:
+/// 1. `--branch` flag wins unconditionally.
+/// 2. SHA-derivation: `git branch -r --contains <bump_sha>`. The bump
+///    SHA is the deterministic anchor of the tag we just rolled back,
+///    so it's race-immune to the default branch moving between bump
+///    and rollback. Exactly one remote branch → use it. Multiple →
+///    require `--branch` to disambiguate.
+/// 3. Fallback to [`git::get_current_branch_in`] for repos with no
+///    remote (local-only rollback workflows).
+fn resolve_push_branch(
+    cwd: &std::path::Path,
+    bump_sha: &str,
+    explicit: Option<&str>,
+) -> Result<String> {
+    if let Some(b) = explicit {
+        return Ok(b.to_string());
+    }
+    if let Ok(branches) = git::branches_containing_sha_in(cwd, bump_sha) {
+        match branches.len() {
+            1 => return Ok(branches.into_iter().next().expect("len 1")),
+            n if n > 1 => bail!(
+                "bump commit {} is reachable from {} remote branches: {}.\n\
+                 pass --branch <name> to disambiguate.",
+                &bump_sha[..bump_sha.len().min(12)],
+                n,
+                branches.join(", ")
+            ),
+            _ => {}
+        }
+    }
+    match git::get_current_branch_in(cwd) {
+        Ok(b) => Ok(b),
+        Err(_) => bail!(
+            "cannot determine branch for revert push — bump commit {} is \
+             not reachable from any remote branch and HEAD resolution failed.\n\
+             pass --branch <name> explicitly.",
+            &bump_sha[..bump_sha.len().min(12)]
+        ),
     }
 }
 
@@ -568,6 +616,7 @@ mod tests {
             no_push: true,
             scope: Scope::All,
             mode: Mode::Revert,
+            branch: None,
             verbose: false,
             debug: false,
             quiet: true,
@@ -685,6 +734,7 @@ mod tests {
             no_push: true,
             scope: Scope::All,
             mode: Mode::Revert,
+            branch: None,
             verbose: false,
             debug: false,
             quiet: true,
@@ -726,6 +776,7 @@ mod tests {
             no_push: true,
             scope: Scope::All,
             mode: Mode::Revert,
+            branch: None,
             verbose: false,
             debug: false,
             quiet: true,
@@ -737,5 +788,180 @@ mod tests {
         assert_eq!(surviving, vec!["internal-release".to_string()]);
 
         std::env::set_current_dir(orig).unwrap();
+    }
+
+    // -----------------------------------------------------------------
+    // --branch flag + detached-HEAD branch resolution.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn resolve_push_branch_honors_explicit_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // No git init required — explicit branch short-circuits before
+        // hitting git_output_in.
+        // Explicit short-circuits before any git query; SHA is irrelevant.
+        let b = resolve_push_branch(
+            dir,
+            "0000000000000000000000000000000000000000",
+            Some("release/v9.9.9-prep"),
+        )
+        .unwrap();
+        assert_eq!(b, "release/v9.9.9-prep");
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_push_branch_hard_fails_on_detached_head_without_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // Build a repo whose HEAD is detached AND no branch points at
+        // it: commit twice on master, then `git checkout --detach` the
+        // older sha — master now points past HEAD.
+        run_git(dir, &["init", "-b", "master"]);
+        run_git(dir, &["config", "user.email", "t@t.com"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        std::fs::write(dir.join("a"), "1").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "c1"]);
+        let older_sha = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(dir)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        std::fs::write(dir.join("a"), "2").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "c2"]);
+        run_git(dir, &["checkout", "--detach", &older_sha]);
+
+        // Clear GITHUB_REF_NAME so the env-var fallback can't supply a
+        // value, then verify the hard-fail surfaces the remediation.
+        struct EnvGuard(&'static str, Option<String>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.1 {
+                    Some(v) => unsafe { std::env::set_var(self.0, v) },
+                    None => unsafe { std::env::remove_var(self.0) },
+                }
+            }
+        }
+        let _g = EnvGuard("GITHUB_REF_NAME", std::env::var("GITHUB_REF_NAME").ok());
+        unsafe { std::env::remove_var("GITHUB_REF_NAME") };
+
+        // No remote configured → SHA-derivation returns empty, falls
+        // through to get_current_branch_in, which fails on detached
+        // HEAD with no env fallback → operator-friendly hard-fail.
+        let err = resolve_push_branch(dir, &older_sha, None).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("cannot determine branch for revert push"),
+            "missing hard-fail phrasing: {msg}"
+        );
+        assert!(
+            msg.contains("--branch <name>"),
+            "hard-fail must name the remediation flag: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_push_branch_hard_fails_when_github_ref_name_looks_like_tag() {
+        // Same shape as above (detached HEAD with no pointing branch),
+        // but GITHUB_REF_NAME is set to a tag-shaped value. The
+        // is_branchlike guard in get_current_branch_in must reject it,
+        // and resolve_push_branch must surface the operator-friendly
+        // hard-fail (not silently push to a branch named after the tag).
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        run_git(dir, &["init", "-b", "master"]);
+        run_git(dir, &["config", "user.email", "t@t.com"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        std::fs::write(dir.join("a"), "1").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "c1"]);
+        let older_sha = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(dir)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        std::fs::write(dir.join("a"), "2").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "c2"]);
+        run_git(dir, &["checkout", "--detach", &older_sha]);
+
+        struct EnvGuard(&'static str, Option<String>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.1 {
+                    Some(v) => unsafe { std::env::set_var(self.0, v) },
+                    None => unsafe { std::env::remove_var(self.0) },
+                }
+            }
+        }
+        let _g = EnvGuard("GITHUB_REF_NAME", std::env::var("GITHUB_REF_NAME").ok());
+        unsafe { std::env::set_var("GITHUB_REF_NAME", "v0.4.5") };
+
+        let err = resolve_push_branch(dir, &older_sha, None).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("cannot determine branch for revert push"),
+            "tag-shaped GITHUB_REF_NAME must trigger the operator-facing hard-fail: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_push_branch_explicit_branch_wins_over_detached_head() {
+        // Even when auto-resolution would hard-fail, --branch wins.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        run_git(dir, &["init", "-b", "master"]);
+        run_git(dir, &["config", "user.email", "t@t.com"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        std::fs::write(dir.join("a"), "1").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "c1"]);
+        let older_sha = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(dir)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        std::fs::write(dir.join("a"), "2").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "c2"]);
+        run_git(dir, &["checkout", "--detach", &older_sha]);
+
+        struct EnvGuard(&'static str, Option<String>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.1 {
+                    Some(v) => unsafe { std::env::set_var(self.0, v) },
+                    None => unsafe { std::env::remove_var(self.0) },
+                }
+            }
+        }
+        let _g = EnvGuard("GITHUB_REF_NAME", std::env::var("GITHUB_REF_NAME").ok());
+        unsafe { std::env::set_var("GITHUB_REF_NAME", "v0.4.5") };
+
+        let b = resolve_push_branch(dir, &older_sha, Some("master")).unwrap();
+        assert_eq!(b, "master");
     }
 }
