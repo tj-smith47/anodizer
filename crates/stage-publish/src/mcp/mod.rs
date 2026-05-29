@@ -454,6 +454,37 @@ fn truncate_response_snippet(scrubbed: &str) -> (std::borrow::Cow<'_, str>, &'st
     )
 }
 
+/// Map a registry `/v0/publish` rejection body to an anodizer-aware
+/// remediation hint, or `""` when no specific guidance applies.
+///
+/// The registry's OCI validator (`internal/validators/registries/oci.go`)
+/// fails closed when it cannot prove image ownership: the published image
+/// must carry an `io.modelcontextprotocol.server.name` **image config label**
+/// equal to the server name. Its own error text says "Add this to your
+/// Dockerfile: LABEL …", which under-serves anodizer users who build images
+/// through the `docker_v2:` block and have no hand-written `LABEL` line — and
+/// who would otherwise reach for `docker_v2.annotations`, which the validator
+/// ignores (it reads `configFile.Config.Labels`, populated only by
+/// `docker_v2.labels` / `--label`, not by OCI manifest annotations). Append
+/// the anodizer-specific path so the rejection is fixable without spelunking
+/// the registry source.
+///
+/// `server_name` is the rendered `mcp.name` so the hint can quote the exact
+/// label value the validator demands.
+fn oci_rejection_hint(response_body: &str, server_name: &str) -> String {
+    if response_body.contains("io.modelcontextprotocol.server.name") {
+        format!(
+            " — the registry could not verify OCI image ownership: the published \
+             image must carry the image config label \
+             `io.modelcontextprotocol.server.name={server_name}`. Set it via \
+             `docker_v2.labels` (NOT `annotations`, which the registry ignores) \
+             or a Dockerfile `LABEL io.modelcontextprotocol.server.name=\"{server_name}\"`."
+        )
+    } else {
+        String::new()
+    }
+}
+
 fn publish_payload(
     publish_url: &str,
     body: &str,
@@ -493,9 +524,13 @@ fn publish_payload(
             // diagnosable from CI logs without a curl reproduction.
             let scrubbed = anodizer_core::redact::redact_bearer_tokens(response);
             let (snippet, truncated) = truncate_response_snippet(&scrubbed);
+            // Surface the remediation hint off the full scrubbed body (not the
+            // bounded snippet) so a marker pushed past the 512-byte cut is
+            // still detected.
+            let hint = oci_rejection_hint(&scrubbed, name);
             format!(
-                "mcp: POST {} returned HTTP {} (request_body_len={}; response={}{})",
-                publish_url, status, request_body_len, snippet, truncated
+                "mcp: POST {} returned HTTP {} (request_body_len={}; response={}{}){}",
+                publish_url, status, request_body_len, snippet, truncated, hint
             )
         },
     )

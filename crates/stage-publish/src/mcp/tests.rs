@@ -23,8 +23,9 @@ use anodizer_core::context::{Context, ContextOptions};
 
 use super::{
     DEFAULT_REGISTRY_URL, MAX_RESPONSE_SNIPPET_BYTES, fill_from_project_metadata,
-    infer_repository_from_release, publish_with_registry, reset_experimental_warned_for_test,
-    resolve_registry_url, truncate_response_snippet, warn_experimental_once, warn_once_lock,
+    infer_repository_from_release, oci_rejection_hint, publish_with_registry,
+    reset_experimental_warned_for_test, resolve_registry_url, truncate_response_snippet,
+    warn_experimental_once, warn_once_lock,
 };
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
@@ -179,6 +180,64 @@ fn publish_unrecoverable_on_400() {
         1,
         "4xx must NOT retry — exactly one call"
     );
+}
+
+#[test]
+fn oci_annotation_rejection_appends_actionable_hint() {
+    // The registry's OCI validator fails closed when the published image
+    // lacks the `io.modelcontextprotocol.server.name` config label, returning
+    // a body that names the label. The raw registry text only mentions a
+    // Dockerfile LABEL; anodizer must add the `docker_v2.labels` path so users
+    // who build images via the `docker_v2:` block know where to set it.
+    let _g = warn_once_lock();
+    // Content-Length is the 161-byte body that follows the blank line — the
+    // registry's verbatim "missing required annotation" text naming the label.
+    let (addr, calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: 161\r\n\r\n\
+         OCI image 'ghcr.io/test/server:v1' is missing required annotation. \
+         Add this to your Dockerfile: LABEL io.modelcontextprotocol.server.name=\"io.github.test/server\"",
+    ]);
+    let registry = format!("http://{addr}");
+
+    let ctx = mcp_ctx(|_| {});
+    let log = ctx.logger("mcp-test");
+    let err = publish_with_registry(&ctx, &log, &registry)
+        .expect_err("422 annotation rejection must surface as an error");
+    let chain = format!("{err:#}");
+    assert!(
+        chain.contains("docker_v2.labels"),
+        "error must point at docker_v2.labels remediation: {chain}"
+    );
+    assert!(
+        chain.contains("io.github.test/server"),
+        "hint must quote the server name the label must equal: {chain}"
+    );
+    assert!(
+        chain.contains("NOT `annotations`"),
+        "hint must warn that annotations are ignored by the validator: {chain}"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "4xx must NOT retry — exactly one call"
+    );
+}
+
+#[test]
+fn oci_rejection_hint_is_empty_for_unrelated_bodies() {
+    // A plain bad-request body that does not name the ownership label must
+    // produce no hint — the hint is reserved for the annotation-missing case
+    // so it never muddies unrelated 4xx diagnostics.
+    assert_eq!(
+        oci_rejection_hint("bad payload", "io.github.test/server"),
+        ""
+    );
+    let hint = oci_rejection_hint(
+        "OCI image is missing required annotation: io.modelcontextprotocol.server.name",
+        "io.github.test/server",
+    );
+    assert!(hint.contains("io.github.test/server"), "{hint}");
+    assert!(hint.contains("docker_v2.labels"), "{hint}");
 }
 
 // ---------------------------------------------------------------------------
