@@ -25,11 +25,36 @@ use crate::yaml::DEFAULT_SNAP_NAME_TEMPLATE;
 // wipe-then-pack sequence is atomic across parallel workers.
 static SNAPCRAFT_CACHE_LOCK: Mutex<()> = Mutex::new(());
 
-fn clear_snapcraft_cache(home: Option<&str>) {
-    if let Some(home) = home {
-        let cache = PathBuf::from(home).join(".cache/snapcraft/download");
-        let _ = std::fs::remove_dir_all(&cache);
+/// Resolve the snapcraft download-cache directory from XDG/HOME semantics.
+///
+/// `XDG_CACHE_HOME` wins when set (snapcraft uses `xdg.BaseDirectory`,
+/// which honors it); otherwise falls back to `<home>/.cache`. Returns the
+/// exact `…/snapcraft/download` leaf — never a parent — so a wipe can
+/// only ever touch the directory snapcraft re-creates at import time.
+fn snapcraft_download_cache(xdg_cache_home: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
+    let base = match xdg_cache_home.filter(|s| !s.is_empty()) {
+        Some(xdg) => PathBuf::from(xdg),
+        None => PathBuf::from(home.filter(|s| !s.is_empty())?).join(".cache"),
+    };
+    Some(base.join("snapcraft").join("download"))
+}
+
+/// Wipe snapcraft's download cache to dodge the ≤8.14.5 import-time crash
+/// (see `SNAPCRAFT_CACHE_LOCK`). Only removes the `…/snapcraft/download`
+/// leaf, only when it already exists, and logs what is being cleared and
+/// why so the destructive step is never silent.
+fn clear_snapcraft_cache(xdg_cache_home: Option<&str>, home: Option<&str>, log: &StageLogger) {
+    let Some(cache) = snapcraft_download_cache(xdg_cache_home, home) else {
+        return;
+    };
+    if !cache.exists() {
+        return;
     }
+    log.status(&format!(
+        "snapcraft: clearing stale download cache at {} (works around snapcraft ≤8.14.5 import-time os.makedirs crash)",
+        cache.display()
+    ));
+    let _ = std::fs::remove_dir_all(&cache);
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +265,14 @@ impl Stage for SnapcraftStage {
 
         if !jobs.is_empty() {
             let home_for_cache = ctx.env_var("HOME");
-            let packed = run_snap_jobs(&jobs, home_for_cache.as_deref(), &log, parallelism)?;
+            let xdg_cache_home = ctx.env_var("XDG_CACHE_HOME");
+            let packed = run_snap_jobs(
+                &jobs,
+                xdg_cache_home.as_deref(),
+                home_for_cache.as_deref(),
+                &log,
+                parallelism,
+            )?;
             new_artifacts.extend(packed);
         }
 
@@ -769,6 +801,7 @@ fn copy_completer_files(ctx: &Context, snap_cfg: &SnapcraftConfig, prime_dir: &P
 /// dir at import time.
 fn run_snap_jobs(
     jobs: &[SnapcraftJob],
+    xdg_cache_home: Option<&str>,
     home_for_cache: Option<&str>,
     log: &StageLogger,
     parallelism: usize,
@@ -779,7 +812,7 @@ fn run_snap_jobs(
         let _cache_guard = SNAPCRAFT_CACHE_LOCK
             .lock()
             .map_err(|_| anyhow::anyhow!("snapcraft cache lock poisoned"))?;
-        clear_snapcraft_cache(home_for_cache);
+        clear_snapcraft_cache(xdg_cache_home, home_for_cache, &thread_log);
 
         thread_log.status(&format!("running: {}", job.cmd_args.join(" ")));
 
@@ -806,4 +839,80 @@ fn run_snap_jobs(
     };
 
     anodizer_core::parallel::run_parallel_chunks(jobs, parallelism, "snapcraft", run_job)
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use anodizer_core::log::Verbosity;
+
+    #[test]
+    fn xdg_cache_home_wins_over_home() {
+        let resolved = snapcraft_download_cache(Some("/xdg/cache"), Some("/home/u"));
+        assert_eq!(
+            resolved,
+            Some(PathBuf::from("/xdg/cache/snapcraft/download"))
+        );
+    }
+
+    #[test]
+    fn falls_back_to_home_dot_cache() {
+        let resolved = snapcraft_download_cache(None, Some("/home/u"));
+        assert_eq!(
+            resolved,
+            Some(PathBuf::from("/home/u/.cache/snapcraft/download"))
+        );
+    }
+
+    #[test]
+    fn empty_xdg_falls_back_to_home() {
+        let resolved = snapcraft_download_cache(Some(""), Some("/home/u"));
+        assert_eq!(
+            resolved,
+            Some(PathBuf::from("/home/u/.cache/snapcraft/download"))
+        );
+    }
+
+    #[test]
+    fn no_home_and_no_xdg_resolves_nothing() {
+        assert_eq!(snapcraft_download_cache(None, None), None);
+        assert_eq!(snapcraft_download_cache(Some(""), Some("")), None);
+    }
+
+    #[test]
+    fn target_is_the_download_leaf_never_a_parent() {
+        let resolved = snapcraft_download_cache(None, Some("/home/u")).unwrap();
+        assert!(resolved.ends_with("snapcraft/download"));
+    }
+
+    #[test]
+    fn clear_only_removes_existing_download_subdir_not_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let xdg = tmp.path();
+        let download = xdg.join("snapcraft").join("download");
+        std::fs::create_dir_all(&download).unwrap();
+        // A sibling under the snapcraft cache that must survive the wipe.
+        let sibling = xdg.join("snapcraft").join("keepme");
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(download.join("blob.bin"), b"stale").unwrap();
+
+        let log = StageLogger::new("snapcraft-cache-test", Verbosity::Quiet);
+        clear_snapcraft_cache(Some(xdg.to_str().unwrap()), None, &log);
+
+        assert!(!download.exists(), "download leaf must be wiped");
+        assert!(
+            sibling.exists(),
+            "wipe must not touch the snapcraft cache parent or its siblings"
+        );
+    }
+
+    #[test]
+    fn clear_is_a_noop_when_cache_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let xdg = tmp.path().join("does-not-exist");
+        let log = StageLogger::new("snapcraft-cache-test", Verbosity::Quiet);
+        // Must not error or create anything.
+        clear_snapcraft_cache(Some(xdg.to_str().unwrap()), None, &log);
+        assert!(!xdg.join("snapcraft").exists());
+    }
 }

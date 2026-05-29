@@ -259,6 +259,14 @@ pub(super) fn run_per_crate(
             "publish-only: publishing crate '{crate_name}' from {}",
             crate_dist.display()
         ));
+        // Rewind the config fields `apply_workspace_overlay` mutates
+        // (changelog / signs / binary_signs / before / after / env /
+        // crates) to the pre-loop baseline before re-applying this
+        // iteration's overlay. Without it a value set by a prior
+        // workspace would leak into one that leaves it unset, and `env`
+        // (appended, not replaced, by the overlay) would accumulate
+        // every prior workspace's entries.
+        guard.reset_overlay_fields();
         let ctx = guard.ctx_mut();
         // Reset the artifact registry before each crate so artifacts
         // from a prior crate's pipeline don't leak into the next one's
@@ -323,6 +331,51 @@ struct PerCrateOverlayGuard<'a> {
     saved_skip_stages: Vec<String>,
     saved_tag: Option<String>,
     saved_previous_tag: Option<String>,
+    saved_overlay: OverlayFields,
+}
+
+/// Snapshot of the `config` fields `apply_workspace_overlay` mutates.
+///
+/// `apply_workspace_overlay` is conditional: it overwrites `changelog` /
+/// `signs` / `binary_signs` / `before` / `after` only when the workspace
+/// sets them, and *appends* to `env`. Without a per-iteration reset to
+/// this baseline, a value set by workspace N would leak into workspace
+/// N+1 (which left it unset), and `env` would accumulate every prior
+/// workspace's entries. Capturing the baseline once lets each iteration
+/// rewind these fields before applying its own overlay.
+#[derive(Clone)]
+struct OverlayFields {
+    crates: Vec<anodizer_core::config::CrateConfig>,
+    changelog: Option<anodizer_core::config::ChangelogConfig>,
+    signs: Vec<anodizer_core::config::SignConfig>,
+    binary_signs: Vec<anodizer_core::config::SignConfig>,
+    before: Option<anodizer_core::config::HooksConfig>,
+    after: Option<anodizer_core::config::HooksConfig>,
+    env: Option<Vec<String>>,
+}
+
+impl OverlayFields {
+    fn capture(config: &Config) -> Self {
+        Self {
+            crates: config.crates.clone(),
+            changelog: config.changelog.clone(),
+            signs: config.signs.clone(),
+            binary_signs: config.binary_signs.clone(),
+            before: config.before.clone(),
+            after: config.after.clone(),
+            env: config.env.clone(),
+        }
+    }
+
+    fn restore_into(&self, config: &mut Config) {
+        config.crates = self.crates.clone();
+        config.changelog = self.changelog.clone();
+        config.signs = self.signs.clone();
+        config.binary_signs = self.binary_signs.clone();
+        config.before = self.before.clone();
+        config.after = self.after.clone();
+        config.env = self.env.clone();
+    }
 }
 
 impl<'a> PerCrateOverlayGuard<'a> {
@@ -332,6 +385,7 @@ impl<'a> PerCrateOverlayGuard<'a> {
         let saved_skip_stages = ctx.options.skip_stages.clone();
         let saved_tag = ctx.template_vars().get("Tag").cloned();
         let saved_previous_tag = ctx.template_vars().get("PreviousTag").cloned();
+        let saved_overlay = OverlayFields::capture(&ctx.config);
         Self {
             ctx,
             saved_dist,
@@ -339,7 +393,17 @@ impl<'a> PerCrateOverlayGuard<'a> {
             saved_skip_stages,
             saved_tag,
             saved_previous_tag,
+            saved_overlay,
         }
+    }
+
+    /// Rewind the overlay-mutated `config` fields to the captured
+    /// baseline. Call at the start of each iteration *before*
+    /// `apply_workspace_overlay` so a value set (or appended) by a prior
+    /// workspace can't leak into the current one.
+    fn reset_overlay_fields(&mut self) {
+        let saved = self.saved_overlay.clone();
+        saved.restore_into(&mut self.ctx.config);
     }
 
     /// Per-iteration `skip_stages` reset baseline. Returns the snapshot
@@ -370,6 +434,8 @@ impl Drop for PerCrateOverlayGuard<'_> {
     /// iteration's `ctx`, so neither is supported. The standard RAII
     /// drop path is the only sound consumption.
     fn drop(&mut self) {
+        let saved_overlay = self.saved_overlay.clone();
+        saved_overlay.restore_into(&mut self.ctx.config);
         self.ctx.config.dist = std::mem::take(&mut self.saved_dist);
         self.ctx.options.selected_crates = std::mem::take(&mut self.saved_selected_crates);
         self.ctx.options.skip_stages = std::mem::take(&mut self.saved_skip_stages);
@@ -2311,6 +2377,108 @@ mod tests {
         assert_eq!(
             ctx.options.skip_stages, original_skip,
             "Drop must restore ctx.options.skip_stages on panic"
+        );
+    }
+
+    /// Each per-crate iteration must apply its workspace overlay to a
+    /// clean baseline. `apply_workspace_overlay` overwrites `changelog` /
+    /// `signs` only when the workspace sets them and *appends* to `env`,
+    /// so without the guard's per-iteration `reset_overlay_fields` a value
+    /// set by workspace A would leak into workspace B (which leaves it
+    /// unset) and `env` would accumulate A's entries every iteration.
+    #[test]
+    fn per_crate_overlay_does_not_leak_across_workspaces() {
+        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig, WorkspaceConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::signing::SignConfig;
+
+        fn ws(name: &str, set_overlay: bool) -> WorkspaceConfig {
+            WorkspaceConfig {
+                name: name.to_string(),
+                crates: vec![CrateConfig {
+                    name: name.to_string(),
+                    ..CrateConfig::default()
+                }],
+                changelog: set_overlay.then(|| ChangelogConfig {
+                    format: Some(format!("{name}-format")),
+                    ..ChangelogConfig::default()
+                }),
+                signs: if set_overlay {
+                    vec![SignConfig {
+                        id: Some(format!("{name}-sign")),
+                        ..SignConfig::default()
+                    }]
+                } else {
+                    Vec::new()
+                },
+                env: set_overlay.then(|| vec![format!("{name}_KEY=1")]),
+                ..WorkspaceConfig::default()
+            }
+        }
+
+        // Baseline config carries no changelog/signs/env so any value
+        // observed after the overlay came from the workspace, not the
+        // top-level config.
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        let workspace_a = ws("alpha", /* set_overlay */ true);
+        let workspace_b = ws("beta", /* set_overlay */ false);
+
+        let mut guard = PerCrateOverlayGuard::capture(&mut ctx);
+
+        // Iteration A: workspace alpha sets every overlay field.
+        guard.reset_overlay_fields();
+        crate::commands::helpers::apply_workspace_overlay(
+            &mut guard.ctx_mut().config,
+            &workspace_a,
+        );
+        {
+            let cfg = &guard.ctx_mut().config;
+            assert_eq!(
+                cfg.changelog.as_ref().and_then(|c| c.format.as_deref()),
+                Some("alpha-format")
+            );
+            assert_eq!(cfg.signs.len(), 1);
+            assert_eq!(
+                cfg.env.as_deref(),
+                Some(["alpha_KEY=1".to_string()].as_slice())
+            );
+        }
+
+        // Iteration B: workspace beta leaves every overlay field unset, so
+        // after the reset+overlay it must NOT inherit alpha's values, and
+        // env must not have accumulated alpha's entry.
+        guard.reset_overlay_fields();
+        crate::commands::helpers::apply_workspace_overlay(
+            &mut guard.ctx_mut().config,
+            &workspace_b,
+        );
+        {
+            let cfg = &guard.ctx_mut().config;
+            assert!(
+                cfg.changelog.is_none(),
+                "workspace B must not inherit A's changelog"
+            );
+            assert!(
+                cfg.signs.is_empty(),
+                "workspace B must not inherit A's signs"
+            );
+            assert!(
+                cfg.env.as_ref().map(|e| e.is_empty()).unwrap_or(true),
+                "env must not accumulate A's entries into B's iteration: {:?}",
+                cfg.env
+            );
+        }
+
+        // Drop must rewind the overlay fields back to the empty baseline.
+        drop(guard);
+        assert!(ctx.config.changelog.is_none());
+        assert!(ctx.config.signs.is_empty());
+        assert!(
+            ctx.config
+                .env
+                .as_ref()
+                .map(|e| e.is_empty())
+                .unwrap_or(true)
         );
     }
 

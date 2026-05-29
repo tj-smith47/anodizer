@@ -114,8 +114,63 @@ pub struct PreservedDistContext {
 ///
 /// Run before the per-iteration worktree is destroyed so the preserved
 /// bytes survive the harness loop's teardown.
+/// Bail before wiping a `dest` that looks like real user data rather
+/// than a preserve target.
+///
+/// Safe-to-wipe cases (return `Ok`):
+/// - `dest` does not exist (first run).
+/// - `dest` is an empty directory.
+/// - `dest` already carries a preserved-dist manifest
+///   (`context.json` / `artifacts.json`) — a re-preserve into the same
+///   target is intended and idempotent.
+///
+/// Everything else (a non-empty directory with no manifest, or a path
+/// that exists but isn't a directory) is treated as data the operator
+/// did not mean to destroy.
+fn guard_preserve_dest(dest: &Path) -> Result<()> {
+    let meta = match std::fs::symlink_metadata(dest) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(e)
+                .with_context(|| format!("inspecting preserve-dist dest {}", dest.display()));
+        }
+    };
+    if !meta.is_dir() {
+        anyhow::bail!(
+            "refusing to overwrite --preserve-dist target {}: it exists and is not a directory. \
+             Point --preserve-dist at an empty or non-existent directory.",
+            dest.display()
+        );
+    }
+    let mut entries = std::fs::read_dir(dest)
+        .with_context(|| format!("reading preserve-dist dest {}", dest.display()))?
+        .peekable();
+    if entries.peek().is_none() {
+        return Ok(()); // empty dir — safe
+    }
+    // Non-empty: only proceed if it's plainly a prior preserve target.
+    if dest.join("context.json").exists() || dest.join("artifacts.json").exists() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "refusing to wipe --preserve-dist target {}: directory is non-empty and does not look like \
+         a preserved-dist tree (no context.json / artifacts.json). Point --preserve-dist at an empty \
+         or non-existent directory to avoid accidental data loss.",
+        dest.display()
+    )
+}
+
 pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()> {
     let src = worktree_path.join("dist");
+    // Refuse to wipe a non-empty `dest` that isn't recognizably a prior
+    // preserve target. `--preserve-dist=<dir>` feeds straight into the
+    // unconditional `remove_dir_all` below, so a fat-fingered path (a
+    // source tree, a home dir) would otherwise be silently destroyed.
+    // An empty / non-existent dest is the normal case; a dest that
+    // already carries a preserved-dist manifest is a re-run we may
+    // overwrite.
+    guard_preserve_dest(dest)?;
     // Clear dest first — defends against a prior aborted preservation
     // attempt that left partial bytes behind. Tolerate NotFound
     // (first-run, dest doesn't exist yet) but surface every other
@@ -1480,6 +1535,55 @@ mod tests {
         assert!(
             dest.join("context.json").exists(),
             "context.json must be at flat root when dest is the base"
+        );
+    }
+
+    #[test]
+    fn preserve_bails_on_non_empty_non_manifest_dest() {
+        let worktree = TempDir::new().unwrap();
+        std::fs::create_dir_all(worktree.path().join("dist")).unwrap();
+        let dest = TempDir::new().unwrap();
+        // Operator fat-fingered --preserve-dist at a real directory full
+        // of data with no preserved-dist manifest.
+        std::fs::write(dest.path().join("important.txt"), b"do not delete").unwrap();
+        std::fs::create_dir_all(dest.path().join("src")).unwrap();
+
+        let err = preserve_dist_tree(worktree.path(), dest.path())
+            .expect_err("must refuse to wipe a non-empty, non-manifest dest");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("refusing to wipe") && msg.contains("empty or non-existent"),
+            "error must be actionable: {msg}"
+        );
+        assert!(
+            dest.path().join("important.txt").exists(),
+            "operator data must survive the bail"
+        );
+    }
+
+    #[test]
+    fn preserve_allows_empty_dest() {
+        let worktree = TempDir::new().unwrap();
+        std::fs::create_dir_all(worktree.path().join("dist")).unwrap();
+        let dest = TempDir::new().unwrap(); // exists but empty
+        preserve_dist_tree(worktree.path(), dest.path())
+            .expect("empty dest is the normal case and must be allowed");
+    }
+
+    #[test]
+    fn preserve_allows_prior_preserve_target() {
+        let worktree = TempDir::new().unwrap();
+        std::fs::create_dir_all(worktree.path().join("dist")).unwrap();
+        let dest = TempDir::new().unwrap();
+        // A prior preserve target carries the manifest; re-preserving is
+        // intended and idempotent, so it must be allowed to overwrite.
+        std::fs::write(dest.path().join("context.json"), b"{}").unwrap();
+        std::fs::write(dest.path().join("stale.tar.gz"), b"old").unwrap();
+        preserve_dist_tree(worktree.path(), dest.path())
+            .expect("a prior preserve target must be overwritable");
+        assert!(
+            !dest.path().join("stale.tar.gz").exists(),
+            "stale bytes from the prior preserve must be cleared"
         );
     }
 }
