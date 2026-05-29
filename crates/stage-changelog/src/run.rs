@@ -279,19 +279,14 @@ fn handle_github_native_changelog(
     // provenance is GitHub" to downstream consumers, so it must not be
     // set when every body is empty.
     let mut any_github_body = false;
+    // Crates lacking `release.github` are collected here and reported in a
+    // single aggregated warn after the loop — one line per workspace instead
+    // of one per crate (a wide workspace would otherwise emit dozens).
+    let mut missing_github: Vec<String> = Vec::new();
     for crate_cfg in &crates {
         let github_cfg = crate_cfg.release.as_ref().and_then(|r| r.github.as_ref());
         let Some(repo) = github_cfg else {
-            // Warn (not status) so a missing `release.github` on
-            // a crate that should have one is visible in CI output
-            // instead of buried in info-level logs.
-            log.warn(&format!(
-                "changelog: use=github-native but crate '{}' has no release.github \
-                 config — skipping (no GitHub release body will be generated for \
-                 this crate; if it should have a release, add release.github.owner \
-                 and release.github.name)",
-                crate_cfg.name
-            ));
+            missing_github.push(crate_cfg.name.clone());
             ctx.stage_outputs
                 .changelogs
                 .insert(crate_cfg.name.clone(), String::new());
@@ -347,6 +342,20 @@ fn handle_github_native_changelog(
         if dry_run_or_snapshot || !body.trim().is_empty() {
             any_github_body = true;
         }
+    }
+
+    // Aggregated skip warning: one line listing every crate without
+    // `release.github`, so a wide workspace doesn't drown the log in
+    // near-identical per-crate warnings. Warn (not status) so a genuinely
+    // missing config stays visible in CI output.
+    if !missing_github.is_empty() {
+        log.warn(&format!(
+            "changelog: use=github-native — skipping github-native notes for {} \
+             crate(s) without release.github: {} (if any should have a release, \
+             add release.github.owner and release.github.name)",
+            missing_github.len(),
+            missing_github.join(", ")
+        ));
     }
 
     ctx.stage_outputs.github_native_changelog = any_github_body;

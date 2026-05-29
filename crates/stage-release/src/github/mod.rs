@@ -623,6 +623,13 @@ pub(crate) fn run_github_backend(
         // Rate limit check before release create/update API call.
         check_github_rate_limit_with_env(&rate_limit_client, &token_str, 10, env_source).await;
 
+        // True when this invocation merely re-touches a release that is
+        // already live (not a draft) — the publish-pipeline pass that runs
+        // after the release stage already created and published it. In that
+        // case the PATCH is idempotent and the create/publish log lines would
+        // be a confusing duplicate, so they are replaced by a single
+        // `release already live` line below.
+        let mut retouch_live = false;
         let release = if let Some(ref existing) = existing_draft {
             // Update the existing draft release via PATCH.
             let route = format!(
@@ -649,10 +656,18 @@ pub(crate) fn run_github_backend(
             // An existing release was found by tag (append/prepend/keep-existing
             // mode). PATCH it instead of POSTing a new one, which would cause
             // a 422 "tag already exists" error from GitHub.
-            log.status(&format!(
-                "updating existing release '{}' (id={}, mode={})",
-                release_name, existing.id, release_mode
-            ));
+            if existing.draft {
+                log.status(&format!(
+                    "updating existing release '{}' (id={}, mode={})",
+                    release_name, existing.id, release_mode
+                ));
+            } else {
+                retouch_live = true;
+                log.status(&format!(
+                    "release already live (id={}, mode={})",
+                    existing.id, release_mode
+                ));
+            }
             let route = format!(
                 "/repos/{}/{}/releases/{}",
                 github.owner, github.name, existing.id
@@ -705,10 +720,12 @@ pub(crate) fn run_github_backend(
             })?
         };
 
-        log.status(&format!(
-            "created GitHub Release '{}' (id={}) on {}/{}",
-            release_name, release.id, github.owner, github.name
-        ));
+        if !retouch_live {
+            log.status(&format!(
+                "created GitHub Release '{}' (id={}) on {}/{}",
+                release_name, release.id, github.owner, github.name
+            ));
+        }
 
         // Construct the public release URL deterministically from
         // owner/repo/tag, matching GoReleaser `internal/pipe/release/scm.go:26-33`.
@@ -1146,10 +1163,12 @@ pub(crate) fn run_github_backend(
                         tag, github.owner, github.name
                     )
                 })?;
-            log.status(&format!(
-                "published release '{}' (draft -> live)",
-                release_name
-            ));
+            if !retouch_live {
+                log.status(&format!(
+                    "published release '{}' (draft -> live)",
+                    release_name
+                ));
+            }
         }
 
         Ok::<String, anyhow::Error>(html_url)
@@ -2112,6 +2131,10 @@ mod orchestrator_tests {
         }
     }
 
+    /// `run_github_backend`'s success payload: `(html_url, download_base,
+    /// owner, repo)` or `None` when the backend signals skip.
+    type BackendOutcome = Result<Option<(String, String, String, String)>>;
+
     /// Build the four ambient handles `run_github_backend` consumes.
     fn run_backend(
         rt: &tokio::runtime::Runtime,
@@ -2121,7 +2144,7 @@ mod orchestrator_tests {
         spec: &GithubReleaseSpec<'_>,
         opts: &UploadOpts,
         artifacts: &[(PathBuf, Option<String>)],
-    ) -> Result<Option<(String, String, String, String)>> {
+    ) -> BackendOutcome {
         let log = StageLogger::new("release", Verbosity::Normal);
         let env = BackendEnv {
             rt,
@@ -2131,6 +2154,30 @@ mod orchestrator_tests {
         };
         let release_cfg = crate_cfg.release.as_ref().expect("release cfg present");
         run_github_backend(&env, crate_cfg, release_cfg, spec, opts, artifacts)
+    }
+
+    /// Like [`run_backend`] but attaches a [`LogCapture`] so a test can assert
+    /// on the status lines the backend emits (not just the HTTP calls it makes).
+    #[allow(clippy::too_many_arguments)]
+    fn run_backend_capturing(
+        rt: &tokio::runtime::Runtime,
+        ctx: &Context,
+        token: &Option<String>,
+        crate_cfg: &CrateConfig,
+        spec: &GithubReleaseSpec<'_>,
+        opts: &UploadOpts,
+        artifacts: &[(PathBuf, Option<String>)],
+    ) -> (BackendOutcome, anodizer_core::log::LogCapture) {
+        let (log, capture) = StageLogger::with_capture("release", Verbosity::Normal);
+        let env = BackendEnv {
+            rt,
+            ctx,
+            log: &log,
+            token,
+        };
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg present");
+        let result = run_github_backend(&env, crate_cfg, release_cfg, spec, opts, artifacts);
+        (result, capture)
     }
 
     // ---------------------------------------------------------------------
@@ -2393,6 +2440,85 @@ mod orchestrator_tests {
                 .iter()
                 .any(|e| e.method == "POST" && e.path == "/repos/o/r/releases"),
             "use_existing_draft must NOT POST a new release (would 422 on duplicate tag); calls: {entries:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // 3b. keep-existing re-touch of an already-live release — the publish
+    //     pipeline pass that runs after the release stage already created and
+    //     published the release. The PATCH stays idempotent, but the
+    //     create/publish log lines collapse to a single `release already live`.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn keep_existing_retouch_of_live_release_logs_already_live_only() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        // An already-published (draft=false) release found by tag.
+        let live = release_json(addr, 77, false, "v1.2.3");
+
+        let routes = vec![
+            // get_by_tag lookup finds the live release.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/tags/v1.2.3",
+                response: http_ok(live.clone()),
+                times: Some(1),
+            },
+            // PATCH the existing release (idempotent update).
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/repos/o/r/releases/77",
+                response: http_ok(live.clone()),
+                times: None,
+            },
+        ];
+        let (_addr2, _log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts: Vec<(PathBuf, Option<String>)> = Vec::new();
+
+        // mode=keep-existing, draft=false (user wants the release live).
+        let spec = GithubReleaseSpec {
+            tag: "v1.2.3",
+            name: "v1.2.3",
+            body: "release body",
+            mode: "keep-existing",
+            draft: false,
+            prerelease: false,
+            make_latest: &None,
+            target_commitish: &None,
+            discussion_category: &None,
+        };
+
+        let (result, capture) = run_backend_capturing(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &spec,
+            &base_opts(),
+            &artifacts,
+        );
+        result.expect("backend succeeds").expect("returns Some");
+
+        let messages: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("release already live")),
+            "re-touch of a live release must log the concise already-live line; got: {messages:?}"
+        );
+        assert!(
+            !messages
+                .iter()
+                .any(|m| m.contains("created GitHub Release")),
+            "re-touch must NOT re-emit the create line; got: {messages:?}"
+        );
+        assert!(
+            !messages.iter().any(|m| m.contains("published release")),
+            "re-touch must NOT re-emit the publish line; got: {messages:?}"
         );
     }
 

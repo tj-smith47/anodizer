@@ -62,7 +62,10 @@ struct SignJob {
 
 /// Execute a single prepared sign job, returning `Ok(())` on success.
 fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
-    log.status(&format!(
+    // Per-artifact detail — at default verbosity the `signing N artifacts`
+    // summary (emitted once before this loop) is the status-level signal; the
+    // per-artifact `sign X -> Y` line would flood the log on wide fan-outs.
+    log.verbose(&format!(
         "[{}] {} {} -> {}",
         job.id_label, job.label, job.artifact_display, job.signature_display
     ));

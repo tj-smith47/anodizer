@@ -775,6 +775,78 @@ fn test_changelog_stage_github_native_skips_when_no_repo_configured() {
         .expect("changelog stage should skip cleanly when no crate has release.github");
 }
 
+#[test]
+fn test_changelog_github_native_aggregates_missing_release_github_warnings() {
+    // A mixed workspace where one crate HAS release.github (so the stage
+    // does not take the all-library early return) and several others lack it
+    // must emit ONE aggregated warn listing the missing ones, not one warn
+    // per crate. Runs in dry-run so the configured crate's generate-notes
+    // call is suppressed (no network).
+    use anodizer_core::config::{ChangelogConfig, CrateConfig, ReleaseConfig, ScmRepoConfig};
+
+    let mut crates: Vec<CrateConfig> = vec![CrateConfig {
+        name: "core".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        release: Some(ReleaseConfig {
+            github: Some(ScmRepoConfig {
+                owner: "owner".to_string(),
+                name: "repo".to_string(),
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }];
+    crates.extend(["alpha", "beta", "gamma"].iter().map(|name| CrateConfig {
+        name: name.to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        ..Default::default()
+    }));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .token(Some("test-token".to_string()))
+        .dry_run(true)
+        .dist(tmp.path().join("dist"))
+        .crates(crates)
+        .build();
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+    ctx.config.changelog = Some(ChangelogConfig {
+        use_source: Some("github-native".to_string()),
+        ..Default::default()
+    });
+
+    ChangelogStage
+        .run(&mut ctx)
+        .expect("changelog stage should skip cleanly");
+
+    let warns = capture.warn_messages();
+    let skip_warns: Vec<&String> = warns
+        .iter()
+        .filter(|m| m.contains("skipping github-native notes"))
+        .collect();
+    assert_eq!(
+        skip_warns.len(),
+        1,
+        "expected exactly one aggregated skip warn, got: {warns:?}"
+    );
+    // The single line must still name every skipped crate.
+    let line = skip_warns[0];
+    for name in ["alpha", "beta", "gamma"] {
+        assert!(
+            line.contains(name),
+            "aggregated warn must name crate '{name}': {line}"
+        );
+    }
+    assert!(
+        line.contains("3 crate(s)"),
+        "aggregated warn must report the count: {line}"
+    );
+}
+
 // -----------------------------------------------------------------------
 // Test include + exclude together
 // -----------------------------------------------------------------------

@@ -341,12 +341,18 @@ impl ArtifactRegistry {
         let path_str = crate::util::normalize_path_separators(&artifact.path.to_string_lossy());
         artifact.path = PathBuf::from(path_str);
 
-        // Warn on duplicate names for uploadable artifact types.
+        // Warn on duplicate names for uploadable artifact types — but only when
+        // the re-registration is a genuine conflict (a different on-disk path
+        // for the same name). An identical re-registration (same resolved path)
+        // is a benign idempotent add (e.g. cross-target `install.sh.sha256`
+        // produced once per shard) and must stay silent; warning on it floods
+        // the default-verbosity log with duplicate, non-actionable lines.
         if is_uploadable(artifact.kind)
             && let Some(existing) = self
                 .artifacts
                 .iter()
                 .find(|a| is_uploadable(a.kind) && a.name == name)
+            && existing.path != artifact.path
         {
             // Route through `tracing::warn!` so the subscriber-level redaction
             // layer applies and the warning is intercept-friendly for tests.
@@ -1634,5 +1640,101 @@ mod tests {
                 excluded
             );
         }
+    }
+
+    /// Shared buffer writer that captures `tracing` output into a `Vec<u8>`.
+    #[derive(Clone, Default)]
+    struct BufferWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl BufferWriter {
+        fn captured(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).to_string()
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufferWriter {
+        type Writer = BufferWriterGuard<'a>;
+        fn make_writer(&'a self) -> Self::Writer {
+            BufferWriterGuard(self.0.lock().unwrap())
+        }
+    }
+
+    struct BufferWriterGuard<'a>(std::sync::MutexGuard<'a, Vec<u8>>);
+    impl std::io::Write for BufferWriterGuard<'_> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Run `body` under a WARN-level capturing subscriber and return the
+    /// emitted text so assertions can inspect duplicate-registration warnings.
+    fn capture_warnings<F: FnOnce()>(body: F) -> String {
+        let buf = BufferWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_max_level(tracing::Level::WARN)
+            .without_time()
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, body);
+        buf.captured()
+    }
+
+    fn upload_artifact(kind: ArtifactKind, name: &str, path: &str) -> Artifact {
+        Artifact {
+            kind,
+            name: name.to_string(),
+            path: PathBuf::from(path),
+            target: None,
+            crate_name: "anodizer".to_string(),
+            metadata: Default::default(),
+            size: None,
+        }
+    }
+
+    #[test]
+    fn identical_reregistration_is_silent() {
+        let captured = capture_warnings(|| {
+            let mut registry = ArtifactRegistry::new();
+            // Same name AND same resolved path, registered four times — the
+            // benign cross-shard `install.sh.sha256` case.
+            for _ in 0..4 {
+                registry.add(upload_artifact(
+                    ArtifactKind::Checksum,
+                    "install.sh.sha256",
+                    "dist/install.sh.sha256",
+                ));
+            }
+        });
+        assert!(
+            !captured.contains("already registered"),
+            "identical re-registration must not warn, got: {captured:?}"
+        );
+    }
+
+    #[test]
+    fn conflicting_reregistration_still_warns() {
+        let captured = capture_warnings(|| {
+            let mut registry = ArtifactRegistry::new();
+            // Same name but a DIFFERENT path — a genuine upload-collision risk.
+            registry.add(upload_artifact(
+                ArtifactKind::Archive,
+                "app.tar.gz",
+                "dist/app.tar.gz",
+            ));
+            registry.add(upload_artifact(
+                ArtifactKind::Archive,
+                "app.tar.gz",
+                "dist/other/app.tar.gz",
+            ));
+        });
+        assert!(
+            captured.contains("already registered"),
+            "conflicting re-registration must still warn, got: {captured:?}"
+        );
     }
 }
