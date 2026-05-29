@@ -8,10 +8,13 @@
 //! moderation/validation state up to `timeout`, sampling every
 //! `interval`, and surfaces the result as part of the release summary.
 //!
-//! Defaults: `enabled: true`, `interval: 30s`, `timeout: 30m`. Callers
-//! that want a fire-and-forget publish (CI without long-running waits)
-//! either set `enabled: false` per-publisher or pass
-//! `--no-post-publish-poll` globally.
+//! Defaults: `enabled: false`, `interval: 30s`, `timeout: 30m`. The
+//! human-moderation queues these publishers feed routinely take
+//! HOURS to DAYS to clear; blocking a CI job for that long is wrong by
+//! default. Operators who genuinely want in-band verification opt in
+//! per-publisher with `post_publish_poll: { enabled: true }`. Operators
+//! who want global opt-out (e.g., already opted-in via top-level
+//! config) keep `--no-post-publish-poll` as the override.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -25,9 +28,12 @@ use super::HumanDuration;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct PostPublishPollConfig {
-    /// Whether to poll at all. Default `true`. Setting `false` disables
-    /// polling without removing the config block (parity with every
-    /// `skip:` toggle elsewhere in the schema).
+    /// Whether to poll at all. Default `false` — the upstream moderation
+    /// queues these publishers feed (Chocolatey, winget-pkgs) routinely
+    /// take HOURS to DAYS; the publish stage cannot reasonably block on
+    /// them in a CI workflow. Opt in to in-band verification by setting
+    /// `true` per-publisher (e.g. when running locally and willing to
+    /// wait).
     pub enabled: bool,
     /// How long to wait between successive status checks. Default `30s`.
     pub interval: HumanDuration,
@@ -47,7 +53,7 @@ impl PostPublishPollConfig {
 impl Default for PostPublishPollConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             interval: HumanDuration(Self::DEFAULT_INTERVAL),
             timeout: HumanDuration(Self::DEFAULT_TIMEOUT),
         }
@@ -61,7 +67,7 @@ mod tests {
     #[test]
     fn defaults_match_spec() {
         let c = PostPublishPollConfig::default();
-        assert!(c.enabled);
+        assert!(!c.enabled, "polling is opt-in — defaults to disabled");
         assert_eq!(c.interval.duration(), std::time::Duration::from_secs(30));
         assert_eq!(
             c.timeout.duration(),
@@ -72,7 +78,7 @@ mod tests {
     #[test]
     fn empty_yaml_yields_defaults() {
         let c: PostPublishPollConfig = serde_yaml_ng::from_str("{}").unwrap();
-        assert!(c.enabled);
+        assert!(!c.enabled);
         assert_eq!(c.interval.duration(), std::time::Duration::from_secs(30));
         assert_eq!(
             c.timeout.duration(),

@@ -481,21 +481,19 @@ fn resolve_poll_config_returns_none_when_disabled() {
 }
 
 #[test]
-fn resolve_poll_config_returns_default_when_unset() {
+fn resolve_poll_config_returns_none_when_unset() {
+    // Polling defaults to disabled — moderation-queue waits (Chocolatey,
+    // winget-pkgs) routinely take hours to days, and blocking a CI job on
+    // that is wrong by default. An unset `post_publish_poll:` block
+    // resolves to `None` so the publisher emits `NotPolled` rather than
+    // entering the polling fan-out with an unwanted 30-min budget.
     use anodizer_core::config::Config;
     use anodizer_core::context::{Context, ContextOptions};
 
     let ctx = Context::new(Config::default(), ContextOptions::default());
     let cfg = super::resolve_poll_config(&ctx, None);
-    assert!(cfg.is_some(), "unset block should default to enabled");
-    let cfg = cfg.unwrap();
-    assert!(cfg.enabled);
-    assert_eq!(
-        cfg.interval.duration(),
-        PostPublishPollConfig::DEFAULT_INTERVAL
-    );
-    assert_eq!(
-        cfg.timeout.duration(),
-        PostPublishPollConfig::DEFAULT_TIMEOUT
+    assert!(
+        cfg.is_none(),
+        "unset block should default to disabled (no polling)"
     );
 }

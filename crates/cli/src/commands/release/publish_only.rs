@@ -196,29 +196,49 @@ pub(super) fn run_per_crate(
         })
         .unwrap_or_default();
 
-    for crate_name in &crate_order {
-        let crate_dist = dist_base.join(crate_name);
-        log.status(&format!(
-            "publish-only: publishing crate '{crate_name}' from {}",
-            crate_dist.display()
-        ));
-        // Reset the artifact registry before each crate so artifacts from a
-        // prior crate's pipeline don't leak into the next one's sign/upload.
-        ctx.artifacts = ArtifactRegistry::new();
-        // Scope ctx.config to the current crate's workspace so stages
-        // (changelog, signs, publishers) see the right crates/overlay
-        // values. Flat configs (no `workspaces:`) fall through unchanged.
-        if let Some(ws) = workspace_for.get(crate_name.as_str()) {
-            crate::commands::helpers::apply_workspace_overlay(&mut ctx.config, ws);
+    // Capture and restore selected_crates around the loop. Publishers
+    // resolve their effective crate set via `effective_publish_crates`,
+    // which falls back to `util::all_crates` (workspace-flattened, all 4)
+    // when `selected_crates` is empty. Without per-iteration scoping
+    // every publisher in cfgd-core's iteration would iterate every
+    // workspace crate, find no applicable config, and either skip-all
+    // (which the homebrew publisher classifies as a `failed` outcome to
+    // surface "nothing pushed") or attempt to publish for crates that
+    // aren't in the current iteration's preserved dist.
+    let prev_selected = ctx.options.selected_crates.clone();
+    let iteration_result = (|| -> Result<()> {
+        for crate_name in &crate_order {
+            let crate_dist = dist_base.join(crate_name);
+            log.status(&format!(
+                "publish-only: publishing crate '{crate_name}' from {}",
+                crate_dist.display()
+            ));
+            // Reset the artifact registry before each crate so artifacts
+            // from a prior crate's pipeline don't leak into the next one's
+            // sign/upload.
+            ctx.artifacts = ArtifactRegistry::new();
+            // Scope ctx.config to the current crate's workspace so stages
+            // (changelog, signs, publishers) see the right crates/overlay
+            // values. Flat configs (no `workspaces:`) fall through
+            // unchanged.
+            if let Some(ws) = workspace_for.get(crate_name.as_str()) {
+                crate::commands::helpers::apply_workspace_overlay(&mut ctx.config, ws);
+            }
+            // Scope selected_crates to the current crate so every
+            // publisher's effective-crates resolution sees a single entry
+            // instead of the workspace-flattened fallback.
+            ctx.options.selected_crates = vec![crate_name.clone()];
+            let per_crate_opts = RunOpts {
+                dry_run: opts.dry_run,
+                no_preflight: true,
+                silent_meta: true,
+            };
+            run_one_crate_dist(ctx, config, log, &per_crate_opts, crate_dist)?;
         }
-        let per_crate_opts = RunOpts {
-            dry_run: opts.dry_run,
-            no_preflight: true,
-            silent_meta: true,
-        };
-        run_one_crate_dist(ctx, config, log, &per_crate_opts, crate_dist)?;
-    }
-    Ok(())
+        Ok(())
+    })();
+    ctx.options.selected_crates = prev_selected;
+    iteration_result
 }
 
 /// Inner body of the publish-only pipeline for a single dist root.

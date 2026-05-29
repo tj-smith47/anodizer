@@ -244,15 +244,15 @@ fn handle_github_native_changelog(
     });
     if !has_repo {
         // No crate in the current scope has a GitHub release configured
-        // (e.g. a library-only workspace). The stage has nothing to fetch;
-        // skip cleanly with a warning instead of bailing the whole pipeline.
-        // Per-crate publish-only scopes ctx.config.crates to one workspace
-        // at a time; library workspaces legitimately omit release.github
-        // and should not block the stage from completing.
-        log.warn(
-            "changelog: use=github-native but no crate in scope has \
-             release.github configured — skipping (no GitHub release \
-             notes will be generated for this crate set)",
+        // (e.g. a library-only workspace in per-crate publish-only). The
+        // stage has nothing to fetch and nothing to write — return Ok
+        // silently. A library workspace legitimately omits release.github;
+        // there is nothing for the operator to fix, so a warn-level log
+        // would be noise that pushes them to add a `skip: [changelog]`
+        // toggle just to silence it.
+        log.verbose(
+            "changelog: use=github-native — no crate in scope has \
+             release.github; skipping (library workspace)",
         );
         return Ok(());
     }

@@ -1375,7 +1375,13 @@ mod tests {
     /// docs.
     #[test]
     fn skip_path_emits_not_polled_for_each_configured_publisher() {
-        use anodizer_core::config::{ChocolateyConfig, WingetConfig};
+        // Polling is opt-in per-publisher (PostPublishPollConfig default
+        // is `enabled: false` because moderation queues take hours-to-
+        // days). The skip-path test must therefore explicitly enable
+        // polling on both publisher blocks before asserting that
+        // `--no-post-publish-poll` overrides emit `NotPolled` rows for
+        // each eligible publisher.
+        use anodizer_core::config::{ChocolateyConfig, PostPublishPollConfig, WingetConfig};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -1385,11 +1391,19 @@ mod tests {
             publish: Some(PublishConfig {
                 chocolatey: Some(ChocolateyConfig {
                     name: Some("mylib-choco".to_string()),
+                    post_publish_poll: Some(PostPublishPollConfig {
+                        enabled: true,
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 }),
                 winget: Some(WingetConfig {
                     publisher: Some("TJSmith".to_string()),
                     name: Some("MyLib".to_string()),
+                    post_publish_poll: Some(PostPublishPollConfig {
+                        enabled: true,
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 }),
                 ..Default::default()
