@@ -265,6 +265,8 @@ crates:
         dockerfile: Dockerfile
         images:
           - ghcr.io/tj-smith47/anodizer
+        labels:
+          io.modelcontextprotocol.server.name: io.github.tj-smith47/anodizer
         tags:
           - "{{ .Version }}"
           - latest
