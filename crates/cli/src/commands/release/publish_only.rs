@@ -105,12 +105,26 @@ pub(super) fn detect_dist_layout(dist: &Path) -> Result<DistLayout> {
 /// per-crate-subdir criterion used by [`detect_dist_layout`] so the
 /// `--crate` dispatch in `mod.rs` routes to the same subdir layout the
 /// no-flag auto-iteration would.
-pub(super) fn crate_subdir_has_manifest(dist: &Path, crate_name: &str) -> bool {
+pub(super) fn crate_subdir_has_manifest(dist: &Path, crate_name: &str, log: &StageLogger) -> bool {
     let subdir = dist.join(crate_name);
-    subdir.is_dir()
-        && discover_sharded_manifests(&subdir, "context")
-            .map(|m| !m.is_empty())
-            .unwrap_or(false)
+    if !subdir.is_dir() {
+        return false;
+    }
+    match discover_sharded_manifests(&subdir, "context") {
+        Ok(manifests) => !manifests.is_empty(),
+        Err(e) => {
+            // A real read error (permissions, transient IO) routes the
+            // crate to the flat path. Surface the reason so an operator
+            // debugging an unexpected layout choice isn't left guessing
+            // why a present subdir was skipped.
+            log.verbose(&format!(
+                "publish-only --crate: scanning {} for context manifests failed: {e}; \
+                 treating crate '{crate_name}' as having no per-crate subdir",
+                subdir.display()
+            ));
+            false
+        }
+    }
 }
 
 /// Names of the env vars that gate the publish-only credential
@@ -385,6 +399,16 @@ impl Drop for PerCrateOverlayGuard<'_> {
 /// `<crate-prev>...<crate-tag>` rather than spanning a foreign crate's
 /// tag. Best-effort: a missing `tag_template` or a git lookup failure
 /// leaves the upstream value in place rather than aborting the publish.
+///
+/// Rendering `tag_template` (rather than reusing a preserved per-crate
+/// `git_tag`) is the only option here: publish-only rehydrates from the
+/// `PreservedDistContext` manifest written by `check determinism
+/// --preserve-dist`, whose schema carries only `artifacts` / `targets` /
+/// `version` / `commit` — no tag field. The `git_tag` persisted by
+/// `release --split` lives in a different (`SplitContext`) manifest that
+/// this path never deserializes, so there is no preserved tag to prefer.
+/// Re-rendering against the shared, already-resolved `Version` recovers
+/// each crate's correct tag.
 fn apply_per_crate_tag(ctx: &mut Context, config: &Config, crate_name: &str, log: &StageLogger) {
     let tag_template = ctx
         .config
@@ -2297,9 +2321,41 @@ mod tests {
         use anodizer_core::config::{Config, CrateConfig, WorkspaceConfig};
         use anodizer_core::context::{Context, ContextOptions};
         use anodizer_core::log::{StageLogger, Verbosity};
+        use serial_test::serial;
 
         fn quiet_log() -> StageLogger {
             StageLogger::new("per-crate-tag-test", Verbosity::Quiet)
+        }
+
+        /// Run `body` with the process cwd swapped to a freshly-`git
+        /// init`ed empty temp repo, restoring the original cwd after.
+        ///
+        /// `apply_per_crate_tag`'s `PreviousTag` lookup shells to `git
+        /// describe` in the process cwd; without this the tag tests would
+        /// scan the real anodize checkout (non-hermetic, slow, and
+        /// dependent on whatever tags happen to be in the dev's tree). An
+        /// empty repo makes the lookup return an error fast — caught and
+        /// logged by `apply_per_crate_tag`, leaving `Tag` (the thing under
+        /// test) untouched. Process-wide cwd swap, so callers must be
+        /// `#[serial]`.
+        fn with_hermetic_git_cwd(body: impl FnOnce()) {
+            let tmp = tempfile::tempdir().unwrap();
+            assert!(
+                std::process::Command::new("git")
+                    .args(["init", "-q"])
+                    .current_dir(tmp.path())
+                    .status()
+                    .expect("spawn git init")
+                    .success(),
+                "git init must succeed for the hermetic tag-test repo",
+            );
+            let orig = std::env::current_dir().unwrap();
+            std::env::set_current_dir(tmp.path()).unwrap();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+            std::env::set_current_dir(orig).unwrap();
+            if let Err(payload) = result {
+                std::panic::resume_unwind(payload);
+            }
         }
 
         fn crate_cfg(name: &str, tag_template: &str) -> CrateConfig {
@@ -2327,31 +2383,34 @@ mod tests {
         /// restore, both inherit whichever tag `resolve_git_context`
         /// pinned once at HEAD.
         #[test]
+        #[serial]
         fn restores_per_crate_tag_from_tag_template() {
-            for (crate_name, tag_template, expect_tag) in [
-                ("cfgd", "v{{ Version }}", "v0.4.0"),
-                ("cfgd-core", "core-v{{ Version }}", "core-v0.4.0"),
-                (
-                    "cfgd-operator",
-                    "operator-v{{ Version }}",
-                    "operator-v0.4.0",
-                ),
-            ] {
-                let config = config_with_crates(vec![crate_cfg(crate_name, tag_template)]);
-                let mut ctx = Context::new(config.clone(), ContextOptions::default());
-                ctx.template_vars_mut().set("Version", "0.4.0");
-                // The global, HEAD-derived tag every iteration would
-                // otherwise carry.
-                ctx.template_vars_mut().set("Tag", "core-v0.4.0");
+            with_hermetic_git_cwd(|| {
+                for (crate_name, tag_template, expect_tag) in [
+                    ("cfgd", "v{{ Version }}", "v0.4.0"),
+                    ("cfgd-core", "core-v{{ Version }}", "core-v0.4.0"),
+                    (
+                        "cfgd-operator",
+                        "operator-v{{ Version }}",
+                        "operator-v0.4.0",
+                    ),
+                ] {
+                    let config = config_with_crates(vec![crate_cfg(crate_name, tag_template)]);
+                    let mut ctx = Context::new(config.clone(), ContextOptions::default());
+                    ctx.template_vars_mut().set("Version", "0.4.0");
+                    // The global, HEAD-derived tag every iteration would
+                    // otherwise carry.
+                    ctx.template_vars_mut().set("Tag", "core-v0.4.0");
 
-                apply_per_crate_tag(&mut ctx, &config, crate_name, &quiet_log());
+                    apply_per_crate_tag(&mut ctx, &config, crate_name, &quiet_log());
 
-                assert_eq!(
-                    ctx.template_vars().get("Tag").map(String::as_str),
-                    Some(expect_tag),
-                    "crate '{crate_name}' must carry its own tag, not the global HEAD tag",
-                );
-            }
+                    assert_eq!(
+                        ctx.template_vars().get("Tag").map(String::as_str),
+                        Some(expect_tag),
+                        "crate '{crate_name}' must carry its own tag, not the global HEAD tag",
+                    );
+                }
+            });
         }
 
         /// The crate may live in `config.workspaces` rather than the
@@ -2359,26 +2418,29 @@ mod tests {
         /// original config rather than the overlaid one). The lookup
         /// must fall back to the workspace list.
         #[test]
+        #[serial]
         fn finds_tag_template_in_workspace_fallback() {
-            let config = Config {
-                workspaces: Some(vec![WorkspaceConfig {
-                    name: "cfgd".to_string(),
-                    crates: vec![crate_cfg("cfgd", "v{{ Version }}")],
-                    ..WorkspaceConfig::default()
-                }]),
-                ..Config::default()
-            };
-            let mut ctx = Context::new(config.clone(), ContextOptions::default());
-            ctx.template_vars_mut().set("Version", "0.4.0");
-            ctx.template_vars_mut().set("Tag", "core-v0.4.0");
+            with_hermetic_git_cwd(|| {
+                let config = Config {
+                    workspaces: Some(vec![WorkspaceConfig {
+                        name: "cfgd".to_string(),
+                        crates: vec![crate_cfg("cfgd", "v{{ Version }}")],
+                        ..WorkspaceConfig::default()
+                    }]),
+                    ..Config::default()
+                };
+                let mut ctx = Context::new(config.clone(), ContextOptions::default());
+                ctx.template_vars_mut().set("Version", "0.4.0");
+                ctx.template_vars_mut().set("Tag", "core-v0.4.0");
 
-            apply_per_crate_tag(&mut ctx, &config, "cfgd", &quiet_log());
+                apply_per_crate_tag(&mut ctx, &config, "cfgd", &quiet_log());
 
-            assert_eq!(
-                ctx.template_vars().get("Tag").map(String::as_str),
-                Some("v0.4.0"),
-                "workspace-list fallback must resolve the crate's tag_template",
-            );
+                assert_eq!(
+                    ctx.template_vars().get("Tag").map(String::as_str),
+                    Some("v0.4.0"),
+                    "workspace-list fallback must resolve the crate's tag_template",
+                );
+            });
         }
 
         /// A crate with no matching config / empty `tag_template` leaves
@@ -2431,20 +2493,39 @@ mod tests {
             );
         }
 
-        /// `write_metadata_json` must land `dist/metadata.json` carrying
-        /// the per-crate `Tag` so the release upload's existence check
-        /// passes (the bug bailed here before the draft→published PATCH).
+        /// `write_metadata_json` must land `metadata.json` under
+        /// `ctx.config.dist` (the per-crate subdir the loop re-anchored
+        /// to), NOT the flat `config.dist` the `config` param still
+        /// carries. The release stage's existence gate reads
+        /// `ctx.config.dist/metadata.json`; writing to the flat root
+        /// would leave that gate looking at a missing file and bail
+        /// before the draft→published PATCH.
+        ///
+        /// This mirrors the real `run_per_crate` / `run_one_crate_dist`
+        /// call shape: `config.dist` is the workspace-root dist, while
+        /// `ctx.config.dist` was re-anchored onto `dist/<crate>/`. Asserts
+        /// the file materializes under `ctx.config.dist` and NOT under
+        /// the flat root — fails against the pre-fix code that derived the
+        /// dir from the `config` param.
         #[test]
         fn write_metadata_json_materializes_per_crate_metadata() {
             let tmp = tempfile::tempdir().unwrap();
-            let crate_dist = tmp.path().join("cfgd-core");
+            let flat_dist = tmp.path().join("dist");
+            let crate_dist = flat_dist.join("cfgd-core");
+
+            // `config` carries the FLAT dist root (what the loop threads
+            // through unchanged), `ctx.config.dist` the per-crate subdir.
             let config = Config {
                 project_name: "cfgd".to_string(),
-                dist: crate_dist.clone(),
+                dist: flat_dist.clone(),
                 crates: vec![crate_cfg("cfgd-core", "core-v{{ Version }}")],
                 ..Config::default()
             };
-            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            let ctx_config = Config {
+                dist: crate_dist.clone(),
+                ..config.clone()
+            };
+            let mut ctx = Context::new(ctx_config, ContextOptions::default());
             ctx.template_vars_mut().set("Version", "0.4.0");
             ctx.template_vars_mut().set("Tag", "core-v0.4.0");
             ctx.template_vars_mut().set("FullCommit", "deadbeef");
@@ -2452,10 +2533,19 @@ mod tests {
             let path =
                 crate::commands::helpers::write_metadata_json(&ctx, &config, &quiet_log()).unwrap();
 
-            assert_eq!(path, crate_dist.join("metadata.json"));
+            assert_eq!(
+                path,
+                crate_dist.join("metadata.json"),
+                "metadata.json must land under ctx.config.dist (per-crate subdir)",
+            );
             assert!(
                 path.exists(),
                 "metadata.json must exist for the release upload"
+            );
+            assert!(
+                !flat_dist.join("metadata.json").exists(),
+                "metadata.json must NOT land at the flat root (where the release \
+                 stage never looks in per-crate mode)",
             );
             let body = std::fs::read_to_string(&path).unwrap();
             let json: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -2468,7 +2558,11 @@ mod tests {
         }
     }
 
-    // ── --crate dispatch: per-crate-subdir layout awareness (Fix 3) ────
+    // ── --crate dispatch: per-crate-subdir layout awareness ────
+
+    fn subdir_test_log() -> StageLogger {
+        StageLogger::new("subdir-test", anodizer_core::log::Verbosity::Quiet)
+    }
 
     #[test]
     fn crate_subdir_has_manifest_detects_context_json() {
@@ -2477,7 +2571,7 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("context.json"), "{}").unwrap();
         assert!(
-            crate_subdir_has_manifest(tmp.path(), "cfgd"),
+            crate_subdir_has_manifest(tmp.path(), "cfgd", &subdir_test_log()),
             "a subdir with context.json must be recognized",
         );
     }
@@ -2489,7 +2583,7 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("context-linux.json"), "{}").unwrap();
         assert!(
-            crate_subdir_has_manifest(tmp.path(), "cfgd"),
+            crate_subdir_has_manifest(tmp.path(), "cfgd", &subdir_test_log()),
             "a subdir with a sharded context-<shard>.json must be recognized",
         );
     }
@@ -2500,7 +2594,7 @@ mod tests {
         // Flat layout: manifest at the root, no per-crate subdir.
         std::fs::write(tmp.path().join("context.json"), "{}").unwrap();
         assert!(
-            !crate_subdir_has_manifest(tmp.path(), "cfgd"),
+            !crate_subdir_has_manifest(tmp.path(), "cfgd", &subdir_test_log()),
             "absence of dist/<crate>/ must fall back to flat (returns false)",
         );
     }

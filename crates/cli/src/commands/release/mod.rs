@@ -330,11 +330,41 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             let with_subdir: Vec<String> = opts
                 .crate_names
                 .iter()
-                .filter(|name| publish_only::crate_subdir_has_manifest(&dist, name))
+                .filter(|name| publish_only::crate_subdir_has_manifest(&dist, name, &log))
                 .cloned()
                 .collect();
             if with_subdir.is_empty() {
                 return publish_only::run(&mut ctx, &config, &log, run_opts);
+            }
+            // Fail closed on a partial match. When SOME requested crates
+            // have a per-crate subdir and some don't, silently publishing
+            // only the matched subset before an irreversible publish would
+            // be a quiet scope reduction — the operator asked for crates
+            // that aren't represented in the preserved dist. Name the
+            // missing ones so they can fix the request or re-run preserve.
+            if with_subdir.len() != opts.crate_names.len() {
+                let missing: Vec<&String> = opts
+                    .crate_names
+                    .iter()
+                    .filter(|name| !with_subdir.iter().any(|s| s == *name))
+                    .collect();
+                anyhow::bail!(
+                    "publish-only --crate: {} of {} requested crate(s) have no \
+                     preserved per-crate dist at {} (missing: {}). The remaining \
+                     crates ({}) do. Refusing to silently publish only the subset \
+                     before an irreversible publish — re-run with only the crates \
+                     that were preserved, or re-run the preserve step so every \
+                     requested crate has a dist/<crate>/ subdir.",
+                    missing.len(),
+                    opts.crate_names.len(),
+                    dist.display(),
+                    missing
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    with_subdir.join(", "),
+                );
             }
             let all_known = flatten_known_crates(&config);
             let sorted = topo_sort_selected(&all_known, &with_subdir);

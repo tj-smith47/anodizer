@@ -820,6 +820,14 @@ pub fn run_report_sizes(ctx: &mut Context, config: &Config, log: &StageLogger) {
 /// release variables (`tag`, `previous_tag`, `version`, `commit`,
 /// `date`, host `runtime`) and return the path it landed at.
 ///
+/// The output directory is taken from `ctx.config.dist`, NOT the
+/// `config` parameter. Per-crate publish-only re-anchors `ctx.config.dist`
+/// onto the per-crate `dist/<crate>/` subdir while still threading the
+/// flat-root `config` through; the release stage's existence gate reads
+/// `ctx.config.dist/metadata.json`, so the file must land there. For the
+/// full-release callers `ctx.config.dist == config.dist`, so this is
+/// behaviour-preserving for them.
+///
 /// Mirrors GoReleaser's metadata.Pipe. Does **not** register the file
 /// as an artifact — callers that need the registry entry (full release
 /// post-pipeline) add it; callers that already rehydrated the registry
@@ -829,7 +837,7 @@ pub fn write_metadata_json(
     config: &Config,
     log: &StageLogger,
 ) -> Result<std::path::PathBuf> {
-    let dist = &config.dist;
+    let dist = &ctx.config.dist;
     std::fs::create_dir_all(dist)
         .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
 
@@ -883,7 +891,10 @@ pub fn write_metadata_and_artifacts(
     config: &Config,
     log: &StageLogger,
 ) -> Result<()> {
-    let dist = &config.dist;
+    // Co-locate artifacts.json with metadata.json. `write_metadata_json`
+    // anchors on `ctx.config.dist`; mirror that here so the sibling pair
+    // never splits across two directories.
+    let dist = ctx.config.dist.clone();
     let metadata_path = write_metadata_json(ctx, config, log)?;
 
     ctx.artifacts.add(anodizer_core::artifact::Artifact {
