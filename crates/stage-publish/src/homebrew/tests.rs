@@ -2029,10 +2029,13 @@ fn publish_top_level_homebrew_casks_empty_returns_false() {
     };
     let mut ctx = Context::new(config, ContextOptions::default());
     let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap();
-    assert!(!got, "no entries => Ok(false)");
+    assert!(!got.pushed_any, "no entries => pushed_any false");
+    assert_eq!(got.total, 0);
+    assert_eq!(got.applicable, 0);
 }
 
-/// publish_top_level_homebrew_casks: list present but empty vec returns Ok(false).
+/// publish_top_level_homebrew_casks: list present but empty vec returns
+/// `TopLevelCaskRunResult::default()`.
 #[test]
 fn publish_top_level_homebrew_casks_empty_vec_returns_false() {
     let config = Config {
@@ -2041,7 +2044,8 @@ fn publish_top_level_homebrew_casks_empty_vec_returns_false() {
     };
     let mut ctx = Context::new(config, ContextOptions::default());
     let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap();
-    assert!(!got);
+    assert!(!got.pushed_any);
+    assert_eq!(got.total, 0);
 }
 
 /// publish_top_level_homebrew_casks: missing repository on an entry => error
@@ -2087,12 +2091,13 @@ fn publish_top_level_homebrew_casks_dry_run_returns_false() {
         },
     );
     let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap();
-    assert!(!got, "dry-run must return Ok(false)");
+    assert!(!got.pushed_any, "dry-run must not push");
+    assert_eq!(got.total, 1);
 }
 
 /// publish_top_level_homebrew_casks: `skip_upload: true` on the entry
 /// short-circuits to a continue (no push, no error) and the function
-/// reports Ok(false) when every entry skipped.
+/// reports `pushed_any: false` when every entry skipped.
 #[test]
 fn publish_top_level_homebrew_casks_skip_upload_returns_false() {
     let config = Config {
@@ -2110,7 +2115,8 @@ fn publish_top_level_homebrew_casks_skip_upload_returns_false() {
     };
     let mut ctx = Context::new(config, ContextOptions::default());
     let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap();
-    assert!(!got, "every entry skipped => Ok(false)");
+    assert!(!got.pushed_any, "every entry skipped => pushed_any false");
+    assert_eq!(got.total, 1);
 }
 
 // ===========================================================================
@@ -2742,7 +2748,11 @@ fn publish_top_level_homebrew_casks_no_macos_artifact_errors_with_cask_name() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, ContextOptions::default());
-    // Linux-only artifact; the darwin selector returns None.
+    // Linux-only artifact; the darwin selector returns None. The cask
+    // entry is *inapplicable* to the current scope (no darwin Archive),
+    // not a publish failure — the run returns Ok with `applicable: 0`
+    // and the HomebrewPublisher caller maps that to
+    // `Skipped(NotApplicable)`.
     ctx.artifacts.add(art_with_url_sha(
         ArtifactKind::Archive,
         "mytool-linux.tar.gz",
@@ -2750,13 +2760,11 @@ fn publish_top_level_homebrew_casks_no_macos_artifact_errors_with_cask_name() {
         "https://e.com/mytool.tar.gz",
         "linuxsha",
     ));
-    let err = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap_err();
-    let msg = format!("{err:#}");
-    assert!(
-        msg.contains("no macOS artifact"),
-        "expected no-macOS-artifact bail; got: {msg}"
-    );
-    assert!(msg.contains("mycask"), "must cite cask name; got: {msg}");
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log())
+        .expect("inapplicable cask must skip cleanly, not error");
+    assert!(!got.pushed_any);
+    assert_eq!(got.total, 1);
+    assert_eq!(got.applicable, 0, "no darwin artifact => not applicable");
 }
 
 /// publish_top_level_homebrew_casks: the cask name defaults to
@@ -2779,14 +2787,15 @@ fn publish_top_level_homebrew_casks_defaults_name_to_project_name() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, ContextOptions::default());
-    // No darwin artifact -> bails through the artifact lookup, surfacing
-    // the project_name fallback in the error message.
-    let err = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap_err();
-    let msg = format!("{err:#}");
-    assert!(
-        msg.contains("myproject"),
-        "cask name must default to project_name; got: {msg}"
-    );
+    // No darwin artifact -> skips through the artifact lookup as
+    // not-applicable; the project_name fallback surfaces in the
+    // status-line log. Captured via the structured result; tests for
+    // the log-line wording live in the per-iteration tests above.
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log())
+        .expect("name fallback path must skip cleanly when no macOS artifact");
+    assert!(!got.pushed_any);
+    assert_eq!(got.total, 1);
+    assert_eq!(got.applicable, 0);
 }
 
 /// publish_top_level_homebrew_casks: when no `url:` block is configured AND

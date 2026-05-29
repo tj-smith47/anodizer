@@ -42,13 +42,30 @@ fn resolve_top_cask_description<'a>(
         .as_deref()
         .or_else(|| ctx.config.meta_description())
 }
-/// Render and push every entry in `homebrew_casks:`. Returns `Ok(true)`
-/// when at least one cask was actually pushed to its tap repo; `Ok(false)`
-/// when every entry skipped (no config, skip_upload, dry-run). The
-/// boolean feeds back into [`super::publisher::HomebrewPublisher::run`]
-/// so the rollback orchestrator doesn't trip git-revert on a tap that
-/// this run never touched.
-pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) -> Result<bool> {
+/// Outcome shape returned by [`publish_top_level_homebrew_casks`].
+///
+/// `pushed_any` mirrors the prior `bool` return — it gates whether the
+/// caller records rollback targets for the tap.
+///
+/// `total` and `applicable` let the caller distinguish "no top-level
+/// casks configured" (`total == 0`) from "casks configured but none in
+/// scope" (`total > 0 && applicable == 0`). The latter is a per-crate
+/// publish-only iteration over a library workspace where the cask's
+/// declared `binaries:` are not present — a `NotApplicable` skip, not
+/// a publish failure.
+#[derive(Debug, Default)]
+pub struct TopLevelCaskRunResult {
+    pub pushed_any: bool,
+    pub total: usize,
+    pub applicable: usize,
+}
+
+/// Render and push every entry in `homebrew_casks:`. See
+/// [`TopLevelCaskRunResult`] for the returned counts.
+pub fn publish_top_level_homebrew_casks(
+    ctx: &mut Context,
+    log: &StageLogger,
+) -> Result<TopLevelCaskRunResult> {
     // Clone the entries so the loop body can call `&mut Context`
     // helpers (e.g. `ctx.record_publisher_outcome`) without holding
     // an immutable borrow on `ctx.config.homebrew_casks` across the
@@ -56,9 +73,11 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
     // entries per release) so the clone cost is negligible.
     let entries = match ctx.config.homebrew_casks {
         Some(ref v) if !v.is_empty() => v.clone(),
-        _ => return Ok(false),
+        _ => return Ok(TopLevelCaskRunResult::default()),
     };
+    let total = entries.len();
     let mut pushed_any = false;
+    let mut applicable = 0usize;
 
     for cask_cfg in &entries {
         let project_name = &ctx.config.project_name;
@@ -123,15 +142,27 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
             continue;
         }
 
-        // Find macOS artifact: prefer DiskImage, then Archive with darwin target.
-        // For top-level cask, iterate all crates' artifacts.
-        let macos_artifact = find_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "homebrew_casks: no macOS artifact (DiskImage or Archive) found for cask '{}'",
-                    cask_name
-                )
-            })?;
+        // Find macOS artifact: prefer DiskImage, then Archive with darwin
+        // target. For top-level cask, iterate all crates' artifacts.
+        //
+        // When the current crate scope has no matching darwin artifact
+        // (per-crate publish-only iterating a library workspace, or a
+        // pipeline that built no darwin targets), the cask has nothing to
+        // publish — that is a config-vs-scope mismatch, not a publish
+        // failure. Log + continue; the caller (HomebrewPublisher::run)
+        // aggregates `applicable` across the entire entry list and decides
+        // whether the overall outcome is `Skipped(NotApplicable)` so the
+        // submitter gate doesn't fire on a phantom required-Manager
+        // failure.
+        let Some(macos_artifact) = find_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref())
+        else {
+            log.status(&format!(
+                "homebrew_casks: no macOS artifact in scope for cask '{}' — skipping (not applicable)",
+                cask_name
+            ));
+            continue;
+        };
+        applicable += 1;
 
         // Build URL.
         let url = if let Some(ref url_cfg) = cask_cfg.url {
@@ -449,7 +480,11 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
         }
     }
 
-    Ok(pushed_any)
+    Ok(TopLevelCaskRunResult {
+        pushed_any,
+        total,
+        applicable,
+    })
 }
 
 #[cfg(test)]

@@ -74,6 +74,19 @@ pub enum SkipReason {
     /// nightly publishes (e.g. homebrew, scoop, aur, krew, nix, every
     /// announcer — matches GoReleaser's nightly skip-list).
     Nightly,
+    /// No artifact in the current crate scope matches this publisher's
+    /// applicability rules (e.g. top-level homebrew_casks declared
+    /// `binaries: [cfgd]` but the current per-crate iteration is on
+    /// `cfgd-core` and has no `cfgd` binary in scope; or cloudsmith
+    /// targets `.deb` / `.rpm` / `.apk` but the current crate produces
+    /// only library archives). Distinct from `NotConfigured` (where
+    /// the publisher block is absent entirely) and from
+    /// `PublisherOutcome::Failed` (where the publisher TRIED to run
+    /// and hit a real error). Required Manager publishers reporting
+    /// `NotApplicable` MUST NOT trigger the submitter gate — there is
+    /// nothing to roll back, and the absence of applicable artifacts
+    /// is not a publish failure.
+    NotApplicable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

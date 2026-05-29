@@ -269,7 +269,8 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         }
         // Top-level casks (single invocation; the entrypoint itself
         // iterates over `ctx.config.homebrew_casks`).
-        if super::publish_top_level_homebrew_casks(ctx, &log)? {
+        let cask_result = super::publish_top_level_homebrew_casks(ctx, &log)?;
+        if cask_result.pushed_any {
             any_pushed = true;
         }
 
@@ -277,6 +278,22 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {
             log.status(&run_done_message(processed));
+        }
+
+        // Aggregate applicability: when the current crate scope had no
+        // per-crate `publish.homebrew` block AND every configured
+        // top-level cask was inapplicable (no macOS artifact in scope),
+        // record `Skipped(NotApplicable)` so the publisher summary and
+        // submitter-gate logic see a non-failure outcome. Conditional on
+        // `pending_outcome.is_none()` so sticky-pending signals already
+        // recorded by `publish_top_level_homebrew_casks` (PR-already-
+        // exists skips, etc.) are not overwritten.
+        let nothing_applicable =
+            processed == 0 && cask_result.total > 0 && cask_result.applicable == 0;
+        if nothing_applicable && ctx.pending_outcome.is_none() {
+            ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
+                anodizer_core::SkipReason::NotApplicable,
+            ));
         }
 
         let mut evidence = anodizer_core::PublishEvidence::new("homebrew");
