@@ -203,7 +203,7 @@ krew:
 
 - **`repository` and `short_description` are required**: omitting either causes a hard error.
 - **PR-based submission**: the krew-index is managed via PR, not direct push. Anodizer creates a PR against `kubernetes-sigs/krew-index` from your fork. PR review and merge are manual.
-- **krew-release-bot**: after initial merge, switch to krew-release-bot for automatic PR creation on new releases. Anodizer auto-detects when the bot is wired and writes `.krew.yaml` instead of opening a PR directly. See [Auto-promote to krew-release-bot](#auto-promote-to-krew-release-bot).
+- **Version updates are self-contained**: once a plugin is in krew-index, anodizer submits each version bump directly via the hosted krew-release-bot webhook — no separate workflow step. See [Version updates](#version-updates-self-contained-no-extra-workflow-step).
 - **Duplicate PRs**: if a prior run already opened a PR for the same tag, use `update_existing_pr: true` to force-push instead of opening a second PR.
 
 ## Custom URL templates
@@ -244,99 +244,77 @@ crates:
         skip_upload: auto
 ```
 
-## Auto-promote to krew-release-bot
+## Version updates — self-contained, no extra workflow step
 
-After your initial krew-index PR is approved and merged, the krew maintainers [recommend](https://krew.sigs.k8s.io/docs/developer-guide/release/automating-updates/) switching to [krew-release-bot](https://github.com/rajatjindal/krew-release-bot) so trivial version bumps auto-merge without manual review. **Anodizer auto-detects the switch — no config change required.**
+After your initial krew-index PR is approved and merged, every subsequent
+version bump is a mechanical update the krew maintainers run through a hosted
+service ([krew-release-bot](https://github.com/rajatjindal/krew-release-bot)):
+it forks krew-index and opens the version-bump PR server-side, under the bot's
+own GitHub account. **Anodizer drives that service directly — `anodize release`
+completes the krew-index submission itself, with no separate GitHub-Actions
+step and no extra token.**
 
-### How auto-detection works
+### How mode selection works
 
-On every release, anodizer probes two signals:
+On every release, anodizer makes one anonymous probe — a GET against
+`api.github.com/repos/kubernetes-sigs/krew-index/contents/plugins/<name>.yaml`
+(200 = published, 404 = not yet) — and picks the flow:
 
-1. **Plugin in krew-index?** — anonymous GET against `api.github.com/repos/kubernetes-sigs/krew-index/contents/plugins/<name>.yaml` (200 = published, 404 = not yet).
-2. **Bot wired in this repo?** — searches `.github/workflows/*.{yml,yaml}` for the string `rajatjindal/krew-release-bot`.
+| In krew-index | Mode | Behavior |
+|---|---|---|
+| No | `pr-direct` | Clone a fork, write `plugins/<name>.yaml`, open the **initial** PR against krew-index. A human reviews + merges it. |
+| Yes | `bot-webhook` | POST the fully-rendered manifest + the release tag to the krew-release-bot webhook, which opens the version-bump PR on your behalf. |
 
-The resulting mode is reported in the release summary:
+**Graceful degradation:** if the membership probe fails (rate-limit, network
+blip, unexpected status), anodizer falls back to the safe `pr-direct` flow —
+no fail, no skip.
 
-| In krew-index | Bot wired | Mode | Behavior |
-|---|---|---|---|
-| No | — | `pr-direct` | Open PR against krew-index (initial submission). |
-| Yes | No | `pr-direct-with-hint` | Open PR + log a hint about switching to the bot. |
-| Yes | Yes | `bot-template` | Write `.krew.yaml`; the bot opens the krew-index PR. |
+### The webhook submission
 
-### Wiring the bot — same job, after anodizer
+In `bot-webhook` mode anodizer POSTs a `ReleaseRequest` to the hosted endpoint:
 
-Add the bot step to your **existing** release workflow, **immediately after** the anodizer release step in the same job. The bot needs the GitHub Release to already be published (so its `addURIAndSha` calls can fetch each archive); running it in the same job, right after anodizer, guarantees that ordering:
-
-```yaml
-name: release
-on:
-  push:
-    tags: ['v*']
-jobs:
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: tj-smith47/anodizer-action@v1
-        with:
-          args: release
-      # Bot reads the .krew.yaml that anodizer wrote in the previous step.
-      - uses: rajatjindal/krew-release-bot@v0.0.46
+```
+POST https://krew-release-bot.rajatjindal.com/github-action-webhook
+Content-Type: application/json
+{
+  "tagName":            "v1.2.3",
+  "pluginName":         "kubectl-mytool",
+  "pluginOwner":        "myorg",
+  "pluginRepo":         "mytool",
+  "pluginReleaseActor": "<github login>",
+  "templateFile":       ".krew.yaml",
+  "processedTemplate":  "<base64 of the rendered manifest>"
+}
 ```
 
-**Don't put the bot in a separate workflow gated on `push: tags`** — it would race anodizer's release workflow, fire before the assets exist, and fail `addURIAndSha`.
+- The endpoint is overridable via `KREW_RELEASE_BOT_WEBHOOK_URL` (for a
+  self-hosted bot deployment).
+- The server forks krew-index and opens the PR under its own account — **no
+  token is sent**.
+- The release-asset coordinates come from `release.github` (owner/repo); the
+  bot fetches the release assets from `tagName` to recompute shas. Both a
+  correct `tagName` and a fully-rendered `processedTemplate` are sent so the
+  submission works whether the server trusts the pre-rendered bytes or
+  recomputes them.
 
-### Alternative: separate workflow on the release event
+The krew publisher runs **after** the GitHub Release is created and its assets
+are uploaded (the `release` stage precedes the `publish` stage in the
+pipeline), so the assets always exist when the bot fetches them.
 
-A standalone workflow is fine if you trigger it on the release-published event so it only runs after anodizer's publish step completes:
+### Idempotency + failures
 
-```yaml
-name: krew-release
-on:
-  release:
-    types: [published]
-jobs:
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: rajatjindal/krew-release-bot@v0.0.46
-```
+- **HTTP 200** → success; the submitted PR URL is logged.
+- **Already submitted** (the version was POSTed on a prior run — the bot's
+  duplicate-PR / nothing-to-commit response) → treated as an idempotent
+  no-op success.
+- **Any other failure** (non-200, network error) → the release fails loudly.
+  The krew submission is never silently skipped.
 
-### Template path
+### Rollback semantics
 
-By default anodizer writes `.krew.yaml` (the bot's default read location). To use a different path, set the bot action's `krew_template_file:` input — anodizer reads that value and writes there:
-
-```yaml
-      - uses: rajatjindal/krew-release-bot@v0.0.46
-        with:
-          krew_template_file: deploy/mytool.krew.yaml
-```
-
-For workspaces with multiple kubectl plugins, create a `.krew/` directory in your repo root. Anodizer detects it and writes each plugin's template to `.krew/<plugin-name>.yaml`; configure the bot action's `krew_template_file:` per plugin.
-
-### What anodizer writes in bot-template mode
-
-```yaml
-# Generated by anodizer for krew-release-bot. DO NOT EDIT.
-apiVersion: krew.googlecontainertools.github.com/v1alpha2
-kind: Plugin
-metadata:
-  name: kubectl-mytool
-spec:
-  version: "{{ .TagName }}"
-  homepage: https://github.com/myorg/mytool
-  shortDescription: A kubectl plugin
-  platforms:
-    - selector:
-        matchLabels:
-          os: linux
-          arch: amd64
-      {{addURIAndSha "https://github.com/myorg/mytool/releases/download/{{ .TagName }}/mytool-{{ .TagName }}-linux-amd64.tar.gz" .TagName | indent 6}}
-      bin: kubectl-mytool
-```
-
-`{{ .TagName }}` and `addURIAndSha` are bot-side placeholders — anodizer emits them literally; the bot expands them when it composes the actual krew-index manifest.
+`pr-direct` mode rolls back by closing the PR anodizer opened. `bot-webhook`
+mode has nothing for anodizer to roll back — the krew-release-bot server owns
+the krew-index PR, so no rollback evidence is recorded for that flow.
 
 ## Dry-run mode
 

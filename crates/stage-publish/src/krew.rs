@@ -1,6 +1,3 @@
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
@@ -181,65 +178,61 @@ fn krew_os(os: &str) -> &str {
 }
 
 // ---------------------------------------------------------------------------
-// krew-release-bot auto-detection
+// krew-release-bot mode selection
 // ---------------------------------------------------------------------------
 //
-// Spec: `.claude/features/krew-bot-auto-detect.md`.
+// A plugin's first appearance in `kubernetes-sigs/krew-index` requires a
+// human-reviewed PR; subsequent version bumps are mechanical. The krew
+// maintainers run a hosted webhook (`krew-release-bot`) that performs the
+// fork + version-bump PR server-side, under the bot's own GitHub account,
+// for any plugin already in the index. anodizer drives that webhook
+// directly so a release is self-contained — no separate GitHub-Actions
+// workflow step is required.
 //
-// Once a plugin lands in `kubernetes-sigs/krew-index`, the krew maintainers
-// recommend switching from anodizer's `pr-direct` (clone fork → write manifest
-// → PR) flow to `krew-release-bot` — a GitHub Action in the plugin's own repo
-// that opens the krew-index PR on the plugin's behalf on every git-tag push.
+// The single signal that decides the mode is whether the plugin already
+// exists in krew-index:
+//   - Plugin NOT in index → `PrDirect`: anodizer clones a fork, writes
+//     `plugins/<name>.yaml`, commits, and opens the initial PR against
+//     `kubernetes-sigs/krew-index`. A human reviews + merges it.
+//   - Plugin IS in index → `BotWebhook`: anodizer POSTs a `ReleaseRequest`
+//     (the fully-rendered manifest plus the release tag) to the hosted
+//     webhook, which opens the version-bump PR on the plugin's behalf.
+//     No fork, no token, no workflow.
 //
-// Anodizer auto-detects which mode applies. No config key; the consumer never
-// has to toggle a flag.
-//
-// Two signals decide the mode:
-//   1. Plugin in krew-index?  Anon GET against the GitHub contents API:
-//        `api.github.com/repos/kubernetes-sigs/krew-index/contents/plugins/<name>.yaml`
-//      → 200 means published; 404 means not yet; any other error means
-//      "unknown" and we fall back to the safe `pr-direct` flow.
-//   2. Bot wired in this repo?  Grep `.github/workflows/*.yml` for
-//      `rajatjindal/krew-release-bot` (the published Action). The Action
-//      input `krew_template_file` is also parsed when present so anodizer
-//      writes the template to the path the user's workflow actually reads.
+// The membership probe is an anonymous GET against the GitHub contents API:
+//   `api.github.com/repos/kubernetes-sigs/krew-index/contents/plugins/<name>.yaml`
+// → 200 means published; 404 means not yet; any other status (rate-limit,
+// 5xx) is treated as "unknown" and falls back to the safe `PrDirect` flow.
 
-/// Three publish modes the krew publisher dispatches between.
+/// The two publish modes the krew publisher dispatches between.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum KrewMode {
     /// Initial-submission flow — plugin isn't in krew-index yet.
     /// Behaviour: clone fork, write `plugins/<name>.yaml`, commit, PR
-    /// against `kubernetes-sigs/krew-index`. Unchanged from pre-detection.
+    /// against `kubernetes-sigs/krew-index`.
     PrDirect,
-    /// Plugin IS in krew-index but the bot is NOT wired in this repo.
-    /// Behaviour: same `pr-direct` flow PLUS a one-line hint in the run
-    /// summary pointing the user at the bot setup doc. Wiring the bot is
-    /// the user's call; anodizer never edits `.github/workflows/`.
-    PrDirectWithHint,
-    /// Plugin IS in krew-index AND the bot is wired in this repo.
-    /// Behaviour: render the manifest as a bot template (uses
-    /// `{{ .TagName }}` + `addURIAndSha` placeholders) and write it to
-    /// `<workdir>/<template_path>`. NO PR against krew-index — the bot
-    /// opens that PR when the user pushes the release tag.
-    BotTemplate { template_path: PathBuf },
+    /// Version-update flow — plugin IS in krew-index. Behaviour: POST a
+    /// `ReleaseRequest` to the hosted krew-release-bot webhook, which
+    /// opens the krew-index PR server-side. Self-contained: no fork, no
+    /// token, no GitHub-Actions workflow step.
+    BotWebhook,
 }
 
-/// Detect the appropriate krew mode for a given plugin in the current
-/// repository. Always succeeds — every detection error falls back to
-/// the safe `PrDirect` mode rather than aborting the publisher.
-fn detect_krew_mode(plugin_name: &str, workdir: Option<&Path>, token: Option<&str>) -> KrewMode {
-    let in_index = matches!(is_plugin_in_krew_index(plugin_name, token), Some(true));
-    if !in_index {
-        return KrewMode::PrDirect;
-    }
-    // Plugin is in krew-index. Check whether the user has already wired
-    // the bot in this repo's workflows.
-    let workflow_hit = workdir.and_then(find_wired_bot_workflow);
-    match workflow_hit {
-        Some(hit) => KrewMode::BotTemplate {
-            template_path: resolve_bot_template_path(workdir, plugin_name, hit.as_path()),
-        },
-        None => KrewMode::PrDirectWithHint,
+/// Detect the appropriate krew mode for a given plugin. Always succeeds —
+/// a membership-probe error falls back to the safe `PrDirect` mode rather
+/// than aborting the publisher.
+fn detect_krew_mode(plugin_name: &str, token: Option<&str>) -> KrewMode {
+    map_probe_to_mode(is_plugin_in_krew_index(plugin_name, token))
+}
+
+/// Pure dispatch from a krew-index membership-probe result to a mode.
+/// `Some(true)` (published) → webhook flow; `Some(false)` (not yet
+/// published) and `None` (probe failed / unknown) both → the safe
+/// PR-direct flow.
+fn map_probe_to_mode(in_index: Option<bool>) -> KrewMode {
+    match in_index {
+        Some(true) => KrewMode::BotWebhook,
+        _ => KrewMode::PrDirect,
     }
 }
 
@@ -279,216 +272,173 @@ fn is_plugin_in_krew_index(plugin_name: &str, token: Option<&str>) -> Option<boo
     None
 }
 
-/// Scan `<workdir>/.github/workflows/*.yml` (and `*.yaml`) for the
-/// `rajatjindal/krew-release-bot` Action reference. Returns the path
-/// to the FIRST workflow file that hits, or `None` when nothing
-/// matches (or the workflows dir doesn't exist).
-///
-/// Loud match string: `rajatjindal/krew-release-bot`. The Action's
-/// canonical reference shape is `uses: rajatjindal/krew-release-bot@vX`,
-/// so a substring search avoids brittleness against `@<ref>` and any
-/// custom-fork rewrites.
-fn find_wired_bot_workflow(workdir: &Path) -> Option<PathBuf> {
-    let dir = workdir.join(".github").join("workflows");
-    let entries = std::fs::read_dir(&dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let is_yaml = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| matches!(e.to_ascii_lowercase().as_str(), "yml" | "yaml"))
-            .unwrap_or(false);
-        if !is_yaml {
-            continue;
-        }
-        if let Ok(content) = std::fs::read_to_string(&path)
-            && content.contains("rajatjindal/krew-release-bot")
-        {
-            return Some(path);
-        }
-    }
-    None
+// ---------------------------------------------------------------------------
+// krew-release-bot webhook submission
+// ---------------------------------------------------------------------------
+
+/// Default hosted krew-release-bot webhook endpoint. The bot forks
+/// krew-index and opens the version-bump PR server-side under its own
+/// GitHub account, so anodizer sends no token.
+const DEFAULT_KREW_RELEASE_BOT_WEBHOOK_URL: &str =
+    "https://krew-release-bot.rajatjindal.com/github-action-webhook";
+
+/// Resolve the effective webhook URL: the `KREW_RELEASE_BOT_WEBHOOK_URL`
+/// env var (trimmed, empty treated as unset) else
+/// [`DEFAULT_KREW_RELEASE_BOT_WEBHOOK_URL`]. Mirrors the bot client's own
+/// `getWebhookURL()` precedence so a self-hosted deployment is reachable
+/// the same way.
+fn resolve_webhook_url(env: &dyn anodizer_core::env_source::EnvSource) -> String {
+    env.var("KREW_RELEASE_BOT_WEBHOOK_URL")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_KREW_RELEASE_BOT_WEBHOOK_URL.to_string())
 }
 
-/// Resolve where the bot expects to find its template file.
+/// The JSON body POSTed to the krew-release-bot webhook.
 ///
-/// Precedence:
-///   1. The workflow file `workflow_path` is parsed for a
-///      `krew_template_file: <value>` line. When found, that path
-///      (joined against `workdir`) wins — anodizer writes wherever the
-///      user told the bot to read from.
-///   2. Otherwise, fall back to the bot's documented default,
-///      `<workdir>/.krew.yaml`. The feature spec also proposes
-///      `.krew/<name>.yaml` for multi-plugin workspaces; when the
-///      `.krew/` directory already exists we pick that per-plugin
-///      shape so a workspace with several kubectl plugins keeps each
-///      template separate. The user can override either default by
-///      adding `krew_template_file:` to the workflow.
-fn resolve_bot_template_path(
-    workdir: Option<&Path>,
+/// Field names and shapes mirror the bot's server-side `ReleaseRequest`
+/// struct: `processed_template` is the fully-rendered manifest bytes
+/// (the server's Go decoder expects a base64 string for its `[]byte`
+/// field, which serde produces from a `Vec<u8>` only via an explicit
+/// encoder — handled at the call site). Sending both `tag_name` and the
+/// rendered manifest covers either server behaviour: trusting the
+/// pre-rendered bytes or recomputing shas from the release assets at
+/// `tag_name`.
+#[derive(Debug, Serialize)]
+struct KrewReleaseRequest {
+    #[serde(rename = "tagName")]
+    tag_name: String,
+    #[serde(rename = "pluginName")]
+    plugin_name: String,
+    #[serde(rename = "pluginOwner")]
+    plugin_owner: String,
+    #[serde(rename = "pluginRepo")]
+    plugin_repo: String,
+    #[serde(rename = "pluginReleaseActor")]
+    plugin_release_actor: String,
+    #[serde(rename = "templateFile")]
+    template_file: String,
+    /// Base64 of the rendered manifest bytes. The bot's `[]byte` JSON
+    /// field decodes from a base64 string (Go's `encoding/json`
+    /// convention), so the bytes are pre-encoded here.
+    #[serde(rename = "processedTemplate")]
+    processed_template: String,
+}
+
+impl KrewReleaseRequest {
+    /// Build a `ReleaseRequest` from the resolved release coordinates and
+    /// the fully-rendered manifest. `tag_name` is normalized to the
+    /// `v<semver>` shape the krew-index manifest's `spec.version` carries.
+    fn new(
+        tag_name: &str,
+        plugin_name: &str,
+        plugin_owner: &str,
+        plugin_repo: &str,
+        plugin_release_actor: &str,
+        rendered_manifest: &str,
+    ) -> Self {
+        use base64::Engine as _;
+        Self {
+            tag_name: tag_name.to_string(),
+            plugin_name: plugin_name.to_string(),
+            plugin_owner: plugin_owner.to_string(),
+            plugin_repo: plugin_repo.to_string(),
+            plugin_release_actor: plugin_release_actor.to_string(),
+            template_file: ".krew.yaml".to_string(),
+            processed_template: base64::engine::general_purpose::STANDARD
+                .encode(rendered_manifest.as_bytes()),
+        }
+    }
+}
+
+/// Whether a non-200 webhook response body indicates the version/PR is
+/// already submitted (an idempotent re-run), versus a genuine failure.
+///
+/// The bot server returns HTTP 500 for every failure path, wrapping the
+/// underlying error message in the response body (`opening pr: <err>`).
+/// When a PR for the same fork branch already exists, GitHub's create-PR
+/// call fails with a 422 whose message contains `pull request already
+/// exists`; an unchanged manifest fails the commit step with a
+/// nothing-to-commit / `already up-to-date` message. Both are benign:
+/// the previous submission already did the work. Match those phrases so a
+/// re-run of an already-published version is treated as a no-op success
+/// rather than a hard failure.
+fn webhook_body_is_already_submitted(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("pull request already exists")
+        || lower.contains("already exists")
+        || lower.contains("already up-to-date")
+        || lower.contains("already up to date")
+        || lower.contains("clean working tree")
+        || lower.contains("nothing to commit")
+}
+
+/// POST a [`KrewReleaseRequest`] to the krew-release-bot webhook and map
+/// the response to a publish result.
+///
+/// A single attempt with a 30s timeout mirrors the bot's own client
+/// (`action_runner.go::submitForPR`). The retry helper is deliberately
+/// NOT used here: the server returns HTTP 500 for every failure path,
+/// including the benign "PR already exists" case, so a generic 5xx-retry
+/// classifier would both burn the budget on an idempotent re-run and
+/// flood the bot with duplicate submissions.
+///
+/// Outcome mapping:
+///   - HTTP 200 → success; the body (`PR "<url>" submitted successfully`)
+///     is logged.
+///   - non-200 whose body matches [`webhook_body_is_already_submitted`] →
+///     idempotent no-op success (the version was already submitted).
+///   - any other non-200 / transport error → loud error. The release
+///     must not silently skip krew.
+fn submit_krew_release_webhook(
+    webhook_url: &str,
+    request: &KrewReleaseRequest,
     plugin_name: &str,
-    workflow_path: &Path,
-) -> PathBuf {
-    let workdir = workdir.unwrap_or_else(|| Path::new("."));
-    if let Some(custom) = read_krew_template_file_input(workflow_path) {
-        return workdir.join(custom);
-    }
-    let dot_krew_dir = workdir.join(".krew");
-    if dot_krew_dir.is_dir() {
-        return dot_krew_dir.join(format!("{}.yaml", plugin_name));
-    }
-    workdir.join(".krew.yaml")
-}
+    version: &str,
+    log: &StageLogger,
+) -> Result<()> {
+    let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(30))
+        .context("krew: build webhook HTTP client")?;
+    let body = serde_json::to_string(request).context("krew: serialize ReleaseRequest")?;
 
-/// Parse a YAML workflow file for the bot's `krew_template_file:` action
-/// input. Returns the parsed value when present, else `None`.
-///
-/// Best-effort regex-free parse: walk the file looking for a line that
-/// contains `krew_template_file:` and split on the first colon. This
-/// avoids pulling in a YAML parser for a one-line lookup and tolerates
-/// the value being quoted ("...", '...') or bare.
-fn read_krew_template_file_input(workflow_path: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(workflow_path).ok()?;
-    for raw_line in content.lines() {
-        let line = raw_line.trim_start();
-        if !line.starts_with("krew_template_file:") {
-            continue;
-        }
-        let (_, rhs) = line.split_once(':')?;
-        let v = rhs.trim();
-        // Strip single or double quotes if present.
-        let stripped = v
-            .strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-            .or_else(|| v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-            .unwrap_or(v);
-        if stripped.is_empty() {
-            return None;
-        }
-        return Some(stripped.to_string());
+    let resp = client
+        .post(webhook_url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()
+        .with_context(|| format!("krew: POST to krew-release-bot webhook {}", webhook_url))?;
+
+    let status = resp.status();
+    let resp_body = anodizer_core::http::body_of_blocking(resp);
+
+    if status.is_success() {
+        log.status(&format!(
+            "krew: mode=bot-webhook plugin={} v{} submitted to {} ({})",
+            plugin_name,
+            version,
+            webhook_url,
+            resp_body.trim()
+        ));
+        return Ok(());
     }
-    None
-}
 
-// ---------------------------------------------------------------------------
-// Bot template generation
-// ---------------------------------------------------------------------------
-
-/// Swap the concrete release version out of every platform URL for the
-/// bot's `{{ .TagName }}` placeholder so the resulting template is
-/// version-independent. Commits made once and reused for every future
-/// release without re-rendering.
-///
-/// Replaces both the `v<ver>` and bare `<ver>` forms — most release URLs
-/// embed the tag as `v<ver>` in the release path (e.g.
-/// `/releases/download/v1.2.3/...`) AND a bare `<ver>` in the artifact
-/// filename (e.g. `tool-1.2.3-linux-amd64.tar.gz`). Both need to flip
-/// to the bot's placeholder. Order matters: replace the longer form
-/// first so `v1.2.3` doesn't collapse to `v{{ .TagName }}` mid-replace.
-fn platforms_with_tag_placeholders(platforms: &[KrewPlatform], version: &str) -> Vec<KrewPlatform> {
-    let placeholder = "{{ .TagName }}";
-    let v_form = format!("v{}", version);
-    platforms
-        .iter()
-        .map(|p| {
-            let mut url = p.url.replace(&v_form, placeholder);
-            if !version.is_empty() {
-                url = url.replace(version, placeholder);
-            }
-            KrewPlatform {
-                os: p.os.clone(),
-                arch: p.arch.clone(),
-                url,
-                sha256: p.sha256.clone(),
-                bin: p.bin.clone(),
-            }
-        })
-        .collect()
-}
-
-/// Render a krew-release-bot template variant of the plugin manifest.
-///
-/// The bot consumes Go-template syntax with two custom funcs:
-///   - `{{ .TagName }}` — replaced with the pushed git tag at bot run
-///     time (e.g. `v1.2.3`). Used in the spec's `version` and inside
-///     every URL passed to `addURIAndSha`.
-///   - `{{ addURIAndSha "<URL with .TagName>" .TagName | indent N }}` —
-///     downloads the URL at bot run time, computes the sha256, and
-///     emits two indented YAML lines (`uri:` + `sha256:`) inline.
-///
-/// Per-platform we emit ONE `addURIAndSha` call (not a separate `uri:` +
-/// `sha256:` pair), since the bot can compute the hash itself from the
-/// release artifacts the publisher uploads via `stage-release`.
-///
-/// `url_template` MUST be a tag-aware template string (e.g.
-/// `"https://github.com/{{ .repo_owner }}/{{ .crate_name }}/releases/download/{{ .TagName }}/...tar.gz"`)
-/// — the caller substitutes runtime values for everything EXCEPT
-/// `.TagName`, which the bot owns. The tag placeholder is what makes
-/// the template version-independent: once committed, the same file
-/// drives every future release without anodizer touching it again.
-fn generate_bot_template(params: &KrewManifestParams<'_>) -> Result<String> {
-    use std::fmt::Write as _;
-
-    // Header + top-level metadata. We use literal strings rather than
-    // serde_yaml_ng so that the embedded `{{ ... }}` placeholders
-    // survive untouched (a YAML serializer would either quote the
-    // braces, escape them, or treat them as plain text in ways that
-    // break Go templating).
-    let mut out = String::new();
-    out.push_str("# This file was generated by anodizer for krew-release-bot. DO NOT EDIT.\n");
-    out.push_str("apiVersion: krew.googlecontainertools.github.com/v1alpha2\n");
-    out.push_str("kind: Plugin\n");
-    out.push_str("metadata:\n");
-    writeln!(out, "  name: {}", params.name)?;
-    out.push_str("spec:\n");
-    // `{{ .TagName }}` already starts with `v` for a typical
-    // `v<semver>` tag. Don't prepend `v` here or the bot would emit
-    // `vv1.0.0`. (anodizer's PR-direct path stamps `v{version}` because
-    // it has the resolved version string in hand; the bot doesn't.)
-    out.push_str("  version: \"{{ .TagName }}\"\n");
-    if !params.homepage.is_empty() {
-        writeln!(out, "  homepage: {}", params.homepage)?;
+    if webhook_body_is_already_submitted(&resp_body) {
+        log.status(&format!(
+            "krew: plugin={} v{} already submitted upstream — treating as \
+             idempotent no-op (webhook HTTP {})",
+            plugin_name, version, status
+        ));
+        return Ok(());
     }
-    writeln!(out, "  shortDescription: {}", params.short_description)?;
-    if !params.description.is_empty() {
-        out.push_str("  description: |\n");
-        for line in params.description.lines() {
-            writeln!(out, "    {}", line)?;
-        }
-    }
-    if !params.caveats.is_empty() {
-        out.push_str("  caveats: |\n");
-        for line in params.caveats.lines() {
-            writeln!(out, "    {}", line)?;
-        }
-    }
-    out.push_str("  platforms:\n");
 
-    // Sort by uri descending to match `generate_manifest`'s ordering —
-    // the bot has no opinion on order, so keeping it consistent with
-    // the pr-direct path lets a side-by-side diff stay readable.
-    let mut sorted: Vec<&KrewPlatform> = params.platforms.iter().collect();
-    sorted.sort_by(|a, b| b.url.cmp(&a.url));
-
-    for p in sorted {
-        out.push_str("    - selector:\n");
-        out.push_str("        matchLabels:\n");
-        writeln!(out, "          os: {}", p.os)?;
-        writeln!(out, "          arch: {}", krew_arch(&p.arch))?;
-        // `addURIAndSha` MUST receive a URL whose `.TagName` placeholder
-        // is still un-rendered — the bot expands it at PR time using
-        // the actual pushed tag. The indent value (6) matches the
-        // spec.platforms[].uri / sha256 indent the bot expects: two
-        // spaces under `- selector:` plus four for the `uri:` line
-        // emitted by the function.
-        writeln!(
-            out,
-            "      {{{{addURIAndSha \"{}\" .TagName | indent 6}}}}",
-            p.url
-        )?;
-        writeln!(out, "      bin: {}", p.bin)?;
-    }
-    Ok(out)
+    anyhow::bail!(
+        "krew: krew-release-bot webhook {} returned HTTP {} for plugin '{}' v{}: {}",
+        webhook_url,
+        status,
+        plugin_name,
+        version,
+        resp_body.trim()
+    )
 }
 
 /// Convert `OsArtifact`s into `KrewPlatform`s.
@@ -556,55 +506,24 @@ fn artifacts_to_platforms(
 /// Per-crate outcome returned by [`publish_to_krew`].
 ///
 /// `pushed` flags whether the run made a real upstream side effect
-/// (branch push + PR opened). Drives the caller's `any_pushed` gate
-/// that decides whether to populate rollback evidence.
-///
-/// `bot_template_pre_image` records the absolute path of the local
-/// bot-template file paired with the SHA-256 of its pre-overwrite
-/// content. The value is only populated for [`KrewMode::BotTemplate`]
-/// runs; PR-direct modes leave it `None` (there is no local file to
-/// checksum). Surfaces to
-/// [`anodizer_core::publish_evidence::KrewExtra::bot_template_pre_image_shas`]
-/// (path → digest map) so a future rollback pass can detect if the
-/// on-disk template drifted out from under the publisher between
-/// publish and rollback. The path is the map key, so multi-crate
-/// workspaces that publish several BotTemplate plugins record one
-/// distinct entry per plugin instead of overwriting the same slot.
+/// (the `PrDirect` flow's branch push + PR open). Drives the caller's
+/// `any_pushed` gate that decides whether to populate rollback evidence.
+/// The `BotWebhook` flow always leaves `pushed = false`: the
+/// krew-release-bot server owns the krew-index PR, so anodizer has
+/// nothing to roll back.
 #[derive(Debug, Default, Clone)]
 pub struct KrewPublishOutcome {
-    /// `true` when a real branch push happened. PR-direct-only mode
-    /// (`pushed=true`) is what the caller's `any_pushed` gate checks.
+    /// `true` when the `PrDirect` flow pushed a branch + opened a PR.
+    /// The caller's `any_pushed` gate checks this.
     pub pushed: bool,
-    /// `(absolute_template_path, sha256_hex)` for the bot-template
-    /// content as it existed before this run overwrote it. `None`
-    /// outside BotTemplate mode or when the template did not
-    /// previously exist (first publish — no pre-image).
-    pub bot_template_pre_image: Option<(PathBuf, String)>,
 }
 
 impl KrewPublishOutcome {
     /// Convenience constructor for run paths that exit before reaching
-    /// the bot-template / push branches.
+    /// the webhook / push branches.
     fn skipped() -> Self {
-        Self {
-            pushed: false,
-            bot_template_pre_image: None,
-        }
+        Self { pushed: false }
     }
-}
-
-/// Hex-encode the SHA-256 of `data`. Lower-case, no separators —
-/// matches the convention used by [`anodizer_core::publish_evidence`]
-/// SHA fields and downstream comparison logic.
-fn sha256_hex(data: &[u8]) -> String {
-    use sha2::Digest as _;
-    let digest = sha2::Sha256::digest(data);
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        write!(&mut out, "{:02x}", byte).expect("write to String never fails");
-    }
-    out
 }
 
 pub fn publish_to_krew(
@@ -713,11 +632,14 @@ pub fn publish_to_krew(
         .render_template(short_description_raw)
         .unwrap_or_else(|_| short_description_raw.to_string());
     // Derive GitHub slug (owner/repo) for homepage fallback, consistent with homebrew.
-    let github_slug = _crate_cfg
+    let plugin_github = _crate_cfg
         .release
         .as_ref()
         .and_then(|r| r.github.as_ref())
-        .map(|gh| format!("{}/{}", gh.owner, gh.name));
+        .map(|gh| (gh.owner.clone(), gh.name.clone()));
+    let github_slug = plugin_github
+        .as_ref()
+        .map(|(owner, name)| format!("{}/{}", owner, name));
     let homepage_raw = krew_cfg.homepage.clone().unwrap_or_else(|| {
         github_slug
             .as_deref()
@@ -839,84 +761,51 @@ pub fn publish_to_krew(
     let token =
         util::resolve_repo_token(ctx, krew_cfg.repository.as_ref(), Some("KREW_INDEX_TOKEN"));
 
-    // ── krew-release-bot auto-detection ──────────────────────────────
-    // Once a plugin lands in `kubernetes-sigs/krew-index`, the krew
-    // maintainers recommend switching from the PR-direct flow to the
-    // krew-release-bot Action. Detect which mode applies and branch.
-    // Detection failures fall back to the safe `PrDirect` mode so a
-    // network blip or permission hiccup never blocks the release.
-    let mode = detect_krew_mode(
-        plugin_name,
-        ctx.options.project_root.as_deref(),
-        token.as_deref(),
-    );
-    if let KrewMode::BotTemplate { template_path } = &mode {
-        // Bot-template mode: write a `{{ .TagName }}`-templated manifest
-        // to the path the user's workflow reads from, then return.
-        // The bot owns the krew-index PR — anodizer must NOT clone or
-        // PR against `kubernetes-sigs/krew-index` from this code path
-        // or two PRs would race to land the same version.
-        let bot_platforms = platforms_with_tag_placeholders(&platforms, &version);
-        let bot_template = generate_bot_template(&KrewManifestParams {
-            name: plugin_name,
-            version: &version, // ignored by the renderer; placeholder rules
-            homepage: &homepage,
-            short_description: &short_description,
-            description: &description,
-            caveats: &caveats,
-            platforms: &bot_platforms,
-        })?;
-        if let Some(parent) = template_path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("krew: create bot-template parent dir {}", parent.display())
-            })?;
-        }
-        // Pre-image SHA capture happens immediately before the
-        // overwrite — tightest window possible without atomic
-        // rename plumbing. An operator hand-editing the template
-        // between `read_pre_image_sha` and `std::fs::write` two
-        // statements down would still defeat the check, but the
-        // detect-time window (which formerly hosted this read) was
-        // many syscalls wider and lost the SHA on every concurrent
-        // mutation. NotFound → None (first publish, expected);
-        // any other error → hard bail per S2 so rollback drift
-        // detection isn't silently disabled. Canonicalize the path
-        // we record so the rollback consumer's lookup key matches
-        // regardless of how the publisher resolved the relative
-        // template path.
-        let pre_image_sha = read_pre_image_sha(template_path).with_context(|| {
-            format!(
-                "krew: read bot-template pre-image at {} (required so rollback \
-                 drift detection can compare against the post-publish content)",
-                template_path.display()
+    // ── krew-release-bot mode selection ──────────────────────────────
+    // A plugin already in krew-index takes the self-contained webhook
+    // flow: anodizer POSTs the rendered manifest + tag to the hosted bot,
+    // which opens the version-bump PR server-side. A plugin not yet in
+    // the index takes the PR-direct flow below (clone fork → write
+    // manifest → open the initial PR). A membership-probe error falls
+    // back to PrDirect so a network blip never blocks the release.
+    let mode = detect_krew_mode(plugin_name, token.as_deref());
+    if mode == KrewMode::BotWebhook {
+        // The bot needs the plugin's OWN GitHub repo (where the release +
+        // assets live), not the krew-index fork coordinates resolved
+        // above. Require it: the webhook fetches release assets from
+        // `<owner>/<repo>` at `tagName` to recompute shas, so missing
+        // coordinates would silently mis-target the bot.
+        let (plugin_owner, plugin_repo) = plugin_github.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "krew: plugin '{}' is in krew-index (webhook flow) but has no \
+                 `release.github` owner/repo — the krew-release-bot webhook \
+                 needs the plugin's GitHub repo to fetch release assets",
+                plugin_name
             )
         })?;
-        let recorded_path =
-            std::fs::canonicalize(template_path).unwrap_or_else(|_| template_path.clone());
-        std::fs::write(template_path, &bot_template)
-            .with_context(|| format!("krew: write bot template to {}", template_path.display()))?;
-        log.status(&format!(
-            "krew: mode=bot-template plugin={} template={} \
-             (krew-release-bot will open the krew-index PR on tag push)",
+        // Actor must be a valid GitHub login. Prefer the CI-provided
+        // GITHUB_ACTOR, then ANODIZER_GITHUB_ACTOR, falling back to the
+        // plugin repo owner (always a real login).
+        let env = ctx.env_source();
+        let actor = env
+            .var("GITHUB_ACTOR")
+            .or_else(|| env.var("ANODIZER_GITHUB_ACTOR"))
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty())
+            .unwrap_or_else(|| plugin_owner.clone());
+        let webhook_url = resolve_webhook_url(env);
+        let request = KrewReleaseRequest::new(
+            &format!("v{}", version),
             plugin_name,
-            template_path.display()
-        ));
-        return Ok(KrewPublishOutcome {
-            pushed: false,
-            bot_template_pre_image: pre_image_sha.map(|sha| (recorded_path, sha)),
-        });
+            &plugin_owner,
+            &plugin_repo,
+            &actor,
+            &manifest,
+        );
+        submit_krew_release_webhook(&webhook_url, &request, plugin_name, &version, log)?;
+        return Ok(KrewPublishOutcome { pushed: false });
     }
-    if matches!(mode, KrewMode::PrDirectWithHint) {
-        log.status(&format!(
-            "krew: mode=pr-direct-with-hint plugin={} — published in krew-index; \
-             consider wiring `rajatjindal/krew-release-bot` so future releases \
-             auto-merge without a manual PR \
-             (https://krew.sigs.k8s.io/docs/developer-guide/release/automating-updates/)",
-            plugin_name
-        ));
-    } else {
-        log.status(&format!("krew: mode=pr-direct plugin={}", plugin_name));
-    }
+    log.status(&format!("krew: mode=pr-direct plugin={}", plugin_name));
 
     let tmp_dir = tempfile::tempdir().context("krew: create temp dir")?;
     let repo_path = tmp_dir.path();
@@ -1060,43 +949,7 @@ pub fn publish_to_krew(
         ctx.record_publisher_outcome(outcome);
     }
 
-    Ok(KrewPublishOutcome {
-        pushed,
-        bot_template_pre_image: None,
-    })
-}
-
-/// Read `template_path` and return its SHA-256 hex digest, distinguishing
-/// "file does not exist" from "file exists but unreadable" so the caller
-/// can preserve rollback drift-detection coverage:
-///
-/// - `Ok(None)`: file does not exist (first publish of a freshly-wired bot
-///   template). No pre-image to record — expected.
-/// - `Ok(Some(sha))`: file existed and was readable.
-/// - `Err(_)`: file existed but the read failed (permissions, transient io
-///   error, etc.). Bubbles up so the publisher hard-fails rather than
-///   silently shipping without rollback drift coverage.
-///
-/// NOTE: the returned SHA is paired (at the call site) with the
-/// canonicalized template path and recorded in
-/// [`KrewExtra::bot_template_pre_image_shas`]. That map is keyed by the
-/// publishing host's canonicalized path; same-machine rollback (the
-/// dominant case) always finds a match. Cross-machine evidence transfer
-/// may produce a stale key — the rollback consumer reports those as
-/// `Missing` rather than matching them against an on-disk file (see
-/// `KrewExtra::bot_template_pre_image_shas` doc).
-fn read_pre_image_sha(template_path: &Path) -> Result<Option<String>> {
-    match std::fs::read(template_path) {
-        Ok(bytes) => Ok(Some(sha256_hex(&bytes))),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(anyhow::Error::new(err).context(format!(
-            "krew: bot-template at {} exists but is unreadable; rollback drift \
-             detection requires a pre-image SHA, so failing fast rather than \
-             shipping without that safety net (fix the file's permissions or \
-             remove it if a fresh first-publish is intended)",
-            template_path.display()
-        ))),
-    }
+    Ok(KrewPublishOutcome { pushed })
 }
 
 // ---------------------------------------------------------------------------
@@ -1109,209 +962,174 @@ mod tests {
     use super::*;
 
     // -----------------------------------------------------------------------
-    // krew-release-bot auto-detection tests
+    // krew-release-bot mode selection + webhook tests
     // -----------------------------------------------------------------------
 
-    /// No workflows dir → `find_wired_bot_workflow` returns None.
+    /// Mode selection: a plugin NOT in krew-index takes `PrDirect`.
+    /// `is_plugin_in_krew_index` returning `Some(false)` (here forced by
+    /// an unreachable token-less probe against a 404 fixture is awkward,
+    /// so the redesign is asserted through `detect_krew_mode`'s pure
+    /// dispatch on each probe outcome via the helper below).
     #[test]
-    fn find_wired_bot_workflow_returns_none_when_no_workflows_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(find_wired_bot_workflow(tmp.path()).is_none());
+    fn mode_selection_maps_index_membership_to_mode() {
+        // Pure dispatch: probe says "in index" → BotWebhook; anything
+        // else (not in index / unknown) → PrDirect.
+        assert_eq!(map_probe_to_mode(Some(true)), KrewMode::BotWebhook);
+        assert_eq!(map_probe_to_mode(Some(false)), KrewMode::PrDirect);
+        assert_eq!(map_probe_to_mode(None), KrewMode::PrDirect);
     }
 
-    /// Workflows dir exists but no file references the bot → None.
+    /// The `ReleaseRequest` body carries the exact field names + values
+    /// the bot's server-side struct expects, and base64-encodes the
+    /// rendered manifest into `processedTemplate` (the server's `[]byte`
+    /// JSON field).
     #[test]
-    fn find_wired_bot_workflow_returns_none_when_bot_not_referenced() {
-        let tmp = tempfile::tempdir().unwrap();
-        let wf = tmp.path().join(".github").join("workflows");
-        std::fs::create_dir_all(&wf).unwrap();
-        std::fs::write(
-            wf.join("release.yml"),
-            "name: Release\njobs:\n  build:\n    runs-on: ubuntu-latest\n",
-        )
-        .unwrap();
-        assert!(find_wired_bot_workflow(tmp.path()).is_none());
+    fn release_request_body_construction() {
+        use base64::Engine as _;
+        let manifest = "apiVersion: krew.googlecontainertools.github.com/v1alpha2\nkind: Plugin\n";
+        let req = KrewReleaseRequest::new(
+            "v1.2.3",
+            "mytool",
+            "acme",
+            "mytool-repo",
+            "octocat",
+            manifest,
+        );
+        let json = serde_json::to_string(&req).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["tagName"], "v1.2.3");
+        assert_eq!(v["pluginName"], "mytool");
+        assert_eq!(v["pluginOwner"], "acme");
+        assert_eq!(v["pluginRepo"], "mytool-repo");
+        assert_eq!(v["pluginReleaseActor"], "octocat");
+        assert_eq!(v["templateFile"], ".krew.yaml");
+        // processedTemplate must be base64 of the raw manifest bytes so
+        // the bot's Go `[]byte` decoder reconstructs the exact manifest.
+        let expected = base64::engine::general_purpose::STANDARD.encode(manifest.as_bytes());
+        assert_eq!(v["processedTemplate"], expected);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(v["processedTemplate"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), manifest);
     }
 
-    /// Any workflow referencing `rajatjindal/krew-release-bot` → that path.
+    /// Webhook URL: env override wins; empty/unset falls back to the
+    /// hosted default.
     #[test]
-    fn find_wired_bot_workflow_matches_bot_reference() {
-        let tmp = tempfile::tempdir().unwrap();
-        let wf = tmp.path().join(".github").join("workflows");
-        std::fs::create_dir_all(&wf).unwrap();
-        let target = wf.join("krew.yaml");
-        std::fs::write(
-            &target,
-            "name: Update krew-index\non:\n  push:\n    tags: ['v*']\njobs:\n  update:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: rajatjindal/krew-release-bot@v0.0.46\n",
-        )
-        .unwrap();
-        let hit = find_wired_bot_workflow(tmp.path()).unwrap();
-        assert_eq!(hit, target);
-    }
-
-    /// Bot reference matches regardless of `.yml` vs `.yaml` extension.
-    #[test]
-    fn find_wired_bot_workflow_matches_yml_extension_too() {
-        let tmp = tempfile::tempdir().unwrap();
-        let wf = tmp.path().join(".github").join("workflows");
-        std::fs::create_dir_all(&wf).unwrap();
-        let target = wf.join("release.yml");
-        std::fs::write(
-            &target,
-            "jobs:\n  x:\n    uses: rajatjindal/krew-release-bot@v0.0.46\n",
-        )
-        .unwrap();
-        let hit = find_wired_bot_workflow(tmp.path()).unwrap();
-        assert_eq!(hit, target);
-    }
-
-    /// `krew_template_file:` action input is parsed when present so we
-    /// write the template to the path the user's workflow reads from.
-    #[test]
-    fn read_krew_template_file_input_extracts_custom_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let wf = tmp.path().join("krew.yaml");
-        std::fs::write(
-            &wf,
-            "      - uses: rajatjindal/krew-release-bot@v0.0.46\n        with:\n          krew_template_file: .krew/my-plugin.yaml\n",
-        )
-        .unwrap();
+    fn webhook_url_resolution_honors_env_override() {
+        use anodizer_core::env_source::MapEnvSource;
+        let default_env = MapEnvSource::new();
         assert_eq!(
-            read_krew_template_file_input(&wf),
-            Some(".krew/my-plugin.yaml".to_string())
+            resolve_webhook_url(&default_env),
+            DEFAULT_KREW_RELEASE_BOT_WEBHOOK_URL
+        );
+
+        let custom_env = MapEnvSource::new().with(
+            "KREW_RELEASE_BOT_WEBHOOK_URL",
+            "https://krew.internal.example/webhook",
+        );
+        assert_eq!(
+            resolve_webhook_url(&custom_env),
+            "https://krew.internal.example/webhook"
+        );
+
+        let blank_env = MapEnvSource::new().with("KREW_RELEASE_BOT_WEBHOOK_URL", "  ");
+        assert_eq!(
+            resolve_webhook_url(&blank_env),
+            DEFAULT_KREW_RELEASE_BOT_WEBHOOK_URL
         );
     }
 
-    /// Quoted values (single + double) are unwrapped.
+    /// The already-submitted classifier recognizes the bot's
+    /// duplicate-PR / nothing-to-commit signals and rejects genuine
+    /// failures.
     #[test]
-    fn read_krew_template_file_input_strips_quotes() {
-        let tmp = tempfile::tempdir().unwrap();
-        let wf = tmp.path().join("krew.yaml");
-        std::fs::write(&wf, "          krew_template_file: \".krew.yaml\"\n").unwrap();
-        assert_eq!(
-            read_krew_template_file_input(&wf),
-            Some(".krew.yaml".to_string())
-        );
-
-        std::fs::write(&wf, "          krew_template_file: '.krew/x.yaml'\n").unwrap();
-        assert_eq!(
-            read_krew_template_file_input(&wf),
-            Some(".krew/x.yaml".to_string())
-        );
+    fn webhook_already_submitted_classifier() {
+        assert!(webhook_body_is_already_submitted(
+            "opening pr: A pull request already exists for acme:mytool-v1.2.3"
+        ));
+        assert!(webhook_body_is_already_submitted(
+            "opening pr: already up-to-date"
+        ));
+        assert!(webhook_body_is_already_submitted("nothing to commit"));
+        assert!(!webhook_body_is_already_submitted(
+            "opening pr: failed when validating plugin spec"
+        ));
+        assert!(!webhook_body_is_already_submitted("internal server error"));
     }
 
-    /// Missing input line → None (caller falls back to defaults).
+    /// HTTP 200 → success.
     #[test]
-    fn read_krew_template_file_input_returns_none_when_absent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let wf = tmp.path().join("krew.yaml");
-        std::fs::write(&wf, "      - uses: rajatjindal/krew-release-bot@v0.0.46\n").unwrap();
-        assert_eq!(read_krew_template_file_input(&wf), None);
+    fn webhook_submit_succeeds_on_200() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        let body =
+            "PR \"https://github.com/kubernetes-sigs/krew-index/pull/42\" submitted successfully";
+        let (addr, calls) = spawn_oneshot_http_responder(vec![Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_boxed_str(),
+        )]);
+        let url = format!("http://{addr}/github-action-webhook");
+        let req =
+            KrewReleaseRequest::new("v1.0.0", "mytool", "acme", "repo", "octocat", "manifest");
+        let log = StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
+        let r = submit_krew_release_webhook(&url, &req, "mytool", "1.0.0", &log);
+        assert!(r.is_ok(), "200 must succeed: {r:?}");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
-    /// Path resolution: custom input wins over both defaults.
+    /// A non-200 whose body signals an already-existing PR is an
+    /// idempotent no-op success.
     #[test]
-    fn resolve_bot_template_path_honors_custom_input() {
-        let tmp = tempfile::tempdir().unwrap();
-        let wf = tmp.path().join("krew.yaml");
-        std::fs::write(&wf, "          krew_template_file: my-template.yaml\n").unwrap();
-        assert_eq!(
-            resolve_bot_template_path(Some(tmp.path()), "anodizer", &wf),
-            tmp.path().join("my-template.yaml")
-        );
-    }
-
-    /// Path resolution: `.krew/` exists → `.krew/<name>.yaml`.
-    #[test]
-    fn resolve_bot_template_path_prefers_dot_krew_directory_when_present() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".krew")).unwrap();
-        let wf = tmp.path().join("krew.yaml");
-        std::fs::write(&wf, "# no template-file input\n").unwrap();
-        assert_eq!(
-            resolve_bot_template_path(Some(tmp.path()), "anodizer", &wf),
-            tmp.path().join(".krew").join("anodizer.yaml")
-        );
-    }
-
-    /// Path resolution: no custom input + no `.krew/` → `.krew.yaml`.
-    #[test]
-    fn resolve_bot_template_path_falls_back_to_dot_krew_yaml() {
-        let tmp = tempfile::tempdir().unwrap();
-        let wf = tmp.path().join("krew.yaml");
-        std::fs::write(&wf, "# no template-file input\n").unwrap();
-        assert_eq!(
-            resolve_bot_template_path(Some(tmp.path()), "anodizer", &wf),
-            tmp.path().join(".krew.yaml")
-        );
-    }
-
-    /// Bot template uses `{{ .TagName }}` (not the concrete version) so
-    /// the file is version-independent — committed once, drives every
-    /// release. `addURIAndSha` wraps every per-platform URL.
-    #[test]
-    fn generate_bot_template_emits_tag_placeholders_and_addurianadsha() {
-        let template = generate_bot_template(&KrewManifestParams {
-            name: "anodizer",
-            version: "1.2.3", // ignored — placeholder rules
-            homepage: "https://github.com/owner/anodizer",
-            short_description: "Release tool",
-            description: "Multi-line\ndescription.",
-            caveats: "",
-            platforms: &[KrewPlatform {
-                os: "linux".to_string(),
-                arch: "amd64".to_string(),
-                url: "https://github.com/owner/anodizer/releases/download/{{ .TagName }}/anodizer-{{ .TagName }}-linux-amd64.tar.gz".to_string(),
-                sha256: "ignored-in-template".to_string(),
-                bin: "kubectl-anodizer".to_string(),
-            }],
-        })
-        .unwrap();
-
+    fn webhook_submit_idempotent_on_already_exists() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        let body = "opening pr: A pull request already exists for acme:mytool-v1.0.0";
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![Box::leak(
+            format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_boxed_str(),
+        )]);
+        let url = format!("http://{addr}/github-action-webhook");
+        let req =
+            KrewReleaseRequest::new("v1.0.0", "mytool", "acme", "repo", "octocat", "manifest");
+        let log = StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
+        let r = submit_krew_release_webhook(&url, &req, "mytool", "1.0.0", &log);
         assert!(
-            template.starts_with(
-                "# This file was generated by anodizer for krew-release-bot. DO NOT EDIT.\n"
-            ),
-            "bot template missing header: {template}"
+            r.is_ok(),
+            "already-exists 500 must be a no-op success: {r:?}"
         );
-        // Version uses `.TagName`, NOT the concrete `1.2.3`.
-        assert!(
-            template.contains("version: \"{{ .TagName }}\""),
-            "got: {template}"
-        );
-        assert!(
-            !template.contains("v1.2.3"),
-            "concrete version leaked: {template}"
-        );
-        // Each platform has an `addURIAndSha` call (not a literal uri+sha256 pair).
-        assert!(
-            template.contains("{{addURIAndSha \"https://github.com/owner/anodizer/releases/download/{{ .TagName }}/anodizer-{{ .TagName }}-linux-amd64.tar.gz\" .TagName | indent 6}}"),
-            "addURIAndSha invocation missing: {template}"
-        );
-        assert!(
-            !template.contains("sha256: ignored-in-template"),
-            "literal sha256 must be replaced: {template}"
-        );
-        // Description block scalar preserved.
-        assert!(template.contains("description: |"), "got: {template}");
-        assert!(template.contains("    Multi-line"), "got: {template}");
     }
 
-    /// `platforms_with_tag_placeholders` swaps both `v<ver>` and bare
-    /// `<ver>` forms so the template is fully tag-independent.
+    /// A genuine failure (non-200, body not an already-exists signal)
+    /// surfaces a loud error — krew must never silently skip.
     #[test]
-    fn platforms_with_tag_placeholders_replaces_both_version_forms() {
-        let inputs = vec![KrewPlatform {
-            os: "linux".to_string(),
-            arch: "amd64".to_string(),
-            url: "https://example.com/v1.2.3/tool-1.2.3-linux-amd64.tar.gz".to_string(),
-            sha256: "deadbeef".to_string(),
-            bin: "kubectl-tool".to_string(),
-        }];
-        let out = platforms_with_tag_placeholders(&inputs, "1.2.3");
-        assert_eq!(
-            out[0].url,
-            "https://example.com/{{ .TagName }}/tool-{{ .TagName }}-linux-amd64.tar.gz"
+    fn webhook_submit_errors_on_genuine_failure() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        let body = "opening pr: failed when validating plugin spec";
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![Box::leak(
+            format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_boxed_str(),
+        )]);
+        let url = format!("http://{addr}/github-action-webhook");
+        let req =
+            KrewReleaseRequest::new("v1.0.0", "mytool", "acme", "repo", "octocat", "manifest");
+        let log = StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
+        let err = submit_krew_release_webhook(&url, &req, "mytool", "1.0.0", &log)
+            .expect_err("genuine 500 must error");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("500") && chain.contains("validating plugin spec"),
+            "error must surface status + body: {chain}"
         );
     }
 
@@ -1768,135 +1586,6 @@ fn decode_krew_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<KrewP
     }
 }
 
-/// Decode the `bot_template_pre_image_shas` map from
-/// [`anodizer_core::PublishEvidence::extra`]. Empty when the variant
-/// isn't `Krew` or the run never took a BotTemplate path.
-fn decode_bot_template_pre_image_shas(
-    extra: &anodizer_core::PublishEvidenceExtra,
-) -> BTreeMap<String, String> {
-    match extra {
-        anodizer_core::PublishEvidenceExtra::Krew(k) => k.bot_template_pre_image_shas.clone(),
-        _ => BTreeMap::new(),
-    }
-}
-
-/// Outcome of a single bot-template drift check. Returned by
-/// [`classify_bot_template_drift`] so the rollback caller can fan out
-/// log lines without re-running the SHA comparison inline.
-#[derive(Debug, PartialEq, Eq)]
-enum BotTemplateDriftOutcome {
-    /// On-disk content matches the recorded pre-image SHA — the
-    /// template has not been touched since publish. No action needed.
-    Unchanged,
-    /// On-disk content differs from the recorded pre-image SHA — the
-    /// operator (or another tool) has edited the template since
-    /// publish. Surface a loud error so they can decide whether to
-    /// revert manually.
-    Drifted {
-        recorded_sha: String,
-        current_sha: String,
-    },
-    /// The recorded path no longer exists. Surface as an error so the
-    /// operator knows the template was deleted (or moved) between
-    /// publish and rollback.
-    Missing,
-    /// The recorded path exists but the read failed (permissions,
-    /// transient io error, etc.). Surface as an error so the operator
-    /// can fix the access problem.
-    Unreadable { error: String },
-}
-
-/// Classify the drift state for a single (path, recorded_sha) pair.
-/// Pulled out of [`run_bot_template_drift_check`] so the comparison
-/// logic is unit-testable without a log fixture.
-fn classify_bot_template_drift(
-    template_path: &Path,
-    recorded_sha: &str,
-) -> BotTemplateDriftOutcome {
-    match std::fs::read(template_path) {
-        Ok(bytes) => {
-            let current_sha = sha256_hex(&bytes);
-            if current_sha == recorded_sha {
-                BotTemplateDriftOutcome::Unchanged
-            } else {
-                BotTemplateDriftOutcome::Drifted {
-                    recorded_sha: recorded_sha.to_string(),
-                    current_sha,
-                }
-            }
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => BotTemplateDriftOutcome::Missing,
-        Err(err) => BotTemplateDriftOutcome::Unreadable {
-            error: err.to_string(),
-        },
-    }
-}
-
-/// Consumer for [`KrewExtra::bot_template_pre_image_shas`] on the
-/// rollback path: for each recorded (template_path, sha) pair, re-read
-/// the current on-disk content, compute its SHA-256, and surface a
-/// log line classifying the drift state. Never returns an error —
-/// drift detection is advisory; the rollback itself succeeds either
-/// way. Use [`log.error()`](StageLogger::error) for drift states the
-/// operator must act on, [`log.status()`](StageLogger::status) for
-/// the benign "unchanged" case.
-fn run_bot_template_drift_check(pre_image_shas: &BTreeMap<String, String>, log: &StageLogger) {
-    for (path_str, recorded_sha) in pre_image_shas {
-        let path = Path::new(path_str);
-        match classify_bot_template_drift(path, recorded_sha) {
-            BotTemplateDriftOutcome::Unchanged => {
-                log.status(&format!(
-                    "krew: BotTemplate rollback: template at {} unchanged \
-                     since publish (sha256 matches recorded pre-image); \
-                     no action needed",
-                    path_str
-                ));
-            }
-            BotTemplateDriftOutcome::Drifted {
-                recorded_sha,
-                current_sha,
-            } => {
-                log.error(&format!(
-                    "krew: BotTemplate rollback: on-disk template at {} \
-                     differs from the pre-publish snapshot \
-                     (recorded sha256={}, current sha256={}); the file was \
-                     mutated between publish and rollback — manual review \
-                     required before re-publishing",
-                    path_str, recorded_sha, current_sha
-                ));
-            }
-            BotTemplateDriftOutcome::Missing => {
-                log.error(&format!(
-                    "krew: BotTemplate rollback: recorded template at {} \
-                     no longer exists on disk (recorded sha256={}); the \
-                     file was deleted or moved between publish and \
-                     rollback — manual review required",
-                    path_str, recorded_sha
-                ));
-            }
-            BotTemplateDriftOutcome::Unreadable { error } => {
-                log.error(&format!(
-                    "krew: BotTemplate rollback: recorded template at {} \
-                     is unreadable ({}); drift detection skipped — fix the \
-                     file's permissions and re-run --rollback-only to \
-                     verify the pre-image SHA matches",
-                    path_str, error
-                ));
-            }
-        }
-    }
-}
-
-/// Operator-facing message emitted when a BotTemplate-mode rollback runs
-/// but the evidence carries no pre-image SHA for the requested template.
-/// Surfaces the "no recorded SHA" case from the rollback consumer
-/// without forcing a log fixture into the unit test.
-#[cfg(test)]
-pub(crate) fn bot_template_rollback_no_sha_msg() -> &'static str {
-    "krew: BotTemplate rollback: no pre-image SHA recorded \
-     (likely first publish or pre-image read failed); skipping drift check"
-}
-
 /// Resolve the upstream `<owner>/<repo>` slug for a krew target — mirrors
 /// the dispatch logic in `publish_to_krew`: prefer
 /// `repository.pull_request.base` when set, else fall back to the
@@ -2055,13 +1744,6 @@ impl anodizer_core::Publisher for KrewPublisher {
         log.status(&run_start_message(selected.len()));
         let mut processed = 0usize;
         let mut any_pushed = false;
-        // One entry per BotTemplate-mode plugin: keyed by absolute
-        // template path so multi-crate workspaces with multiple
-        // bot-templated plugins each get their own digest recorded.
-        // A single scalar would collapse two crates' pre-images onto
-        // one slot and rollback drift detection would silently
-        // mis-attribute the SHA at compare time.
-        let mut bot_template_pre_image_shas: BTreeMap<String, String> = BTreeMap::new();
         for crate_name in &selected {
             // Defensive guard for explicit `--crate=X` selection when X has no
             // publisher block; implicit-all is already filtered by effective_publish_crates above.
@@ -2075,9 +1757,6 @@ impl anodizer_core::Publisher for KrewPublisher {
             if outcome.pushed {
                 any_pushed = true;
             }
-            if let Some((path, sha)) = outcome.bot_template_pre_image {
-                bot_template_pre_image_shas.insert(path.to_string_lossy().into_owned(), sha);
-            }
         }
         if should_warn_no_eligible(processed, selected.len()) {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
@@ -2085,23 +1764,15 @@ impl anodizer_core::Publisher for KrewPublisher {
             log.status(&run_done_message(processed));
         }
         let mut evidence = anodizer_core::PublishEvidence::new("krew");
-        // Record evidence whenever we either pushed (PR-direct modes)
-        // or captured a bot-template pre-image SHA (BotTemplate mode).
-        // The pre-image SHA is the only operator-public artefact of a
-        // BotTemplate run — without it, a future rollback can't detect
-        // template drift, so the evidence block has to land even
-        // though `krew_targets` stays empty (the bot owns the
-        // krew-index PR; anodizer has no PR to revert).
-        if any_pushed || !bot_template_pre_image_shas.is_empty() {
-            let targets = if any_pushed {
-                collect_krew_run_targets(ctx)
-            } else {
-                Vec::new()
-            };
+        // Record rollback evidence only for the PrDirect flow, which
+        // pushes a branch + opens a PR anodizer can later close. The
+        // BotWebhook flow has no anodizer-owned PR (the krew-release-bot
+        // server opens it), so there is nothing to roll back and no
+        // evidence to record.
+        if any_pushed {
             evidence.extra = anodizer_core::PublishEvidenceExtra::Krew(
                 anodizer_core::publish_evidence::KrewExtra {
-                    krew_targets: targets,
-                    bot_template_pre_image_shas,
+                    krew_targets: collect_krew_run_targets(ctx),
                 },
             );
         }
@@ -2115,24 +1786,15 @@ impl anodizer_core::Publisher for KrewPublisher {
     ) -> anyhow::Result<()> {
         let log = ctx.logger("publish");
         let targets = decode_krew_targets(&evidence.extra);
-        let pre_image_shas = decode_bot_template_pre_image_shas(&evidence.extra);
 
-        // BotTemplate drift detection runs first regardless of whether
-        // there are PR targets to close. A BotTemplate-mode publish
-        // never records a PR target (the bot owns the krew-index PR),
-        // so the early-empty-targets warn would mask the entire
-        // BotTemplate rollback path. Only short-circuit when BOTH
-        // dimensions are empty.
-        if !pre_image_shas.is_empty() {
-            run_bot_template_drift_check(&pre_image_shas, &log);
-        }
+        // Only the PrDirect flow records PR targets; the BotWebhook flow
+        // records none (the krew-release-bot server owns the PR). Nothing
+        // to roll back when there are no targets.
         if targets.is_empty() {
-            if pre_image_shas.is_empty() {
-                log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
-                    "krew",
-                    "PR targets",
-                ));
-            }
+            log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                "krew",
+                "PR targets",
+            ));
             return Ok(());
         }
 
@@ -2391,7 +2053,6 @@ mod publisher_tests {
         let extra =
             anodizer_core::PublishEvidenceExtra::Krew(anodizer_core::publish_evidence::KrewExtra {
                 krew_targets: original.clone(),
-                ..Default::default()
             });
         let decoded = decode_krew_targets(&extra);
         assert_eq!(decoded, original);
@@ -2413,7 +2074,6 @@ mod publisher_tests {
                     branch: "demo-v1.2.3".into(),
                     token_env_var: Some("KREW_INDEX_TOKEN".into()),
                 }],
-                ..Default::default()
             });
         let s = serde_json::to_string(&e).expect("serialize");
         assert!(!s.contains("\"token\":"), "{s}");
@@ -2479,305 +2139,6 @@ mod publisher_tests {
             "branch: {}",
             targets[0].branch
         );
-    }
-
-    /// `sha256_hex` must emit lower-case hex with no separators so the
-    /// digest is byte-comparable against the convention used elsewhere
-    /// in `publish_evidence` (cosign-style hex). Known-answer test:
-    /// SHA-256("") is the documented `e3b0c44...b855` digest.
-    #[test]
-    fn sha256_hex_empty_input_matches_known_digest() {
-        assert_eq!(
-            sha256_hex(b""),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-        // Stability pin for the trivial "abc" vector from RFC 6234.
-        assert_eq!(
-            sha256_hex(b"abc"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-    }
-
-    /// BotTemplate-mode publish must record the pre-image SHA of the
-    /// on-disk template file so a later rollback pass can detect
-    /// drift. This is the regression pin for the original behaviour
-    /// where the BotTemplate branch returned without surfacing any
-    /// evidence at all — leaving rollback with nothing to compare
-    /// against. Exercises the SHA helper directly against a temp file
-    /// because driving the full `publish_to_krew` path needs an
-    /// artifacts table and network probe state; the helper is the
-    /// load-bearing piece.
-    #[test]
-    fn bot_template_pre_image_sha_recorded_from_local_file() {
-        let tmp = tempfile::tempdir().expect("create tempdir");
-        let template_path = tmp.path().join(".krew.yaml");
-        let initial = b"apiVersion: krew.googlecontainertools.github.com/v1alpha2\n";
-        std::fs::write(&template_path, initial).expect("seed pre-image");
-
-        // Simulate the read-and-hash step the BotTemplate branch performs
-        // before overwriting `template_path`.
-        let pre_image = std::fs::read(&template_path).expect("read pre-image");
-        let pre_image_sha = sha256_hex(&pre_image);
-
-        // Now overwrite — what the publish step does after capturing
-        // the pre-image SHA.
-        std::fs::write(&template_path, b"post-image content").expect("overwrite");
-
-        // The recorded SHA must still match the original content's
-        // digest, NOT the post-image content's.
-        let expected = sha256_hex(initial);
-        assert_eq!(
-            pre_image_sha, expected,
-            "pre-image SHA must reflect content BEFORE the publish overwrite"
-        );
-
-        // And the new on-disk content's SHA must differ — confirms the
-        // hash function discriminates between pre- and post-image states.
-        let post_image = std::fs::read(&template_path).expect("read post-image");
-        let post_image_sha = sha256_hex(&post_image);
-        assert_ne!(
-            pre_image_sha, post_image_sha,
-            "pre-image and post-image SHAs must differ — otherwise rollback \
-             cannot tell whether the template was mutated unexpectedly"
-        );
-    }
-
-    /// `KrewExtra::bot_template_pre_image_shas` must survive a JSON
-    /// round-trip so the values persisted to `report.json` are the same
-    /// values rollback reads back. Pins the snake_case key name + the
-    /// map shape downstream tooling will grep for.
-    #[test]
-    fn krew_extra_bot_template_pre_image_shas_serializes() {
-        let mut shas = BTreeMap::new();
-        shas.insert("/r/.krew.yaml".to_string(), "a".repeat(64));
-        let extra = anodizer_core::publish_evidence::KrewExtra {
-            krew_targets: vec![],
-            bot_template_pre_image_shas: shas.clone(),
-        };
-        let json = serde_json::to_string(&extra).expect("serialize");
-        assert!(
-            json.contains("\"bot_template_pre_image_shas\":{"),
-            "expected snake_case map field in JSON; got: {json}"
-        );
-        let decoded: anodizer_core::publish_evidence::KrewExtra =
-            serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded.bot_template_pre_image_shas, shas);
-
-        // Empty map must be omitted from the wire to keep older reports
-        // (pre-field-addition) parseable as the same struct.
-        let absent = anodizer_core::publish_evidence::KrewExtra::default();
-        let json = serde_json::to_string(&absent).expect("serialize absent");
-        assert!(
-            !json.contains("bot_template_pre_image_shas"),
-            "empty map must not serialize: {json}"
-        );
-    }
-
-    /// Multi-crate workspace with two BotTemplate plugins must record
-    /// one map entry per plugin — a single scalar would collapse the
-    /// two digests onto one slot and rollback drift detection would
-    /// mis-attribute the SHA. Pins the per-key shape from the producer
-    /// side without driving the full `publish_to_krew` path.
-    #[test]
-    fn krew_extra_multi_plugin_records_distinct_entries() {
-        let mut shas = BTreeMap::new();
-        shas.insert("/repo/a/.krew.yaml".to_string(), "a".repeat(64));
-        shas.insert("/repo/b/.krew.yaml".to_string(), "b".repeat(64));
-        let extra = anodizer_core::publish_evidence::KrewExtra {
-            krew_targets: vec![],
-            bot_template_pre_image_shas: shas.clone(),
-        };
-        let json = serde_json::to_string(&extra).expect("serialize multi");
-        let back: anodizer_core::publish_evidence::KrewExtra =
-            serde_json::from_str(&json).expect("deserialize multi");
-        assert_eq!(back.bot_template_pre_image_shas.len(), 2);
-        assert_eq!(back.bot_template_pre_image_shas, shas);
-    }
-
-    /// Drift classifier: unchanged on-disk content reports `Unchanged`.
-    /// The benign case the rollback consumer logs at status level —
-    /// operator sees "template unchanged since publish".
-    #[test]
-    fn classify_bot_template_drift_unchanged_when_content_matches() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join(".krew.yaml");
-        std::fs::write(&path, b"frozen content").expect("seed");
-        let recorded = sha256_hex(b"frozen content");
-        assert_eq!(
-            classify_bot_template_drift(&path, &recorded),
-            BotTemplateDriftOutcome::Unchanged
-        );
-    }
-
-    /// Drift classifier: mutated on-disk content reports `Drifted` and
-    /// surfaces both digests so the operator can diff. The error case
-    /// the rollback consumer logs loudly — manual review required
-    /// before re-publishing.
-    #[test]
-    fn classify_bot_template_drift_reports_drift_when_content_differs() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join(".krew.yaml");
-        std::fs::write(&path, b"new content").expect("seed");
-        let recorded = sha256_hex(b"original content");
-        let outcome = classify_bot_template_drift(&path, &recorded);
-        let BotTemplateDriftOutcome::Drifted {
-            recorded_sha,
-            current_sha,
-        } = outcome
-        else {
-            panic!("expected Drifted, got {outcome:?}");
-        };
-        assert_eq!(recorded_sha, sha256_hex(b"original content"));
-        assert_eq!(current_sha, sha256_hex(b"new content"));
-        assert_ne!(recorded_sha, current_sha);
-    }
-
-    /// Drift classifier: missing on-disk file reports `Missing` so the
-    /// rollback consumer surfaces the deletion to the operator rather
-    /// than confusing it with the benign "first publish" case (which
-    /// never reaches the consumer because the producer records no
-    /// entry when the pre-image is absent).
-    #[test]
-    fn classify_bot_template_drift_reports_missing_when_file_deleted() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("never-existed.yaml");
-        assert_eq!(
-            classify_bot_template_drift(&path, &"a".repeat(64)),
-            BotTemplateDriftOutcome::Missing
-        );
-    }
-
-    /// `read_pre_image_sha` distinguishes the three cases the
-    /// publisher must act on differently:
-    ///   - file missing → Ok(None) (first publish — expected)
-    ///   - file present + readable → Ok(Some(sha))
-    ///   - file present + unreadable → Err (hard bail; otherwise
-    ///     rollback drift detection silently disappears).
-    #[test]
-    fn read_pre_image_sha_distinguishes_missing_from_unreadable() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-
-        // Case 1: missing file → Ok(None).
-        let missing = tmp.path().join("nope.yaml");
-        let r = read_pre_image_sha(&missing).expect("missing must be Ok");
-        assert!(r.is_none(), "missing file should yield None: {r:?}");
-
-        // Case 2: present + readable → Ok(Some(sha)).
-        let present = tmp.path().join(".krew.yaml");
-        std::fs::write(&present, b"hi").expect("seed");
-        let r = read_pre_image_sha(&present).expect("readable must be Ok");
-        assert_eq!(r, Some(sha256_hex(b"hi")));
-    }
-
-    /// `read_pre_image_sha` returns `Err` when the file exists but
-    /// cannot be read (permission-denied surrogate: we make the path
-    /// point at a directory, which `std::fs::read` rejects with
-    /// `EISDIR`). The point: a read failure must NOT silently downgrade
-    /// to `None` — otherwise rollback drift detection loses its safety
-    /// net on every permissions hiccup, which was the S2 finding.
-    #[test]
-    fn read_pre_image_sha_errors_when_file_exists_but_unreadable() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        // `std::fs::read` on a directory yields an `Other`-kind error
-        // (not NotFound), exercising the bail branch. Cross-platform
-        // surrogate for the permission-denied case: simpler than
-        // chmod-ing a temp file across CI runners.
-        let dir = tmp.path().join("a-dir");
-        std::fs::create_dir(&dir).expect("mkdir");
-        let r = read_pre_image_sha(&dir);
-        assert!(r.is_err(), "directory read must Err, got: {r:?}");
-        let msg = format!("{:#}", r.unwrap_err());
-        assert!(
-            msg.contains("unreadable"),
-            "error must mention unreadable: {msg}"
-        );
-        assert!(
-            msg.contains("rollback drift detection"),
-            "error must mention rollback drift detection: {msg}"
-        );
-    }
-
-    /// Drift consumer reports the benign unchanged case at status
-    /// level and the drift / missing cases at error level — the
-    /// publisher's log capture distinguishes the two so an operator
-    /// scanning `error` lines doesn't have to wade through the
-    /// unchanged log noise to find the actual drift events.
-    #[test]
-    fn run_bot_template_drift_check_separates_status_and_error_lines() {
-        use anodizer_core::log::LogLevel;
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let unchanged = tmp.path().join("unchanged.yaml");
-        let drifted = tmp.path().join("drifted.yaml");
-        let missing = tmp.path().join("missing.yaml");
-        std::fs::write(&unchanged, b"a").expect("seed unchanged");
-        std::fs::write(&drifted, b"new").expect("seed drifted");
-
-        let mut shas = BTreeMap::new();
-        shas.insert(unchanged.to_string_lossy().into_owned(), sha256_hex(b"a"));
-        shas.insert(
-            drifted.to_string_lossy().into_owned(),
-            sha256_hex(b"original"),
-        );
-        shas.insert(
-            missing.to_string_lossy().into_owned(),
-            sha256_hex(b"never-seen"),
-        );
-
-        let capture = anodizer_core::log::LogCapture::new();
-        let mut ctx = anodizer_core::test_helpers::TestContextBuilder::new().build();
-        ctx.with_log_capture(capture.clone());
-        let log = ctx.logger("publish");
-        run_bot_template_drift_check(&shas, &log);
-
-        let all = capture.all_messages();
-        let errors: Vec<&String> = all
-            .iter()
-            .filter(|(lvl, _)| *lvl == LogLevel::Error)
-            .map(|(_, m)| m)
-            .collect();
-        let statuses: Vec<&String> = all
-            .iter()
-            .filter(|(lvl, _)| *lvl == LogLevel::Status)
-            .map(|(_, m)| m)
-            .collect();
-        assert!(
-            errors
-                .iter()
-                .any(|m| m.contains("differs from the pre-publish")),
-            "drift line should be error-level: errors={errors:?}"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|m| m.contains("no longer exists on disk")),
-            "missing line should be error-level: errors={errors:?}"
-        );
-        assert!(
-            statuses
-                .iter()
-                .any(|m| m.contains("unchanged since publish")),
-            "unchanged line should be status-level: statuses={statuses:?}"
-        );
-        // Cross-check: no false-positive crossover.
-        assert!(
-            !errors.iter().any(|m| m.contains("unchanged since publish")),
-            "unchanged must NOT escalate to error: errors={errors:?}"
-        );
-    }
-
-    /// `no_pre_image_sha` informational string is the load-bearing
-    /// log payload for the "BotTemplate mode rollback was requested,
-    /// but the producer had no pre-image SHA to record" case (e.g.
-    /// first publish — pre-image file did not exist). Pinned via the
-    /// shared helper so any rephrase keeps the operator-facing
-    /// substring stable across releases.
-    #[test]
-    fn bot_template_rollback_no_sha_msg_pins_operator_facing_substrings() {
-        let msg = bot_template_rollback_no_sha_msg();
-        assert!(msg.starts_with("krew:"), "{msg}");
-        assert!(msg.contains("BotTemplate rollback"), "{msg}");
-        assert!(msg.contains("no pre-image SHA recorded"), "{msg}");
-        assert!(msg.contains("skipping drift check"), "{msg}");
     }
 
     #[test]

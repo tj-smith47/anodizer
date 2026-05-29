@@ -66,7 +66,7 @@ logic.
 | homebrew (tap) | Manager | false | git revert + push | `GITHUB_TOKEN contents:write` |
 | scoop (bucket) | Manager | false | git revert + push | `GITHUB_TOKEN contents:write` |
 | nix (overlay repo) | Manager | false | git revert + push | `GITHUB_TOKEN contents:write` |
-| krew | Manager | false | close PR | `GITHUB_TOKEN pull_request:write` |
+| krew | Manager | false | PrDirect: close the PR anodizer opened. BotWebhook: no-op (the krew-release-bot server owns the krew-index PR) | `GITHUB_TOKEN pull_request:write` (PrDirect) |
 | mcp | Manager | false | warn-only (no programmatic unpublish; manual mark-deprecated via registry admin UI) | `MCP_GITHUB_TOKEN publish` |
 | our-AUR-repos | Manager | false | git revert + push | `AUR_SSH_KEY write` |
 | custom-publishers | Manager | false | none | depends on publisher |
@@ -353,6 +353,72 @@ anodize release --rollback-only --from-run=v0.2.1
 #         pushed tag and re-runs the pipeline).
 anodize tag
 ```
+
+### Recovering a poisoned tag with `tag rollback`
+
+`anodize tag rollback` is the inverse of `anodize tag`: when a downstream
+release fails (publish error, mcp 422, an irreversible Submitter blows up),
+the operator is left with a tag pointing at a bumped-but-broken commit. The
+subcommand deletes the anodize-managed tag(s) at that SHA, reverts the bump
+commit, and pushes the revert — restoring the branch to a clean state so the
+next `anodize tag` invocation can re-cut from the fixed commit.
+
+```bash
+# Rollback the bump at the current HEAD (or any SHA you pass explicitly):
+anodize tag rollback "$GITHUB_SHA"
+
+# Dry-run first:
+anodize tag rollback --dry-run "$GITHUB_SHA"
+
+# Don't push — just mutate locally:
+anodize tag rollback --no-push "$GITHUB_SHA"
+```
+
+**Flag matrix:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `<SHA>` (positional) | `HEAD` | Target commit. Tags at this SHA are deleted; the commit itself is reverted (or reset past, with `--mode=reset`) |
+| `--dry-run` | off | Print what would happen — no tag delete, no commit, no push |
+| `--no-push` | off | Mutate locally; skip the remote tag-delete and revert-commit push |
+| `--scope` | `all` | `all` (lockstep + per-crate) \| `lockstep` (`vX.Y.Z` only) \| `per-crate` (`<crate>-vX.Y.Z` only) |
+| `--mode` | `revert` | `revert` (history-preserving `git revert --no-edit`, default) \| `reset` (history-rewriting `git reset --hard <sha>~1`; requires force-push to land) |
+| `--branch` | auto | Branch to push the revert to. Auto-resolved from `git branch -r --contains <bump_sha>` so the bump SHA itself (not "the default branch right now") drives the lookup — race-immune to default-branch movement. Falls back to `HEAD` resolution for local-only repos. Pass `--branch` to override |
+
+**SHA-derivation:** the bump SHA is the anchor for both the tag lookup AND
+the branch resolution. There is no `--default-branch` flag and no API call
+to `repos/<owner>/<repo>` — the rollback can run on a detached HEAD as long
+as the bump SHA is reachable from at least one remote branch.
+
+**Safety check:** under the default `--mode=revert`, anodize hard-fails when
+non-bump commits sit between HEAD and the target SHA. (Anodize's own prior
+revert commits — those with the `Revert "chore(release): ` prefix — are
+recognised so re-runs of the same rollback are idempotent.) Use
+`--mode=reset` to force history rewrite when you genuinely want the
+intervening commits gone too.
+
+**Workflow integration:** anodizer's own `release.yml` wires this as the
+default `if: failure() || cancelled()` step on the release job:
+
+```yaml
+- name: Rollback on release failure
+  if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+  env:
+    GH_TOKEN: ${{ secrets.GH_PAT }}
+    GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+  run: anodizer tag rollback "$GITHUB_SHA"
+```
+
+The `id: release` on the release step is what makes `steps.release.outcome`
+resolvable; the `steps.release.outcome != 'skipped'` guard prevents the
+rollback from running when the release step itself was skipped (e.g.,
+`workflow_dispatch` with a `if:` that didn't match).
+
+`tag rollback` complements `release --rollback-only` rather than replacing
+it: use `--rollback-only` to unwind individual publisher state (reversible
+Assets / Manager DELETEs, PR closes, blob removes); use `tag rollback` to
+delete the tag itself and revert the bump commit so the next `anodize tag`
+can cut a fresh version from the fixed code.
 
 Only use `--allow-rerun` when:
 

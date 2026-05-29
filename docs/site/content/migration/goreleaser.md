@@ -20,7 +20,7 @@ If you're coming from GoReleaser, anodizer will feel familiar. The config struct
 | `brews` | `homebrew_casks:` (top-level) or `crates[].publish.homebrew_cask` | **Deprecated upstream in GoReleaser v2.16.** `publish.homebrew` (Formula) still parses with a deprecation warning; see [the `brews → homebrew_casks` migration](#brews-homebrew_casks) below. |
 | `scoop` | `crates[].publish.scoop` | Nested under publish |
 | `mcp` | `mcp` | Identical top-level key. The deprecated nested `mcp.github:` block from older GoReleaser configs collapses to top-level `mcp.*` fields in anodizer (matches upstream's current recommendation). See [MCP registry](@/docs/publish/mcp-registry.md) |
-| `dockers` | `crates[].docker` | Nested under crate |
+| `dockers` | `crates[].docker_v2` | Nested under crate (multi-arch buildx; V2-only) |
 | `signs` | `signs` | Top-level, same structure |
 | `nfpms` | `crates[].nfpm` | Nested under crate |
 | `announces` | `announce` | Same structure |

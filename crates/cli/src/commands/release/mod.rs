@@ -790,19 +790,18 @@ fn parse_allow_nondeterministic(entries: &[String]) -> Result<Vec<(String, Strin
 ///      lacks a parent component (e.g. a bare filename in `/`).
 ///
 /// Both branches canonicalize when possible so downstream consumers that
-/// join repo-relative paths (`.github/workflows/<name>.yml`,
-/// `.krew.yaml`, snapcraft icons) hit the real tree even when called
-/// from a symlinked checkout.
+/// join repo-relative paths (snapcraft icons, extra-file globs, ...) hit
+/// the real tree even when called from a symlinked checkout.
 ///
 /// When the CWD fallback fires (bare-filename `--config=anodize.yaml`)
 /// and `log` is `Some`, a warn surfaces because the resulting CWD
 /// anchor is almost certainly NOT what the operator meant when they
-/// passed a bare filename: subsequent `.github/workflows/` scans, krew
-/// bot-mode auto-detection, snapcraft icon lookups, etc. will all hit
-/// the process CWD rather than the repo root. We warn rather than
-/// bail because legitimate workflows do invoke anodizer with
-/// CWD == project root and a bare filename; the warn lets a
-/// misconfiguration become visible without breaking the working case.
+/// passed a bare filename: repo-relative file lookups (snapcraft icon
+/// resolution, extra-file globs, etc.) will all hit the process CWD
+/// rather than the repo root. We warn rather than bail because
+/// legitimate workflows do invoke anodizer with CWD == project root and
+/// a bare filename; the warn lets a misconfiguration become visible
+/// without breaking the working case.
 fn resolve_project_root(
     config_path: &std::path::Path,
     log: Option<&StageLogger>,
@@ -822,8 +821,8 @@ fn resolve_project_root(
                     config_path.display()
                 ));
                 log.warn(
-                    "krew bot-mode auto-detection (and any other repo-relative file lookup) \
-                     will scan the CWD's `.github/workflows/` — pass --config with a parent \
+                    "repo-relative file lookups (snapcraft icons, extra-file globs, ...) \
+                     will resolve against the process CWD — pass --config with a parent \
                      directory (e.g. `--config=./anodize.yaml`) if this is incorrect",
                 );
             }
@@ -842,11 +841,10 @@ fn resolve_project_root(
 /// config file when available, falling back to the process CWD. The
 /// resolved config path is authoritative because the operator may have
 /// invoked anodizer from a subdirectory with `--config=../anodize.yaml`;
-/// CWD alone would point the consumer (e.g. the krew publisher's
-/// `.github/workflows/` scan) at the wrong tree. Stage modules that
-/// need to read repo-relative files (`.github/workflows/`,
-/// `.krew.yaml`, snapcraft icons, ...) consume this via
-/// `ctx.options.project_root`.
+/// CWD alone would point repo-relative consumers at the wrong tree.
+/// Stage modules that need to read repo-relative files (snapcraft
+/// icons, extra-file globs, the cargo publisher's `target/`
+/// resolution, ...) consume this via `ctx.options.project_root`.
 fn build_context_options(
     opts: &ReleaseOpts,
     skip_stages: Vec<String>,
@@ -2363,9 +2361,9 @@ mod tests {
     // ---- project_root resolution -----------------------------------------
 
     /// `resolve_project_root` must return the parent of a normal config
-    /// path so the krew publisher's `.github/workflows/` scan finds the
-    /// repo's workflows even when anodizer is invoked from a sibling
-    /// directory with `--config=<repo>/anodize.yaml`.
+    /// path so repo-relative file lookups resolve against the repo root
+    /// even when anodizer is invoked from a sibling directory with
+    /// `--config=<repo>/anodize.yaml`.
     #[test]
     fn resolve_project_root_uses_config_parent() {
         let tmp = tempfile::tempdir().expect("create tempdir");
@@ -2401,12 +2399,12 @@ mod tests {
     }
 
     /// Bare-filename `--config=anodize.yaml` is almost always a
-    /// misconfiguration: every repo-relative consumer
-    /// (`.github/workflows/` scan for krew bot-mode, snapcraft icon
-    /// lookup, ...) will scan the process CWD rather than the repo
-    /// root. The resolver must surface a `warn` so the misconfiguration
-    /// is visible in CI logs without hard-failing the release (which
-    /// would break the legitimate CWD == project-root case).
+    /// misconfiguration: every repo-relative consumer (snapcraft icon
+    /// lookup, extra-file globs, ...) will resolve against the process
+    /// CWD rather than the repo root. The resolver must surface a `warn`
+    /// so the misconfiguration is visible in CI logs without
+    /// hard-failing the release (which would break the legitimate
+    /// CWD == project-root case).
     #[test]
     fn resolve_project_root_warns_when_falling_back_for_bare_filename() {
         let bare = std::path::Path::new("anodize.yaml");
@@ -2421,18 +2419,17 @@ mod tests {
         assert!(
             warns
                 .iter()
-                .any(|m| m.contains(".github/workflows/") || m.contains("krew")),
-            "expected the warn to call out the load-bearing krew/.github/workflows/ scan; \
+                .any(|m| m.contains("repo-relative file lookups")),
+            "expected the warn to call out the load-bearing repo-relative file lookups; \
              got warns: {warns:?}"
         );
     }
 
     /// `build_context_options` must surface the `project_root` it was
-    /// handed verbatim onto `ContextOptions` so the krew publisher's
-    /// `detect_krew_mode` workflow scan can find `.github/workflows/`.
-    /// Hard-coded `None` here was the original bug: a wired
-    /// `rajatjindal/krew-release-bot` step would be invisible and the
-    /// publisher would fall through to the wrong mode.
+    /// handed verbatim onto `ContextOptions` so downstream stages that
+    /// resolve paths relative to the project root (e.g. the cargo
+    /// publisher's `target/` resolution, snapcraft icon paths) see the
+    /// real root rather than a hard-coded `None`.
     #[test]
     fn build_context_options_propagates_project_root() {
         let opts = ReleaseOpts {
