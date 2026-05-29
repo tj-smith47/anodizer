@@ -119,19 +119,84 @@ fn enable_ci_colors() {
     }
 }
 
+/// `tracing` event formatter that renders library-side `warn!`/`error!`
+/// in the exact visual shape of [`anodizer_core::log::StageLogger`] — a
+/// bold `Warning:` / `Error:` prefix followed by the event's message —
+/// with NO ` WARN ` ansi level badge and NO `key=value` field/target
+/// clutter. This is the single output authority: the few user-facing
+/// warnings emitted from pure-library code paths (config validation,
+/// defaults merge) that have no `StageLogger` in scope therefore look
+/// identical to logger output instead of the default subscriber's
+/// `2026-… WARN target: msg key=value` line, which previously
+/// interleaved a third warning shape into release stderr.
+struct StageStyleFormat;
+
+/// Field visitor that captures only the `message` field of a tracing
+/// event, discarding all structured `key=value` fields so they never
+/// reach the rendered line.
+#[derive(Default)]
+struct MessageVisitor {
+    message: String,
+}
+
+impl tracing::field::Visit for MessageVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = format!("{value:?}");
+        }
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.message = value.to_string();
+        }
+    }
+}
+
+impl<S, N> tracing_subscriber::fmt::FormatEvent<S, N> for StageStyleFormat
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    N: for<'a> tracing_subscriber::fmt::FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        _ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: tracing_subscriber::fmt::format::Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        use colored::Colorize;
+        use tracing::Level;
+
+        let mut visitor = MessageVisitor::default();
+        event.record(&mut visitor);
+
+        let level = *event.metadata().level();
+        let prefix = if level == Level::ERROR {
+            "Error:".red().bold()
+        } else {
+            // warn (and the rare info/debug that slip past the filter)
+            // all render under the Warning style — they only reach this
+            // formatter when surfaced to the user at the default `warn`
+            // level.
+            "Warning:".yellow().bold()
+        };
+        writeln!(writer, "{} {}", prefix, visitor.message)
+    }
+}
+
 /// Initialize tracing for `tracing::warn!`/`info!`/`debug!` calls inside the
 /// pure-library code paths (e.g. `defaults_merge`). Honours `RUST_LOG` for
 /// per-module filtering; falls back to `warn` so config-validation warnings
 /// surface in CI even without a configured filter. Writes to stderr without
-/// timestamps to match the existing `eprintln!` convention used elsewhere.
+/// timestamps, in `StageLogger` visual style, so library warnings match the
+/// pipeline's own logger output (one output authority).
 fn init_tracing() {
     use tracing_subscriber::{EnvFilter, fmt};
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
     let _ = fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
-        .without_time()
-        .with_target(false)
+        .event_format(StageStyleFormat)
         .try_init();
 }
 

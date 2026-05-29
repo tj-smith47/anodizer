@@ -1154,10 +1154,13 @@ impl Pipeline {
                 log.warn(&format!("failed to write pre-release metadata: {}", e));
             }
 
-            log.status(&format!("\u{2022} {}...", name.bold()));
+            // One collapsible section per stage: `::group::<name>` under
+            // GitHub Actions, an indented `• name` header locally. The
+            // guard closes the section (`::endgroup::` / de-indent) on
+            // any exit path, including the early `?` return below.
+            let section = log.group(name);
             match stage.run(ctx) {
                 Ok(()) => {
-                    log.status(&format!("{} {}", "\u{2713}".green().bold(), name.bold()));
                     // After the build stage, record whether binaries were produced.
                     if name == "build" {
                         has_binaries = ctx.artifacts.all().iter().any(|a| {
@@ -1174,14 +1177,11 @@ impl Pipeline {
                     if name == "changelog" {
                         ctx.populate_release_notes_var();
                     }
+                    drop(section);
                 }
                 Err(e) => {
-                    log.status(&format!(
-                        "{} {} \u{2014} {}",
-                        "\u{2717}".red().bold(),
-                        name.bold(),
-                        e
-                    ));
+                    log.error(&format!("{} failed: {}", name, e));
+                    drop(section);
                     return Err(e);
                 }
             }

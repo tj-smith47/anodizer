@@ -24,8 +24,60 @@
 use std::sync::Arc;
 #[cfg(feature = "test-helpers")]
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use colored::Colorize;
+
+/// Process-global section nesting depth. Drives the 2-space-per-level
+/// indentation applied to every stderr log line so output produced
+/// inside a [`StageLogger::group`] sits visually beneath its header.
+///
+/// A single atomic (rather than per-logger state) is correct because the
+/// release pipeline drives one stderr stream and runs its stages
+/// sequentially; the depth is a property of "where we are in the run",
+/// not of any individual logger clone.
+static SECTION_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+/// Width of the right-aligned verb column in [`StageLogger::step`],
+/// matching Cargo's `   Compiling foo` look (3 leading spaces + 9-char
+/// verb = a 12-column gutter before the message).
+const VERB_COLUMN: usize = 12;
+
+/// `true` when running under GitHub Actions, where `::group::` /
+/// `::endgroup::` workflow commands render collapsible log sections.
+fn in_github_actions() -> bool {
+    std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
+}
+
+/// Current indentation prefix (2 spaces per open section). Empty at the
+/// top level. Suppressed under GitHub Actions, where `::group::` already
+/// supplies the visual nesting and a leading-space prefix would only add
+/// noise to the collapsed view.
+fn indent() -> String {
+    if in_github_actions() {
+        return String::new();
+    }
+    "  ".repeat(SECTION_DEPTH.load(Ordering::Relaxed))
+}
+
+/// RAII guard returned by [`StageLogger::group`]. Closes the section
+/// (emits `::endgroup::` under Actions, decrements the local indent
+/// depth) when dropped, so a stage's output is always balanced even if
+/// the stage bails early with `?`.
+#[must_use = "dropping the guard immediately ends the section"]
+pub struct SectionGuard {
+    _private: (),
+}
+
+impl Drop for SectionGuard {
+    fn drop(&mut self) {
+        if in_github_actions() {
+            eprintln!("::endgroup::");
+        } else {
+            SECTION_DEPTH.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
 
 /// Level of a log line captured by a [`LogCapture`]. Mirrors the
 /// [`StageLogger`] methods that produce each level.
@@ -253,7 +305,13 @@ impl StageLogger {
 
     /// Error message — always shown (even in quiet mode).
     pub fn error(&self, msg: &str) {
-        eprintln!("{} [{}] {}", "Error:".red().bold(), self.stage, msg);
+        eprintln!(
+            "{}{} {} {}",
+            indent(),
+            "Error:".red().bold(),
+            format!("[{}]", self.stage).dimmed(),
+            msg
+        );
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
             cap.record(LogLevel::Error, msg);
@@ -263,7 +321,13 @@ impl StageLogger {
     /// Warning message — shown at Normal and above.
     pub fn warn(&self, msg: &str) {
         if self.verbosity >= Verbosity::Normal {
-            eprintln!("{} [{}] {}", "Warning:".yellow().bold(), self.stage, msg);
+            eprintln!(
+                "{}{} {} {}",
+                indent(),
+                "Warning:".yellow().bold(),
+                format!("[{}]", self.stage).dimmed(),
+                msg
+            );
         }
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
@@ -275,7 +339,18 @@ impl StageLogger {
     /// for key actions (stage start, completion, skips, dry-run notes).
     pub fn status(&self, msg: &str) {
         if self.verbosity >= Verbosity::Normal {
-            eprintln!("[{}] {}", self.stage, msg);
+            // Preserve fully-blank spacer lines exactly (no prefix), so
+            // callers using `status("")` for vertical rhythm keep it.
+            if msg.is_empty() {
+                eprintln!();
+            } else {
+                eprintln!(
+                    "{}{} {}",
+                    indent(),
+                    format!("[{}]", self.stage).dimmed(),
+                    msg
+                );
+            }
         }
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
@@ -283,11 +358,68 @@ impl StageLogger {
         }
     }
 
+    /// Cargo-style status line: a capitalized, right-aligned, bold-green
+    /// `verb` in a fixed-width gutter followed by `msg`
+    /// (`   Building build`, `   Signing sign`). Shown at Normal and
+    /// above. Use for section/stage headers where there is a natural
+    /// verb; plain key-action lines stay on [`StageLogger::status`].
+    pub fn step(&self, verb: &str, msg: &str) {
+        if self.verbosity >= Verbosity::Normal {
+            eprintln!(
+                "{}{} {}",
+                indent(),
+                format!("{verb:>VERB_COLUMN$}").green().bold(),
+                msg
+            );
+        }
+        #[cfg(feature = "test-helpers")]
+        if let Some(cap) = &self.capture {
+            cap.record(LogLevel::Status, msg);
+        }
+    }
+
+    /// Open a log section titled `title`.
+    ///
+    /// Under GitHub Actions emits a `::group::<title>` workflow command
+    /// (rendered as a collapsible block); the returned [`SectionGuard`]
+    /// emits the matching `::endgroup::` on drop. Locally emits a
+    /// Cargo-style header and indents every subsequent log line two
+    /// spaces until the guard drops. Sections nest.
+    ///
+    /// ```rust,ignore
+    /// let _section = log.group("build");
+    /// log.status("compiling x86_64-unknown-linux-gnu"); // indented beneath
+    /// // section closes here as `_section` drops
+    /// ```
+    #[must_use = "the section stays open only while the guard is alive"]
+    pub fn group(&self, title: &str) -> SectionGuard {
+        if self.verbosity >= Verbosity::Normal {
+            if in_github_actions() {
+                eprintln!("::group::{title}");
+            } else {
+                eprintln!("{}{} {}", indent(), "\u{2022}".green().bold(), title.bold());
+                SECTION_DEPTH.fetch_add(1, Ordering::Relaxed);
+            }
+        } else if in_github_actions() {
+            // Keep group markers balanced even in quiet mode so the
+            // Actions UI never shows an unterminated section.
+            eprintln!("::group::{title}");
+        } else {
+            SECTION_DEPTH.fetch_add(1, Ordering::Relaxed);
+        }
+        SectionGuard { _private: () }
+    }
+
     /// Detail message — shown only at Verbose and above.
     /// Use for: command output on success, env vars, file paths, template vars.
     pub fn verbose(&self, msg: &str) {
         if self.verbosity >= Verbosity::Verbose {
-            eprintln!("[{}] {}", self.stage, msg);
+            eprintln!(
+                "{}{} {}",
+                indent(),
+                format!("[{}]", self.stage).dimmed(),
+                msg
+            );
         }
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
@@ -299,7 +431,12 @@ impl StageLogger {
     /// Use for: HTTP request/response details, full template contexts, resolved config.
     pub fn debug(&self, msg: &str) {
         if self.verbosity >= Verbosity::Debug {
-            eprintln!("[{}] {}", self.stage.dimmed(), msg.dimmed());
+            eprintln!(
+                "{}{} {}",
+                indent(),
+                format!("[{}]", self.stage).dimmed(),
+                msg.dimmed()
+            );
         }
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
@@ -436,6 +573,72 @@ impl StageLogger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serializes the section-depth tests: `SECTION_DEPTH` is a
+    /// process-global atomic, so two grouping tests running on parallel
+    /// threads would observe each other's increments.
+    static SECTION_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn test_group_guard_balances_depth_locally() {
+        // GITHUB_ACTIONS must be unset so the local (indent-depth) path
+        // runs rather than the `::group::` emit path.
+        let _guard = SECTION_TEST_LOCK.lock().unwrap();
+        // SAFETY: single-threaded under SECTION_TEST_LOCK; no other
+        // thread reads GITHUB_ACTIONS while this test holds the lock.
+        unsafe {
+            std::env::remove_var("GITHUB_ACTIONS");
+        }
+        let log = StageLogger::new("build", Verbosity::Normal);
+        let start = SECTION_DEPTH.load(Ordering::Relaxed);
+        {
+            let _outer = log.group("build");
+            assert_eq!(SECTION_DEPTH.load(Ordering::Relaxed), start + 1);
+            {
+                let _inner = log.group("sign");
+                assert_eq!(SECTION_DEPTH.load(Ordering::Relaxed), start + 2);
+            }
+            assert_eq!(SECTION_DEPTH.load(Ordering::Relaxed), start + 1);
+        }
+        assert_eq!(SECTION_DEPTH.load(Ordering::Relaxed), start);
+    }
+
+    #[test]
+    fn test_group_quiet_still_tracks_local_depth() {
+        // Even at Quiet verbosity the local indent depth must stay
+        // balanced so any status lines that DO print (errors) indent
+        // correctly and the guard's decrement has a matching increment.
+        let _guard = SECTION_TEST_LOCK.lock().unwrap();
+        // SAFETY: single-threaded under SECTION_TEST_LOCK.
+        unsafe {
+            std::env::remove_var("GITHUB_ACTIONS");
+        }
+        let log = StageLogger::new("build", Verbosity::Quiet);
+        let start = SECTION_DEPTH.load(Ordering::Relaxed);
+        {
+            let _s = log.group("build");
+            assert_eq!(SECTION_DEPTH.load(Ordering::Relaxed), start + 1);
+        }
+        assert_eq!(SECTION_DEPTH.load(Ordering::Relaxed), start);
+    }
+
+    #[test]
+    fn test_indent_suppressed_under_github_actions() {
+        let _guard = SECTION_TEST_LOCK.lock().unwrap();
+        // SAFETY: single-threaded under SECTION_TEST_LOCK.
+        unsafe {
+            std::env::set_var("GITHUB_ACTIONS", "true");
+        }
+        // Under Actions, indent() returns empty regardless of any
+        // residual depth, because `::group::` supplies the nesting.
+        assert_eq!(indent(), "");
+        assert!(in_github_actions());
+        // SAFETY: single-threaded under SECTION_TEST_LOCK.
+        unsafe {
+            std::env::remove_var("GITHUB_ACTIONS");
+        }
+        assert!(!in_github_actions());
+    }
 
     #[test]
     fn test_verbosity_from_flags_default() {

@@ -664,8 +664,8 @@ pub(crate) fn run_github_backend(
             } else {
                 retouch_live = true;
                 log.status(&format!(
-                    "release already live (id={}, mode={})",
-                    existing.id, release_mode
+                    "release already live: {} (id={}, mode={})",
+                    release_name, existing.id, release_mode
                 ));
             }
             let route = format!(
