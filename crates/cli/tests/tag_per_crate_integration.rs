@@ -452,3 +452,116 @@ fn per_crate_dry_run_emits_output_but_no_tags_no_commits() {
         "--dry-run must not create tags"
     );
 }
+
+fn read_dep_version(root: &Path, manifest_rel: &str, dep_name: &str) -> String {
+    let text = fs::read_to_string(root.join(manifest_rel)).unwrap();
+    let doc = text.parse::<toml_edit::DocumentMut>().unwrap();
+    doc.get("dependencies")
+        .and_then(|d| d.get(dep_name))
+        .and_then(|d| d.get("version"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| {
+            panic!(
+                "{}: [dependencies].{}.version not found",
+                manifest_rel, dep_name
+            )
+        })
+        .to_string()
+}
+
+/// A workspace member that pins a sibling via `{ path = "...", version = "X" }`
+/// must have THAT version pin rewritten when the sibling is lockstep-bumped
+/// during a per-crate tag run. Without this, `cargo publish -p <sibling>`
+/// later fails with "failed to select a version for the requirement
+/// <sibling> = ^<old>" because the workspace resolves against the
+/// pre-bump pin while the sibling's `[package].version` is already at
+/// the new value. Regression for cfgd's v0.4.0 ship failure.
+#[test]
+fn per_crate_lockstep_group_rewrites_intra_workspace_dep_pins() {
+    let tmp = TempDir::new().unwrap();
+
+    // Two-member workspace, lockstep group. `app` depends on `lib` via
+    // `{ path = "../lib", version = "0.1.0" }`.
+    fs::write(
+        tmp.path().join("Cargo.toml"),
+        r#"[workspace]
+members = ["crates/lib", "crates/app"]
+resolver = "2"
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(tmp.path().join("crates/lib/src")).unwrap();
+    fs::create_dir_all(tmp.path().join("crates/app/src")).unwrap();
+    fs::write(
+        tmp.path().join("crates/lib/Cargo.toml"),
+        r#"[package]
+name = "lib"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .unwrap();
+    fs::write(tmp.path().join("crates/lib/src/lib.rs"), "").unwrap();
+    fs::write(
+        tmp.path().join("crates/app/Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lib = { path = "../lib", version = "0.1.0" }
+"#,
+    )
+    .unwrap();
+    fs::write(tmp.path().join("crates/app/src/lib.rs"), "").unwrap();
+    fs::write(
+        tmp.path().join(".anodizer.yaml"),
+        r#"project_name: myproj
+workspaces:
+  - name: group-all
+    crates:
+      - name: lib
+        path: crates/lib
+        tag_template: "lib-v{{ .Version }}"
+        version_sync:
+          enabled: true
+      - name: app
+        path: crates/app
+        tag_template: "app-v{{ .Version }}"
+        version_sync:
+          enabled: true
+"#,
+    )
+    .unwrap();
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "lib-v0.1.0"]);
+    run_git(tmp.path(), &["tag", "app-v0.1.0"]);
+
+    // Trigger a lockstep bump by touching the lib crate.
+    fs::write(tmp.path().join("crates/lib/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(tmp.path(), "feat: lib feature");
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "tag failed: stdout={stdout} stderr={stderr}"
+    );
+
+    // Both members in the lockstep group were bumped to 0.2.0...
+    assert_eq!(read_crate_version(tmp.path(), "crates/lib"), "0.2.0");
+    assert_eq!(read_crate_version(tmp.path(), "crates/app"), "0.2.0");
+    // ...and the intra-workspace pin in app's [dependencies] also moved.
+    assert_eq!(
+        read_dep_version(tmp.path(), "crates/app/Cargo.toml", "lib"),
+        "0.2.0",
+        "intra-workspace dep pin app→lib must be rewritten to the new version"
+    );
+}

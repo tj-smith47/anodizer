@@ -937,6 +937,33 @@ fn run_per_crate_tag(
             anodizer_stage_build::version_sync::sync_version(path, new_version, false, log)?;
         }
 
+        // Propagate every bumped crate's new version into sibling manifests'
+        // intra-workspace `[dependencies].<crate>.version` pins. Without this,
+        // a workspace member that depends on a sibling at the old pinned
+        // version (e.g. `cfgd-core = { path = "../cfgd-core", version = "0.3.5" }`)
+        // still references the pre-bump version after sync_version() rewrites
+        // only `[package].version`, and `cargo publish` later fails with
+        // "failed to select a version for the requirement <sibling> = ^<old>".
+        let workspace_root = std::env::current_dir()?;
+        let workspace_root_str = workspace_root.to_string_lossy().into_owned();
+        let mut intra_ws_modified: Vec<String> = Vec::new();
+        for group_result in &tag_results {
+            for (crate_name, (_, new_version)) in group_result
+                .crate_names
+                .iter()
+                .zip(group_result.version_updates.iter())
+            {
+                let modified = anodizer_stage_build::version_sync::sync_workspace_deps(
+                    &workspace_root_str,
+                    crate_name,
+                    new_version,
+                    false,
+                    log,
+                )?;
+                intra_ws_modified.extend(modified);
+            }
+        }
+
         // Update Cargo.lock to match bumped manifests.
         match anodizer_core::cargo_lock::cargo_update_workspace(None) {
             Ok(_) => {}
@@ -945,11 +972,22 @@ fn run_per_crate_tag(
             )),
         }
 
-        // Stage all bumped Cargo.toml files + Cargo.lock.
+        // Stage all bumped Cargo.toml files + intra-workspace dep rewrites +
+        // Cargo.lock. Convert absolute intra-ws paths to repo-relative so
+        // `git add` recognizes them.
         let mut files_to_stage: Vec<String> = all_version_updates
             .iter()
             .map(|(path, _)| format!("{}/Cargo.toml", path))
             .collect();
+        for abs in &intra_ws_modified {
+            let rel = Path::new(abs)
+                .strip_prefix(&workspace_root)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| abs.clone());
+            if !files_to_stage.contains(&rel) {
+                files_to_stage.push(rel);
+            }
+        }
         files_to_stage.push("Cargo.lock".to_string());
         let staged_refs: Vec<&str> = files_to_stage.iter().map(|s| s.as_str()).collect();
 
