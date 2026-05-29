@@ -89,6 +89,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
+        id: release
         with:
           auto-install: true
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -96,6 +97,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+      - name: Rollback on release failure
+        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 **Concurrency:** `group: release-${{ github.repository }}` — serializes the one run; `cancel-in-progress: false` so a release in flight is never killed.
@@ -167,6 +174,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
+        id: release
         with:
           auto-install: true
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -175,6 +183,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Rollback on release failure
+        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 **Concurrency:** same group key as A — one live run per repo.
@@ -266,6 +280,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
+        id: release
         with:
           auto-install: true
           download-dist: true
@@ -275,6 +290,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Rollback on release failure
+        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 **Concurrency:** one live run per repo; the determinism matrix runs in parallel within the run.
@@ -377,6 +398,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
+        id: release
         with:
           auto-install: true
           download-dist: true
@@ -386,6 +408,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Rollback on release failure
+        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 **Concurrency:** one live run per repo.
@@ -454,6 +482,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
+        id: release
         with:
           auto-install: true
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -462,6 +491,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Rollback on release failure
+        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 **Concurrency:** `group: release-${{ github.repository }}` — the repo-wide key serializes concurrent tag pushes. Do not use `group: release-${{ github.ref_name }}`; that creates one group per tag ref, allowing parallel runs that race at the registry.
@@ -576,6 +611,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
+        id: release
         with:
           from-artifact: anodizer-linux
           artifact-run-id: auto
@@ -589,6 +625,12 @@ jobs:
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Rollback on release failure
+        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 **Concurrency:** repo-wide group in `release.yml`; CI can fan out freely.
@@ -612,6 +654,26 @@ jobs:
 | `release-${{ github.ref_name }}` | `false` | **Avoid for releases** — creates one group per tag ref, enabling parallel runs |
 
 The `cancel-in-progress: false` requirement for release is non-negotiable: publishing to crates.io, signing artifacts, and creating GitHub Releases are partially irreversible. Killing a run mid-flight leaves artifacts in an inconsistent state.
+
+## Permissions
+
+Every release workflow needs at least `contents: write` (release creation +
+tag mutation). Add the others as your strategy uses them:
+
+| Permission | When |
+|---|---|
+| `contents: write` | Always (release creation, tag rollback, version_sync commits) |
+| `actions: read` | When the release job downloads artifacts from a sibling workflow (`from-artifact: anodizer-linux` in Strategy D, the cross-workflow artifact pattern, `--publish-only` consuming preserved-dist from a prior `determinism-check` run). The `actions/download-artifact@v4` action requires it for `merge-multiple: true` cross-workflow downloads |
+| `packages: write` | `docker_v2[]` (GHCR), GitHub Packages npm publishes |
+| `id-token: write` | `mcp.auth.type: github-oidc`, cosign keyless, any OIDC-anchored publisher |
+
+```yaml
+permissions:
+  contents: write
+  actions: read          # for cross-workflow artifact downloads
+  packages: write        # for ghcr.io docker_v2 pushes
+  id-token: write        # for cosign keyless / mcp github-oidc
+```
 
 ## Anti-patterns
 

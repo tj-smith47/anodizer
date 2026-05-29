@@ -7,14 +7,14 @@ template = "section.html"
 
 # What anodizer builds
 
-Output formats and the `builds[]` / `archives[]` / `dockers[]` / `signs[]`
+Output formats and the `builds[]` / `archives[]` / `docker_v2[]` / `signs[]`
 keys that drive them. Native binaries for 6 targets ship on every release
 (linux amd64/arm64, darwin amd64/arm64, windows amd64/arm64), built with
 cargo + cargo-zigbuild + cross.
 
 ## Live configuration
 
-Build / archive / nfpm / docker / sign blocks from
+Build / archive / nfpm / docker_v2 / sign blocks from
 [`cfgd/.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml)
 (snapshot 2026-05-24) — every key referenced in the tables below is wired
 here.
@@ -67,7 +67,11 @@ nfpms:
 
 # docker_v2: pushes a multi-arch image index in one step (no separate manifest).
 docker_v2:
-  - { id: cfgd, image_templates: ["ghcr.io/tj-smith47/cfgd:{{ .Tag }}"], sbom: true }
+  - id: cfgd
+    dockerfile: Dockerfile.agent.release
+    images: ["ghcr.io/tj-smith47/cfgd"]
+    tags: ["{{ Version }}", "v{{ Version }}", "latest"]
+    sbom: true
 
 signs:
   - { id: cosign-checksum, artifacts: checksum, cmd: cosign }
@@ -149,14 +153,13 @@ before these can ship live. Implementation is complete and unit-tested.
 
 | Key | Status | Notes |
 |---|---|---|
-| `dockers[]` | ✅ Verified | [ghcr.io/tj-smith47/cfgd](https://github.com/tj-smith47?tab=packages&repo_name=cfgd) (`cfgd`, `cfgd-operator`, `cfgd-csi`) |
-| `docker_manifests[]` | ✅ Verified | [`ghcr.io/tj-smith47/cfgd:v0.3.5`](https://github.com/tj-smith47/cfgd/pkgs/container/cfgd) (multi-arch linux/amd64+arm64; same for `cfgd-operator`, `cfgd-csi`) |
-| `docker_v2` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`docker_v2:` blocks for `cfgd-agent`, `cfgd-operator`, `cfgd-csi`) |
-| `dockers[].build_args` / `labels` / `annotations` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`build_args.VERSION` + `org.opencontainers.image.*` annotations) |
-| `docker_v2.sbom: true` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`sbom: true` on all three `docker_v2` images) |
+| `docker_v2[]` | ✅ Verified | [ghcr.io/tj-smith47/cfgd](https://github.com/tj-smith47?tab=packages&repo_name=cfgd) (`cfgd-agent`, `cfgd-operator`, `cfgd-csi`); [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`docker_v2:` per crate) |
+| `docker_manifests[]` | ✅ Verified | [`ghcr.io/tj-smith47/cfgd:v0.3.5`](https://github.com/tj-smith47/cfgd/pkgs/container/cfgd) (multi-arch linux/amd64+arm64). `docker_v2` already pushes a multi-arch index, so cfgd's `docker_manifests[]` entries are bypassed at runtime (`docker: skipping manifest ... already pushed as multi-arch by docker_v2`) — retained only for the niche case of stitching together images not built by `docker_v2` in the same run |
+| `docker_v2[].build_args` / `labels` / `annotations` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`build_args.VERSION` + `org.opencontainers.image.*` annotations) |
+| `docker_v2[].sbom: true` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`sbom: true` on all three `docker_v2` images) |
 | `docker_digest.name_template` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`docker_digest.name_template: "cfgd_{{ .Tag }}.digest"`) |
-| `dockers[].use: buildx` | ✅ Verified | [`crates/stage-docker/src/detect.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-docker/src/detect.rs) (buildx is the default backend) |
-| `docker_manifests[].use: docker` / `podman` | 🤝 Help wanted | Backend selector for `docker manifest create / push`. cfgd configures `docker_manifests[]` but the entries are bypassed because `docker_v2` already pushes multi-arch indexes (`docker: skipping manifest ... already pushed as multi-arch by docker_v2`). No live release exercises the non-buildx manifest backend. Note: `docker_v2[].use: podman` (image build path) is a separate surface — also no live dogfood yet |
+| `docker_v2[].use: buildx` | ✅ Verified | [`crates/stage-docker/src/detect.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-docker/src/detect.rs) (buildx is the default backend) |
+| `docker_v2[].use: podman` / `docker_manifests[].use: docker` / `podman` | 🤝 Help wanted | Linux-only backend selectors. No live release exercises the non-buildx path |
 | `docker_hub.description` | 🤝 Help wanted | We use ghcr; needs a Docker Hub-anchored release |
 
 ## Signing

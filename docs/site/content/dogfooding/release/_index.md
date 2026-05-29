@@ -178,22 +178,25 @@ others have full test coverage but no live secrets configured.
 ## MCP registry
 
 Publishes an MCP server manifest to `https://registry.modelcontextprotocol.io`.
+The manifest points at `ghcr.io/tj-smith47/anodizer:<version>`, the multi-arch
+OCI image built by [`docker_v2:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml).
+The image's `ENTRYPOINT` runs the `anodizer` binary and `CMD` defaults to
+`mcp` (see [`Dockerfile`](https://github.com/tj-smith47/anodizer/blob/master/Dockerfile)),
+so consumers `docker run --rm -i ghcr.io/tj-smith47/anodizer:<ver>` and the
+container speaks MCP over stdio out of the box.
 
-Implementation is feature-complete with unit-test coverage of every branch
-(auth providers, retry policy, dry-run, repository inference). Dogfooding is
-**held**: anodizer's own `.anodizer.yaml` declares `packages[0].registry_type: oci`
-with `identifier: ghcr.io/tj-smith47/anodizer`, but the project ships binary
-archives and does not yet have a `dockers:` block. Publishing this manifest
-today would point MCP clients at a 404, so the `mcp:` block is marked
-`skip: true` until anodizer ships an OCI image (via a `dockers:` block) or
-the package is pivoted to a registry type the project actually distributes.
+The previous "blocked on `dockers:`" status reflected anodizer's lack of an
+OCI image; commit `41947cb` shipped both the `docker_v2:` block and the
+`Dockerfile` that unblocks it. The `mcp:` block no longer carries `skip: true`
+— the next release after this commit lands publishes the manifest live.
 
 | Key | Status | Notes |
 |---|---|---|
-| `mcp.name` | 🤝 Help wanted | Wired in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml); blocked on `dockers:` block / first live publish |
-| `mcp.packages[]` | 🤝 Help wanted | Wired in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`packages[].registry_type: oci`); blocked on `dockers:` block / first live publish |
-| `mcp.auth.type: none` | 🤝 Help wanted | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (None branch) — unit-tested; blocked on `dockers:` block before dogfood publish |
-| `mcp.auth.type: github` | 🤝 Help wanted | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (PAT exchange branch) — unit-tested; blocked on `dockers:` block before dogfood publish |
-| `mcp.auth.type: github-oidc` | 🤝 Help wanted | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (OIDC id-token branch); blocked on `dockers:` block before dogfood publish |
-| `mcp.repository` | 🤝 Help wanted | [`crates/stage-publish/src/mcp/manifest.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/manifest.rs) — unit-tested; blocked on `dockers:` block before dogfood publish |
-| `mcp.skip` (tera, accepts `disable:` alias) | 🤝 Help wanted | [`crates/stage-publish/src/mcp/mod.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/mod.rs) — unit-tested; blocked on `dockers:` block before dogfood publish |
+| `mcp.name` | ✅ Ready | Wired in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`name: io.github.tj-smith47/anodizer`); next release publishes |
+| `mcp.packages[]` | ✅ Ready | Wired in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`packages[].registry_type: oci`, `identifier: ghcr.io/tj-smith47/anodizer`); image built by [`docker_v2:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) |
+| `mcp.auth.type: github-oidc` | ✅ Ready | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (OIDC id-token branch); release workflow declares `id-token: write` and `packages: write` permissions |
+| `mcp.auth.type: none` | ✅ Verified (tests) | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (None branch) — unit-tested; private mirrors only |
+| `mcp.auth.type: github` | ✅ Verified (tests) | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (PAT exchange branch) — unit-tested; for non-GHA CI |
+| `mcp.repository` | ✅ Ready | [`crates/stage-publish/src/mcp/manifest.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/manifest.rs) — inferred from release context (omitted from anodizer config; uses defaults) |
+| `mcp.skip` (tera, accepts `disable:` alias) | ✅ Verified (tests) | [`crates/stage-publish/src/mcp/mod.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/mod.rs) — unit-tested; not used in production (block is unconditionally enabled) |
+| OCI `version` field omitted | ✅ Verified (tests) | Per commit `596e1a3`: OCI registry types get an empty `version` field on the published manifest — the registry resolves the version from the image tag. Other registry types (npm, pypi, ...) receive the release version verbatim |

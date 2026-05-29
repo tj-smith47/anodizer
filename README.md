@@ -221,7 +221,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -230,8 +230,8 @@ jobs:
       - name: Release
         uses: tj-smith47/anodizer-action@v1
         with:
-          version: latest
-          auto-install: true   # auto-detect nfpm/makeself/snapcraft/cosign/etc from .anodizer.yaml
+          version: latest        # accepts `latest`, `nightly`, or an exact tag (e.g. `v0.5.0`). Pin in production.
+          auto-install: true     # auto-detect nfpm/makeself/snapcraft/cosign/etc from .anodizer.yaml
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -244,10 +244,17 @@ For split/merge fan-out, GPG key import, registry login, and per-platform varian
 ```
 anodizer release       Full release pipeline (--snapshot, --dry-run, --split/--merge, --publish-only, --rollback-only)
 anodizer tag           Auto-tag from commit directives
+anodizer tag rollback  Delete anodize-managed tags at a SHA and revert the bump commit
 anodizer check         Validate configuration + run determinism harness
 anodizer init          Generate starter .anodizer.yaml
 anodizer healthcheck   Probe external tools (nfpm, cosign, ...)
 ```
+
+`anodizer tag rollback "$GITHUB_SHA"` is the recommended `if: failure()` hook
+on every release workflow — it deletes any anodize-managed tag at the failed
+commit, reverts the bump, and pushes the revert so the next CI run isn't
+poisoned. See [Release resilience](https://tj-smith47.github.io/anodizer/docs/advanced/release-resilience/)
+for the flag matrix and integration recipe.
 
 Full reference: `anodizer --help` or the [docs site](https://tj-smith47.github.io/anodizer/docs/reference/cli/).
 

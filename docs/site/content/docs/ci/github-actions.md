@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: write
+  actions: read    # required for the cross-workflow artifact download path
 
 jobs:
   release:
@@ -30,11 +31,21 @@ jobs:
           fetch-depth: 0    # full history for changelog generation
 
       - uses: tj-smith47/anodizer-action@v1
+        id: release
         with:
           auto-install: true
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Recommended: roll back the tag + revert the bump on failure so the
+      # next CI run isn't poisoned. See `tag rollback` in Release Resilience.
+      - name: Rollback on release failure
+        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 `auto-install: true` reads `.anodizer.yaml` and installs whatever the configured stages need. To pin dependencies explicitly, replace it with `install: nfpm,cosign,zig,...`.
@@ -43,6 +54,7 @@ jobs:
 
 ```yaml
 - uses: tj-smith47/anodizer-action@v1
+  id: release
   with:
     auto-install: true
     gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -52,6 +64,13 @@ jobs:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
     COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+
+- name: Rollback on release failure
+  if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+  env:
+    GH_TOKEN: ${{ secrets.GH_PAT }}
+    GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+  run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 ## Auto-tag on push to main
@@ -161,6 +180,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
+        id: release
         with:
           auto-install: true
           docker-registry: ghcr.io
@@ -170,6 +190,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+      - name: Rollback on release failure
+        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 ## Reuse a CI-built anodizer binary across workflows

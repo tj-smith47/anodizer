@@ -97,7 +97,7 @@ anodize check determinism \
 | `--stages=<subset>` | full set | Restrict to a stage subset (`build,archive,sbom,sign,checksum`). |
 | `--targets=<csv>` | (all) | Restrict the harness to a comma-separated subset of configured target triples (forwarded to the child `anodize release` subprocess). Used by the sharded release matrix so each runner only validates targets it can natively build. |
 | `--report=<path>` | `dist/run-<id>/determinism.json` | JSON report destination. |
-| `--preserve-dist=<path>` | off | On green, copy run-0's `<worktree>/dist/**` to `<path>` and emit `<path>/context.json`. The release workflow's `release --publish-only` step consumes this directly — eliminating a separate recompile job. |
+| `--preserve-dist=<path>` | off | On green, copy run-0's `<worktree>/dist/**` to `<path>` and emit `<path>/context.json`. The release workflow's `release --publish-only` step consumes this directly — eliminating a separate recompile job. See [Preserved raw binaries layout](#preserved-raw-binaries-layout) for how `binary_signs:` source binaries are mirrored alongside dist. |
 | `--snapshot` / `--no-snapshot` | auto | Force snapshot mode on or off for the child release subprocess. Default: auto — `--no-snapshot` when HEAD is at a tag (`git describe --tags --exact-match HEAD` succeeds), `--snapshot` otherwise. Mutually exclusive. |
 
 Scope: build-side only. The harness runs the pipeline up to and including
@@ -305,6 +305,55 @@ stage would refuse to continue after detecting leftover assets and bail with a
 
 Operators do not need to pass `--resume-release` manually for the standard
 determinism → preserve-dist → `--publish-only` pattern.
+
+### Preserved raw binaries layout
+
+`--preserve-dist=<path>` copies `<worktree>/dist/**` so the downstream
+`release --publish-only` job has the artifact tree it needs. **But** the
+per-stage `binary_signs:` block signs the raw cargo build outputs that live
+*outside* `dist/` — at `<worktree>/.det-tmp/target/<triple>/release/<basename>`
+under the harness's `CARGO_TARGET_DIR` override. Those binaries are *not*
+in `dist/**`; without explicit preservation, the publish-only loader would
+either skip them or crash on missing files.
+
+Layout (as written by `preserve_raw_binaries` in
+[`crates/cli/src/determinism_harness/preserve.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/determinism_harness/preserve.rs)):
+
+```
+<preserve-dist>/
+├── context.json
+├── artifacts.json                  # rewritten: Binary entries now point at _preserved-bin/...
+├── <archive>.tar.gz                # normal dist/** contents
+├── ...
+└── _preserved-bin/                 # raw binaries mirrored out of the worktree
+    ├── x86_64-unknown-linux-gnu/
+    │   └── anodizer
+    ├── aarch64-unknown-linux-gnu/
+    │   └── anodizer
+    └── x86_64-pc-windows-msvc/
+        └── anodizer.exe
+```
+
+- **Path constant:** `PRESERVED_BIN_SUBDIR = "_preserved-bin"` —
+  single source of truth shared by the manifest rewrite, the disk
+  copy, and the publish-only loader's `dist/`-prefix re-anchor.
+- **Underscore prefix (not dot-hidden):** `_preserved-bin/` is *visible*
+  to `actions/upload-artifact@v4` without setting
+  `include-hidden-files: true`. A dotfile would silently drop out of
+  the uploaded artifact and `binary_signs:` would fail with missing
+  inputs on the publish-only runner.
+- **Why this exists:** publish-only loads preserved dist on a fresh runner
+  with no `target/` tree — the raw binary bytes that
+  `binary_signs: { artifacts: binary, cmd: cosign }` operates on must
+  travel with the dist tree. The prior session's
+  `suppress_binary_signs` workaround (which silently skipped binary
+  signing during publish-only) was deleted in commit `596e1a3` in favour
+  of this preservation path.
+- **What's preserved:** every `Binary`, `UploadableBinary`, `Library`,
+  `Header`, `CArchive`, `CShared`, and `Wasm` artifact from
+  `artifacts.json`. `UniversalBinary` is deliberately excluded —
+  `stage-build`'s universal step writes lipo'd output into `dist/`
+  already, so it's caught by `preserve_dist_tree` directly.
 
 ### Makeself artifact ordering
 

@@ -89,8 +89,16 @@ creation. This keeps workspaces independent — `my-core-v0.5.0` and
 
 When `version_sync.enabled: true` is set per-crate, the tag command also
 updates that crate's `Cargo.toml` version (and any intra-workspace `path +
-version` dependency specs that reference it), commits the change with
-`[skip ci]`, and tags that commit so `cargo publish` reads the right version.
+version` dependency specs that reference it), commits the change, and tags
+that commit so `cargo publish` reads the right version.
+
+The bump commit's marker matters: the **primary** bump commit deliberately
+**omits** `[skip ci]` so the tag-push trigger fires downstream release
+workflows. (GitHub suppresses tag-push triggers when the tag's target
+commit message contains `[skip ci]`.) Only the **side-effect** commits —
+the per-crate `version_sync` propagations of an intra-workspace dependency
+pin bump — carry the `[skip ci]` marker, since those don't have their own
+tag and shouldn't re-trigger CI on their own.
 
 ## GitHub Actions: single-crate repo
 
@@ -151,3 +159,18 @@ anodizer tag --crate my-core --dry-run      # specific crate in a workspace
 anodizer tag --default-bump minor           # override config default
 anodizer tag --custom-tag v2.0.0            # skip bump logic entirely
 ```
+
+## Roll back a poisoned tag
+
+When a downstream release fails on a freshly-tagged commit, the operator is
+left with a tag pointing at a bumped-but-broken commit. The reverse direction
+of `anodize tag` is `anodize tag rollback`:
+
+```bash
+anodizer tag rollback "$GITHUB_SHA"       # delete tag(s) at SHA + revert the bump
+anodizer tag rollback --dry-run HEAD       # preview without mutation
+```
+
+See [Release resilience — Recovering a poisoned tag](./release-resilience.md#recovering-a-poisoned-tag-with-tag-rollback)
+for the full flag matrix (`--scope`, `--mode`, `--branch`, `--no-push`) and
+the recommended `if: failure()` workflow integration.

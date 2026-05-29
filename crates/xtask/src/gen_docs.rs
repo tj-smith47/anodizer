@@ -457,22 +457,39 @@ fn resolve_type_name(prop: &SchemaObject) -> String {
 }
 
 /// Given a schema object, if it directly or indirectly references a definition,
-/// return that definition name. Handles $ref, anyOf with $ref, and array items $ref.
+/// return that definition name. Handles `$ref`, `anyOf`/`allOf` with `$ref`,
+/// and array items `$ref`.
+///
+/// `allOf` coverage matters because schemars emits the
+/// `#[serde(default = "...")]` + `#[serde(rename = "use")]` pattern (used by
+/// `mcp:` among others) as a wrapper object with a default and a single-entry
+/// `allOf: [{ $ref: ... }]`. Without this branch the field shows up in the
+/// top-level table but never gets a `## <name>` schema section.
 fn resolve_ref_type_name(obj: &SchemaObject) -> Option<String> {
     // Direct $ref
     if let Some(ref r) = obj.reference {
         return ref_name(r);
     }
 
-    // anyOf — look for non-null $ref variant
-    if let Some(ref sub) = obj.subschemas
-        && let Some(ref any_of) = sub.any_of
-    {
-        for s in any_of {
-            if let Schema::Object(inner) = s
-                && let Some(ref r) = inner.reference
-            {
-                return ref_name(r);
+    if let Some(ref sub) = obj.subschemas {
+        // anyOf — look for non-null $ref variant
+        if let Some(ref any_of) = sub.any_of {
+            for s in any_of {
+                if let Schema::Object(inner) = s
+                    && let Some(ref r) = inner.reference
+                {
+                    return ref_name(r);
+                }
+            }
+        }
+        // allOf — wrapper for `#[serde(default)]` on a struct field
+        if let Some(ref all_of) = sub.all_of {
+            for s in all_of {
+                if let Schema::Object(inner) = s
+                    && let Some(ref r) = inner.reference
+                {
+                    return ref_name(r);
+                }
             }
         }
     }
@@ -527,6 +544,28 @@ fn extract_fields(props: &Map<String, Schema>) -> Vec<ConfigField> {
         .collect()
 }
 
+/// Inner types (typically per-crate fields or per-crate `publish.*` entries)
+/// that warrant their own `## <qualified-name>` schema section even though
+/// they are not top-level `Config` fields. Each entry is
+/// `(qualified_section_name, parent_definition, field_name)`.
+///
+/// Without this list, a consumer reading the configuration reference cannot
+/// see the field shape for the canonical Docker API (`crates[].docker_v2`),
+/// the Krew publisher (`crates[].publish.krew`), and similar per-crate
+/// publisher / packager sub-structs — they show up only as a type name in
+/// the parent table.
+const SECOND_LEVEL_SECTIONS: &[(&str, &str, &str)] = &[
+    ("crates[].docker_v2", "CrateConfig", "docker_v2"),
+    (
+        "crates[].docker_manifests",
+        "CrateConfig",
+        "docker_manifests",
+    ),
+    ("crates[].docker_digest", "CrateConfig", "docker_digest"),
+    ("crates[].publish", "CrateConfig", "publish"),
+    ("crates[].publish.krew", "PublishConfig", "krew"),
+];
+
 fn generate_config_reference(tera: &Tera) -> Result<String, String> {
     let root_schema = schemars::schema_for!(anodizer_core::config::Config);
     let defs = &root_schema.definitions;
@@ -576,6 +615,45 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
 
         nested_sections.push(NestedSection {
             name: field_name.clone(),
+            description,
+            fields,
+        });
+    }
+
+    // Append second-level sections (per-crate / per-publisher sub-structs).
+    for (section_name, parent_def, field_name) in SECOND_LEVEL_SECTIONS {
+        let parent_schema = match defs.get(*parent_def) {
+            Some(Schema::Object(s)) => s,
+            _ => continue,
+        };
+        let parent_props = match parent_schema.object.as_ref() {
+            Some(o) => &o.properties,
+            None => continue,
+        };
+        let field_obj = match parent_props.get(*field_name) {
+            Some(Schema::Object(o)) => o,
+            _ => continue,
+        };
+        let def_name = match resolve_ref_type_name(field_obj) {
+            Some(n) => n,
+            None => continue,
+        };
+        let def_schema = match defs.get(&def_name) {
+            Some(Schema::Object(s)) => s,
+            _ => continue,
+        };
+        let def_props = match def_schema.object.as_ref() {
+            Some(o) if !o.properties.is_empty() => &o.properties,
+            _ => continue,
+        };
+        let description = def_schema
+            .metadata
+            .as_ref()
+            .and_then(|m| m.description.clone())
+            .unwrap_or_default();
+        let fields = extract_fields(def_props);
+        nested_sections.push(NestedSection {
+            name: (*section_name).to_string(),
             description,
             fields,
         });
