@@ -56,7 +56,11 @@ fn run_announcer(
         return Ok(());
     }
     if let Err(e) = a.send(ctx, announce, retry, log) {
-        errors.push(format!("{}: {e}", a.name()));
+        // `{e:#}` flattens the anyhow chain into "outer: middle: root"
+        // so the announce-stage summary actually names the underlying
+        // failure (e.g. a missing template variable or a wrapped tera
+        // syntax error) instead of just the outermost wrapper.
+        errors.push(format!("{}: {e:#}", a.name()));
     }
     Ok(())
 }

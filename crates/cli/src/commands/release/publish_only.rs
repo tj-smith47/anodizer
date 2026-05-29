@@ -206,6 +206,7 @@ pub(super) fn run_per_crate(
     // surface "nothing pushed") or attempt to publish for crates that
     // aren't in the current iteration's preserved dist.
     let prev_selected = ctx.options.selected_crates.clone();
+    let prev_skip_stages = ctx.options.skip_stages.clone();
     let iteration_result = (|| -> Result<()> {
         for crate_name in &crate_order {
             let crate_dist = dist_base.join(crate_name);
@@ -221,8 +222,20 @@ pub(super) fn run_per_crate(
             // (changelog, signs, publishers) see the right crates/overlay
             // values. Flat configs (no `workspaces:`) fall through
             // unchanged.
+            //
+            // Also merge `workspaces[].skip:` into `ctx.options.skip_stages`
+            // for the duration of this iteration. The regular release path
+            // does this in `compute_skip_stages`; publish-only never went
+            // through that code, so a workspace declaring
+            // `skip: [announce]` (e.g. cfgd-core, a library crate that
+            // shouldn't broadcast an announcement) was silently ignored
+            // and announce ran anyway, failing to render templates that
+            // depend on stage-release outputs absent for skip-target
+            // workspaces.
+            ctx.options.skip_stages = prev_skip_stages.clone();
             if let Some(ws) = workspace_for.get(crate_name.as_str()) {
                 crate::commands::helpers::apply_workspace_overlay(&mut ctx.config, ws);
+                merge_workspace_skip(&mut ctx.options.skip_stages, &ws.skip);
             }
             // Scope selected_crates to the current crate so every
             // publisher's effective-crates resolution sees a single entry
@@ -238,7 +251,22 @@ pub(super) fn run_per_crate(
         Ok(())
     })();
     ctx.options.selected_crates = prev_selected;
+    ctx.options.skip_stages = prev_skip_stages;
     iteration_result
+}
+
+/// Merge a workspace's `skip:` list into the iteration's effective
+/// `skip_stages`, deduping so an already-present stage (set by CLI or a
+/// prior iteration's restore) doesn't appear twice.
+///
+/// Extracted from the per-crate loop so the dedup contract is unit-
+/// testable without standing up a full Context/Config fixture.
+fn merge_workspace_skip(into: &mut Vec<String>, ws_skip: &[String]) {
+    for stage in ws_skip {
+        if !into.iter().any(|s| s == stage) {
+            into.push(stage.clone());
+        }
+    }
 }
 
 /// Inner body of the publish-only pipeline for a single dist root.
@@ -1966,6 +1994,53 @@ mod tests {
         assert!(
             matches!(layout, super::DistLayout::Flat),
             "subdir without context.json must not count as per-crate, got {layout:?}"
+        );
+    }
+
+    // ── merge_workspace_skip ─────────────────────────────────────────
+
+    #[test]
+    fn merge_workspace_skip_appends_new_entries() {
+        let mut into: Vec<String> = vec![];
+        super::merge_workspace_skip(&mut into, &["announce".to_string(), "publish".to_string()]);
+        assert_eq!(into, vec!["announce", "publish"]);
+    }
+
+    #[test]
+    fn merge_workspace_skip_dedupes_existing_cli_entries() {
+        // CLI-supplied `--skip announce` plus a workspace
+        // `skip: [announce, blob]` must NOT yield `[announce, announce, blob]`
+        // — the dedup keeps each stage exactly once so the
+        // `should_skip` lookup short-circuits as soon as it finds the
+        // first match.
+        let mut into: Vec<String> = vec!["announce".to_string()];
+        super::merge_workspace_skip(&mut into, &["announce".to_string(), "blob".to_string()]);
+        assert_eq!(into, vec!["announce", "blob"]);
+    }
+
+    #[test]
+    fn merge_workspace_skip_empty_ws_is_noop() {
+        let mut into: Vec<String> = vec!["snapcraft-publish".to_string()];
+        super::merge_workspace_skip(&mut into, &[]);
+        assert_eq!(into, vec!["snapcraft-publish"]);
+    }
+
+    /// Regression: prior to the fix, publish-only per-crate iteration
+    /// applied the workspace overlay but never propagated
+    /// `workspaces[].skip:` into the iteration's effective skip list.
+    /// cfgd-core (a library workspace declaring `skip: [announce]`)
+    /// ran announce anyway and failed rendering templates that depend
+    /// on stage-release outputs the announce stage never saw a release
+    /// from. This asserts the dedup behavior that gates the propagation.
+    #[test]
+    fn merge_workspace_skip_propagates_cfgd_core_announce_skip() {
+        let mut into: Vec<String> = vec![];
+        // Mirrors cfgd's `workspaces[name=cfgd-core].skip: [announce]`.
+        super::merge_workspace_skip(&mut into, &["announce".to_string()]);
+        assert!(
+            into.iter().any(|s| s == "announce"),
+            "workspace-level announce skip must propagate; got {:?}",
+            into
         );
     }
 }
