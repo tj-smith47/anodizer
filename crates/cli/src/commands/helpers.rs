@@ -1114,10 +1114,29 @@ pub fn load_artifacts_from_manifest(
     for a in artifacts {
         let kind = ArtifactKind::parse(&a.kind)
             .ok_or_else(|| anyhow::anyhow!("unknown artifact kind: {}", a.kind))?;
+        // Re-anchor `./dist/<rel>` / `dist/<rel>` paths onto the caller-
+        // supplied `dist` root. Stored paths reflect the harness worktree's
+        // `dist/<file>` shape; per-crate publish-only consumes from
+        // `./dist/<crate>/` and would otherwise hit the manifest path
+        // verbatim (`./dist/<file>`) instead of `./dist/<crate>/<file>` and
+        // trip `detect_missing_files`. Flat callers (`publish`, `announce`,
+        // single-crate `publish-only`) pass `dist=./dist`, so the rewrite
+        // is a no-op for them. Paths outside the dist root (raw
+        // `.det-tmp/target/...` binaries surfaced as Binary artifacts) are
+        // left alone.
+        let path_str = a.path.as_str();
+        let rewritten = if let Some(rel) = path_str
+            .strip_prefix("./dist/")
+            .or_else(|| path_str.strip_prefix("dist/"))
+        {
+            dist.join(rel)
+        } else {
+            std::path::PathBuf::from(path_str)
+        };
         ctx.artifacts.add(Artifact {
             kind,
             name: a.name.unwrap_or_default(),
-            path: std::path::PathBuf::from(&a.path),
+            path: rewritten,
             target: a.target,
             crate_name: a.crate_name,
             metadata: a.metadata,
