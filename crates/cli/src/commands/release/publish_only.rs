@@ -2388,7 +2388,9 @@ mod tests {
     /// unset) and `env` would accumulate A's entries every iteration.
     #[test]
     fn per_crate_overlay_does_not_leak_across_workspaces() {
-        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig, WorkspaceConfig};
+        use anodizer_core::config::{
+            ChangelogConfig, Config, CrateConfig, HookEntry, HooksConfig, WorkspaceConfig,
+        };
         use anodizer_core::context::{Context, ContextOptions};
         use anodizer_core::signing::SignConfig;
 
@@ -2411,6 +2413,22 @@ mod tests {
                 } else {
                     Vec::new()
                 },
+                binary_signs: if set_overlay {
+                    vec![SignConfig {
+                        id: Some(format!("{name}-binary-sign")),
+                        ..SignConfig::default()
+                    }]
+                } else {
+                    Vec::new()
+                },
+                before: set_overlay.then(|| HooksConfig {
+                    hooks: Some(vec![HookEntry::Simple(format!("{name}-before"))]),
+                    post: None,
+                }),
+                after: set_overlay.then(|| HooksConfig {
+                    hooks: Some(vec![HookEntry::Simple(format!("{name}-after"))]),
+                    post: None,
+                }),
                 env: set_overlay.then(|| vec![format!("{name}_KEY=1")]),
                 ..WorkspaceConfig::default()
             }
@@ -2438,6 +2456,21 @@ mod tests {
                 Some("alpha-format")
             );
             assert_eq!(cfg.signs.len(), 1);
+            assert_eq!(cfg.binary_signs.len(), 1);
+            assert_eq!(
+                cfg.before
+                    .as_ref()
+                    .and_then(|h| h.hooks.as_ref())
+                    .map(|v| v.as_slice()),
+                Some([HookEntry::Simple("alpha-before".to_string())].as_slice())
+            );
+            assert_eq!(
+                cfg.after
+                    .as_ref()
+                    .and_then(|h| h.hooks.as_ref())
+                    .map(|v| v.as_slice()),
+                Some([HookEntry::Simple("alpha-after".to_string())].as_slice())
+            );
             assert_eq!(
                 cfg.env.as_deref(),
                 Some(["alpha_KEY=1".to_string()].as_slice())
@@ -2463,6 +2496,18 @@ mod tests {
                 "workspace B must not inherit A's signs"
             );
             assert!(
+                cfg.binary_signs.is_empty(),
+                "workspace B must not inherit A's binary_signs"
+            );
+            assert!(
+                cfg.before.is_none(),
+                "workspace B must not inherit A's before hooks"
+            );
+            assert!(
+                cfg.after.is_none(),
+                "workspace B must not inherit A's after hooks"
+            );
+            assert!(
                 cfg.env.as_ref().map(|e| e.is_empty()).unwrap_or(true),
                 "env must not accumulate A's entries into B's iteration: {:?}",
                 cfg.env
@@ -2473,6 +2518,9 @@ mod tests {
         drop(guard);
         assert!(ctx.config.changelog.is_none());
         assert!(ctx.config.signs.is_empty());
+        assert!(ctx.config.binary_signs.is_empty());
+        assert!(ctx.config.before.is_none());
+        assert!(ctx.config.after.is_none());
         assert!(
             ctx.config
                 .env
