@@ -936,10 +936,9 @@ pub fn validate_builds(config: &Config) -> Result<(), String> {
                 Some(BuilderKind::Cargo) | None => {
                     if build.prebuilt.is_some() {
                         tracing::warn!(
-                            location = %location,
-                            index = idx,
-                            "build has a `prebuilt:` block but `builder:` is not `prebuilt`; \
-                             the block is ignored. Set `builder: prebuilt` or remove the block.",
+                            "{location}: build[{idx}] has a `prebuilt:` block but `builder:` \
+                             is not `prebuilt`; the block is ignored. Set `builder: prebuilt` \
+                             or remove the block."
                         );
                     }
                 }

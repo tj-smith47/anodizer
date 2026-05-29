@@ -104,19 +104,18 @@ impl Drop for Worktree {
             Ok(out) if out.status.success() => {}
             Ok(out) => {
                 tracing::warn!(
-                    path = %self.path.display(),
-                    exit = ?out.status.code(),
-                    stderr = %String::from_utf8_lossy(&out.stderr).trim(),
-                    "git worktree remove failed during Drop; \
-                     run `git worktree prune` in the parent repo to reap the stale entry"
+                    "git worktree remove '{}' failed during Drop (exit {:?}: {}); \
+                     run `git worktree prune` in the parent repo to reap the stale entry",
+                    self.path.display(),
+                    out.status.code(),
+                    String::from_utf8_lossy(&out.stderr).trim(),
                 );
             }
             Err(err) => {
                 tracing::warn!(
-                    path = %self.path.display(),
-                    error = %err,
-                    "failed to spawn 'git worktree remove' during Drop; \
-                     run `git worktree prune` in the parent repo to reap the stale entry"
+                    "failed to spawn 'git worktree remove' for '{}' during Drop ({err}); \
+                     run `git worktree prune` in the parent repo to reap the stale entry",
+                    self.path.display(),
                 );
             }
         }

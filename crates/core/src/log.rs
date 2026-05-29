@@ -33,15 +33,83 @@ use colored::Colorize;
 /// inside a [`StageLogger::group`] sits visually beneath its header.
 ///
 /// A single atomic (rather than per-logger state) is correct because the
-/// release pipeline drives one stderr stream and runs its stages
-/// sequentially; the depth is a property of "where we are in the run",
-/// not of any individual logger clone.
+/// release pipeline drives one stderr stream and no `group()` is ever
+/// opened from a worker thread — sections bracket whole stages on the
+/// main thread, while a stage's interior parallelism (e.g. `build`
+/// spawning per-target threads) emits *inside* an already-open section.
+/// The depth is therefore a property of "where the main thread is in the
+/// run", not of any individual logger clone or worker.
 static SECTION_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
 /// Width of the right-aligned verb column in [`StageLogger::step`],
 /// matching Cargo's `   Compiling foo` look (3 leading spaces + 9-char
 /// verb = a 12-column gutter before the message).
 const VERB_COLUMN: usize = 12;
+
+/// Map a pipeline stage name to its Cargo-style header verb (present
+/// participle, right-aligned into the [`VERB_COLUMN`] gutter). Drives
+/// [`StageLogger::group`]'s local header so a section opens with
+/// `   Building build` / ` Publishing publish` instead of a bare bullet,
+/// matching `cargo`'s `   Compiling foo` look.
+///
+/// Falls back to a capitalized "Running" for any stage without a bespoke
+/// verb, so a newly-added stage still renders in the system vocabulary
+/// without a code change here.
+pub fn stage_verb(stage: &str) -> &'static str {
+    match stage {
+        "setup" => "Preparing",
+        "build" => "Building",
+        "upx" => "Compressing",
+        "appbundle" => "Bundling",
+        "dmg" | "msi" | "nsis" | "pkg" | "srpm" | "nfpm" | "makeself" => "Packaging",
+        "notarize" => "Notarizing",
+        "changelog" => "Changelog",
+        "archive" => "Archiving",
+        "source" => "Archiving",
+        "snapcraft" | "flatpak" => "Packaging",
+        "sbom" => "Cataloging",
+        "templatefiles" => "Templating",
+        "checksum" => "Checksumming",
+        "sign" | "docker-sign" => "Signing",
+        "before-publish" => "Preparing",
+        "release" => "Releasing",
+        "docker" => "Building",
+        "publish" | "blob" | "snapcraft-publish" => "Publishing",
+        "announce" => "Announcing",
+        "publisher-summary" => "Summary",
+        "finalize" => "Finalizing",
+        "prepare" => "Preparing",
+        _ => "Running",
+    }
+}
+
+/// Render the themed `Warning:` line for `msg`, including the current
+/// section indent. The single source of truth for the warning palette
+/// and label, shared by [`StageLogger::warn`] and the CLI's tracing
+/// formatter so a library-side `warn!` looks identical to a logger warn
+/// (one output authority). The `[stage]` tag is the caller's
+/// responsibility — loggerless library warns have no stage to name.
+pub fn render_warning(msg: &str) -> String {
+    format!("{}{} {}", indent(), "Warning:".yellow().bold(), msg)
+}
+
+/// Render the themed `Error:` line for `msg`, including the current
+/// section indent. Companion to [`render_warning`]; shared so the error
+/// palette/label lives in exactly one place.
+pub fn render_error(msg: &str) -> String {
+    format!("{}{} {}", indent(), "Error:".red().bold(), msg)
+}
+
+/// Render the themed `Note:` line for `msg`, including the current
+/// section indent. The third (and final) status label in the vocabulary
+/// — informational lines that are neither warnings nor errors (host-target
+/// selection, auto-snapshot activation). Bold-green to read as a benign
+/// status, distinct from the yellow `Warning:` and red `Error:`. Shared
+/// so the `Note:` palette/label lives in exactly one place rather than
+/// being open-coded per call site.
+pub fn render_note(msg: &str) -> String {
+    format!("{}{} {}", indent(), "Note:".green().bold(), msg)
+}
 
 /// `true` when running under GitHub Actions, where `::group::` /
 /// `::endgroup::` workflow commands render collapsible log sections.
@@ -53,7 +121,11 @@ fn in_github_actions() -> bool {
 /// top level. Suppressed under GitHub Actions, where `::group::` already
 /// supplies the visual nesting and a leading-space prefix would only add
 /// noise to the collapsed view.
-fn indent() -> String {
+///
+/// Exposed so the CLI's loggerless `tracing` warning formatter can apply
+/// the same indent a library warn fired mid-stage would otherwise lack,
+/// keeping it aligned with the surrounding `[stage]` lines.
+pub fn indent() -> String {
     if in_github_actions() {
         return String::new();
     }
@@ -305,13 +377,8 @@ impl StageLogger {
 
     /// Error message — always shown (even in quiet mode).
     pub fn error(&self, msg: &str) {
-        eprintln!(
-            "{}{} {} {}",
-            indent(),
-            "Error:".red().bold(),
-            format!("[{}]", self.stage).dimmed(),
-            msg
-        );
+        let tagged = format!("{} {}", format!("[{}]", self.stage).dimmed(), msg);
+        eprintln!("{}", render_error(&tagged));
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
             cap.record(LogLevel::Error, msg);
@@ -321,13 +388,8 @@ impl StageLogger {
     /// Warning message — shown at Normal and above.
     pub fn warn(&self, msg: &str) {
         if self.verbosity >= Verbosity::Normal {
-            eprintln!(
-                "{}{} {} {}",
-                indent(),
-                "Warning:".yellow().bold(),
-                format!("[{}]", self.stage).dimmed(),
-                msg
-            );
+            let tagged = format!("{} {}", format!("[{}]", self.stage).dimmed(), msg);
+            eprintln!("{}", render_warning(&tagged));
         }
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
@@ -339,8 +401,11 @@ impl StageLogger {
     /// for key actions (stage start, completion, skips, dry-run notes).
     pub fn status(&self, msg: &str) {
         if self.verbosity >= Verbosity::Normal {
-            // Preserve fully-blank spacer lines exactly (no prefix), so
-            // callers using `status("")` for vertical rhythm keep it.
+            // Preserve fully-blank spacer lines exactly (no prefix and no
+            // indent), so callers using `status("")` for vertical rhythm
+            // keep a clean blank line even inside a group. An indented
+            // "blank" line (trailing spaces only) would render as visible
+            // whitespace and break the rhythm the caller asked for.
             if msg.is_empty() {
                 eprintln!();
             } else {
@@ -383,12 +448,15 @@ impl StageLogger {
     /// Under GitHub Actions emits a `::group::<title>` workflow command
     /// (rendered as a collapsible block); the returned [`SectionGuard`]
     /// emits the matching `::endgroup::` on drop. Locally emits a
-    /// Cargo-style header and indents every subsequent log line two
-    /// spaces until the guard drops. Sections nest.
+    /// Cargo-style header — a bold-green right-aligned verb (derived from
+    /// the stage name via [`stage_verb`]) in the [`VERB_COLUMN`] gutter
+    /// followed by the title (`   Building build`) — and indents every
+    /// subsequent log line two spaces until the guard drops. Sections
+    /// nest.
     ///
     /// ```rust,ignore
-    /// let _section = log.group("build");
-    /// log.status("compiling x86_64-unknown-linux-gnu"); // indented beneath
+    /// let _section = log.group("build");                 //    Building build
+    /// log.status("compiling x86_64-unknown-linux-gnu");  // indented beneath
     /// // section closes here as `_section` drops
     /// ```
     #[must_use = "the section stays open only while the guard is alive"]
@@ -397,7 +465,7 @@ impl StageLogger {
             if in_github_actions() {
                 eprintln!("::group::{title}");
             } else {
-                eprintln!("{}{} {}", indent(), "\u{2022}".green().bold(), title.bold());
+                self.step(stage_verb(title), title);
                 SECTION_DEPTH.fetch_add(1, Ordering::Relaxed);
             }
         } else if in_github_actions() {

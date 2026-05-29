@@ -283,8 +283,9 @@ pub fn resolve_git_context(
 ) -> anyhow::Result<()> {
     // Warn on shallow clones where tag discovery may be incomplete.
     if git::is_shallow_clone() {
-        eprintln!(
-            "WARNING: shallow clone detected; tag discovery may be incomplete. Use `git fetch --unshallow` in CI."
+        log.warn(
+            "shallow clone detected; tag discovery may be incomplete. \
+             Use `git fetch --unshallow` in CI.",
         );
     }
 

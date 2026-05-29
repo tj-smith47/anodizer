@@ -217,7 +217,6 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     helpers::auto_detect_github(&mut config, &log);
 
     apply_release_meta_overrides(&mut config, &opts)?;
-    enforce_dist_state(&config, &opts, &log)?;
 
     let all_known_crates = flatten_known_crates(&config);
     let selected_sorted = resolve_selected_crates(&opts, &all_known_crates, &config, &log)?;
@@ -281,27 +280,40 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     ctx.template_vars_mut()
         .set("IsPrepare", if opts.prepare { "true" } else { "false" });
 
-    helpers::setup_env(&mut ctx, &config, &log)?;
-    helpers::resolve_git_context(&mut ctx, &config, &log)?;
-
-    run_before_hooks(&ctx, &config, &opts, &log)?;
-    render_release_notes_tmpl(&mut ctx, &config, &opts, release_notes_path, &log)?;
-    enforce_dirty_repo_gate(&ctx)?;
-
-    if ctx.is_nightly() {
-        apply_nightly_template_vars(&mut ctx, &config, &log)?;
-    }
-    if ctx.is_snapshot() {
-        apply_snapshot_template_vars(&mut ctx, &config, &log)?;
-    }
-
-    helpers::write_effective_config(&config, &log)?;
-
-    if !opts.split
-        && !opts.announce_only
-        && let Some(ref milestones) = config.milestones
+    // Group the pre-pipeline setup (env, git context, `before:` hooks,
+    // snapshot/nightly notes, deprecation warnings, milestone preflight)
+    // into one section so it renders as a collapsible stage in CI rather
+    // than ungrouped flush-left output ahead of the first `::group::`. The
+    // scope block drops the guard before the mode dispatch below, so each
+    // mode opens its own sections cleanly.
     {
-        milestones::preflight_milestones(milestones, &mut ctx, &log)?;
+        let _setup = log.group("setup");
+        // Dist-state enforcement (`--clean` removal / non-empty hard error)
+        // emits its user-facing `would clean` note here so it sits inside
+        // the setup section rather than ungrouped ahead of the run.
+        enforce_dist_state(&config, &opts, &log)?;
+        helpers::setup_env(&mut ctx, &config, &log)?;
+        helpers::resolve_git_context(&mut ctx, &config, &log)?;
+
+        run_before_hooks(&ctx, &config, &opts, &log)?;
+        render_release_notes_tmpl(&mut ctx, &config, &opts, release_notes_path, &log)?;
+        enforce_dirty_repo_gate(&ctx)?;
+
+        if ctx.is_nightly() {
+            apply_nightly_template_vars(&mut ctx, &config, &log)?;
+        }
+        if ctx.is_snapshot() {
+            apply_snapshot_template_vars(&mut ctx, &config, &log)?;
+        }
+
+        helpers::write_effective_config(&config, &log)?;
+
+        if !opts.split
+            && !opts.announce_only
+            && let Some(ref milestones) = config.milestones
+        {
+            milestones::preflight_milestones(milestones, &mut ctx, &log)?;
+        }
     }
 
     if run_publisher_preflight(&mut ctx, &opts, &log)? {
@@ -1251,6 +1263,12 @@ fn run_post_pipeline(
     dry_run: bool,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
+    // One collapsible section so the post-pipeline work (metadata write,
+    // custom publishers, milestone closure, `after:` hooks) renders as a
+    // grouped stage in CI just like the in-loop stages, instead of raw
+    // flush-left output trailing the last `::endgroup::`.
+    let _section = log.group("finalize");
+
     // Print artifact size table if configured
     helpers::run_report_sizes(ctx, config, log);
 

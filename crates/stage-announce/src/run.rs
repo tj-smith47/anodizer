@@ -276,10 +276,19 @@ pub fn emit_summary(ctx: &mut Context) {
             )),
         }
     }
-    // Always pretty-print the status table to stderr so non-CI runs
-    // see the per-publisher outcome at a glance.
-    let mut stderr = std::io::stderr();
-    let _ = anodizer_stage_publish::run_summary::print_status_table(&summary, &mut stderr);
+    // Always emit the per-publisher status table so non-CI runs see the
+    // outcome at a glance. Render into a buffer, then push each line
+    // through the StageLogger inside its own section so the table carries
+    // the unified `[stage]`/indent/theming and reads as one group in CI
+    // (`::group::publisher-summary`) rather than a raw flush-left block.
+    let log = ctx.logger("announce");
+    let mut buf: Vec<u8> = Vec::new();
+    if anodizer_stage_publish::run_summary::print_status_table(&summary, &mut buf).is_ok() {
+        let _section = log.group("publisher-summary");
+        for line in String::from_utf8_lossy(&buf).lines() {
+            log.status(line);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -112,10 +112,7 @@ pub fn detect_git_info_in(cwd: &Path, tag: &str, skip_validate: bool) -> Result<
     let remote_url_raw = match git_output_in(cwd, &["ls-remote", "--get-url"]) {
         Ok(url) => url,
         Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "git ls-remote --get-url failed; remote_url left empty"
-            );
+            tracing::warn!("git ls-remote --get-url failed ({e}); remote_url left empty");
             String::new()
         }
     };

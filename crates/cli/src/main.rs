@@ -13,10 +13,8 @@ pub mod timeout;
 fn parse_timeout_or_exit(timeout: &str) -> std::time::Duration {
     timeout::parse_duration(timeout).unwrap_or_else(|e| {
         eprintln!(
-            "{} invalid --timeout value '{}': {}",
-            "Error:".red().bold(),
-            timeout,
-            e
+            "{}",
+            anodizer_core::log::render_error(&format!("invalid --timeout value '{timeout}': {e}"))
         );
         std::process::exit(1);
     })
@@ -58,9 +56,10 @@ fn resolve_single_target(single_target: bool) -> Option<String> {
     match anodizer_core::partial::resolve_host_target() {
         Ok(triple) => {
             eprintln!(
-                "{} building only for host target: {}",
-                "Note:".cyan().bold(),
-                triple
+                "{}",
+                anodizer_core::log::render_note(&format!(
+                    "building only for host target: {triple}"
+                ))
             );
             // SAFETY: single-threaded CLI startup, well before any
             // worker threads or pipeline workers spawn. Setting `TARGET`
@@ -73,9 +72,8 @@ fn resolve_single_target(single_target: bool) -> Option<String> {
         }
         Err(e) => {
             eprintln!(
-                "{} failed to detect host target: {}",
-                "Error:".red().bold(),
-                e
+                "{}",
+                anodizer_core::log::render_error(&format!("failed to detect host target: {e}"))
             );
             std::process::exit(1);
         }
@@ -141,8 +139,15 @@ struct MessageVisitor {
 
 impl tracing::field::Visit for MessageVisitor {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        // Only the synthetic `message` field is rendered; every structured
+        // `key=value` field is dropped here so it never reaches the line.
+        // The `message` arrives as `tracing`'s `format_args!` result, whose
+        // `Debug` impl is identical to its `Display` (no surrounding
+        // quotes) — so a string message renders cleanly. Any stray quoting
+        // (e.g. a future caller passing `?msg`) is stripped defensively so
+        // the user never sees a `"…"`-wrapped warning.
         if field.name() == "message" {
-            self.message = format!("{value:?}");
+            self.message = strip_debug_quotes(format!("{value:?}"));
         }
     }
 
@@ -150,6 +155,20 @@ impl tracing::field::Visit for MessageVisitor {
         if field.name() == "message" {
             self.message = value.to_string();
         }
+    }
+}
+
+/// Strip a single layer of `Debug` quoting from `s` if present, so a
+/// message that arrived as `"text"` (with literal surrounding quotes)
+/// renders as `text`. A no-op for the common case where `tracing`'s
+/// `format_args!` `Debug` already produced an unquoted message.
+fn strip_debug_quotes(s: String) -> String {
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        s[1..s.len() - 1]
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\")
+    } else {
+        s
     }
 }
 
@@ -164,23 +183,22 @@ where
         mut writer: tracing_subscriber::fmt::format::Writer<'_>,
         event: &tracing::Event<'_>,
     ) -> std::fmt::Result {
-        use colored::Colorize;
         use tracing::Level;
 
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
 
-        let level = *event.metadata().level();
-        let prefix = if level == Level::ERROR {
-            "Error:".red().bold()
+        // Render through the same `core::log` helpers the StageLogger uses,
+        // so a loggerless library warn carries the identical palette, label,
+        // AND section indent as the surrounding `[stage]` lines (one output
+        // authority). warn (and the rare info/debug that slip past the
+        // filter) all render under the Warning style; only ERROR uses Error.
+        let line = if *event.metadata().level() == Level::ERROR {
+            anodizer_core::log::render_error(&visitor.message)
         } else {
-            // warn (and the rare info/debug that slip past the filter)
-            // all render under the Warning style — they only reach this
-            // formatter when surfaced to the user at the default `warn`
-            // level.
-            "Warning:".yellow().bold()
+            anodizer_core::log::render_warning(&visitor.message)
         };
-        writeln!(writer, "{} {}", prefix, visitor.message)
+        writeln!(writer, "{line}")
     }
 }
 
@@ -214,8 +232,10 @@ fn main() {
             .build()
             .unwrap_or_else(|e| {
                 eprintln!(
-                    "{} failed to start tokio runtime: {e}",
-                    "Error:".red().bold()
+                    "{}",
+                    anodizer_core::log::render_error(&format!(
+                        "failed to start tokio runtime: {e}"
+                    ))
                 );
                 std::process::exit(1);
             });
@@ -223,7 +243,7 @@ fn main() {
         match result {
             Ok(()) => std::process::exit(0),
             Err(e) => {
-                eprintln!("{} {e}", "Error:".red().bold());
+                eprintln!("{}", anodizer_core::log::render_error(&e.to_string()));
                 std::process::exit(1);
             }
         }
@@ -296,8 +316,10 @@ fn main() {
             let effective_snapshot =
                 if !snapshot && auto_snapshot && anodizer_core::git::is_git_dirty() {
                     eprintln!(
-                        "{} repo is dirty, automatically enabling snapshot mode",
-                        "Note:".yellow().bold()
+                        "{}",
+                        anodizer_core::log::render_note(
+                            "repo is dirty, automatically enabling snapshot mode"
+                        )
                     );
                     true
                 } else {
@@ -313,13 +335,13 @@ fn main() {
             let resolved_targets = match parse_targets_csv(targets.as_deref()) {
                 Ok(v) => v,
                 Err(msg) => {
-                    eprintln!("{} {}", "Error:".red().bold(), msg);
+                    eprintln!("{}", anodizer_core::log::render_error(&msg));
                     std::process::exit(1);
                 }
             };
 
             if let Err(msg) = validate_skip_values(&skip, VALID_RELEASE_SKIPS) {
-                eprintln!("{} {}", "Error:".red().bold(), msg);
+                eprintln!("{}", anodizer_core::log::render_error(&msg));
                 std::process::exit(1);
             }
 
@@ -393,7 +415,7 @@ fn main() {
             let quiet = cli.quiet;
 
             if let Err(msg) = validate_skip_values(&skip, VALID_BUILD_SKIPS) {
-                eprintln!("{} {}", "Error:".red().bold(), msg);
+                eprintln!("{}", anodizer_core::log::render_error(&msg));
                 std::process::exit(1);
             }
 
@@ -597,7 +619,7 @@ fn main() {
         }),
     };
     if let Err(e) = result {
-        eprintln!("{} {}", "Error:".red().bold(), e);
+        eprintln!("{}", anodizer_core::log::render_error(&e.to_string()));
         // Print the error chain
         for cause in e.chain().skip(1) {
             eprintln!("  {} {}", "caused by:".dimmed(), cause);

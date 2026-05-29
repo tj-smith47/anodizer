@@ -69,9 +69,10 @@ impl RetryConfig {
     pub fn to_policy(&self) -> RetryPolicy {
         if self.max_delay.duration() < self.delay.duration() {
             tracing::warn!(
-                delay = ?self.delay.duration(),
-                max_delay = ?self.max_delay.duration(),
-                "retry.max_delay is less than retry.delay; backoff will be capped at max_delay"
+                "retry.max_delay ({:?}) is less than retry.delay ({:?}); \
+                 backoff will be capped at max_delay",
+                self.max_delay.duration(),
+                self.delay.duration(),
             );
         }
         RetryPolicy {

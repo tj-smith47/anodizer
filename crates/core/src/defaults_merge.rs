@@ -317,10 +317,8 @@ fn deep_merge_struct_inplace<T: Serialize + DeserializeOwned>(target: &mut T, de
         Ok(v) => v,
         Err(err) => {
             tracing::warn!(
-                target = "defaults_merge",
-                type_name,
-                error = %err,
-                "failed to serialize target; defaults inheritance skipped for this field"
+                "failed to serialize target ({type_name}: {err}); \
+                 defaults inheritance skipped for this field"
             );
             return;
         }
@@ -329,10 +327,8 @@ fn deep_merge_struct_inplace<T: Serialize + DeserializeOwned>(target: &mut T, de
         Ok(v) => v,
         Err(err) => {
             tracing::warn!(
-                target = "defaults_merge",
-                type_name,
-                error = %err,
-                "failed to serialize defaults; defaults inheritance skipped for this field"
+                "failed to serialize defaults ({type_name}: {err}); \
+                 defaults inheritance skipped for this field"
             );
             return;
         }
@@ -342,10 +338,8 @@ fn deep_merge_struct_inplace<T: Serialize + DeserializeOwned>(target: &mut T, de
         Ok(merged) => *target = merged,
         Err(err) => {
             tracing::warn!(
-                target = "defaults_merge",
-                type_name,
-                error = %err,
-                "failed to deserialize merged value; defaults inheritance skipped for this field"
+                "failed to deserialize merged value ({type_name}: {err}); \
+                 defaults inheritance skipped for this field"
             );
         }
     }

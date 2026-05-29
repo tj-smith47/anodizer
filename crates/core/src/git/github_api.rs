@@ -129,9 +129,9 @@ pub fn gh_api_get_paginated_with_binary(
             // context should convey "what server said" without dumping a
             // multi-MB stack trace to the user's terminal.
             tracing::warn!(
-                len = trimmed.len(),
-                chunk = ?&trimmed[..trimmed.len().min(200)],
-                "gh_api_get_paginated: failed to parse JSON chunk",
+                "gh_api_get_paginated: failed to parse JSON chunk ({} bytes): {:?}",
+                trimmed.len(),
+                &trimmed[..trimmed.len().min(200)],
             );
         }
     }

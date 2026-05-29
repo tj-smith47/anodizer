@@ -105,9 +105,16 @@ where
         let remaining = deadline.saturating_duration_since(Instant::now());
         std::thread::sleep(remaining);
         if !completed_clone.load(Ordering::SeqCst) {
+            // Leading newline separates the abort line from any in-progress
+            // stage output. Themed through the shared `Error:` render so the
+            // watchdog line matches every other error in the run, then exit
+            // 124 (GNU `timeout` convention).
             eprintln!(
-                "\nERROR: pipeline timed out after {}; aborting. Use --timeout to increase the limit.",
-                format_duration(timeout)
+                "\n{}",
+                anodizer_core::log::render_error(&format!(
+                    "pipeline timed out after {}; aborting. Use --timeout to increase the limit.",
+                    format_duration(timeout)
+                ))
             );
             std::process::exit(124);
         }

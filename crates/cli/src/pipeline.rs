@@ -1123,8 +1123,12 @@ impl Pipeline {
 
         for stage in &self.stages {
             let name = stage.name();
+            // Operator-skipped stage: still open its section so the skip
+            // note sits inside the stage's own group (one section per
+            // stage in CI) rather than ungrouped after the last endgroup.
             if ctx.should_skip(name) {
-                log.status(&format!("{} {}", name.bold(), "skipped".yellow()));
+                let _section = log.group(name);
+                log.status(&"skipped".yellow().to_string());
                 continue;
             }
 
@@ -1136,12 +1140,8 @@ impl Pipeline {
             // individual stages (e.g., archive, upx) where it fires AFTER the stage
             // confirms it has work to do.
             if BINARY_DEPENDENT_STAGES.contains(&name) && !has_binaries {
-                log.status(&format!(
-                    "{} {} {}",
-                    "\u{2713}".green().bold(),
-                    name.bold(),
-                    "(no binaries, skipped)".yellow()
-                ));
+                let _section = log.group(name);
+                log.status(&"(no binaries, skipped)".yellow().to_string());
                 continue;
             }
 
@@ -1155,10 +1155,13 @@ impl Pipeline {
             }
 
             // One collapsible section per stage: `::group::<name>` under
-            // GitHub Actions, an indented `• name` header locally. The
-            // guard closes the section (`::endgroup::` / de-indent) on
-            // any exit path, including the early `?` return below.
-            let section = log.group(name);
+            // GitHub Actions, a Cargo-style verb header locally. The guard
+            // closes the section (`::endgroup::` / de-indent) when it drops
+            // at the end of this loop iteration — on the normal path, on the
+            // early `?` return below, and on any panic unwind — so the
+            // section is always balanced without an explicit drop in either
+            // arm.
+            let _section = log.group(name);
             match stage.run(ctx) {
                 Ok(()) => {
                     // After the build stage, record whether binaries were produced.
@@ -1177,11 +1180,9 @@ impl Pipeline {
                     if name == "changelog" {
                         ctx.populate_release_notes_var();
                     }
-                    drop(section);
                 }
                 Err(e) => {
                     log.error(&format!("{} failed: {}", name, e));
-                    drop(section);
                     return Err(e);
                 }
             }

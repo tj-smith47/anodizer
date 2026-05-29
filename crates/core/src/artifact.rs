@@ -356,11 +356,14 @@ impl ArtifactRegistry {
         {
             // Route through `tracing::warn!` so the subscriber-level redaction
             // layer applies and the warning is intercept-friendly for tests.
+            // The formatter renders only `message`, so the actionable detail
+            // (which artifact, both conflicting paths) is folded inline.
             tracing::warn!(
-                artifact = %name,
-                existing = %existing.path.display(),
-                new = %artifact.path.display(),
-                "artifact already registered; upload may fail with duplicate error",
+                "artifact '{}' already registered at '{}' but re-added from '{}'; \
+                 upload may fail with a duplicate error",
+                name,
+                existing.path.display(),
+                artifact.path.display(),
             );
         }
 
