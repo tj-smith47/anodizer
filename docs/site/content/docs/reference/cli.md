@@ -201,6 +201,20 @@ Auto-tag based on commit message directives
 | `--crate` | — | — | Tag a specific crate in a workspace |
 
 
+### `anodizer tag rollback`
+
+Rollback anodize-managed tags at a SHA, then revert (or reset past) the bump commit they point at
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `<sha>` | — | — | Commit SHA to roll back from. Defaults to HEAD. |
+| `--dry-run` | — | — | Print what would happen without mutating anything |
+| `--no-push` | — | — | Skip remote tag delete and branch push (local-only) |
+| `--scope` | — | `all` | Tag-shape filter: all | lockstep | per-crate |
+| `--mode` | — | `revert` | Rollback strategy: revert (default; history-preserving) | reset (opt-in; rewrites history, requires --force-with-lease to push) |
+
+
 ### `anodizer continue`
 
 Resume a release after a transient failure or after `--prepare`/`--split`

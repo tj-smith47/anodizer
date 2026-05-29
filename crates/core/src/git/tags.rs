@@ -742,11 +742,20 @@ pub fn get_tags_at_head() -> Result<Vec<String>> {
 
 /// Path-taking sibling of [`get_tags_at_head`].
 pub fn get_tags_at_head_in(cwd: &Path) -> Result<Vec<String>> {
+    get_tags_at_sha_in(cwd, "HEAD")
+}
+
+/// Return all tags that point at the given commit (any revision spec).
+///
+/// Runs `git tag --points-at <sha>`. Failures (unknown sha, not a git
+/// repo) return `Ok(vec![])` rather than an error so callers can treat
+/// "no tags at that ref" as the empty case.
+pub fn get_tags_at_sha_in(cwd: &Path, sha: &str) -> Result<Vec<String>> {
     let out = Command::new("git")
         .current_dir(cwd)
-        .args(["tag", "--points-at", "HEAD"])
+        .args(["tag", "--points-at", sha])
         .output()
-        .map_err(|e| anyhow::anyhow!("failed to invoke git tag --points-at HEAD: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to invoke git tag --points-at {sha}: {e}"))?;
     if !out.status.success() {
         return Ok(Vec::new());
     }
@@ -756,6 +765,45 @@ pub fn get_tags_at_head_in(cwd: &Path) -> Result<Vec<String>> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect())
+}
+
+/// Delete a local tag (`git tag -d <tag>`). Returns `Ok(())` even when the
+/// tag is missing so callers can run the delete idempotently.
+pub fn delete_local_tag_in(cwd: &Path, tag: &str) -> Result<()> {
+    let out = Command::new("git")
+        .current_dir(cwd)
+        .args(["tag", "-d", tag])
+        .output()
+        .map_err(|e| anyhow::anyhow!("failed to invoke git tag -d {tag}: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // "tag not found" is fine — caller wanted it gone.
+        if stderr.contains("not found") {
+            return Ok(());
+        }
+        anyhow::bail!("git tag -d {tag} failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
+/// Delete a tag on the `origin` remote (`git push origin :refs/tags/<tag>`).
+///
+/// Errors propagate so callers (notably `tag rollback`) can warn-and-continue
+/// per tag without aborting the whole pass.
+pub fn delete_remote_tag_in(cwd: &Path, tag: &str) -> Result<()> {
+    let refspec = format!(":refs/tags/{}", tag);
+    let out = Command::new("git")
+        .current_dir(cwd)
+        .args(["push", "origin", &refspec])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| anyhow::anyhow!("failed to invoke git push origin {refspec}: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let raw = format!("git push origin {} failed: {}", refspec, stderr.trim());
+        anyhow::bail!("{}", crate::redact::redact_process_env(&raw));
+    }
+    Ok(())
 }
 
 /// Push `branch` and all `tags` to `origin` in a single atomic operation.

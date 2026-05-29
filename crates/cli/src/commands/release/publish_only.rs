@@ -190,76 +190,135 @@ pub(super) fn run_per_crate(
         })
         .unwrap_or_default();
 
-    // Capture and restore selected_crates around the loop. Publishers
-    // resolve their effective crate set via `effective_publish_crates`,
-    // which falls back to `util::all_crates` (workspace-flattened, all 4)
-    // when `selected_crates` is empty. Without per-iteration scoping
-    // every publisher in cfgd-core's iteration would iterate every
-    // workspace crate, find no applicable config, and either skip-all
-    // (which the homebrew publisher classifies as a `failed` outcome to
-    // surface "nothing pushed") or attempt to publish for crates that
-    // aren't in the current iteration's preserved dist.
-    let prev_selected = ctx.options.selected_crates.clone();
-    let prev_skip_stages = ctx.options.skip_stages.clone();
-    // Save ctx.config.dist so each iteration can re-anchor it onto the
-    // per-crate dist subdir without leaking the override into the
-    // caller's state on Ok or Err. Downstream code that emits release
-    // metadata (`write_pre_release_metadata`, the GitHub uploader's
-    // relative-path resolver) reads `ctx.config.dist` directly; without
-    // per-iteration scoping every crate's metadata.json would land at
-    // (or be looked for under) the workspace-root `dist/` instead of
-    // the active crate's preserved subdir.
-    let prev_dist = ctx.config.dist.clone();
-    let iteration_result = (|| -> Result<()> {
-        for crate_name in &crate_order {
-            let crate_dist = dist_base.join(crate_name);
-            log.status(&format!(
-                "publish-only: publishing crate '{crate_name}' from {}",
-                crate_dist.display()
-            ));
-            // Reset the artifact registry before each crate so artifacts
-            // from a prior crate's pipeline don't leak into the next one's
-            // sign/upload.
-            ctx.artifacts = ArtifactRegistry::new();
-            // Scope ctx.config to the current crate's workspace so stages
-            // (changelog, signs, publishers) see the right crates/overlay
-            // values. Flat configs (no `workspaces:`) fall through
-            // unchanged.
-            //
-            // Also merge `workspaces[].skip:` into `ctx.options.skip_stages`
-            // for the duration of this iteration. The regular release path
-            // does this in `compute_skip_stages`; publish-only never went
-            // through that code, so a workspace declaring
-            // `skip: [announce]` (e.g. cfgd-core, a library crate that
-            // shouldn't broadcast an announcement) was silently ignored
-            // and announce ran anyway, failing to render templates that
-            // depend on stage-release outputs absent for skip-target
-            // workspaces.
-            ctx.options.skip_stages = prev_skip_stages.clone();
-            if let Some(ws) = workspace_for.get(crate_name.as_str()) {
-                crate::commands::helpers::apply_workspace_overlay(&mut ctx.config, ws);
-                merge_workspace_skip(&mut ctx.options.skip_stages, &ws.skip);
-            }
-            // Re-anchor ctx.config.dist onto the per-crate preserved
-            // subdir for the duration of this iteration.
-            ctx.config.dist = crate_dist.clone();
-            // Scope selected_crates to the current crate so every
-            // publisher's effective-crates resolution sees a single entry
-            // instead of the workspace-flattened fallback.
-            ctx.options.selected_crates = vec![crate_name.clone()];
-            let per_crate_opts = RunOpts {
-                dry_run: opts.dry_run,
-                no_preflight: true,
-                silent_meta: true,
-            };
-            run_one_crate_dist(ctx, config, log, &per_crate_opts, crate_dist)?;
+    // Snapshot-and-restore the three fields the per-iteration overlay
+    // mutates. Wrapped in an RAII guard (`PerCrateOverlayGuard`) so a
+    // panic from `run_one_crate_dist` or any overlay/skip-merge call
+    // still rolls the caller's `ctx` back to its pre-loop shape —
+    // without it, an unwind would leak the last iteration's
+    // `selected_crates` / `skip_stages` / `dist` overrides into any
+    // outer `catch_unwind` boundary, leaving the caller's state
+    // pointed at half-applied mid-iteration values.
+    //
+    // Why per-iteration scoping in the first place:
+    //
+    // * `selected_crates`: publishers resolve their effective crate
+    //   set via `effective_publish_crates`, which falls back to
+    //   `util::all_crates` (workspace-flattened) when this Vec is
+    //   empty. Without scoping every publisher in cfgd-core's
+    //   iteration would iterate every workspace crate, find no
+    //   applicable config, and either skip-all (which the homebrew
+    //   publisher classifies as a `failed` outcome to surface
+    //   "nothing pushed") or attempt to publish for crates that
+    //   aren't in the current iteration's preserved dist.
+    // * `skip_stages`: regular release routes through
+    //   `compute_skip_stages`, which merges `workspaces[].skip:`.
+    //   Publish-only never went through that code, so a workspace
+    //   declaring `skip: [announce]` (e.g. cfgd-core, a library
+    //   crate that shouldn't broadcast an announcement) was
+    //   silently ignored and announce ran anyway.
+    // * `dist`: downstream metadata writers
+    //   (`write_pre_release_metadata`, the GitHub uploader's
+    //   relative-path resolver) read `ctx.config.dist` directly;
+    //   without scoping every crate's metadata.json would land at
+    //   the workspace-root `dist/` instead of its preserved subdir.
+    let mut guard = PerCrateOverlayGuard::capture(ctx);
+    // The saved baseline lives on the guard; copy it out once so the
+    // per-iteration reset doesn't need a `&self` borrow that would
+    // conflict with the `&mut ctx` reborrow further down.
+    let baseline_skip_stages = guard.snapshot_skip_stages().to_vec();
+    for crate_name in &crate_order {
+        let crate_dist = dist_base.join(crate_name);
+        log.status(&format!(
+            "publish-only: publishing crate '{crate_name}' from {}",
+            crate_dist.display()
+        ));
+        let ctx = guard.ctx_mut();
+        // Reset the artifact registry before each crate so artifacts
+        // from a prior crate's pipeline don't leak into the next one's
+        // sign/upload.
+        ctx.artifacts = ArtifactRegistry::new();
+        // Reset skip_stages to the original baseline before re-applying
+        // the workspace overlay so a skip from a prior iteration's
+        // workspace doesn't leak forward.
+        ctx.options.skip_stages = baseline_skip_stages.clone();
+        if let Some(ws) = workspace_for.get(crate_name.as_str()) {
+            crate::commands::helpers::apply_workspace_overlay(&mut ctx.config, ws);
+            merge_workspace_skip(&mut ctx.options.skip_stages, &ws.skip);
         }
-        Ok(())
-    })();
-    ctx.options.selected_crates = prev_selected;
-    ctx.options.skip_stages = prev_skip_stages;
-    ctx.config.dist = prev_dist;
-    iteration_result
+        // Re-anchor ctx.config.dist onto the per-crate preserved
+        // subdir for the duration of this iteration.
+        ctx.config.dist = crate_dist.clone();
+        // Scope selected_crates to the current crate so every
+        // publisher's effective-crates resolution sees a single entry
+        // instead of the workspace-flattened fallback.
+        ctx.options.selected_crates = vec![crate_name.clone()];
+        let per_crate_opts = RunOpts {
+            dry_run: opts.dry_run,
+            no_preflight: true,
+            silent_meta: true,
+        };
+        run_one_crate_dist(ctx, config, log, &per_crate_opts, crate_dist)?;
+    }
+    // Explicit drop is redundant — `guard` falls out of scope and
+    // restores at function exit — but it documents the restore point
+    // for a reader.
+    drop(guard);
+    Ok(())
+}
+
+/// RAII guard that snapshots the three `ctx` fields mutated by
+/// `run_per_crate`'s overlay loop (`config.dist`,
+/// `options.selected_crates`, `options.skip_stages`) and restores them
+/// in `Drop` so an unwind through the loop body still leaves the
+/// caller's `ctx` pointed at its pre-loop shape.
+///
+/// The save/restore-via-closure pattern this replaces was
+/// panic-unsafe: a panic from inside the iteration would skip the
+/// post-closure restore lines, leaking mid-iteration override values
+/// into any outer `catch_unwind` boundary (test harnesses, embedding
+/// crates).
+struct PerCrateOverlayGuard<'a> {
+    ctx: &'a mut Context,
+    saved_dist: std::path::PathBuf,
+    saved_selected_crates: Vec<String>,
+    saved_skip_stages: Vec<String>,
+}
+
+impl<'a> PerCrateOverlayGuard<'a> {
+    fn capture(ctx: &'a mut Context) -> Self {
+        let saved_dist = ctx.config.dist.clone();
+        let saved_selected_crates = ctx.options.selected_crates.clone();
+        let saved_skip_stages = ctx.options.skip_stages.clone();
+        Self {
+            ctx,
+            saved_dist,
+            saved_selected_crates,
+            saved_skip_stages,
+        }
+    }
+
+    /// Per-iteration `skip_stages` reset baseline. Returns the snapshot
+    /// the guard took at capture-time so the loop can rewind to the
+    /// pre-overlay value before applying the current workspace's
+    /// `skip:` list.
+    fn snapshot_skip_stages(&self) -> &[String] {
+        &self.saved_skip_stages
+    }
+
+    /// Reborrow the wrapped `&mut Context` for one loop iteration.
+    /// Bypasses the borrow that would otherwise pin the original `ctx`
+    /// alias for the entire lifetime of the guard.
+    fn ctx_mut(&mut self) -> &mut Context {
+        self.ctx
+    }
+}
+
+impl Drop for PerCrateOverlayGuard<'_> {
+    fn drop(&mut self) {
+        self.ctx.config.dist = std::mem::take(&mut self.saved_dist);
+        self.ctx.options.selected_crates = std::mem::take(&mut self.saved_selected_crates);
+        self.ctx.options.skip_stages = std::mem::take(&mut self.saved_skip_stages);
+    }
 }
 
 /// Merge a workspace's `skip:` list into the iteration's effective
@@ -1103,6 +1162,13 @@ fn hash_verify_preserved_dist(ctx: &PreservedDistContext, dist_root: &Path) -> R
 /// completed successfully, and a stale shard manifest only matters on
 /// the next retry (where it would trip
 /// `check_no_unsuffixed_suffixed_collision`).
+///
+/// Manual recovery: if `run_post_pipeline` succeeded and the process
+/// was SIGKILL'd before this cleanup ran, `dist/` will hold both the
+/// canonical `dist/artifacts.json` AND the per-shard
+/// `dist/artifacts-<shard>.json` siblings. A retry would bail in
+/// `check_no_unsuffixed_suffixed_collision`. Clear the shard files
+/// before retry: `rm dist/artifacts-*.json`.
 fn cleanup_shard_manifests(dist: &Path, log: &StageLogger) {
     let base = "artifacts";
     let entries = match std::fs::read_dir(dist) {
@@ -1802,37 +1868,6 @@ mod tests {
         assert!(dist.join("context-macos-latest.json").is_file());
     }
 
-    /// The publish-only path must clear `binary_signs` early so
-    /// SignStage doesn't try to cosign sign-blob a raw-binary path
-    /// that doesn't exist in preserved-dist. Pin the suppression
-    /// logic directly so a refactor that quietly drops the
-    /// `.clear()` call regresses here.
-    #[test]
-    fn publish_only_run_suppresses_binary_signs_with_warn() {
-        use anodizer_core::config::SignConfig;
-
-        // Mirror the suppression block in publish_only::run on a
-        // standalone Vec — full publish_only::run requires a too-deep
-        // fixture (preserved dist, git context, GitHub token) for a
-        // focused unit test on the .clear() invariant.
-        let mut binary_signs: Vec<SignConfig> = vec![
-            SignConfig {
-                id: Some("cosign-binary".into()),
-                ..Default::default()
-            },
-            SignConfig {
-                id: Some("cosign-binary-2".into()),
-                ..Default::default()
-            },
-        ];
-        assert_eq!(binary_signs.len(), 2);
-
-        if !binary_signs.is_empty() {
-            binary_signs.clear();
-        }
-        assert!(binary_signs.is_empty());
-    }
-
     /// Filter contract for the inlined missing-file check: Binary +
     /// UniversalBinary kinds must be skipped (their paths live under
     /// `.det-tmp/target/...` and are not preserved into `dist/`),
@@ -2071,6 +2106,59 @@ mod tests {
             ctx.config.dist, original_dist,
             "ctx.config.dist must be restored after the iteration (Ok or Err) \
              so the per-iteration override never leaks into the caller's context"
+        );
+    }
+
+    /// `PerCrateOverlayGuard::Drop` must fire on unwind so a panic from
+    /// inside the iteration body (e.g. an `unwrap` deep in stage code,
+    /// a templating overflow, an `unreachable!()`) still rolls the
+    /// caller's `ctx` back to its pre-loop shape. The closure-then-
+    /// restore pattern this RAII guard replaces would skip the restore
+    /// on panic, leaking mid-iteration override values into any outer
+    /// `catch_unwind` boundary (test harnesses, embedding crates).
+    #[test]
+    fn per_crate_overlay_guard_restores_on_panic() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        let mut config = Config::default();
+        let original_dist = std::path::PathBuf::from("/tmp/per-crate-guard-panic/dist");
+        config.dist = original_dist.clone();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let original_selected = vec!["root-crate".to_string()];
+        let original_skip = vec!["root-skip".to_string()];
+        ctx.options.selected_crates = original_selected.clone();
+        ctx.options.skip_stages = original_skip.clone();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut guard = PerCrateOverlayGuard::capture(&mut ctx);
+            // Simulate the per-iteration mutations the loop performs.
+            let inner = guard.ctx_mut();
+            inner.config.dist = std::path::PathBuf::from("/scratch/mid-iteration");
+            inner.options.selected_crates = vec!["mid-iter-crate".to_string()];
+            inner.options.skip_stages = vec!["mid-iter-skip".to_string()];
+            // Panic before the guard would normally fall out of scope
+            // at the end of the loop. The Drop impl must still fire.
+            panic!("simulated mid-iteration panic");
+        }));
+
+        assert!(
+            result.is_err(),
+            "fixture must actually panic — otherwise the guard's restore would also \
+             run via the happy path and the test would pass trivially"
+        );
+        assert_eq!(
+            ctx.config.dist, original_dist,
+            "Drop must restore ctx.config.dist on panic"
+        );
+        assert_eq!(
+            ctx.options.selected_crates, original_selected,
+            "Drop must restore ctx.options.selected_crates on panic"
+        );
+        assert_eq!(
+            ctx.options.skip_stages, original_skip,
+            "Drop must restore ctx.options.skip_stages on panic"
         );
     }
 }

@@ -359,6 +359,13 @@ pub enum Commands {
         default_bump: Option<String>,
         #[arg(long = "crate", help = "Tag a specific crate in a workspace")]
         crate_name: Option<String>,
+        /// `anodize tag rollback [...]` — failure-recovery counterpart.
+        ///
+        /// Subcommand is optional: bare `anodize tag` keeps its
+        /// existing autotag behavior; only `anodize tag rollback`
+        /// invokes the rollback flow.
+        #[command(subcommand)]
+        sub: Option<TagSub>,
     },
     /// Resume a release after a transient failure or after `--prepare`/`--split`
     ///
@@ -513,6 +520,44 @@ pub enum Commands {
             help = "Merge artifact lists from `release --split` workers (dist/<subdir>/context.json) before announcing. Mirrors `goreleaser announce --merge`."
         )]
         merge: bool,
+    },
+}
+
+/// `anodize tag` parent subcommand.
+///
+/// Bare `anodize tag` keeps its existing autotag behavior (handled
+/// by the `Tag` variant directly). `anodize tag rollback` opts into
+/// the failure-recovery flow described in
+/// [`commands::tag::rollback`].
+#[derive(Subcommand)]
+pub enum TagSub {
+    /// Rollback anodize-managed tags at a SHA, then revert (or reset
+    /// past) the bump commit they point at.
+    Rollback {
+        #[arg(
+            value_name = "sha",
+            help = "Commit SHA to roll back from. Defaults to HEAD."
+        )]
+        sha: Option<String>,
+        #[arg(long, help = "Print what would happen without mutating anything")]
+        dry_run: bool,
+        #[arg(
+            long = "no-push",
+            help = "Skip remote tag delete and branch push (local-only)"
+        )]
+        no_push: bool,
+        #[arg(
+            long,
+            default_value = "all",
+            help = "Tag-shape filter: all | lockstep | per-crate"
+        )]
+        scope: String,
+        #[arg(
+            long,
+            default_value = "revert",
+            help = "Rollback strategy: revert (default; history-preserving) | reset (opt-in; rewrites history, requires --force-with-lease to push)"
+        )]
+        mode: String,
     },
 }
 

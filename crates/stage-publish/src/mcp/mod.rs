@@ -420,6 +420,32 @@ pub(crate) fn build_server_json(mcp: &McpConfig, version: &str) -> ServerJson {
 /// On success, parses the response body for `_meta.official.status` and
 /// logs `published to MCP registry name=<...> status=<...>` — matching GR
 /// `mcp.go:181-184`'s log shape.
+/// Maximum response-body bytes embedded in the user-visible HTTP-error
+/// message. Cap is byte-based (cheap `len()`) instead of char-based so a
+/// large response body is rejected after a single O(1) length check —
+/// the prior `chars().take(512)` + `chars().count() > 512` shape walked a
+/// 100 KB body twice. The cut walks back to a UTF-8 char boundary so we
+/// never slice through a multi-byte char.
+const MAX_RESPONSE_SNIPPET_BYTES: usize = 512;
+
+/// Return `(snippet, truncated_suffix)` for a scrubbed HTTP response
+/// body. When the body fits inside [`MAX_RESPONSE_SNIPPET_BYTES`] the
+/// snippet is the input verbatim and the suffix is empty; otherwise the
+/// snippet is the input truncated at the nearest UTF-8 char boundary at
+/// or below the byte cap and the suffix is `"...[truncated]"`.
+fn truncate_response_snippet(scrubbed: &str) -> (String, &'static str) {
+    if scrubbed.len() <= MAX_RESPONSE_SNIPPET_BYTES {
+        return (scrubbed.to_string(), "");
+    }
+    let mut cut = MAX_RESPONSE_SNIPPET_BYTES;
+    // UTF-8 multi-byte chars must not be split; `is_char_boundary(0)` is
+    // always true so the loop terminates without an underflow guard.
+    while !scrubbed.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    (scrubbed[..cut].to_string(), "...[truncated]")
+}
+
 fn publish_payload(
     publish_url: &str,
     body: &str,
@@ -458,12 +484,7 @@ fn publish_payload(
             // tightening `body.packages[i].version`'s `minLength`) are
             // diagnosable from CI logs without a curl reproduction.
             let scrubbed = anodizer_core::redact::redact_bearer_tokens(response);
-            let snippet: String = scrubbed.chars().take(512).collect();
-            let truncated = if scrubbed.chars().count() > 512 {
-                "...[truncated]"
-            } else {
-                ""
-            };
+            let (snippet, truncated) = truncate_response_snippet(&scrubbed);
             format!(
                 "mcp: POST {} returned HTTP {} (request_body_len={}; response={}{})",
                 publish_url, status, request_body_len, snippet, truncated

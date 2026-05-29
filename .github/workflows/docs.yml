@@ -24,10 +24,10 @@ jobs:
     name: Docs freshness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: arduino/setup-task@v2
+      - uses: go-task/setup-task@v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Check generated docs are up-to-date
@@ -37,7 +37,7 @@ jobs:
     needs: docs-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -45,7 +45,7 @@ jobs:
         with:
           cache-targets: false
 
-      - uses: arduino/setup-task@v2
+      - uses: go-task/setup-task@v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 

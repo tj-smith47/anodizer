@@ -16,17 +16,18 @@ pub mod worktree;
 mod tests;
 
 pub use commits::{
-    Commit, SHORT_COMMIT_LEN, add_path_in, commit_in, get_all_commits, get_all_commits_in,
-    get_all_commits_paths, get_all_commits_paths_in, get_commit_messages_between,
-    get_commit_messages_between_in, get_commit_messages_between_path,
+    Commit, SHORT_COMMIT_LEN, add_path_in, commit_in, commit_subject_in, commits_between_in,
+    get_all_commits, get_all_commits_in, get_all_commits_paths, get_all_commits_paths_in,
+    get_commit_messages_between, get_commit_messages_between_in, get_commit_messages_between_path,
     get_commit_messages_between_path_in, get_commits_between, get_commits_between_in,
     get_commits_between_paths, get_commits_between_paths_in, get_current_branch,
     get_current_branch_in, get_head_commit, get_head_commit_in, get_last_commit_messages,
     get_last_commit_messages_in, get_last_commit_messages_path, get_last_commit_messages_path_in,
     get_short_commit, get_short_commit_in, has_changes_since, has_changes_since_in,
     has_commits_since_tag, has_commits_since_tag_in, head_commit_hash_in, head_commit_timestamp_in,
-    log_subjects_for_range, paths_changed_since_tag, paths_changed_since_tag_in, short_commit_str,
-    stage_and_commit, stage_and_commit_in,
+    log_subjects_for_range, paths_changed_since_tag, paths_changed_since_tag_in, push_branch_in,
+    reset_hard_in, rev_parse_in, revert_commit_in, short_commit_str, stage_and_commit,
+    stage_and_commit_in,
 };
 pub use detect::{GitInfo, detect_git_info, detect_git_info_in};
 pub use github_api::{
@@ -45,13 +46,14 @@ pub use status::{
     local_git_user_email, local_git_user_email_in, local_git_user_name, local_git_user_name_in,
 };
 pub use tags::{
-    create_and_push_tag, create_and_push_tag_in, create_tag_local_only, extract_tag_prefix,
-    find_latest_tag_matching, find_latest_tag_matching_in, find_latest_tag_matching_with_prefix,
+    create_and_push_tag, create_and_push_tag_in, create_tag_local_only, delete_local_tag_in,
+    delete_remote_tag_in, extract_tag_prefix, find_latest_tag_matching,
+    find_latest_tag_matching_in, find_latest_tag_matching_with_prefix,
     find_latest_tag_matching_with_prefix_in, find_previous_tag, find_previous_tag_in,
     find_previous_tag_with_prefix, find_previous_tag_with_prefix_in, get_all_semver_tags,
     get_all_semver_tags_in, get_branch_semver_tags, get_branch_semver_tags_in, get_first_commit,
-    get_first_commit_in, get_tags_at_head, get_tags_at_head_in, has_version_placeholder,
-    head_is_at_tag, list_tags_with_prefix, push_branch_and_tags_atomic,
+    get_first_commit_in, get_tags_at_head, get_tags_at_head_in, get_tags_at_sha_in,
+    has_version_placeholder, head_is_at_tag, list_tags_with_prefix, push_branch_and_tags_atomic,
     push_branch_and_tags_atomic_in, render_ignore_patterns, strip_monorepo_prefix,
     tag_points_at_head, tag_points_at_head_in,
 };

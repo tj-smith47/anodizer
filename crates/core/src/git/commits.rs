@@ -530,6 +530,116 @@ pub fn head_commit_hash_in(repo: &std::path::Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Resolve a revision (sha, ref name, `HEAD`, etc.) to its full commit hash.
+///
+/// Wrapper over `git rev-parse <rev>` — errors when the revision can't be
+/// resolved (unknown sha, ambiguous short hash, not a git repo).
+pub fn rev_parse_in(cwd: &Path, rev: &str) -> Result<String> {
+    git_output_in(cwd, &["rev-parse", rev])
+}
+
+/// `git rev-list <sha>..HEAD` — list the commit hashes (newest-first) that
+/// sit on top of `sha` but aren't in `sha`.
+///
+/// Returns an empty vec when `sha` IS `HEAD` (no commits between).
+pub fn commits_between_in(cwd: &Path, sha: &str) -> Result<Vec<String>> {
+    let range = format!("{}..HEAD", sha);
+    let out = git_output_in(cwd, &["rev-list", &range])?;
+    if out.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(out.lines().map(|s| s.trim().to_string()).collect())
+}
+
+/// `git log -1 --format=%s <sha>` — return the subject line of a single
+/// commit. Used to render the "non-bump commit subject" list when the
+/// rollback safety check fires.
+pub fn commit_subject_in(cwd: &Path, sha: &str) -> Result<String> {
+    git_output_in(
+        cwd,
+        &[
+            "-c",
+            "log.showSignature=false",
+            "log",
+            "-1",
+            "--format=%s",
+            sha,
+        ],
+    )
+}
+
+/// Run `git revert --no-edit <sha>` in `cwd`.
+///
+/// Refuses against a dirty working tree (`git revert` would surface a
+/// less actionable "your local changes would be overwritten" message
+/// otherwise). Mirrors the dirty-tree guard used by
+/// `stage-publish/src/util/git_revert.rs`.
+///
+/// When `message` is `Some`, follows up with `git commit --amend -m <message>`
+/// so the rollback commit's subject lists the deleted tags / `[skip ci]`
+/// without needing a separate amend in the caller.
+pub fn revert_commit_in(cwd: &Path, sha: &str, message: Option<&str>) -> Result<()> {
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(cwd)
+        .output()
+        .with_context(|| format!("revert_commit_in: git status in {}", cwd.display()))?;
+    if !status.status.success() {
+        let stderr_raw = String::from_utf8_lossy(&status.stderr);
+        let raw = format!("git status failed: {}", stderr_raw.trim());
+        bail!("{}", crate::redact::redact_process_env(&raw));
+    }
+    if !status.stdout.is_empty() {
+        bail!(
+            "refusing to revert in a dirty working tree at {}\nstatus:\n{}",
+            cwd.display(),
+            String::from_utf8_lossy(&status.stdout),
+        );
+    }
+
+    git_output_in(cwd, &["revert", "--no-edit", sha])?;
+    if let Some(msg) = message {
+        git_output_in(cwd, &["commit", "--amend", "-m", msg])?;
+    }
+    Ok(())
+}
+
+/// Run `git reset --hard <sha>` in `cwd`. **Destructive** — rewrites HEAD
+/// and the index in place; callers must surface a warning before invoking.
+pub fn reset_hard_in(cwd: &Path, sha: &str) -> Result<()> {
+    git_output_in(cwd, &["reset", "--hard", sha])?;
+    Ok(())
+}
+
+/// Push a branch (`HEAD:refs/heads/<branch>`) to the `origin` remote.
+///
+/// Errors when no `origin` remote is configured — callers driving local-only
+/// flows should pass `--no-push` to skip the call entirely.
+pub fn push_branch_in(cwd: &Path, branch: &str) -> Result<()> {
+    let has_remote = Command::new("git")
+        .current_dir(cwd)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !has_remote {
+        bail!("no 'origin' remote configured, cannot push branch '{branch}'");
+    }
+    let refspec = format!("HEAD:refs/heads/{}", branch);
+    let out = Command::new("git")
+        .current_dir(cwd)
+        .args(["push", "origin", &refspec])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .with_context(|| format!("push_branch_in: git push origin {refspec}"))?;
+    if !out.status.success() {
+        let stderr_raw = String::from_utf8_lossy(&out.stderr);
+        let raw = format!("git push origin {} failed: {}", refspec, stderr_raw.trim());
+        bail!("{}", crate::redact::redact_process_env(&raw));
+    }
+    Ok(())
+}
+
 /// `git -C <repo> log -1 --format=%ct HEAD` — return HEAD's committer
 /// timestamp (seconds since UNIX epoch) for the given repository. Used by
 /// the determinism harness as the non-snapshot SDE seed.

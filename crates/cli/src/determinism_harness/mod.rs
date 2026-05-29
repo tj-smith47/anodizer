@@ -463,11 +463,14 @@ impl Harness {
         let worktree_path =
             worktree_root.join(format!("anodize-determinism-{}", std::process::id()));
 
-        // When crate_name is set, write the preserved dist into a per-crate
-        // subdir so parallel crate releases can merge into one dist/ without
-        // context.json collision. The flat base is still used for the
-        // preserve_dist_tree copy (which copies run-0's whole dist/**);
-        // write_preserved_dist_context handles the subdir internally.
+        // When crate_name is set, anchor the preserved dist into a
+        // per-crate subdir so parallel crate releases (each invoking
+        // the harness independently) can merge into one `dist/` root
+        // without colliding on `context.json` / `artifacts.json`. All
+        // downstream writers (preserve_dist_tree, preserve_raw_binaries,
+        // write_preserved_dist_context) accept this dest directly and
+        // emit into it as-is; the subdir is computed once here so the
+        // path stays consistent across the three calls below.
         let effective_preserve_dest: Option<std::path::PathBuf> =
             self.preserve_dist.as_ref().map(|base| {
                 if let Some(ref name) = self.crate_name {

@@ -22,9 +22,9 @@ use anodizer_core::config::{
 use anodizer_core::context::{Context, ContextOptions};
 
 use super::{
-    DEFAULT_REGISTRY_URL, fill_from_project_metadata, infer_repository_from_release,
-    publish_with_registry, reset_experimental_warned_for_test, resolve_registry_url,
-    warn_experimental_once, warn_once_lock,
+    DEFAULT_REGISTRY_URL, MAX_RESPONSE_SNIPPET_BYTES, fill_from_project_metadata,
+    infer_repository_from_release, publish_with_registry, reset_experimental_warned_for_test,
+    resolve_registry_url, truncate_response_snippet, warn_experimental_once, warn_once_lock,
 };
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
@@ -489,4 +489,74 @@ fn resolve_registry_url_fallback_matrix() {
         let got = resolve_registry_url(&mcp);
         assert_eq!(got, *expected, "case {label}: input={input:?}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP error-snippet truncation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn truncate_response_snippet_short_body_returned_verbatim() {
+    // Bodies at or below the byte cap pass through unchanged with an
+    // empty suffix — no allocation surprise, no truncation marker.
+    let body = "ok";
+    let (snippet, suffix) = truncate_response_snippet(body);
+    assert_eq!(snippet, "ok");
+    assert_eq!(suffix, "");
+}
+
+#[test]
+fn truncate_response_snippet_at_cap_returned_verbatim() {
+    // Exactly-cap bodies are NOT truncated. Guards the `<=` boundary so
+    // a hypothetical future off-by-one doesn't silently start tagging
+    // every cap-sized response as truncated.
+    let body = "a".repeat(MAX_RESPONSE_SNIPPET_BYTES);
+    let (snippet, suffix) = truncate_response_snippet(&body);
+    assert_eq!(snippet.len(), MAX_RESPONSE_SNIPPET_BYTES);
+    assert_eq!(suffix, "");
+}
+
+#[test]
+fn truncate_response_snippet_oversized_ascii_marks_truncated() {
+    // ASCII path: every byte is a char boundary so the cut lands on
+    // exactly `MAX_RESPONSE_SNIPPET_BYTES` and the suffix announces
+    // the trim.
+    let body = "x".repeat(MAX_RESPONSE_SNIPPET_BYTES * 2);
+    let (snippet, suffix) = truncate_response_snippet(&body);
+    assert_eq!(snippet.len(), MAX_RESPONSE_SNIPPET_BYTES);
+    assert_eq!(suffix, "...[truncated]");
+}
+
+#[test]
+fn truncate_response_snippet_walks_back_to_utf8_char_boundary() {
+    // A 4-byte UTF-8 char straddling the cap forces the cut to walk
+    // backward to a boundary. The snippet must be valid UTF-8 (the
+    // `format!` formatter would panic on a slice through a multi-byte
+    // char), strictly shorter than the cap, and end on a clean
+    // codepoint — not mid-sequence.
+    let mut body = "a".repeat(MAX_RESPONSE_SNIPPET_BYTES - 2);
+    // U+1F600 GRINNING FACE is 4 bytes in UTF-8. With 510 leading 'a's
+    // the char straddles bytes 510..514, so a 512-byte cut lands inside
+    // it and the loop must walk back to byte 510.
+    body.push('\u{1F600}');
+    body.push_str(&"b".repeat(20));
+    let (snippet, suffix) = truncate_response_snippet(&body);
+
+    assert_eq!(suffix, "...[truncated]");
+    assert!(
+        snippet.len() < MAX_RESPONSE_SNIPPET_BYTES,
+        "boundary walk must yield strictly fewer bytes than the cap (got {})",
+        snippet.len()
+    );
+    // The smiley straddles the cap, so it must NOT appear in the snippet
+    // — otherwise the cut landed past the boundary, not before it.
+    assert!(
+        !snippet.contains('\u{1F600}'),
+        "the multi-byte char straddling the cap must be dropped wholesale, not split"
+    );
+    // Round-trip back into a format! to prove the result is valid UTF-8
+    // (a mid-codepoint slice would panic here, even though indexing in
+    // the helper itself uses a byte slice). The assertion is the
+    // absence of a panic.
+    let _ = format!("snippet={snippet}");
 }

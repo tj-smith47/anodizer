@@ -17,6 +17,7 @@
 //! [`extra`]: PublishEvidence::extra
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// One entry in [`HomebrewExtra::homebrew_targets`] — the operator-public
@@ -129,16 +130,23 @@ pub struct KrewTargetSnapshot {
 #[serde(deny_unknown_fields)]
 pub struct KrewExtra {
     pub krew_targets: Vec<KrewTargetSnapshot>,
-    /// SHA-256 of the bot-template file content as it stood BEFORE the
-    /// krew-release-bot publish run wrote a fresh template. Recorded
-    /// only in `KrewMode::BotTemplate`; absent for the PR-direct modes
-    /// (no local template file exists to checksum). Lets a future
-    /// rollback pass detect whether the on-disk template was mutated
-    /// out from under us between publish and rollback. `None` when the
-    /// pre-image file did not exist at publish time (first-publish of
-    /// a freshly-wired bot template).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bot_template_pre_image_sha: Option<String>,
+    /// SHA-256s of each bot-template file's content as it stood BEFORE
+    /// the krew-release-bot publish run overwrote it. Keyed by the
+    /// absolute template path (stable across same-machine rollback;
+    /// the rollback consumer re-reads each path and compares against
+    /// the recorded digest to detect drift). Populated only in
+    /// `KrewMode::BotTemplate` runs; an empty map means the run never
+    /// took a BotTemplate path. PR-direct modes leave the map empty
+    /// even when `krew_targets` is non-empty (no local template
+    /// exists to checksum).
+    ///
+    /// A `BTreeMap` rather than a single value because a workspace can
+    /// declare multiple bot-templated krew plugins; the per-crate loop
+    /// in the publisher must record one entry per plugin or rollback
+    /// drift detection would lie about which template a digest belongs
+    /// to.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bot_template_pre_image_shas: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -467,7 +475,16 @@ where
 }
 
 impl PublishEvidence {
-    pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+    /// Bumped from `1` to `2` when [`KrewExtra::bot_template_pre_image_shas`]
+    /// landed as a `BTreeMap` (previously a single `Option<String>` field
+    /// named `bot_template_pre_image_sha`). The decoder still accepts
+    /// payloads written by version-`1` producers — the field is
+    /// `#[serde(default)]` so an absent map deserializes to empty — but
+    /// the field name itself changed, so a version-`2` evidence blob
+    /// MAY contain coordinates a version-`1` rollback path cannot
+    /// consume. Operators reading the constant know whether their
+    /// installed anodizer matches the producer that wrote the blob.
+    pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
     pub fn new(publisher: impl Into<String>) -> Self {
         Self {
@@ -555,6 +572,57 @@ mod tests {
         // here.
         let from_null = serde_json::from_str::<PublishEvidenceExtra>("null").expect("null");
         assert_eq!(from_null, PublishEvidenceExtra::Empty);
+    }
+
+    #[test]
+    fn krew_extra_without_pre_image_map_deserializes_to_empty() {
+        // Forward-compat pin: a producer at schema_version=1 (or any
+        // future producer that legitimately has no BotTemplate runs)
+        // emits a `KrewExtra` blob with no `bot_template_pre_image_shas`
+        // key. `#[serde(default)]` on the field must coerce the absent
+        // key to an empty map rather than erroring on the missing
+        // field. Without this, a v1 evidence blob fed into a v2
+        // rollback would fail to parse and operators would lose
+        // rollback access on the first cross-version run.
+        let pre_v2 = r#"{"krew_targets":[]}"#;
+        let decoded: KrewExtra = serde_json::from_str(pre_v2).expect("deserialize pre-v2");
+        assert!(
+            decoded.bot_template_pre_image_shas.is_empty(),
+            "absent map must default to empty: {decoded:?}"
+        );
+        assert!(decoded.krew_targets.is_empty());
+    }
+
+    #[test]
+    fn krew_extra_multi_plugin_pre_image_map_serializes() {
+        // Multi-crate workspace with 2+ BotTemplate-mode plugins: each
+        // template path must round-trip as a distinct map entry so
+        // rollback drift detection compares the right digest against
+        // the right file. Without keying, a workspace with crate A's
+        // pre-image SHA at `/r/a/.krew.yaml` and crate B's at
+        // `/r/b/.krew.yaml` would collapse to a single value and
+        // rollback would mis-attribute the digest.
+        let mut shas = BTreeMap::new();
+        shas.insert("/r/a/.krew.yaml".to_string(), "a".repeat(64));
+        shas.insert("/r/b/.krew.yaml".to_string(), "b".repeat(64));
+        let extra = KrewExtra {
+            krew_targets: vec![],
+            bot_template_pre_image_shas: shas.clone(),
+        };
+        let json = serde_json::to_string(&extra).expect("serialize");
+        let back: KrewExtra = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.bot_template_pre_image_shas, shas);
+        assert_eq!(back.bot_template_pre_image_shas.len(), 2);
+    }
+
+    #[test]
+    fn publish_evidence_schema_version_bumped_to_two() {
+        // The constant is the operator-visible signal that the wire
+        // format has changed. Pinning the value here keeps the
+        // KrewExtra map-vs-scalar change documented at the
+        // schema-version level — a future bump must update this test
+        // alongside the constant.
+        assert_eq!(PublishEvidence::CURRENT_SCHEMA_VERSION, 2);
     }
 
     #[test]

@@ -398,16 +398,25 @@ mod tests {
         // discarded before reaching the operator. The recorded message
         // must contain BOTH the outer and inner segments, exactly as
         // `format!("{err:#}")` produces them.
+        //
+        // Parametrized across every `PublisherGroup` variant so a future
+        // refactor that branches the closure per group cannot regress
+        // one path silently. Assets/Manager/Submitter all flow through
+        // the same `match p.run(ctx)` arm today — keep them all locked
+        // in.
         use anodizer_core::PublishEvidence;
         use anyhow::Context as _;
 
-        struct WrappedFailPublisher;
+        struct WrappedFailPublisher {
+            name: &'static str,
+            group: PublisherGroup,
+        }
         impl Publisher for WrappedFailPublisher {
             fn name(&self) -> &str {
-                "wrapped"
+                self.name
             }
             fn group(&self) -> PublisherGroup {
-                PublisherGroup::Manager
+                self.group
             }
             fn required(&self) -> bool {
                 false
@@ -430,28 +439,35 @@ mod tests {
             }
         }
 
-        let mut ctx = Context::test_fixture();
-        let publishers: Vec<Box<dyn Publisher>> = vec![Box::new(WrappedFailPublisher)];
-        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
-            .expect("dispatch returns Ok");
+        for (group, label) in [
+            (PublisherGroup::Assets, "assets"),
+            (PublisherGroup::Manager, "manager"),
+            (PublisherGroup::Submitter, "submitter"),
+        ] {
+            let mut ctx = Context::test_fixture();
+            let publishers: Vec<Box<dyn Publisher>> =
+                vec![Box::new(WrappedFailPublisher { name: label, group })];
+            let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+                .expect("dispatch returns Ok");
 
-        let entry = report
-            .results
-            .iter()
-            .find(|r| r.name == "wrapped")
-            .expect("wrapped entry present");
-        match &entry.outcome {
-            PublisherOutcome::Failed(msg) => {
-                assert!(
-                    msg.contains("outer"),
-                    "outermost context must be present, got: {msg}"
-                );
-                assert!(
-                    msg.contains("inner"),
-                    "innermost cause must be present (anyhow `{{:#}}` chain), got: {msg}"
-                );
+            let entry = report
+                .results
+                .iter()
+                .find(|r| r.name == label)
+                .unwrap_or_else(|| panic!("{label} entry present"));
+            match &entry.outcome {
+                PublisherOutcome::Failed(msg) => {
+                    assert!(
+                        msg.contains("outer"),
+                        "{label}: outermost context must be present, got: {msg}"
+                    );
+                    assert!(
+                        msg.contains("inner"),
+                        "{label}: innermost cause must be present (anyhow `{{:#}}` chain), got: {msg}"
+                    );
+                }
+                other => panic!("{label}: expected Failed, got {other:?}"),
             }
-            other => panic!("expected Failed, got {other:?}"),
         }
     }
 

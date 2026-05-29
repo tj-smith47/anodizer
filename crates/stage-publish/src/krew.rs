@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anodizer_core::context::Context;
@@ -558,23 +559,27 @@ fn artifacts_to_platforms(
 /// (branch push + PR opened). Drives the caller's `any_pushed` gate
 /// that decides whether to populate rollback evidence.
 ///
-/// `bot_template_pre_image_sha` records the SHA-256 hex digest of the
-/// local bot-template file *before* the BotTemplate-mode write
-/// replaced it. The value is only populated for
-/// [`KrewMode::BotTemplate`] runs; PR-direct modes leave it `None`
-/// (there is no local file to checksum). Surfaces to
-/// [`anodizer_core::publish_evidence::KrewExtra::bot_template_pre_image_sha`]
-/// so a future rollback pass can detect if the on-disk template
-/// drifted out from under the publisher between publish and rollback.
+/// `bot_template_pre_image` records the absolute path of the local
+/// bot-template file paired with the SHA-256 of its pre-overwrite
+/// content. The value is only populated for [`KrewMode::BotTemplate`]
+/// runs; PR-direct modes leave it `None` (there is no local file to
+/// checksum). Surfaces to
+/// [`anodizer_core::publish_evidence::KrewExtra::bot_template_pre_image_shas`]
+/// (path → digest map) so a future rollback pass can detect if the
+/// on-disk template drifted out from under the publisher between
+/// publish and rollback. The path is the map key, so multi-crate
+/// workspaces that publish several BotTemplate plugins record one
+/// distinct entry per plugin instead of overwriting the same slot.
 #[derive(Debug, Default, Clone)]
 pub struct KrewPublishOutcome {
     /// `true` when a real branch push happened. PR-direct-only mode
     /// (`pushed=true`) is what the caller's `any_pushed` gate checks.
     pub pushed: bool,
-    /// SHA-256 hex of the bot-template file content as it existed
-    /// before this run wrote a fresh template. `None` outside
-    /// BotTemplate mode or when the template did not previously exist.
-    pub bot_template_pre_image_sha: Option<String>,
+    /// `(absolute_template_path, sha256_hex)` for the bot-template
+    /// content as it existed before this run overwrote it. `None`
+    /// outside BotTemplate mode or when the template did not
+    /// previously exist (first publish — no pre-image).
+    pub bot_template_pre_image: Option<(PathBuf, String)>,
 }
 
 impl KrewPublishOutcome {
@@ -583,7 +588,7 @@ impl KrewPublishOutcome {
     fn skipped() -> Self {
         Self {
             pushed: false,
-            bot_template_pre_image_sha: None,
+            bot_template_pre_image: None,
         }
     }
 }
@@ -851,30 +856,6 @@ pub fn publish_to_krew(
         // The bot owns the krew-index PR — anodizer must NOT clone or
         // PR against `kubernetes-sigs/krew-index` from this code path
         // or two PRs would race to land the same version.
-        //
-        // Pre-image SHA recording: capture the on-disk content's
-        // SHA-256 *before* we overwrite it so a future rollback pass
-        // can decide whether the template was mutated unexpectedly
-        // between this run and the rollback (e.g. a concurrent hand
-        // edit). `None` when the file does not yet exist — first
-        // publish of a freshly-wired bot template has no pre-image.
-        // Read errors other than NotFound surface as warnings rather
-        // than aborts so a permissions hiccup never blocks the release.
-        let pre_image_sha = match std::fs::read(template_path) {
-            Ok(bytes) => Some(sha256_hex(&bytes)),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => {
-                log.warn(&format!(
-                    "krew: could not read existing bot template at {} for \
-                     pre-image SHA recording ({}); rollback drift detection \
-                     will be unavailable for this run",
-                    template_path.display(),
-                    err
-                ));
-                None
-            }
-        };
-
         let bot_platforms = platforms_with_tag_placeholders(&platforms, &version);
         let bot_template = generate_bot_template(&KrewManifestParams {
             name: plugin_name,
@@ -890,6 +871,28 @@ pub fn publish_to_krew(
                 format!("krew: create bot-template parent dir {}", parent.display())
             })?;
         }
+        // Pre-image SHA capture happens immediately before the
+        // overwrite — tightest window possible without atomic
+        // rename plumbing. An operator hand-editing the template
+        // between `read_pre_image_sha` and `std::fs::write` two
+        // statements down would still defeat the check, but the
+        // detect-time window (which formerly hosted this read) was
+        // many syscalls wider and lost the SHA on every concurrent
+        // mutation. NotFound → None (first publish, expected);
+        // any other error → hard bail per S2 so rollback drift
+        // detection isn't silently disabled. Canonicalize the path
+        // we record so the rollback consumer's lookup key matches
+        // regardless of how the publisher resolved the relative
+        // template path.
+        let pre_image_sha = read_pre_image_sha(template_path).with_context(|| {
+            format!(
+                "krew: read bot-template pre-image at {} (required so rollback \
+                 drift detection can compare against the post-publish content)",
+                template_path.display()
+            )
+        })?;
+        let recorded_path =
+            std::fs::canonicalize(template_path).unwrap_or_else(|_| template_path.clone());
         std::fs::write(template_path, &bot_template)
             .with_context(|| format!("krew: write bot template to {}", template_path.display()))?;
         log.status(&format!(
@@ -900,7 +903,7 @@ pub fn publish_to_krew(
         ));
         return Ok(KrewPublishOutcome {
             pushed: false,
-            bot_template_pre_image_sha: pre_image_sha,
+            bot_template_pre_image: pre_image_sha.map(|sha| (recorded_path, sha)),
         });
     }
     if matches!(mode, KrewMode::PrDirectWithHint) {
@@ -1059,8 +1062,32 @@ pub fn publish_to_krew(
 
     Ok(KrewPublishOutcome {
         pushed,
-        bot_template_pre_image_sha: None,
+        bot_template_pre_image: None,
     })
+}
+
+/// Read `template_path` and return its SHA-256 hex digest, distinguishing
+/// "file does not exist" from "file exists but unreadable" so the caller
+/// can preserve rollback drift-detection coverage:
+///
+/// - `Ok(None)`: file does not exist (first publish of a freshly-wired bot
+///   template). No pre-image to record — expected.
+/// - `Ok(Some(sha))`: file existed and was readable.
+/// - `Err(_)`: file existed but the read failed (permissions, transient io
+///   error, etc.). Bubbles up so the publisher hard-fails rather than
+///   silently shipping without rollback drift coverage.
+fn read_pre_image_sha(template_path: &Path) -> Result<Option<String>> {
+    match std::fs::read(template_path) {
+        Ok(bytes) => Ok(Some(sha256_hex(&bytes))),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(anyhow::Error::new(err).context(format!(
+            "krew: bot-template at {} exists but is unreadable; rollback drift \
+             detection requires a pre-image SHA, so failing fast rather than \
+             shipping without that safety net (fix the file's permissions or \
+             remove it if a fresh first-publish is intended)",
+            template_path.display()
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1732,6 +1759,135 @@ fn decode_krew_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<KrewP
     }
 }
 
+/// Decode the `bot_template_pre_image_shas` map from
+/// [`anodizer_core::PublishEvidence::extra`]. Empty when the variant
+/// isn't `Krew` or the run never took a BotTemplate path.
+fn decode_bot_template_pre_image_shas(
+    extra: &anodizer_core::PublishEvidenceExtra,
+) -> BTreeMap<String, String> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::Krew(k) => k.bot_template_pre_image_shas.clone(),
+        _ => BTreeMap::new(),
+    }
+}
+
+/// Outcome of a single bot-template drift check. Returned by
+/// [`classify_bot_template_drift`] so the rollback caller can fan out
+/// log lines without re-running the SHA comparison inline.
+#[derive(Debug, PartialEq, Eq)]
+enum BotTemplateDriftOutcome {
+    /// On-disk content matches the recorded pre-image SHA — the
+    /// template has not been touched since publish. No action needed.
+    Unchanged,
+    /// On-disk content differs from the recorded pre-image SHA — the
+    /// operator (or another tool) has edited the template since
+    /// publish. Surface a loud error so they can decide whether to
+    /// revert manually.
+    Drifted {
+        recorded_sha: String,
+        current_sha: String,
+    },
+    /// The recorded path no longer exists. Surface as an error so the
+    /// operator knows the template was deleted (or moved) between
+    /// publish and rollback.
+    Missing,
+    /// The recorded path exists but the read failed (permissions,
+    /// transient io error, etc.). Surface as an error so the operator
+    /// can fix the access problem.
+    Unreadable { error: String },
+}
+
+/// Classify the drift state for a single (path, recorded_sha) pair.
+/// Pulled out of [`run_bot_template_drift_check`] so the comparison
+/// logic is unit-testable without a log fixture.
+fn classify_bot_template_drift(
+    template_path: &Path,
+    recorded_sha: &str,
+) -> BotTemplateDriftOutcome {
+    match std::fs::read(template_path) {
+        Ok(bytes) => {
+            let current_sha = sha256_hex(&bytes);
+            if current_sha == recorded_sha {
+                BotTemplateDriftOutcome::Unchanged
+            } else {
+                BotTemplateDriftOutcome::Drifted {
+                    recorded_sha: recorded_sha.to_string(),
+                    current_sha,
+                }
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => BotTemplateDriftOutcome::Missing,
+        Err(err) => BotTemplateDriftOutcome::Unreadable {
+            error: err.to_string(),
+        },
+    }
+}
+
+/// Consumer for [`KrewExtra::bot_template_pre_image_shas`] on the
+/// rollback path: for each recorded (template_path, sha) pair, re-read
+/// the current on-disk content, compute its SHA-256, and surface a
+/// log line classifying the drift state. Never returns an error —
+/// drift detection is advisory; the rollback itself succeeds either
+/// way. Use [`log.error()`](StageLogger::error) for drift states the
+/// operator must act on, [`log.status()`](StageLogger::status) for
+/// the benign "unchanged" case.
+fn run_bot_template_drift_check(pre_image_shas: &BTreeMap<String, String>, log: &StageLogger) {
+    for (path_str, recorded_sha) in pre_image_shas {
+        let path = Path::new(path_str);
+        match classify_bot_template_drift(path, recorded_sha) {
+            BotTemplateDriftOutcome::Unchanged => {
+                log.status(&format!(
+                    "krew: BotTemplate rollback: template at {} unchanged \
+                     since publish (sha256 matches recorded pre-image); \
+                     no action needed",
+                    path_str
+                ));
+            }
+            BotTemplateDriftOutcome::Drifted {
+                recorded_sha,
+                current_sha,
+            } => {
+                log.error(&format!(
+                    "krew: BotTemplate rollback: on-disk template at {} \
+                     differs from the pre-publish snapshot \
+                     (recorded sha256={}, current sha256={}); the file was \
+                     mutated between publish and rollback — manual review \
+                     required before re-publishing",
+                    path_str, recorded_sha, current_sha
+                ));
+            }
+            BotTemplateDriftOutcome::Missing => {
+                log.error(&format!(
+                    "krew: BotTemplate rollback: recorded template at {} \
+                     no longer exists on disk (recorded sha256={}); the \
+                     file was deleted or moved between publish and \
+                     rollback — manual review required",
+                    path_str, recorded_sha
+                ));
+            }
+            BotTemplateDriftOutcome::Unreadable { error } => {
+                log.error(&format!(
+                    "krew: BotTemplate rollback: recorded template at {} \
+                     is unreadable ({}); drift detection skipped — fix the \
+                     file's permissions and re-run --rollback-only to \
+                     verify the pre-image SHA matches",
+                    path_str, error
+                ));
+            }
+        }
+    }
+}
+
+/// Operator-facing message emitted when a BotTemplate-mode rollback runs
+/// but the evidence carries no pre-image SHA for the requested template.
+/// Surfaces the "no recorded SHA" case from the rollback consumer
+/// without forcing a log fixture into the unit test.
+#[cfg(test)]
+pub(crate) fn bot_template_rollback_no_sha_msg() -> &'static str {
+    "krew: BotTemplate rollback: no pre-image SHA recorded \
+     (likely first publish or pre-image read failed); skipping drift check"
+}
+
 /// Resolve the upstream `<owner>/<repo>` slug for a krew target — mirrors
 /// the dispatch logic in `publish_to_krew`: prefer
 /// `repository.pull_request.base` when set, else fall back to the
@@ -1890,15 +2046,13 @@ impl anodizer_core::Publisher for KrewPublisher {
         log.status(&run_start_message(selected.len()));
         let mut processed = 0usize;
         let mut any_pushed = false;
-        // BotTemplate-mode pre-image SHA — populated by the most recent
-        // BotTemplate run. Multi-crate workspaces with multiple
-        // bot-templated plugins would each carry their own SHA; the
-        // current `KrewExtra` schema only records one value, so a
-        // future schema bump (per-target SHA map) is the right shape
-        // when that workspace shape lands. Until then this records the
-        // last-seen value, which is correct for the single-plugin
-        // workspaces that dominate today.
-        let mut bot_template_pre_image_sha: Option<String> = None;
+        // One entry per BotTemplate-mode plugin: keyed by absolute
+        // template path so multi-crate workspaces with multiple
+        // bot-templated plugins each get their own digest recorded.
+        // A single scalar would collapse two crates' pre-images onto
+        // one slot and rollback drift detection would silently
+        // mis-attribute the SHA at compare time.
+        let mut bot_template_pre_image_shas: BTreeMap<String, String> = BTreeMap::new();
         for crate_name in &selected {
             // Defensive guard for explicit `--crate=X` selection when X has no
             // publisher block; implicit-all is already filtered by effective_publish_crates above.
@@ -1912,8 +2066,8 @@ impl anodizer_core::Publisher for KrewPublisher {
             if outcome.pushed {
                 any_pushed = true;
             }
-            if outcome.bot_template_pre_image_sha.is_some() {
-                bot_template_pre_image_sha = outcome.bot_template_pre_image_sha;
+            if let Some((path, sha)) = outcome.bot_template_pre_image {
+                bot_template_pre_image_shas.insert(path.to_string_lossy().into_owned(), sha);
             }
         }
         if should_warn_no_eligible(processed, selected.len()) {
@@ -1929,7 +2083,7 @@ impl anodizer_core::Publisher for KrewPublisher {
         // template drift, so the evidence block has to land even
         // though `krew_targets` stays empty (the bot owns the
         // krew-index PR; anodizer has no PR to revert).
-        if any_pushed || bot_template_pre_image_sha.is_some() {
+        if any_pushed || !bot_template_pre_image_shas.is_empty() {
             let targets = if any_pushed {
                 collect_krew_run_targets(ctx)
             } else {
@@ -1938,7 +2092,7 @@ impl anodizer_core::Publisher for KrewPublisher {
             evidence.extra = anodizer_core::PublishEvidenceExtra::Krew(
                 anodizer_core::publish_evidence::KrewExtra {
                     krew_targets: targets,
-                    bot_template_pre_image_sha,
+                    bot_template_pre_image_shas,
                 },
             );
         }
@@ -1952,11 +2106,24 @@ impl anodizer_core::Publisher for KrewPublisher {
     ) -> anyhow::Result<()> {
         let log = ctx.logger("publish");
         let targets = decode_krew_targets(&evidence.extra);
+        let pre_image_shas = decode_bot_template_pre_image_shas(&evidence.extra);
+
+        // BotTemplate drift detection runs first regardless of whether
+        // there are PR targets to close. A BotTemplate-mode publish
+        // never records a PR target (the bot owns the krew-index PR),
+        // so the early-empty-targets warn would mask the entire
+        // BotTemplate rollback path. Only short-circuit when BOTH
+        // dimensions are empty.
+        if !pre_image_shas.is_empty() {
+            run_bot_template_drift_check(&pre_image_shas, &log);
+        }
         if targets.is_empty() {
-            log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
-                "krew",
-                "PR targets",
-            ));
+            if pre_image_shas.is_empty() {
+                log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                    "krew",
+                    "PR targets",
+                ));
+            }
             return Ok(());
         }
 
@@ -2366,33 +2533,242 @@ mod publisher_tests {
         );
     }
 
-    /// `KrewExtra::bot_template_pre_image_sha` must survive a JSON
-    /// round-trip so the value persisted to `report.json` is the same
-    /// value rollback reads back. Also pins that the field is the
-    /// snake_case key downstream tooling will grep for.
+    /// `KrewExtra::bot_template_pre_image_shas` must survive a JSON
+    /// round-trip so the values persisted to `report.json` are the same
+    /// values rollback reads back. Pins the snake_case key name + the
+    /// map shape downstream tooling will grep for.
     #[test]
-    fn krew_extra_bot_template_pre_image_sha_serializes() {
+    fn krew_extra_bot_template_pre_image_shas_serializes() {
+        let mut shas = BTreeMap::new();
+        shas.insert("/r/.krew.yaml".to_string(), "a".repeat(64));
         let extra = anodizer_core::publish_evidence::KrewExtra {
             krew_targets: vec![],
-            bot_template_pre_image_sha: Some("a".repeat(64)),
+            bot_template_pre_image_shas: shas.clone(),
         };
         let json = serde_json::to_string(&extra).expect("serialize");
         assert!(
-            json.contains("\"bot_template_pre_image_sha\":\""),
-            "expected snake_case field in JSON; got: {json}"
+            json.contains("\"bot_template_pre_image_shas\":{"),
+            "expected snake_case map field in JSON; got: {json}"
         );
         let decoded: anodizer_core::publish_evidence::KrewExtra =
             serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded.bot_template_pre_image_sha, Some("a".repeat(64)));
+        assert_eq!(decoded.bot_template_pre_image_shas, shas);
 
-        // `None` must be omitted from the wire to keep older reports
+        // Empty map must be omitted from the wire to keep older reports
         // (pre-field-addition) parseable as the same struct.
         let absent = anodizer_core::publish_evidence::KrewExtra::default();
         let json = serde_json::to_string(&absent).expect("serialize absent");
         assert!(
-            !json.contains("bot_template_pre_image_sha"),
-            "absent SHA must not serialize; got: {json}"
+            !json.contains("bot_template_pre_image_shas"),
+            "empty map must not serialize: {json}"
         );
+    }
+
+    /// Multi-crate workspace with two BotTemplate plugins must record
+    /// one map entry per plugin — a single scalar would collapse the
+    /// two digests onto one slot and rollback drift detection would
+    /// mis-attribute the SHA. Pins the per-key shape from the producer
+    /// side without driving the full `publish_to_krew` path.
+    #[test]
+    fn krew_extra_multi_plugin_records_distinct_entries() {
+        let mut shas = BTreeMap::new();
+        shas.insert("/repo/a/.krew.yaml".to_string(), "a".repeat(64));
+        shas.insert("/repo/b/.krew.yaml".to_string(), "b".repeat(64));
+        let extra = anodizer_core::publish_evidence::KrewExtra {
+            krew_targets: vec![],
+            bot_template_pre_image_shas: shas.clone(),
+        };
+        let json = serde_json::to_string(&extra).expect("serialize multi");
+        let back: anodizer_core::publish_evidence::KrewExtra =
+            serde_json::from_str(&json).expect("deserialize multi");
+        assert_eq!(back.bot_template_pre_image_shas.len(), 2);
+        assert_eq!(back.bot_template_pre_image_shas, shas);
+    }
+
+    /// Drift classifier: unchanged on-disk content reports `Unchanged`.
+    /// The benign case the rollback consumer logs at status level —
+    /// operator sees "template unchanged since publish".
+    #[test]
+    fn classify_bot_template_drift_unchanged_when_content_matches() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(".krew.yaml");
+        std::fs::write(&path, b"frozen content").expect("seed");
+        let recorded = sha256_hex(b"frozen content");
+        assert_eq!(
+            classify_bot_template_drift(&path, &recorded),
+            BotTemplateDriftOutcome::Unchanged
+        );
+    }
+
+    /// Drift classifier: mutated on-disk content reports `Drifted` and
+    /// surfaces both digests so the operator can diff. The error case
+    /// the rollback consumer logs loudly — manual review required
+    /// before re-publishing.
+    #[test]
+    fn classify_bot_template_drift_reports_drift_when_content_differs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(".krew.yaml");
+        std::fs::write(&path, b"new content").expect("seed");
+        let recorded = sha256_hex(b"original content");
+        let outcome = classify_bot_template_drift(&path, &recorded);
+        let BotTemplateDriftOutcome::Drifted {
+            recorded_sha,
+            current_sha,
+        } = outcome
+        else {
+            panic!("expected Drifted, got {outcome:?}");
+        };
+        assert_eq!(recorded_sha, sha256_hex(b"original content"));
+        assert_eq!(current_sha, sha256_hex(b"new content"));
+        assert_ne!(recorded_sha, current_sha);
+    }
+
+    /// Drift classifier: missing on-disk file reports `Missing` so the
+    /// rollback consumer surfaces the deletion to the operator rather
+    /// than confusing it with the benign "first publish" case (which
+    /// never reaches the consumer because the producer records no
+    /// entry when the pre-image is absent).
+    #[test]
+    fn classify_bot_template_drift_reports_missing_when_file_deleted() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("never-existed.yaml");
+        assert_eq!(
+            classify_bot_template_drift(&path, &"a".repeat(64)),
+            BotTemplateDriftOutcome::Missing
+        );
+    }
+
+    /// `read_pre_image_sha` distinguishes the three cases the
+    /// publisher must act on differently:
+    ///   - file missing → Ok(None) (first publish — expected)
+    ///   - file present + readable → Ok(Some(sha))
+    ///   - file present + unreadable → Err (hard bail; otherwise
+    ///     rollback drift detection silently disappears).
+    #[test]
+    fn read_pre_image_sha_distinguishes_missing_from_unreadable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // Case 1: missing file → Ok(None).
+        let missing = tmp.path().join("nope.yaml");
+        let r = read_pre_image_sha(&missing).expect("missing must be Ok");
+        assert!(r.is_none(), "missing file should yield None: {r:?}");
+
+        // Case 2: present + readable → Ok(Some(sha)).
+        let present = tmp.path().join(".krew.yaml");
+        std::fs::write(&present, b"hi").expect("seed");
+        let r = read_pre_image_sha(&present).expect("readable must be Ok");
+        assert_eq!(r, Some(sha256_hex(b"hi")));
+    }
+
+    /// `read_pre_image_sha` returns `Err` when the file exists but
+    /// cannot be read (permission-denied surrogate: we make the path
+    /// point at a directory, which `std::fs::read` rejects with
+    /// `EISDIR`). The point: a read failure must NOT silently downgrade
+    /// to `None` — otherwise rollback drift detection loses its safety
+    /// net on every permissions hiccup, which was the S2 finding.
+    #[test]
+    fn read_pre_image_sha_errors_when_file_exists_but_unreadable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // `std::fs::read` on a directory yields an `Other`-kind error
+        // (not NotFound), exercising the bail branch. Cross-platform
+        // surrogate for the permission-denied case: simpler than
+        // chmod-ing a temp file across CI runners.
+        let dir = tmp.path().join("a-dir");
+        std::fs::create_dir(&dir).expect("mkdir");
+        let r = read_pre_image_sha(&dir);
+        assert!(r.is_err(), "directory read must Err, got: {r:?}");
+        let msg = format!("{:#}", r.unwrap_err());
+        assert!(
+            msg.contains("unreadable"),
+            "error must mention unreadable: {msg}"
+        );
+        assert!(
+            msg.contains("rollback drift detection"),
+            "error must mention rollback drift detection: {msg}"
+        );
+    }
+
+    /// Drift consumer reports the benign unchanged case at status
+    /// level and the drift / missing cases at error level — the
+    /// publisher's log capture distinguishes the two so an operator
+    /// scanning `error` lines doesn't have to wade through the
+    /// unchanged log noise to find the actual drift events.
+    #[test]
+    fn run_bot_template_drift_check_separates_status_and_error_lines() {
+        use anodizer_core::log::LogLevel;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let unchanged = tmp.path().join("unchanged.yaml");
+        let drifted = tmp.path().join("drifted.yaml");
+        let missing = tmp.path().join("missing.yaml");
+        std::fs::write(&unchanged, b"a").expect("seed unchanged");
+        std::fs::write(&drifted, b"new").expect("seed drifted");
+
+        let mut shas = BTreeMap::new();
+        shas.insert(unchanged.to_string_lossy().into_owned(), sha256_hex(b"a"));
+        shas.insert(
+            drifted.to_string_lossy().into_owned(),
+            sha256_hex(b"original"),
+        );
+        shas.insert(
+            missing.to_string_lossy().into_owned(),
+            sha256_hex(b"never-seen"),
+        );
+
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = anodizer_core::test_helpers::TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
+        let log = ctx.logger("publish");
+        run_bot_template_drift_check(&shas, &log);
+
+        let all = capture.all_messages();
+        let errors: Vec<&String> = all
+            .iter()
+            .filter(|(lvl, _)| *lvl == LogLevel::Error)
+            .map(|(_, m)| m)
+            .collect();
+        let statuses: Vec<&String> = all
+            .iter()
+            .filter(|(lvl, _)| *lvl == LogLevel::Status)
+            .map(|(_, m)| m)
+            .collect();
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("differs from the pre-publish")),
+            "drift line should be error-level: errors={errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("no longer exists on disk")),
+            "missing line should be error-level: errors={errors:?}"
+        );
+        assert!(
+            statuses
+                .iter()
+                .any(|m| m.contains("unchanged since publish")),
+            "unchanged line should be status-level: statuses={statuses:?}"
+        );
+        // Cross-check: no false-positive crossover.
+        assert!(
+            !errors.iter().any(|m| m.contains("unchanged since publish")),
+            "unchanged must NOT escalate to error: errors={errors:?}"
+        );
+    }
+
+    /// `no_pre_image_sha` informational string is the load-bearing
+    /// log payload for the "BotTemplate mode rollback was requested,
+    /// but the producer had no pre-image SHA to record" case (e.g.
+    /// first publish — pre-image file did not exist). Pinned via the
+    /// shared helper so any rephrase keeps the operator-facing
+    /// substring stable across releases.
+    #[test]
+    fn bot_template_rollback_no_sha_msg_pins_operator_facing_substrings() {
+        let msg = bot_template_rollback_no_sha_msg();
+        assert!(msg.starts_with("krew:"), "{msg}");
+        assert!(msg.contains("BotTemplate rollback"), "{msg}");
+        assert!(msg.contains("no pre-image SHA recorded"), "{msg}");
+        assert!(msg.contains("skipping drift check"), "{msg}");
     }
 
     #[test]

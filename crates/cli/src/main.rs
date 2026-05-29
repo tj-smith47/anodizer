@@ -1,4 +1,4 @@
-use anodizer_cli::{CheckCmd, Cli, Commands, num_cpus};
+use anodizer_cli::{CheckCmd, Cli, Commands, TagSub, num_cpus};
 use anodizer_core::context::{VALID_BUILD_SKIPS, VALID_RELEASE_SKIPS, validate_skip_values};
 
 use clap::{CommandFactory, FromArgMatches};
@@ -408,17 +408,43 @@ fn main() {
             custom_tag,
             default_bump,
             crate_name,
-        } => commands::tag::run(commands::tag::TagOpts {
-            dry_run,
-            custom_tag,
-            default_bump,
-            crate_name,
-            config_override: cli.config.clone(),
-            verbose: cli.verbose,
-            debug: cli.debug,
-            quiet: cli.quiet,
-            strict: cli.strict,
-        }),
+            sub,
+        } => match sub {
+            Some(TagSub::Rollback {
+                sha,
+                dry_run: rb_dry_run,
+                no_push,
+                scope,
+                mode,
+            }) => {
+                use commands::tag::rollback::{Mode, RollbackOpts, Scope};
+                (|| -> anyhow::Result<()> {
+                    let scope: Scope = scope.parse().map_err(anyhow::Error::msg)?;
+                    let mode: Mode = mode.parse().map_err(anyhow::Error::msg)?;
+                    commands::tag::rollback::run(RollbackOpts {
+                        sha,
+                        dry_run: rb_dry_run,
+                        no_push,
+                        scope,
+                        mode,
+                        verbose: cli.verbose,
+                        debug: cli.debug,
+                        quiet: cli.quiet,
+                    })
+                })()
+            }
+            None => commands::tag::run(commands::tag::TagOpts {
+                dry_run,
+                custom_tag,
+                default_bump,
+                crate_name,
+                config_override: cli.config.clone(),
+                verbose: cli.verbose,
+                debug: cli.debug,
+                quiet: cli.quiet,
+                strict: cli.strict,
+            }),
+        },
         Commands::Continue {
             merge,
             dist,
@@ -803,6 +829,62 @@ mod tests {
             "CLI should parse tag with all flags: {:?}",
             cli.err()
         );
+    }
+
+    #[test]
+    fn test_cli_parses_tag_rollback_bare() {
+        let cli = Cli::try_parse_from(["anodizer", "tag", "rollback"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse tag rollback: {:?}",
+            cli.err()
+        );
+        if let Some(Commands::Tag { sub, .. }) = cli.unwrap().command {
+            assert!(matches!(sub, Some(TagSub::Rollback { .. })));
+        } else {
+            panic!("expected Tag command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_tag_rollback_flags() {
+        let cli = Cli::try_parse_from([
+            "anodizer",
+            "tag",
+            "rollback",
+            "deadbeef",
+            "--dry-run",
+            "--no-push",
+            "--scope",
+            "lockstep",
+            "--mode",
+            "reset",
+        ]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse tag rollback with flags: {:?}",
+            cli.err()
+        );
+        if let Some(Commands::Tag {
+            sub:
+                Some(TagSub::Rollback {
+                    sha,
+                    dry_run,
+                    no_push,
+                    scope,
+                    mode,
+                }),
+            ..
+        }) = cli.unwrap().command
+        {
+            assert_eq!(sha.as_deref(), Some("deadbeef"));
+            assert!(dry_run);
+            assert!(no_push);
+            assert_eq!(scope, "lockstep");
+            assert_eq!(mode, "reset");
+        } else {
+            panic!("expected Tag command with Rollback sub");
+        }
     }
 
     #[test]

@@ -254,7 +254,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     let runtime_nondeterministic_allowlist =
         parse_allow_nondeterministic(&opts.allow_nondeterministic)?;
 
-    let project_root = resolve_project_root(&config_path);
+    let project_root = resolve_project_root(&config_path, Some(&log));
 
     let ctx_opts = build_context_options(
         &opts,
@@ -743,12 +743,43 @@ fn parse_allow_nondeterministic(entries: &[String]) -> Result<Vec<(String, Strin
 /// join repo-relative paths (`.github/workflows/<name>.yml`,
 /// `.krew.yaml`, snapcraft icons) hit the real tree even when called
 /// from a symlinked checkout.
-fn resolve_project_root(config_path: &std::path::Path) -> Option<PathBuf> {
-    let candidate = config_path
+///
+/// When the CWD fallback fires (bare-filename `--config=anodize.yaml`)
+/// and `log` is `Some`, a warn surfaces because the resulting CWD
+/// anchor is almost certainly NOT what the operator meant when they
+/// passed a bare filename: subsequent `.github/workflows/` scans, krew
+/// bot-mode auto-detection, snapcraft icon lookups, etc. will all hit
+/// the process CWD rather than the repo root. We warn rather than
+/// bail because legitimate workflows do invoke anodizer with
+/// CWD == project root and a bare filename; the warn lets a
+/// misconfiguration become visible without breaking the working case.
+fn resolve_project_root(
+    config_path: &std::path::Path,
+    log: Option<&StageLogger>,
+) -> Option<PathBuf> {
+    let from_parent = config_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .map(std::path::Path::to_path_buf)
-        .or_else(|| std::env::current_dir().ok())?;
+        .map(std::path::Path::to_path_buf);
+    let candidate = match from_parent {
+        Some(p) => p,
+        None => {
+            let cwd = std::env::current_dir().ok()?;
+            if let Some(log) = log {
+                log.warn(&format!(
+                    "project_root falling back to CWD `{}` because --config=`{}` is a bare filename",
+                    cwd.display(),
+                    config_path.display()
+                ));
+                log.warn(
+                    "krew bot-mode auto-detection (and any other repo-relative file lookup) \
+                     will scan the CWD's `.github/workflows/` — pass --config with a parent \
+                     directory (e.g. `--config=./anodize.yaml`) if this is incorrect",
+                );
+            }
+            cwd
+        }
+    };
     Some(std::fs::canonicalize(&candidate).unwrap_or(candidate))
 }
 
@@ -2293,9 +2324,15 @@ mod tests {
         let cfg_path = repo_dir.join("anodize.yaml");
         std::fs::write(&cfg_path, "project_name: x\n").expect("write config");
 
-        let resolved = resolve_project_root(&cfg_path).expect("project_root resolved");
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let resolved = resolve_project_root(&cfg_path, Some(&log)).expect("project_root resolved");
         let expected = std::fs::canonicalize(&repo_dir).expect("canonicalize repo dir");
         assert_eq!(resolved, expected);
+        assert_eq!(
+            cap.warn_count(),
+            0,
+            "a config path with a parent must NOT trigger the bare-filename warn"
+        );
     }
 
     /// When the config path has no parent component (rare — bare filename),
@@ -2306,10 +2343,37 @@ mod tests {
     #[test]
     fn resolve_project_root_falls_back_to_cwd_for_bare_filename() {
         let bare = std::path::Path::new("anodize.yaml");
-        let resolved = resolve_project_root(bare);
+        let resolved = resolve_project_root(bare, None);
         assert!(
             resolved.is_some(),
             "bare-filename config should fall back to CWD, got None"
+        );
+    }
+
+    /// Bare-filename `--config=anodize.yaml` is almost always a
+    /// misconfiguration: every repo-relative consumer
+    /// (`.github/workflows/` scan for krew bot-mode, snapcraft icon
+    /// lookup, ...) will scan the process CWD rather than the repo
+    /// root. The resolver must surface a `warn` so the misconfiguration
+    /// is visible in CI logs without hard-failing the release (which
+    /// would break the legitimate CWD == project-root case).
+    #[test]
+    fn resolve_project_root_warns_when_falling_back_for_bare_filename() {
+        let bare = std::path::Path::new("anodize.yaml");
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let resolved = resolve_project_root(bare, Some(&log));
+        assert!(resolved.is_some(), "fallback path still resolved");
+        let warns = cap.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("bare filename")),
+            "expected a bare-filename warn; got warns: {warns:?}"
+        );
+        assert!(
+            warns
+                .iter()
+                .any(|m| m.contains(".github/workflows/") || m.contains("krew")),
+            "expected the warn to call out the load-bearing krew/.github/workflows/ scan; \
+             got warns: {warns:?}"
         );
     }
 

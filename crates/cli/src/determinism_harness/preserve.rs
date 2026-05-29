@@ -164,33 +164,64 @@ pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()
     Ok(())
 }
 
-/// Mirror raw cargo binaries into the preserved tree so the publish-only
-/// `SignStage` can re-sign them under production keys.
+/// Subdirectory under `<dest>/` where raw build outputs land after
+/// `preserve_raw_binaries` mirrors them out of the worktree's
+/// `target/<triple>/release/` tree. Single source of truth so the
+/// manifest rewrite, the disk copy, and downstream consumers all agree
+/// on the path prefix.
+///
+/// Underscore-prefixed (non-hidden) so `actions/upload-artifact@v4`
+/// includes it without `include-hidden-files: true`, while still being
+/// distinctive enough that a user's archive template writing to
+/// `dist/bin/**` won't collide.
+const PRESERVED_BIN_SUBDIR: &str = "_preserved-bin";
+
+/// Mirror raw cargo build outputs into the preserved tree so the
+/// publish-only `SignStage` can re-sign them under production keys.
 ///
 /// `preserve_dist_tree` copies `<worktree>/dist/**`, which excludes raw
-/// build outputs living at `<worktree>/.det-tmp/target/<triple>/release/<bin>`
-/// (the harness's CARGO_TARGET_DIR override). Those binaries are what
+/// build outputs living at `<worktree>/.det-tmp/target/<triple>/release/<file>`
+/// (the harness's CARGO_TARGET_DIR override). Those files are what
 /// `binary_signs:` operates on, so without preservation publish-only's
 /// `SignStage` would either skip them silently or crash on missing files.
 ///
 /// This helper reads the harness child's `dist/artifacts.json` (already
 /// copied verbatim into `<dest>/artifacts.json` by `preserve_dist_tree`),
-/// walks every `Binary` / `UploadableBinary` / `UniversalBinary` entry,
-/// copies `<worktree>/<orig_path>` to `<dest>/bin/<triple>/<basename>`,
-/// and rewrites the manifest entry's `path` to
-/// `dist/bin/<triple>/<basename>` so the publish-only loader
-/// (`load_artifacts_from_manifest`) re-anchors it onto the preserved
-/// tree via its existing `dist/`-prefix strip.
+/// walks every Binary-shaped or staticlib/cdylib/cdylib-style entry
+/// (`Binary`, `UploadableBinary`, `Library`, `Header`, `CArchive`,
+/// `CShared`, `Wasm`), copies `<worktree>/<orig_path>` to
+/// `<dest>/_preserved-bin/<triple>/<basename>`, and rewrites the manifest
+/// entry's `path` to `dist/_preserved-bin/<triple>/<basename>` so the
+/// publish-only loader (`load_artifacts_from_manifest`) re-anchors it
+/// onto the preserved tree via its existing `dist/`-prefix strip.
 ///
-/// The `bin/` subdir name is intentionally non-hidden so
-/// `actions/upload-artifact@v4` includes it without
-/// `include-hidden-files: true`.
+/// `UniversalBinary` is deliberately excluded from the kind list:
+/// `stage-build`'s universal step writes the lipo'd output into
+/// `dist/<crate>_darwin_all/<binname>` (already under `dist/`), so
+/// `preserve_dist_tree` already preserves it. Re-rewriting its manifest
+/// path here would orphan the original under `dist/<crate>_darwin_all/`
+/// and double-preserve the bytes.
 ///
-/// Idempotent / tolerant: missing artifacts.json, missing `target` field,
-/// or absent source binary all degrade to a no-op rather than aborting
-/// the preserve. The publish-only path already validates rehydrated
-/// artifacts; surfacing the gap there gives a more actionable error than
-/// failing the harness's preserve step.
+/// Collision guard: two artifacts sharing `(triple, basename)` would
+/// silently overwrite each other under
+/// `<dest>/_preserved-bin/<triple>/<basename>`, and the manifest
+/// rewrite would point both entries at the same path. We bail with an
+/// explanatory error instead, suggesting the user disambiguate via
+/// `builds[].binary` in their config.
+///
+/// Idempotent / tolerant on inputs (missing artifacts.json, missing
+/// `target` field, or absent source file degrade to a no-op rather
+/// than aborting the preserve) — the publish-only path validates
+/// rehydrated artifacts and surfaces a more actionable error if a
+/// gap was tolerated here. The collision guard is the one hard error
+/// because there is no actionable downstream surface for it.
+///
+/// Atomic-rename caveat: the staged `.json.tmp` -> `artifacts.json`
+/// rename assumes the harness owns the dist tree exclusively during
+/// the preserve phase. Concurrent readers would Windows-fail the
+/// rename with a sharing violation; in production the harness loop
+/// runs single-threaded against `dest` before the publish-only path
+/// touches it, so this is safe.
 pub(super) fn preserve_raw_binaries(worktree_path: &Path, dest: &Path) -> Result<()> {
     let manifest_path = dest.join("artifacts.json");
     let bytes = match std::fs::read(&manifest_path) {
@@ -220,16 +251,16 @@ pub(super) fn preserve_raw_binaries(worktree_path: &Path, dest: &Path) -> Result
         return Ok(());
     };
 
+    // Track `(triple, basename) -> source_path` so a second entry with
+    // the same key bails loudly instead of silently overwriting the
+    // first copy.
+    let mut copied: HashMap<(String, String), String> = HashMap::new();
     let mut rewrote_any = false;
     for entry in entries.iter_mut() {
         let Some(obj) = entry.as_object_mut() else {
             continue;
         };
-        let is_binary = matches!(
-            obj.get("kind").and_then(|k| k.as_str()),
-            Some("binary") | Some("uploadable_binary") | Some("universal_binary")
-        );
-        if !is_binary {
+        if !is_preservable_raw_kind(obj.get("kind").and_then(|k| k.as_str())) {
             continue;
         }
         let Some(orig_path) = obj.get("path").and_then(|p| p.as_str()).map(str::to_string) else {
@@ -247,10 +278,24 @@ pub(super) fn preserve_raw_binaries(worktree_path: &Path, dest: &Path) -> Result
         if !src.is_file() {
             continue;
         }
-        let dst_rel = std::path::PathBuf::from("bin")
+        let dst_rel = std::path::PathBuf::from(PRESERVED_BIN_SUBDIR)
             .join(&triple)
             .join(&basename);
         let dst_abs = dest.join(&dst_rel);
+        let key = (triple.clone(), basename.clone());
+        if let Some(prior_src) = copied.get(&key) {
+            anyhow::bail!(
+                "preserve_raw_binaries: two artifacts share (target={}, basename={}); \
+                 the second copy would silently overwrite the first under {}. \
+                 First source: {}; second source: {}. \
+                 Disambiguate via the `builds[].binary` name in your config.",
+                triple,
+                basename,
+                dst_abs.display(),
+                prior_src,
+                src.display()
+            );
+        }
         if let Some(parent) = dst_abs.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating preserved bin dir {}", parent.display()))?;
@@ -262,6 +307,7 @@ pub(super) fn preserve_raw_binaries(worktree_path: &Path, dest: &Path) -> Result
                 dst_abs.display()
             )
         })?;
+        copied.insert(key, src.display().to_string());
         // Rewrite the manifest path so publish-only's loader resolves it
         // under the preserved tree. The `dist/` prefix lets
         // `load_artifacts_from_manifest`'s existing strip-and-rejoin
@@ -289,6 +335,30 @@ pub(super) fn preserve_raw_binaries(worktree_path: &Path, dest: &Path) -> Result
         )
     })?;
     Ok(())
+}
+
+/// Curated set of `ArtifactKind`s whose payload lives under
+/// `target/<triple>/release/<file>` and therefore needs the
+/// preserve-raw-binaries mirror to survive worktree teardown.
+///
+/// Excludes `UniversalBinary` (the lipo step writes its output under
+/// `dist/<crate>_darwin_all/` which `preserve_dist_tree` already
+/// preserves verbatim — re-rewriting would orphan-and-double-preserve).
+/// Excludes packaged / installer / metadata kinds (they live under
+/// `dist/` from the start).
+fn is_preservable_raw_kind(kind: Option<&str>) -> bool {
+    matches!(
+        kind,
+        Some(
+            "binary"
+                | "uploadable_binary"
+                | "library"
+                | "header"
+                | "c_archive"
+                | "c_shared"
+                | "wasm"
+        )
+    )
 }
 
 /// Recursive directory copy with predictable semantics — files via
@@ -701,10 +771,9 @@ mod tests {
         );
     }
 
-    /// FIX #2 regression test: when artifacts.json carries no
-    /// `target` entries (or is missing), `targets` falls back to the
-    /// harness's `--targets=<csv>` list so the manifest's `targets`
-    /// field is non-empty for production runs.
+    /// When artifacts.json carries no `target` entries (or is missing),
+    /// `targets` falls back to the harness's `--targets=<csv>` list so
+    /// the manifest's `targets` field is non-empty for production runs.
     #[test]
     fn targets_falls_back_to_harness_targets_when_artifacts_json_lacks_them() {
         let tmp = TempDir::new().unwrap();
@@ -740,9 +809,9 @@ mod tests {
         );
     }
 
-    /// FIX #5 regression test: a malformed sibling JSON must not
-    /// abort the manifest write. The function warns and falls back
-    /// to harness-supplied defaults.
+    /// A malformed sibling JSON must not abort the manifest write —
+    /// the function warns and falls back to harness-supplied defaults
+    /// so a corrupted sibling can't take down the preserve.
     #[test]
     fn malformed_sibling_json_falls_back_to_defaults() {
         let tmp = TempDir::new().unwrap();
@@ -768,9 +837,10 @@ mod tests {
         assert_eq!(ctx.version, "1.2.3-snapshot");
     }
 
-    /// FIX #9 regression test: the write must be atomic. After a
-    /// successful call there is no `context.json.tmp` sibling — the
-    /// rename moved the staged file into place.
+    /// The write must be atomic. After a successful call there is no
+    /// `context.json.tmp` sibling — the rename moved the staged file
+    /// into place, so a partial mid-write `.tmp` can't be mistaken
+    /// for the canonical manifest by a downstream reader.
     #[test]
     fn write_context_is_atomic_no_tmp_left_behind() {
         let tmp = TempDir::new().unwrap();
@@ -843,11 +913,11 @@ mod tests {
     /// Raw cargo binaries live outside `dist/` in the harness worktree
     /// (under `.det-tmp/target/<triple>/release/`) and would be lost
     /// when the worktree is dropped. `preserve_raw_binaries` mirrors
-    /// them into `<dest>/bin/<triple>/<basename>` and rewrites the
-    /// manifest path so publish-only's `SignStage` resolves them under
-    /// the preserved tree.
+    /// them into `<dest>/_preserved-bin/<triple>/<basename>` and rewrites
+    /// the manifest path so publish-only's `SignStage` resolves them
+    /// under the preserved tree.
     #[test]
-    fn preserve_raw_binaries_copies_under_bin_subdir_and_rewrites_manifest() {
+    fn preserve_raw_binaries_copies_under_preserved_bin_subdir_and_rewrites_manifest() {
         let worktree = TempDir::new().unwrap();
         let dest = TempDir::new().unwrap();
         let triple = "x86_64-unknown-linux-gnu";
@@ -875,10 +945,15 @@ mod tests {
         preserve_raw_binaries(worktree.path(), dest.path())
             .expect("preserve_raw_binaries must succeed");
 
-        let copied = dest.path().join("bin").join(triple).join("cfgd");
+        let copied = dest
+            .path()
+            .join(PRESERVED_BIN_SUBDIR)
+            .join(triple)
+            .join("cfgd");
         assert!(
             copied.is_file(),
-            "raw binary must land at <dest>/bin/<triple>/<name>; got missing {}",
+            "raw binary must land at <dest>/{PRESERVED_BIN_SUBDIR}/<triple>/<name>; \
+             got missing {}",
             copied.display()
         );
         assert_eq!(std::fs::read(&copied).unwrap(), b"raw-binary-bytes");
@@ -889,15 +964,15 @@ mod tests {
         let entry = &manifest.as_array().unwrap()[0];
         assert_eq!(
             entry["path"].as_str().unwrap(),
-            format!("dist/bin/{triple}/cfgd"),
-            "manifest path must be rewritten to dist/bin/<triple>/<name> so \
+            format!("dist/{PRESERVED_BIN_SUBDIR}/{triple}/cfgd"),
+            "manifest path must be rewritten to dist/{PRESERVED_BIN_SUBDIR}/<triple>/<name> so \
              load_artifacts_from_manifest re-anchors onto the preserved tree"
         );
     }
 
     /// A non-Binary manifest entry next to a Binary entry must not be
-    /// rewritten — the path-rewrite is scoped to the three binary
-    /// artifact kinds.
+    /// rewritten — the path-rewrite is scoped to the curated raw-build-
+    /// output kinds.
     #[test]
     fn preserve_raw_binaries_leaves_archive_paths_untouched() {
         let worktree = TempDir::new().unwrap();
@@ -951,7 +1026,7 @@ mod tests {
         let binary = arr.iter().find(|e| e["kind"] == "binary").unwrap();
         assert_eq!(
             binary["path"].as_str().unwrap(),
-            format!("dist/bin/{triple}/cfgd"),
+            format!("dist/{PRESERVED_BIN_SUBDIR}/{triple}/cfgd"),
             "binary entry must be rewritten"
         );
     }
@@ -965,6 +1040,195 @@ mod tests {
         let dest = TempDir::new().unwrap();
         preserve_raw_binaries(worktree.path(), dest.path())
             .expect("missing artifacts.json must not error");
+    }
+
+    /// Two entries sharing `(target, basename)` would silently
+    /// overwrite each other in `<dest>/<PRESERVED_BIN_SUBDIR>/<triple>/<basename>`
+    /// and the manifest rewrite would point both at the same path. The
+    /// function must bail with an error naming both source paths and
+    /// suggesting the `builds[].binary` disambiguation knob.
+    #[test]
+    fn preserve_raw_binaries_bails_on_basename_target_collision() {
+        let worktree = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+        let triple = "x86_64-unknown-linux-gnu";
+        // Two distinct source paths, same basename, same triple.
+        let bin_rel_a = format!(".det-tmp/target/{triple}/release/cli");
+        let bin_rel_b = format!("xtask-target/{triple}/release/cli");
+        let src_a = worktree.path().join(&bin_rel_a);
+        let src_b = worktree.path().join(&bin_rel_b);
+        std::fs::create_dir_all(src_a.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(src_b.parent().unwrap()).unwrap();
+        std::fs::write(&src_a, b"cli-from-main").unwrap();
+        std::fs::write(&src_b, b"cli-from-xtask").unwrap();
+
+        std::fs::write(
+            dest.path().join("artifacts.json"),
+            serde_json::to_string_pretty(&serde_json::json!([
+                {
+                    "kind": "binary",
+                    "name": "cli",
+                    "path": bin_rel_a,
+                    "target": triple,
+                    "crate_name": "main",
+                    "metadata": {}
+                },
+                {
+                    "kind": "binary",
+                    "name": "cli",
+                    "path": bin_rel_b,
+                    "target": triple,
+                    "crate_name": "xtask",
+                    "metadata": {}
+                }
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let err = preserve_raw_binaries(worktree.path(), dest.path())
+            .expect_err("collision must bail")
+            .to_string();
+        assert!(
+            err.contains(triple) && err.contains("cli") && err.contains("builds[].binary"),
+            "error must name the colliding triple+basename and suggest a fix; got: {err}"
+        );
+        // Source files must reference both paths so the operator can
+        // tell which build configs produced the collision.
+        assert!(
+            err.contains(&src_a.display().to_string()),
+            "error must name the first source path; got: {err}"
+        );
+        assert!(
+            err.contains(&src_b.display().to_string()),
+            "error must name the second source path; got: {err}"
+        );
+    }
+
+    /// `UniversalBinary` entries live UNDER `dist/<crate>_darwin_all/`
+    /// (written by `stage-build`'s universal step) and are already
+    /// preserved verbatim by `preserve_dist_tree`. The raw-binary
+    /// preserver must NOT rewrite their manifest paths — doing so
+    /// would orphan the original copy under `dist/<crate>_darwin_all/`
+    /// and double-preserve the bytes under `<PRESERVED_BIN_SUBDIR>/`.
+    #[test]
+    fn preserve_raw_binaries_skips_universal_binary_to_avoid_double_preservation() {
+        let worktree = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+        // The universal artifact already lives under dist/, so the
+        // manifest's `path` is `dist/<crate>_darwin_all/<binname>` and
+        // there's no separate raw-build source to copy from.
+        let uni_path = "dist/cfgd_darwin_all/cfgd";
+
+        std::fs::write(
+            dest.path().join("artifacts.json"),
+            serde_json::to_string_pretty(&serde_json::json!([
+                {
+                    "kind": "universal_binary",
+                    "name": "cfgd",
+                    "path": uni_path,
+                    "target": "darwin-universal",
+                    "crate_name": "cfgd",
+                    "metadata": {}
+                }
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        preserve_raw_binaries(worktree.path(), dest.path())
+            .expect("preserve must succeed even with only a UniversalBinary entry");
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dest.path().join("artifacts.json")).unwrap())
+                .unwrap();
+        let entry = &manifest.as_array().unwrap()[0];
+        assert_eq!(
+            entry["path"].as_str().unwrap(),
+            uni_path,
+            "UniversalBinary manifest path must remain untouched (preserve_dist_tree owns it)"
+        );
+        // The mirror subdir must NOT exist — no copy happened for the
+        // universal entry.
+        assert!(
+            !dest
+                .path()
+                .join(PRESERVED_BIN_SUBDIR)
+                .join("darwin-universal")
+                .exists(),
+            "no <PRESERVED_BIN_SUBDIR>/darwin-universal copy may exist; the universal \
+             entry must round-trip via preserve_dist_tree only"
+        );
+    }
+
+    /// Library / Header / CArchive / CShared / Wasm outputs live at
+    /// `target/<triple>/release/<file>` exactly like raw binaries (see
+    /// `stage-build/src/run.rs` for the Wasm + Library branches). They
+    /// must therefore travel through the same preserve path so
+    /// publish-only's `SignStage` and downstream consumers see them.
+    #[test]
+    fn preserve_raw_binaries_extends_kind_set_to_library_header_carchive_cshared_wasm() {
+        let worktree = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+        let triple = "x86_64-unknown-linux-gnu";
+
+        // One artifact per extended kind, each at a distinct source
+        // file so the collision guard doesn't fire.
+        let cases = [
+            ("library", "libfoo.so"),
+            ("header", "foo.h"),
+            ("c_archive", "libfoo.a"),
+            ("c_shared", "libfoo_shared.so"),
+            ("wasm", "foo.wasm"),
+        ];
+
+        let mut entries: Vec<serde_json::Value> = Vec::new();
+        for (kind, basename) in cases.iter() {
+            let rel = format!(".det-tmp/target/{triple}/release/{basename}");
+            let abs = worktree.path().join(&rel);
+            std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+            std::fs::write(&abs, format!("bytes-of-{basename}")).unwrap();
+            entries.push(serde_json::json!({
+                "kind": kind,
+                "name": basename,
+                "path": rel,
+                "target": triple,
+                "crate_name": "foo",
+                "metadata": {}
+            }));
+        }
+        std::fs::write(
+            dest.path().join("artifacts.json"),
+            serde_json::to_string_pretty(&serde_json::json!(entries)).unwrap(),
+        )
+        .unwrap();
+
+        preserve_raw_binaries(worktree.path(), dest.path())
+            .expect("preserve_raw_binaries must accept all extended kinds");
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dest.path().join("artifacts.json")).unwrap())
+                .unwrap();
+        let arr = manifest.as_array().unwrap();
+        for (kind, basename) in cases.iter() {
+            let copied = dest
+                .path()
+                .join(PRESERVED_BIN_SUBDIR)
+                .join(triple)
+                .join(basename);
+            assert!(
+                copied.is_file(),
+                "{kind} artifact `{basename}` must be mirrored under \
+                 <PRESERVED_BIN_SUBDIR>/<triple>/; missing {}",
+                copied.display()
+            );
+            let entry = arr.iter().find(|e| e["kind"] == *kind).unwrap();
+            assert_eq!(
+                entry["path"].as_str().unwrap(),
+                format!("dist/{PRESERVED_BIN_SUBDIR}/{triple}/{basename}"),
+                "{kind} entry must have its manifest path rewritten"
+            );
+        }
     }
 
     /// `preserve_dist_tree` copies the full `dist/` tree verbatim, including
@@ -1131,10 +1395,10 @@ mod tests {
         );
     }
 
-    /// FIX #10 regression test: the streaming hasher matches the
-    /// canonical `sha256:<hex>` shape and reports the correct byte
-    /// count for a >64 KiB file (exercises the read loop's
-    /// multi-chunk path).
+    /// The streaming hasher matches the canonical `sha256:<hex>` shape
+    /// and reports the correct byte count for a file larger than the
+    /// 64 KiB read buffer — exercises the multi-chunk read loop so a
+    /// regression that loses bytes between iterations is caught.
     #[test]
     fn hash_file_streaming_handles_multi_chunk_files() {
         let tmp = TempDir::new().unwrap();

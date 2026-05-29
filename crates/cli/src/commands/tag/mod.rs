@@ -1,3 +1,5 @@
+pub mod rollback;
+
 use anodizer_core::config::{CrateConfig, GitConfig, TagConfig};
 use anodizer_core::git;
 use anodizer_core::hooks::run_hooks;
