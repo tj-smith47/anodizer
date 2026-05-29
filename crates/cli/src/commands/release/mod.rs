@@ -315,6 +315,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         let run_opts = publish_only::RunOpts {
             dry_run: opts.dry_run,
             no_preflight: opts.no_preflight,
+            silent_meta: false,
         };
         // When --crate is given, always use the flat path regardless of
         // layout. Per-crate auto-iteration is a no-crate-flag feature.

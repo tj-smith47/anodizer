@@ -1133,6 +1133,23 @@ pub fn load_artifacts_from_manifest(
         } else {
             std::path::PathBuf::from(path_str)
         };
+        // Cross-shard cross-target artifacts (source archive, install.sh,
+        // metadata.json — all `target: None`) appear in every shard's
+        // manifest by design and are byte-deduped on disk by
+        // `download-artifact merge-multiple`. Adding all N shard entries
+        // here would emit N-1 "already registered" warnings per artifact
+        // before `dedupe_targetless_duplicates` cleaned them up — noise
+        // that doesn't reflect a real problem. Skip-add when the same
+        // path is already in the registry and the entry is targetless.
+        if a.target.is_none()
+            && ctx
+                .artifacts
+                .all()
+                .iter()
+                .any(|existing| existing.target.is_none() && existing.path == rewritten)
+        {
+            continue;
+        }
         ctx.artifacts.add(Artifact {
             kind,
             name: a.name.unwrap_or_default(),

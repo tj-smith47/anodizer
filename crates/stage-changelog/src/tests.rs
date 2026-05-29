@@ -747,7 +747,12 @@ fn test_changelog_stage_github_native_requires_token() {
 }
 
 #[test]
-fn test_changelog_stage_github_native_requires_repo() {
+fn test_changelog_stage_github_native_skips_when_no_repo_configured() {
+    // No crate in scope has release.github (e.g. a library-only workspace
+    // in publish-only's per-crate iteration). The stage skips cleanly
+    // with a warn instead of bailing — bailing would block the whole
+    // pipeline on a workspace that legitimately ships nothing to
+    // GitHub.
     use anodizer_core::config::{ChangelogConfig, CrateConfig};
 
     let mut ctx = TestContextBuilder::new()
@@ -765,12 +770,9 @@ fn test_changelog_stage_github_native_requires_repo() {
         ..Default::default()
     });
 
-    let err = ChangelogStage.run(&mut ctx).unwrap_err().to_string();
-    assert!(
-        err.contains("release.github.owner and release.github.name"),
-        "{}",
-        err
-    );
+    ChangelogStage
+        .run(&mut ctx)
+        .expect("changelog stage should skip cleanly when no crate has release.github");
 }
 
 // -----------------------------------------------------------------------

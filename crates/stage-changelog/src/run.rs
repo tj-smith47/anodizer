@@ -242,12 +242,19 @@ fn handle_github_native_changelog(
             .and_then(|r| r.github.as_ref())
             .is_some_and(|g| !g.owner.is_empty() && !g.name.is_empty())
     });
-    if !has_repo && !ctx.is_dry_run() && !ctx.is_snapshot() {
-        bail!(
-            "changelog: use=github-native requires release.github.owner and \
-             release.github.name on at least one crate so the auto-release-notes \
-             API knows which repository to read"
+    if !has_repo {
+        // No crate in the current scope has a GitHub release configured
+        // (e.g. a library-only workspace). The stage has nothing to fetch;
+        // skip cleanly with a warning instead of bailing the whole pipeline.
+        // Per-crate publish-only scopes ctx.config.crates to one workspace
+        // at a time; library workspaces legitimately omit release.github
+        // and should not block the stage from completing.
+        log.warn(
+            "changelog: use=github-native but no crate in scope has \
+             release.github configured — skipping (no GitHub release \
+             notes will be generated for this crate set)",
         );
+        return Ok(());
     }
 
     let monorepo_prefix = ctx.config.monorepo_tag_prefix();

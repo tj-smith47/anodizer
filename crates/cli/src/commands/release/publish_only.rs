@@ -32,10 +32,11 @@
 //! `crate::pipeline`), not `build_merge_pipeline`.
 
 use anyhow::{Context as _, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anodizer_core::artifact::ArtifactRegistry;
-use anodizer_core::config::Config;
+use anodizer_core::config::{Config, WorkspaceConfig};
 use anodizer_core::context::Context;
 use anodizer_core::git::short_commit_str;
 use anodizer_core::log::StageLogger;
@@ -116,6 +117,11 @@ pub(super) struct RunOpts {
     /// where they know what they're doing and want the mid-pipeline
     /// failure to surface instead.
     pub no_preflight: bool,
+    /// True when the dispatcher already handled preflight + binary_signs
+    /// suppression upstream, so per-iteration meta-logs should stay quiet.
+    /// Set by `run_per_crate` for each inner iteration; defaults to false
+    /// for direct callers (flat layout / single-crate publish-only).
+    pub silent_meta: bool,
 }
 
 /// `--publish-only` entry point. Wired from `commands/release/mod.rs::run`
@@ -165,6 +171,31 @@ pub(super) fn run_per_crate(
         preflight_credentials(|k| ctx.env_var(k))?;
     }
 
+    // Suppress binary_signs once before the loop. The harness never
+    // preserves raw binaries, so re-signing them in publish-only would
+    // crash on missing files — clearing the list before any iteration
+    // keeps the warning to once-per-process instead of once-per-crate.
+    suppress_binary_signs(ctx, log);
+
+    // Build a name → WorkspaceConfig index up-front so each iteration
+    // can apply the right overlay in O(1). Workspace-based configs leave
+    // top-level `config.crates` empty; per-crate iteration must scope
+    // `ctx.config.crates` to the workspace containing the current
+    // crate or stages like changelog see no crates and bail.
+    let workspace_for: HashMap<String, &WorkspaceConfig> = config
+        .workspaces
+        .as_deref()
+        .map(|ws_list| {
+            let mut idx = HashMap::new();
+            for ws in ws_list {
+                for c in &ws.crates {
+                    idx.insert(c.name.clone(), ws);
+                }
+            }
+            idx
+        })
+        .unwrap_or_default();
+
     for crate_name in &crate_order {
         let crate_dist = dist_base.join(crate_name);
         log.status(&format!(
@@ -174,10 +205,16 @@ pub(super) fn run_per_crate(
         // Reset the artifact registry before each crate so artifacts from a
         // prior crate's pipeline don't leak into the next one's sign/upload.
         ctx.artifacts = ArtifactRegistry::new();
-        // Per-crate run: skip preflight (already done above).
+        // Scope ctx.config to the current crate's workspace so stages
+        // (changelog, signs, publishers) see the right crates/overlay
+        // values. Flat configs (no `workspaces:`) fall through unchanged.
+        if let Some(ws) = workspace_for.get(crate_name.as_str()) {
+            crate::commands::helpers::apply_workspace_overlay(&mut ctx.config, ws);
+        }
         let per_crate_opts = RunOpts {
             dry_run: opts.dry_run,
             no_preflight: true,
+            silent_meta: true,
         };
         run_one_crate_dist(ctx, config, log, &per_crate_opts, crate_dist)?;
     }
@@ -202,13 +239,21 @@ fn run_one_crate_dist(
     // pipeline without secrets; `--no-preflight` is the explicit
     // operator opt-out for the rare case where they want the
     // mid-pipeline failure instead.
+    //
+    // `silent_meta` is set by `run_per_crate` after it ran preflight
+    // once before the loop — repeating the warn per crate iteration is
+    // noise.
     if opts.dry_run {
-        log.verbose("(dry-run) skipping production-credential preflight");
+        if !opts.silent_meta {
+            log.verbose("(dry-run) skipping production-credential preflight");
+        }
     } else if opts.no_preflight {
-        log.warn(
-            "credential preflight skipped via --no-preflight; \
-             missing credentials will fail mid-pipeline (no idempotent recovery)",
-        );
+        if !opts.silent_meta {
+            log.warn(
+                "credential preflight skipped via --no-preflight; \
+                 missing credentials will fail mid-pipeline (no idempotent recovery)",
+            );
+        }
     } else {
         preflight_credentials(|k| ctx.env_var(k))?;
     }
@@ -218,22 +263,11 @@ fn run_one_crate_dist(
     // binaries live at `.det-tmp/target/<triple>/release/<bin>` in the
     // harness's worktree, which is NOT preserved into `dist/`. cosign
     // sign-blob inside SignStage would crash trying to read the missing
-    // path. Clear the list early and warn the operator so they know
-    // binary-level signatures aren't ever produced in this mode.
-    //
-    // Workaround for callers that need signed binaries: configure
-    // archive-level `signs:` (binaries inside an archive get the
-    // archive's signature), or sign at consumer-side via cosign
-    // verify-blob against the binaries inside the released archive.
-    if !ctx.config.binary_signs.is_empty() {
-        let n = ctx.config.binary_signs.len();
-        log.warn(&format!(
-            "publish-only: suppressing {n} binary_signs entrie(s); raw binaries are not \
-             preserved into dist/ by the determinism harness, so binary-level signatures \
-             cannot be (re-)produced in this mode. Configure archive-level signs: or sign \
-             on the consumer side."
-        ));
-        ctx.config.binary_signs.clear();
+    // path. `suppress_binary_signs` clears the list and warns once.
+    // `run_per_crate` calls this before the loop so the warn fires
+    // once per process; direct callers (flat layout) run it here.
+    if !opts.silent_meta {
+        suppress_binary_signs(ctx, log);
     }
 
     // ── Load preserved-dist context ────────────────────────────────────
@@ -697,6 +731,29 @@ fn discover_preserved_contexts(dist: &Path) -> Result<Vec<(PathBuf, PreservedDis
 /// that's fatal.
 fn discover_artifacts_manifests(dist: &Path) -> Result<Vec<PathBuf>> {
     discover_sharded_manifests(dist, "artifacts")
+}
+
+/// Clear `ctx.config.binary_signs` and warn once. Publish-only cannot
+/// produce shippable binary signatures: raw binaries live at
+/// `.det-tmp/target/<triple>/release/<bin>` in the harness worktree,
+/// which is NOT preserved into `dist/`. cosign sign-blob inside
+/// SignStage would crash trying to read the missing path. Operators
+/// needing signed binaries: configure archive-level `signs:` (binaries
+/// inside an archive get the archive's signature), or sign at consumer-
+/// side via cosign verify-blob against binaries inside the released
+/// archive.
+fn suppress_binary_signs(ctx: &mut Context, log: &StageLogger) {
+    if ctx.config.binary_signs.is_empty() {
+        return;
+    }
+    let n = ctx.config.binary_signs.len();
+    log.warn(&format!(
+        "publish-only: suppressing {n} binary_signs entrie(s); raw binaries are not \
+         preserved into dist/ by the determinism harness, so binary-level signatures \
+         cannot be (re-)produced in this mode. Configure archive-level signs: or sign \
+         on the consumer side."
+    ));
+    ctx.config.binary_signs.clear();
 }
 
 /// Detect the upload-artifact merge-collision symptom: both
