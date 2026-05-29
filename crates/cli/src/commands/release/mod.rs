@@ -320,10 +320,30 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             no_preflight: opts.no_preflight,
             silent_meta: false,
         };
-        // When --crate is given, always use the flat path regardless of
-        // layout. Per-crate auto-iteration is a no-crate-flag feature.
+        // When --crate is given, prefer the matching per-crate dist
+        // subdir (`dist/<crate>/`) when one exists so the publish reads
+        // that crate's preserved manifests, its per-crate `Tag`, and its
+        // workspace overlay — same shape the no-flag auto-iteration uses.
+        // Fall back to the flat root when no subdir exists (single-crate
+        // preserve laid down at the dist root).
         if !opts.crate_names.is_empty() {
-            return publish_only::run(&mut ctx, &config, &log, run_opts);
+            let with_subdir: Vec<String> = opts
+                .crate_names
+                .iter()
+                .filter(|name| publish_only::crate_subdir_has_manifest(&dist, name))
+                .cloned()
+                .collect();
+            if with_subdir.is_empty() {
+                return publish_only::run(&mut ctx, &config, &log, run_opts);
+            }
+            let all_known = flatten_known_crates(&config);
+            let sorted = topo_sort_selected(&all_known, &with_subdir);
+            let order = if sorted.is_empty() {
+                with_subdir
+            } else {
+                sorted
+            };
+            return publish_only::run_per_crate(&mut ctx, &config, &log, run_opts, dist, order);
         }
         // Detect layout and dispatch.
         match publish_only::detect_dist_layout(&dist)? {

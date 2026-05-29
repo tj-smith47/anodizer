@@ -100,6 +100,19 @@ pub(super) fn detect_dist_layout(dist: &Path) -> Result<DistLayout> {
     }
 }
 
+/// Whether `dist/<crate>/` exists and holds a preserved context
+/// manifest (`context.json` or `context-<shard>.json`). Matches the
+/// per-crate-subdir criterion used by [`detect_dist_layout`] so the
+/// `--crate` dispatch in `mod.rs` routes to the same subdir layout the
+/// no-flag auto-iteration would.
+pub(super) fn crate_subdir_has_manifest(dist: &Path, crate_name: &str) -> bool {
+    let subdir = dist.join(crate_name);
+    subdir.is_dir()
+        && discover_sharded_manifests(&subdir, "context")
+            .map(|m| !m.is_empty())
+            .unwrap_or(false)
+}
+
 /// Names of the env vars that gate the publish-only credential
 /// preflight. Documented as a single source of truth so the error
 /// message and the check itself stay in lockstep.
@@ -252,6 +265,17 @@ pub(super) fn run_per_crate(
         // publisher's effective-crates resolution sees a single entry
         // instead of the workspace-flattened fallback.
         ctx.options.selected_crates = vec![crate_name.clone()];
+        // Re-derive the per-crate `Tag` (and matching `PreviousTag`).
+        // The upstream `resolve_git_context` set these once from the
+        // first-resolved crate's `tag_template` against HEAD; every
+        // iteration would otherwise inherit that single global tag,
+        // titling each crate's GitHub release with the wrong tag and
+        // skewing the changelog's current-tag / compare-link to a
+        // foreign crate's tag. `Version` is shared across a lockstep
+        // workspace, so rendering each crate's own `tag_template`
+        // recovers its correct tag (`core-v0.4.0` for cfgd-core,
+        // `v0.4.0` for cfgd).
+        apply_per_crate_tag(ctx, config, crate_name, log);
         let per_crate_opts = RunOpts {
             dry_run: opts.dry_run,
             no_preflight: true,
@@ -266,11 +290,12 @@ pub(super) fn run_per_crate(
     Ok(())
 }
 
-/// RAII guard that snapshots the three `ctx` fields mutated by
+/// RAII guard that snapshots the `ctx` fields mutated by
 /// `run_per_crate`'s overlay loop (`config.dist`,
-/// `options.selected_crates`, `options.skip_stages`) and restores them
-/// in `Drop` so an unwind through the loop body still leaves the
-/// caller's `ctx` pointed at its pre-loop shape.
+/// `options.selected_crates`, `options.skip_stages`, and the per-crate
+/// `Tag` / `PreviousTag` template vars) and restores them in `Drop` so
+/// an unwind through the loop body still leaves the caller's `ctx`
+/// pointed at its pre-loop shape.
 ///
 /// The save/restore-via-closure pattern this replaces was
 /// panic-unsafe: a panic from inside the iteration would skip the
@@ -282,6 +307,8 @@ struct PerCrateOverlayGuard<'a> {
     saved_dist: std::path::PathBuf,
     saved_selected_crates: Vec<String>,
     saved_skip_stages: Vec<String>,
+    saved_tag: Option<String>,
+    saved_previous_tag: Option<String>,
 }
 
 impl<'a> PerCrateOverlayGuard<'a> {
@@ -289,11 +316,15 @@ impl<'a> PerCrateOverlayGuard<'a> {
         let saved_dist = ctx.config.dist.clone();
         let saved_selected_crates = ctx.options.selected_crates.clone();
         let saved_skip_stages = ctx.options.skip_stages.clone();
+        let saved_tag = ctx.template_vars().get("Tag").cloned();
+        let saved_previous_tag = ctx.template_vars().get("PreviousTag").cloned();
         Self {
             ctx,
             saved_dist,
             saved_selected_crates,
             saved_skip_stages,
+            saved_tag,
+            saved_previous_tag,
         }
     }
 
@@ -328,6 +359,81 @@ impl Drop for PerCrateOverlayGuard<'_> {
         self.ctx.config.dist = std::mem::take(&mut self.saved_dist);
         self.ctx.options.selected_crates = std::mem::take(&mut self.saved_selected_crates);
         self.ctx.options.skip_stages = std::mem::take(&mut self.saved_skip_stages);
+        match self.saved_tag.take() {
+            Some(tag) => self.ctx.template_vars_mut().set("Tag", &tag),
+            None => {
+                self.ctx.template_vars_mut().unset("Tag");
+            }
+        }
+        match self.saved_previous_tag.take() {
+            Some(prev) => self.ctx.template_vars_mut().set("PreviousTag", &prev),
+            None => {
+                self.ctx.template_vars_mut().unset("PreviousTag");
+            }
+        }
+    }
+}
+
+/// Set `ctx`'s `Tag` (and a prefix-matched `PreviousTag`) for the crate
+/// currently being published.
+///
+/// Locates the crate's `tag_template` (in `ctx.config.crates` after the
+/// workspace overlay, falling back to the workspace list on `config`),
+/// renders it against the already-resolved `Version`, and writes the
+/// result to the `Tag` template var. `PreviousTag` is re-derived with
+/// the crate's tag prefix so the changelog compare-link resolves
+/// `<crate-prev>...<crate-tag>` rather than spanning a foreign crate's
+/// tag. Best-effort: a missing `tag_template` or a git lookup failure
+/// leaves the upstream value in place rather than aborting the publish.
+fn apply_per_crate_tag(ctx: &mut Context, config: &Config, crate_name: &str, log: &StageLogger) {
+    let tag_template = ctx
+        .config
+        .crates
+        .iter()
+        .find(|c| c.name == crate_name)
+        .or_else(|| {
+            config
+                .workspaces
+                .as_deref()
+                .into_iter()
+                .flatten()
+                .flat_map(|ws| ws.crates.iter())
+                .find(|c| c.name == crate_name)
+        })
+        .map(|c| c.tag_template.clone());
+    let Some(tag_template) = tag_template.filter(|t| !t.is_empty()) else {
+        return;
+    };
+
+    let tag = match ctx.render_template(&tag_template) {
+        Ok(t) if !t.is_empty() => t,
+        Ok(_) => return,
+        Err(e) => {
+            log.warn(&format!(
+                "publish-only: failed to render tag_template '{tag_template}' for crate '{crate_name}': {e}"
+            ));
+            return;
+        }
+    };
+    ctx.template_vars_mut().set("Tag", &tag);
+
+    let crate_prefix = anodizer_core::git::extract_tag_prefix(&tag_template);
+    let prefix = crate_prefix
+        .as_deref()
+        .or_else(|| config.monorepo_tag_prefix());
+    match anodizer_core::git::find_previous_tag_with_prefix(
+        &tag,
+        config.git.as_ref(),
+        Some(ctx.template_vars()),
+        prefix,
+    ) {
+        Ok(Some(prev)) => ctx.template_vars_mut().set("PreviousTag", &prev),
+        Ok(None) => {
+            ctx.template_vars_mut().unset("PreviousTag");
+        }
+        Err(e) => log.verbose(&format!(
+            "publish-only: previous-tag lookup for crate '{crate_name}' failed: {e}"
+        )),
     }
 }
 
@@ -555,6 +661,18 @@ fn run_one_crate_dist(
             .map(|a| a.path.as_path()),
         &dist,
     )?;
+
+    // ── Materialize metadata.json for the release upload ───────────────
+    // The release upload set includes the `Metadata` artifact (when
+    // `include_meta` is on), whose path resolves to
+    // `<dist>/metadata.json`. The preserve-dist flow rehydrates the
+    // registry from per-crate manifests but never writes that file —
+    // only `run_post_pipeline` does, and that runs *after* the upload.
+    // Write it now (after the per-crate `Tag` is set, so it carries the
+    // correct tag/version/commit) so ReleaseStage's existence check
+    // doesn't bail before the draft→published promotion. The registry
+    // entry already points here; no `add` needed.
+    crate::commands::helpers::write_metadata_json(ctx, config, log)?;
 
     // ── Run the extended publish pipeline ──────────────────────────────
     // `build_publish_only_pipeline` prepends `SignStage` ahead of the
@@ -2169,6 +2287,221 @@ mod tests {
         assert_eq!(
             ctx.options.skip_stages, original_skip,
             "Drop must restore ctx.options.skip_stages on panic"
+        );
+    }
+
+    // ── per-crate Tag restore (the lockstep-workspace title/changelog bug) ──
+
+    mod per_crate_tag {
+        use super::*;
+        use anodizer_core::config::{Config, CrateConfig, WorkspaceConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        fn quiet_log() -> StageLogger {
+            StageLogger::new("per-crate-tag-test", Verbosity::Quiet)
+        }
+
+        fn crate_cfg(name: &str, tag_template: &str) -> CrateConfig {
+            CrateConfig {
+                name: name.to_string(),
+                tag_template: tag_template.to_string(),
+                ..CrateConfig::default()
+            }
+        }
+
+        /// Build a config whose `crates` already hold the workspace's
+        /// entries (the shape `apply_workspace_overlay` produces before
+        /// `apply_per_crate_tag` runs).
+        fn config_with_crates(crates: Vec<CrateConfig>) -> Config {
+            Config {
+                crates,
+                ..Config::default()
+            }
+        }
+
+        /// A lockstep workspace shares one `Version`; each crate's own
+        /// `tag_template` must recover its own tag. cfgd's top-level
+        /// crate templates `v{{ Version }}` → `v0.4.0`; cfgd-core
+        /// templates `core-v{{ Version }}` → `core-v0.4.0`. Without the
+        /// restore, both inherit whichever tag `resolve_git_context`
+        /// pinned once at HEAD.
+        #[test]
+        fn restores_per_crate_tag_from_tag_template() {
+            for (crate_name, tag_template, expect_tag) in [
+                ("cfgd", "v{{ Version }}", "v0.4.0"),
+                ("cfgd-core", "core-v{{ Version }}", "core-v0.4.0"),
+                (
+                    "cfgd-operator",
+                    "operator-v{{ Version }}",
+                    "operator-v0.4.0",
+                ),
+            ] {
+                let config = config_with_crates(vec![crate_cfg(crate_name, tag_template)]);
+                let mut ctx = Context::new(config.clone(), ContextOptions::default());
+                ctx.template_vars_mut().set("Version", "0.4.0");
+                // The global, HEAD-derived tag every iteration would
+                // otherwise carry.
+                ctx.template_vars_mut().set("Tag", "core-v0.4.0");
+
+                apply_per_crate_tag(&mut ctx, &config, crate_name, &quiet_log());
+
+                assert_eq!(
+                    ctx.template_vars().get("Tag").map(String::as_str),
+                    Some(expect_tag),
+                    "crate '{crate_name}' must carry its own tag, not the global HEAD tag",
+                );
+            }
+        }
+
+        /// The crate may live in `config.workspaces` rather than the
+        /// top-level `crates` list (e.g. when the caller passes the
+        /// original config rather than the overlaid one). The lookup
+        /// must fall back to the workspace list.
+        #[test]
+        fn finds_tag_template_in_workspace_fallback() {
+            let config = Config {
+                workspaces: Some(vec![WorkspaceConfig {
+                    name: "cfgd".to_string(),
+                    crates: vec![crate_cfg("cfgd", "v{{ Version }}")],
+                    ..WorkspaceConfig::default()
+                }]),
+                ..Config::default()
+            };
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            ctx.template_vars_mut().set("Version", "0.4.0");
+            ctx.template_vars_mut().set("Tag", "core-v0.4.0");
+
+            apply_per_crate_tag(&mut ctx, &config, "cfgd", &quiet_log());
+
+            assert_eq!(
+                ctx.template_vars().get("Tag").map(String::as_str),
+                Some("v0.4.0"),
+                "workspace-list fallback must resolve the crate's tag_template",
+            );
+        }
+
+        /// A crate with no matching config / empty `tag_template` leaves
+        /// the upstream tag untouched rather than blanking it.
+        #[test]
+        fn missing_tag_template_leaves_tag_untouched() {
+            let config = config_with_crates(vec![crate_cfg("known", "v{{ Version }}")]);
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            ctx.template_vars_mut().set("Version", "0.4.0");
+            ctx.template_vars_mut().set("Tag", "v0.4.0");
+
+            apply_per_crate_tag(&mut ctx, &config, "unknown-crate", &quiet_log());
+
+            assert_eq!(
+                ctx.template_vars().get("Tag").map(String::as_str),
+                Some("v0.4.0"),
+                "an unmatched crate must not clobber the existing Tag",
+            );
+        }
+
+        /// The overlay guard must snapshot the pre-loop `Tag` /
+        /// `PreviousTag` and restore them on drop so the per-iteration
+        /// re-derivation never leaks into the caller's context.
+        #[test]
+        fn overlay_guard_restores_tag_and_previous_tag() {
+            let config = Config {
+                dist: std::path::PathBuf::from("/tmp/per-crate-guard-tag/dist"),
+                ..Config::default()
+            };
+            let mut ctx = Context::new(config, ContextOptions::default());
+            ctx.template_vars_mut().set("Tag", "v0.4.0");
+            ctx.template_vars_mut().set("PreviousTag", "v0.3.0");
+
+            {
+                let mut guard = PerCrateOverlayGuard::capture(&mut ctx);
+                let inner = guard.ctx_mut();
+                inner.template_vars_mut().set("Tag", "core-v0.4.0");
+                inner.template_vars_mut().set("PreviousTag", "core-v0.3.0");
+            }
+
+            assert_eq!(
+                ctx.template_vars().get("Tag").map(String::as_str),
+                Some("v0.4.0"),
+                "Drop must restore the caller's Tag",
+            );
+            assert_eq!(
+                ctx.template_vars().get("PreviousTag").map(String::as_str),
+                Some("v0.3.0"),
+                "Drop must restore the caller's PreviousTag",
+            );
+        }
+
+        /// `write_metadata_json` must land `dist/metadata.json` carrying
+        /// the per-crate `Tag` so the release upload's existence check
+        /// passes (the bug bailed here before the draft→published PATCH).
+        #[test]
+        fn write_metadata_json_materializes_per_crate_metadata() {
+            let tmp = tempfile::tempdir().unwrap();
+            let crate_dist = tmp.path().join("cfgd-core");
+            let config = Config {
+                project_name: "cfgd".to_string(),
+                dist: crate_dist.clone(),
+                crates: vec![crate_cfg("cfgd-core", "core-v{{ Version }}")],
+                ..Config::default()
+            };
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            ctx.template_vars_mut().set("Version", "0.4.0");
+            ctx.template_vars_mut().set("Tag", "core-v0.4.0");
+            ctx.template_vars_mut().set("FullCommit", "deadbeef");
+
+            let path =
+                crate::commands::helpers::write_metadata_json(&ctx, &config, &quiet_log()).unwrap();
+
+            assert_eq!(path, crate_dist.join("metadata.json"));
+            assert!(
+                path.exists(),
+                "metadata.json must exist for the release upload"
+            );
+            let body = std::fs::read_to_string(&path).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(
+                json["tag"], "core-v0.4.0",
+                "metadata must carry the per-crate tag"
+            );
+            assert_eq!(json["version"], "0.4.0");
+            assert_eq!(json["project_name"], "cfgd");
+        }
+    }
+
+    // ── --crate dispatch: per-crate-subdir layout awareness (Fix 3) ────
+
+    #[test]
+    fn crate_subdir_has_manifest_detects_context_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("cfgd");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("context.json"), "{}").unwrap();
+        assert!(
+            crate_subdir_has_manifest(tmp.path(), "cfgd"),
+            "a subdir with context.json must be recognized",
+        );
+    }
+
+    #[test]
+    fn crate_subdir_has_manifest_detects_sharded_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("cfgd");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("context-linux.json"), "{}").unwrap();
+        assert!(
+            crate_subdir_has_manifest(tmp.path(), "cfgd"),
+            "a subdir with a sharded context-<shard>.json must be recognized",
+        );
+    }
+
+    #[test]
+    fn crate_subdir_has_manifest_false_for_flat_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Flat layout: manifest at the root, no per-crate subdir.
+        std::fs::write(tmp.path().join("context.json"), "{}").unwrap();
+        assert!(
+            !crate_subdir_has_manifest(tmp.path(), "cfgd"),
+            "absence of dist/<crate>/ must fall back to flat (returns false)",
         );
     }
 }

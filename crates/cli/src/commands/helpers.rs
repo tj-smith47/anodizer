@@ -816,16 +816,19 @@ pub fn run_report_sizes(ctx: &mut Context, config: &Config, log: &StageLogger) {
     }
 }
 
-/// Write `dist/metadata.json` and `dist/artifacts.json` and apply the
-/// configured `metadata.mod_timestamp` to both files.
+/// Write `dist/metadata.json` from the current context's resolved
+/// release variables (`tag`, `previous_tag`, `version`, `commit`,
+/// `date`, host `runtime`) and return the path it landed at.
 ///
-/// Mirrors GoReleaser's metadata.Pipe + artifacts.Pipe. Registers
-/// `metadata.json` as an artifact so downstream stages can pick it up.
-pub fn write_metadata_and_artifacts(
-    ctx: &mut Context,
+/// Mirrors GoReleaser's metadata.Pipe. Does **not** register the file
+/// as an artifact — callers that need the registry entry (full release
+/// post-pipeline) add it; callers that already rehydrated the registry
+/// (per-crate publish-only) reuse the existing entry.
+pub fn write_metadata_json(
+    ctx: &Context,
     config: &Config,
     log: &StageLogger,
-) -> Result<()> {
+) -> Result<std::path::PathBuf> {
     let dist = &config.dist;
     std::fs::create_dir_all(dist)
         .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
@@ -866,6 +869,22 @@ pub fn write_metadata_and_artifacts(
     std::fs::write(&metadata_path, &json_str)
         .with_context(|| format!("failed to write {}", metadata_path.display()))?;
     log.status(&format!("wrote {}", metadata_path.display()));
+
+    Ok(metadata_path)
+}
+
+/// Write `dist/metadata.json` and `dist/artifacts.json` and apply the
+/// configured `metadata.mod_timestamp` to both files.
+///
+/// Mirrors GoReleaser's metadata.Pipe + artifacts.Pipe. Registers
+/// `metadata.json` as an artifact so downstream stages can pick it up.
+pub fn write_metadata_and_artifacts(
+    ctx: &mut Context,
+    config: &Config,
+    log: &StageLogger,
+) -> Result<()> {
+    let dist = &config.dist;
+    let metadata_path = write_metadata_json(ctx, config, log)?;
 
     ctx.artifacts.add(anodizer_core::artifact::Artifact {
         kind: ArtifactKind::Metadata,
