@@ -189,7 +189,7 @@ fn krew_os(os: &str) -> &str {
 // directly so a release is self-contained — no separate GitHub-Actions
 // workflow step is required.
 //
-// The single signal that decides the mode is whether the plugin already
+// In `auto` mode the deciding signal is whether the plugin already
 // exists in krew-index:
 //   - Plugin NOT in index → `PrDirect`: anodizer clones a fork, writes
 //     `plugins/<name>.yaml`, commits, and opens the initial PR against
@@ -199,14 +199,24 @@ fn krew_os(os: &str) -> &str {
 //     webhook, which opens the version-bump PR on the plugin's behalf.
 //     No fork, no token, no workflow.
 //
-// The membership probe is an anonymous GET against the GitHub contents API:
+// The membership probe is a GET against the GitHub contents API:
 //   `api.github.com/repos/kubernetes-sigs/krew-index/contents/plugins/<name>.yaml`
-// → 200 means published; 404 means not yet; any other status (rate-limit,
-// 5xx) is treated as "unknown" and falls back to the safe `PrDirect` flow.
+// → 200 means published; 404 means not yet. Any other status
+// (rate-limit, 5xx) is indeterminate: `auto` mode then HARD-ERRORS
+// rather than guessing, because a transient blip must never route a
+// plugin already in the index into a fork PR (krew maintainers reject
+// mechanical version bumps submitted as fork PRs). The probe is
+// authenticated whenever a token is in context — the same token used
+// for the GitHub release — which raises the rate limit from 60/hr (anon)
+// to 5,000/hr and eliminates almost all indeterminate results. Set the
+// krew `mode` config field to `bot` or `pr-direct` to skip the probe
+// entirely.
 
-/// The two publish modes the krew publisher dispatches between.
+/// The two flows the krew publisher dispatches between, after the
+/// user-facing [`KrewMode`](anodizer_core::config::KrewMode) config knob
+/// (and, in `auto`, the membership probe) have been resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum KrewMode {
+enum KrewFlow {
     /// Initial-submission flow — plugin isn't in krew-index yet.
     /// Behaviour: clone fork, write `plugins/<name>.yaml`, commit, PR
     /// against `kubernetes-sigs/krew-index`.
@@ -218,21 +228,49 @@ enum KrewMode {
     BotWebhook,
 }
 
-/// Detect the appropriate krew mode for a given plugin. Always succeeds —
-/// a membership-probe error falls back to the safe `PrDirect` mode rather
-/// than aborting the publisher.
-fn detect_krew_mode(plugin_name: &str, token: Option<&str>) -> KrewMode {
-    map_probe_to_mode(is_plugin_in_krew_index(plugin_name, token))
+/// Resolve the krew submission flow from the configured `mode` and (in
+/// `auto`) a krew-index membership probe.
+///
+/// - `Bot` → [`KrewFlow::BotWebhook`] (probe skipped).
+/// - `PrDirect` → [`KrewFlow::PrDirect`] (probe skipped).
+/// - `Auto` → probe membership: definitively in-index →
+///   `BotWebhook`; definitively absent → `PrDirect`; indeterminate
+///   (rate-limit / network / unexpected status) → `Err`, so the caller
+///   fails loudly instead of guessing the maintainer-hostile path.
+///
+/// `token` is the GitHub token resolved from the krew repository config
+/// (else the release token); passing it authenticates the probe.
+fn detect_krew_flow(
+    mode: anodizer_core::config::KrewMode,
+    plugin_name: &str,
+    token: Option<&str>,
+) -> Result<KrewFlow> {
+    use anodizer_core::config::KrewMode;
+    match mode {
+        KrewMode::Bot => Ok(KrewFlow::BotWebhook),
+        KrewMode::PrDirect => Ok(KrewFlow::PrDirect),
+        KrewMode::Auto => map_auto_probe(plugin_name, is_plugin_in_krew_index(plugin_name, token)),
+    }
 }
 
-/// Pure dispatch from a krew-index membership-probe result to a mode.
-/// `Some(true)` (published) → webhook flow; `Some(false)` (not yet
-/// published) and `None` (probe failed / unknown) both → the safe
-/// PR-direct flow.
-fn map_probe_to_mode(in_index: Option<bool>) -> KrewMode {
+/// Pure dispatch for `auto` mode from a membership-probe result.
+/// `Some(true)` → webhook flow; `Some(false)` → fork PR; `None`
+/// (indeterminate) → loud error with an actionable hint, never a silent
+/// fallback into the maintainer-hostile fork-PR path.
+fn map_auto_probe(plugin_name: &str, in_index: Option<bool>) -> Result<KrewFlow> {
     match in_index {
-        Some(true) => KrewMode::BotWebhook,
-        _ => KrewMode::PrDirect,
+        Some(true) => Ok(KrewFlow::BotWebhook),
+        Some(false) => Ok(KrewFlow::PrDirect),
+        None => anyhow::bail!(
+            "krew: could not determine krew-index membership for plugin '{}' \
+             (the contents-API probe failed — likely a rate-limit or network \
+             error). Refusing to guess: an existing plugin wrongly routed to a \
+             fork PR is rejected by krew maintainers. Retry the release, ensure \
+             a GitHub token is available (ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN) \
+             to raise the API rate limit, or set the krew `mode` field \
+             explicitly to `bot` or `pr-direct`.",
+            plugin_name
+        ),
     }
 }
 
@@ -241,12 +279,13 @@ fn map_probe_to_mode(in_index: Option<bool>) -> KrewMode {
 ///   - `Some(true)` → 200 OK, the plugin is published.
 ///   - `Some(false)` → 404 Not Found, the plugin is not yet published.
 ///   - `None` → network error, rate-limit, or unexpected status. Caller
-///     treats this as "unknown" and falls back to `pr-direct`.
+///     treats this as indeterminate and (in `auto` mode) hard-errors.
 ///
 /// `token` is optional — anodizer's GitHub PATs are scoped enough that
 /// passing one raises the rate limit from 60/hr (anon) to 5,000/hr
-/// (authenticated), but an anonymous probe is sufficient for low-volume
-/// release cadence (≤ 60 releases per hour from one IP is generous).
+/// (authenticated). The caller passes the release token so the probe is
+/// authenticated in CI, which is what makes the `None`→hard-error path
+/// rare in practice.
 fn is_plugin_in_krew_index(plugin_name: &str, token: Option<&str>) -> Option<bool> {
     let url = format!(
         "https://api.github.com/repos/kubernetes-sigs/krew-index/contents/plugins/{}.yaml",
@@ -300,10 +339,10 @@ fn resolve_webhook_url(env: &dyn anodizer_core::env_source::EnvSource) -> String
 /// struct: `processed_template` is the fully-rendered manifest bytes
 /// (the server's Go decoder expects a base64 string for its `[]byte`
 /// field, which serde produces from a `Vec<u8>` only via an explicit
-/// encoder — handled at the call site). Sending both `tag_name` and the
-/// rendered manifest covers either server behaviour: trusting the
-/// pre-rendered bytes or recomputing shas from the release assets at
-/// `tag_name`.
+/// encoder — handled at the call site). The server validates the
+/// manifest and commits these bytes to its krew-index fork verbatim
+/// (it does not fetch release assets or recompute shas), so
+/// `processed_template` already carries the final sha256 digests.
 #[derive(Debug, Serialize)]
 struct KrewReleaseRequest {
     #[serde(rename = "tagName")]
@@ -356,21 +395,24 @@ impl KrewReleaseRequest {
 ///
 /// The bot server returns HTTP 500 for every failure path, wrapping the
 /// underlying error message in the response body (`opening pr: <err>`).
-/// When a PR for the same fork branch already exists, GitHub's create-PR
-/// call fails with a 422 whose message contains `pull request already
-/// exists`; an unchanged manifest fails the commit step with a
-/// nothing-to-commit / `already up-to-date` message. Both are benign:
-/// the previous submission already did the work. Match those phrases so a
-/// re-run of an already-published version is treated as a no-op success
-/// rather than a hard failure.
+/// Only two of those failure messages are benign re-runs of work the
+/// previous submission already did. First, a PR for the same fork branch
+/// already exists: GitHub's create-PR call fails with a 422 whose
+/// message contains `pull request already exists`. Second, the manifest
+/// is unchanged, so the commit step finds a clean tree and reports
+/// `nothing to commit` / `clean working tree`.
+///
+/// The match is deliberately narrow — only these exact server phrases —
+/// so a future genuine server error (a validation failure, an auth
+/// error, an unexpected 5xx) is NOT silently swallowed as "already
+/// submitted". Silently skipping a one-way publish is the worst failure
+/// mode, so anything outside these phrases falls through to a loud
+/// error.
 fn webhook_body_is_already_submitted(body: &str) -> bool {
     let lower = body.to_ascii_lowercase();
     lower.contains("pull request already exists")
-        || lower.contains("already exists")
-        || lower.contains("already up-to-date")
-        || lower.contains("already up to date")
-        || lower.contains("clean working tree")
         || lower.contains("nothing to commit")
+        || lower.contains("clean working tree")
 }
 
 /// POST a [`KrewReleaseRequest`] to the krew-release-bot webhook and map
@@ -761,25 +803,27 @@ pub fn publish_to_krew(
     let token =
         util::resolve_repo_token(ctx, krew_cfg.repository.as_ref(), Some("KREW_INDEX_TOKEN"));
 
-    // ── krew-release-bot mode selection ──────────────────────────────
     // A plugin already in krew-index takes the self-contained webhook
     // flow: anodizer POSTs the rendered manifest + tag to the hosted bot,
     // which opens the version-bump PR server-side. A plugin not yet in
     // the index takes the PR-direct flow below (clone fork → write
-    // manifest → open the initial PR). A membership-probe error falls
-    // back to PrDirect so a network blip never blocks the release.
-    let mode = detect_krew_mode(plugin_name, token.as_deref());
-    if mode == KrewMode::BotWebhook {
-        // The bot needs the plugin's OWN GitHub repo (where the release +
-        // assets live), not the krew-index fork coordinates resolved
-        // above. Require it: the webhook fetches release assets from
-        // `<owner>/<repo>` at `tagName` to recompute shas, so missing
-        // coordinates would silently mis-target the bot.
+    // manifest → open the initial PR). In `auto` the choice comes from a
+    // token-authenticated membership probe that hard-errors on an
+    // indeterminate result; `mode: bot` / `mode: pr-direct` force the
+    // flow and skip the probe.
+    let mode = krew_cfg.mode.unwrap_or_default();
+    let flow = detect_krew_flow(mode, plugin_name, token.as_deref())?;
+    if flow == KrewFlow::BotWebhook {
+        // The bot identifies the submission by the plugin's OWN GitHub
+        // repo (owner/repo/tag), not the krew-index fork coordinates
+        // resolved above. Require it: the server records these in the
+        // PR's provenance, so missing coordinates would silently
+        // mis-target the bot.
         let (plugin_owner, plugin_repo) = plugin_github.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "krew: plugin '{}' is in krew-index (webhook flow) but has no \
                  `release.github` owner/repo — the krew-release-bot webhook \
-                 needs the plugin's GitHub repo to fetch release assets",
+                 needs the plugin's GitHub repo to identify the submission",
                 plugin_name
             )
         })?;
@@ -965,18 +1009,48 @@ mod tests {
     // krew-release-bot mode selection + webhook tests
     // -----------------------------------------------------------------------
 
-    /// Mode selection: a plugin NOT in krew-index takes `PrDirect`.
-    /// `is_plugin_in_krew_index` returning `Some(false)` (here forced by
-    /// an unreachable token-less probe against a 404 fixture is awkward,
-    /// so the redesign is asserted through `detect_krew_mode`'s pure
-    /// dispatch on each probe outcome via the helper below).
+    /// Explicit `mode: bot` / `mode: pr-direct` force the flow and skip
+    /// the membership probe entirely (the probe would hit the network).
     #[test]
-    fn mode_selection_maps_index_membership_to_mode() {
-        // Pure dispatch: probe says "in index" → BotWebhook; anything
-        // else (not in index / unknown) → PrDirect.
-        assert_eq!(map_probe_to_mode(Some(true)), KrewMode::BotWebhook);
-        assert_eq!(map_probe_to_mode(Some(false)), KrewMode::PrDirect);
-        assert_eq!(map_probe_to_mode(None), KrewMode::PrDirect);
+    fn explicit_mode_forces_flow_without_probe() {
+        use anodizer_core::config::KrewMode;
+        assert_eq!(
+            detect_krew_flow(KrewMode::Bot, "anything", None).unwrap(),
+            KrewFlow::BotWebhook
+        );
+        assert_eq!(
+            detect_krew_flow(KrewMode::PrDirect, "anything", None).unwrap(),
+            KrewFlow::PrDirect
+        );
+    }
+
+    /// `auto` dispatch: definitive in-index → webhook; definitive absent
+    /// → fork PR; INDETERMINATE probe → loud error (never a silent
+    /// fork-PR fallback that krew maintainers reject).
+    #[test]
+    fn auto_probe_dispatch_errors_loudly_on_indeterminate() {
+        assert_eq!(
+            map_auto_probe("mytool", Some(true)).unwrap(),
+            KrewFlow::BotWebhook
+        );
+        assert_eq!(
+            map_auto_probe("mytool", Some(false)).unwrap(),
+            KrewFlow::PrDirect
+        );
+        let err = map_auto_probe("mytool", None).unwrap_err().to_string();
+        assert!(
+            err.contains("could not determine krew-index membership"),
+            "indeterminate probe must error: {err}"
+        );
+        // The hint must point at the explicit override + token remedies.
+        assert!(
+            err.contains("mode"),
+            "error must mention the mode override: {err}"
+        );
+        assert!(
+            err.contains("pr-direct") && err.contains("bot"),
+            "error must name both explicit modes: {err}"
+        );
     }
 
     /// The `ReleaseRequest` body carries the exact field names + values
@@ -1040,22 +1114,37 @@ mod tests {
         );
     }
 
-    /// The already-submitted classifier recognizes the bot's
-    /// duplicate-PR / nothing-to-commit signals and rejects genuine
-    /// failures.
+    /// The already-submitted classifier matches ONLY the bot's actual
+    /// duplicate-PR / clean-tree signals, and rejects every genuine
+    /// failure — including bodies that merely contain loose phrases like
+    /// `already exists`, so a future real error can't be swallowed.
     #[test]
     fn webhook_already_submitted_classifier() {
+        // The two (now three-phrasing) benign signals the server emits.
         assert!(webhook_body_is_already_submitted(
             "opening pr: A pull request already exists for acme:mytool-v1.2.3"
         ));
         assert!(webhook_body_is_already_submitted(
-            "opening pr: already up-to-date"
+            "opening pr: clean working tree, nothing to commit"
         ));
-        assert!(webhook_body_is_already_submitted("nothing to commit"));
+        assert!(webhook_body_is_already_submitted(
+            "opening pr: clean working tree"
+        ));
+
+        // Genuine failures must NOT be swallowed.
         assert!(!webhook_body_is_already_submitted(
             "opening pr: failed when validating plugin spec"
         ));
         assert!(!webhook_body_is_already_submitted("internal server error"));
+        // The loose arms dropped from the classifier: a bare resource
+        // "already exists" or generic "up-to-date" is NOT the server's
+        // duplicate-PR signal and must surface as a hard failure.
+        assert!(!webhook_body_is_already_submitted(
+            "opening pr: release already exists for tag v1.2.3"
+        ));
+        assert!(!webhook_body_is_already_submitted(
+            "opening pr: branch already up-to-date with base"
+        ));
     }
 
     /// HTTP 200 → success.

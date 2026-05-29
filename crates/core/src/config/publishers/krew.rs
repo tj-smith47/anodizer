@@ -70,4 +70,40 @@ pub struct KrewConfig {
     /// `krews[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
+    /// Which krew-index submission path to take.
+    ///
+    /// - `auto` (default): probe whether the plugin already exists in
+    ///   `kubernetes-sigs/krew-index`. Already present → `bot` (the
+    ///   hosted krew-release-bot opens the version-bump PR server-side);
+    ///   definitively absent → `pr-direct` (anodizer opens the initial
+    ///   fork PR). A probe that can't reach a definitive answer
+    ///   (rate-limit, network error) hard-errors rather than guessing,
+    ///   so a transient blip never routes an existing plugin into a
+    ///   maintainer-hostile fork PR.
+    /// - `bot`: always POST to the krew-release-bot webhook. Use when
+    ///   the plugin is known to be in krew-index and you want to skip
+    ///   the membership probe entirely.
+    /// - `pr-direct`: always open a fork PR against krew-index. Use for
+    ///   the initial submission, or a self-hosted krew-index mirror the
+    ///   hosted bot can't reach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<KrewMode>,
+}
+
+/// Which krew-index submission path the krew publisher takes.
+///
+/// Selects between the self-contained krew-release-bot webhook and the
+/// fork-PR flow. Defaults to [`KrewMode::Auto`], which probes krew-index
+/// membership to decide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum KrewMode {
+    /// Probe krew-index membership and pick `bot` (present) or
+    /// `pr-direct` (absent). An indeterminate probe hard-errors.
+    #[default]
+    Auto,
+    /// Always submit via the krew-release-bot webhook.
+    Bot,
+    /// Always open a fork PR against krew-index.
+    PrDirect,
 }

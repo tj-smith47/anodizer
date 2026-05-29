@@ -461,6 +461,27 @@ Cannot be combined with `url.template:` — set one or the other. If both are pr
 | `script` | string | — | Startup script to run when the archive is extracted and executed. Required — the archive will not be created without this. |
 | `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. |
 
+## `mcp`
+MCP server registry publisher configuration.
+
+Publishes an `apiv0.ServerJSON` document to the MCP registry (`https://registry.modelcontextprotocol.io/v0/publish` by default). Mirrors GoReleaser `config.MCP` + `config.MCPDetails` flattened.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `auth` | McpAuth | `{"type":"none"}` | Authentication method for the registry's `/v0/publish` endpoint. Defaults to `none` (anonymous publish, allowed for development / staging registries). |
+| `description` | string | — | Clear human-readable description of server functionality (max 100 chars). |
+| `homepage` | string | — | Optional URL to the server's homepage, documentation, or project website. Serialized as `websiteUrl` in the registry payload. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the MCP publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `mcp.if:`. |
+| `name` | string | — | Server name in reverse-DNS format (e.g. `io.github.user/weather`). Must contain exactly one forward slash separating namespace from server name. An empty / unset value skips the publisher entirely. |
+| `packages` | list of McpPackage | `[]` | Distribution packages — one entry per package registry (npm, pypi, nuget, oci, mcpb). |
+| `registry` | string | — | Override the registry endpoint (for staging or a private mirror). Defaults to `https://registry.modelcontextprotocol.io` when unset. |
+| `repository` | McpRepository | `{"id":"","source":"","subfolder":"","url":""}` | Optional source repository metadata. Emitted as the `repository` object in the registry payload — omitted entirely when `url` is empty. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.
+
+Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `skip` | StringOrBool | — | Skip this publisher when the expression evaluates truthy. Accepts a bool or a Tera template that renders to `"true"`/`"false"` (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`). Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's MCP config field is `pkg/config/config.go` `MCP.Disable string`). |
+| `title` | string | — | Optional human-readable title shown in registry UIs (max 100 chars). Templated; supports `{{ .ProjectName \| title }}`, `{{ .Version }}`, etc. |
+| `transports` | list of McpTransport | `[]` | Top-level transports list. Intentional GoReleaser config-portability shim: `McpConfig` carries `deny_unknown_fields`, so a migrated `.goreleaser.yaml` containing `transports:` would fail to parse if the field were absent. The list is accepted and discarded — the current MCP server schema derives transports per-package via `packages[].transport`, so the top-level list is never read after deserialization and is intentionally not emitted to the registry. |
+
 ## `metadata`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -786,4 +807,101 @@ List of `KEY=VALUE` strings. Order is preserved. Values are template-rendered at
 | `name` | string | — | Workspace identifier used in logs and template variables. |
 | `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
 | `skip` | list of string | `[]` | Pipeline stages to skip when releasing this workspace. Stage names match the CLI `--skip` flag (e.g., `announce`, `publish`). |
+
+## `crates[].docker_v2`
+Docker V2 configuration — the canonical Docker build API.
+
+Notable surface: - `images` + `tags` (cleaner separation than a single `image_templates` list) - `annotations` map for OCI annotations (`--annotation`) - `build_args` map for build-time variables - `skip` as a [`StringOrBool`] template for conditional opt-out - `sbom` as a [`StringOrBool`] — when truthy, adds `--sbom=true` to buildx - `flags` for arbitrary extra `docker build` flags - `platforms` is the only target selector — no per-arch field overrides
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `annotations` | map | — | OCI annotations to apply via `--annotation key=value` flags. |
+| `build_args` | map | — | Build arguments passed as `--build-arg KEY=VALUE`.
+
+Each value is template-expanded and forwarded verbatim to buildx (one argv token per pair, no shell tokenization). Prefer `{{ .Env.VAR }}` over raw user-config strings for secrets — buildx records build-args in image history by default, so plaintext values here propagate into the image metadata. |
+| `dockerfile` | string | — | Path to the Dockerfile relative to the project root. |
+| `extra_files` | list of string | — | Extra files to copy into the Docker build context. |
+| `flags` | list of string | — | Arbitrary extra flags passed to the docker build command. |
+| `hooks` | BuildHooksConfig | — | Pre/post hooks for this docker_v2 config. Each hook accepts the same `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks run after the staging directory is prepared but before `docker buildx build`; `post` hooks run after the image digest is captured. Hook commands, working directories, and env values are template-expanded; in addition to the standard template surface, hooks see:
+
+- `{{ .Images }}` — list of `image:tag` references for this build. Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror GR's `[]string` exposure of the same field; `{{ .Images \| join(sep=",") }}` reproduces a flat comma-separated string for legacy templates. - `{{ .Dockerfile }}` — path to the rendered Dockerfile - `{{ .ContextDir }}` — path to the buildx context staging directory - `{{ .Digest }}` — image manifest digest (post hooks only) - `{{ .BaseImage }}` / `{{ .BaseImageDigest }}` — final-stage base image (matches the `BaseImage` / `BaseImageDigest` overlay GR adds in `internal/pipe/docker/v2/docker.go`) |
+| `id` | string | — | Unique identifier for this Docker V2 config. |
+| `ids` | list of string | — | Build IDs filter: only include binary artifacts whose metadata `id` is in this list. |
+| `images` | list of string | `[]` | Base image names (e.g., ["ghcr.io/owner/app"]). Combined with `tags` to form full references. |
+| `labels` | map | — | OCI labels to apply to the image via `--label key=value` flags. |
+| `platforms` | list of string | — | Target platforms for multi-arch builds (e.g., ["linux/amd64", "linux/arm64"]). |
+| `retry` | DockerRetryConfig | — | Retry configuration for docker push operations. |
+| `sbom` | StringOrBool | — | When truthy, adds `--sbom=true` to buildx. Supports templates. |
+| `skip` | StringOrBool | — | When truthy, skip this docker build entirely. Supports templates. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's docker config field is `pkg/config/config.go:1149` `Disable string`). |
+| `tags` | list of string | `[]` | Tag suffixes (e.g., ["latest", "{{ .Version }}"]). Each image is tagged with each tag. |
+| `use` | string | — | Docker backend for build commands: `"buildx"` (default) or `"podman"`.
+
+The default `"buildx"` invokes `docker buildx build` with the full set of BuildKit features (multi-platform, attestations, `--rewrite-timestamp`, SBOM, OCI exporter). Setting `use: podman` swaps the binary to `podman build` and disables every buildx-only flag — anodizer rejects configs that mix `use: podman` with `sbom: true`, `--rewrite-timestamp`, `--provenance`, `--attest`, `--cache-from`, `--cache-to`, `--output`, or `--sbom` because plain podman does not recognise them.
+
+**Linux-only.** Matches GoReleaser Pro: the podman backend is restricted to Linux hosts. Configs setting `use: podman` on macOS or Windows fail at config-validation time with a clear error rather than blowing up later when `podman` is not on `PATH`. |
+
+## `crates[].docker_manifests`
+Deprecated: prefer `docker_v2` (which produces multi-arch manifests via the `platforms:` field automatically). `DockerManifestConfig` is retained for back-compat with imported GoReleaser configs and for the niche case of stitching together manifest lists from images that were not built by `docker_v2` in the same run.
+
+Mirrors GoReleaser commit e09e23a, which marked the v1 docker / docker manifest pipes deprecated in favour of the v2 buildx flow. The rustdoc here is the load-bearing surface for the deprecation: it flows into the schemars-generated JSON Schema (consumed by IDEs / editor tooling) and rustdoc HTML, both of which are how downstream config authors discover that the v2 pipe is the preferred entry point.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `create_flags` | list of string | — | Extra flags for `docker manifest create`. |
+| `id` | string | — | Unique identifier for this manifest config. |
+| `image_templates` | list of string | `[]` | Image references to include in the manifest. |
+| `name_template` | string | — | Template for the manifest name, e.g. "ghcr.io/owner/app:{{ .Version }}". |
+| `push_flags` | list of string | — | Extra flags for `docker manifest push`. |
+| `retry` | DockerRetryConfig | — | Retry configuration for manifest push (handles transient registry errors). |
+| `skip_push` | object | — | Skip push: true, false, or "auto" (skip for prereleases). |
+| `use` | string | — | Docker backend for manifest commands: `"docker"` (default) or `"podman"`. The `"podman"` backend is **Linux-only** (mirrors GoReleaser Pro): configs on macOS or Windows fail at config-validation time with a clear error rather than blowing up later when `podman` is not on `PATH`. |
+
+## `crates[].docker_digest`
+Controls docker image digest file creation.
+
+After each docker image push, a digest file (containing the sha256 digest) is written to the dist directory. This config controls whether that happens and how the files are named.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name_template` | string | — | Template for the digest artifact filename. Default: tag-based naming (e.g., "ghcr.io_owner_app_v1.0.0.digest"). |
+| `skip` | StringOrBool | — | When truthy, disable docker digest artifact creation. |
+
+## `crates[].publish`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `aur` | AurConfig | — | AUR (Arch User Repository) binary package publishing configuration. |
+| `aur_source` | AurSourceConfig | — | AUR source package publishing configuration (source-only PKGBUILD, not -bin). |
+| `cargo` | CargoPublishConfig | — | Publish to crates.io. Presence opts in; use `cargo: { skip: true }` to opt out. |
+| `chocolatey` | ChocolateyConfig | — | Chocolatey package publishing configuration. |
+| `homebrew` | HomebrewConfig | — | Homebrew formula publishing configuration. |
+| `homebrew_cask` | HomebrewCaskConfig | — | Homebrew Cask publishing configuration (macOS .app bundles).
+
+Uses the unified `HomebrewCaskConfig` which carries all fields from both the per-crate cask config and the top-level `homebrew_casks:` config. |
+| `krew` | KrewConfig | — | Krew (kubectl plugin manager) manifest publishing configuration. |
+| `nix` | NixConfig | — | Nix derivation publishing configuration. |
+| `scoop` | ScoopConfig | — | Scoop manifest publishing configuration. |
+| `winget` | WingetConfig | — | WinGet manifest publishing configuration. |
+
+## `crates[].publish.krew`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `arm_variant` | string | — | ARM version filter (e.g. "6", "7"). Only artifacts matching this variant are included. |
+| `caveats` | string | — | Post-install message shown to the user. |
+| `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
+| `commit_msg_template` | string | — | Custom commit message template. |
+| `description` | string | — | Full description of the kubectl plugin. |
+| `homepage` | string | — | Project homepage URL for the plugin. |
+| `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Krew publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `krews[].if:`. |
+| `mode` | KrewMode | — | Which krew-index submission path to take.
+
+- `auto` (default): probe whether the plugin already exists in `kubernetes-sigs/krew-index`. Already present → `bot` (the hosted krew-release-bot opens the version-bump PR server-side); definitively absent → `pr-direct` (anodizer opens the initial fork PR). A probe that can't reach a definitive answer (rate-limit, network error) hard-errors rather than guessing, so a transient blip never routes an existing plugin into a maintainer-hostile fork PR. - `bot`: always POST to the krew-release-bot webhook. Use when the plugin is known to be in krew-index and you want to skip the membership probe entirely. - `pr-direct`: always open a fork PR against krew-index. Use for the initial submission, or a self-hosted krew-index mirror the hosted bot can't reach. |
+| `name` | string | — | Override the plugin name (default: crate name). |
+| `repository` | RepositoryConfig | — | Unified repository config with branch, token, PR, git SSH support. (Replaces the legacy `manifests_repo:` / `upstream_repo:` form.) The upstream PR target is derived from `repository.pull_request.base` when set, falling back to the canonical kubernetes-sigs/krew-index. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.
+
+Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `short_description` | string | — | One-line summary of the kubectl plugin (max 255 chars). |
+| `skip` | StringOrBool | — | Skip this Krew config. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip). Distinct from `skip_upload` so users can opt out of generating the manifest entirely (common when a project is not a kubectl plugin and has no krew channel). |
+| `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. Accepts bool or template string. |
+| `update_existing_pr` | StringOrBool | — | When true, force-push the updated plugin manifest to the existing PR branch when a PR for the same head branch already exists. The PR content is updated in place rather than creating a duplicate. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not update the PR. |
+| `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
 

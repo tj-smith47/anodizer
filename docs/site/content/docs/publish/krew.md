@@ -256,18 +256,40 @@ step and no extra token.**
 
 ### How mode selection works
 
-On every release, anodizer makes one anonymous probe — a GET against
+The krew `mode` field selects the submission path. It defaults to `auto`:
+
+```yaml
+publish:
+  krew:
+    mode: auto   # auto (default) | bot | pr-direct
+```
+
+| `mode` | Behavior |
+|---|---|
+| `auto` (default) | Probe krew-index membership and pick the flow (see below). |
+| `bot` | Always POST to the krew-release-bot webhook. Skips the probe — use when the plugin is known to be in krew-index. |
+| `pr-direct` | Always open a fork PR against krew-index. Skips the probe — use for the initial submission, or a self-hosted krew-index mirror the hosted bot can't reach. |
+
+In `auto`, anodizer makes one probe — a GET against
 `api.github.com/repos/kubernetes-sigs/krew-index/contents/plugins/<name>.yaml`
 (200 = published, 404 = not yet) — and picks the flow:
 
-| In krew-index | Mode | Behavior |
+| In krew-index | Flow | Behavior |
 |---|---|---|
-| No | `pr-direct` | Clone a fork, write `plugins/<name>.yaml`, open the **initial** PR against krew-index. A human reviews + merges it. |
-| Yes | `bot-webhook` | POST the fully-rendered manifest + the release tag to the krew-release-bot webhook, which opens the version-bump PR on your behalf. |
+| No (404) | `pr-direct` | Clone a fork, write `plugins/<name>.yaml`, open the **initial** PR against krew-index. A human reviews + merges it. |
+| Yes (200) | `bot-webhook` | POST the fully-rendered manifest + the release tag to the krew-release-bot webhook, which opens the version-bump PR on your behalf. |
 
-**Graceful degradation:** if the membership probe fails (rate-limit, network
-blip, unexpected status), anodizer falls back to the safe `pr-direct` flow —
-no fail, no skip.
+The probe is **authenticated** whenever a GitHub token is available
+(`ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN`, or `repository.token`) — the same
+token the GitHub release uses — which raises the API rate limit from 60/hr
+(anonymous) to 5,000/hr.
+
+**Indeterminate probe → loud failure, not a guess.** If the probe can't reach a
+definitive 200/404 (rate-limit, network blip, unexpected status), anodizer
+**hard-errors** rather than guessing. It does **not** silently fall back to
+`pr-direct`: a plugin already in krew-index wrongly routed into a fork PR is
+rejected by krew maintainers. The error tells you to retry, supply a token, or
+set `mode: bot` / `mode: pr-direct` explicitly to bypass the probe.
 
 ### The webhook submission
 
@@ -291,24 +313,29 @@ Content-Type: application/json
   self-hosted bot deployment).
 - The server forks krew-index and opens the PR under its own account — **no
   token is sent**.
-- The release-asset coordinates come from `release.github` (owner/repo); the
-  bot fetches the release assets from `tagName` to recompute shas. Both a
-  correct `tagName` and a fully-rendered `processedTemplate` are sent so the
-  submission works whether the server trusts the pre-rendered bytes or
-  recomputes them.
+- `processedTemplate` carries the **final rendered manifest**, with real
+  sha256 digests already filled in. The server validates the manifest and
+  commits these bytes to its krew-index fork **verbatim** — it does not fetch
+  release assets or recompute shas. The `pluginOwner`/`pluginRepo`/`tagName`
+  identify the submission in the PR's provenance.
 
 The krew publisher runs **after** the GitHub Release is created and its assets
 are uploaded (the `release` stage precedes the `publish` stage in the
-pipeline), so the assets always exist when the bot fetches them.
+pipeline), so the manifest's download URLs resolve by the time the PR merges.
 
 ### Idempotency + failures
 
 - **HTTP 200** → success; the submitted PR URL is logged.
 - **Already submitted** (the version was POSTed on a prior run — the bot's
-  duplicate-PR / nothing-to-commit response) → treated as an idempotent
+  duplicate-PR / clean-working-tree response) → treated as an idempotent
   no-op success.
 - **Any other failure** (non-200, network error) → the release fails loudly.
   The krew submission is never silently skipped.
+
+> **Note:** when a PR for this version already exists, re-running does **not**
+> guarantee the open PR reflects your latest submission. The server commits the
+> new bytes to its fork, but anodizer can't observe the resulting PR content, so
+> treat the first successful submission as authoritative.
 
 ### Rollback semantics
 

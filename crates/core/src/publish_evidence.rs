@@ -125,8 +125,13 @@ pub struct KrewTargetSnapshot {
     pub token_env_var: Option<String>,
 }
 
+// NOTE: no `deny_unknown_fields` here (every sibling extra struct has it).
+// An intra-branch iteration carried a `bot_template_pre_image_shas` field
+// that was removed before any release tag. Tolerating unknown keys lets a
+// `report.json` written by such a build still deserialize for rollback;
+// the orphan key is simply ignored. Adding it back would resurrect a field
+// that never shipped, so the lenient decode is the durable fix.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct KrewExtra {
     /// One entry per crate whose krew publish opened a PR against the
     /// upstream krew-index (the `PrDirect` initial-submission flow).
@@ -587,6 +592,33 @@ mod tests {
         let json = serde_json::to_string(&extra).expect("serialize");
         let back: KrewExtra = serde_json::from_str(&json).expect("deserialize");
         assert!(back.krew_targets.is_empty());
+    }
+
+    #[test]
+    fn krew_extra_tolerates_orphan_bot_template_key() {
+        // A `report.json` written by an intra-branch build that still
+        // carried the since-removed `bot_template_pre_image_shas` field
+        // must still deserialize for rollback — the orphan key is ignored.
+        let blob = r#"{
+            "krew_targets": [{
+                "target": "mytool",
+                "upstream_owner": "kubernetes-sigs",
+                "upstream_repo": "krew-index",
+                "fork_owner": "acme",
+                "branch": "mytool-v1.2.3"
+            }],
+            "bot_template_pre_image_shas": {"plugins/mytool.yaml": "deadbeef"}
+        }"#;
+        let back: KrewExtra = serde_json::from_str(blob).expect("orphan key must be tolerated");
+        assert_eq!(back.krew_targets.len(), 1);
+        assert_eq!(back.krew_targets[0].target, "mytool");
+
+        // The same blob must deserialize through the full untagged
+        // `PublishEvidenceExtra` dispatch (the path rollback actually
+        // takes), landing in the Krew variant.
+        let via_enum: PublishEvidenceExtra =
+            serde_json::from_str(blob).expect("untagged dispatch must tolerate orphan key");
+        assert!(matches!(via_enum, PublishEvidenceExtra::Krew(_)));
     }
 
     #[test]
