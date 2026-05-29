@@ -91,14 +91,14 @@ pub struct Package {
     /// download URL for mcpb).
     pub identifier: String,
     /// Package version. **Set to `""` when `registry_type == "oci"`** —
-    /// pinned by GR `mcp.go:132-135` (`if pkg.RegistryType == "oci"
-    /// { version = "" }`). The OCI image reference already pins the
-    /// version (e.g. `ghcr.io/foo/bar:v1.2.3`), so the registry's
-    /// `body.packages[i].version` field is redundant for OCI packages.
-    /// `skip_serializing_if = "String::is_empty"` mirrors upstream Go's
-    /// `json:"version,omitempty"` (see `pkg/model/types.go:38`), omitting
-    /// the field on the wire when empty — the registry's openapi schema
-    /// enforces `minLength: 1` and rejects with HTTP 422 otherwise.
+    /// the OCI image reference already pins the version (e.g.
+    /// `ghcr.io/foo/bar:v1.2.3`), so a separate `version` field is
+    /// redundant. The MCP registry's OCI validator *rejects* a present
+    /// version field ("OCI packages must not have 'version' field"),
+    /// while its npm/pypi/nuget validators *require* a non-empty version.
+    /// `skip_serializing_if = "String::is_empty"` reconciles both: an
+    /// empty string is dropped from the wire (satisfying the OCI rule),
+    /// and non-OCI callers always supply a concrete version.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub version: String,
     /// Transport descriptor (always emitted).
@@ -214,13 +214,11 @@ mod tests {
 
     #[test]
     fn package_version_omitted_when_empty_for_oci() {
-        // Upstream Go's `model.Package.Version` is tagged
-        // `json:"version,omitempty"` (pkg/model/types.go:38), so the
-        // empty value GR assigns for OCI packages is dropped on the wire.
-        // The registry's openapi schema enforces `minLength: 1` on
-        // `body.packages[i].version` and rejects with HTTP 422 if the
-        // field is sent as `""`. Mirror the omission via serde's
-        // `skip_serializing_if`.
+        // The MCP registry's OCI validator rejects a present `version`
+        // field, so an empty version for an OCI package must be dropped
+        // from the wire entirely rather than serialized as `""`. The
+        // `skip_serializing_if = "String::is_empty"` attribute is what
+        // makes that omission happen.
         let pkg = Package {
             registry_type: "oci".to_string(),
             identifier: "ghcr.io/test/server:v1".to_string(),

@@ -306,8 +306,11 @@ fn is_plugin_in_krew_index(plugin_name: &str, token: Option<&str>) -> Option<boo
     if status == reqwest::StatusCode::NOT_FOUND {
         return Some(false);
     }
-    // 403 (rate limited / token denied), 5xx (GitHub flaking) — both go
-    // back as `None` so the caller falls through to `pr-direct`.
+    // 403 (rate limited / token denied), 5xx (GitHub flaking) surface as
+    // `None` (indeterminate). The probe runs only in `auto` mode, where an
+    // indeterminate result is a hard error rather than a guess — an existing
+    // plugin wrongly routed to a fork PR is rejected by krew maintainers.
+    // Explicit `bot` / `pr-direct` modes never reach this probe.
     None
 }
 
@@ -1581,7 +1584,6 @@ mod tests {
         assert!(arches.contains(&"arm64"));
     }
 
-    /// Regression for GoReleaser parity P9.1 (commit cba5b9f):
     /// `krew.skip_upload: "{{ .IsSnapshot }}"` must template-expand
     /// before its bool/auto/empty interpretation. On a snapshot run
     /// the rendered value is `"true"` and the publish path must
