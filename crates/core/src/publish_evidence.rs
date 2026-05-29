@@ -129,6 +129,16 @@ pub struct KrewTargetSnapshot {
 #[serde(deny_unknown_fields)]
 pub struct KrewExtra {
     pub krew_targets: Vec<KrewTargetSnapshot>,
+    /// SHA-256 of the bot-template file content as it stood BEFORE the
+    /// krew-release-bot publish run wrote a fresh template. Recorded
+    /// only in `KrewMode::BotTemplate`; absent for the PR-direct modes
+    /// (no local template file exists to checksum). Lets a future
+    /// rollback pass detect whether the on-disk template was mutated
+    /// out from under us between publish and rollback. `None` when the
+    /// pre-image file did not exist at publish time (first-publish of
+    /// a freshly-wired bot template).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_template_pre_image_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

@@ -137,7 +137,7 @@ pub fn dispatch(
                             .unwrap_or(PublisherOutcome::Succeeded);
                         (outcome, Some(evidence))
                     }
-                    Err(err) => (PublisherOutcome::Failed(err.to_string()), None),
+                    Err(err) => (PublisherOutcome::Failed(format!("{err:#}")), None),
                 }
             };
             let failed = matches!(outcome, PublisherOutcome::Failed(_));
@@ -386,6 +386,73 @@ mod tests {
             "expected PendingValidation, got {:?}",
             result.outcome
         );
+    }
+
+    #[test]
+    fn dispatch_records_full_anyhow_chain_on_failure() {
+        // The user-visible failure message must surface every wrapped
+        // `anyhow::Context` layer, not just the outermost one. Using
+        // `Display` (the default `err.to_string()`) drops every cause,
+        // which was the root cause of the mcp publisher's HTTP-status-less
+        // "publish to https://..." log line — the inner HTTP 422 body was
+        // discarded before reaching the operator. The recorded message
+        // must contain BOTH the outer and inner segments, exactly as
+        // `format!("{err:#}")` produces them.
+        use anodizer_core::PublishEvidence;
+        use anyhow::Context as _;
+
+        struct WrappedFailPublisher;
+        impl Publisher for WrappedFailPublisher {
+            fn name(&self) -> &str {
+                "wrapped"
+            }
+            fn group(&self) -> PublisherGroup {
+                PublisherGroup::Manager
+            }
+            fn required(&self) -> bool {
+                false
+            }
+            fn skips_on_nightly(&self) -> bool {
+                false
+            }
+            fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
+                Err::<(), _>(anyhow::anyhow!("inner"))
+                    .context("middle")
+                    .context("outer")?;
+                unreachable!()
+            }
+            fn rollback(
+                &self,
+                _ctx: &mut Context,
+                _evidence: &PublishEvidence,
+            ) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut ctx = Context::test_fixture();
+        let publishers: Vec<Box<dyn Publisher>> = vec![Box::new(WrappedFailPublisher)];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        let entry = report
+            .results
+            .iter()
+            .find(|r| r.name == "wrapped")
+            .expect("wrapped entry present");
+        match &entry.outcome {
+            PublisherOutcome::Failed(msg) => {
+                assert!(
+                    msg.contains("outer"),
+                    "outermost context must be present, got: {msg}"
+                );
+                assert!(
+                    msg.contains("inner"),
+                    "innermost cause must be present (anyhow `{{:#}}` chain), got: {msg}"
+                );
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
     }
 
     #[test]

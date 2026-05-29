@@ -62,7 +62,7 @@ impl PreflightChecker for CargoCratesIo {
             Ok(true) => PublisherState::Published,
             Ok(false) => PublisherState::Clean,
             Err(e) => PublisherState::Unknown {
-                reason: e.to_string(),
+                reason: format!("{e:#}"),
             },
         }
     }
@@ -218,7 +218,7 @@ impl PreflightChecker for Winget {
                 reason: "winget search response missing html_url".into(),
             },
             Err(e) => PublisherState::Unknown {
-                reason: e.to_string(),
+                reason: format!("{e:#}"),
             },
         }
     }
@@ -401,7 +401,7 @@ impl PreflightChecker for Aur {
             },
             Ok(false) => PublisherState::Clean,
             Err(e) => PublisherState::Unknown {
-                reason: e.to_string(),
+                reason: format!("{e:#}"),
             },
         }
     }
@@ -1096,7 +1096,7 @@ mod tests {
             Ok(true) => PublisherState::Published,
             Ok(false) => PublisherState::Clean,
             Err(e) => PublisherState::Unknown {
-                reason: e.to_string(),
+                reason: format!("{e:#}"),
             },
         };
         assert!(

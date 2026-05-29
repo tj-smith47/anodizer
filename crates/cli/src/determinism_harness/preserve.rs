@@ -164,6 +164,133 @@ pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()
     Ok(())
 }
 
+/// Mirror raw cargo binaries into the preserved tree so the publish-only
+/// `SignStage` can re-sign them under production keys.
+///
+/// `preserve_dist_tree` copies `<worktree>/dist/**`, which excludes raw
+/// build outputs living at `<worktree>/.det-tmp/target/<triple>/release/<bin>`
+/// (the harness's CARGO_TARGET_DIR override). Those binaries are what
+/// `binary_signs:` operates on, so without preservation publish-only's
+/// `SignStage` would either skip them silently or crash on missing files.
+///
+/// This helper reads the harness child's `dist/artifacts.json` (already
+/// copied verbatim into `<dest>/artifacts.json` by `preserve_dist_tree`),
+/// walks every `Binary` / `UploadableBinary` / `UniversalBinary` entry,
+/// copies `<worktree>/<orig_path>` to `<dest>/bin/<triple>/<basename>`,
+/// and rewrites the manifest entry's `path` to
+/// `dist/bin/<triple>/<basename>` so the publish-only loader
+/// (`load_artifacts_from_manifest`) re-anchors it onto the preserved
+/// tree via its existing `dist/`-prefix strip.
+///
+/// The `bin/` subdir name is intentionally non-hidden so
+/// `actions/upload-artifact@v4` includes it without
+/// `include-hidden-files: true`.
+///
+/// Idempotent / tolerant: missing artifacts.json, missing `target` field,
+/// or absent source binary all degrade to a no-op rather than aborting
+/// the preserve. The publish-only path already validates rehydrated
+/// artifacts; surfacing the gap there gives a more actionable error than
+/// failing the harness's preserve step.
+pub(super) fn preserve_raw_binaries(worktree_path: &Path, dest: &Path) -> Result<()> {
+    let manifest_path = dest.join("artifacts.json");
+    let bytes = match std::fs::read(&manifest_path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!(
+                    "reading {} for raw-binary preservation",
+                    manifest_path.display()
+                )
+            });
+        }
+    };
+    let mut manifest: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "warn: preserved-dist {} present but malformed ({}); skipping raw-binary preservation",
+                manifest_path.display(),
+                e
+            );
+            return Ok(());
+        }
+    };
+    let Some(entries) = manifest.as_array_mut() else {
+        return Ok(());
+    };
+
+    let mut rewrote_any = false;
+    for entry in entries.iter_mut() {
+        let Some(obj) = entry.as_object_mut() else {
+            continue;
+        };
+        let is_binary = matches!(
+            obj.get("kind").and_then(|k| k.as_str()),
+            Some("binary") | Some("uploadable_binary") | Some("universal_binary")
+        );
+        if !is_binary {
+            continue;
+        }
+        let Some(orig_path) = obj.get("path").and_then(|p| p.as_str()).map(str::to_string) else {
+            continue;
+        };
+        let triple = match obj.get("target").and_then(|t| t.as_str()) {
+            Some(t) if !t.is_empty() => t.to_string(),
+            _ => continue,
+        };
+        let basename = match std::path::Path::new(&orig_path).file_name() {
+            Some(n) => n.to_string_lossy().into_owned(),
+            None => continue,
+        };
+        let src = worktree_path.join(&orig_path);
+        if !src.is_file() {
+            continue;
+        }
+        let dst_rel = std::path::PathBuf::from("bin")
+            .join(&triple)
+            .join(&basename);
+        let dst_abs = dest.join(&dst_rel);
+        if let Some(parent) = dst_abs.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating preserved bin dir {}", parent.display()))?;
+        }
+        std::fs::copy(&src, &dst_abs).with_context(|| {
+            format!(
+                "copying raw binary {} -> {}",
+                src.display(),
+                dst_abs.display()
+            )
+        })?;
+        // Rewrite the manifest path so publish-only's loader resolves it
+        // under the preserved tree. The `dist/` prefix lets
+        // `load_artifacts_from_manifest`'s existing strip-and-rejoin
+        // logic re-anchor onto whatever dist root publish-only is
+        // consuming (flat or per-crate).
+        let rewritten = format!("dist/{}", dst_rel.to_string_lossy().replace('\\', "/"));
+        obj.insert("path".to_string(), serde_json::Value::String(rewritten));
+        rewrote_any = true;
+    }
+
+    if !rewrote_any {
+        return Ok(());
+    }
+
+    let json = serde_json::to_string_pretty(&manifest)
+        .context("re-serializing artifacts.json after raw-binary path rewrite")?;
+    let tmp_path = manifest_path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, &json)
+        .with_context(|| format!("writing rewritten manifest tmp to {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &manifest_path).with_context(|| {
+        format!(
+            "atomically renaming {} -> {}",
+            tmp_path.display(),
+            manifest_path.display()
+        )
+    })?;
+    Ok(())
+}
+
 /// Recursive directory copy with predictable semantics — files via
 /// `std::fs::copy`, directories created on demand. Symlinks are
 /// dereferenced (harness output should not contain symlinks; this is
@@ -711,6 +838,133 @@ mod tests {
             names.contains(&"foo.tar.gz"),
             "real artifacts must still be preserved: {names:?}"
         );
+    }
+
+    /// Raw cargo binaries live outside `dist/` in the harness worktree
+    /// (under `.det-tmp/target/<triple>/release/`) and would be lost
+    /// when the worktree is dropped. `preserve_raw_binaries` mirrors
+    /// them into `<dest>/bin/<triple>/<basename>` and rewrites the
+    /// manifest path so publish-only's `SignStage` resolves them under
+    /// the preserved tree.
+    #[test]
+    fn preserve_raw_binaries_copies_under_bin_subdir_and_rewrites_manifest() {
+        let worktree = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+        let triple = "x86_64-unknown-linux-gnu";
+        let bin_rel = format!(".det-tmp/target/{triple}/release/cfgd");
+        let bin_src = worktree.path().join(&bin_rel);
+        std::fs::create_dir_all(bin_src.parent().unwrap()).unwrap();
+        std::fs::write(&bin_src, b"raw-binary-bytes").unwrap();
+
+        std::fs::write(
+            dest.path().join("artifacts.json"),
+            serde_json::to_string_pretty(&serde_json::json!([
+                {
+                    "kind": "binary",
+                    "name": "cfgd",
+                    "path": bin_rel,
+                    "target": triple,
+                    "crate_name": "cfgd",
+                    "metadata": {}
+                }
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        preserve_raw_binaries(worktree.path(), dest.path())
+            .expect("preserve_raw_binaries must succeed");
+
+        let copied = dest.path().join("bin").join(triple).join("cfgd");
+        assert!(
+            copied.is_file(),
+            "raw binary must land at <dest>/bin/<triple>/<name>; got missing {}",
+            copied.display()
+        );
+        assert_eq!(std::fs::read(&copied).unwrap(), b"raw-binary-bytes");
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dest.path().join("artifacts.json")).unwrap())
+                .unwrap();
+        let entry = &manifest.as_array().unwrap()[0];
+        assert_eq!(
+            entry["path"].as_str().unwrap(),
+            format!("dist/bin/{triple}/cfgd"),
+            "manifest path must be rewritten to dist/bin/<triple>/<name> so \
+             load_artifacts_from_manifest re-anchors onto the preserved tree"
+        );
+    }
+
+    /// A non-Binary manifest entry next to a Binary entry must not be
+    /// rewritten — the path-rewrite is scoped to the three binary
+    /// artifact kinds.
+    #[test]
+    fn preserve_raw_binaries_leaves_archive_paths_untouched() {
+        let worktree = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+        let triple = "aarch64-apple-darwin";
+        let bin_rel = format!(".det-tmp/target/{triple}/release/cfgd");
+        std::fs::create_dir_all(
+            worktree
+                .path()
+                .join(format!(".det-tmp/target/{triple}/release")),
+        )
+        .unwrap();
+        std::fs::write(worktree.path().join(&bin_rel), b"bin").unwrap();
+
+        std::fs::write(
+            dest.path().join("artifacts.json"),
+            serde_json::to_string_pretty(&serde_json::json!([
+                {
+                    "kind": "archive",
+                    "name": "cfgd_darwin_arm64.tar.gz",
+                    "path": "dist/cfgd_darwin_arm64.tar.gz",
+                    "target": triple,
+                    "crate_name": "cfgd",
+                    "metadata": {}
+                },
+                {
+                    "kind": "binary",
+                    "name": "cfgd",
+                    "path": bin_rel,
+                    "target": triple,
+                    "crate_name": "cfgd",
+                    "metadata": {}
+                }
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        preserve_raw_binaries(worktree.path(), dest.path()).unwrap();
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dest.path().join("artifacts.json")).unwrap())
+                .unwrap();
+        let arr = manifest.as_array().unwrap();
+        let archive = arr.iter().find(|e| e["kind"] == "archive").unwrap();
+        assert_eq!(
+            archive["path"].as_str().unwrap(),
+            "dist/cfgd_darwin_arm64.tar.gz",
+            "archive entry must remain untouched"
+        );
+        let binary = arr.iter().find(|e| e["kind"] == "binary").unwrap();
+        assert_eq!(
+            binary["path"].as_str().unwrap(),
+            format!("dist/bin/{triple}/cfgd"),
+            "binary entry must be rewritten"
+        );
+    }
+
+    /// Absent `<dest>/artifacts.json` is a tolerated no-op (the harness
+    /// child pipeline may have skipped artifact production altogether
+    /// for a fixture run).
+    #[test]
+    fn preserve_raw_binaries_no_op_when_manifest_absent() {
+        let worktree = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+        preserve_raw_binaries(worktree.path(), dest.path())
+            .expect("missing artifacts.json must not error");
     }
 
     /// `preserve_dist_tree` copies the full `dist/` tree verbatim, including

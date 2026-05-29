@@ -376,6 +376,14 @@ pub(crate) fn build_server_json(mcp: &McpConfig, version: &str) -> ServerJson {
         .packages
         .iter()
         .map(|pkg| {
+            // OCI image refs already pin the version (e.g.
+            // `ghcr.io/foo/bar:v1.2.3`), so the registry's
+            // `body.packages[i].version` field is redundant for OCI
+            // packages. Combined with `Package::version`'s
+            // `skip_serializing_if = "String::is_empty"`, the empty
+            // value is omitted on the wire — matching upstream Go's
+            // `json:"version,omitempty"` and satisfying the openapi
+            // schema's `minLength: 1` constraint.
             let v = if pkg.registry_type == anodizer_core::config::McpRegistryType::Oci {
                 String::new()
             } else {
@@ -423,6 +431,8 @@ fn publish_payload(
 ) -> Result<()> {
     let client = build_client(Duration::from_secs(60))?;
 
+    let request_body_len = body.len();
+
     // reqwest validates header values; CRLF in `token` surfaces as a send-error, not header injection.
     let (_, response_body) = retry_http_blocking(
         "mcp: POST /v0/publish",
@@ -436,17 +446,27 @@ fn publish_payload(
                 .body(body.to_string())
                 .send()
         },
-        |status, body| {
+        |status, response| {
             // Defense-in-depth: if the registry echoes our Authorization
             // header back in an error body, scrub the token before it
             // lands in the user-visible log. No evidence the registry
             // does this today, but the cost of redacting is one regex's
             // worth of CPU vs. the cost of leaking a token to logs.
+            //
+            // Include the request body length AND a bounded slice of
+            // the response so 4xx schema rejections (e.g. the registry
+            // tightening `body.packages[i].version`'s `minLength`) are
+            // diagnosable from CI logs without a curl reproduction.
+            let scrubbed = anodizer_core::redact::redact_bearer_tokens(response);
+            let snippet: String = scrubbed.chars().take(512).collect();
+            let truncated = if scrubbed.chars().count() > 512 {
+                "...[truncated]"
+            } else {
+                ""
+            };
             format!(
-                "mcp: POST {} returned HTTP {}: {}",
-                publish_url,
-                status,
-                anodizer_core::redact::redact_bearer_tokens(body)
+                "mcp: POST {} returned HTTP {} (request_body_len={}; response={}{})",
+                publish_url, status, request_body_len, snippet, truncated
             )
         },
     )

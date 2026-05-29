@@ -92,10 +92,14 @@ pub struct Package {
     pub identifier: String,
     /// Package version. **Set to `""` when `registry_type == "oci"`** —
     /// pinned by GR `mcp.go:132-135` (`if pkg.RegistryType == "oci"
-    /// { version = "" }`). Always emitted, even when empty (the registry
-    /// omits version for OCI packages — handled in the builder, not via
-    /// serde).
-    #[serde(default)]
+    /// { version = "" }`). The OCI image reference already pins the
+    /// version (e.g. `ghcr.io/foo/bar:v1.2.3`), so the registry's
+    /// `body.packages[i].version` field is redundant for OCI packages.
+    /// `skip_serializing_if = "String::is_empty"` mirrors upstream Go's
+    /// `json:"version,omitempty"` (see `pkg/model/types.go:38`), omitting
+    /// the field on the wire when empty — the registry's openapi schema
+    /// enforces `minLength: 1` and rejects with HTTP 422 otherwise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub version: String,
     /// Transport descriptor (always emitted).
     pub transport: Transport,
@@ -209,11 +213,14 @@ mod tests {
     }
 
     #[test]
-    fn package_version_serializes_even_when_empty_for_oci() {
-        // GR sets version="" for OCI but still emits it in the JSON
-        // (no `omitempty` on the Go side for the version field in this
-        // context). Anodizer mirrors that — the version key is always
-        // present in a Package object.
+    fn package_version_omitted_when_empty_for_oci() {
+        // Upstream Go's `model.Package.Version` is tagged
+        // `json:"version,omitempty"` (pkg/model/types.go:38), so the
+        // empty value GR assigns for OCI packages is dropped on the wire.
+        // The registry's openapi schema enforces `minLength: 1` on
+        // `body.packages[i].version` and rejects with HTTP 422 if the
+        // field is sent as `""`. Mirror the omission via serde's
+        // `skip_serializing_if`.
         let pkg = Package {
             registry_type: "oci".to_string(),
             identifier: "ghcr.io/test/server:v1".to_string(),
@@ -224,8 +231,27 @@ mod tests {
         };
         let v = serde_json::to_value(&pkg).expect("serialize");
         assert_eq!(v["registryType"], "oci");
-        assert!(v.get("version").is_some(), "version key must be present");
-        assert_eq!(v["version"], "");
+        assert!(
+            v.get("version").is_none(),
+            "version key must be omitted when empty (registry rejects \"\" with 422)"
+        );
+    }
+
+    #[test]
+    fn package_version_present_when_non_empty() {
+        // Non-OCI registry types (npm/pypi/nuget/mcpb) require the
+        // version field — confirm serde still emits it when populated.
+        let pkg = Package {
+            registry_type: "npm".to_string(),
+            identifier: "@test/server".to_string(),
+            version: "1.2.3".to_string(),
+            transport: Transport {
+                kind: "stdio".to_string(),
+            },
+        };
+        let v = serde_json::to_value(&pkg).expect("serialize");
+        assert_eq!(v["registryType"], "npm");
+        assert_eq!(v["version"], "1.2.3");
     }
 
     #[test]

@@ -69,7 +69,8 @@ use artifacts::{
 use drift::{inject_drift_byte, pick_first_artifact_for_stage, summarize_drift};
 use env::{BuildSubprocessEnv, build_subprocess_env};
 use preserve::{
-    ContextInputs, preserve_dist_tree, remove_preserved_on_drift, write_preserved_dist_context,
+    ContextInputs, preserve_dist_tree, preserve_raw_binaries, remove_preserved_on_drift,
+    write_preserved_dist_context,
 };
 
 /// Stage subset selector for `--stages=<subset>`.
@@ -578,6 +579,19 @@ impl Harness {
                     format!(
                         "preserving run-0 dist tree from {} to {}",
                         worktree.path().join("dist").display(),
+                        dest.display()
+                    )
+                })?;
+                // Mirror raw cargo binaries under `<dest>/bin/<triple>/`
+                // and rewrite their paths in `<dest>/artifacts.json` so
+                // publish-only's `SignStage` can resolve them under the
+                // preserved tree (binaries live outside `dist/` in the
+                // worktree and are otherwise lost when the worktree is
+                // dropped).
+                preserve_raw_binaries(worktree.path(), dest).with_context(|| {
+                    format!(
+                        "preserving raw binaries from {} into {}",
+                        worktree.path().display(),
                         dest.display()
                     )
                 })?;

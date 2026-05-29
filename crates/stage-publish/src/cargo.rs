@@ -657,7 +657,7 @@ fn wait_for_workspace_deps_to_appear(
 /// upgrades cargo to a different major.minor, that test fails and the
 /// maintainer must re-verify the substrings against the new cargo output
 /// before updating the pinned version. The strings were last verified
-/// against **cargo 1.95.x** (rustc 1.95.0, 2026-04-14).
+/// against **cargo 1.96.x** (rustc 1.96.0, 2026-05-25).
 fn is_index_propagation_failure(stderr: &str) -> bool {
     stderr.contains("no matching package")
         || stderr.contains("failed to select a version")
@@ -2394,14 +2394,14 @@ mod tests {
     /// fixture that triggers each error substring and confirm the wording
     /// matches before bumping `VERIFIED_CARGO_MINOR` below.
     ///
-    /// The substrings were last verified against cargo 1.95.x (rustc 1.95.0,
-    /// released 2026-04-14). Bump `VERIFIED_CARGO_MINOR` only after
+    /// The substrings were last verified against cargo 1.96.x (rustc 1.96.0,
+    /// released 2026-05-25). Bump `VERIFIED_CARGO_MINOR` only after
     /// manually confirming all three substrings still appear verbatim in
     /// the new cargo's publish output.
     #[test]
     fn cargo_version_matches_pinned_discriminator_strings() {
         // Last-verified cargo minor. Update together with re-verification.
-        const VERIFIED_CARGO_MINOR: u64 = 95;
+        const VERIFIED_CARGO_MINOR: u64 = 96;
 
         let output = std::process::Command::new("cargo")
             .arg("--version")

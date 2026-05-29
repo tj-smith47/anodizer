@@ -813,7 +813,6 @@ mcp:
         type: stdio
   auth:
     type: github-oidc
-  skip: true
 
 # Source RPM configuration
 srpm:

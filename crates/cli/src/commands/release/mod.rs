@@ -254,6 +254,8 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     let runtime_nondeterministic_allowlist =
         parse_allow_nondeterministic(&opts.allow_nondeterministic)?;
 
+    let project_root = resolve_project_root(&config_path);
+
     let ctx_opts = build_context_options(
         &opts,
         skip_stages,
@@ -261,6 +263,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         rollback_mode,
         simulate_failure_publishers,
         runtime_nondeterministic_allowlist,
+        project_root,
     );
     let mut ctx = Context::new(config.clone(), ctx_opts);
     helpers::resolve_scm_token_type(&mut ctx, &config);
@@ -727,10 +730,42 @@ fn parse_allow_nondeterministic(entries: &[String]) -> Result<Vec<(String, Strin
         .collect()
 }
 
+/// Resolve `project_root` for [`ContextOptions::project_root`].
+///
+/// Precedence:
+///   1. The parent directory of the resolved config file (authoritative
+///      — the operator may have invoked anodizer from a subdirectory
+///      with `--config=../anodize.yaml`).
+///   2. Process CWD (`current_dir`), as a fallback when the config path
+///      lacks a parent component (e.g. a bare filename in `/`).
+///
+/// Both branches canonicalize when possible so downstream consumers that
+/// join repo-relative paths (`.github/workflows/<name>.yml`,
+/// `.krew.yaml`, snapcraft icons) hit the real tree even when called
+/// from a symlinked checkout.
+fn resolve_project_root(config_path: &std::path::Path) -> Option<PathBuf> {
+    let candidate = config_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())?;
+    Some(std::fs::canonicalize(&candidate).unwrap_or(candidate))
+}
+
 /// Assemble the [`ContextOptions`] from parsed flags + derived state.
 /// `resume_release` auto-enables under `--publish-only` so the publish
 /// pipeline's `ReleaseStage` and `github-release` publisher target the same
 /// tag without tripping the leftover-asset bail.
+///
+/// `project_root` resolves from the parent directory of the resolved
+/// config file when available, falling back to the process CWD. The
+/// resolved config path is authoritative because the operator may have
+/// invoked anodizer from a subdirectory with `--config=../anodize.yaml`;
+/// CWD alone would point the consumer (e.g. the krew publisher's
+/// `.github/workflows/` scan) at the wrong tree. Stage modules that
+/// need to read repo-relative files (`.github/workflows/`,
+/// `.krew.yaml`, snapcraft icons, ...) consume this via
+/// `ctx.options.project_root`.
 fn build_context_options(
     opts: &ReleaseOpts,
     skip_stages: Vec<String>,
@@ -738,6 +773,7 @@ fn build_context_options(
     rollback_mode: Option<RollbackMode>,
     simulate_failure_publishers: Vec<String>,
     runtime_nondeterministic_allowlist: Vec<(String, String)>,
+    project_root: Option<PathBuf>,
 ) -> ContextOptions {
     ContextOptions {
         snapshot: opts.snapshot,
@@ -759,7 +795,7 @@ fn build_context_options(
             .map(anodizer_core::partial::PartialTarget::Targets),
         merge: opts.merge,
         publish_only: opts.publish_only,
-        project_root: None,
+        project_root,
         strict: opts.strict,
         resume_release: opts.resume_release || opts.publish_only,
         replace_existing_artifacts: opts.replace_existing,
@@ -2241,5 +2277,112 @@ mod tests {
             tag_template: template.to_string(),
             ..Default::default()
         }
+    }
+
+    // ---- project_root resolution -----------------------------------------
+
+    /// `resolve_project_root` must return the parent of a normal config
+    /// path so the krew publisher's `.github/workflows/` scan finds the
+    /// repo's workflows even when anodizer is invoked from a sibling
+    /// directory with `--config=<repo>/anodize.yaml`.
+    #[test]
+    fn resolve_project_root_uses_config_parent() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let repo_dir = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).expect("create repo dir");
+        let cfg_path = repo_dir.join("anodize.yaml");
+        std::fs::write(&cfg_path, "project_name: x\n").expect("write config");
+
+        let resolved = resolve_project_root(&cfg_path).expect("project_root resolved");
+        let expected = std::fs::canonicalize(&repo_dir).expect("canonicalize repo dir");
+        assert_eq!(resolved, expected);
+    }
+
+    /// When the config path has no parent component (rare — bare filename),
+    /// the resolver must fall back to CWD so consumers still get *some*
+    /// anchor instead of `None`. CWD is process-state we can't override
+    /// in tests, so we assert the field is populated rather than match a
+    /// specific path.
+    #[test]
+    fn resolve_project_root_falls_back_to_cwd_for_bare_filename() {
+        let bare = std::path::Path::new("anodize.yaml");
+        let resolved = resolve_project_root(bare);
+        assert!(
+            resolved.is_some(),
+            "bare-filename config should fall back to CWD, got None"
+        );
+    }
+
+    /// `build_context_options` must surface the `project_root` it was
+    /// handed verbatim onto `ContextOptions` so the krew publisher's
+    /// `detect_krew_mode` workflow scan can find `.github/workflows/`.
+    /// Hard-coded `None` here was the original bug: a wired
+    /// `rajatjindal/krew-release-bot` step would be invisible and the
+    /// publisher would fall through to the wrong mode.
+    #[test]
+    fn build_context_options_propagates_project_root() {
+        let opts = ReleaseOpts {
+            crate_names: vec![],
+            all: false,
+            force: false,
+            snapshot: false,
+            nightly: false,
+            dry_run: false,
+            clean: false,
+            skip: vec![],
+            token: None,
+            verbose: false,
+            debug: false,
+            quiet: false,
+            config_override: None,
+            parallelism: 1,
+            single_target: None,
+            targets: None,
+            release_notes: None,
+            release_notes_tmpl: None,
+            workspace: None,
+            draft: false,
+            release_header: None,
+            release_header_tmpl: None,
+            release_footer: None,
+            release_footer_tmpl: None,
+            fail_fast: false,
+            split: false,
+            merge: false,
+            publish_only: false,
+            strict: false,
+            prepare: false,
+            announce_only: false,
+            resume_release: false,
+            replace_existing: false,
+            preflight: false,
+            no_preflight: false,
+            strict_preflight: false,
+            no_post_publish_poll: false,
+            no_gate_submitter: false,
+            rollback: None,
+            simulate_failure: vec![],
+            rollback_only: false,
+            from_run: None,
+            allow_rerun: false,
+            allow_nondeterministic: vec![],
+            summary_json: None,
+            allow_ai_failure: false,
+        };
+        let root = std::path::PathBuf::from("/tmp/example-project");
+        let ctx_opts = build_context_options(
+            &opts,
+            vec![],
+            vec![],
+            None,
+            vec![],
+            vec![],
+            Some(root.clone()),
+        );
+        assert_eq!(
+            ctx_opts.project_root,
+            Some(root),
+            "project_root must flow through build_context_options into ContextOptions"
+        );
     }
 }

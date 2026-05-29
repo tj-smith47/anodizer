@@ -117,10 +117,10 @@ pub(super) struct RunOpts {
     /// where they know what they're doing and want the mid-pipeline
     /// failure to surface instead.
     pub no_preflight: bool,
-    /// True when the dispatcher already handled preflight + binary_signs
-    /// suppression upstream, so per-iteration meta-logs should stay quiet.
-    /// Set by `run_per_crate` for each inner iteration; defaults to false
-    /// for direct callers (flat layout / single-crate publish-only).
+    /// True when the dispatcher already handled the credential preflight
+    /// upstream, so per-iteration meta-logs should stay quiet. Set by
+    /// `run_per_crate` for each inner iteration; defaults to false for
+    /// direct callers (flat layout / single-crate publish-only).
     pub silent_meta: bool,
 }
 
@@ -171,12 +171,6 @@ pub(super) fn run_per_crate(
         preflight_credentials(|k| ctx.env_var(k))?;
     }
 
-    // Suppress binary_signs once before the loop. The harness never
-    // preserves raw binaries, so re-signing them in publish-only would
-    // crash on missing files — clearing the list before any iteration
-    // keeps the warning to once-per-process instead of once-per-crate.
-    suppress_binary_signs(ctx, log);
-
     // Build a name → WorkspaceConfig index up-front so each iteration
     // can apply the right overlay in O(1). Workspace-based configs leave
     // top-level `config.crates` empty; per-crate iteration must scope
@@ -207,6 +201,15 @@ pub(super) fn run_per_crate(
     // aren't in the current iteration's preserved dist.
     let prev_selected = ctx.options.selected_crates.clone();
     let prev_skip_stages = ctx.options.skip_stages.clone();
+    // Save ctx.config.dist so each iteration can re-anchor it onto the
+    // per-crate dist subdir without leaking the override into the
+    // caller's state on Ok or Err. Downstream code that emits release
+    // metadata (`write_pre_release_metadata`, the GitHub uploader's
+    // relative-path resolver) reads `ctx.config.dist` directly; without
+    // per-iteration scoping every crate's metadata.json would land at
+    // (or be looked for under) the workspace-root `dist/` instead of
+    // the active crate's preserved subdir.
+    let prev_dist = ctx.config.dist.clone();
     let iteration_result = (|| -> Result<()> {
         for crate_name in &crate_order {
             let crate_dist = dist_base.join(crate_name);
@@ -237,6 +240,9 @@ pub(super) fn run_per_crate(
                 crate::commands::helpers::apply_workspace_overlay(&mut ctx.config, ws);
                 merge_workspace_skip(&mut ctx.options.skip_stages, &ws.skip);
             }
+            // Re-anchor ctx.config.dist onto the per-crate preserved
+            // subdir for the duration of this iteration.
+            ctx.config.dist = crate_dist.clone();
             // Scope selected_crates to the current crate so every
             // publisher's effective-crates resolution sees a single entry
             // instead of the workspace-flattened fallback.
@@ -252,6 +258,7 @@ pub(super) fn run_per_crate(
     })();
     ctx.options.selected_crates = prev_selected;
     ctx.options.skip_stages = prev_skip_stages;
+    ctx.config.dist = prev_dist;
     iteration_result
 }
 
@@ -304,18 +311,6 @@ fn run_one_crate_dist(
         }
     } else {
         preflight_credentials(|k| ctx.env_var(k))?;
-    }
-
-    // ── Suppress binary_signs ─────────────────────────────────────────
-    // Publish-only cannot produce shippable binary signatures: raw
-    // binaries live at `.det-tmp/target/<triple>/release/<bin>` in the
-    // harness's worktree, which is NOT preserved into `dist/`. cosign
-    // sign-blob inside SignStage would crash trying to read the missing
-    // path. `suppress_binary_signs` clears the list and warns once.
-    // `run_per_crate` calls this before the loop so the warn fires
-    // once per process; direct callers (flat layout) run it here.
-    if !opts.silent_meta {
-        suppress_binary_signs(ctx, log);
     }
 
     // ── Load preserved-dist context ────────────────────────────────────
@@ -779,29 +774,6 @@ fn discover_preserved_contexts(dist: &Path) -> Result<Vec<(PathBuf, PreservedDis
 /// that's fatal.
 fn discover_artifacts_manifests(dist: &Path) -> Result<Vec<PathBuf>> {
     discover_sharded_manifests(dist, "artifacts")
-}
-
-/// Clear `ctx.config.binary_signs` and warn once. Publish-only cannot
-/// produce shippable binary signatures: raw binaries live at
-/// `.det-tmp/target/<triple>/release/<bin>` in the harness worktree,
-/// which is NOT preserved into `dist/`. cosign sign-blob inside
-/// SignStage would crash trying to read the missing path. Operators
-/// needing signed binaries: configure archive-level `signs:` (binaries
-/// inside an archive get the archive's signature), or sign at consumer-
-/// side via cosign verify-blob against binaries inside the released
-/// archive.
-fn suppress_binary_signs(ctx: &mut Context, log: &StageLogger) {
-    if ctx.config.binary_signs.is_empty() {
-        return;
-    }
-    let n = ctx.config.binary_signs.len();
-    log.warn(&format!(
-        "publish-only: suppressing {n} binary_signs entrie(s); raw binaries are not \
-         preserved into dist/ by the determinism harness, so binary-level signatures \
-         cannot be (re-)produced in this mode. Configure archive-level signs: or sign \
-         on the consumer side."
-    ));
-    ctx.config.binary_signs.clear();
 }
 
 /// Detect the upload-artifact merge-collision symptom: both
@@ -2041,6 +2013,64 @@ mod tests {
             into.iter().any(|s| s == "announce"),
             "workspace-level announce skip must propagate; got {:?}",
             into
+        );
+    }
+
+    // ── run_per_crate dist restore ───────────────────────────────────
+
+    /// Regression: `run_per_crate` re-anchors `ctx.config.dist` onto
+    /// the per-crate preserved subdir for the duration of each
+    /// iteration so downstream code reading `ctx.config.dist`
+    /// (`write_pre_release_metadata`, the GitHub uploader's
+    /// relative-path resolver) sees the active crate's preserved
+    /// location. The pre-fix code left `ctx.config.dist` pointing at
+    /// the workspace-root `./dist`, so cfgd's per-crate metadata.json
+    /// landed in the wrong place. The save/restore must hold even
+    /// when the iteration body errors out — otherwise a partial
+    /// publish-only run would leak the per-iteration dist into the
+    /// caller's context.
+    #[test]
+    fn run_per_crate_restores_ctx_config_dist_on_error() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let mut config = Config::default();
+        let original_dist = std::path::PathBuf::from("/tmp/anodize-publish-only-restore-test/dist");
+        config.dist = original_dist.clone();
+        let mut ctx = Context::new(config.clone(), ContextOptions::default());
+
+        // `dist_base` points at a path that doesn't exist; `run_per_crate`
+        // will iterate to the first crate, then `run_one_crate_dist`
+        // will fail at `detect_dist_layout` / preserved-context discovery.
+        // The dist-restore logic must still fire on the Err branch.
+        let dist_base = std::path::PathBuf::from(
+            "/tmp/anodize-publish-only-restore-test/nonexistent-dist-base",
+        );
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-only-restore-test",
+            anodizer_core::log::Verbosity::Quiet,
+        );
+        let opts = RunOpts {
+            dry_run: true,
+            no_preflight: true,
+            silent_meta: false,
+        };
+        let result = run_per_crate(
+            &mut ctx,
+            &config,
+            &log,
+            opts,
+            dist_base,
+            vec!["cfgd".to_string()],
+        );
+        assert!(
+            result.is_err(),
+            "iteration must fail when dist_base is absent — fixture precondition"
+        );
+        assert_eq!(
+            ctx.config.dist, original_dist,
+            "ctx.config.dist must be restored after the iteration (Ok or Err) \
+             so the per-iteration override never leaks into the caller's context"
         );
     }
 }

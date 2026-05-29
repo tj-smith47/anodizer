@@ -552,7 +552,61 @@ fn artifacts_to_platforms(
 // publish_to_krew
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
+/// Per-crate outcome returned by [`publish_to_krew`].
+///
+/// `pushed` flags whether the run made a real upstream side effect
+/// (branch push + PR opened). Drives the caller's `any_pushed` gate
+/// that decides whether to populate rollback evidence.
+///
+/// `bot_template_pre_image_sha` records the SHA-256 hex digest of the
+/// local bot-template file *before* the BotTemplate-mode write
+/// replaced it. The value is only populated for
+/// [`KrewMode::BotTemplate`] runs; PR-direct modes leave it `None`
+/// (there is no local file to checksum). Surfaces to
+/// [`anodizer_core::publish_evidence::KrewExtra::bot_template_pre_image_sha`]
+/// so a future rollback pass can detect if the on-disk template
+/// drifted out from under the publisher between publish and rollback.
+#[derive(Debug, Default, Clone)]
+pub struct KrewPublishOutcome {
+    /// `true` when a real branch push happened. PR-direct-only mode
+    /// (`pushed=true`) is what the caller's `any_pushed` gate checks.
+    pub pushed: bool,
+    /// SHA-256 hex of the bot-template file content as it existed
+    /// before this run wrote a fresh template. `None` outside
+    /// BotTemplate mode or when the template did not previously exist.
+    pub bot_template_pre_image_sha: Option<String>,
+}
+
+impl KrewPublishOutcome {
+    /// Convenience constructor for run paths that exit before reaching
+    /// the bot-template / push branches.
+    fn skipped() -> Self {
+        Self {
+            pushed: false,
+            bot_template_pre_image_sha: None,
+        }
+    }
+}
+
+/// Hex-encode the SHA-256 of `data`. Lower-case, no separators —
+/// matches the convention used by [`anodizer_core::publish_evidence`]
+/// SHA fields and downstream comparison logic.
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(data);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut out, "{:02x}", byte).expect("write to String never fails");
+    }
+    out
+}
+
+pub fn publish_to_krew(
+    ctx: &mut Context,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<KrewPublishOutcome> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "krew")?;
 
     let krew_cfg = publish
@@ -573,7 +627,7 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
                 "krew: skipping config for '{}' (skip=true)",
                 crate_name
             ));
-            return Ok(false);
+            return Ok(KrewPublishOutcome::skipped());
         }
     }
     let proceed = anodizer_core::config::evaluate_if_condition(
@@ -586,7 +640,7 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
             "krew: skipping '{}' — `if` condition evaluated falsy",
             crate_name
         ));
-        return Ok(false);
+        return Ok(KrewPublishOutcome::skipped());
     }
     if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx, log) {
         log.status(&format!(
@@ -598,7 +652,7 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
                 .map(|v| v.as_str())
                 .unwrap_or("")
         ));
-        return Ok(false);
+        return Ok(KrewPublishOutcome::skipped());
     }
 
     // Resolve repository owner/name from `repository:` (RepositoryConfig).
@@ -616,7 +670,7 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
             "(dry-run) would submit Krew plugin manifest for '{}' to {}/{}",
             crate_name, repo_owner, repo_name
         ));
-        return Ok(false);
+        return Ok(KrewPublishOutcome::skipped());
     }
 
     let version = ctx.version();
@@ -797,6 +851,30 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
         // The bot owns the krew-index PR — anodizer must NOT clone or
         // PR against `kubernetes-sigs/krew-index` from this code path
         // or two PRs would race to land the same version.
+        //
+        // Pre-image SHA recording: capture the on-disk content's
+        // SHA-256 *before* we overwrite it so a future rollback pass
+        // can decide whether the template was mutated unexpectedly
+        // between this run and the rollback (e.g. a concurrent hand
+        // edit). `None` when the file does not yet exist — first
+        // publish of a freshly-wired bot template has no pre-image.
+        // Read errors other than NotFound surface as warnings rather
+        // than aborts so a permissions hiccup never blocks the release.
+        let pre_image_sha = match std::fs::read(template_path) {
+            Ok(bytes) => Some(sha256_hex(&bytes)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                log.warn(&format!(
+                    "krew: could not read existing bot template at {} for \
+                     pre-image SHA recording ({}); rollback drift detection \
+                     will be unavailable for this run",
+                    template_path.display(),
+                    err
+                ));
+                None
+            }
+        };
+
         let bot_platforms = platforms_with_tag_placeholders(&platforms, &version);
         let bot_template = generate_bot_template(&KrewManifestParams {
             name: plugin_name,
@@ -820,7 +898,10 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
             plugin_name,
             template_path.display()
         ));
-        return Ok(false);
+        return Ok(KrewPublishOutcome {
+            pushed: false,
+            bot_template_pre_image_sha: pre_image_sha,
+        });
     }
     if matches!(mode, KrewMode::PrDirectWithHint) {
         log.status(&format!(
@@ -976,7 +1057,10 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
         ctx.record_publisher_outcome(outcome);
     }
 
-    Ok(pushed)
+    Ok(KrewPublishOutcome {
+        pushed,
+        bot_template_pre_image_sha: None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1806,6 +1890,15 @@ impl anodizer_core::Publisher for KrewPublisher {
         log.status(&run_start_message(selected.len()));
         let mut processed = 0usize;
         let mut any_pushed = false;
+        // BotTemplate-mode pre-image SHA — populated by the most recent
+        // BotTemplate run. Multi-crate workspaces with multiple
+        // bot-templated plugins would each carry their own SHA; the
+        // current `KrewExtra` schema only records one value, so a
+        // future schema bump (per-target SHA map) is the right shape
+        // when that workspace shape lands. Until then this records the
+        // last-seen value, which is correct for the single-plugin
+        // workspaces that dominate today.
+        let mut bot_template_pre_image_sha: Option<String> = None;
         for crate_name in &selected {
             // Defensive guard for explicit `--crate=X` selection when X has no
             // publisher block; implicit-all is already filtered by effective_publish_crates above.
@@ -1815,8 +1908,12 @@ impl anodizer_core::Publisher for KrewPublisher {
             }
             processed += 1;
             log.status(&run_per_crate_start_message(crate_name));
-            if publish_to_krew(ctx, crate_name, &log)? {
+            let outcome = publish_to_krew(ctx, crate_name, &log)?;
+            if outcome.pushed {
                 any_pushed = true;
+            }
+            if outcome.bot_template_pre_image_sha.is_some() {
+                bot_template_pre_image_sha = outcome.bot_template_pre_image_sha;
             }
         }
         if should_warn_no_eligible(processed, selected.len()) {
@@ -1825,14 +1922,23 @@ impl anodizer_core::Publisher for KrewPublisher {
             log.status(&run_done_message(processed));
         }
         let mut evidence = anodizer_core::PublishEvidence::new("krew");
-        // Only record rollback targets when at least one branch push was made.
-        // Phantom evidence causes rollback to close PRs that were never opened
-        // (dry-run, skip_upload, no-op NoChanges, bot-template mode).
-        if any_pushed {
-            let targets = collect_krew_run_targets(ctx);
+        // Record evidence whenever we either pushed (PR-direct modes)
+        // or captured a bot-template pre-image SHA (BotTemplate mode).
+        // The pre-image SHA is the only operator-public artefact of a
+        // BotTemplate run — without it, a future rollback can't detect
+        // template drift, so the evidence block has to land even
+        // though `krew_targets` stays empty (the bot owns the
+        // krew-index PR; anodizer has no PR to revert).
+        if any_pushed || bot_template_pre_image_sha.is_some() {
+            let targets = if any_pushed {
+                collect_krew_run_targets(ctx)
+            } else {
+                Vec::new()
+            };
             evidence.extra = anodizer_core::PublishEvidenceExtra::Krew(
                 anodizer_core::publish_evidence::KrewExtra {
                     krew_targets: targets,
+                    bot_template_pre_image_sha,
                 },
             );
         }
@@ -2109,6 +2215,7 @@ mod publisher_tests {
         let extra =
             anodizer_core::PublishEvidenceExtra::Krew(anodizer_core::publish_evidence::KrewExtra {
                 krew_targets: original.clone(),
+                ..Default::default()
             });
         let decoded = decode_krew_targets(&extra);
         assert_eq!(decoded, original);
@@ -2130,6 +2237,7 @@ mod publisher_tests {
                     branch: "demo-v1.2.3".into(),
                     token_env_var: Some("KREW_INDEX_TOKEN".into()),
                 }],
+                ..Default::default()
             });
         let s = serde_json::to_string(&e).expect("serialize");
         assert!(!s.contains("\"token\":"), "{s}");
@@ -2194,6 +2302,96 @@ mod publisher_tests {
             targets[0].branch.starts_with("demo-v"),
             "branch: {}",
             targets[0].branch
+        );
+    }
+
+    /// `sha256_hex` must emit lower-case hex with no separators so the
+    /// digest is byte-comparable against the convention used elsewhere
+    /// in `publish_evidence` (cosign-style hex). Known-answer test:
+    /// SHA-256("") is the documented `e3b0c44...b855` digest.
+    #[test]
+    fn sha256_hex_empty_input_matches_known_digest() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        // Stability pin for the trivial "abc" vector from RFC 6234.
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    /// BotTemplate-mode publish must record the pre-image SHA of the
+    /// on-disk template file so a later rollback pass can detect
+    /// drift. This is the regression pin for the original behaviour
+    /// where the BotTemplate branch returned without surfacing any
+    /// evidence at all — leaving rollback with nothing to compare
+    /// against. Exercises the SHA helper directly against a temp file
+    /// because driving the full `publish_to_krew` path needs an
+    /// artifacts table and network probe state; the helper is the
+    /// load-bearing piece.
+    #[test]
+    fn bot_template_pre_image_sha_recorded_from_local_file() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let template_path = tmp.path().join(".krew.yaml");
+        let initial = b"apiVersion: krew.googlecontainertools.github.com/v1alpha2\n";
+        std::fs::write(&template_path, initial).expect("seed pre-image");
+
+        // Simulate the read-and-hash step the BotTemplate branch performs
+        // before overwriting `template_path`.
+        let pre_image = std::fs::read(&template_path).expect("read pre-image");
+        let pre_image_sha = sha256_hex(&pre_image);
+
+        // Now overwrite — what the publish step does after capturing
+        // the pre-image SHA.
+        std::fs::write(&template_path, b"post-image content").expect("overwrite");
+
+        // The recorded SHA must still match the original content's
+        // digest, NOT the post-image content's.
+        let expected = sha256_hex(initial);
+        assert_eq!(
+            pre_image_sha, expected,
+            "pre-image SHA must reflect content BEFORE the publish overwrite"
+        );
+
+        // And the new on-disk content's SHA must differ — confirms the
+        // hash function discriminates between pre- and post-image states.
+        let post_image = std::fs::read(&template_path).expect("read post-image");
+        let post_image_sha = sha256_hex(&post_image);
+        assert_ne!(
+            pre_image_sha, post_image_sha,
+            "pre-image and post-image SHAs must differ — otherwise rollback \
+             cannot tell whether the template was mutated unexpectedly"
+        );
+    }
+
+    /// `KrewExtra::bot_template_pre_image_sha` must survive a JSON
+    /// round-trip so the value persisted to `report.json` is the same
+    /// value rollback reads back. Also pins that the field is the
+    /// snake_case key downstream tooling will grep for.
+    #[test]
+    fn krew_extra_bot_template_pre_image_sha_serializes() {
+        let extra = anodizer_core::publish_evidence::KrewExtra {
+            krew_targets: vec![],
+            bot_template_pre_image_sha: Some("a".repeat(64)),
+        };
+        let json = serde_json::to_string(&extra).expect("serialize");
+        assert!(
+            json.contains("\"bot_template_pre_image_sha\":\""),
+            "expected snake_case field in JSON; got: {json}"
+        );
+        let decoded: anodizer_core::publish_evidence::KrewExtra =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.bot_template_pre_image_sha, Some("a".repeat(64)));
+
+        // `None` must be omitted from the wire to keep older reports
+        // (pre-field-addition) parseable as the same struct.
+        let absent = anodizer_core::publish_evidence::KrewExtra::default();
+        let json = serde_json::to_string(&absent).expect("serialize absent");
+        assert!(
+            !json.contains("bot_template_pre_image_sha"),
+            "absent SHA must not serialize; got: {json}"
         );
     }
 
