@@ -98,6 +98,18 @@ impl Stage for super::BuildStage {
         };
         let (build_jobs, copy_jobs) = plan_build_jobs(ctx, &log, &inputs)?;
 
+        // Record which crates actually received an in-scope build/copy job so
+        // the binary-artifact guard can tell "no in-scope target in this
+        // shard" (skip) from "built but produced no binary" (real mis-scope).
+        // A crate filtered out by `--targets` / `build.ignore` lands here with
+        // zero jobs and is therefore absent from this set.
+        let built_crate_names: std::collections::HashSet<String> = build_jobs
+            .iter()
+            .chain(copy_jobs.iter())
+            .map(|j| j.crate_name.clone())
+            .collect();
+        ctx.set_built_crate_names(built_crate_names);
+
         // -----------------------------------------------------------------
         // Ensure cross-compilation targets are installed via rustup.
         // -----------------------------------------------------------------

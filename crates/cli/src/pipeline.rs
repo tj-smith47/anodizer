@@ -1151,10 +1151,14 @@ impl Pipeline {
         // Merge-mode checkpoint: binaries are already loaded, so the
         // artifact set is final before the first stage runs.
         if self.expects_binaries && !build_in_pipeline {
+            // Merge mode pre-loaded every crate's binaries and ran no build
+            // stage, so there is no built-set to scope by — pass `None` to
+            // check every in-scope crate.
             anodizer_core::binary_artifact_guard::check(
                 &ctx.config,
                 &ctx.artifacts,
                 &ctx.options.selected_crates,
+                None,
             )?;
         }
 
@@ -1222,10 +1226,15 @@ impl Pipeline {
                         // aborts the release at build time rather than 20
                         // minutes later inside publish/docker.
                         if self.expects_binaries {
+                            // Pass the set of crates the build stage actually
+                            // built so a crate with no in-scope target in this
+                            // shard is skipped, while a built-but-binary-less
+                            // crate still fails.
                             anodizer_core::binary_artifact_guard::check(
                                 &ctx.config,
                                 &ctx.artifacts,
                                 &ctx.options.selected_crates,
+                                ctx.built_crate_names(),
                             )?;
                         }
                     }

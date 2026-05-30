@@ -332,6 +332,17 @@ pub struct Context {
     /// `succeeded`. The slot is single-shot: any unread value is
     /// cleared at the start of every `run` call.
     pub pending_outcome: Option<crate::PublisherOutcome>,
+    /// Distinct set of crate names the build stage actually built — i.e.
+    /// those that had at least one in-scope build (or `copy_from`) job after
+    /// target resolution. `None` until [`BuildStage`] runs (e.g. merge mode,
+    /// which pre-loads artifacts and never invokes the build stage).
+    ///
+    /// Read by the binary-artifact guard to distinguish "configured a
+    /// binary-requiring surface but legitimately had no in-scope target in
+    /// this shard" (skip) from "was built yet produced no binary" (a real
+    /// mis-scope to fail on). Populated via [`Context::set_built_crate_names`]
+    /// and read via [`Context::built_crate_names`].
+    built_crate_names: Option<std::collections::HashSet<String>>,
     /// Injectable environment-variable source. Defaults to
     /// [`ProcessEnvSource`] (reads `std::env::var`). Tests inject a
     /// [`MapEnvSource`](crate::MapEnvSource) via
@@ -367,6 +378,7 @@ impl Context {
             publish_report: None,
             determinism: None,
             pending_outcome: None,
+            built_crate_names: None,
             env_source: Arc::new(ProcessEnvSource),
             #[cfg(feature = "test-helpers")]
             log_capture: None,
@@ -451,6 +463,18 @@ impl Context {
     /// announce stage sees an equivalent context without re-publishing.
     pub fn set_publish_report(&mut self, r: PublishReport) {
         self.publish_report = Some(r);
+    }
+
+    /// Borrow the set of crate names the build stage actually built, or
+    /// `None` if the build stage has not run in this pipeline (merge mode).
+    pub fn built_crate_names(&self) -> Option<&std::collections::HashSet<String>> {
+        self.built_crate_names.as_ref()
+    }
+
+    /// Record the distinct crate names that received at least one in-scope
+    /// build job. Called once by the build stage after job planning.
+    pub fn set_built_crate_names(&mut self, names: std::collections::HashSet<String>) {
+        self.built_crate_names = Some(names);
     }
 
     /// Record an intentional skip from a per-sub-config loop

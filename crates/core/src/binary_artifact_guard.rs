@@ -18,6 +18,7 @@
 
 use crate::artifact::{ArtifactKind, ArtifactRegistry};
 use crate::config::{Config, CrateConfig, PublishConfig};
+use std::collections::HashSet;
 
 /// Artifact kinds that count as "a compiled binary is present for this
 /// crate". A per-target [`ArtifactKind::Archive`] wraps a binary, so its
@@ -37,6 +38,17 @@ const BINARY_PRESENCE_KINDS: &[ArtifactKind] = &[
 /// "all configured crates are in scope"; otherwise only the named crates
 /// are checked.
 ///
+/// `built_crate_names` makes the check target-aware:
+/// - `None` — the build stage did not run in this pipeline (merge mode,
+///   where binaries are pre-loaded); every in-scope crate is checked.
+/// - `Some(set)` — the build stage ran and `set` names the crates that had
+///   at least one in-scope build target. A crate absent from `set` had no
+///   in-scope target in this shard (e.g. a Linux-only crate on a Windows
+///   determinism shard) and is skipped — it is not this shard's
+///   responsibility. A crate present in `set` but with no binary artifact
+///   still fails: it was built yet produced nothing (the real mis-scope the
+///   guard exists to catch).
+///
 /// Returns the first offending crate as an error (named, with the
 /// configured surfaces and the likely causes) so the release aborts at
 /// build time instead of mid-publish.
@@ -44,9 +56,19 @@ pub fn check(
     config: &Config,
     artifacts: &ArtifactRegistry,
     selected_crates: &[String],
+    built_crate_names: Option<&HashSet<String>>,
 ) -> anyhow::Result<()> {
     for krate in &config.crates {
         if !selected_crates.is_empty() && !selected_crates.contains(&krate.name) {
+            continue;
+        }
+
+        // Target-aware skip: the build stage ran but produced no in-scope
+        // build target for this crate, so it was never this shard's job to
+        // build it. Absent only when `built_crate_names` is `Some`.
+        if let Some(built) = built_crate_names
+            && !built.contains(&krate.name)
+        {
             continue;
         }
 
@@ -211,7 +233,9 @@ mod tests {
         let mut artifacts = ArtifactRegistry::new();
         artifacts.add(source_artifact("svc"));
 
-        let err = check(&config, &artifacts, &[]).unwrap_err().to_string();
+        let err = check(&config, &artifacts, &[], None)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("crate 'svc'"), "{err}");
         assert!(err.contains("docker_v2"), "{err}");
         assert!(err.contains("scoop"), "{err}");
@@ -227,7 +251,7 @@ mod tests {
         let mut artifacts = ArtifactRegistry::new();
         artifacts.add(source_artifact("libonly"));
 
-        check(&config, &artifacts, &[]).expect("library crate must pass");
+        check(&config, &artifacts, &[], None).expect("library crate must pass");
     }
 
     #[test]
@@ -239,7 +263,7 @@ mod tests {
         let mut artifacts = ArtifactRegistry::new();
         artifacts.add(binary_artifact("svc"));
 
-        check(&config, &artifacts, &[]).expect("binary present must pass");
+        check(&config, &artifacts, &[], None).expect("binary present must pass");
     }
 
     #[test]
@@ -262,7 +286,7 @@ mod tests {
             size: None,
         });
 
-        check(&config, &artifacts, &[]).expect("archive-wrapped binary must pass");
+        check(&config, &artifacts, &[], None).expect("archive-wrapped binary must pass");
     }
 
     #[test]
@@ -276,7 +300,7 @@ mod tests {
         let mut artifacts = ArtifactRegistry::new();
         artifacts.add(source_artifact("svc"));
 
-        check(&config, &artifacts, &[]).expect("empty surface list must pass");
+        check(&config, &artifacts, &[], None).expect("empty surface list must pass");
     }
 
     #[test]
@@ -290,7 +314,60 @@ mod tests {
         let mut artifacts = ArtifactRegistry::new();
         artifacts.add(source_artifact("svc"));
 
-        check(&config, &artifacts, &["other".to_string()])
+        check(&config, &artifacts, &["other".to_string()], None)
             .expect("out-of-scope crate must not be checked");
+    }
+
+    #[test]
+    fn skips_crate_absent_from_built_set() {
+        // The cfgd-csi-on-macOS case: the crate configures docker_v2 but had
+        // no in-scope build target in this shard, so the build stage never
+        // built it. It must NOT be this shard's responsibility — skip it.
+        let mut krate = crate_named("cfgd-csi");
+        krate.docker_v2 = Some(vec![DockerV2Config::default()]);
+        let config = config_with(krate);
+
+        let artifacts = ArtifactRegistry::new();
+        let built: HashSet<String> = ["cfgd".to_string()].into_iter().collect();
+
+        check(&config, &artifacts, &[], Some(&built))
+            .expect("crate with no in-scope target must be skipped");
+    }
+
+    #[test]
+    fn bails_when_built_crate_has_no_binary() {
+        // The real mis-scope: the crate WAS built (present in the built set)
+        // yet produced no binary artifact. The guard must still fire.
+        let mut krate = crate_named("svc");
+        krate.docker_v2 = Some(vec![DockerV2Config::default()]);
+        let config = config_with(krate);
+
+        let mut artifacts = ArtifactRegistry::new();
+        artifacts.add(source_artifact("svc"));
+        let built: HashSet<String> = ["svc".to_string()].into_iter().collect();
+
+        let err = check(&config, &artifacts, &[], Some(&built))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("crate 'svc'"), "{err}");
+        assert!(err.contains("no binary artifacts"), "{err}");
+    }
+
+    #[test]
+    fn none_built_set_still_bails_on_missing_binary() {
+        // Merge-mode call site passes `None`: every in-scope crate is checked,
+        // preserving the original bail-on-no-binary behavior.
+        let mut krate = crate_named("svc");
+        krate.docker_v2 = Some(vec![DockerV2Config::default()]);
+        let config = config_with(krate);
+
+        let mut artifacts = ArtifactRegistry::new();
+        artifacts.add(source_artifact("svc"));
+
+        let err = check(&config, &artifacts, &[], None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("crate 'svc'"), "{err}");
+        assert!(err.contains("no binary artifacts"), "{err}");
     }
 }
