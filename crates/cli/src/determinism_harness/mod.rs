@@ -702,6 +702,7 @@ impl Harness {
             self.targets.as_deref(),
             &extra_skip,
             self.child_snapshot,
+            self.crate_name.as_deref(),
         )
     }
 

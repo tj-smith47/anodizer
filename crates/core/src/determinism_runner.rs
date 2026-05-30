@@ -113,6 +113,7 @@ pub fn run_build_pipeline_subprocess(
     targets: Option<&[String]>,
     extra_skip: &[String],
     snapshot: bool,
+    crate_name: Option<&str>,
 ) -> Result<()> {
     let mut cmd = build_subprocess_command(
         anodize_binary,
@@ -121,6 +122,7 @@ pub fn run_build_pipeline_subprocess(
         targets,
         extra_skip,
         snapshot,
+        crate_name,
     );
     tracing::debug!(
         args = ?cmd.get_args(),
@@ -150,6 +152,7 @@ fn build_subprocess_command(
     targets: Option<&[String]>,
     extra_skip: &[String],
     snapshot: bool,
+    crate_name: Option<&str>,
 ) -> Command {
     let mut cmd = Command::new(anodize_binary);
     let extra_refs: Vec<&str> = extra_skip.iter().map(String::as_str).collect();
@@ -162,6 +165,15 @@ fn build_subprocess_command(
         && !list.is_empty()
     {
         cmd.arg(format!("--targets={}", list.join(",")));
+    }
+    // Scope the child build to the same crate the harness is preserving for.
+    // Without it a workspace build defaults to its primary crate, so a
+    // per-crate shard would rebuild (and preserve) the wrong member's
+    // artifacts — e.g. a library's source archive in place of a binary
+    // crate's compiled binaries, leaving publish-only with no binary to
+    // ship or stage into a docker context.
+    if let Some(name) = crate_name {
+        cmd.arg(format!("--crate={name}"));
     }
     cmd.current_dir(worktree_path);
     cmd.env_clear();
@@ -195,7 +207,7 @@ mod tests {
         let env = HashMap::new();
         let worktree = std::env::temp_dir();
         let bogus = PathBuf::from("/nonexistent/anodize-binary-for-tests");
-        let res = run_build_pipeline_subprocess(&bogus, &worktree, &env, None, &[], true);
+        let res = run_build_pipeline_subprocess(&bogus, &worktree, &env, None, &[], true, None);
         assert!(
             res.is_err(),
             "missing binary should surface as an error, not a panic"
@@ -215,6 +227,7 @@ mod tests {
             None,
             &[],
             true,
+            None,
         );
         let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().expect("ascii")).collect();
         assert!(
@@ -250,6 +263,7 @@ mod tests {
             Some(&triples),
             &[],
             true,
+            None,
         );
         let args: Vec<String> = cmd
             .get_args()
@@ -278,6 +292,7 @@ mod tests {
             Some(&empty),
             &[],
             true,
+            None,
         );
         let args: Vec<String> = cmd
             .get_args()
@@ -303,6 +318,7 @@ mod tests {
             None,
             &[],
             false,
+            None,
         );
         let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().expect("ascii")).collect();
         assert!(
@@ -314,6 +330,57 @@ mod tests {
             "argv still needs --skip=...: {args:?}"
         );
         assert_eq!(args[0], "release", "argv must lead with `release`");
+    }
+
+    /// A per-crate determinism shard MUST scope the child build to its
+    /// crate, else a workspace build defaults to the primary member and
+    /// the shard preserves the wrong crate's artifacts (a library's source
+    /// archive in place of a binary crate's binaries), starving publish-only
+    /// of the binaries docker and the binary publishers need.
+    #[test]
+    fn subprocess_command_scopes_to_crate_when_named() {
+        let env = HashMap::new();
+        let cmd = build_subprocess_command(
+            &PathBuf::from("/usr/bin/anodize"),
+            &std::env::temp_dir(),
+            &env,
+            None,
+            &[],
+            true,
+            Some("cfgd"),
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_str().expect("ascii").to_string())
+            .collect();
+        assert!(
+            args.iter().any(|a| a == "--crate=cfgd"),
+            "expected --crate=cfgd to scope the child build; got {args:?}"
+        );
+    }
+
+    /// `None` (a single-crate / non-workspace project) must NOT emit
+    /// `--crate`, so the default whole-project build is preserved.
+    #[test]
+    fn subprocess_command_omits_crate_when_none() {
+        let env = HashMap::new();
+        let cmd = build_subprocess_command(
+            &PathBuf::from("/usr/bin/anodize"),
+            &std::env::temp_dir(),
+            &env,
+            None,
+            &[],
+            true,
+            None,
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_str().expect("ascii").to_string())
+            .collect();
+        assert!(
+            args.iter().all(|a| !a.starts_with("--crate")),
+            "no crate named: --crate must be omitted; got {args:?}"
+        );
     }
 
     #[test]
