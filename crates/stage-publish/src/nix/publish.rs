@@ -136,11 +136,26 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
 
     log.status(&format!("wrote Nix expression: {}", nix_file.display()));
 
+    // (Re)generate the root `flake.nix`, merging this package into the
+    // set recovered from any prior committed flake. Without a root flake
+    // the overlay derivations are not flake-installable
+    // (`nix profile install …#<name>` / `nix build .#<name>` /
+    // `nix run …#<name>` have nothing to resolve). Merge-by-attr (rather
+    // than re-globbing `pkgs/*`) keeps custom-`path` packages and prior
+    // siblings intact across the per-crate re-clone loop. The attr is the
+    // package name; the path is the derivation file actually written
+    // (honoring `nix.path`).
+    let flake_rel = super::flake::write_flake(repo_path, name, &nix_path)?;
+    log.status(&format!(
+        "wrote root flake: {}",
+        repo_path.join(flake_rel).display()
+    ));
+
     finalize_publish(
         ctx,
         nix_cfg,
         repo_path,
-        &nix_path,
+        &[&nix_path, flake_rel],
         name,
         &version,
         &repo_owner,
@@ -603,7 +618,7 @@ fn finalize_publish(
     ctx: &mut Context,
     nix_cfg: &NixConfig,
     repo_path: &Path,
-    nix_path: &str,
+    files: &[&str],
     name: &str,
     version: &str,
     repo_owner: &str,
@@ -627,7 +642,7 @@ fn finalize_publish(
     let branch = util::resolve_branch(nix_cfg.repository.as_ref());
     let outcome = util::commit_and_push_with_opts(
         repo_path,
-        &[nix_path],
+        files,
         &commit_msg,
         branch,
         "nix",

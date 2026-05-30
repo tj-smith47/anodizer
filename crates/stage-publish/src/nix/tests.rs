@@ -79,6 +79,79 @@ fn test_generate_nix_expression_basic() {
 }
 
 #[test]
+fn test_derivation_url_map_pairs_nix_double_with_go_arch_asset() {
+    // The derivation's `urlMap` is keyed by Nix system doubles
+    // (`<arch>-<os>`) but each value is the go-arch-named release asset
+    // for that system. A wrong pairing is a 404 at `nix-build` time, the
+    // same failure class as a binstall asset-name bug. Pin that each
+    // standard system selects the correctly-named asset:
+    //   x86_64-linux   -> ...-linux-amd64.tar.gz
+    //   aarch64-linux  -> ...-linux-arm64.tar.gz
+    //   x86_64-darwin  -> ...-darwin-amd64.tar.gz
+    //   aarch64-darwin -> ...-darwin-arm64.tar.gz
+    let cases = [
+        ("linux", "amd64", "x86_64-linux", "tool-linux-amd64.tar.gz"),
+        ("linux", "arm64", "aarch64-linux", "tool-linux-arm64.tar.gz"),
+        (
+            "darwin",
+            "amd64",
+            "x86_64-darwin",
+            "tool-darwin-amd64.tar.gz",
+        ),
+        (
+            "darwin",
+            "arm64",
+            "aarch64-darwin",
+            "tool-darwin-arm64.tar.gz",
+        ),
+    ];
+
+    // Build archives exactly the way publish.rs does: zip nix_system(os,
+    // arch) with the per-artifact asset URL.
+    let archives: Vec<(String, String, String)> = cases
+        .iter()
+        .map(|(os, arch, double, asset)| {
+            assert_eq!(
+                nix_system(os, arch).as_deref(),
+                Some(*double),
+                "nix_system({os},{arch}) must map to {double}"
+            );
+            (
+                double.to_string(),
+                format!("https://example.com/{asset}"),
+                "deadbeef".to_string(),
+            )
+        })
+        .collect();
+
+    let expr = generate_nix_expression(&NixParams {
+        name: "tool",
+        version: "1.0.0",
+        description: "",
+        homepage: "",
+        license: "mit",
+        main_program: "",
+        archives: &archives,
+        install_lines: &["mkdir -p $out/bin".to_string()],
+        post_install_lines: &[],
+        needs_unzip: false,
+        needs_make_wrapper: false,
+        dep_args: &[],
+        source_root: Some("."),
+        source_root_map: None,
+        dynamically_linked: false,
+    })
+    .unwrap();
+
+    for (_os, _arch, double, asset) in cases {
+        assert!(
+            expr.contains(&format!("{double} = \"https://example.com/{asset}\";")),
+            "urlMap must pair nix double {double} with go-arch asset {asset}:\n{expr}"
+        );
+    }
+}
+
+#[test]
 fn test_generate_nix_expression_with_unzip() {
     let archives = vec![(
         "x86_64-linux".to_string(),

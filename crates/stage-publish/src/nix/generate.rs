@@ -132,8 +132,15 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> Result<String> {
     let mut ctx = tera::Context::new();
     ctx.insert("name", params.name);
     ctx.insert("version", params.version);
-    ctx.insert("description", params.description);
-    ctx.insert("homepage", params.homepage);
+    // `description` and `homepage` are free-text user input rendered
+    // directly inside Nix string literals (`description = "{{ description }}";`,
+    // `homepage = "{{ homepage }}";`). A value containing `"`, `\`, or
+    // `${` would either break the literal or trigger antiquotation, so
+    // escape both before insertion — same rationale as `main_program`
+    // below. `license` is validated against the `lib.licenses` allow-list
+    // upstream, so it needs no escaping.
+    ctx.insert("description", &nix_escape_string(params.description));
+    ctx.insert("homepage", &nix_escape_string(params.homepage));
     ctx.insert("license", params.license);
     // `main_program` is interpolated directly inside `"..."` in the rendered
     // Nix derivation (`meta.mainProgram = "{{ main_program }}";`). Nix string

@@ -205,6 +205,66 @@ stdenvNoCC.mkDerivation {
 }
 ```
 
+## Root `flake.nix`
+
+Alongside each `pkgs/<name>/default.nix` derivation, the publisher writes (and keeps up to date) a root `flake.nix` so the repository is directly **flake-installable** — not just usable as an overlay. After a publish, consumers can install or run a package by name without cloning:
+
+```bash
+nix profile install github:<owner>/<repo>#<name>
+nix build github:<owner>/<repo>#<name>
+nix run   github:<owner>/<repo>#<name>
+```
+
+The flake pins `nixpkgs` (`nixos-unstable`) and exposes, for every published package:
+
+- `packages.<system>.<name>` for `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and `aarch64-darwin`.
+- `overlays.default`, composing the same packages — so existing overlay consumers keep working.
+
+```nix
+{
+  description = "Nix flake for release artifacts published by anodize";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  };
+
+  outputs = { self, nixpkgs }:
+    let
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+      forAllSystems = nixpkgs.lib.genAttrs systems;
+      pkgsFor = system: import nixpkgs {
+        inherit system;
+        overlays = [ self.overlays.default ];
+      };
+    in
+    {
+      overlays.default = final: prev: {
+        myapp = final.callPackage ./pkgs/myapp/default.nix { };
+      };
+
+      packages = forAllSystems (system:
+        let pkgs = pkgsFor system;
+        in {
+          myapp = pkgs.myapp;
+        });
+    };
+}
+```
+
+The flake is regenerated on every publish by **merging** the package just written into the set recovered from the previously committed `flake.nix`. This keeps it correct across all configurations:
+
+- **Single crate** — one package, exposed for all four systems.
+- **Workspace (lockstep)** — every crate's package is exposed at the shared version.
+- **Workspace (per-crate versions)** — every crate's package is exposed at its own version and tag.
+- **Custom `path`** — a derivation written to a non-default path (e.g. `nix/myapp.nix`) is exposed by its real path; siblings published at other paths are preserved (never clobbered).
+
+The flake's top-level `description` is a fixed, repo-level string, so a multi-crate publish produces byte-stable output regardless of which crate published last.
+
 ## Platform mapping
 
 Only Linux and macOS (Darwin) artifacts are included. Nix system strings are derived from the artifact's OS and architecture:

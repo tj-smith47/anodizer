@@ -2,6 +2,7 @@
 //! artifacts and push it to a configured Nix overlay repository.
 
 mod binary;
+mod flake;
 mod generate;
 mod hashing;
 mod publish;
