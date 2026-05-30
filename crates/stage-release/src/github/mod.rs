@@ -140,9 +140,11 @@ async fn find_release_by_tag(
 }
 
 /// Number of `GET /releases/{id}` readiness probes attempted before the
-/// upload loop starts (see [`wait_for_release_readable`]). Bounds the
-/// total wait to roughly `READINESS_GUARD_BASE_DELAY * (2^7 - 1)` capped by
-/// [`READINESS_GUARD_MAX_DELAY`] per slot — under ~10 s wall-clock.
+/// upload loop starts (see [`wait_for_release_readable`]). The 7 inter-probe
+/// sleeps double from [`READINESS_GUARD_BASE_DELAY`] (100 ms) and saturate at
+/// [`READINESS_GUARD_MAX_DELAY`] (1500 ms) — 100+200+400+800+1500+1500+1500 ≈
+/// 6 s nominal, ~7 s with jitter, leaving headroom under the ~10 s budget so
+/// the guard never dominates release wall-clock.
 const READINESS_GUARD_ATTEMPTS: u32 = 8;
 
 /// Initial backoff between readiness probes; doubles each slot up to
@@ -1158,6 +1160,9 @@ pub(crate) fn run_github_backend(
                                     "NotFound outcome guarantees Err variant",
                                 );
                                 let label = format!("upload of '{file_name}'");
+                                // NotFound is by construction a 404, so the
+                                // status is a literal here rather than extracted
+                                // from the error as the TransientRetry arm does.
                                 release_log().warn(&format_retry_warn(
                                     &label,
                                     attempt,
