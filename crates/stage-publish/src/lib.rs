@@ -26,6 +26,7 @@ pub mod rollback_only;
 pub mod run_summary;
 pub mod scoop;
 pub(crate) mod scope;
+pub(crate) mod snapshot_validation;
 pub(crate) mod util;
 pub mod winget;
 
@@ -679,6 +680,34 @@ fn matches_artifact_pattern(pattern: &str, artifact: &str) -> bool {
         return artifact.ends_with(suffix);
     }
     pattern == artifact
+}
+
+/// Validates the anodize-only emissions (binstall, nix, version-sync) in
+/// snapshot / dry-run mode, where the real-release stages skip their source
+/// mutations and remote pushes.
+///
+/// In a real release this stage is a no-op — the actual emission stages run
+/// and the published output is the source of truth. In snapshot/dry-run it
+/// renders each emission in-memory and cross-checks it against the assets the
+/// run produced, so a broken emission (a 404-class binstall `pkg_url`, a nix
+/// system mapped to a missing asset, a crate with no resolvable version) fails
+/// LOCALLY instead of on a consumer's `cargo binstall` / `nix build`.
+///
+/// Placed after the packaging + checksum stages so `ctx.artifacts` carries the
+/// archive set the cross-checks compare against, and before the publishers so
+/// a broken emission aborts the snapshot before any (skipped-anyway) publish
+/// work is reported as green.
+pub struct EmissionValidateStage;
+
+impl Stage for EmissionValidateStage {
+    fn name(&self) -> &str {
+        "emission-validate"
+    }
+
+    fn run(&self, ctx: &mut Context) -> Result<()> {
+        let log = ctx.logger("publish");
+        snapshot_validation::validate_snapshot_emissions(ctx, &log)
+    }
 }
 
 pub struct PublishStage;

@@ -538,7 +538,7 @@ pub fn validate_nix_license(license: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Map canonical (os, arch) to Nix system string.
-pub(super) fn nix_system(os: &str, arch: &str) -> Option<String> {
+pub(crate) fn nix_system(os: &str, arch: &str) -> Option<String> {
     let nix_arch = match arch {
         "amd64" | "x86_64" => "x86_64",
         "arm64" | "aarch64" => "aarch64",

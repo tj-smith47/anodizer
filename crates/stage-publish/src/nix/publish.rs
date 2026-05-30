@@ -165,6 +165,100 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
     )
 }
 
+/// Outcome of rendering a crate's Nix emission in-memory for snapshot
+/// validation: the derivation `name`, the rendered expression, and the
+/// `(nix_system, url, hash)` archive tuples the derivation maps. No repo
+/// is cloned and no file is written — this is the validation-only twin of
+/// [`publish_to_nix`]'s render path.
+pub(crate) struct NixRender {
+    pub name: String,
+    pub expr: String,
+    pub archives: Vec<(String, String, String)>,
+}
+
+/// Render `crate_name`'s Nix derivation entirely in-memory so the snapshot
+/// validator can assert it is well-formed and that every `packages.<system>`
+/// maps a produced asset — WITHOUT mutating source, cloning the overlay
+/// repo, or pushing. Mirrors the resolve/collect/generate path of
+/// [`publish_to_nix`] up to (but not including) the clone.
+///
+/// Returns `Ok(None)` when the publisher would skip (skip / `if` falsy /
+/// skip_upload), so the validator treats a skipped emission as nothing to
+/// validate rather than a failure.
+pub(crate) fn render_nix_for_validation(
+    ctx: &mut Context,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Option<NixRender>> {
+    let (crate_cfg, nix_cfg) = {
+        let (cc, publish) = crate::util::get_publish_config(ctx, crate_name, "nix")?;
+        let nx = publish
+            .nix
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("nix: no nix config for '{}'", crate_name))?
+            .clone();
+        (cc.clone(), nx)
+    };
+    let nix_cfg = &nix_cfg;
+    let crate_cfg = &crate_cfg;
+
+    if check_skip_guards(ctx, nix_cfg, crate_name, log)?.is_some() {
+        return Ok(None);
+    }
+
+    let name_raw = nix_cfg.name.as_deref().unwrap_or(crate_name);
+    let name = ctx
+        .render_template(name_raw)
+        .unwrap_or_else(|_| name_raw.to_string());
+
+    let version = ctx.version();
+    let meta = resolve_nix_metadata(ctx, nix_cfg, crate_name)?;
+
+    let all_artifacts = collect_platform_artifacts(ctx, crate_name, nix_cfg)?;
+    let archives = build_archive_tuples(&all_artifacts, nix_cfg, crate_name, &version, log)?;
+
+    let needs_unzip = all_artifacts.iter().any(|a| a.url.ends_with(".zip"));
+    let deps = nix_cfg.dependencies.as_deref().unwrap_or(&[]);
+    let needs_make_wrapper = !deps.is_empty();
+    let dep_args = unique_dep_args(deps);
+
+    let install_lines = build_install_lines(nix_cfg, crate_cfg, &name, deps, needs_make_wrapper);
+    let post_install_lines: Vec<String> = nix_cfg
+        .post_install
+        .as_ref()
+        .map(|s| s.lines().map(|l| l.to_string()).collect())
+        .unwrap_or_default();
+
+    let (source_root, source_root_map) =
+        resolve_source_roots(crate_cfg, &all_artifacts, &name, &version);
+
+    let dynamically_linked = detect_dynamically_linked(ctx, crate_name);
+
+    let expr = generate_nix_expression(&NixParams {
+        name: &name,
+        version: &version,
+        description: meta.description.as_str(),
+        homepage: meta.homepage.as_str(),
+        license: meta.license.as_str(),
+        main_program: meta.main_program.as_str(),
+        archives: &archives,
+        install_lines: &install_lines,
+        post_install_lines: &post_install_lines,
+        needs_unzip,
+        needs_make_wrapper,
+        dep_args: &dep_args,
+        source_root: source_root.as_deref(),
+        source_root_map: source_root_map.as_deref(),
+        dynamically_linked,
+    })?;
+
+    Ok(Some(NixRender {
+        name,
+        expr,
+        archives,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Skip / repo / metadata helpers
 // ---------------------------------------------------------------------------

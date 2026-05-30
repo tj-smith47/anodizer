@@ -456,13 +456,12 @@ fn archive_one_config(
                 }
             };
 
-            let (os, arch) = map_target(target);
-
-            // Build template vars for this target
+            // Seed Os / Arch / Target plus the micro-architecture variant vars
+            // (Arm / Arm64 / Amd64 / Mips / I386) the default name_template
+            // reads. Shared with binstall/nix asset-name derivation so a
+            // derived `pkg_url` cannot drift from the archive this stage writes.
+            anodizer_core::archive_name::seed_target_vars(ctx, target);
             let tvars = ctx.template_vars_mut();
-            tvars.set("Os", &os);
-            tvars.set("Arch", &arch);
-            tvars.set("Target", target);
             // CrateName is set per-crate so the multi-crate default
             // template (and any user template that references
             // `{{ .CrateName }}`) can produce distinct archive stems.

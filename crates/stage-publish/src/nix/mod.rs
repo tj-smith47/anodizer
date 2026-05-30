@@ -11,8 +11,10 @@ pub mod publisher;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use flake::{FLAKE_SYSTEMS, FlakePackage, flake_is_well_formed, generate_flake};
 pub use generate::{NixParams, SourceRootEntry, generate_nix_expression, validate_nix_license};
 pub use hashing::hex_sha256_to_nix_base32;
 #[cfg(test)]
 pub use hashing::hex_sha256_to_sri;
 pub use publish::publish_to_nix;
+pub(crate) use publish::render_nix_for_validation;

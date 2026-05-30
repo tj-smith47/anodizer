@@ -72,7 +72,7 @@ impl Stage for super::BuildStage {
             .cloned()
             .collect();
 
-        apply_source_mutations(ctx, &crates, dry_run, &log)?;
+        apply_source_mutations(ctx, &crates, &default_targets, dry_run, &log)?;
 
         // -----------------------------------------------------------------
         // Flatten the nested (crate, build, target) loops into a list of

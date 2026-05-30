@@ -300,10 +300,12 @@ crates:
       algorithm: sha256
       split: true
     binstall:
+      # Auto-derived: anodize renders a per-target `overrides.<triple>` for every
+      # build target from this crate's own archive `name_template` + release repo,
+      # so the cargo-binstall `pkg_url` always matches the asset the release
+      # uploads. No hand-written `pkg_url`/`overrides` needed (supply either to
+      # take full manual control).
       enabled: true
-      pkg_url: "https://github.com/tj-smith47/anodizer/releases/download/v{{ Version }}/anodizer-{{ Version }}-{ target }.tar.gz"
-      bin_dir: ""
-      pkg_fmt: tgz
     release:
       github:
         owner: tj-smith47

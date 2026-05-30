@@ -1,3 +1,4 @@
+pub mod archive_name;
 pub mod artifact;
 pub mod binary_artifact_guard;
 pub mod cargo_lock;
@@ -5,6 +6,7 @@ pub mod cargo_package;
 pub mod config;
 pub mod content_source;
 pub mod context;
+pub mod crate_scope;
 pub mod defaults_merge;
 pub mod determinism;
 pub mod determinism_report;

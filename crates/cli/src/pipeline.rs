@@ -1335,7 +1335,7 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodizer_stage_notarize::NotarizeStage;
     use anodizer_stage_nsis::NsisStage;
     use anodizer_stage_pkg::PkgStage;
-    use anodizer_stage_publish::PublishStage;
+    use anodizer_stage_publish::{EmissionValidateStage, PublishStage};
     use anodizer_stage_release::ReleaseStage;
     use anodizer_stage_sbom::SbomStage;
     use anodizer_stage_sign::{DockerSignStage, SignStage};
@@ -1382,6 +1382,11 @@ pub fn build_release_pipeline() -> Pipeline {
     p.add(Box::new(SignStage));
 
     // ── Publish ──────────────────────────────────────────────────────────
+    // EmissionValidateStage is a no-op in a real release; in snapshot/dry-run
+    // it validates the binstall/nix/version-sync emissions (which the real
+    // stages mutate/push but snapshot skips) against the produced asset set.
+    // Runs after ChecksumStage so the archive cross-checks see every asset.
+    p.add(Box::new(EmissionValidateStage));
     // BeforePublishStage runs user-defined `before_publish:` hooks here so a
     // non-zero hook can abort the release before any publisher writes to a
     // registry — last gate for smoke-tests / scanners against the staged dist.
@@ -1539,7 +1544,7 @@ pub fn build_merge_pipeline() -> Pipeline {
     use anodizer_stage_notarize::NotarizeStage;
     use anodizer_stage_nsis::NsisStage;
     use anodizer_stage_pkg::PkgStage;
-    use anodizer_stage_publish::PublishStage;
+    use anodizer_stage_publish::{EmissionValidateStage, PublishStage};
     use anodizer_stage_release::ReleaseStage;
     use anodizer_stage_sbom::SbomStage;
     use anodizer_stage_sign::{DockerSignStage, SignStage};
@@ -1569,6 +1574,8 @@ pub fn build_merge_pipeline() -> Pipeline {
     p.add(Box::new(TemplateFilesStage));
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(SignStage));
+    // Snapshot/dry-run emission validation; no-op in a real release.
+    p.add(Box::new(EmissionValidateStage));
     p.add(Box::new(anodizer_core::hooks::BeforePublishStage));
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(DockerStage::new()));

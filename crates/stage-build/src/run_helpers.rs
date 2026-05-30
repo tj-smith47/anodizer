@@ -10,6 +10,9 @@ use anyhow::{Context as _, Result};
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{CrateConfig, HookEntry};
 use anodizer_core::context::Context;
+use anodizer_core::crate_scope::{
+    apply_var_overrides, crate_template_overrides, resolve_crate_tag, restore_var_overrides,
+};
 use anodizer_core::hooks::run_hooks;
 use anodizer_core::log::StageLogger;
 use anodizer_core::template::TemplateVars;
@@ -129,81 +132,21 @@ pub(crate) fn add_artifact(
     Ok(())
 }
 
-/// Template variables anodize re-scopes per crate so a multi-crate
-/// invocation (`release --all`, or several independent-version tags at HEAD)
-/// renders each crate's `version_sync` and binstall `pkg-url`/`overrides`
-/// against THAT crate's own version and name — not the first crate's.
-///
-/// `populate_git_vars` derives these from a single `GitInfo` for the first
-/// crate, so without per-crate scoping every sibling inherits the first
-/// crate's `Version`/`Tag`/`RawVersion`/`ProjectName`.
-const PER_CRATE_SCOPED_VARS: &[&str] = &["Version", "RawVersion", "Tag", "ProjectName", "Name"];
-
-/// Per-crate template-variable overrides derived the same way
-/// `Context::populate_git_vars` derives the global ones, but scoped to a
-/// single crate's tag and name.
-///
-/// `tag` is the crate's own git tag (monorepo prefix already stripped for the
-/// base `Tag`/`Version` vars); `name` is the crate's package name, used for
-/// `ProjectName`/`Name` so binstall `pkg-url` templates referencing
-/// `{{ .ProjectName }}` resolve per crate.
-///
-/// Returns an error when the tag is not parseable as semver: a mutation-enabled
-/// crate MUST get its own version, and silently falling back to the first
-/// crate's vars would stamp the wrong version/URL. `Version`/`RawVersion` are
-/// derived from the shared [`SemVer::version_string`] /
-/// [`SemVer::raw_version_string`] helpers so the build stage and
-/// `populate_git_vars` never drift.
-fn crate_template_overrides(name: &str, tag: &str) -> Result<Vec<(&'static str, String)>> {
-    let semver = anodizer_core::git::parse_semver_tag(tag).with_context(|| {
-        format!("crate '{name}': release tag '{tag}' is not a parseable semver version")
-    })?;
-    Ok(vec![
-        ("RawVersion", semver.raw_version_string()),
-        ("Version", semver.version_string()),
-        ("Tag", tag.to_string()),
-        ("ProjectName", name.to_string()),
-        ("Name", name.to_string()),
-    ])
-}
-
-/// Resolve a crate's own latest matching tag from git, monorepo prefix
-/// stripped. Returns `None` when no tag matches; the caller treats that as a
-/// fail-loud error for a mutation-enabled crate (never a silent fall-back to
-/// the first crate's vars). For single-crate / lockstep this resolves to the
-/// same tag the global context already carries, so behavior is unchanged.
-fn resolve_crate_tag(ctx: &Context, crate_cfg: &CrateConfig) -> Option<String> {
-    let monorepo_prefix = ctx.config.monorepo_tag_prefix();
-    // Honor `--project-root` like the other git-rooted stage-build helpers so
-    // tag discovery targets the release repo rather than the process cwd.
-    let repo = ctx
-        .options
-        .project_root
-        .clone()
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let tag = anodizer_core::git::find_latest_tag_matching_with_prefix_in(
-        &repo,
-        &crate_cfg.tag_template,
-        ctx.config.git.as_ref(),
-        Some(ctx.template_vars()),
-        monorepo_prefix,
-    )
-    .ok()
-    .flatten()?;
-    let stripped = match monorepo_prefix {
-        Some(prefix) => anodizer_core::git::strip_monorepo_prefix(&tag, prefix).to_string(),
-        None => tag,
-    };
-    Some(stripped)
-}
-
 pub(crate) fn apply_source_mutations(
     ctx: &mut Context,
     crates: &[CrateConfig],
+    default_targets: &[String],
     dry_run: bool,
     log: &StageLogger,
 ) -> Result<()> {
-    apply_source_mutations_with_resolver(ctx, crates, dry_run, log, &resolve_crate_tag)
+    apply_source_mutations_with_resolver(
+        ctx,
+        crates,
+        default_targets,
+        dry_run,
+        log,
+        &resolve_crate_tag,
+    )
 }
 
 /// Inner body of [`apply_source_mutations`] with the per-crate tag source
@@ -213,6 +156,7 @@ pub(crate) fn apply_source_mutations(
 fn apply_source_mutations_with_resolver(
     ctx: &mut Context,
     crates: &[CrateConfig],
+    default_targets: &[String],
     dry_run: bool,
     log: &StageLogger,
     resolve_tag: &dyn Fn(&Context, &CrateConfig) -> Option<String>,
@@ -284,7 +228,13 @@ fn apply_source_mutations_with_resolver(
                         crate_cfg.path
                     ));
                 } else {
-                    binstall::generate_binstall_metadata(&crate_cfg.path, bs, ctx, dry_run)?;
+                    binstall::generate_binstall_metadata(
+                        crate_cfg,
+                        bs,
+                        default_targets,
+                        ctx,
+                        dry_run,
+                    )?;
                 }
             }
             Ok(())
@@ -295,38 +245,6 @@ fn apply_source_mutations_with_resolver(
         result?;
     }
     Ok(())
-}
-
-/// Apply `(key, value)` overrides to `ctx`'s template vars, returning the
-/// prior values (`None` when the key was absent) so the scope can be restored
-/// by [`restore_var_overrides`].
-fn apply_var_overrides(
-    ctx: &mut Context,
-    overrides: &[(&'static str, String)],
-) -> Vec<(&'static str, Option<String>)> {
-    let mut saved: Vec<(&'static str, Option<String>)> = Vec::new();
-    let mut seen: HashSet<&'static str> = HashSet::new();
-    for key in PER_CRATE_SCOPED_VARS {
-        if seen.insert(*key) {
-            saved.push((*key, ctx.template_vars().get(key).cloned()));
-        }
-    }
-    for (key, value) in overrides {
-        ctx.template_vars_mut().set(key, value);
-    }
-    saved
-}
-
-/// Restore template vars to the values captured by [`apply_var_overrides`].
-fn restore_var_overrides(ctx: &mut Context, saved: Vec<(&'static str, Option<String>)>) {
-    for (key, prior) in saved {
-        match prior {
-            Some(value) => ctx.template_vars_mut().set(key, &value),
-            None => {
-                ctx.template_vars_mut().unset(key);
-            }
-        }
-    }
 }
 
 pub(crate) fn seed_determinism_state(
@@ -908,7 +826,8 @@ mod source_mutation_tests {
         };
 
         let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
-        apply_source_mutations_with_resolver(&mut ctx, &crates, false, &log, &resolver).unwrap();
+        apply_source_mutations_with_resolver(&mut ctx, &crates, &[], false, &log, &resolver)
+            .unwrap();
 
         // version_sync: each Cargo.toml carries ITS OWN version.
         let alpha_toml = std::fs::read_to_string(alpha_dir.join("Cargo.toml")).unwrap();
@@ -980,7 +899,8 @@ mod source_mutation_tests {
 
         let resolver = |_ctx: &Context, _c: &CrateConfig| Some("v3.3.3".to_string());
         let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
-        apply_source_mutations_with_resolver(&mut ctx, &crates, false, &log, &resolver).unwrap();
+        apply_source_mutations_with_resolver(&mut ctx, &crates, &[], false, &log, &resolver)
+            .unwrap();
 
         let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
         let doc = toml.parse::<toml_edit::DocumentMut>().unwrap();
@@ -1020,7 +940,8 @@ mod source_mutation_tests {
         // Lockstep: both crates resolve to the SAME shared tag.
         let resolver = |_ctx: &Context, _c: &CrateConfig| Some("v2.0.0".to_string());
         let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
-        apply_source_mutations_with_resolver(&mut ctx, &crates, false, &log, &resolver).unwrap();
+        apply_source_mutations_with_resolver(&mut ctx, &crates, &[], false, &log, &resolver)
+            .unwrap();
 
         for (dir, name) in [(&core_dir, "core"), (&cli_dir, "cli")] {
             let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
@@ -1071,7 +992,8 @@ mod source_mutation_tests {
 
         let resolver = |_ctx: &Context, _c: &CrateConfig| Some("beta-v4.5.6".to_string());
         let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
-        apply_source_mutations_with_resolver(&mut ctx, &crates, false, &log, &resolver).unwrap();
+        apply_source_mutations_with_resolver(&mut ctx, &crates, &[], false, &log, &resolver)
+            .unwrap();
 
         // beta mutated.
         let beta_toml = std::fs::read_to_string(beta_dir.join("Cargo.toml")).unwrap();
@@ -1117,7 +1039,7 @@ mod source_mutation_tests {
         let resolver = |_ctx: &Context, _c: &CrateConfig| Some("boom-v1.0.0".to_string());
         let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
         let result =
-            apply_source_mutations_with_resolver(&mut ctx, &crates, false, &log, &resolver);
+            apply_source_mutations_with_resolver(&mut ctx, &crates, &[], false, &log, &resolver);
         assert!(result.is_err(), "bad binstall template must error");
 
         // Global vars restored to the pre-loop ("first" crate) values.
@@ -1161,8 +1083,9 @@ mod source_mutation_tests {
         // Resolver finds NO tag for this crate.
         let resolver = |_ctx: &Context, _c: &CrateConfig| None;
         let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
-        let err = apply_source_mutations_with_resolver(&mut ctx, &crates, false, &log, &resolver)
-            .unwrap_err();
+        let err =
+            apply_source_mutations_with_resolver(&mut ctx, &crates, &[], false, &log, &resolver)
+                .unwrap_err();
         let msg = format!("{err:#}");
         assert!(
             msg.contains("orphan") && msg.contains("no release tag matching its tag_template"),
@@ -1203,8 +1126,9 @@ mod source_mutation_tests {
         // Resolver returns a non-semver string.
         let resolver = |_ctx: &Context, _c: &CrateConfig| Some("weird-nightly".to_string());
         let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
-        let err = apply_source_mutations_with_resolver(&mut ctx, &crates, false, &log, &resolver)
-            .unwrap_err();
+        let err =
+            apply_source_mutations_with_resolver(&mut ctx, &crates, &[], false, &log, &resolver)
+                .unwrap_err();
         let msg = format!("{err:#}");
         assert!(
             msg.contains("weird") && msg.contains("weird-nightly"),
@@ -1282,7 +1206,7 @@ mod source_mutation_tests {
 
         let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
         // Production entry point — exercises the real resolve_crate_tag.
-        apply_source_mutations(&mut ctx, &crates, false, &log).unwrap();
+        apply_source_mutations(&mut ctx, &crates, &[], false, &log).unwrap();
 
         let alpha_toml = std::fs::read_to_string(alpha_dir.join("Cargo.toml")).unwrap();
         let beta_toml = std::fs::read_to_string(beta_dir.join("Cargo.toml")).unwrap();

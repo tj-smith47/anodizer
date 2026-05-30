@@ -32,7 +32,7 @@ use super::generate::nix_escape_string;
 /// derivation (`urlMap`/`shaMap` keyed by these same doubles), so the
 /// flake only ever speaks in doubles and the derivation resolves the
 /// correct release asset per system.
-pub(super) const FLAKE_SYSTEMS: &[&str] = &[
+pub(crate) const FLAKE_SYSTEMS: &[&str] = &[
     "x86_64-linux",
     "aarch64-linux",
     "x86_64-darwin",
@@ -92,7 +92,7 @@ const FLAKE_TEMPLATE: &str = r#"{
 /// `attr` is the package name — never guessed from `path`, which for a
 /// custom `nix.path` may not contain the name at all.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub(super) struct FlakePackage {
+pub(crate) struct FlakePackage {
     pub attr: String,
     pub path: String,
 }
@@ -147,7 +147,7 @@ fn parse_overlay_line(line: &str) -> Option<FlakePackage> {
 /// output is independent of publish order). The output is fully
 /// determined by `packages` (already sorted by the caller), making
 /// re-renders byte-identical.
-pub(super) fn generate_flake(packages: &[FlakePackage]) -> Result<String> {
+pub(crate) fn generate_flake(packages: &[FlakePackage]) -> Result<String> {
     let tera = anodizer_core::template::parse_static("nix-flake", FLAKE_TEMPLATE)
         .context("nix: parse flake template")?;
 
@@ -189,6 +189,36 @@ pub(super) fn write_flake(repo_path: &Path, attr: &str, nix_path: &str) -> Resul
     std::fs::write(&flake_path, &flake)
         .with_context(|| format!("nix: write {}", flake_path.display()))?;
     Ok("flake.nix")
+}
+
+/// Cheap structural validity check for a generated `flake.nix`: braces
+/// balance AND every emitted overlay `callPackage` line round-trips
+/// through [`parse_overlay_line`] (the same recovery parser the next
+/// publish relies on). Used by the snapshot emission validator to fail
+/// loud locally on a malformed flake rather than at `nix build` time on
+/// the consumer's machine.
+///
+/// Returns the recovered package set on success so the caller can run
+/// the system→asset cross-check; returns `Err` on imbalance or an
+/// overlay line the recovery parser cannot read back.
+pub(crate) fn flake_is_well_formed(flake: &str) -> Result<Vec<FlakePackage>> {
+    let opens = flake.matches('{').count();
+    let closes = flake.matches('}').count();
+    if opens != closes {
+        anyhow::bail!("generated flake.nix has unbalanced braces ({opens} '{{' vs {closes} '}}')");
+    }
+    let mut recovered: Vec<FlakePackage> = Vec::new();
+    for line in flake.lines() {
+        // Only lines shaped like the overlay callPackage emission are
+        // parsed; the recovery parser returns None for everything else.
+        if line.contains("final.callPackage") {
+            let pkg = parse_overlay_line(line).with_context(|| {
+                format!("generated flake.nix has an unparseable overlay line: {line:?}")
+            })?;
+            recovered.push(pkg);
+        }
+    }
+    Ok(recovered)
 }
 
 #[cfg(test)]

@@ -1,14 +1,42 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::config::BinstallConfig;
+use anodizer_core::archive_name::{binstall_pkg_fmt, render_archive_asset_name};
+use anodizer_core::config::{
+    ArchiveConfig, ArchivesConfig, BinstallConfig, BinstallOverride, CrateConfig,
+};
 use anodizer_core::context::Context;
+use anodizer_core::target::map_target;
+
+/// Sentinel substituted into the rendered tag + asset name in place of the
+/// release version, then swapped for cargo-binstall's own `{ version }` token.
+/// Picked to be vanishingly unlikely to appear in a real project/version string
+/// so the post-render substitution is unambiguous.
+const VERSION_SENTINEL: &str = "__ANODIZE_BINSTALL_VERSION__";
 
 /// Generate or update `[package.metadata.binstall]` in a crate's Cargo.toml
 /// based on the provided BinstallConfig.  The `pkg_url` field is rendered
 /// through the template engine so that variables like `{{ .Version }}` and
 /// `{{ .Target }}` are expanded.
+///
+/// # Auto-derivation
+///
+/// When `binstall.enabled` is set and the user supplied **neither** a top-level
+/// `pkg_url` **nor** any `overrides`, anodize auto-derives a per-target
+/// `overrides.<rust-triple>` for every configured build target. Each derived
+/// override's `pkg_url` is the full GitHub release download URL for that
+/// target's archive — its asset name rendered through the *same*
+/// `archive.name_template` the archive stage uses, with the version positions
+/// expressed as cargo-binstall's `{ version }` token so the URL resolves for
+/// whatever version is being installed. Because the asset name is derived from
+/// the single source of truth ([`anodizer_core::archive_name`]), a derived URL
+/// can never drift from the asset the release actually uploads (the "binstall
+/// 404" class is eliminated by construction).
+///
+/// A user-supplied `pkg_url` or any `overrides` entry suppresses
+/// auto-derivation entirely — manual values always win.
 ///
 /// The update is performed in place: anodize re-writes only the keys it owns
 /// (`pkg-url`, `bin-dir`, `pkg-fmt`, and the `overrides` sub-table). Any other
@@ -17,12 +45,13 @@ use anodizer_core::context::Context;
 /// not yet model — is preserved verbatim. An owned key that is now unset in
 /// config is cleared, but unknown keys still survive.
 pub fn generate_binstall_metadata(
-    crate_path: &str,
+    crate_cfg: &CrateConfig,
     config: &BinstallConfig,
-    ctx: &Context,
+    default_targets: &[String],
+    ctx: &mut Context,
     dry_run: bool,
 ) -> Result<()> {
-    let cargo_toml_path = Path::new(crate_path).join("Cargo.toml");
+    let cargo_toml_path = Path::new(&crate_cfg.path).join("Cargo.toml");
     let content = std::fs::read_to_string(&cargo_toml_path)
         .with_context(|| format!("failed to read {}", cargo_toml_path.display()))?;
 
@@ -41,7 +70,21 @@ pub fn generate_binstall_metadata(
             None => None,
         };
 
-    let rendered_overrides = render_overrides(config, ctx)?;
+    // Precedence: a user-supplied top-level `pkg_url` or any explicit
+    // `overrides` entry takes full manual control. Auto-derivation engages only
+    // when the user supplied NEITHER — the common case where anodize already
+    // knows every fact (owner/repo, tag template, per-target asset names) the
+    // metadata needs.
+    let user_supplied_overrides = config.overrides.as_ref().is_some_and(|o| !o.is_empty());
+    let rendered_overrides = if config.pkg_url.is_none() && !user_supplied_overrides {
+        let derived = derive_overrides(crate_cfg, default_targets, ctx)?;
+        match derived {
+            Some(map) => render_overrides_map(&map, ctx)?,
+            None => None,
+        }
+    } else {
+        render_overrides(config, ctx)?
+    };
 
     let log = ctx.logger("build");
     if dry_run {
@@ -174,7 +217,21 @@ fn render_overrides(config: &BinstallConfig, ctx: &Context) -> Result<Option<tom
     if overrides.is_empty() {
         return Ok(None);
     }
+    render_overrides_map(overrides, ctx)
+}
 
+/// Render a `<triple> -> BinstallOverride` map into a TOML `overrides` table.
+/// Shared by the user-supplied path ([`render_overrides`]) and the
+/// auto-derived path so both emit identical `[…overrides.<triple>]` headers.
+/// `pkg_url` values are rendered through the context so any anodize tokens
+/// expand while cargo-binstall's own `{ ... }` tokens survive intact.
+fn render_overrides_map(
+    overrides: &BTreeMap<String, BinstallOverride>,
+    ctx: &Context,
+) -> Result<Option<toml_edit::Table>> {
+    if overrides.is_empty() {
+        return Ok(None);
+    }
     let mut overrides_table = toml_edit::Table::new();
     // Render as proper [package.metadata.binstall.overrides.<triple>]
     // headers rather than an inline dotted key.
@@ -199,12 +256,284 @@ fn render_overrides(config: &BinstallConfig, ctx: &Context) -> Result<Option<tom
     Ok(Some(overrides_table))
 }
 
+// ---------------------------------------------------------------------------
+// Auto-derivation
+// ---------------------------------------------------------------------------
+
+/// Auto-derive a per-target `overrides` map for `crate_cfg` when binstall is
+/// enabled but the user supplied no `pkg_url`/`overrides`.
+///
+/// For every configured build target, the override's `pkg_url` is the full
+/// GitHub release download URL for that target's archive, with the version
+/// positions expressed as cargo-binstall's `{ version }` token. The asset name
+/// is rendered through the *same* `archive.name_template` the archive stage
+/// uses (via [`anodizer_core::archive_name`]), so the URL is byte-identical to
+/// the asset the release uploads — no drift, no 404.
+///
+/// Returns `None` (no derivation) when the crate has no release repo, no
+/// binstallable archive entry, or no resolvable targets; the surrounding
+/// `binstall.enabled` block then emits whatever the user explicitly set
+/// (possibly nothing), preserving the manual escape hatch.
+fn derive_overrides(
+    crate_cfg: &CrateConfig,
+    default_targets: &[String],
+    ctx: &mut Context,
+) -> Result<Option<BTreeMap<String, BinstallOverride>>> {
+    let Some((owner, repo, download_base)) = release_repo(crate_cfg, ctx) else {
+        return Ok(None);
+    };
+    let Some(archive) = binstallable_archive(crate_cfg) else {
+        return Ok(None);
+    };
+
+    let targets = derive_target_list(crate_cfg, default_targets);
+    if targets.is_empty() {
+        return Ok(None);
+    }
+
+    // The tag the release uploads under, with the version expressed as the
+    // cargo-binstall `{ version }` token. Rendered once (target-independent) by
+    // stamping the sentinel as the version, then swapping it for `{ version }`.
+    let tag_with_token = render_tag_with_version_token(crate_cfg, ctx)?;
+
+    // The name template the archive stage will use for this crate (user's
+    // `name_template:` wins; otherwise the canonical default — multi-crate when
+    // the workspace has more than one crate, matching the archive stage's own
+    // single-vs-multi default selection).
+    let name_template = archive
+        .name_template
+        .clone()
+        .unwrap_or_else(|| default_archive_name_template(ctx));
+
+    let global_default_format = global_default_archive_format(ctx);
+
+    let mut map: BTreeMap<String, BinstallOverride> = BTreeMap::new();
+    for target in &targets {
+        let format = archive_format_for_target(&archive, target, &global_default_format);
+        let Some(pkg_fmt) = binstall_pkg_fmt(&format) else {
+            // A format cargo-binstall cannot binstall (binary / none): no usable
+            // override for this target. Skip it rather than emit an unresolvable
+            // pkg_fmt.
+            continue;
+        };
+
+        // Render the asset name with the sentinel version, then swap the
+        // sentinel for cargo-binstall's `{ version }` token so the URL resolves
+        // for whatever version is being installed.
+        let prior = stamp_sentinel_version(ctx);
+        let asset = render_archive_asset_name(ctx, &name_template, target, &format);
+        restore_version(ctx, prior);
+        let asset = asset?;
+        let asset_with_token = asset.replace(VERSION_SENTINEL, "{ version }");
+
+        let pkg_url = format!(
+            "{download_base}/{owner}/{repo}/releases/download/{tag_with_token}/{asset_with_token}"
+        );
+
+        map.insert(
+            target.clone(),
+            BinstallOverride {
+                pkg_url: Some(pkg_url),
+                pkg_fmt: Some(pkg_fmt.to_string()),
+                bin_dir: None,
+            },
+        );
+    }
+
+    if map.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(map))
+}
+
+/// Resolve the release repo `(owner, repo, download_base)` for `crate_cfg`,
+/// rendering any templates in the owner/name. Returns `None` when no GitHub /
+/// GitLab / Gitea release repo is configured (auto-derivation cannot build a
+/// download URL without one).
+fn release_repo(crate_cfg: &CrateConfig, ctx: &Context) -> Option<(String, String, String)> {
+    let release = crate_cfg.release.as_ref()?;
+    // GitHub is the default download host; GitLab/Gitea use the same
+    // `<base>/<owner>/<repo>/releases/download/<tag>/<asset>` path shape, only
+    // the host differs. anodize's own config uses GitHub.
+    let (repo_cfg, base) = if let Some(gh) = release.github.as_ref() {
+        (gh, "https://github.com")
+    } else if let Some(gl) = release.gitlab.as_ref() {
+        (gl, "https://gitlab.com")
+    } else if let Some(gt) = release.gitea.as_ref() {
+        (gt, "https://gitea.com")
+    } else {
+        return None;
+    };
+    let owner = ctx.render_template(&repo_cfg.owner).ok()?;
+    let repo = ctx.render_template(&repo_cfg.name).ok()?;
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((owner, repo, base.to_string()))
+}
+
+/// Pick the archive entry cargo-binstall should install from: the first entry
+/// whose default format is binstallable (tar.gz / zip / …). GoReleaser-style,
+/// the primary archive is the one consumers fetch; auxiliary entries (e.g. a
+/// `tar.xz`/`tar.zst` `-extra` entry) are skipped.
+fn binstallable_archive(crate_cfg: &CrateConfig) -> Option<ArchiveConfig> {
+    let ArchivesConfig::Configs(configs) = &crate_cfg.archives else {
+        return None;
+    };
+    configs
+        .iter()
+        .find(|a| {
+            a.formats
+                .as_ref()
+                .and_then(|f| f.first())
+                .map(|fmt| binstall_pkg_fmt(fmt).is_some())
+                .unwrap_or(true)
+        })
+        .cloned()
+        .or_else(|| configs.first().cloned())
+}
+
+/// Resolve the full set of target triples binstall metadata must cover for
+/// `crate_cfg`: the union of each build's targets (a build's own `targets:`
+/// when set, else the global `default_targets`), de-duplicated and sorted.
+/// Mirrors the build stage's per-build target resolution so the derived
+/// override set equals the released asset set.
+fn derive_target_list(crate_cfg: &CrateConfig, default_targets: &[String]) -> Vec<String> {
+    let mut seen: BTreeMap<String, ()> = BTreeMap::new();
+    let builds = crate_cfg.builds.as_deref().unwrap_or(&[]);
+    if builds.is_empty() {
+        for t in default_targets {
+            seen.insert(t.clone(), ());
+        }
+    } else {
+        for build in builds {
+            let targets: &[String] = match build.targets.as_deref() {
+                Some(ts) => ts,
+                None => default_targets,
+            };
+            for t in targets {
+                seen.insert(t.clone(), ());
+            }
+        }
+    }
+    seen.into_keys().collect()
+}
+
+/// Render the crate's tag template with the version expressed as
+/// cargo-binstall's `{ version }` token. Stamps the [`VERSION_SENTINEL`] as the
+/// version, renders, then swaps the sentinel for `{ version }`.
+fn render_tag_with_version_token(crate_cfg: &CrateConfig, ctx: &mut Context) -> Result<String> {
+    // Prefer an explicit `release.tag` override; otherwise the crate's
+    // `tag_template` (defaulting to `v{{ Version }}` shape when unset).
+    let tag_template = crate_cfg
+        .release
+        .as_ref()
+        .and_then(|r| r.tag.clone())
+        .filter(|t| !t.is_empty())
+        .or_else(|| Some(crate_cfg.tag_template.clone()).filter(|t| !t.is_empty()))
+        .unwrap_or_else(|| "v{{ Version }}".to_string());
+
+    let prior = stamp_sentinel_version(ctx);
+    let rendered = ctx.render_template(&tag_template);
+    restore_version(ctx, prior);
+    let rendered = rendered
+        .with_context(|| format!("failed to render binstall tag template: {tag_template}"))?;
+    Ok(rendered.replace(VERSION_SENTINEL, "{ version }"))
+}
+
+/// Stamp the version-related template vars (`Version`, `RawVersion`, `Tag`) to
+/// the sentinel and return the prior values for [`restore_version`]. Tag is
+/// stamped too so a `name_template` referencing `{{ Tag }}` also picks up the
+/// sentinel.
+fn stamp_sentinel_version(ctx: &mut Context) -> Vec<(&'static str, Option<String>)> {
+    let prior: Vec<(&'static str, Option<String>)> = ["Version", "RawVersion", "Tag"]
+        .iter()
+        .map(|k| (*k, ctx.template_vars().get(k).cloned()))
+        .collect();
+
+    let vars = ctx.template_vars_mut();
+    vars.set("Version", VERSION_SENTINEL);
+    vars.set("RawVersion", VERSION_SENTINEL);
+    // A literal `v<sentinel>` keeps `{{ Tag }}`-based name templates aligned
+    // with the `v{ version }` tag the download URL targets.
+    vars.set("Tag", &format!("v{VERSION_SENTINEL}"));
+    prior
+}
+
+/// Restore the version vars captured by [`stamp_sentinel_version`].
+fn restore_version(ctx: &mut Context, prior: Vec<(&'static str, Option<String>)>) {
+    let vars = ctx.template_vars_mut();
+    for (key, value) in prior {
+        match value {
+            Some(v) => vars.set(key, &v),
+            None => {
+                vars.unset(key);
+            }
+        }
+    }
+}
+
+/// The default `archive.name_template` the archive stage uses for this crate:
+/// the multi-crate default when the workspace has more than one crate, else the
+/// single-crate default. Matches the archive stage's own default selection.
+fn default_archive_name_template(ctx: &Context) -> String {
+    if ctx.config.crates.len() > 1 {
+        anodizer_core::archive_name::DEFAULT_NAME_TEMPLATE_MULTI_CRATE.to_string()
+    } else {
+        anodizer_core::archive_name::DEFAULT_NAME_TEMPLATE.to_string()
+    }
+}
+
+/// The project-wide default archive format (`defaults.archives.formats[0]`,
+/// falling back to `tar.gz`). Used when an archive entry sets no `formats:`.
+fn global_default_archive_format(ctx: &Context) -> String {
+    ctx.config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.archives.as_ref())
+        .and_then(|a| a.formats.as_ref())
+        .and_then(|f| f.first())
+        .cloned()
+        .unwrap_or_else(|| "tar.gz".to_string())
+}
+
+/// The archive format an entry produces for `target`: the first matching
+/// `format_overrides[]` entry's format (OS-prefix match, mirroring the archive
+/// stage), else the entry's own first `formats[]`, else `global_default`.
+fn archive_format_for_target(
+    archive: &ArchiveConfig,
+    target: &str,
+    global_default: &str,
+) -> String {
+    let (os, _arch) = map_target(target);
+    if let Some(overrides) = archive.format_overrides.as_ref() {
+        for ov in overrides {
+            if !ov.os.is_empty()
+                && os.starts_with(&ov.os)
+                && let Some(fmts) = ov.formats.as_ref()
+                && let Some(first) = fmts.first()
+            {
+                return first.clone();
+            }
+        }
+    }
+    archive
+        .formats
+        .as_ref()
+        .and_then(|f| f.first())
+        .cloned()
+        .unwrap_or_else(|| global_default.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use anodizer_core::config::{BinstallConfig, BinstallOverride, Config};
+    use anodizer_core::config::{
+        ArchiveConfig, ArchivesConfig, BinstallConfig, BinstallOverride, Config, FormatOverride,
+        GitHubConfig, ReleaseConfig,
+    };
     use anodizer_core::context::{Context, ContextOptions};
 
     fn make_ctx() -> Context {
@@ -216,6 +545,33 @@ mod tests {
         ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.template_vars_mut().set("ProjectName", "myapp");
         ctx
+    }
+
+    /// Drive [`generate_binstall_metadata`] against a temp-dir crate with the
+    /// given binstall config. The synthesized `CrateConfig` carries no archives
+    /// / release / builds, so auto-derivation is inert unless the test supplies
+    /// a richer crate via [`gen_with_crate`] — matching the bare
+    /// `(path, cfg, ctx)` call shape the surrounding tests use.
+    fn gen_meta(path: &str, cfg: &BinstallConfig, ctx: &mut Context, dry_run: bool) -> Result<()> {
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: path.to_string(),
+            ..Default::default()
+        };
+        generate_binstall_metadata(&crate_cfg, cfg, &[], ctx, dry_run)
+    }
+
+    /// Like [`gen`] but with a caller-supplied `CrateConfig` (path is forced to
+    /// `path`) and an explicit `default_targets` list, for auto-derivation tests.
+    fn gen_with_crate(
+        path: &str,
+        mut crate_cfg: CrateConfig,
+        cfg: &BinstallConfig,
+        default_targets: &[String],
+        ctx: &mut Context,
+    ) -> Result<()> {
+        crate_cfg.path = path.to_string();
+        generate_binstall_metadata(&crate_cfg, cfg, default_targets, ctx, false)
     }
 
     #[test]
@@ -243,9 +599,8 @@ edition = "2024"
             overrides: None,
         };
 
-        let ctx = make_ctx();
-        generate_binstall_metadata(tmp.path().to_str().unwrap(), &binstall_cfg, &ctx, false)
-            .unwrap();
+        let mut ctx = make_ctx();
+        gen_meta(tmp.path().to_str().unwrap(), &binstall_cfg, &mut ctx, false).unwrap();
 
         let updated = std::fs::read_to_string(&cargo_toml).unwrap();
         let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
@@ -287,9 +642,8 @@ edition = "2024"
             overrides: None,
         };
 
-        let ctx = make_ctx();
-        generate_binstall_metadata(tmp.path().to_str().unwrap(), &binstall_cfg, &ctx, true)
-            .unwrap();
+        let mut ctx = make_ctx();
+        gen_meta(tmp.path().to_str().unwrap(), &binstall_cfg, &mut ctx, true).unwrap();
 
         // File should be unchanged in dry-run mode
         let content = std::fs::read_to_string(&cargo_toml).unwrap();
@@ -307,9 +661,8 @@ edition = "2024"
             overrides: None,
         };
 
-        let ctx = make_ctx();
-        let result =
-            generate_binstall_metadata(tmp.path().to_str().unwrap(), &binstall_cfg, &ctx, false);
+        let mut ctx = make_ctx();
+        let result = gen_meta(tmp.path().to_str().unwrap(), &binstall_cfg, &mut ctx, false);
         assert!(result.is_err());
     }
 
@@ -359,9 +712,8 @@ edition = "2024"
             overrides: Some(overrides),
         };
 
-        let ctx = make_ctx();
-        generate_binstall_metadata(tmp.path().to_str().unwrap(), &binstall_cfg, &ctx, false)
-            .unwrap();
+        let mut ctx = make_ctx();
+        gen_meta(tmp.path().to_str().unwrap(), &binstall_cfg, &mut ctx, false).unwrap();
 
         let updated = std::fs::read_to_string(&cargo_toml).unwrap();
         let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
@@ -458,9 +810,8 @@ pubkey = "RWQABCDEF1234567890"
             overrides: Some(overrides),
         };
 
-        let ctx = make_ctx();
-        generate_binstall_metadata(tmp.path().to_str().unwrap(), &binstall_cfg, &ctx, false)
-            .unwrap();
+        let mut ctx = make_ctx();
+        gen_meta(tmp.path().to_str().unwrap(), &binstall_cfg, &mut ctx, false).unwrap();
 
         let updated = std::fs::read_to_string(&cargo_toml).unwrap();
         let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
@@ -533,9 +884,8 @@ pkg-url = "https://old.example.com/stale"
             overrides: None,
         };
 
-        let ctx = make_ctx();
-        generate_binstall_metadata(tmp.path().to_str().unwrap(), &binstall_cfg, &ctx, false)
-            .unwrap();
+        let mut ctx = make_ctx();
+        gen_meta(tmp.path().to_str().unwrap(), &binstall_cfg, &mut ctx, false).unwrap();
 
         let updated = std::fs::read_to_string(&cargo_toml).unwrap();
         let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
@@ -579,9 +929,8 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
             overrides: None,
         };
 
-        let ctx = make_ctx();
-        generate_binstall_metadata(tmp.path().to_str().unwrap(), &binstall_cfg, &ctx, false)
-            .unwrap();
+        let mut ctx = make_ctx();
+        gen_meta(tmp.path().to_str().unwrap(), &binstall_cfg, &mut ctx, false).unwrap();
 
         let updated = std::fs::read_to_string(&cargo_toml).unwrap();
         let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
@@ -598,5 +947,326 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
         let strategies = binstall["disabled-strategies"].as_array().unwrap();
         assert_eq!(strategies.len(), 1);
         assert_eq!(strategies.get(0).unwrap().as_str().unwrap(), "compile");
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto-derivation
+    // -----------------------------------------------------------------------
+
+    /// All six anodize triples, the matrix the auto-derivation must cover.
+    fn six_targets() -> Vec<String> {
+        vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "aarch64-unknown-linux-gnu".to_string(),
+            "x86_64-apple-darwin".to_string(),
+            "aarch64-apple-darwin".to_string(),
+            "x86_64-pc-windows-msvc".to_string(),
+            "aarch64-pc-windows-msvc".to_string(),
+        ]
+    }
+
+    /// A crate mirroring anodize's binary crate: an explicit
+    /// `name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"`,
+    /// `formats: [tar.gz]` with a windows→zip override, and a GitHub release.
+    fn anodize_like_crate() -> CrateConfig {
+        let archive = ArchiveConfig {
+            name_template: Some("{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}".to_string()),
+            formats: Some(vec!["tar.gz".to_string()]),
+            format_overrides: Some(vec![FormatOverride {
+                os: "windows".to_string(),
+                formats: Some(vec!["zip".to_string()]),
+            }]),
+            ..Default::default()
+        };
+        CrateConfig {
+            name: "anodizer".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![archive]),
+            release: Some(ReleaseConfig {
+                github: Some(GitHubConfig {
+                    owner: "tj-smith47".to_string(),
+                    name: "anodizer".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// The asset filename a binstall override resolves to, with the
+    /// cargo-binstall `{ version }` token substituted back to the test version.
+    fn override_asset(binstall: &toml_edit::Item, triple: &str, version: &str) -> String {
+        let url = binstall["overrides"][triple]["pkg-url"].as_str().unwrap();
+        let leaf = url.rsplit('/').next().unwrap();
+        leaf.replace("{ version }", version)
+    }
+
+    #[test]
+    fn auto_derive_covers_all_six_triples_matching_archive_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cargo_toml = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            "[package]\nname = \"anodizer\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+
+        // enabled: true, NOTHING else — the whole point.
+        let cfg = BinstallConfig {
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx();
+        ctx.template_vars_mut().set("ProjectName", "anodizer");
+        let targets = six_targets();
+        gen_with_crate(
+            tmp.path().to_str().unwrap(),
+            anodize_like_crate(),
+            &cfg,
+            &targets,
+            &mut ctx,
+        )
+        .unwrap();
+
+        let updated = std::fs::read_to_string(&cargo_toml).unwrap();
+        let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
+        let binstall = &doc["package"]["metadata"]["binstall"];
+
+        // Every triple got an override, and each override's asset name EQUALS
+        // what the shared archive name-rendering produces for that target —
+        // the byte-equality that kills the 404 class. Render the expectation
+        // through the SAME core function the archive stage uses.
+        let mut check_ctx = make_ctx();
+        check_ctx.template_vars_mut().set("ProjectName", "anodizer");
+        let name_tmpl = "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}";
+        for triple in &targets {
+            let fmt = if triple.contains("windows") {
+                "zip"
+            } else {
+                "tar.gz"
+            };
+            let expected = anodizer_core::archive_name::render_archive_asset_name(
+                &mut check_ctx,
+                name_tmpl,
+                triple,
+                fmt,
+            )
+            .unwrap();
+            let actual = override_asset(binstall, triple, "1.0.0");
+            assert_eq!(
+                actual, expected,
+                "override asset for {triple} must equal the archive stage's name"
+            );
+
+            // pkg-fmt matches the format.
+            let pkg_fmt = binstall["overrides"][triple]["pkg-fmt"].as_str().unwrap();
+            assert_eq!(pkg_fmt, if fmt == "zip" { "zip" } else { "tgz" });
+
+            // cargo-binstall's `{ version }` token is present (resolves per
+            // install), and the full download URL is well-formed.
+            let url = binstall["overrides"][triple]["pkg-url"].as_str().unwrap();
+            assert!(
+                url.starts_with(
+                    "https://github.com/tj-smith47/anodizer/releases/download/v{ version }/"
+                ),
+                "url should target the GitHub release download path with the binstall version token, got: {url}"
+            );
+            assert!(
+                url.contains("{ version }"),
+                "url must carry cargo-binstall's version token, got: {url}"
+            );
+        }
+
+        // Concrete spot-checks for the two GoReleaser-style endpoints.
+        assert_eq!(
+            override_asset(binstall, "x86_64-unknown-linux-gnu", "9.9.9"),
+            "anodizer-9.9.9-linux-amd64.tar.gz"
+        );
+        assert_eq!(
+            override_asset(binstall, "aarch64-pc-windows-msvc", "9.9.9"),
+            "anodizer-9.9.9-windows-arm64.zip"
+        );
+
+        // No stale top-level pkg-url leaks in.
+        assert!(
+            binstall.get("pkg-url").is_none(),
+            "auto-derivation must not write a top-level pkg-url, got:\n{updated}"
+        );
+    }
+
+    #[test]
+    fn user_pkg_url_suppresses_auto_derivation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cargo_toml = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            "[package]\nname = \"anodizer\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+
+        let cfg = BinstallConfig {
+            enabled: Some(true),
+            pkg_url: Some("https://example.com/custom/anodizer-{ target }.tar.gz".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx();
+        ctx.template_vars_mut().set("ProjectName", "anodizer");
+        gen_with_crate(
+            tmp.path().to_str().unwrap(),
+            anodize_like_crate(),
+            &cfg,
+            &six_targets(),
+            &mut ctx,
+        )
+        .unwrap();
+
+        let updated = std::fs::read_to_string(&cargo_toml).unwrap();
+        let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
+        let binstall = &doc["package"]["metadata"]["binstall"];
+
+        // Manual pkg-url wins; NO auto-derived overrides table is emitted.
+        assert_eq!(
+            binstall["pkg-url"].as_str().unwrap(),
+            "https://example.com/custom/anodizer-{ target }.tar.gz"
+        );
+        assert!(
+            binstall.get("overrides").is_none(),
+            "a user pkg_url must suppress auto-derived overrides, got:\n{updated}"
+        );
+    }
+
+    #[test]
+    fn user_override_suppresses_auto_derivation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cargo_toml = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            "[package]\nname = \"anodizer\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+
+        let mut user_overrides = BTreeMap::new();
+        user_overrides.insert(
+            "x86_64-unknown-linux-gnu".to_string(),
+            BinstallOverride {
+                pkg_url: Some("https://example.com/manual-linux.tar.gz".to_string()),
+                pkg_fmt: Some("tgz".to_string()),
+                bin_dir: None,
+            },
+        );
+        let cfg = BinstallConfig {
+            enabled: Some(true),
+            overrides: Some(user_overrides),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx();
+        ctx.template_vars_mut().set("ProjectName", "anodizer");
+        gen_with_crate(
+            tmp.path().to_str().unwrap(),
+            anodize_like_crate(),
+            &cfg,
+            &six_targets(),
+            &mut ctx,
+        )
+        .unwrap();
+
+        let updated = std::fs::read_to_string(&cargo_toml).unwrap();
+        let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
+        let overrides = &doc["package"]["metadata"]["binstall"]["overrides"];
+
+        // ONLY the user's single override is emitted — auto-derivation does not
+        // add the other five triples.
+        assert_eq!(
+            overrides["x86_64-unknown-linux-gnu"]["pkg-url"]
+                .as_str()
+                .unwrap(),
+            "https://example.com/manual-linux.tar.gz"
+        );
+        assert!(
+            overrides.get("aarch64-apple-darwin").is_none(),
+            "supplying one override must suppress auto-derivation of the rest, got:\n{updated}"
+        );
+    }
+
+    #[test]
+    fn auto_derive_uses_default_template_when_unset() {
+        // A crate with binstall enabled but NO explicit archive name_template
+        // must derive against the canonical default (single-crate) template.
+        let tmp = tempfile::tempdir().unwrap();
+        let cargo_toml = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            "[package]\nname = \"myapp\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+
+        let mut crate_cfg = anodize_like_crate();
+        crate_cfg.name = "myapp".to_string();
+        // Archive with formats but no name_template.
+        crate_cfg.archives = ArchivesConfig::Configs(vec![ArchiveConfig {
+            formats: Some(vec!["tar.gz".to_string()]),
+            ..Default::default()
+        }]);
+
+        let cfg = BinstallConfig {
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx();
+        gen_with_crate(
+            tmp.path().to_str().unwrap(),
+            crate_cfg,
+            &cfg,
+            &["x86_64-unknown-linux-gnu".to_string()],
+            &mut ctx,
+        )
+        .unwrap();
+
+        let updated = std::fs::read_to_string(&cargo_toml).unwrap();
+        let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
+        let binstall = &doc["package"]["metadata"]["binstall"];
+        // Default GR template → `myapp_1.0.0_linux_amd64.tar.gz`.
+        assert_eq!(
+            override_asset(binstall, "x86_64-unknown-linux-gnu", "1.0.0"),
+            "myapp_1.0.0_linux_amd64.tar.gz"
+        );
+    }
+
+    #[test]
+    fn auto_derive_noops_without_release_repo() {
+        // No release repo → no download URL can be built → no overrides.
+        let tmp = tempfile::tempdir().unwrap();
+        let cargo_toml = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            "[package]\nname = \"myapp\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+
+        let mut crate_cfg = anodize_like_crate();
+        crate_cfg.name = "myapp".to_string();
+        crate_cfg.release = None;
+
+        let cfg = BinstallConfig {
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx();
+        gen_with_crate(
+            tmp.path().to_str().unwrap(),
+            crate_cfg,
+            &cfg,
+            &six_targets(),
+            &mut ctx,
+        )
+        .unwrap();
+
+        let updated = std::fs::read_to_string(&cargo_toml).unwrap();
+        let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
+        let binstall = &doc["package"]["metadata"]["binstall"];
+        assert!(
+            binstall.get("overrides").is_none(),
+            "no release repo should mean no auto-derived overrides, got:\n{updated}"
+        );
     }
 }

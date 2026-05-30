@@ -96,7 +96,7 @@ pub fn format_for_target(
 // ---------------------------------------------------------------------------
 
 pub(crate) fn default_name_template() -> &'static str {
-    "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
+    anodizer_core::archive_name::DEFAULT_NAME_TEMPLATE
 }
 
 /// Multi-crate variant of [`default_name_template`]: identical to the
@@ -108,11 +108,11 @@ pub(crate) fn default_name_template() -> &'static str {
 /// [`default_name_template`] (same shape) with the workspace `ProjectName`
 /// untouched.
 pub(crate) fn default_name_template_multi_crate() -> &'static str {
-    "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
+    anodizer_core::archive_name::DEFAULT_NAME_TEMPLATE_MULTI_CRATE
 }
 
 pub(crate) fn default_binary_name_template() -> &'static str {
-    "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
+    anodizer_core::archive_name::DEFAULT_BINARY_NAME_TEMPLATE
 }
 
 // ---------------------------------------------------------------------------
