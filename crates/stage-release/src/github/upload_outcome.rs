@@ -44,6 +44,19 @@ pub(crate) enum UploadAttemptOutcome {
     /// rate-limit signature. Treated as primary quota exhaustion: the
     /// loop probes `/rate_limit` and sleeps until the quota resets.
     PrimaryRateLimited,
+    /// GitHub returned `404 Not Found`. Immediately after a release is
+    /// created this is the post-create read-after-write replication lag:
+    /// octocrab's `upload_asset(...).send()` first does a
+    /// `GET /releases/{id}` to read `upload_url`, and that read can hit a
+    /// replica that has not yet observed the create. The asset was
+    /// definitively NOT created, so re-issuing the upload is
+    /// idempotent-safe. The loop sleeps an exponential-backoff slot and
+    /// retries — bounded by [`MIN_UPLOAD_TRANSIENT_ATTEMPTS`] even in
+    /// stateful modes whose policy caps attempts at 1, so a genuinely
+    /// missing release still fails once the floor is exhausted.
+    ///
+    /// [`MIN_UPLOAD_TRANSIENT_ATTEMPTS`]: super::MIN_UPLOAD_TRANSIENT_ATTEMPTS
+    NotFound,
     /// A 5xx response or a transport-layer failure
     /// (`Hyper`, `Http`, `Service`, `Other`, `Serde`, `Json`). The loop
     /// sleeps an exponential-backoff slot and retries.
@@ -71,13 +84,14 @@ pub(crate) enum UploadAttemptOutcome {
 ///   1. `Ok(_)` → [`UploadAttemptOutcome::Success`]
 ///   2. GitHub 422 with `errors[].code == "already_exists"` →
 ///      [`UploadAttemptOutcome::AlreadyExists`]
-///   3. Secondary rate-limit signature on a 403/429 →
+///   3. GitHub 404 → [`UploadAttemptOutcome::NotFound`]
+///   4. Secondary rate-limit signature on a 403/429 →
 ///      [`UploadAttemptOutcome::SecondaryRateLimited`]
-///   4. Plain 403 or 429 →
+///   5. Plain 403 or 429 →
 ///      [`UploadAttemptOutcome::PrimaryRateLimited`]
-///   5. 5xx, or `Hyper` / `Http` / `Service` / `Other` / `Serde` /
+///   6. 5xx, or `Hyper` / `Http` / `Service` / `Other` / `Serde` /
 ///      `Json` variants → [`UploadAttemptOutcome::TransientRetry`]
-///   6. Anything else → [`UploadAttemptOutcome::Fatal`]
+///   7. Anything else → [`UploadAttemptOutcome::Fatal`]
 ///
 /// The success arm carries no payload because the loop only needs to know
 /// "did this attempt succeed?" — the uploaded asset metadata is not
@@ -104,6 +118,19 @@ pub(crate) fn classify_upload_attempt<T>(
     );
     if is_already_exists {
         return UploadAttemptOutcome::AlreadyExists;
+    }
+
+    // 404 right after create is read-after-write replication lag, not a
+    // missing release. Checked before the rate-limit / server-error
+    // buckets (a 404 matches none of them) so it gets the dedicated
+    // bounded-retry arm rather than falling through to Fatal.
+    let is_not_found = matches!(
+        err,
+        octocrab::Error::GitHub { source, .. }
+            if source.status_code.as_u16() == 404
+    );
+    if is_not_found {
+        return UploadAttemptOutcome::NotFound;
     }
 
     if is_secondary_rate_limit(err) {
@@ -210,6 +237,23 @@ mod tests {
         assert_eq!(
             classify_upload_attempt(&result),
             UploadAttemptOutcome::Fatal,
+        );
+    }
+
+    #[tokio::test]
+    async fn github_404_classifies_as_not_found() {
+        // A 404 immediately after release create is GitHub's post-create
+        // read-after-write replication lag (the GET inside
+        // upload_asset(...).send() hit a replica that hasn't observed the
+        // create yet). It must NOT fall through to Fatal: the upload loop
+        // retries it, bounded, so the release is not killed by a single
+        // transient miss.
+        let body = r#"{"message":"Not Found"}"#;
+        let err = synth_github_error(404, body).await;
+        let result: Result<serde_json::Value, octocrab::Error> = Err(err);
+        assert_eq!(
+            classify_upload_attempt(&result),
+            UploadAttemptOutcome::NotFound,
         );
     }
 

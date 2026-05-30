@@ -230,9 +230,37 @@ fn serve_one(mut stream: TcpStream, entries: &[RouteEntry], log: &Mutex<Vec<Requ
         })
         .unwrap_or(NOT_FOUND_RESPONSE);
 
-    let _ = stream.write_all(response.as_bytes());
+    // Force `Connection: close`: the responder serves exactly one response
+    // per connection and then `shutdown`s the socket, so a client (hyper's
+    // pool) that keeps the connection alive will reuse an already-closed
+    // socket on its next request and surface `connection closed before
+    // message completed`. Advertising `close` makes the client open a fresh
+    // connection each time, eliminating that reuse race regardless of how
+    // many sequential requests a single test drives.
+    let _ = write_response_with_connection_close(&mut stream, response);
     let _ = stream.flush();
     let _ = stream.shutdown(std::net::Shutdown::Both);
+}
+
+/// Write `response` to `stream`, injecting a `Connection: close` header
+/// after the status line unless one is already present. Operates on the
+/// raw response string so callers keep writing plain HTTP fixtures.
+fn write_response_with_connection_close(
+    stream: &mut TcpStream,
+    response: &str,
+) -> std::io::Result<()> {
+    if response.to_ascii_lowercase().contains("\r\nconnection:") {
+        return stream.write_all(response.as_bytes());
+    }
+    match response.split_once("\r\n") {
+        Some((status_line, rest)) => {
+            stream.write_all(status_line.as_bytes())?;
+            stream.write_all(b"\r\nConnection: close\r\n")?;
+            stream.write_all(rest.as_bytes())
+        }
+        // No CRLF at all — malformed fixture; write it through unchanged.
+        None => stream.write_all(response.as_bytes()),
+    }
 }
 
 /// Read one HTTP request and return `(method, path, body)`. Returns

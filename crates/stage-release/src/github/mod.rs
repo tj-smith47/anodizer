@@ -139,6 +139,89 @@ async fn find_release_by_tag(
     }
 }
 
+/// Number of `GET /releases/{id}` readiness probes attempted before the
+/// upload loop starts (see [`wait_for_release_readable`]). Bounds the
+/// total wait to roughly `READINESS_GUARD_BASE_DELAY * (2^7 - 1)` capped by
+/// [`READINESS_GUARD_MAX_DELAY`] per slot — under ~10 s wall-clock.
+const READINESS_GUARD_ATTEMPTS: u32 = 8;
+
+/// Initial backoff between readiness probes; doubles each slot up to
+/// [`READINESS_GUARD_MAX_DELAY`].
+const READINESS_GUARD_BASE_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Per-slot ceiling for the readiness-probe backoff.
+const READINESS_GUARD_MAX_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Guaranteed minimum number of upload attempts for the transient /
+/// read-after-write-404 classes, even when the resolved [`RetryPolicy`]
+/// caps `max_attempts` at 1 (as stateful modes like `--publish-only` do).
+///
+/// A 404 from `upload_asset` immediately after the release was created is
+/// GitHub's post-create read-after-write replication lag, not a missing
+/// release — the asset definitively was not created, so re-issuing the
+/// upload is idempotent-safe. Fatal / auth / 422-bail outcomes are
+/// unaffected and still fail on the first attempt. Genuinely-missing
+/// releases still fail once this floor is exhausted.
+const MIN_UPLOAD_TRANSIENT_ATTEMPTS: u32 = 3;
+
+/// Poll `GET /repos/{owner}/{repo}/releases/{id}` until it returns 200,
+/// bounded by [`READINESS_GUARD_ATTEMPTS`] with short exponential backoff.
+///
+/// GitHub serves `POST /releases` from a primary replica but the
+/// `GET /releases/{id}` issued by `ReleasesHandler::upload_asset(...).send()`
+/// (to read the release's `upload_url`) may hit a replica that has not yet
+/// observed the create — a read-after-write lag that surfaces as a transient
+/// 404. Because the upload loop fans out in parallel immediately after the
+/// create, several of those probes can race the propagation window at once.
+///
+/// This guard makes the release readable once before any upload starts,
+/// shrinking (but not eliminating — replicas lag independently) that window.
+/// It runs regardless of the resolved retry policy's `max_attempts`, because
+/// it is a consistency guard rather than a flaky-network retry. On persistent
+/// failure after the bound it returns `Ok(false)` so the caller proceeds
+/// anyway: the per-upload bounded-404 retry is the backstop, and this guard
+/// must never introduce a new failure mode of its own.
+///
+/// Returns `Ok(true)` once the release is readable (immediately on the first
+/// probe in the common no-lag case), `Ok(false)` if the bound is exhausted
+/// without a 200, and `Err(_)` only for a non-404 hard error (auth, etc.).
+async fn wait_for_release_readable(
+    octo: &Arc<octocrab::Octocrab>,
+    owner: &str,
+    repo: &str,
+    release_id: u64,
+    log: &StageLogger,
+) -> Result<bool> {
+    let mut delay = READINESS_GUARD_BASE_DELAY;
+    for attempt in 1..=READINESS_GUARD_ATTEMPTS {
+        let route = format!("/repos/{owner}/{repo}/releases/{release_id}");
+        let result = octo
+            .get::<octocrab::models::repos::Release, _, _>(route, None::<&()>)
+            .await;
+        match result {
+            Ok(_) => {
+                if attempt > 1 {
+                    log.verbose(&format!(
+                        "release {release_id} became readable after {attempt} probe(s) \
+                         (GitHub post-create propagation lag)"
+                    ));
+                }
+                return Ok(true);
+            }
+            Err(err) if is_octocrab_404(&err) => {
+                if attempt < READINESS_GUARD_ATTEMPTS {
+                    tokio::time::sleep(jitter_duration(delay)).await;
+                    delay = std::cmp::min(delay * 2, READINESS_GUARD_MAX_DELAY);
+                }
+            }
+            // A non-404 hard error (auth, validation) is not a propagation
+            // lag; surface it rather than silently consuming the budget.
+            Err(err) => return Err(anyhow::Error::new(err)),
+        }
+    }
+    Ok(false)
+}
+
 /// Resolve the upload retry loop's per-iteration locals from a [`RetryPolicy`].
 ///
 /// Returns `(max_upload_attempts, initial_retry_delay, max_retry_delay)` in
@@ -799,6 +882,23 @@ pub(crate) fn run_github_backend(
                 );
             }
 
+            // Readiness guard: octocrab's `upload_asset(...).send()` issues a
+            // `GET /releases/{id}` (to read `upload_url`) before each upload
+            // POST. Right after the create POST those reads can hit a GitHub
+            // replica that has not yet observed the new release, returning a
+            // transient 404. Because uploads fan out in parallel, several of
+            // those reads race the propagation window simultaneously. Block
+            // once here until the release is readable so the common case never
+            // enters that race; a persistent miss returns `Ok(false)` and the
+            // loop proceeds (the per-upload bounded-404 retry below is the
+            // backstop).
+            // Only run when there is at least one asset to upload — an empty
+            // upload set issues no `GET`, so the guard would be pure overhead.
+            if !prepared_entries.is_empty() {
+                wait_for_release_readable(&octo, &github.owner, &github.name, release_id_raw, log)
+                    .await?;
+            }
+
             let mut join_set = tokio::task::JoinSet::new();
 
             for (path, file_name) in prepared_entries {
@@ -836,8 +936,16 @@ pub(crate) fn run_github_backend(
                     // user-configurable. The `>= 1` clamp lives at
                     // `RetryConfig::to_policy` (see `RetryPolicy::max_attempts`
                     // rustdoc); no additional clamp is needed here.
-                    let (max_upload_attempts, initial_retry_delay, max_retry_delay) =
+                    let (configured_attempts, initial_retry_delay, max_retry_delay) =
                         upload_retry_locals(&policy);
+                    // The transient / read-after-write-404 classes get a
+                    // guaranteed floor of attempts even when stateful modes
+                    // (e.g. `--publish-only`) resolve `max_attempts` to 1:
+                    // a single post-create 404 is recoverable and must not
+                    // kill the whole release. The Fatal / 422-bail arms still
+                    // fast-fail regardless of this floor.
+                    let max_upload_attempts =
+                        std::cmp::max(configured_attempts, MIN_UPLOAD_TRANSIENT_ATTEMPTS);
 
                     let mut last_err: Option<anyhow::Error> = None;
                     // One-shot overwrite guard: once we've successfully deleted a
@@ -1033,6 +1141,37 @@ pub(crate) fn run_github_backend(
                                 )
                                 .await;
                                 last_err = Some(anyhow::anyhow!(err));
+                                continue;
+                            }
+                            UploadAttemptOutcome::NotFound => {
+                                // octocrab's `upload_asset(...).send()` does a
+                                // `GET /releases/{id}` (to read `upload_url`)
+                                // before the POST; right after the create that
+                                // read can hit a GitHub replica lagging the
+                                // create, yielding a transient 404. The asset
+                                // was definitively not created, so retrying is
+                                // idempotent-safe. Bounded by
+                                // `max_upload_attempts` (floored at
+                                // MIN_UPLOAD_TRANSIENT_ATTEMPTS) so a genuinely
+                                // missing release still fails once exhausted.
+                                let err = result.expect_err(
+                                    "NotFound outcome guarantees Err variant",
+                                );
+                                let label = format!("upload of '{file_name}'");
+                                release_log().warn(&format_retry_warn(
+                                    &label,
+                                    attempt,
+                                    max_upload_attempts,
+                                    404,
+                                ));
+                                last_err = Some(anyhow::anyhow!(err));
+                                if attempt < max_upload_attempts {
+                                    let base = std::cmp::min(
+                                        initial_retry_delay * 2u32.pow(attempt - 1),
+                                        max_retry_delay,
+                                    );
+                                    tokio::time::sleep(jitter_duration(base)).await;
+                                }
                                 continue;
                             }
                             UploadAttemptOutcome::TransientRetry => {
@@ -3046,6 +3185,191 @@ mod orchestrator_tests {
                 .iter()
                 .any(|e| e.method == "POST" && e.path == "/repos/o/r/releases"),
             "skip_upload=true must still create the release; calls: {entries:?}",
+        );
+    }
+
+    /// `404 Not Found` carrying a GitHub-shaped JSON body, so octocrab maps
+    /// it to `Error::GitHub { status_code: 404 }` (the read-after-write lag
+    /// shape) rather than a transport error.
+    fn http_404() -> &'static str {
+        let body = r#"{"message":"Not Found","documentation_url":"https://docs.github.com/rest"}"#;
+        let len = body.len();
+        Box::leak(
+            format!("HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n\r\n{body}")
+                .into_boxed_str(),
+        )
+    }
+
+    /// Force `retry.attempts: 1` to reproduce the stateful-mode policy
+    /// (`--publish-only`), under which a single transient failure is
+    /// otherwise unrecoverable. The readiness guard and the per-upload
+    /// bounded-404 retry must both work despite this cap.
+    fn build_ctx_attempts_one(addr: SocketAddr) -> Context {
+        let mut ctx = build_ctx(addr);
+        ctx.config.retry = Some(anodizer_core::config::RetryConfig {
+            attempts: 1,
+            delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(1)),
+            max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(2)),
+        });
+        ctx
+    }
+
+    // ---------------------------------------------------------------------
+    // Post-create read-after-write lag: the readiness guard must absorb a
+    // transient 404 on `GET /releases/{id}` before uploads start, even when
+    // the resolved policy caps attempts at 1 (stateful `--publish-only`).
+    // Without the guard the first `upload_asset` GET 404s and the run dies.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn readiness_guard_absorbs_transient_404_before_upload() {
+        let tmp = TempDir::new().expect("tempdir");
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"hello world");
+        let artifact_len = std::fs::metadata(&artifact_path).expect("meta").len();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let release = release_json(addr, 42, true, "v1.2.3");
+
+        let routes = vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/o/r/releases",
+                response: http_201(release.clone()),
+                times: Some(1),
+            },
+            // The readiness guard's first probe hits the replica before it
+            // has observed the create: a transient 404 (served once).
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42",
+                response: http_404(),
+                times: Some(1),
+            },
+            // Every subsequent GET (the guard's retry, then upload_asset's
+            // own upload_url read) sees the release.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42",
+                response: http_ok(release),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/42?name=demo.tar.gz",
+                response: http_201(asset_json(7, "demo.tar.gz", artifact_len)),
+                times: Some(1),
+            },
+        ];
+        let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let ctx = build_ctx_attempts_one(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+        let anc = spec_ancillary_default();
+
+        run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &base_opts(),
+            &artifacts,
+        )
+        .expect("readiness guard must absorb the transient 404 and let the upload succeed")
+        .expect("returns Some");
+
+        let entries = log.lock().expect("log mutex");
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path == "/upload/42?name=demo.tar.gz"),
+            "the asset upload must reach the POST after the readiness guard recovers; calls: {entries:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Backstop: even past the readiness guard, a parallel replica can lag
+    // independently and 404 the `GET` inside `upload_asset(...).send()`. With
+    // the stateful policy (attempts=1) that single 404 used to be fatal; the
+    // per-upload bounded-404 floor must retry it instead.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn per_upload_404_retries_under_stateful_attempts_one() {
+        let tmp = TempDir::new().expect("tempdir");
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"hello world");
+        let artifact_len = std::fs::metadata(&artifact_path).expect("meta").len();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let release = release_json(addr, 42, true, "v1.2.3");
+
+        let routes = vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/o/r/releases",
+                response: http_201(release.clone()),
+                times: Some(1),
+            },
+            // (1) Readiness guard GET — readable on the first probe.
+            // (2) upload_asset's upload_url GET on the FIRST attempt — 404
+            //     (independent replica still lagging). attempts=1 would make
+            //     this fatal without the per-upload bounded-404 floor.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42",
+                response: http_ok(release.clone()),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42",
+                response: http_404(),
+                times: Some(1),
+            },
+            // upload_asset's GET on the retry attempt, and any further reads.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42",
+                response: http_ok(release),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/42?name=demo.tar.gz",
+                response: http_201(asset_json(7, "demo.tar.gz", artifact_len)),
+                times: Some(1),
+            },
+        ];
+        let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let ctx = build_ctx_attempts_one(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+        let anc = spec_ancillary_default();
+
+        run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &base_opts(),
+            &artifacts,
+        )
+        .expect("per-upload bounded-404 retry must recover under attempts=1")
+        .expect("returns Some");
+
+        let entries = log.lock().expect("log mutex");
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path == "/upload/42?name=demo.tar.gz"),
+            "the asset upload must reach the POST after the per-upload 404 retry; calls: {entries:?}",
         );
     }
 }
