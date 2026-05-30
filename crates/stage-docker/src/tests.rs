@@ -2734,17 +2734,15 @@ fn test_docker_build_job_env_vars_field() {
 }
 
 #[test]
-fn test_build_podman_push_commands_one_per_tag() {
-    // A real podman publish must produce one `podman push <tag>` per rendered
-    // tag — `podman build` cannot bake `--push`, so this loop is the only
-    // thing that publishes the image. Asserting the constructed argv avoids
-    // invoking podman.
+fn test_build_podman_push_commands_single_platform_uses_plain_push() {
+    // Single-platform podman publishes the lone image with `podman push <tag>`.
+    // Asserting the constructed argv avoids invoking podman.
     let tags = vec![
         "ghcr.io/owner/app:v1.2.3".to_string(),
         "ghcr.io/owner/app:latest".to_string(),
         "docker.io/owner/app:v1.2.3".to_string(),
     ];
-    let cmds = build_podman_push_commands(&tags);
+    let cmds = build_podman_push_commands(&tags, false);
 
     assert_eq!(
         cmds.len(),
@@ -2760,23 +2758,101 @@ fn test_build_podman_push_commands_one_per_tag() {
 }
 
 #[test]
+fn test_build_podman_push_commands_multi_platform_uses_manifest_push_all() {
+    // Multi-platform podman built a local manifest list (via `--manifest`), so
+    // publication must be `podman manifest push --all <tag>` — `--all` pushes
+    // the list's per-arch contents, not just the list descriptor. A plain
+    // `podman push` here would publish nothing valid.
+    let tags = vec![
+        "ghcr.io/owner/app:1.0.0".to_string(),
+        "ghcr.io/owner/app:latest".to_string(),
+    ];
+    let cmds = build_podman_push_commands(&tags, true);
+
+    assert_eq!(cmds.len(), tags.len());
+    for (cmd, tag) in cmds.iter().zip(&tags) {
+        assert_eq!(
+            cmd,
+            &vec![
+                "podman".to_string(),
+                "manifest".to_string(),
+                "push".to_string(),
+                "--all".to_string(),
+                tag.clone(),
+            ],
+            "multi-platform podman must use `manifest push --all`"
+        );
+        // Defensive: the plain single-arch verb must NOT be the whole command.
+        assert_ne!(
+            cmd,
+            &vec!["podman".to_string(), "push".to_string(), tag.clone()]
+        );
+    }
+}
+
+#[test]
 fn test_build_podman_push_commands_empty_when_no_tags() {
-    // No rendered tags → no push commands (nothing to publish).
-    let cmds = build_podman_push_commands(&[]);
-    assert!(cmds.is_empty());
+    // No rendered tags → no push commands (nothing to publish), either arity.
+    assert!(build_podman_push_commands(&[], false).is_empty());
+    assert!(build_podman_push_commands(&[], true).is_empty());
 }
 
 #[test]
 fn test_podman_real_publish_pushes_every_tag() {
-    // On a real publish (push=true) with the podman backend, every rendered
-    // tag must be pushed. The job carries `is_podman` + `push`; the push loop
-    // builds its argv from `build_podman_push_commands(&rendered_tags)`. This
-    // asserts the gate (`is_podman && push`) selects the push commands and
-    // that they cover each tag, without spawning podman.
+    // On a real single-platform publish (push=true) with the podman backend,
+    // every rendered tag must be pushed via `podman push <tag>`. The job
+    // carries `is_podman` + `push`; the push loop derives the argv from
+    // `build_podman_push_commands(&rendered_tags, multi_platform)`. This
+    // asserts the gate (`is_podman && push`) selects the push commands and that
+    // they cover each tag, without spawning podman.
     let tags = vec![
-        "ghcr.io/owner/app:1.0.0-amd64".to_string(),
-        "ghcr.io/owner/app:1.0.0-arm64".to_string(),
+        "ghcr.io/owner/app:1.0.0".to_string(),
+        "docker.io/owner/app:1.0.0".to_string(),
     ];
+    let job = DockerBuildJob {
+        cmd_args: vec!["podman".to_string(), "build".to_string()],
+        backend_label: "podman".to_string(),
+        crate_name: "app".to_string(),
+        idx: 0,
+        max_attempts: 1,
+        base_delay: Duration::from_secs(1),
+        max_delay: None,
+        rendered_tags: tags.clone(),
+        platforms_list: vec!["linux/amd64".to_string()],
+        staging_dir: PathBuf::new(),
+        id: None,
+        use_backend: Some("podman".to_string()),
+        is_podman: true,
+        push: true,
+        dist: PathBuf::new(),
+        skip_digest: false,
+        digest_name_template: None,
+        env_vars: BTreeMap::new(),
+    };
+
+    assert!(
+        job.is_podman && job.push,
+        "real podman publish must take the push path"
+    );
+    let multi_platform = job.platforms_list.len() > 1;
+    let cmds = build_podman_push_commands(&job.rendered_tags, multi_platform);
+    let pushed: Vec<&String> = cmds.iter().map(|c| c.last().unwrap()).collect();
+    for tag in &tags {
+        assert!(
+            pushed.contains(&tag),
+            "podman push must cover rendered tag {tag}"
+        );
+    }
+    assert_eq!(pushed.len(), 2);
+}
+
+#[test]
+fn test_podman_multi_platform_real_publish_pushes_manifest_all() {
+    // A real MULTI-platform publish is one job with both platforms and
+    // unsuffixed tags. The job's push loop must publish each tag with
+    // `manifest push --all`, and those tags are in the registry before the
+    // docker_manifests stage runs (the whole build phase completes first).
+    let tags = vec!["ghcr.io/owner/app:1.0.0".to_string()];
     let job = DockerBuildJob {
         cmd_args: vec!["podman".to_string(), "build".to_string()],
         backend_label: "podman".to_string(),
@@ -2798,23 +2874,20 @@ fn test_podman_real_publish_pushes_every_tag() {
         env_vars: BTreeMap::new(),
     };
 
-    assert!(
-        job.is_podman && job.push,
-        "real podman publish must take the push path"
+    let multi_platform = job.platforms_list.len() > 1;
+    assert!(multi_platform);
+    let cmds = build_podman_push_commands(&job.rendered_tags, multi_platform);
+    assert_eq!(cmds.len(), 1);
+    assert_eq!(
+        cmds[0],
+        vec![
+            "podman".to_string(),
+            "manifest".to_string(),
+            "push".to_string(),
+            "--all".to_string(),
+            "ghcr.io/owner/app:1.0.0".to_string(),
+        ]
     );
-    let cmds = build_podman_push_commands(&job.rendered_tags);
-    let pushed: Vec<&String> = cmds.iter().map(|c| &c[2]).collect();
-    for tag in &tags {
-        assert!(
-            pushed.contains(&tag),
-            "podman push must cover rendered tag {tag}"
-        );
-    }
-    // Per-arch tags are pushed before the manifest stage runs because the whole
-    // build phase (including this loop) completes before docker_manifests; the
-    // ordering is structural, so asserting all per-arch tags are covered is the
-    // observable guarantee a subsequent `manifest push` relies on.
-    assert_eq!(pushed.len(), 2);
 }
 
 #[test]

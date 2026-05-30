@@ -20,8 +20,8 @@
 //! flag through fails CI on every OS.
 
 use anodizer_stage_docker::{
-    DockerV2Spec, build_docker_v2_command, enforce_podman_linux_only, resolve_backend,
-    validate_podman_flag_compat,
+    DockerV2Spec, build_docker_v2_command, build_podman_push_commands, enforce_podman_linux_only,
+    resolve_backend, validate_podman_flag_compat,
 };
 
 #[cfg(target_os = "linux")]
@@ -129,4 +129,93 @@ fn podman_v2_command_shape_matches_spec() {
             "podman command must not contain buildx-only {forbidden}: {cmd:?}"
         );
     }
+
+    // Single-platform podman names the target with `--tag`, never `--manifest`.
+    assert!(
+        cmd.windows(2)
+            .any(|w| w[0] == "--tag" && w[1] == "ghcr.io/owner/app:v1"),
+        "single-platform podman must use --tag: {cmd:?}"
+    );
+    assert!(
+        !cmd.iter().any(|a| a == "--manifest"),
+        "single-platform podman must NOT use --manifest: {cmd:?}"
+    );
+}
+
+/// Multi-platform podman MUST name the build target with `--manifest <name>`
+/// (NOT `--tag`). Per the podman-build docs, a multi-platform `--tag` build
+/// does not assemble a local manifest list, so the subsequent
+/// `podman manifest push --all` would publish nothing valid. This test fails
+/// before the `--manifest` fix lands (the build emitted `--tag`).
+#[cfg(target_os = "linux")]
+#[test]
+fn podman_multi_platform_build_uses_manifest_not_tag() {
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64", "linux/arm64"],
+        image_tags: &["ghcr.io/owner/app:v1".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: true,
+        load: false,
+        backend: Some("podman"),
+    })
+    .expect("podman multi-platform spec valid on linux");
+
+    assert_eq!(cmd[0], "podman");
+    assert_eq!(cmd[1], "build");
+    assert!(
+        cmd.contains(&"--platform=linux/amd64,linux/arm64".to_string()),
+        "both platforms must be passed: {cmd:?}"
+    );
+    assert!(
+        cmd.windows(2)
+            .any(|w| w[0] == "--manifest" && w[1] == "ghcr.io/owner/app:v1"),
+        "multi-platform podman must name the target with --manifest: {cmd:?}"
+    );
+    assert!(
+        !cmd.iter().any(|a| a == "--tag"),
+        "multi-platform podman must NOT use --tag (does not build a manifest list): {cmd:?}"
+    );
+    // Multi-platform `podman build` rejects --iidfile (errors when --platform
+    // is given more than once), so it must be suppressed.
+    assert!(
+        !cmd.iter().any(|a| a.starts_with("--iidfile")),
+        "multi-platform podman must NOT pass --iidfile: {cmd:?}"
+    );
+}
+
+/// Push verb depends on arity: single-platform → `podman push <tag>`,
+/// multi-platform → `podman manifest push --all <tag>` (the `--all` pushes the
+/// list's per-arch contents, which a downstream manifest resolve depends on).
+#[test]
+fn podman_push_verb_depends_on_platform_arity() {
+    let tags = vec!["ghcr.io/owner/app:v1".to_string()];
+
+    let single = build_podman_push_commands(&tags, false);
+    assert_eq!(
+        single,
+        vec![vec![
+            "podman".to_string(),
+            "push".to_string(),
+            "ghcr.io/owner/app:v1".to_string(),
+        ]],
+        "single-platform podman publishes with plain `podman push`"
+    );
+
+    let multi = build_podman_push_commands(&tags, true);
+    assert_eq!(
+        multi,
+        vec![vec![
+            "podman".to_string(),
+            "manifest".to_string(),
+            "push".to_string(),
+            "--all".to_string(),
+            "ghcr.io/owner/app:v1".to_string(),
+        ]],
+        "multi-platform podman publishes with `podman manifest push --all`"
+    );
 }

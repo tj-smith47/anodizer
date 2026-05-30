@@ -25,8 +25,15 @@ use super::detect::docker_supports_provenance;
 /// confusing `podman: command not found` later in the pipeline.
 pub fn resolve_backend(
     use_backend: Option<&str>,
-    _multi_platform: bool,
+    multi_platform: bool,
 ) -> Result<(&str, Vec<&str>)> {
+    // `multi_platform` is consumed by callers for the podman tag-emission
+    // branch (multi-platform podman writes a local manifest list via
+    // `--manifest <name>`, single-platform podman uses `--tag <name>`); the
+    // subcommand vector itself is identical for both arities. Reading it here
+    // keeps the parameter load-bearing rather than silently ignored, and a
+    // future backend whose *subcommand* depends on arity has the value ready.
+    let _ = multi_platform;
     match use_backend {
         Some("docker") => Ok(("docker", vec!["build"])),
         Some("podman") => {
@@ -184,6 +191,21 @@ fn push_tags<S: AsRef<str>>(cmd: &mut Vec<String>, tags: &[S]) {
     for tag in tags {
         cmd.push("--tag".to_string());
         cmd.push(tag.as_ref().to_string());
+    }
+}
+
+/// Append `--manifest <name>` pairs for every entry.
+///
+/// Multi-platform `podman build` requires `--manifest <name>` (NOT `--tag`):
+/// per the podman-build docs, when more than one `--platform` is given podman
+/// only assembles a local manifest list when the target is named via
+/// `--manifest`. A multi-platform `--tag` build does not produce a manifest
+/// list, so a later `podman manifest push` / `podman push` of that name would
+/// publish nothing valid (or a single-arch image).
+fn push_manifest_targets<S: AsRef<str>>(cmd: &mut Vec<String>, names: &[S]) {
+    for name in names {
+        cmd.push("--manifest".to_string());
+        cmd.push(name.as_ref().to_string());
     }
 }
 
@@ -382,7 +404,15 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
     // diagnose buildx errors (e.g., COPY failures, attestation issues).
     cmd.push("--progress=plain".to_string());
     push_platforms(&mut cmd, platforms);
-    push_tags(&mut cmd, image_tags);
+    // Multi-platform podman names the build target with `--manifest <name>` so
+    // podman assembles a local manifest list; every other path (single-platform
+    // podman, and buildx for any arity) names it with `--tag <name>`. See
+    // `push_manifest_targets` for the podman-build constraint.
+    if is_podman && multi_platform {
+        push_manifest_targets(&mut cmd, image_tags);
+    } else {
+        push_tags(&mut cmd, image_tags);
+    }
 
     // --build-arg KEY=VALUE
     for (key, value) in build_args {
@@ -425,12 +455,13 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
     // --push / --load logic. Both are buildx-only flags: `podman build` does
     // not accept either. buildx bakes `--push` directly into the build so the
     // image is published as a side-effect of the build. podman build can only
-    // write the image into local storage, so for the podman backend the build
-    // command never carries `--push`; publication is performed afterwards by an
-    // explicit `podman push <tag>` per rendered tag (see
-    // [`build_podman_push_commands`] and the podman push loop in
-    // `execute_docker_build`). That separate-push step is the reason the
-    // podman backend must not silently rely on a baked-in `--push`.
+    // write the image (or, multi-platform, a local manifest list) into local
+    // storage, so for the podman backend the build command never carries
+    // `--push`; publication is performed afterwards by an explicit push per
+    // rendered tag (`podman push` single-platform, `podman manifest push --all`
+    // multi-platform — see [`build_podman_push_commands`] and the push loop in
+    // `execute_docker_build`). That separate-push step is the reason the podman
+    // backend must not silently rely on a baked-in `--push`.
     if !is_podman {
         if push {
             cmd.push("--push".to_string());
@@ -446,9 +477,14 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
 
     // Write image digest to file for capture (GoReleaser V2 behavior).
     // This works even without --push (no daemon needed for digest capture).
-    // Podman supports `--iidfile` natively (same flag name), so the digest
-    // capture wiring downstream applies to both backends.
-    cmd.push(format!("--iidfile={}/id.txt", staging_dir));
+    // buildx and single-platform podman support `--iidfile` (same flag name).
+    // Multi-platform `podman build` rejects `--iidfile` (it errors when
+    // `--platform` is given more than once), so it is suppressed there; the
+    // downstream digest capture reads the iidfile only when present and
+    // degrades gracefully when it is absent.
+    if !(is_podman && multi_platform) {
+        cmd.push(format!("--iidfile={}/id.txt", staging_dir));
+    }
 
     // Build context directory (positional, last argument)
     cmd.push(staging_dir.to_string());
@@ -460,24 +496,41 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
 // build_podman_push_commands
 // ---------------------------------------------------------------------------
 
-/// Construct the `podman push <tag>` argv for every rendered tag.
+/// Construct the publish argv for every rendered tag of a podman build.
 ///
 /// `podman build` cannot bake `--push` into the build the way `docker buildx
-/// build --push` does — it only writes the image (and, for multi-platform
-/// builds, a local manifest list) into podman's local storage. Publication for
-/// the podman backend therefore requires an explicit push of each rendered tag
-/// after the build succeeds. This helper produces the argv for those pushes so
-/// the spawn site in `execute_docker_build` stays a thin executor and the
-/// command shape is unit-testable without invoking podman.
+/// build --push` does — it only writes the image (single-platform) or a local
+/// manifest list (multi-platform, named via `--manifest`) into podman's local
+/// storage. Publication therefore requires an explicit push after the build
+/// succeeds. This helper produces that argv so the spawn site in
+/// `execute_docker_build` stays a thin executor and the command shape is
+/// unit-testable without invoking podman.
 ///
-/// For a multi-platform podman build the rendered tags name the local manifest
-/// list, so `podman push <tag>` publishes the full multi-arch list — which is
-/// also what a downstream `podman manifest push` (the separate
-/// `docker_manifests` feature) needs to already be in the registry before it
-/// resolves a manifest list from per-arch tags.
-pub fn build_podman_push_commands(tags: &[String]) -> Vec<Vec<String>> {
+/// The publish verb depends on the build's platform arity:
+/// - **single-platform** → `podman push <tag>` (pushes the lone image).
+/// - **multi-platform** → `podman manifest push --all <tag>`. The build named
+///   the local manifest list with `--manifest <tag>`; `manifest push` is the
+///   command that publishes a manifest list, and `--all` is required so the
+///   list's per-arch image contents are pushed alongside the list (without it
+///   podman pushes only the list descriptor, leaving the per-arch blobs
+///   missing from the registry). Pushing the contents is also what the
+///   separate `docker_manifests` feature relies on being in the registry
+///   before its own `manifest create`/`push` resolves per-arch tags.
+pub fn build_podman_push_commands(tags: &[String], multi_platform: bool) -> Vec<Vec<String>> {
     tags.iter()
-        .map(|tag| vec!["podman".to_string(), "push".to_string(), tag.clone()])
+        .map(|tag| {
+            if multi_platform {
+                vec![
+                    "podman".to_string(),
+                    "manifest".to_string(),
+                    "push".to_string(),
+                    "--all".to_string(),
+                    tag.clone(),
+                ]
+            } else {
+                vec!["podman".to_string(), "push".to_string(), tag.clone()]
+            }
+        })
         .collect()
 }
 

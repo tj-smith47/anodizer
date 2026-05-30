@@ -318,21 +318,24 @@ pub(crate) fn execute_docker_build(
     })
 }
 
-/// Publish a podman-backend build by running `podman push <tag>` for every
-/// rendered tag.
+/// Publish a podman-backend build by pushing every rendered tag.
 ///
-/// `podman build` writes the image (and, for multi-platform builds, a local
-/// manifest list) into local storage but cannot bake `--push` into the build
-/// the way `docker buildx build --push` does. This pushes each tag with the
-/// same retry policy as the build so a transient registry error is retried
-/// rather than failing the release. A push failure is a hard error: a release
-/// that builds an image but never publishes it has shipped nothing, so the
-/// error is propagated with context, never swallowed.
+/// `podman build` cannot bake `--push` into the build the way `docker buildx
+/// build --push` does, so publication happens here. Single-platform builds
+/// push the lone image (`podman push <tag>`); multi-platform builds named a
+/// local manifest list with `--manifest <tag>` and publish it with `podman
+/// manifest push --all <tag>` (see
+/// [`crate::command::build_podman_push_commands`]). Each push uses the same
+/// retry policy as the build so a transient registry error is retried rather
+/// than failing the release. A push failure is a hard error: a release that
+/// builds an image but never publishes it has shipped nothing, so the error is
+/// propagated with context, never swallowed.
 fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<()> {
     use anodizer_core::retry::{RetryPolicy, retry_sync};
     use std::ops::ControlFlow;
 
-    let push_cmds = crate::command::build_podman_push_commands(&job.rendered_tags);
+    let multi_platform = job.platforms_list.len() > 1;
+    let push_cmds = crate::command::build_podman_push_commands(&job.rendered_tags, multi_platform);
     let policy = RetryPolicy {
         max_attempts: job.max_attempts,
         base_delay: job.base_delay,
