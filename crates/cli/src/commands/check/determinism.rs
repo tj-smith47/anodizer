@@ -62,7 +62,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
     // `release` pipeline that would have populated it.
     let state = DeterminismState::seed_from_commit(sde)
         .context("seeding determinism state from HEAD commit timestamp")?;
-    let allowlist = AllowList {
+    let mut allowlist = AllowList {
         compile_time: state
             .compile_time_allowlist
             .iter()
@@ -73,6 +73,15 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
             .collect(),
         runtime: Vec::new(),
     };
+    // Signature artifacts (cosign bundles, gpg sigs) are non-reproducible
+    // by nature; derive their suffixes from the project's `signs:` /
+    // `binary_signs:` templates so the harness excludes them from drift
+    // regardless of the user's chosen `signature:` naming scheme (e.g.
+    // cfgd's `{{ .Artifact }}.cosign.bundle`, which would otherwise fall
+    // through `infer_stage_from_path` to `unknown` and count as drift).
+    allowlist
+        .runtime
+        .extend(derive_signature_allowlist_entries(&repo_root));
 
     // `--preserve-dist=<path>` may be relative; resolve against the
     // repo root so the harness has an absolute target. The repo_root
@@ -340,6 +349,105 @@ fn resolve_child_snapshot(snapshot: bool, no_snapshot: bool, head_at_tag: bool) 
 /// there is nothing to rebuild — re-stat()-ing the same staged file twice
 /// would just produce two identical hashes.
 ///
+/// Extract the literal filename suffix a `signature:` template appends
+/// after the artifact reference — the text following the final `}}`
+/// template expansion (e.g. `{{ .Artifact }}.cosign.bundle` →
+/// `.cosign.bundle`, `{{ .Artifact }}.sig` → `.sig`).
+///
+/// Returns `None` when there is no usable dotted extension to anchor a
+/// `*.<ext>` allow-list pattern on (empty tail, or a template that signs
+/// in place without adding an extension). The dotted-prefix guard is
+/// load-bearing: an empty tail would otherwise yield a bare `*` pattern
+/// that allow-lists every artifact and silently suppresses all drift.
+fn signature_suffix(template: &str) -> Option<String> {
+    let tail = match template.rfind("}}") {
+        Some(idx) => &template[idx + 2..],
+        None => template,
+    };
+    let tail = tail.trim();
+    if tail.is_empty() || !tail.starts_with('.') {
+        return None;
+    }
+    Some(tail.to_string())
+}
+
+/// Derive allow-list entries for signature artifacts from the project's
+/// `signs:` / `binary_signs:` signature templates (top-level and per
+/// workspace).
+///
+/// Signatures are non-reproducible by nature: cosign signs with a random
+/// ECDSA nonce, so its bundle/signature bytes differ on every signing of
+/// byte-identical input. `infer_stage_from_path` already classifies the
+/// default `.sig` / `.pem` / `.cert` suffixes as the `sign` stage (which
+/// the harness auto-allow-lists), but the `signature:` template is
+/// user-configurable, so a custom suffix (cfgd's `.cosign.bundle`) would
+/// fall through to `unknown` and be counted as drift. Deriving the
+/// suffixes from config keeps the harness correct for any naming scheme.
+///
+/// Best-effort: a missing / unparseable config yields no entries (the
+/// harness still runs; real config errors surface elsewhere).
+fn derive_signature_allowlist_entries(repo_root: &std::path::Path) -> Vec<AllowListEntry> {
+    let prev_cwd = std::env::current_dir().ok();
+    if std::env::set_current_dir(repo_root).is_err() {
+        return Vec::new();
+    }
+    let cfg_path = crate::pipeline::find_config(None).ok();
+    let cfg = cfg_path
+        .as_ref()
+        .and_then(|p| crate::pipeline::load_config(p).ok());
+    if let Some(p) = prev_cwd {
+        std::env::set_current_dir(p).ok();
+    }
+    match cfg {
+        Some(cfg) => signature_allowlist_entries_from_config(&cfg),
+        None => Vec::new(),
+    }
+}
+
+/// Pure core of [`derive_signature_allowlist_entries`]: collect the
+/// distinct signature suffixes configured across top-level and per-
+/// workspace `signs:` / `binary_signs:`, and map each to a `*<suffix>`
+/// allow-list entry. Factored out so the suffix logic is unit-testable
+/// without the cwd-dependent config load.
+fn signature_allowlist_entries_from_config(
+    cfg: &anodizer_core::config::Config,
+) -> Vec<AllowListEntry> {
+    use anodizer_core::config::SignConfig;
+
+    let mut suffixes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut collect = |entries: &[SignConfig], default_tmpl: &str| {
+        for s in entries {
+            if let Some(suffix) = signature_suffix(s.resolved_signature_template(default_tmpl)) {
+                suffixes.insert(suffix);
+            }
+        }
+    };
+    collect(&cfg.signs, SignConfig::DEFAULT_SIGNATURE_TEMPLATE);
+    collect(
+        &cfg.binary_signs,
+        SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
+    );
+    for w in cfg.workspaces.iter().flatten() {
+        collect(&w.signs, SignConfig::DEFAULT_SIGNATURE_TEMPLATE);
+        collect(
+            &w.binary_signs,
+            SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
+        );
+    }
+
+    suffixes
+        .into_iter()
+        .map(|suffix| AllowListEntry {
+            reason: format!(
+                "signature artifact ({suffix}): signature bytes vary by signer \
+                 (cosign signs with a random ECDSA nonce); validate cryptographically \
+                 via `cosign verify-blob` / `gpg --verify`, not byte-equality"
+            ),
+            artifact: format!("*{suffix}"),
+        })
+        .collect()
+}
+
 /// Soft on errors: a missing or unparseable config falls through to
 /// `false` so the existing harness flow surfaces the real error.
 fn all_builds_prebuilt_in_repo(repo_root: &std::path::Path) -> bool {
@@ -759,5 +867,166 @@ version = "0.0.1"
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("Cargo.toml"), "not valid \x00 toml ===").unwrap();
         assert_eq!(read_project_version(tmp.path()), None);
+    }
+
+    #[test]
+    fn signature_suffix_extracts_literal_tail_after_last_expansion() {
+        assert_eq!(
+            signature_suffix("{{ .Artifact }}.cosign.bundle").as_deref(),
+            Some(".cosign.bundle")
+        );
+        assert_eq!(
+            signature_suffix("{{ .Artifact }}.sig").as_deref(),
+            Some(".sig")
+        );
+        assert_eq!(
+            signature_suffix("{{ .Artifact }}.asc").as_deref(),
+            Some(".asc")
+        );
+    }
+
+    #[test]
+    fn signature_suffix_rejects_unanchorable_templates() {
+        // A bare-expansion template (sign in place, no new extension) must
+        // NOT yield a suffix — an empty tail would produce a `*` pattern
+        // that allow-lists every artifact and suppresses all drift.
+        assert_eq!(signature_suffix("{{ .Artifact }}"), None);
+        assert_eq!(signature_suffix("{{ .Artifact }}   "), None);
+        // Non-dotted tail can't anchor `*.<ext>`.
+        assert_eq!(signature_suffix("{{ .Artifact }}sig"), None);
+    }
+
+    #[test]
+    fn signature_allowlist_derives_custom_cosign_bundle_suffix() {
+        use anodizer_core::config::{Config, SignConfig};
+        // Mirrors cfgd: a checksum-signing cosign entry with a custom
+        // `.cosign.bundle` signature template plus a default-`.sig` entry.
+        let cfg = Config {
+            signs: vec![
+                SignConfig {
+                    signature: Some("{{ .Artifact }}.cosign.bundle".into()),
+                    ..Default::default()
+                },
+                SignConfig::default(), // default template → `.sig`
+            ],
+            ..Default::default()
+        };
+        let entries = signature_allowlist_entries_from_config(&cfg);
+        let patterns: Vec<&str> = entries.iter().map(|e| e.artifact.as_str()).collect();
+        assert!(
+            patterns.contains(&"*.cosign.bundle"),
+            "custom signature suffix must be allow-listed, got {patterns:?}"
+        );
+        assert!(patterns.contains(&"*.sig"), "got {patterns:?}");
+        // Every derived pattern is a concrete extension anchor, never a
+        // bare `*` (which would suppress all drift).
+        assert!(entries.iter().all(|e| e.artifact != "*"));
+    }
+
+    /// Regression for the cfgd v0.4.0 determinism failure: the build was
+    /// reproducible, but 18 signature/SBOM artifacts drifted and counted,
+    /// failing the release. Every one of those exact names must now resolve
+    /// to an allow-list reason through the canonical matcher — the SBOM
+    /// documents via the compile-time list, the cosign bundles via the
+    /// config-derived signature suffix.
+    #[test]
+    fn cfgd_v040_drift_set_is_fully_allowlisted() {
+        use anodizer_core::DeterminismState;
+        use anodizer_core::config::{Config, SignConfig};
+
+        // cfgd's signing surface: a cosign checksum signer emitting
+        // `.cosign.bundle`, plus default-`.sig` gpg/cosign entries.
+        let cfg = Config {
+            signs: vec![
+                SignConfig {
+                    signature: Some("{{ .Artifact }}.cosign.bundle".into()),
+                    ..Default::default()
+                },
+                SignConfig::default(),
+            ],
+            binary_signs: vec![SignConfig::default()],
+            ..Default::default()
+        };
+
+        let mut state = DeterminismState::seed_from_commit(0).expect("non-negative");
+        for entry in signature_allowlist_entries_from_config(&cfg) {
+            state.append_runtime(entry.artifact, entry.reason);
+        }
+
+        // The exact artifact set that drifted in run 26675983133.
+        let drifted = [
+            "cfgd-0.4.0-linux-amd64-installer.run.sha256.cosign.bundle",
+            "cfgd-0.4.0-linux-amd64.tar.gz.cdx.json",
+            "cfgd-0.4.0-linux-amd64.tar.gz.cdx.json.sha256",
+            "cfgd-0.4.0-linux-amd64.tar.gz.cdx.json.sha256.cosign.bundle",
+            "cfgd-0.4.0-linux-amd64.tar.gz.sha256.cosign.bundle",
+            "cfgd-0.4.0-linux-arm64-installer.run.sha256.cosign.bundle",
+            "cfgd-0.4.0-linux-arm64.tar.gz.cdx.json",
+            "cfgd-0.4.0-linux-arm64.tar.gz.cdx.json.sha256",
+            "cfgd-0.4.0-linux-arm64.tar.gz.cdx.json.sha256.cosign.bundle",
+            "cfgd-0.4.0-linux-arm64.tar.gz.sha256.cosign.bundle",
+            "cfgd-0.4.0-source.tar.gz.sha256.cosign.bundle",
+            "cfgd_0.4.0_linux_amd64.apk.sha256.cosign.bundle",
+            "cfgd_0.4.0_linux_amd64.deb.sha256.cosign.bundle",
+            "cfgd_0.4.0_linux_amd64.rpm.sha256.cosign.bundle",
+            "cfgd_0.4.0_linux_arm64.apk.sha256.cosign.bundle",
+            "cfgd_0.4.0_linux_arm64.deb.sha256.cosign.bundle",
+            "cfgd_0.4.0_linux_arm64.rpm.sha256.cosign.bundle",
+            "install.sh.sha256.cosign.bundle",
+            // macOS shard drift set (darwin universal + per-arch), plus the
+            // aggregating manifest.
+            "artifacts.json",
+            "cfgd-0.4.0-darwin-all.tar.gz.cdx.json",
+            "cfgd-0.4.0-darwin-all.tar.gz.cdx.json.sha256",
+            "cfgd-0.4.0-darwin-all.tar.gz.cdx.json.sha256.cosign.bundle",
+            "cfgd-0.4.0-darwin-all.tar.gz.sha256.cosign.bundle",
+            "cfgd-0.4.0-darwin-amd64.tar.gz.cdx.json",
+            "cfgd-0.4.0-darwin-arm64.tar.gz.cdx.json.sha256.cosign.bundle",
+            // cfgd-csi shard: a combined-checksums cosign bundle.
+            "cfgd_0.4.0_checksums.txt.cosign.bundle",
+        ];
+        for name in drifted {
+            assert!(
+                state.resolve_reason(name).is_some(),
+                "{name} drifted v0.4.0 and must now be allow-listed"
+            );
+        }
+
+        // Negative control: a real build output must NOT be allow-listed,
+        // so genuine binary drift still fails the harness.
+        assert!(
+            state
+                .resolve_reason("cfgd-0.4.0-linux-amd64.tar.gz")
+                .is_none(),
+            "archive bytes must still be drift-checked"
+        );
+        assert!(
+            state.resolve_reason("cfgd").is_none(),
+            "raw binary must still be drift-checked"
+        );
+    }
+
+    #[test]
+    fn signature_allowlist_collects_per_workspace_signs() {
+        use anodizer_core::config::{Config, SignConfig, WorkspaceConfig};
+        let cfg = Config {
+            workspaces: Some(vec![WorkspaceConfig {
+                name: "member".into(),
+                binary_signs: vec![SignConfig {
+                    signature: Some("{{ .Artifact }}.bundle".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let patterns: Vec<String> = signature_allowlist_entries_from_config(&cfg)
+            .into_iter()
+            .map(|e| e.artifact)
+            .collect();
+        assert!(
+            patterns.contains(&"*.bundle".to_string()),
+            "per-workspace signature suffix must be collected, got {patterns:?}"
+        );
     }
 }

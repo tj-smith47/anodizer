@@ -112,14 +112,54 @@ impl DeterminismState {
                 "snapcraft pack runs deterministically when SOURCE_DATE_EPOCH propagates (harness env exports it; mksquashfs respects it via craft-parts); allowlisted as defense-in-depth in case snapcraft introduces non-mtime variance",
             ),
         ];
+        // SBOMs embed identifiers that are non-reproducible by nature:
+        // CycloneDX carries a random `serialNumber` UUID plus a generation
+        // `metadata.timestamp`, and SPDX carries a `documentNamespace` UUID
+        // plus a `created` timestamp. syft does not honor SOURCE_DATE_EPOCH
+        // for the document timestamp and (per the CycloneDX/SPDX specs) the
+        // serial/namespace must be unique per document, so two runs over
+        // byte-identical inputs still produce differing SBOM bytes. This
+        // matches GoReleaser, which excludes SBOMs from its reproducibility
+        // guarantee. Surfaced in the report, excluded from `drift_count`.
+        // Extensions mirror `infer_stage_from_path`'s `sbom` classifier.
+        let sbom_allow: &[(&str, &str)] = &[
+            (
+                "*.cdx.json",
+                "CycloneDX SBOM embeds a random serialNumber UUID and a generation timestamp (syft does not honor SOURCE_DATE_EPOCH for it); not byte-reproducible across runs",
+            ),
+            (
+                "*.spdx.json",
+                "SPDX SBOM embeds a documentNamespace UUID and a created timestamp; not byte-reproducible across runs",
+            ),
+            (
+                "*.sbom.json",
+                "SBOM document embeds a per-document unique identifier and generation timestamp; not byte-reproducible across runs",
+            ),
+        ];
         let mut compile_time_allowlist: Vec<(String, String)> = Vec::new();
-        for (pattern, reason) in installer_allow {
+        for (pattern, reason) in installer_allow.iter().chain(sbom_allow) {
             compile_time_allowlist.push(((*pattern).into(), (*reason).into()));
             compile_time_allowlist.push((
                 format!("{}.sha256", pattern),
                 format!("derivative of {pattern}: {reason}"),
             ));
         }
+        // `artifacts.json` is anodize's own dist manifest: it records the
+        // `size` and `sha256` of every produced artifact. Its byte-stability
+        // is exactly the conjunction of all indexed artifacts', so it can
+        // only drift when (a) a real build output drifted — already caught
+        // directly on that artifact — or (b) an allow-listed non-deterministic
+        // artifact (SBOM, signature) drifted — intentionally excluded. It
+        // therefore carries no independent determinism signal; comparing its
+        // bytes only re-surfaces drift already accounted for. Exact-match so
+        // no other `.json` is swept in.
+        compile_time_allowlist.push((
+            "artifacts.json".into(),
+            "anodize dist manifest aggregating every artifact's size+digest \
+             (including allow-listed non-deterministic SBOMs/signatures); a derivative \
+             signal — each indexed artifact is drift-checked independently"
+                .into(),
+        ));
 
         Ok(Self {
             sde: commit_ts,
@@ -197,6 +237,47 @@ mod tests {
     fn compile_time_allowlist_resolves_for_rpm() {
         let s = DeterminismState::seed_from_commit(0).expect("non-negative");
         assert!(s.resolve_reason("foo-1.0.rpm").is_some());
+    }
+
+    #[test]
+    fn compile_time_allowlist_resolves_for_sbom_documents() {
+        let s = DeterminismState::seed_from_commit(0).expect("non-negative");
+        // syft-generated CycloneDX/SPDX SBOMs carry a random serial/namespace
+        // UUID + generation timestamp and can never be byte-identical across
+        // runs; the harness must not count them as drift.
+        for name in [
+            "cfgd-0.4.0-linux-amd64.tar.gz.cdx.json",
+            "cfgd-0.4.0-linux-amd64.tar.gz.spdx.json",
+            "cfgd-0.4.0-linux-amd64.tar.gz.sbom.json",
+        ] {
+            assert!(
+                s.resolve_reason(name).is_some(),
+                "SBOM document {name} must be allow-listed"
+            );
+        }
+    }
+
+    #[test]
+    fn compile_time_allowlist_resolves_for_sbom_checksum_sidecars() {
+        let s = DeterminismState::seed_from_commit(0).expect("non-negative");
+        // The `.sha256` sidecar hashes the non-deterministic SBOM, so it is
+        // itself non-deterministic — allow-listed as a derivative.
+        let reason = s
+            .resolve_reason("cfgd-0.4.0-linux-amd64.tar.gz.cdx.json.sha256")
+            .expect("matches *.cdx.json.sha256");
+        assert!(reason.contains("derivative of"));
+    }
+
+    #[test]
+    fn compile_time_allowlist_resolves_for_artifacts_manifest() {
+        let s = DeterminismState::seed_from_commit(0).expect("non-negative");
+        assert!(
+            s.resolve_reason("artifacts.json").is_some(),
+            "the dist manifest aggregates non-deterministic artifact sizes/digests"
+        );
+        // Exact-match: must not sweep in unrelated `.json` files.
+        assert!(s.resolve_reason("config.json").is_none());
+        assert!(s.resolve_reason("metadata.json").is_none());
     }
 
     #[test]
