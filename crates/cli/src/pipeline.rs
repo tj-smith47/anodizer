@@ -1028,15 +1028,35 @@ fn load_include_as_yaml(
 
 pub struct Pipeline {
     stages: Vec<Box<dyn Stage>>,
+    /// Whether this pipeline is expected to have a compiled binary for
+    /// every in-scope crate that configures a binary-requiring surface.
+    ///
+    /// Set only on the build-producing pipelines (full release, which
+    /// runs `BuildStage`, and merge, which pre-loads the split shards'
+    /// binaries before the pipeline runs). The publish-only / publish /
+    /// announce pipelines leave it `false`: they rehydrate or never touch
+    /// binary artifacts, so a missing binary there is not a build mistake
+    /// the guard should fail on.
+    expects_binaries: bool,
 }
 
 impl Pipeline {
     pub fn new() -> Self {
-        Self { stages: vec![] }
+        Self {
+            stages: vec![],
+            expects_binaries: false,
+        }
     }
 
     pub fn add(&mut self, stage: Box<dyn Stage>) {
         self.stages.push(stage);
+    }
+
+    /// Arm the binary-artifact guard for this pipeline. Call only on the
+    /// build-producing pipelines (full release, merge); see
+    /// [`anodizer_core::binary_artifact_guard`].
+    fn expect_binaries(&mut self) {
+        self.expects_binaries = true;
     }
 
     /// Returns the registered stage names in pipeline order. Used by the
@@ -1121,6 +1141,23 @@ impl Pipeline {
             )
         });
 
+        // Whether `BuildStage` runs inside this pipeline. Drives where the
+        // binary-artifact guard fires: merge pre-loads its binaries (no
+        // build stage), so the guard runs up-front here; the full-release
+        // and determinism-harness-child pipelines compile in-process, so
+        // their guard runs immediately after the build stage completes.
+        let build_in_pipeline = self.stages.iter().any(|s| s.name() == "build");
+
+        // Merge-mode checkpoint: binaries are already loaded, so the
+        // artifact set is final before the first stage runs.
+        if self.expects_binaries && !build_in_pipeline {
+            anodizer_core::binary_artifact_guard::check(
+                &ctx.config,
+                &ctx.artifacts,
+                &ctx.options.selected_crates,
+            )?;
+        }
+
         for stage in &self.stages {
             let name = stage.name();
             // Operator-skipped stage: still open its section so the skip
@@ -1178,6 +1215,19 @@ impl Pipeline {
                                     | anodizer_core::artifact::ArtifactKind::UniversalBinary
                             )
                         });
+                        // Build-producing checkpoint: the per-crate binary
+                        // artifact set is final once the build stage finishes.
+                        // Fail loud here so a crate that configures a
+                        // binary-requiring surface but produced no binary
+                        // aborts the release at build time rather than 20
+                        // minutes later inside publish/docker.
+                        if self.expects_binaries {
+                            anodizer_core::binary_artifact_guard::check(
+                                &ctx.config,
+                                &ctx.artifacts,
+                                &ctx.options.selected_crates,
+                            )?;
+                        }
                     }
                     // After the changelog stage completes, populate the ReleaseNotes
                     // template variable so subsequent stages can reference it.
@@ -1290,6 +1340,7 @@ pub fn build_release_pipeline() -> Pipeline {
     // Anodizer-specific stages (appbundle, dmg, msi, pkg, nsis, templatefiles,
     // release, snapcraft-publish, blob) are interleaved at logical positions.
     let mut p = Pipeline::new();
+    p.expect_binaries();
 
     // ── Build ────────────────────────────────────────────────────────────
     p.add(Box::new(BuildStage));
@@ -1490,6 +1541,7 @@ pub fn build_merge_pipeline() -> Pipeline {
 
     // Merge pipeline: same order as build_release_pipeline minus Build/UPX.
     let mut p = Pipeline::new();
+    p.expect_binaries();
     p.add(Box::new(AppBundleStage));
     p.add(Box::new(DmgStage));
     p.add(Box::new(MsiStage));

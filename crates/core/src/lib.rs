@@ -1,4 +1,5 @@
 pub mod artifact;
+pub mod binary_artifact_guard;
 pub mod cargo_lock;
 pub mod cargo_package;
 pub mod config;
