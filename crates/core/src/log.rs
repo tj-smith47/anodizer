@@ -360,6 +360,27 @@ impl StageLogger {
         self
     }
 
+    /// Derive a clone of this logger tagged for a different `stage`, keeping
+    /// verbosity, the (Arc-shared) redaction env, and any capture sink.
+    ///
+    /// The pipeline driver owns one `[release]`-tagged logger but brackets
+    /// sub-sections (`setup`, `finalize`, `publisher-summary`) with their own
+    /// `group()`. Body lines emitted inside such a section must carry the
+    /// *section's* tag, not `[release]`, or the output reads
+    /// `[release] wrote …` underneath `::group::finalize`. Retagging once at
+    /// the section boundary lets every helper called within the section emit
+    /// under the correct tag without threading an explicit `stage` argument
+    /// through each call.
+    pub fn with_stage(&self, stage: &'static str) -> Self {
+        Self {
+            stage,
+            verbosity: self.verbosity,
+            env: self.env.clone(),
+            #[cfg(feature = "test-helpers")]
+            capture: self.capture.clone(),
+        }
+    }
+
     /// Redact secret values from `s` using this logger's attached env.
     ///
     /// When no env has been attached (the default for `StageLogger::new`),
@@ -385,6 +406,22 @@ impl StageLogger {
         }
     }
 
+    /// Error message rendered under an explicit `stage` tag rather than this
+    /// logger's own [`Self::stage`]. Companion to [`Self::status_as`] for the
+    /// pipeline driver, which owns a single `[release]`-tagged logger but
+    /// opens a `group()` per stage: a stage-failure line emitted from that
+    /// driver must carry the failing stage's tag (so the error inside
+    /// `::group::build` reads `[build]`, not `[release]`). Identical
+    /// formatting to [`Self::error`] otherwise.
+    pub fn error_as(&self, stage: &str, msg: &str) {
+        let tagged = format!("{} {}", format!("[{stage}]").dimmed(), msg);
+        eprintln!("{}", render_error(&tagged));
+        #[cfg(feature = "test-helpers")]
+        if let Some(cap) = &self.capture {
+            cap.record(LogLevel::Error, msg);
+        }
+    }
+
     /// Warning message — shown at Normal and above.
     pub fn warn(&self, msg: &str) {
         if self.verbosity >= Verbosity::Normal {
@@ -399,28 +436,12 @@ impl StageLogger {
 
     /// Status message — shown at Normal and above. This is the default level
     /// for key actions (stage start, completion, skips, dry-run notes).
+    ///
+    /// Delegates to [`Self::status_as`] under this logger's own stage tag so
+    /// there is a single status render path (one source of truth for the
+    /// blank-line / indent / `[stage]` formatting).
     pub fn status(&self, msg: &str) {
-        if self.verbosity >= Verbosity::Normal {
-            // Preserve fully-blank spacer lines exactly (no prefix and no
-            // indent), so callers using `status("")` for vertical rhythm
-            // keep a clean blank line even inside a group. An indented
-            // "blank" line (trailing spaces only) would render as visible
-            // whitespace and break the rhythm the caller asked for.
-            if msg.is_empty() {
-                eprintln!();
-            } else {
-                eprintln!(
-                    "{}{} {}",
-                    indent(),
-                    format!("[{}]", self.stage).dimmed(),
-                    msg
-                );
-            }
-        }
-        #[cfg(feature = "test-helpers")]
-        if let Some(cap) = &self.capture {
-            cap.record(LogLevel::Status, msg);
-        }
+        self.status_as(self.stage, msg);
     }
 
     /// Status message rendered under an explicit `stage` tag rather than
@@ -431,6 +452,11 @@ impl StageLogger {
     /// not `[release]`). Identical formatting to [`Self::status`] otherwise.
     pub fn status_as(&self, stage: &str, msg: &str) {
         if self.verbosity >= Verbosity::Normal {
+            // Preserve fully-blank spacer lines exactly (no prefix and no
+            // indent), so callers using `status("")` for vertical rhythm
+            // keep a clean blank line even inside a group. An indented
+            // "blank" line (trailing spaces only) would render as visible
+            // whitespace and break the rhythm the caller asked for.
             if msg.is_empty() {
                 eprintln!();
             } else {

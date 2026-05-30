@@ -1186,7 +1186,12 @@ impl Pipeline {
                     }
                 }
                 Err(e) => {
-                    log.error(&format!("{} failed: {}", name, e));
+                    // Tag the failure line to the failing stage (not the
+                    // pipeline-level `release` logger) so it reads
+                    // `[<name>] Error: … failed` inside `::group::<name>`
+                    // rather than bleeding `[release]` into the stage's
+                    // own section.
+                    log.error_as(name, &format!("{} failed: {}", name, e));
                     return Err(e);
                 }
             }

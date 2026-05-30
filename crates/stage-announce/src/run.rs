@@ -281,7 +281,10 @@ pub fn emit_summary(ctx: &mut Context) {
     // through the StageLogger inside its own section so the table carries
     // the unified `[stage]`/indent/theming and reads as one group in CI
     // (`::group::publisher-summary`) rather than a raw flush-left block.
-    let log = ctx.logger("announce");
+    // Tagged `publisher-summary` (not `announce`) so the table body lines
+    // read `[publisher-summary]` under their own group rather than bleeding
+    // the pipeline-level `[announce]` tag inside `::group::publisher-summary`.
+    let log = ctx.logger("publisher-summary");
     let mut buf: Vec<u8> = Vec::new();
     if anodizer_stage_publish::run_summary::print_status_table(&summary, &mut buf).is_ok() {
         let _section = log.group("publisher-summary");
