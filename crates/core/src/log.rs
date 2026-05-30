@@ -396,14 +396,21 @@ impl StageLogger {
         }
     }
 
+    /// Dimmed `[stage] ` tag prefix (bracketed stage name, dimmed, plus a
+    /// trailing space). The single source of truth for the per-line tag so
+    /// every render method (`error`/`warn`/`status`/`verbose`/`debug`)
+    /// produces a byte-identical prefix — same palette, brackets, spacing.
+    fn tag_prefix(stage: &str) -> String {
+        format!("{} ", format!("[{stage}]").dimmed())
+    }
+
     /// Error message — always shown (even in quiet mode).
+    ///
+    /// Delegates to [`Self::error_as`] under this logger's own stage tag so
+    /// there is a single error render path (one source of truth for the
+    /// label / indent / `[stage]` formatting).
     pub fn error(&self, msg: &str) {
-        let tagged = format!("{} {}", format!("[{}]", self.stage).dimmed(), msg);
-        eprintln!("{}", render_error(&tagged));
-        #[cfg(feature = "test-helpers")]
-        if let Some(cap) = &self.capture {
-            cap.record(LogLevel::Error, msg);
-        }
+        self.error_as(self.stage, msg);
     }
 
     /// Error message rendered under an explicit `stage` tag rather than this
@@ -414,7 +421,7 @@ impl StageLogger {
     /// `::group::build` reads `[build]`, not `[release]`). Identical
     /// formatting to [`Self::error`] otherwise.
     pub fn error_as(&self, stage: &str, msg: &str) {
-        let tagged = format!("{} {}", format!("[{stage}]").dimmed(), msg);
+        let tagged = format!("{}{}", Self::tag_prefix(stage), msg);
         eprintln!("{}", render_error(&tagged));
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
@@ -425,7 +432,7 @@ impl StageLogger {
     /// Warning message — shown at Normal and above.
     pub fn warn(&self, msg: &str) {
         if self.verbosity >= Verbosity::Normal {
-            let tagged = format!("{} {}", format!("[{}]", self.stage).dimmed(), msg);
+            let tagged = format!("{}{}", Self::tag_prefix(self.stage), msg);
             eprintln!("{}", render_warning(&tagged));
         }
         #[cfg(feature = "test-helpers")]
@@ -460,7 +467,7 @@ impl StageLogger {
             if msg.is_empty() {
                 eprintln!();
             } else {
-                eprintln!("{}{} {}", indent(), format!("[{stage}]").dimmed(), msg);
+                eprintln!("{}{}{}", indent(), Self::tag_prefix(stage), msg);
             }
         }
         #[cfg(feature = "test-helpers")]
@@ -549,12 +556,7 @@ impl StageLogger {
     /// Use for: command output on success, env vars, file paths, template vars.
     pub fn verbose(&self, msg: &str) {
         if self.verbosity >= Verbosity::Verbose {
-            eprintln!(
-                "{}{} {}",
-                indent(),
-                format!("[{}]", self.stage).dimmed(),
-                msg
-            );
+            eprintln!("{}{}{}", indent(), Self::tag_prefix(self.stage), msg);
         }
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
@@ -567,9 +569,9 @@ impl StageLogger {
     pub fn debug(&self, msg: &str) {
         if self.verbosity >= Verbosity::Debug {
             eprintln!(
-                "{}{} {}",
+                "{}{}{}",
                 indent(),
-                format!("[{}]", self.stage).dimmed(),
+                Self::tag_prefix(self.stage),
                 msg.dimmed()
             );
         }
@@ -1058,5 +1060,52 @@ mod tests {
         let pa: *const Vec<(String, String)> = a.env.as_ref().unwrap().as_ref();
         let pb: *const Vec<(String, String)> = b.env.as_ref().unwrap().as_ref();
         assert_eq!(pa, pb);
+    }
+
+    #[test]
+    fn test_retag_helpers_emit_under_explicit_stage() {
+        // `with_stage` rebinds the rendered tag to the section name, while
+        // `status`/`error` (post-delegation) and the `*_as` variants honour
+        // the requested stage. The dimmed `tag_prefix` is the byte source for
+        // every render path, so asserting on it pins the rendered `[stage]`.
+        let log = StageLogger::new("release", Verbosity::Normal);
+
+        // Plain accessors render under the logger's own stage.
+        assert!(StageLogger::tag_prefix(log.stage).contains("[release]"));
+
+        // `with_stage` rebinds the stage the body lines render under.
+        let finalize = log.with_stage("finalize");
+        assert_eq!(finalize.stage, "finalize");
+        assert!(StageLogger::tag_prefix(finalize.stage).contains("[finalize]"));
+
+        // The `*_as` variants render under the explicit stage argument.
+        assert!(StageLogger::tag_prefix("blob").contains("[blob]"));
+
+        // The tag carries a single trailing space (after any ANSI reset) so
+        // the prefix concatenates byte-identically with the message.
+        assert!(StageLogger::tag_prefix("setup").ends_with(' '));
+    }
+
+    #[test]
+    fn test_retag_helpers_record_under_shared_capture() {
+        // The retagged clone shares the capture sink, and the plain
+        // delegations still record at the right level — locking the plumbing
+        // independent of the rendered tag (which the capture does not store).
+        let (log, cap) = StageLogger::with_capture("release", Verbosity::Normal);
+
+        log.with_stage("finalize").status("x");
+        log.error_as("blob", "y");
+        log.status("own-status");
+        log.error("own-error");
+
+        assert_eq!(
+            cap.all_messages(),
+            vec![
+                (LogLevel::Status, "x".to_string()),
+                (LogLevel::Error, "y".to_string()),
+                (LogLevel::Status, "own-status".to_string()),
+                (LogLevel::Error, "own-error".to_string()),
+            ]
+        );
     }
 }

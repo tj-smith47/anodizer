@@ -265,9 +265,8 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     let mut ctx;
     {
         let _setup = log.group("setup");
-        // Drive the setup section's body with a `setup`-tagged logger so every
-        // line inside `::group::setup` reads `[setup]` rather than bleeding the
-        // pipeline-level `[release]` tag the group title is `setup`.
+        // Retag to the section name so body lines inside `::group::setup`
+        // render `[setup]` rather than the pipeline-level `[release]` tag.
         let log = log.with_stage("setup");
 
         project_root = resolve_project_root(&config_path, Some(&log));
@@ -1290,10 +1289,8 @@ fn run_post_pipeline(
     // grouped stage in CI just like the in-loop stages, instead of raw
     // flush-left output trailing the last `::endgroup::`.
     let _section = log.group("finalize");
-    // Drive the finalize section's body with a `finalize`-tagged logger so the
-    // metadata-write / custom-publisher / milestone / after-hook lines read
-    // `[finalize]` rather than the pipeline-level `[release]` tag the group
-    // title is `finalize`.
+    // Retag to the section name so body lines inside `::group::finalize`
+    // render `[finalize]` rather than the pipeline-level `[release]` tag.
     let log = &log.with_stage("finalize");
 
     // Print artifact size table if configured
