@@ -15,15 +15,18 @@ use anodizer_core::stage::Stage;
 
 /// Generate a default `.nsi` script template using Tera syntax.
 ///
-/// Uses `{{ ProjectName }}`, `{{ Name }}`, `{{ ProgramFiles }}`,
-/// `{{ NsisBinaryPath }}`, and `{{ NsisBinaryName }}`. `ProgramFiles`
-/// resolves to `$PROGRAMFILES64` on 64-bit targets and `$PROGRAMFILES`
-/// on 32-bit targets, so the installer lands in the correct directory on
-/// all Windows variants.
+/// Uses `{{ ProjectName }}`, `{{ NsisOutputFile }}`, `{{ ProgramFiles }}`,
+/// `{{ NsisBinaryPath }}`, and `{{ NsisBinaryName }}`. `NsisOutputFile` is
+/// the absolute path makensis writes the installer to (equal to the recorded
+/// artifact path); makensis resolves a relative `OutFile` against the script's
+/// directory, which is an ephemeral staging dir, so it must be absolute.
+/// `ProgramFiles` resolves to `$PROGRAMFILES64` on 64-bit targets and
+/// `$PROGRAMFILES` on 32-bit targets, so the installer lands in the correct
+/// directory on all Windows variants.
 pub fn default_nsi_script() -> &'static str {
     r#"!include "MUI2.nsh"
 Name "{{ ProjectName }}"
-OutFile "{{ Name }}.exe"
+OutFile "{{ NsisOutputFile }}"
 InstallDir "{{ ProgramFiles }}\{{ ProjectName }}"
 RequestExecutionLevel admin
 !insertmacro MUI_PAGE_DIRECTORY
@@ -313,7 +316,16 @@ impl Stage for NsisStage {
 
                     name_vars.set("Name", &rendered_name);
 
-                    let exe_filename = rendered_name;
+                    // The recorded artifact path and the `OutFile` makensis is
+                    // told to write must end in `.exe`. The default name template
+                    // is extension-less (mirroring how dmg/pkg append `.dmg`/`.pkg`
+                    // after rendering); append `.exe` here unless the user's custom
+                    // `name` already supplies it (case-insensitive, no double-append).
+                    let exe_filename = if rendered_name.to_ascii_lowercase().ends_with(".exe") {
+                        rendered_name
+                    } else {
+                        format!("{rendered_name}.exe")
+                    };
 
                     // Output goes in dist/windows/
                     let output_dir = dist.join("windows");
@@ -591,10 +603,16 @@ mod tests {
             script.contains("Name \"{{ ProjectName }}\""),
             "should reference ProjectName"
         );
-        // Default script uses Name (stem) + .exe, not the legacy NsisOutputFile var
+        // OutFile must be the absolute NsisOutputFile (the recorded artifact
+        // path), never a bare relative filename — makensis resolves a relative
+        // OutFile against the ephemeral staging dir.
         assert!(
-            script.contains("OutFile \"{{ Name }}.exe\""),
-            "should use Name var for OutFile"
+            script.contains("OutFile \"{{ NsisOutputFile }}\""),
+            "should use the absolute NsisOutputFile var for OutFile"
+        );
+        assert!(
+            !script.contains("OutFile \"{{ Name }}.exe\""),
+            "OutFile must not be a bare relative filename"
         );
         // Default script uses ProgramFiles (arch-aware) instead of the hardcoded $PROGRAMFILES
         assert!(
@@ -709,10 +727,11 @@ mod tests {
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
         assert_eq!(installers.len(), 1);
         let path = installers[0].path.to_string_lossy();
-        // Default template: `{{ ProjectName }}_{{ Arch }}_setup` with NSIS-native arch x64
+        // Default template `{{ ProjectName }}_{{ Arch }}_setup` renders with the
+        // NSIS-native arch (x64) and gains the auto-appended `.exe`.
         assert!(
-            path.ends_with("myapp_x64_setup"),
-            "expected NSIS-native arch in filename, got: {path}"
+            path.ends_with("myapp_x64_setup.exe"),
+            "expected NSIS-native arch + .exe in filename, got: {path}"
         );
     }
 
@@ -1314,10 +1333,12 @@ crates:
         );
     }
 
+    /// The recorded `Installer` artifact path — what every downstream stage
+    /// (sign, checksum, upload) and makensis itself reference — must end in
+    /// `.exe`. The extension-less default/user `name` template gains `.exe`
+    /// after rendering (mirroring how dmg/pkg append `.dmg`/`.pkg`).
     #[test]
-    fn test_stage_name_is_user_literal() {
-        // The user `name` template is taken verbatim. Anodizer matches GoReleaser
-        // by not auto-appending `.exe` — the user's NSIS script controls the OutFile.
+    fn test_stage_exe_extension_appended() {
         use anodizer_core::config::{Config, CrateConfig, NsisConfig};
         use anodizer_core::context::{Context, ContextOptions};
 
@@ -1363,10 +1384,68 @@ crates:
         assert_eq!(installers.len(), 1);
         let path = installers[0].path.to_string_lossy();
         assert!(
-            path.ends_with("myapp_x64_setup"),
-            "name should be taken verbatim (no auto .exe), got: {path}"
+            path.ends_with("myapp_x64_setup.exe"),
+            ".exe must be appended to the recorded artifact path, got: {path}"
         );
-        assert!(!path.ends_with(".exe"), "no auto .exe append, got: {path}");
+    }
+
+    /// A user `name` that already ends in `.exe` (any case) must not be
+    /// double-appended.
+    #[test]
+    fn test_stage_exe_extension_not_double_appended() {
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        for literal in ["myapp_setup.exe", "myapp_setup.EXE"] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let nsis_cfg = NsisConfig {
+                name: Some(literal.to_string()),
+                ..Default::default()
+            };
+
+            let mut config = Config::default();
+            config.project_name = "myapp".to_string();
+            config.dist = tmp.path().join("dist");
+            config.crates = vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                nsis: Some(vec![nsis_cfg]),
+                ..Default::default()
+            }];
+
+            let mut ctx = Context::new(
+                config,
+                ContextOptions {
+                    dry_run: true,
+                    ..Default::default()
+                },
+            );
+            ctx.template_vars_mut().set("Version", "1.0.0");
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from("dist/myapp.exe"),
+                target: Some("x86_64-pc-windows-msvc".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: Default::default(),
+                size: None,
+            });
+
+            NsisStage.run(&mut ctx).unwrap();
+
+            let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+            assert_eq!(installers.len(), 1);
+            let path = installers[0].path.to_string_lossy();
+            assert!(
+                path.ends_with(literal),
+                "existing .exe must not be double-appended, got: {path} (name was {literal})"
+            );
+            assert!(
+                !path.to_ascii_lowercase().ends_with(".exe.exe"),
+                "double .exe append, got: {path}"
+            );
+        }
     }
 
     // --- `nsis.if` template-conditional (GoReleaser Pro) ---
@@ -1541,6 +1620,76 @@ crates:
         );
     }
 
+    /// Core invariant: the `OutFile` literal in the rendered default script
+    /// equals the recorded `Installer` artifact path — both absolute, both
+    /// ending in `.exe`. A bare relative `OutFile` would make makensis write
+    /// into the ephemeral staging dir, and a path mismatch would leave every
+    /// downstream stage pointing at a file that does not exist.
+    #[test]
+    fn test_outfile_equals_recorded_artifact_path() {
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::template::render;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nsis: Some(vec![NsisConfig::default()]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        NsisStage.run(&mut ctx).unwrap();
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(installers.len(), 1);
+        let recorded = installers[0].path.clone();
+
+        // The recorded artifact path is absolute and ends in `.exe`.
+        assert!(recorded.is_absolute(), "recorded path must be absolute");
+        assert!(
+            recorded.to_string_lossy().ends_with(".exe"),
+            "recorded path must end in .exe, got: {}",
+            recorded.display()
+        );
+
+        // The stage injects the recorded path as `NsisOutputFile` for the script
+        // render. Feeding that same value into the default script must yield an
+        // `OutFile` line equal to the recorded path verbatim.
+        let recorded_str = recorded.to_string_lossy().into_owned();
+        let mut vars = ctx.template_vars().clone();
+        vars.set("NsisOutputFile", &recorded_str);
+        vars.set("ProgramFiles", "$PROGRAMFILES64");
+        vars.set("NsisBinaryPath", "staging/myapp.exe");
+        vars.set("NsisBinaryName", "myapp.exe");
+        let script = render(default_nsi_script(), &vars).expect("default script must render");
+        assert!(
+            script.contains(&format!("OutFile \"{recorded_str}\"")),
+            "OutFile must equal the recorded artifact path; script:\n{script}"
+        );
+    }
+
     // -------------------------------------------------------------------
     // GR-compatible NSIS script template vars
     // -------------------------------------------------------------------
@@ -1548,14 +1697,15 @@ crates:
     /// Render the built-in default script with realistic vars and ensure the
     /// output is the expected NSIS snippet (`OutFile`, `InstallDir`, etc.).
     /// Pins the default-script render path end-to-end including ProgramFiles
-    /// (arch-aware) and Name (output stem).
+    /// (arch-aware) and the absolute `NsisOutputFile` makensis writes to.
     #[test]
     fn test_default_script_renders_correctly_for_amd64() {
         use anodizer_core::template::{TemplateVars, render};
 
         let mut vars = TemplateVars::new();
         vars.set("ProjectName", "myapp");
-        vars.set("Name", "myapp_x64_setup");
+        // OutFile must be the absolute artifact path, ending in `.exe`.
+        vars.set("NsisOutputFile", "/dist/windows/myapp_x64_setup.exe");
         vars.set("ProgramFiles", "$PROGRAMFILES64");
         vars.set("NsisBinaryPath", "/tmp/staging/myapp.exe");
         vars.set("NsisBinaryName", "myapp.exe");
@@ -1565,7 +1715,9 @@ crates:
         let out = render(default_nsi_script(), &vars).expect("default script must render");
 
         assert!(out.contains("Name \"myapp\""));
-        assert!(out.contains("OutFile \"myapp_x64_setup.exe\""));
+        // OutFile is the absolute NsisOutputFile, never a bare relative filename.
+        assert!(out.contains("OutFile \"/dist/windows/myapp_x64_setup.exe\""));
+        assert!(!out.contains("OutFile \"myapp_x64_setup.exe\""));
         // 64-bit target lands in PROGRAMFILES64 (not the WOW6432 redirect)
         assert!(out.contains("InstallDir \"$PROGRAMFILES64\\myapp\""));
         assert!(!out.contains("$PROGRAMFILES\\myapp"));
@@ -1580,7 +1732,7 @@ crates:
 
         let mut vars = TemplateVars::new();
         vars.set("ProjectName", "myapp");
-        vars.set("Name", "myapp_x86_setup");
+        vars.set("NsisOutputFile", "/dist/windows/myapp_x86_setup.exe");
         vars.set("ProgramFiles", "$PROGRAMFILES");
         vars.set("NsisBinaryPath", "/tmp/staging/myapp.exe");
         vars.set("NsisBinaryName", "myapp.exe");
@@ -1588,6 +1740,7 @@ crates:
         vars.set("Arch", "x86");
 
         let out = render(default_nsi_script(), &vars).expect("default script must render");
+        assert!(out.contains("OutFile \"/dist/windows/myapp_x86_setup.exe\""));
         // 32-bit target uses $PROGRAMFILES
         assert!(out.contains("InstallDir \"$PROGRAMFILES\\myapp\""));
         assert!(!out.contains("$PROGRAMFILES64"));
