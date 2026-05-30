@@ -61,7 +61,7 @@ tasks:
     desc: "FULL pre-push dry-run: ALL targets + emission-validate (binstall/nix/version-sync). Slower than `task snapshot`."
     deps: [_check:tmp-headroom]
     cmds:
-      - cargo run -p anodizer --release -- release --snapshot --dry-run --summary-json=dist/snapshot-summary.json
+      - cargo run -p anodizer --release -- release --snapshot --clean --dry-run --summary-json=dist/snapshot-summary.json
 
   prepush:
     # Discoverable alias for the canonical full gate; reuses `release:snapshot`
