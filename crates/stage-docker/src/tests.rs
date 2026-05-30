@@ -2216,6 +2216,8 @@ fn test_apply_docker_v2_defaults_sbom_none_resolves_to_true() {
             ..Default::default()
         },
         "myapp",
+        Some("owner"),
+        "myapp",
     );
     assert_eq!(cfg.sbom, Some(StringOrBool::Bool(true)));
     // Spot-check the other applied defaults so a regression in any one
@@ -2238,14 +2240,19 @@ fn test_apply_docker_v2_defaults_preserves_user_values() {
         DockerV2Config {
             id: Some("custom-id".into()),
             dockerfile: "Containerfile".into(),
+            images: vec!["docker.io/me/custom".into()],
             tags: vec!["v1".into()],
             platforms: Some(vec!["linux/arm/v7".into()]),
             sbom: Some(StringOrBool::Bool(false)),
             ..Default::default()
         },
         "myapp",
+        Some("owner"),
+        "myapp",
     );
     assert_eq!(cfg.id.as_deref(), Some("custom-id"));
+    // User-supplied images list wins over the ghcr.io default.
+    assert_eq!(cfg.images, vec!["docker.io/me/custom".to_string()]);
     assert_eq!(cfg.dockerfile, "Containerfile");
     assert_eq!(cfg.tags, vec!["v1"]);
     assert_eq!(
@@ -2253,6 +2260,283 @@ fn test_apply_docker_v2_defaults_preserves_user_values() {
         Some(&["linux/arm/v7".to_string()][..])
     );
     assert_eq!(cfg.sbom, Some(StringOrBool::Bool(false)));
+}
+
+#[test]
+fn test_apply_docker_v2_defaults_images_default_to_ghcr() {
+    // When `images` is unset and an owner is resolvable, default to
+    // ghcr.io/{owner}/{crate} using the CRATE's own name (image_name),
+    // not the project primary's.
+    use anodizer_core::config::DockerV2Config;
+
+    let cfg = apply_docker_v2_defaults(
+        DockerV2Config::default(),
+        "workspace-primary",
+        Some("acme"),
+        "my-cli",
+    );
+    assert_eq!(cfg.images, vec!["ghcr.io/acme/my-cli".to_string()]);
+}
+
+#[test]
+fn test_apply_docker_v2_defaults_per_crate_images_differ() {
+    // Workspace per-crate mode: two crates sharing one owner default to two
+    // DISTINCT images, each named after its own crate.
+    use anodizer_core::config::DockerV2Config;
+
+    let a = apply_docker_v2_defaults(DockerV2Config::default(), "proj", Some("acme"), "crate-a");
+    let b = apply_docker_v2_defaults(DockerV2Config::default(), "proj", Some("acme"), "crate-b");
+    assert_eq!(a.images, vec!["ghcr.io/acme/crate-a".to_string()]);
+    assert_eq!(b.images, vec!["ghcr.io/acme/crate-b".to_string()]);
+}
+
+#[test]
+fn test_apply_docker_v2_defaults_images_default_skipped_without_owner() {
+    // No resolvable owner -> leave images empty (the docker pipe then emits
+    // no tags for the config, unchanged from prior behaviour).
+    use anodizer_core::config::DockerV2Config;
+
+    let none = apply_docker_v2_defaults(DockerV2Config::default(), "proj", None, "my-cli");
+    assert!(none.images.is_empty());
+    let empty = apply_docker_v2_defaults(DockerV2Config::default(), "proj", Some(""), "my-cli");
+    assert!(empty.images.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// resolve_registry_owner — 3-tier precedence
+// ---------------------------------------------------------------------------
+
+/// Build a `CrateConfig` carrying an optional `release.github.owner` and the
+/// minimal docker_v2 shape so it survives the run's crate filter. `owner: None`
+/// omits the `release` block entirely.
+fn crate_with_owner(name: &str, owner: Option<&str>) -> anodizer_core::config::CrateConfig {
+    use anodizer_core::config::{CrateConfig, DockerV2Config, ReleaseConfig, ScmRepoConfig};
+    let release = owner.map(|o| ReleaseConfig {
+        github: Some(ScmRepoConfig {
+            owner: o.to_string(),
+            name: "repo".to_string(),
+        }),
+        ..ReleaseConfig::default()
+    });
+    CrateConfig {
+        name: name.to_string(),
+        path: ".".to_string(),
+        release,
+        docker_v2: Some(vec![DockerV2Config {
+            dockerfile: "Dockerfile".to_string(),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn test_resolve_registry_owner_per_crate_wins_over_top_level() {
+    // Tier 1 (per-crate release.github.owner) beats tier 2 (top-level
+    // config.release.github.owner). Pure config read — no remote consulted.
+    use anodizer_core::config::{Config, ReleaseConfig, ScmRepoConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let crates = vec![crate_with_owner("svc", Some("per-crate-owner"))];
+    let config = Config {
+        release: Some(ReleaseConfig {
+            github: Some(ScmRepoConfig {
+                owner: "top-level-owner".to_string(),
+                name: "repo".to_string(),
+            }),
+            ..ReleaseConfig::default()
+        }),
+        crates: crates.clone(),
+        ..Config::default()
+    };
+    let ctx = Context::new(config, ContextOptions::default());
+    assert_eq!(
+        super::run::resolve_registry_owner(&ctx, &crates).as_deref(),
+        Some("per-crate-owner"),
+    );
+}
+
+#[test]
+fn test_resolve_registry_owner_top_level_when_no_per_crate() {
+    // Tier 2 (top-level release.github.owner) used when no crate carries a
+    // resolved release.github. Beats tier 3 (remote) — still no remote probe.
+    use anodizer_core::config::{Config, ReleaseConfig, ScmRepoConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let crates = vec![crate_with_owner("svc", None)];
+    let config = Config {
+        release: Some(ReleaseConfig {
+            github: Some(ScmRepoConfig {
+                owner: "top-level-owner".to_string(),
+                name: "repo".to_string(),
+            }),
+            ..ReleaseConfig::default()
+        }),
+        crates: crates.clone(),
+        ..Config::default()
+    };
+    let ctx = Context::new(config, ContextOptions::default());
+    assert_eq!(
+        super::run::resolve_registry_owner(&ctx, &crates).as_deref(),
+        Some("top-level-owner"),
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn test_resolve_registry_owner_falls_back_to_remote() {
+    // Tier 3: no per-crate AND no top-level owner -> the single git-remote
+    // probe resolves the owner. Run inside a throwaway repo with a GitHub
+    // `origin` so the assertion does not depend on the ambient repo's remote.
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let repo = temp_git_repo_with_remote("git@github.com:remote-owner/widget.git");
+    let _cwd = anodizer_core::test_helpers::CwdGuard::new(repo.path()).expect("cwd guard");
+
+    let crates = vec![crate_with_owner("svc", None)];
+    let config = Config {
+        crates: crates.clone(),
+        ..Config::default()
+    };
+    let ctx = Context::new(config, ContextOptions::default());
+    assert_eq!(
+        super::run::resolve_registry_owner(&ctx, &crates).as_deref(),
+        Some("remote-owner"),
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn test_resolve_registry_owner_none_when_no_owner_and_no_remote() {
+    // Tier 3 with a remote-less repo -> None (caller then leaves images empty).
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let repo = temp_git_repo_no_remote();
+    let _cwd = anodizer_core::test_helpers::CwdGuard::new(repo.path()).expect("cwd guard");
+
+    let crates = vec![crate_with_owner("svc", None)];
+    let config = Config {
+        crates: crates.clone(),
+        ..Config::default()
+    };
+    let ctx = Context::new(config, ContextOptions::default());
+    assert_eq!(super::run::resolve_registry_owner(&ctx, &crates), None);
+}
+
+/// Init a throwaway git repo with the given `origin` remote; returns the
+/// tempdir handle (kept alive by the caller).
+fn temp_git_repo_with_remote(remote_url: &str) -> tempfile::TempDir {
+    use std::process::Command;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(path)
+            .status()
+            .expect("git init")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["remote", "add", "origin", remote_url])
+            .current_dir(path)
+            .status()
+            .expect("git remote add")
+            .success()
+    );
+    dir
+}
+
+/// Init a throwaway git repo with NO `origin` remote.
+fn temp_git_repo_no_remote() -> tempfile::TempDir {
+    use std::process::Command;
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .expect("git init")
+            .success()
+    );
+    dir
+}
+
+#[test]
+fn test_docker_v2_derived_image_default_reaches_rendered_tag() {
+    // End-to-end: a docker_v2 config with NO user `images` plus a resolvable
+    // owner (here via per-crate release.github) must produce a rendered
+    // ghcr.io/{owner}/{crate}:{tag} artifact. Proves the derived default flows
+    // through apply_docker_v2_defaults -> prepare_v2_config -> tag rendering ->
+    // artifact registration. Offline: dry-run, no docker/registry.
+    use anodizer_core::config::{
+        Config, CrateConfig, DockerV2Config, ReleaseConfig, ScmRepoConfig,
+    };
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let v2_cfg = DockerV2Config {
+        id: Some("svc-v2".to_string()),
+        // No `images:` — the ghcr.io/{owner}/{crate} default must fill it.
+        tags: vec!["{{ .Tag }}".to_string(), "latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+
+    let crate_cfg = CrateConfig {
+        name: "svc".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        release: Some(ReleaseConfig {
+            github: Some(ScmRepoConfig {
+                owner: "acme".to_string(),
+                name: "svc".to_string(),
+            }),
+            ..ReleaseConfig::default()
+        }),
+        docker_v2: Some(vec![v2_cfg]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "svc".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    DockerStage::new()
+        .run(&mut ctx)
+        .expect("dry-run derived-image build must succeed");
+
+    let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+    let tags: Vec<&str> = images
+        .iter()
+        .map(|a| a.metadata.get("tag").unwrap().as_str())
+        .collect();
+    assert!(
+        tags.contains(&"ghcr.io/acme/svc:v1.0.0"),
+        "derived image must reach a rendered tag; got {tags:?}",
+    );
+    assert!(
+        tags.contains(&"ghcr.io/acme/svc:latest"),
+        "derived image must tag every tag entry; got {tags:?}",
+    );
 }
 
 #[test]

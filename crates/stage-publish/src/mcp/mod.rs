@@ -364,19 +364,36 @@ fn mcp_owning_crate_name(ctx: &Context) -> Option<&str> {
         .map(|c| c.name.as_str())
 }
 
-/// Fill in `mcp.repository.url` / `mcp.repository.source` from the configured
-/// `release.<github|gitlab|gitea>` block when the user left them blank. This
-/// matches the doc claim that anodizer "infers `url` and `source` from the
-/// release context" — without this, the entire `repository` object is
-/// silently omitted from the published payload (since the builder gates on
-/// `mcp.repository.url.is_empty()`).
+/// Fill in `mcp.repository.url` / `mcp.repository.source` when the user left
+/// them blank, deriving from (in priority order):
+///
+/// 1. the configured `release.<github|gitlab|gitea>` block, or
+/// 2. the `origin` git remote when it is a GitHub repo (source `github`).
+///
+/// Without this, the entire `repository` object is silently omitted from the
+/// published payload (the builder gates on `mcp.repository.url.is_empty()`).
+/// A user-set `repository.url` always wins — derivation only fills a genuine
+/// gap, and a user-set `repository.source` is likewise preserved.
+///
+/// The git-remote fallback is GitHub-only by construction: a self-hosted or
+/// non-GitHub `origin` never matches [`parse_github_remote`], so the
+/// `repository` object stays user-supplied rather than being force-derived
+/// with a wrong `source`.
 fn infer_repository_from_release(ctx: &Context, mcp: &mut McpConfig) {
     if !mcp.repository.url.is_empty() {
         return;
     }
-    let Some(release) = ctx.config.release.as_ref() else {
-        return;
-    };
+    let resolved = resolve_repository_host(&ctx.config).or_else(github_repo_from_remote);
+    apply_inferred_repository(mcp, resolved);
+}
+
+/// Resolve `(host, owner, name)` from the configured `release.<host>` block.
+/// Returns `None` when there is no release block or none of the SCM sub-blocks
+/// carry a non-empty owner+name.
+fn resolve_repository_host(
+    config: &anodizer_core::config::Config,
+) -> Option<(&'static str, String, String)> {
+    let release = config.release.as_ref()?;
     let (host, repo) = if let Some(r) = release.github.as_ref() {
         ("github", r)
     } else if let Some(r) = release.gitlab.as_ref() {
@@ -384,18 +401,43 @@ fn infer_repository_from_release(ctx: &Context, mcp: &mut McpConfig) {
     } else if let Some(r) = release.gitea.as_ref() {
         ("gitea", r)
     } else {
-        return;
+        return None;
     };
     if repo.owner.is_empty() || repo.name.is_empty() {
-        return;
+        return None;
     }
+    Some((host, repo.owner.clone(), repo.name.clone()))
+}
+
+/// Resolve `(host="github", owner, name)` from the `origin` git remote when it
+/// is a GitHub repo. Reads `git remote get-url origin` from the process cwd
+/// (the project root the publisher runs in), matching `auto_detect_github`'s
+/// cwd-based probe. Returns `None` for any non-GitHub remote (so derivation
+/// never invents a wrong `source`) and for any git failure (no remote,
+/// detached checkout, ...).
+fn github_repo_from_remote() -> Option<(&'static str, String, String)> {
+    anodizer_core::git::detect_github_repo()
+        .ok()
+        .map(|(owner, name)| ("github", owner, name))
+}
+
+/// Apply a resolved `(host, owner, name)` to `mcp.repository`, leaving any
+/// user-set `source` untouched. Pure over its inputs so both derivation
+/// branches (release block, git remote) funnel through one tested writer.
+fn apply_inferred_repository(
+    mcp: &mut McpConfig,
+    resolved: Option<(&'static str, String, String)>,
+) {
+    let Some((host, owner, name)) = resolved else {
+        return;
+    };
     let base = match host {
         "github" => "https://github.com",
         "gitlab" => "https://gitlab.com",
         "gitea" => "https://gitea.com",
         _ => return,
     };
-    mcp.repository.url = format!("{}/{}/{}", base, repo.owner, repo.name);
+    mcp.repository.url = format!("{}/{}/{}", base, owner, name);
     if mcp.repository.source.is_empty() {
         mcp.repository.source = host.to_string();
     }

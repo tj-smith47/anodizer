@@ -101,16 +101,32 @@ impl Stage for super::DockerStage {
         // post-hook queueing.
         let mut pre_hook_errors: Vec<anyhow::Error> = Vec::new();
 
+        // Resolve the registry owner ONCE for the whole run — the per-crate
+        // `images` default is `ghcr.io/{owner}/{crate}`, so the owner (the
+        // GitHub org/user) is shared while the image name varies per crate.
+        // Prefer the already-resolved `release.github.owner` (auto-filled from
+        // the remote at config load) to avoid an extra `git remote` shell-out;
+        // fall back to a single git-remote probe; `None` leaves the default off.
+        let registry_owner = resolve_registry_owner(ctx, &crates);
+
         for krate in &crates {
             let docker_v2_configs = match krate.docker_v2.as_ref() {
                 Some(cfgs) => cfgs.clone(),
                 None => Vec::new(),
             };
 
-            // Apply GoReleaser-compatible defaults to V2 configs.
+            // Apply GoReleaser-compatible defaults to V2 configs. The per-crate
+            // `images` default uses THIS crate's name, not the project primary.
             let docker_v2_configs: Vec<_> = docker_v2_configs
                 .into_iter()
-                .map(|cfg| apply_docker_v2_defaults(cfg, &ctx.config.project_name))
+                .map(|cfg| {
+                    apply_docker_v2_defaults(
+                        cfg,
+                        &ctx.config.project_name,
+                        registry_owner.as_deref(),
+                        &krate.name,
+                    )
+                })
                 .collect();
 
             for (idx, v2_cfg) in docker_v2_configs.iter().enumerate() {
@@ -188,6 +204,48 @@ impl Stage for super::DockerStage {
 // ---------------------------------------------------------------------------
 // Run helpers
 // ---------------------------------------------------------------------------
+
+/// Resolve the registry owner used for the per-crate `ghcr.io/{owner}/{crate}`
+/// `images` default. Resolution order (no new blocking network call):
+///
+/// 1. the first non-empty `release.github.owner` among the docker-bearing
+///    crates — already auto-filled from the `origin` remote at config load, so
+///    this is a pure config read;
+/// 2. a single `git remote get-url origin` probe (GitHub-only) as a fallback
+///    when no crate carries a resolved `release.github`.
+///
+/// Returns `None` when neither source yields an owner — the caller then leaves
+/// `images` empty and the docker pipe emits no tags for that config (unchanged
+/// behaviour). Resolved once per run, never per crate.
+pub(crate) fn resolve_registry_owner(
+    ctx: &Context,
+    crates: &[anodizer_core::config::CrateConfig],
+) -> Option<String> {
+    let from_config = crates
+        .iter()
+        .filter_map(|c| c.release.as_ref())
+        .filter_map(|r| r.github.as_ref())
+        .map(|g| g.owner.clone())
+        .find(|o| !o.is_empty());
+    if from_config.is_some() {
+        return from_config;
+    }
+    // Also consult the top-level `release.github` block (single-crate configs
+    // declare the SCM repo there rather than per crate).
+    if let Some(owner) = ctx
+        .config
+        .release
+        .as_ref()
+        .and_then(|r| r.github.as_ref())
+        .map(|g| g.owner.clone())
+        .filter(|o| !o.is_empty())
+    {
+        return Some(owner);
+    }
+    anodizer_core::git::detect_github_repo()
+        .ok()
+        .map(|(owner, _name)| owner)
+}
 
 /// Fire per-config post-hooks once per docker_v2 config, after all
 /// snapshot-platform jobs for that config have completed. Matches GR's

@@ -592,12 +592,33 @@ pub(crate) fn resolve_digest_config(
 ///
 /// Retry defaults are applied later by `resolve_retry_params` (10 attempts,
 /// 10s base, 5m max) so they aren't repeated here.
-pub fn apply_docker_v2_defaults(mut cfg: DockerV2Config, project_name: &str) -> DockerV2Config {
+/// `image_name` is the crate's own binary/crate name — the per-crate `images`
+/// default is `ghcr.io/{owner}/{image_name}`, NOT the workspace primary's, so
+/// each crate in a workspace defaults to its own image namespace. `owner` is
+/// the git-remote owner (GitHub org/user); when `None` (no remote resolvable),
+/// the `images` default is skipped and the empty list flows through unchanged —
+/// the docker pipe then emits no image tags for that config, the same as today.
+///
+/// `dockerfile` is intentionally left required (no sane default beyond
+/// `"Dockerfile"`, applied here only when empty) — the path is a real choice.
+/// `images` stays an escape hatch: a user-supplied `images:` list always wins.
+pub fn apply_docker_v2_defaults(
+    mut cfg: DockerV2Config,
+    project_name: &str,
+    owner: Option<&str>,
+    image_name: &str,
+) -> DockerV2Config {
     if cfg.id.is_none() {
         cfg.id = Some(project_name.to_string());
     }
     if cfg.dockerfile.is_empty() {
         cfg.dockerfile = "Dockerfile".to_string();
+    }
+    if cfg.images.is_empty()
+        && let Some(owner) = owner.filter(|o| !o.is_empty())
+        && !image_name.is_empty()
+    {
+        cfg.images = vec![format!("ghcr.io/{}/{}", owner, image_name)];
     }
     if cfg.tags.is_empty() {
         cfg.tags = vec!["{{ .Tag }}".to_string()];

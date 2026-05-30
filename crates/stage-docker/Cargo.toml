@@ -19,3 +19,5 @@ tracing.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 serde_yaml_ng.workspace = true
+serial_test.workspace = true
+anodizer-core = { workspace = true, features = ["test-helpers"] }

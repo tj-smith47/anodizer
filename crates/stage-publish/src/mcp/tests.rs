@@ -22,10 +22,11 @@ use anodizer_core::config::{
 use anodizer_core::context::{Context, ContextOptions};
 
 use super::{
-    DEFAULT_REGISTRY_URL, MAX_RESPONSE_SNIPPET_BYTES, fill_from_project_metadata, image_repo,
-    infer_repository_from_release, mcp_image_owned_by_selected, oci_rejection_hint,
-    publish_with_registry, reset_experimental_warned_for_test, resolve_registry_url,
-    truncate_response_snippet, warn_experimental_once, warn_once_lock,
+    DEFAULT_REGISTRY_URL, MAX_RESPONSE_SNIPPET_BYTES, apply_inferred_repository,
+    fill_from_project_metadata, image_repo, infer_repository_from_release,
+    mcp_image_owned_by_selected, oci_rejection_hint, publish_with_registry,
+    reset_experimental_warned_for_test, resolve_registry_url, truncate_response_snippet,
+    warn_experimental_once, warn_once_lock,
 };
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
@@ -424,10 +425,15 @@ fn inference_does_not_override_explicit_repository() {
 }
 
 #[test]
+#[serial_test::serial]
 fn inference_no_ops_when_owner_or_name_empty() {
     // Defensive: an empty owner OR name in release.github must not
-    // produce a half-baked URL like https://github.com//repo. The
-    // function must return without touching mcp.repository.
+    // produce a half-baked URL like https://github.com//repo. Run inside a
+    // remote-less git repo so the git-remote fallback also yields nothing,
+    // isolating the release-block branch under test.
+    let repo = temp_git_repo_no_remote();
+    let _cwd = anodizer_core::test_helpers::CwdGuard::new(repo.path()).expect("cwd guard");
+
     for (owner, name) in [("", "repo"), ("owner", ""), ("", "")] {
         let ctx = Context::new(
             cfg_with_release("github", owner, name),
@@ -447,6 +453,115 @@ fn inference_no_ops_when_owner_or_name_empty() {
             mcp.repository.source
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Repository derivation from the git remote (fallback when no release block)
+// ---------------------------------------------------------------------------
+
+/// Init a throwaway git repo with the given `origin` remote and return the
+/// tempdir handle (kept alive by the caller).
+fn temp_git_repo_with_remote(remote_url: &str) -> tempfile::TempDir {
+    use std::process::Command;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(path)
+            .status()
+            .expect("git init")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["remote", "add", "origin", remote_url])
+            .current_dir(path)
+            .status()
+            .expect("git remote add")
+            .success()
+    );
+    dir
+}
+
+/// Init a throwaway git repo with NO `origin` remote — the git-remote
+/// fallback resolves to `None` from inside it.
+fn temp_git_repo_no_remote() -> tempfile::TempDir {
+    use std::process::Command;
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .expect("git init")
+            .success()
+    );
+    dir
+}
+
+#[test]
+#[serial_test::serial]
+fn infer_repository_derives_from_github_remote_when_no_release_block() {
+    // No release block at all: the git-remote fallback must derive
+    // url + source="github" from a GitHub `origin`.
+    let repo = temp_git_repo_with_remote("git@github.com:acme/widget.git");
+    let _cwd = anodizer_core::test_helpers::CwdGuard::new(repo.path()).expect("cwd guard");
+
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let mut mcp = McpConfig::default();
+    infer_repository_from_release(&ctx, &mut mcp);
+    assert_eq!(mcp.repository.url, "https://github.com/acme/widget");
+    assert_eq!(mcp.repository.source, "github");
+}
+
+#[test]
+#[serial_test::serial]
+fn infer_repository_not_forced_for_non_github_remote() {
+    // A self-hosted / non-GitHub remote must NOT be force-derived — the
+    // repository object stays user-supplied (here: empty).
+    let repo = temp_git_repo_with_remote("git@gitlab.example.com:acme/widget.git");
+    let _cwd = anodizer_core::test_helpers::CwdGuard::new(repo.path()).expect("cwd guard");
+
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let mut mcp = McpConfig::default();
+    infer_repository_from_release(&ctx, &mut mcp);
+    assert!(
+        mcp.repository.url.is_empty(),
+        "non-github remote must not force a url, got {:?}",
+        mcp.repository.url
+    );
+    assert!(mcp.repository.source.is_empty());
+}
+
+#[test]
+#[serial_test::serial]
+fn infer_repository_user_set_wins_over_github_remote() {
+    // An explicit repository.url must survive even when a GitHub remote
+    // could otherwise be derived.
+    let repo = temp_git_repo_with_remote("git@github.com:acme/widget.git");
+    let _cwd = anodizer_core::test_helpers::CwdGuard::new(repo.path()).expect("cwd guard");
+
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let mut mcp = McpConfig::default();
+    mcp.repository.url = "https://example.com/me/thing".to_string();
+    mcp.repository.source = "custom".to_string();
+    infer_repository_from_release(&ctx, &mut mcp);
+    assert_eq!(mcp.repository.url, "https://example.com/me/thing");
+    assert_eq!(mcp.repository.source, "custom");
+}
+
+#[test]
+fn apply_inferred_repository_preserves_user_source() {
+    // The pure writer must keep a user-set source while filling the url.
+    let mut mcp = McpConfig::default();
+    mcp.repository.source = "ghe".to_string();
+    apply_inferred_repository(
+        &mut mcp,
+        Some(("github", "acme".to_string(), "widget".to_string())),
+    );
+    assert_eq!(mcp.repository.url, "https://github.com/acme/widget");
+    assert_eq!(mcp.repository.source, "ghe", "user-set source must win");
 }
 
 // ---------------------------------------------------------------------------
