@@ -267,3 +267,56 @@ crates:
 anodizer does not derive `cargo publish` metadata for prebuilt imports;
 disable binstall per-crate via `binstall: { enabled: false }` if you do not
 want a placeholder metadata block written into the crate's `Cargo.toml`.
+
+### Per-target `pkg_url` overrides (GoReleaser-style asset names)
+
+`cargo-binstall`'s own tokens only ever expand to its target words —
+`{ target }` yields the Rust triple and the OS/arch tokens resolve to
+`macos`/`x86_64`/`aarch64`, never `darwin`/`amd64`/`arm64`. If your release
+archives use GoReleaser-style `<os>-<goarch>` names
+(`cfgd-1.2.3-linux-amd64.tar.gz`, `cfgd-1.2.3-darwin-arm64.tar.gz`), a single
+`pkg_url` cannot match every asset and `cargo binstall` 404s.
+
+Use `binstall.overrides` to map each Rust target triple to its real asset
+name. Each entry overrides `pkg_url`/`pkg_fmt`/`bin_dir` for that triple and
+is emitted as a `[package.metadata.binstall.overrides.<triple>]` sub-table.
+anodize templates (`{{ .Version }}`) are rendered; cargo-binstall's own
+`{ ... }` tokens are left intact.
+
+```yaml
+crates:
+  - name: cfgd
+    path: "."
+    binstall:
+      enabled: true
+      overrides:
+        x86_64-unknown-linux-gnu:
+          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-linux-amd64.tar.gz"
+          pkg_fmt: tgz
+        aarch64-unknown-linux-gnu:
+          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-linux-arm64.tar.gz"
+          pkg_fmt: tgz
+        x86_64-apple-darwin:
+          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-darwin-amd64.tar.gz"
+          pkg_fmt: tgz
+        aarch64-apple-darwin:
+          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-darwin-arm64.tar.gz"
+          pkg_fmt: tgz
+        x86_64-pc-windows-msvc:
+          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-windows-amd64.zip"
+          pkg_fmt: zip
+        aarch64-pc-windows-msvc:
+          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-windows-arm64.zip"
+          pkg_fmt: zip
+```
+
+This renders into the crate's `Cargo.toml` as:
+
+```toml
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "https://github.com/myorg/cfgd/releases/download/v1.2.3/cfgd-1.2.3-linux-amd64.tar.gz"
+pkg-fmt = "tgz"
+```
+
+so `cargo binstall cfgd` resolves the real per-target asset for every
+platform.

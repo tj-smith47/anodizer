@@ -2370,6 +2370,47 @@ crates:
 }
 
 #[test]
+fn test_binstall_config_overrides_parsed() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    binstall:
+      enabled: true
+      overrides:
+        x86_64-unknown-linux-gnu:
+          pkg_url: "https://example.com/{{ .Version }}/myapp-linux-amd64.tar.gz"
+          pkg_fmt: tgz
+          bin_dir: "{ bin }{ binary-ext }"
+        aarch64-apple-darwin:
+          pkg_url: "https://example.com/{{ .Version }}/myapp-darwin-arm64.tar.gz"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let bs = config.crates[0].binstall.as_ref().unwrap();
+    let overrides = bs.overrides.as_ref().expect("overrides should parse");
+    assert_eq!(overrides.len(), 2);
+
+    let linux = overrides.get("x86_64-unknown-linux-gnu").unwrap();
+    assert_eq!(
+        linux.pkg_url,
+        Some("https://example.com/{{ .Version }}/myapp-linux-amd64.tar.gz".to_string())
+    );
+    assert_eq!(linux.pkg_fmt, Some("tgz".to_string()));
+    assert_eq!(linux.bin_dir, Some("{ bin }{ binary-ext }".to_string()));
+
+    let darwin = overrides.get("aarch64-apple-darwin").unwrap();
+    assert_eq!(
+        darwin.pkg_url,
+        Some("https://example.com/{{ .Version }}/myapp-darwin-arm64.tar.gz".to_string())
+    );
+    // Unset override fields default to None.
+    assert_eq!(darwin.pkg_fmt, None);
+    assert_eq!(darwin.bin_dir, None);
+}
+
+#[test]
 fn test_version_sync_config_parsed() {
     let yaml = r#"
 project_name: test

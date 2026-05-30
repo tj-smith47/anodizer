@@ -129,46 +129,204 @@ pub(crate) fn add_artifact(
     Ok(())
 }
 
+/// Template variables anodize re-scopes per crate so a multi-crate
+/// invocation (`release --all`, or several independent-version tags at HEAD)
+/// renders each crate's `version_sync` and binstall `pkg-url`/`overrides`
+/// against THAT crate's own version and name — not the first crate's.
+///
+/// `populate_git_vars` derives these from a single `GitInfo` for the first
+/// crate, so without per-crate scoping every sibling inherits the first
+/// crate's `Version`/`Tag`/`RawVersion`/`ProjectName`.
+const PER_CRATE_SCOPED_VARS: &[&str] = &["Version", "RawVersion", "Tag", "ProjectName", "Name"];
+
+/// Per-crate template-variable overrides derived the same way
+/// `Context::populate_git_vars` derives the global ones, but scoped to a
+/// single crate's tag and name.
+///
+/// `tag` is the crate's own git tag (monorepo prefix already stripped for the
+/// base `Tag`/`Version` vars); `name` is the crate's package name, used for
+/// `ProjectName`/`Name` so binstall `pkg-url` templates referencing
+/// `{{ .ProjectName }}` resolve per crate.
+///
+/// Returns an error when the tag is not parseable as semver: a mutation-enabled
+/// crate MUST get its own version, and silently falling back to the first
+/// crate's vars would stamp the wrong version/URL. `Version`/`RawVersion` are
+/// derived from the shared [`SemVer::version_string`] /
+/// [`SemVer::raw_version_string`] helpers so the build stage and
+/// `populate_git_vars` never drift.
+fn crate_template_overrides(name: &str, tag: &str) -> Result<Vec<(&'static str, String)>> {
+    let semver = anodizer_core::git::parse_semver_tag(tag).with_context(|| {
+        format!("crate '{name}': release tag '{tag}' is not a parseable semver version")
+    })?;
+    Ok(vec![
+        ("RawVersion", semver.raw_version_string()),
+        ("Version", semver.version_string()),
+        ("Tag", tag.to_string()),
+        ("ProjectName", name.to_string()),
+        ("Name", name.to_string()),
+    ])
+}
+
+/// Resolve a crate's own latest matching tag from git, monorepo prefix
+/// stripped. Returns `None` when no tag matches; the caller treats that as a
+/// fail-loud error for a mutation-enabled crate (never a silent fall-back to
+/// the first crate's vars). For single-crate / lockstep this resolves to the
+/// same tag the global context already carries, so behavior is unchanged.
+fn resolve_crate_tag(ctx: &Context, crate_cfg: &CrateConfig) -> Option<String> {
+    let monorepo_prefix = ctx.config.monorepo_tag_prefix();
+    // Honor `--project-root` like the other git-rooted stage-build helpers so
+    // tag discovery targets the release repo rather than the process cwd.
+    let repo = ctx
+        .options
+        .project_root
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let tag = anodizer_core::git::find_latest_tag_matching_with_prefix_in(
+        &repo,
+        &crate_cfg.tag_template,
+        ctx.config.git.as_ref(),
+        Some(ctx.template_vars()),
+        monorepo_prefix,
+    )
+    .ok()
+    .flatten()?;
+    let stripped = match monorepo_prefix {
+        Some(prefix) => anodizer_core::git::strip_monorepo_prefix(&tag, prefix).to_string(),
+        None => tag,
+    };
+    Some(stripped)
+}
+
 pub(crate) fn apply_source_mutations(
     ctx: &mut Context,
     crates: &[CrateConfig],
     dry_run: bool,
     log: &StageLogger,
 ) -> Result<()> {
-    let version = ctx
-        .template_vars()
-        .get("RawVersion")
-        .or_else(|| ctx.template_vars().get("Version"))
-        .cloned()
-        .unwrap_or_default();
+    apply_source_mutations_with_resolver(ctx, crates, dry_run, log, &resolve_crate_tag)
+}
+
+/// Inner body of [`apply_source_mutations`] with the per-crate tag source
+/// injected. Production passes [`resolve_crate_tag`] (git-backed); tests pass a
+/// closure returning fixed tags so the per-crate scoping can be exercised
+/// without a git fixture.
+fn apply_source_mutations_with_resolver(
+    ctx: &mut Context,
+    crates: &[CrateConfig],
+    dry_run: bool,
+    log: &StageLogger,
+    resolve_tag: &dyn Fn(&Context, &CrateConfig) -> Option<String>,
+) -> Result<()> {
     let is_snapshot = ctx.is_snapshot();
     for crate_cfg in crates {
-        if let Some(ref vs) = crate_cfg.version_sync
-            && vs.enabled.unwrap_or(false)
-        {
-            if is_snapshot {
-                log.verbose(&format!(
-                    "version-sync: skipping {} (snapshot mode does not mutate source files)",
-                    crate_cfg.path
-                ));
-            } else if !version.is_empty() {
-                version_sync::sync_version(&crate_cfg.path, &version, dry_run, log)?;
-            }
+        let needs_mutation = crate_cfg
+            .version_sync
+            .as_ref()
+            .is_some_and(|vs| vs.enabled.unwrap_or(false))
+            || crate_cfg
+                .binstall
+                .as_ref()
+                .is_some_and(|bs| bs.enabled.unwrap_or(false));
+        if !needs_mutation {
+            continue;
         }
-        if let Some(ref bs) = crate_cfg.binstall
-            && bs.enabled.unwrap_or(false)
-        {
-            if is_snapshot {
-                log.verbose(&format!(
-                    "binstall: skipping {} (snapshot mode does not mutate source files)",
-                    crate_cfg.path
-                ));
-            } else {
-                binstall::generate_binstall_metadata(&crate_cfg.path, bs, ctx, dry_run)?;
+
+        // Re-scope the version/name vars to THIS crate before rendering its
+        // source mutations, then restore so one crate's vars never leak into
+        // the next. Snapshot mode skips mutation entirely, so no git lookup
+        // (and no re-scope) happens there.
+        //
+        // A mutation-enabled crate with no resolvable per-crate tag/version is
+        // a fail-loud error, never a silent fall-back to the first crate's
+        // vars: stamping crate B with crate A's version (or rendering B's
+        // binstall URL with A's version) ships a wrong, hard-to-spot artifact.
+        let saved: Vec<(&'static str, Option<String>)> = if is_snapshot {
+            Vec::new()
+        } else {
+            let tag = resolve_tag(ctx, crate_cfg).with_context(|| {
+                format!(
+                    "crate '{}' is selected for version-sync/binstall but has no \
+                     release tag matching its tag_template; cannot derive its version",
+                    crate_cfg.name
+                )
+            })?;
+            let overrides = crate_template_overrides(&crate_cfg.name, &tag)?;
+            apply_var_overrides(ctx, &overrides)
+        };
+
+        let result = (|| -> Result<()> {
+            if let Some(ref vs) = crate_cfg.version_sync
+                && vs.enabled.unwrap_or(false)
+            {
+                if is_snapshot {
+                    log.verbose(&format!(
+                        "version-sync: skipping {} (snapshot mode does not mutate source files)",
+                        crate_cfg.path
+                    ));
+                } else {
+                    let version = ctx
+                        .template_vars()
+                        .get("RawVersion")
+                        .or_else(|| ctx.template_vars().get("Version"))
+                        .cloned()
+                        .unwrap_or_default();
+                    if !version.is_empty() {
+                        version_sync::sync_version(&crate_cfg.path, &version, dry_run, log)?;
+                    }
+                }
+            }
+            if let Some(ref bs) = crate_cfg.binstall
+                && bs.enabled.unwrap_or(false)
+            {
+                if is_snapshot {
+                    log.verbose(&format!(
+                        "binstall: skipping {} (snapshot mode does not mutate source files)",
+                        crate_cfg.path
+                    ));
+                } else {
+                    binstall::generate_binstall_metadata(&crate_cfg.path, bs, ctx, dry_run)?;
+                }
+            }
+            Ok(())
+        })();
+
+        // Restore even on error so a failed crate doesn't poison the next.
+        restore_var_overrides(ctx, saved);
+        result?;
+    }
+    Ok(())
+}
+
+/// Apply `(key, value)` overrides to `ctx`'s template vars, returning the
+/// prior values (`None` when the key was absent) so the scope can be restored
+/// by [`restore_var_overrides`].
+fn apply_var_overrides(
+    ctx: &mut Context,
+    overrides: &[(&'static str, String)],
+) -> Vec<(&'static str, Option<String>)> {
+    let mut saved: Vec<(&'static str, Option<String>)> = Vec::new();
+    let mut seen: HashSet<&'static str> = HashSet::new();
+    for key in PER_CRATE_SCOPED_VARS {
+        if seen.insert(*key) {
+            saved.push((*key, ctx.template_vars().get(key).cloned()));
+        }
+    }
+    for (key, value) in overrides {
+        ctx.template_vars_mut().set(key, value);
+    }
+    saved
+}
+
+/// Restore template vars to the values captured by [`apply_var_overrides`].
+fn restore_var_overrides(ctx: &mut Context, saved: Vec<(&'static str, Option<String>)>) {
+    for (key, prior) in saved {
+        match prior {
+            Some(value) => ctx.template_vars_mut().set(key, &value),
+            None => {
+                ctx.template_vars_mut().unset(key);
             }
         }
     }
-    Ok(())
 }
 
 pub(crate) fn seed_determinism_state(
@@ -636,4 +794,520 @@ pub(crate) fn process_universal_binaries(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod source_mutation_tests {
+    use super::*;
+    use anodizer_core::config::{BinstallConfig, Config, CrateConfig, VersionSyncConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    fn crate_cfg(name: &str, path: &str, tag_template: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: path.to_string(),
+            tag_template: tag_template.to_string(),
+            version_sync: Some(VersionSyncConfig {
+                enabled: Some(true),
+                mode: None,
+            }),
+            binstall: Some(BinstallConfig {
+                enabled: Some(true),
+                pkg_url: Some(
+                    "https://github.com/myorg/{{ .ProjectName }}/releases/download/v{{ .Version }}/{{ .ProjectName }}-{{ .Version }}-{ target }.tar.gz"
+                        .to_string(),
+                ),
+                bin_dir: None,
+                pkg_fmt: Some("tgz".to_string()),
+                overrides: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn seed_cargo_toml(dir: &std::path::Path, name: &str) {
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn crate_template_overrides_derives_per_crate_version_and_name() {
+        let ov = crate_template_overrides("alpha", "alpha-v1.2.3").unwrap();
+        let map: std::collections::HashMap<_, _> = ov.into_iter().collect();
+        assert_eq!(map.get("RawVersion").map(String::as_str), Some("1.2.3"));
+        assert_eq!(map.get("Version").map(String::as_str), Some("1.2.3"));
+        assert_eq!(map.get("Tag").map(String::as_str), Some("alpha-v1.2.3"));
+        assert_eq!(map.get("ProjectName").map(String::as_str), Some("alpha"));
+        assert_eq!(map.get("Name").map(String::as_str), Some("alpha"));
+
+        // Prerelease + build metadata mirror populate_git_vars.
+        let ov = crate_template_overrides("beta", "beta-v2.0.0-rc.1+build.7").unwrap();
+        let map: std::collections::HashMap<_, _> = ov.into_iter().collect();
+        assert_eq!(map.get("RawVersion").map(String::as_str), Some("2.0.0"));
+        assert_eq!(
+            map.get("Version").map(String::as_str),
+            Some("2.0.0-rc.1+build.7")
+        );
+    }
+
+    #[test]
+    fn crate_template_overrides_rejects_unparseable_tag() {
+        let err = crate_template_overrides("gamma", "not-a-version").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("gamma") && msg.contains("not-a-version"),
+            "error must name the crate and its bad tag, got: {msg}"
+        );
+    }
+
+    /// Two crates with DIFFERENT versions and names in one invocation: each
+    /// crate's Cargo.toml must receive ITS OWN version + binstall pkg-url, and
+    /// crate B must NOT inherit crate A's version/name (the headline bleed bug).
+    #[test]
+    fn apply_source_mutations_scopes_version_and_binstall_per_crate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let alpha_dir = tmp.path().join("alpha");
+        let beta_dir = tmp.path().join("beta");
+        std::fs::create_dir_all(&alpha_dir).unwrap();
+        std::fs::create_dir_all(&beta_dir).unwrap();
+        seed_cargo_toml(&alpha_dir, "alpha");
+        seed_cargo_toml(&beta_dir, "beta");
+
+        let crates = vec![
+            crate_cfg(
+                "alpha",
+                alpha_dir.to_str().unwrap(),
+                "alpha-v{{ .Version }}",
+            ),
+            crate_cfg("beta", beta_dir.to_str().unwrap(), "beta-v{{ .Version }}"),
+        ];
+
+        // Context seeded the way populate_git_vars would for the FIRST crate
+        // only: alpha's version/name. Without per-crate scoping, beta inherits
+        // these.
+        let config = Config {
+            project_name: "alpha".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.2.3");
+        ctx.template_vars_mut().set("RawVersion", "1.2.3");
+        ctx.template_vars_mut().set("Tag", "alpha-v1.2.3");
+        ctx.template_vars_mut().set("ProjectName", "alpha");
+
+        // Inject each crate's own tag so the test needs no git fixture.
+        let resolver = |_ctx: &Context, c: &CrateConfig| -> Option<String> {
+            match c.name.as_str() {
+                "alpha" => Some("alpha-v1.2.3".to_string()),
+                "beta" => Some("beta-v4.5.6".to_string()),
+                _ => None,
+            }
+        };
+
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        apply_source_mutations_with_resolver(&mut ctx, &crates, false, &log, &resolver).unwrap();
+
+        // version_sync: each Cargo.toml carries ITS OWN version.
+        let alpha_toml = std::fs::read_to_string(alpha_dir.join("Cargo.toml")).unwrap();
+        let beta_toml = std::fs::read_to_string(beta_dir.join("Cargo.toml")).unwrap();
+        let alpha_doc = alpha_toml.parse::<toml_edit::DocumentMut>().unwrap();
+        let beta_doc = beta_toml.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(alpha_doc["package"]["version"].as_str().unwrap(), "1.2.3");
+        assert_eq!(
+            beta_doc["package"]["version"].as_str().unwrap(),
+            "4.5.6",
+            "beta must get ITS OWN version, not alpha's 1.2.3"
+        );
+
+        // binstall pkg-url: each rendered with its own Version + ProjectName.
+        let alpha_url = alpha_doc["package"]["metadata"]["binstall"]["pkg-url"]
+            .as_str()
+            .unwrap();
+        let beta_url = beta_doc["package"]["metadata"]["binstall"]["pkg-url"]
+            .as_str()
+            .unwrap();
+        assert!(
+            alpha_url.contains("/myorg/alpha/")
+                && alpha_url.contains("/v1.2.3/")
+                && alpha_url.contains("alpha-1.2.3-"),
+            "alpha pkg-url should carry alpha's name+version, got: {alpha_url}"
+        );
+        assert!(
+            beta_url.contains("/myorg/beta/")
+                && beta_url.contains("/v4.5.6/")
+                && beta_url.contains("beta-4.5.6-"),
+            "beta pkg-url must carry beta's OWN name+version, not alpha's, got: {beta_url}"
+        );
+        assert!(
+            !beta_url.contains("alpha") && !beta_url.contains("1.2.3"),
+            "beta pkg-url must not bleed alpha's name/version, got: {beta_url}"
+        );
+
+        // After the loop, the global vars are restored to the first crate's
+        // values (no leak past the helper).
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            ctx.template_vars().get("ProjectName").map(String::as_str),
+            Some("alpha")
+        );
+    }
+
+    /// Single-crate / lockstep parity: when the per-crate tag yields the same
+    /// version the context already carries, the result is unchanged.
+    #[test]
+    fn apply_source_mutations_single_crate_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("solo");
+        std::fs::create_dir_all(&dir).unwrap();
+        seed_cargo_toml(&dir, "solo");
+
+        let crates = vec![crate_cfg("solo", dir.to_str().unwrap(), "v{{ .Version }}")];
+        let config = Config {
+            project_name: "solo".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "3.3.3");
+        ctx.template_vars_mut().set("RawVersion", "3.3.3");
+        ctx.template_vars_mut().set("Tag", "v3.3.3");
+        ctx.template_vars_mut().set("ProjectName", "solo");
+
+        let resolver = |_ctx: &Context, _c: &CrateConfig| Some("v3.3.3".to_string());
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        apply_source_mutations_with_resolver(&mut ctx, &crates, false, &log, &resolver).unwrap();
+
+        let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+        let doc = toml.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(doc["package"]["version"].as_str().unwrap(), "3.3.3");
+        let url = doc["package"]["metadata"]["binstall"]["pkg-url"]
+            .as_str()
+            .unwrap();
+        assert!(url.contains("/v3.3.3/") && url.contains("solo-3.3.3-"));
+    }
+
+    /// Lockstep workspace: two crates share ONE version. Each must receive that
+    /// shared version with no bleed and no spurious error.
+    #[test]
+    fn apply_source_mutations_lockstep_multi_crate_shared_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core_dir = tmp.path().join("core");
+        let cli_dir = tmp.path().join("cli");
+        std::fs::create_dir_all(&core_dir).unwrap();
+        std::fs::create_dir_all(&cli_dir).unwrap();
+        seed_cargo_toml(&core_dir, "core");
+        seed_cargo_toml(&cli_dir, "cli");
+
+        let crates = vec![
+            crate_cfg("core", core_dir.to_str().unwrap(), "v{{ .Version }}"),
+            crate_cfg("cli", cli_dir.to_str().unwrap(), "v{{ .Version }}"),
+        ];
+        let config = Config {
+            project_name: "myws".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "2.0.0");
+        ctx.template_vars_mut().set("RawVersion", "2.0.0");
+        ctx.template_vars_mut().set("Tag", "v2.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myws");
+
+        // Lockstep: both crates resolve to the SAME shared tag.
+        let resolver = |_ctx: &Context, _c: &CrateConfig| Some("v2.0.0".to_string());
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        apply_source_mutations_with_resolver(&mut ctx, &crates, false, &log, &resolver).unwrap();
+
+        for (dir, name) in [(&core_dir, "core"), (&cli_dir, "cli")] {
+            let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+            let doc = toml.parse::<toml_edit::DocumentMut>().unwrap();
+            assert_eq!(
+                doc["package"]["version"].as_str().unwrap(),
+                "2.0.0",
+                "{name} should carry the shared lockstep version"
+            );
+            let url = doc["package"]["metadata"]["binstall"]["pkg-url"]
+                .as_str()
+                .unwrap();
+            assert!(
+                url.contains("/v2.0.0/") && url.contains(&format!("{name}-2.0.0-")),
+                "{name} pkg-url should carry its own name + shared version, got: {url}"
+            );
+        }
+    }
+
+    /// `--crate X` subset: only the selected crate is passed in `crates`, so
+    /// only it is mutated through this path.
+    #[test]
+    fn apply_source_mutations_crate_subset_mutates_only_selected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let alpha_dir = tmp.path().join("alpha");
+        let beta_dir = tmp.path().join("beta");
+        std::fs::create_dir_all(&alpha_dir).unwrap();
+        std::fs::create_dir_all(&beta_dir).unwrap();
+        seed_cargo_toml(&alpha_dir, "alpha");
+        seed_cargo_toml(&beta_dir, "beta");
+
+        // Only beta is selected (mirrors the BuildStage filtering crates by
+        // `selected_crates` before calling apply_source_mutations).
+        let crates = vec![crate_cfg(
+            "beta",
+            beta_dir.to_str().unwrap(),
+            "beta-v{{ .Version }}",
+        )];
+        let config = Config {
+            project_name: "alpha".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "4.5.6");
+        ctx.template_vars_mut().set("RawVersion", "4.5.6");
+        ctx.template_vars_mut().set("Tag", "beta-v4.5.6");
+        ctx.template_vars_mut().set("ProjectName", "beta");
+
+        let resolver = |_ctx: &Context, _c: &CrateConfig| Some("beta-v4.5.6".to_string());
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        apply_source_mutations_with_resolver(&mut ctx, &crates, false, &log, &resolver).unwrap();
+
+        // beta mutated.
+        let beta_toml = std::fs::read_to_string(beta_dir.join("Cargo.toml")).unwrap();
+        let beta_doc = beta_toml.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(beta_doc["package"]["version"].as_str().unwrap(), "4.5.6");
+
+        // alpha left at its seeded 0.0.0 with no binstall section: untouched.
+        let alpha_toml = std::fs::read_to_string(alpha_dir.join("Cargo.toml")).unwrap();
+        let alpha_doc = alpha_toml.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(alpha_doc["package"]["version"].as_str().unwrap(), "0.0.0");
+        assert!(
+            alpha_doc["package"].get("metadata").is_none(),
+            "alpha must not be mutated when only beta is selected"
+        );
+    }
+
+    /// Error-path restore: a crate whose binstall template fails to render must
+    /// propagate the error AND restore the global vars (not leave them at the
+    /// failed crate's scoped values).
+    #[test]
+    fn apply_source_mutations_restores_vars_on_render_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("boom");
+        std::fs::create_dir_all(&dir).unwrap();
+        seed_cargo_toml(&dir, "boom");
+
+        let mut bad = crate_cfg("boom", dir.to_str().unwrap(), "boom-v{{ .Version }}");
+        // An unterminated Tera tag is a hard render error.
+        bad.binstall.as_mut().unwrap().pkg_url =
+            Some("https://example.com/{{ .Version ".to_string());
+        let crates = vec![bad];
+
+        let config = Config {
+            project_name: "first".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "9.9.9");
+        ctx.template_vars_mut().set("RawVersion", "9.9.9");
+        ctx.template_vars_mut().set("Tag", "first-v9.9.9");
+        ctx.template_vars_mut().set("ProjectName", "first");
+
+        let resolver = |_ctx: &Context, _c: &CrateConfig| Some("boom-v1.0.0".to_string());
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        let result =
+            apply_source_mutations_with_resolver(&mut ctx, &crates, false, &log, &resolver);
+        assert!(result.is_err(), "bad binstall template must error");
+
+        // Global vars restored to the pre-loop ("first" crate) values.
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("9.9.9"),
+            "Version must be restored after a failed crate, not left at boom's 1.0.0"
+        );
+        assert_eq!(
+            ctx.template_vars().get("ProjectName").map(String::as_str),
+            Some("first")
+        );
+        assert_eq!(
+            ctx.template_vars().get("Tag").map(String::as_str),
+            Some("first-v9.9.9")
+        );
+    }
+
+    /// No resolvable tag for a mutation-enabled crate is a fail-loud error
+    /// naming the crate — never a silent fall-back to the first crate's vars.
+    #[test]
+    fn apply_source_mutations_no_tag_fails_loud() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("orphan");
+        std::fs::create_dir_all(&dir).unwrap();
+        seed_cargo_toml(&dir, "orphan");
+
+        let crates = vec![crate_cfg(
+            "orphan",
+            dir.to_str().unwrap(),
+            "orphan-v{{ .Version }}",
+        )];
+        let config = Config {
+            project_name: "first".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.2.3");
+        ctx.template_vars_mut().set("ProjectName", "first");
+
+        // Resolver finds NO tag for this crate.
+        let resolver = |_ctx: &Context, _c: &CrateConfig| None;
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        let err = apply_source_mutations_with_resolver(&mut ctx, &crates, false, &log, &resolver)
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("orphan") && msg.contains("no release tag matching its tag_template"),
+            "error must name the crate and the no-tag cause, got: {msg}"
+        );
+
+        // The crate's Cargo.toml must NOT have been stamped with the first
+        // crate's version.
+        let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+        assert!(
+            toml.contains("version = \"0.0.0\""),
+            "no-tag crate must remain unstamped, got:\n{toml}"
+        );
+    }
+
+    /// An unparseable resolved tag for a mutation-enabled crate is a fail-loud
+    /// error (the partial-override case: Tag derivable but Version not).
+    #[test]
+    fn apply_source_mutations_unparseable_tag_fails_loud() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("weird");
+        std::fs::create_dir_all(&dir).unwrap();
+        seed_cargo_toml(&dir, "weird");
+
+        let crates = vec![crate_cfg(
+            "weird",
+            dir.to_str().unwrap(),
+            "weird-{{ .Version }}",
+        )];
+        let config = Config {
+            project_name: "first".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.2.3");
+        ctx.template_vars_mut().set("ProjectName", "first");
+
+        // Resolver returns a non-semver string.
+        let resolver = |_ctx: &Context, _c: &CrateConfig| Some("weird-nightly".to_string());
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        let err = apply_source_mutations_with_resolver(&mut ctx, &crates, false, &log, &resolver)
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("weird") && msg.contains("weird-nightly"),
+            "error must name the crate and its unparseable tag, got: {msg}"
+        );
+        let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+        assert!(
+            toml.contains("version = \"0.0.0\""),
+            "unparseable-tag crate must remain unstamped, got:\n{toml}"
+        );
+    }
+
+    // -- git-backed integration: the REAL resolve_crate_tag path --------------
+
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// The key missing proof: drive the PRODUCTION `apply_source_mutations`
+    /// (which calls the real git-backed `resolve_crate_tag`) against a temp repo
+    /// with two crates tagged at INDEPENDENT versions at HEAD. Each crate's
+    /// Cargo.toml version AND binstall pkg-url must carry ITS OWN version/name.
+    #[test]
+    fn apply_source_mutations_git_backed_per_crate_tags() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let alpha_dir = root.join("alpha");
+        let beta_dir = root.join("beta");
+        std::fs::create_dir_all(&alpha_dir).unwrap();
+        std::fs::create_dir_all(&beta_dir).unwrap();
+        seed_cargo_toml(&alpha_dir, "alpha");
+        seed_cargo_toml(&beta_dir, "beta");
+
+        run_git(root, &["init"]);
+        run_git(root, &["config", "user.email", "test@test.com"]);
+        run_git(root, &["config", "user.name", "Test"]);
+        run_git(root, &["add", "-A"]);
+        run_git(root, &["commit", "-m", "initial"]);
+        // Two INDEPENDENT-version tags on the SAME HEAD commit.
+        run_git(root, &["tag", "alpha-v1.2.3"]);
+        run_git(root, &["tag", "beta-v4.5.6"]);
+
+        let crates = vec![
+            crate_cfg(
+                "alpha",
+                alpha_dir.to_str().unwrap(),
+                "alpha-v{{ .Version }}",
+            ),
+            crate_cfg("beta", beta_dir.to_str().unwrap(), "beta-v{{ .Version }}"),
+        ];
+        let config = Config {
+            project_name: "alpha".to_string(),
+            ..Default::default()
+        };
+        // Drive git discovery against the temp repo without mutating cwd.
+        let options = ContextOptions {
+            project_root: Some(root.to_path_buf()),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, options);
+        // Seed the first-crate vars exactly as resolve_git_context would.
+        ctx.template_vars_mut().set("Version", "1.2.3");
+        ctx.template_vars_mut().set("RawVersion", "1.2.3");
+        ctx.template_vars_mut().set("Tag", "alpha-v1.2.3");
+        ctx.template_vars_mut().set("ProjectName", "alpha");
+
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        // Production entry point — exercises the real resolve_crate_tag.
+        apply_source_mutations(&mut ctx, &crates, false, &log).unwrap();
+
+        let alpha_toml = std::fs::read_to_string(alpha_dir.join("Cargo.toml")).unwrap();
+        let beta_toml = std::fs::read_to_string(beta_dir.join("Cargo.toml")).unwrap();
+        let alpha_doc = alpha_toml.parse::<toml_edit::DocumentMut>().unwrap();
+        let beta_doc = beta_toml.parse::<toml_edit::DocumentMut>().unwrap();
+
+        assert_eq!(alpha_doc["package"]["version"].as_str().unwrap(), "1.2.3");
+        assert_eq!(
+            beta_doc["package"]["version"].as_str().unwrap(),
+            "4.5.6",
+            "git-backed: beta must get ITS OWN tag's version 4.5.6, not alpha's 1.2.3"
+        );
+
+        let beta_url = beta_doc["package"]["metadata"]["binstall"]["pkg-url"]
+            .as_str()
+            .unwrap();
+        assert!(
+            beta_url.contains("/myorg/beta/")
+                && beta_url.contains("/v4.5.6/")
+                && beta_url.contains("beta-4.5.6-"),
+            "git-backed: beta pkg-url must carry beta's own name+version, got: {beta_url}"
+        );
+        assert!(
+            !beta_url.contains("alpha") && !beta_url.contains("1.2.3"),
+            "git-backed: beta pkg-url must not bleed alpha, got: {beta_url}"
+        );
+    }
 }

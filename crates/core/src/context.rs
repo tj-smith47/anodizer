@@ -707,25 +707,14 @@ impl Context {
     pub fn populate_git_vars(&mut self) {
         if let Some(ref info) = self.git_info {
             // RawVersion: just major.minor.patch, no prerelease or build metadata.
-            let raw_version = format!(
-                "{}.{}.{}",
-                info.semver.major, info.semver.minor, info.semver.patch
-            );
+            let raw_version = info.semver.raw_version_string();
 
             // Version: clean semver derived from the parsed SemVer struct, not
             // from the tag string.  The old `tag.strip_prefix('v')` approach
             // broke for monorepo workspace tags like `core-v0.3.2` because it
             // only stripped a leading 'v', leaving `core-v0.3.2` intact.
             // Deriving from the struct handles all tag_template prefixes.
-            let mut version = raw_version.clone();
-            if let Some(ref pre) = info.semver.prerelease {
-                version.push('-');
-                version.push_str(pre);
-            }
-            if let Some(ref meta) = info.semver.build_metadata {
-                version.push('+');
-                version.push_str(meta);
-            }
+            let version = info.semver.version_string();
 
             self.template_vars.set("Tag", &info.tag);
             self.template_vars.set("Version", &version);
@@ -793,13 +782,16 @@ impl Context {
                 let stripped_tag = crate::git::strip_monorepo_prefix(&info.tag, prefix);
                 self.template_vars.set("Tag", stripped_tag);
 
-                // Version: derive from the stripped tag (overrides the initial
-                // value set above from info.tag, which in monorepo mode still
-                // contains the prefix).
-                let version = stripped_tag
-                    .strip_prefix('v')
-                    .unwrap_or(stripped_tag)
-                    .to_string();
+                // Version: derived from the parsed SemVer struct (same source as
+                // the non-monorepo path and the build stage's per-crate
+                // re-scoping) so all three stay byte-identical. `info.semver`
+                // was parsed from the full prefixed tag, so it already excludes
+                // the monorepo prefix — no separate string-strip needed.
+                //
+                // For a non-semver tag under `--skip=validate`, info.semver is
+                // the skip-validate fallback, so this yields "0.0.0" rather than
+                // the old raw prefix-stripped string.
+                let version = info.semver.version_string();
                 self.template_vars.set("Version", &version);
 
                 // PrefixedPreviousTag = full previous tag (already has prefix).
@@ -2350,6 +2342,44 @@ mod tests {
     // -----------------------------------------------------------------------
     // Monorepo template variable tests
     // -----------------------------------------------------------------------
+
+    /// Parity proof: in monorepo mode `populate_git_vars` derives `Version`
+    /// from the shared `SemVer::version_string()` helper — the SAME source the
+    /// build stage's per-crate `crate_template_overrides` uses — so the two
+    /// can't drift. Exercised with a prerelease + build-metadata tag, the case
+    /// where the old raw string-strip and the struct derivation could diverge.
+    #[test]
+    fn test_monorepo_version_matches_shared_semver_helper() {
+        let mut config = Config::default();
+        config.monorepo = Some(crate::config::MonorepoConfig {
+            tag_prefix: Some("core/".to_string()),
+            dir: None,
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        let semver = SemVer {
+            major: 2,
+            minor: 1,
+            patch: 0,
+            prerelease: Some("rc.1".to_string()),
+            build_metadata: Some("build.7".to_string()),
+        };
+        let mut info = make_git_info(false, None);
+        info.tag = "core/v2.1.0-rc.1+build.7".to_string();
+        info.semver = semver.clone();
+        ctx.git_info = Some(info);
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+        // populate_git_vars (monorepo path) and the build stage's per-crate
+        // derivation both route through SemVer::version_string().
+        assert_eq!(v.get("Version"), Some(&semver.version_string()));
+        assert_eq!(v.get("Version"), Some(&"2.1.0-rc.1+build.7".to_string()));
+        assert_eq!(v.get("RawVersion"), Some(&semver.raw_version_string()));
+        assert_eq!(v.get("RawVersion"), Some(&"2.1.0".to_string()));
+        // Tag is still the monorepo-stripped value.
+        assert_eq!(v.get("Tag"), Some(&"v2.1.0-rc.1+build.7".to_string()));
+    }
 
     #[test]
     fn test_monorepo_tag_prefix_strips_tag_for_template_var() {

@@ -15,6 +15,30 @@ impl SemVer {
     pub fn is_prerelease(&self) -> bool {
         self.prerelease.is_some()
     }
+
+    /// Canonical `RawVersion` string: `major.minor.patch`, with no prerelease
+    /// or build-metadata suffix.
+    pub fn raw_version_string(&self) -> String {
+        format!("{}.{}.{}", self.major, self.minor, self.patch)
+    }
+
+    /// Canonical `Version` string: `major.minor.patch` plus the optional
+    /// `-prerelease` and `+build-metadata` suffixes. This is the single source
+    /// of truth for deriving the `Version` template var from a parsed tag, used
+    /// by both [`Context::populate_git_vars`](crate::context::Context::populate_git_vars)
+    /// and the build stage's per-crate re-scoping so the two never drift.
+    pub fn version_string(&self) -> String {
+        let mut version = self.raw_version_string();
+        if let Some(ref pre) = self.prerelease {
+            version.push('-');
+            version.push_str(pre);
+        }
+        if let Some(ref meta) = self.build_metadata {
+            version.push('+');
+            version.push_str(meta);
+        }
+        version
+    }
 }
 
 impl PartialEq for SemVer {
