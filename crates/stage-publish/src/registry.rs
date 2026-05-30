@@ -160,15 +160,6 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
             crate::mcp::publisher::McpPublisher::with_required(req),
         ));
     }
-    if is_npm_configured(ctx) {
-        // First non-None across `npms:` entries wins.
-        let req = ctx
-            .config
-            .npms
-            .as_ref()
-            .and_then(|v| v.iter().find_map(|c| c.required));
-        v.push(Box::new(crate::npm::NpmPublisher::with_required(req)));
-    }
     if is_gemfury_configured(ctx) {
         // First non-None across `gemfury:` entries wins.
         let req = ctx
@@ -294,11 +285,6 @@ fn is_krew_configured(ctx: &Context) -> bool {
         .crates
         .iter()
         .any(|c| c.publish.as_ref().is_some_and(|p| p.krew.is_some()))
-}
-
-/// True when the top-level `npms:` block has at least one entry.
-fn is_npm_configured(ctx: &Context) -> bool {
-    crate::publisher_helpers::is_top_level_block_configured(ctx.config.npms.as_ref())
 }
 
 /// True when the top-level `gemfury:` (or legacy `furies:`) block has at

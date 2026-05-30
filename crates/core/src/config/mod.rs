@@ -218,9 +218,6 @@ pub struct Config {
     /// skipped. Mirrors GoReleaser's `mcp:` block.
     #[serde(default)]
     pub mcp: McpConfig,
-    /// NPM package registry publishing configurations. One entry per
-    /// published package. Mirrors GoReleaser Pro's `npms:` block.
-    pub npms: Option<Vec<NpmConfig>>,
     /// GemFury (fury.io) deb/rpm/apk publishing configurations. Mirrors
     /// GoReleaser Pro's `gemfury:` block. The pre-GR-v2.14 spelling
     /// `furies:` is accepted via serde alias; a one-time deprecation
@@ -314,7 +311,6 @@ impl Default for Config {
             aur_sources: None,
             retry: None,
             mcp: McpConfig::default(),
-            npms: None,
             gemfury: None,
         }
     }
@@ -1796,9 +1792,6 @@ pub use aur_source::*;
 
 mod mcp;
 pub use mcp::*;
-
-mod npm;
-pub use npm::*;
 
 // ---------------------------------------------------------------------------
 // GemFuryConfig (Gemfury / fury.io publisher)

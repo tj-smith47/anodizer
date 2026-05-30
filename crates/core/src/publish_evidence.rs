@@ -294,38 +294,6 @@ pub struct GithubReleaseExtra {
     pub github_release_targets: Vec<GithubReleaseTargetSnapshot>,
 }
 
-/// Operator-public snapshot of a single NPM `package@version` publish.
-/// Stored in [`NpmExtra::npm_targets`] so a later `--rollback-only --from-run`
-/// has the exact coordinates required to attempt `npm unpublish` within
-/// the 72-hour window.
-///
-/// **CREDENTIAL CONTRACT**: no token field — the auth token is resolved
-/// at publish/rollback time from the env var named by `token_env_var`
-/// (default `NPM_TOKEN`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct NpmTargetSnapshot {
-    /// Per-target label — the package name (scoped or unscoped).
-    pub target: String,
-    /// NPM package name as published (e.g. `@scope/foo`).
-    pub package: String,
-    /// Published version (semver string, no `v` prefix).
-    pub version: String,
-    /// Registry endpoint URL (e.g. `https://registry.npmjs.org`).
-    pub registry: String,
-    /// Dist-tag the version was pushed under (default `latest`).
-    pub dist_tag: String,
-    /// Env var NAME to consult for the rollback `npm unpublish` token.
-    /// NEVER the token VALUE.
-    pub token_env_var: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct NpmExtra {
-    pub npm_targets: Vec<NpmTargetSnapshot>,
-}
-
 /// Operator-public snapshot of a single GemFury push of one artifact file.
 /// Stored in [`GemFuryExtra::gemfury_targets`] so a later
 /// `--rollback-only --from-run` has the exact coordinates required to
@@ -402,7 +370,6 @@ pub enum PublishEvidenceExtra {
     Blob(BlobExtra),
     Snapcraft(SnapcraftExtra),
     GithubRelease(GithubReleaseExtra),
-    Npm(NpmExtra),
     GemFury(GemFuryExtra),
     /// Default for publishers with no per-evidence operator-public fields,
     /// or for runs that no-op'd. Serializes as JSON `null`.

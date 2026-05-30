@@ -797,8 +797,9 @@ cloudsmiths:
       alpine: alpine/any-version
     republish: true  # prevents MD5 conflict when re-cutting a version
 
-# Note: `fury:` and `npms:` publishers were removed; users migrating
-# should replace fury with cloudsmiths/artifactories and drop npms entirely.
+# Note: the `npms:` publisher was removed (npm targets the Node.js
+# registry, which a Rust crate cannot populate). For deb/rpm/apk uploads
+# use the `gemfury:`, `cloudsmiths:`, or `artifactories:` publishers.
 
 # MCP (Model Context Protocol) server registry publisher.
 #
