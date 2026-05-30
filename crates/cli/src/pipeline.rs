@@ -1423,9 +1423,10 @@ pub(crate) fn build_publish_only_pipeline() -> Pipeline {
     use anodizer_stage_blob::BlobStage;
     use anodizer_stage_changelog::ChangelogStage;
     use anodizer_stage_checksum::ChecksumStage;
+    use anodizer_stage_docker::DockerStage;
     use anodizer_stage_publish::PublishStage;
     use anodizer_stage_release::ReleaseStage;
-    use anodizer_stage_sign::SignStage;
+    use anodizer_stage_sign::{DockerSignStage, SignStage};
     use anodizer_stage_snapcraft::SnapcraftPublishStage;
 
     let mut p = Pipeline::new();
@@ -1439,6 +1440,12 @@ pub(crate) fn build_publish_only_pipeline() -> Pipeline {
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(anodizer_core::hooks::BeforePublishStage));
     p.add(Box::new(ReleaseStage));
+    // Docker build+sign land between the GitHub release and PublishStage:
+    // the mcp publisher (inside PublishStage) validates that the OCI image
+    // its manifest references already exists in the registry, so the image
+    // must be built and pushed first.
+    p.add(Box::new(DockerStage::new()));
+    p.add(Box::new(DockerSignStage));
     p.add(Box::new(PublishStage));
     p.add(Box::new(BlobStage));
     p.add(Box::new(SnapcraftPublishStage));
@@ -2454,6 +2461,44 @@ crates:
         assert!(
             sign_idx < release_idx,
             "sign (idx {sign_idx}) must precede release (idx {release_idx}); got {names:?}"
+        );
+    }
+
+    #[test]
+    fn publish_only_pipeline_runs_docker_after_release_before_publish() {
+        // Docker build+sign must sit between the GitHub release and the
+        // publish stage: the mcp publisher (inside PublishStage) validates
+        // that the OCI image its manifest references already exists, so the
+        // image must be built and pushed before publish runs.
+        let p = build_publish_only_pipeline();
+        let names = p.stage_names();
+        let release_idx = names
+            .iter()
+            .position(|n| *n == "release")
+            .expect("publish-only pipeline must include release stage");
+        let docker_idx = names
+            .iter()
+            .position(|n| *n == "docker")
+            .expect("publish-only pipeline must include docker stage");
+        let docker_sign_idx = names
+            .iter()
+            .position(|n| *n == "docker-sign")
+            .expect("publish-only pipeline must include docker-sign stage");
+        let publish_idx = names
+            .iter()
+            .position(|n| *n == "publish")
+            .expect("publish-only pipeline must include publish stage");
+        assert!(
+            release_idx < docker_idx,
+            "docker (idx {docker_idx}) must follow release (idx {release_idx}); got {names:?}"
+        );
+        assert!(
+            docker_idx < docker_sign_idx,
+            "docker-sign (idx {docker_sign_idx}) must follow docker (idx {docker_idx}); got {names:?}"
+        );
+        assert!(
+            docker_sign_idx < publish_idx,
+            "docker-sign (idx {docker_sign_idx}) must precede publish (idx {publish_idx}); got {names:?}"
         );
     }
 

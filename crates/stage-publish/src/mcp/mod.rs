@@ -85,8 +85,79 @@ static EXPERIMENTAL_WARNED: AtomicBool = AtomicBool::new(false);
 /// `--rollback-only` cannot fire a PATCH against a server-version that
 /// was never published.
 pub(crate) fn publish_to_mcp(ctx: &Context, log: &StageLogger) -> Result<Option<McpTarget>> {
+    // In per-crate iteration (workspace publish-only), `selected_crates`
+    // is scoped to a single crate per pass. The mcp block is top-level
+    // (one `mcp:` per config), so without this gate the publisher would
+    // fire on EVERY crate's pass — including crates that don't own the OCI
+    // image the manifest references, whose image may not even be built yet.
+    // Run mcp only on the pass for the crate that owns the referenced image.
+    if !mcp_image_owned_by_selected(ctx) {
+        log.verbose(
+            "mcp: skipping — none of the selected crates own the OCI image \
+             referenced by the mcp manifest (runs on the owning crate's pass)",
+        );
+        return Ok(None);
+    }
     let registry_url = resolve_registry_url(&ctx.config.mcp);
     publish_with_registry(ctx, log, registry_url)
+}
+
+/// Decide whether the mcp publisher should run for the current crate
+/// selection.
+///
+/// - When `ctx.options.selected_crates` is empty (non-workspace / single
+///   config, or an explicit run-once context), returns `true` — the
+///   publisher keeps its run-once behavior.
+/// - When `selected_crates` is non-empty (per-crate iteration), returns
+///   `true` only if one of the selected crates owns the OCI image the mcp
+///   manifest references. Ownership is decided by comparing the image
+///   *repo* (the ref minus its `:tag`) so that an un-rendered
+///   `{{ .Version }}` template in either the mcp identifier or the crate's
+///   `docker_v2[].images` never affects the match.
+///
+/// When the mcp manifest references no OCI package, every crate's pass is
+/// allowed through — the publisher's own skip-gate then decides whether it
+/// has anything to do.
+fn mcp_image_owned_by_selected(ctx: &Context) -> bool {
+    let selected = &ctx.options.selected_crates;
+    if selected.is_empty() {
+        return true;
+    }
+
+    let mcp_repos: Vec<&str> = ctx
+        .config
+        .mcp
+        .packages
+        .iter()
+        .filter(|p| p.registry_type == anodizer_core::config::McpRegistryType::Oci)
+        .map(|p| image_repo(&p.identifier))
+        .collect();
+    if mcp_repos.is_empty() {
+        return true;
+    }
+
+    crate::util::all_crates(ctx)
+        .iter()
+        .filter(|c| selected.iter().any(|s| s == &c.name))
+        .filter_map(|c| c.docker_v2.as_ref())
+        .flatten()
+        .flat_map(|d| d.images.iter())
+        .any(|img| mcp_repos.contains(&image_repo(img)))
+}
+
+/// Return the repository portion of a container image reference — the ref
+/// minus any `:tag` suffix. A trailing tag is only stripped when the last
+/// path segment (after the final `/`) contains a `:`, so a registry host
+/// port such as `registry:5000/owner/app` is preserved while
+/// `ghcr.io/owner/app:v1.2.3` becomes `ghcr.io/owner/app`. A `@sha256:`
+/// digest reference is likewise trimmed to the repo.
+fn image_repo(image: &str) -> &str {
+    let image = image.split_once('@').map_or(image, |(repo, _)| repo);
+    let last_segment_start = image.rfind('/').map_or(0, |i| i + 1);
+    match image[last_segment_start..].find(':') {
+        Some(rel) => &image[..last_segment_start + rel],
+        None => image,
+    }
 }
 
 /// Resolve the effective registry URL with the standard fallback chain:

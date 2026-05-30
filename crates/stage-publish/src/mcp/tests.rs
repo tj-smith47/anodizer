@@ -22,10 +22,10 @@ use anodizer_core::config::{
 use anodizer_core::context::{Context, ContextOptions};
 
 use super::{
-    DEFAULT_REGISTRY_URL, MAX_RESPONSE_SNIPPET_BYTES, fill_from_project_metadata,
-    infer_repository_from_release, oci_rejection_hint, publish_with_registry,
-    reset_experimental_warned_for_test, resolve_registry_url, truncate_response_snippet,
-    warn_experimental_once, warn_once_lock,
+    DEFAULT_REGISTRY_URL, MAX_RESPONSE_SNIPPET_BYTES, fill_from_project_metadata, image_repo,
+    infer_repository_from_release, mcp_image_owned_by_selected, oci_rejection_hint,
+    publish_with_registry, reset_experimental_warned_for_test, resolve_registry_url,
+    truncate_response_snippet, warn_experimental_once, warn_once_lock,
 };
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
@@ -618,4 +618,115 @@ fn truncate_response_snippet_walks_back_to_utf8_char_boundary() {
     // the helper itself uses a byte slice). The assertion is the
     // absence of a panic.
     let _ = format!("snippet={snippet}");
+}
+
+// ---------------------------------------------------------------------------
+// Owning-crate gate (per-crate iteration)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn image_repo_strips_tag_keeps_registry_port_and_digest() {
+    assert_eq!(image_repo("ghcr.io/owner/app:v1.2.3"), "ghcr.io/owner/app");
+    assert_eq!(image_repo("ghcr.io/owner/app"), "ghcr.io/owner/app");
+    // A registry host port must not be mistaken for a tag.
+    assert_eq!(
+        image_repo("registry:5000/owner/app"),
+        "registry:5000/owner/app"
+    );
+    assert_eq!(
+        image_repo("registry:5000/owner/app:latest"),
+        "registry:5000/owner/app"
+    );
+    // An un-rendered template tag is stripped just like a literal tag.
+    assert_eq!(
+        image_repo("ghcr.io/owner/app:{{ .Version }}"),
+        "ghcr.io/owner/app"
+    );
+    // Digest references trim back to the repo.
+    assert_eq!(
+        image_repo("ghcr.io/owner/app@sha256:deadbeef"),
+        "ghcr.io/owner/app"
+    );
+}
+
+/// Build a context whose top-level crates each carry a `docker_v2` image,
+/// with the given `selected_crates` scope and an mcp OCI package pointing
+/// at `mcp_identifier`.
+fn owning_ctx(selected: Vec<&str>, mcp_identifier: &str) -> Context {
+    use anodizer_core::config::{CrateConfig, DockerV2Config};
+
+    let docker_for = |image: &str| {
+        Some(vec![DockerV2Config {
+            images: vec![image.to_string()],
+            ..Default::default()
+        }])
+    };
+    let mut config = Config::default();
+    config.crates = vec![
+        CrateConfig {
+            name: "cfgd-core".to_string(),
+            docker_v2: None,
+            ..Default::default()
+        },
+        CrateConfig {
+            name: "cfgd".to_string(),
+            docker_v2: docker_for("ghcr.io/tj-smith47/cfgd"),
+            ..Default::default()
+        },
+    ];
+    config.mcp = McpConfig {
+        name: Some("io.github.test/server".to_string()),
+        packages: vec![McpPackage {
+            registry_type: McpRegistryType::Oci,
+            identifier: mcp_identifier.to_string(),
+            transport: McpTransport {
+                kind: McpTransportType::Stdio,
+            },
+        }],
+        ..Default::default()
+    };
+    let opts = ContextOptions {
+        selected_crates: selected.into_iter().map(String::from).collect(),
+        ..ContextOptions::default()
+    };
+    Context::new(config, opts)
+}
+
+#[test]
+fn mcp_runs_for_owning_crate_pass() {
+    // The `cfgd` crate's docker_v2 image base matches the mcp identifier's
+    // repo (tag-stripped), so mcp must run on its pass.
+    let ctx = owning_ctx(vec!["cfgd"], "ghcr.io/tj-smith47/cfgd:{{ .Version }}");
+    assert!(mcp_image_owned_by_selected(&ctx));
+}
+
+#[test]
+fn mcp_skips_for_non_owning_crate_pass() {
+    // `cfgd-core` owns no docker_v2 image matching the mcp identifier, so
+    // mcp must be skipped during its pass rather than firing spuriously.
+    let ctx = owning_ctx(vec!["cfgd-core"], "ghcr.io/tj-smith47/cfgd:{{ .Version }}");
+    assert!(!mcp_image_owned_by_selected(&ctx));
+}
+
+#[test]
+fn mcp_runs_when_no_crate_selection() {
+    // Empty `selected_crates` (non-workspace / run-once) keeps the
+    // historical run-once behavior regardless of image ownership.
+    let ctx = owning_ctx(vec![], "ghcr.io/unrelated/image:v1");
+    assert!(mcp_image_owned_by_selected(&ctx));
+}
+
+#[test]
+fn mcp_runs_when_manifest_has_no_oci_package() {
+    // With a non-OCI package the ownership concept does not apply; every
+    // selected pass is allowed through so the skip-gate decides.
+    let mut ctx = owning_ctx(vec!["cfgd-core"], "unused");
+    ctx.config.mcp.packages = vec![McpPackage {
+        registry_type: McpRegistryType::Npm,
+        identifier: "some-npm-pkg".to_string(),
+        transport: McpTransport {
+            kind: McpTransportType::Stdio,
+        },
+    }];
+    assert!(mcp_image_owned_by_selected(&ctx));
 }
