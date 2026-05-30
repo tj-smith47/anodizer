@@ -169,6 +169,44 @@ struct PlanInputs<'a> {
     commit_timestamp: &'a str,
 }
 
+/// Merge reproducibility RUSTFLAGS for a build whose working directory is
+/// `cwd`, without clobbering externally-set flags.
+///
+/// `config` (a per-target `build.env` RUSTFLAGS) wins when present;
+/// otherwise fall back to `inherited` — the process env, where the
+/// determinism harness places the Windows-MSVC reproducibility flags
+/// (`/Brepro`, `/DEBUG:NONE`, `codegen-units=1`, ...) alongside its own
+/// `--remap-path-prefix` rules. A `--remap-path-prefix=<cwd>=/build` rule
+/// is appended so source paths normalize, UNLESS the chosen base already
+/// remaps `cwd` (the harness remaps the worktree, which is `cwd`) — a
+/// second rule for the same prefix is shadowed by rustc's first-match-wins
+/// and would only mislead.
+///
+/// The cargo build inherits the process env (`Command::envs` adds, does
+/// not clear). Overwriting RUSTFLAGS here with only the remap rule would —
+/// per cargo's `RUSTFLAGS` over `CARGO_TARGET_<triple>_RUSTFLAGS`
+/// precedence — suppress the harness-injected flags and reintroduce the PE
+/// `TimeDateStamp` drift on Windows. Blank (whitespace-only) values are
+/// treated as unset.
+fn merge_reproducible_rustflags(
+    config: Option<&str>,
+    inherited: Option<&str>,
+    cwd: &str,
+) -> String {
+    let base = config
+        .filter(|s| !s.trim().is_empty())
+        .or(inherited.filter(|s| !s.trim().is_empty()))
+        .map(str::trim)
+        .unwrap_or("");
+    if base.is_empty() {
+        format!("--remap-path-prefix={cwd}=/build")
+    } else if base.contains(&format!("--remap-path-prefix={cwd}=")) {
+        base.to_string()
+    } else {
+        format!("{base} --remap-path-prefix={cwd}=/build")
+    }
+}
+
 /// Flatten the nested (crate, build, target) tree into a list of
 /// `BuildJob` descriptors. No compilation happens here — the planner
 /// only resolves overrides, renders templates, and assembles the
@@ -692,14 +730,12 @@ fn plan_build_jobs(
                         .unwrap_or_else(|_| PathBuf::from("."))
                         .to_string_lossy()
                         .into_owned();
-                    let remap_flag = format!("--remap-path-prefix={cwd}=/build");
-                    let existing_rustflags =
-                        target_env.get("RUSTFLAGS").cloned().unwrap_or_default();
-                    let new_rustflags = if existing_rustflags.is_empty() {
-                        remap_flag
-                    } else {
-                        format!("{existing_rustflags} {remap_flag}")
-                    };
+                    let inherited_rustflags = ctx.env_source().var("RUSTFLAGS");
+                    let new_rustflags = merge_reproducible_rustflags(
+                        target_env.get("RUSTFLAGS").map(String::as_str),
+                        inherited_rustflags.as_deref(),
+                        &cwd,
+                    );
                     target_env.insert("RUSTFLAGS".to_string(), new_rustflags);
                 }
 
@@ -961,4 +997,60 @@ fn plan_prebuilt_build(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod reproducible_rustflags_tests {
+    use super::merge_reproducible_rustflags;
+
+    const CWD: &str = "/work";
+    const REMAP: &str = "--remap-path-prefix=/work=/build";
+
+    #[test]
+    fn preserves_inherited_msvc_flags_from_harness() {
+        // The determinism harness injects /Brepro into the child's process
+        // RUSTFLAGS. With no per-target config override, the build stage must
+        // carry it through — clobbering it reintroduces the PE timestamp drift.
+        let inherited = "-C link-arg=/Brepro -C link-arg=/DEBUG:NONE";
+        let merged = merge_reproducible_rustflags(None, Some(inherited), CWD);
+        assert!(merged.contains("/Brepro"), "got {merged}");
+        assert!(merged.contains("/DEBUG:NONE"), "got {merged}");
+        assert!(merged.ends_with(REMAP), "remap must be appended: {merged}");
+    }
+
+    #[test]
+    fn config_override_wins_over_inherited() {
+        let merged = merge_reproducible_rustflags(
+            Some("-C target-cpu=native"),
+            Some("-C link-arg=/Brepro"),
+            CWD,
+        );
+        assert_eq!(merged, format!("-C target-cpu=native {REMAP}"));
+    }
+
+    #[test]
+    fn remap_only_when_nothing_inherited() {
+        assert_eq!(merge_reproducible_rustflags(None, None, CWD), REMAP);
+        // Blank (whitespace-only) values are treated as unset, not as a real
+        // base to append to — no leading-space artifact.
+        assert_eq!(
+            merge_reproducible_rustflags(Some(""), Some("  "), CWD),
+            REMAP
+        );
+    }
+
+    #[test]
+    fn does_not_double_remap_when_cwd_already_remapped() {
+        // The harness already remaps the worktree (== cwd) to /anodize.
+        // A second rule for the same prefix is shadowed (rustc first-match-
+        // wins) and only misleads, so it must not be appended.
+        let inherited = "-C link-arg=/Brepro --remap-path-prefix=/work=/anodize";
+        let merged = merge_reproducible_rustflags(None, Some(inherited), CWD);
+        assert_eq!(merged, inherited, "must not append a shadowed cwd remap");
+        assert_eq!(
+            merged.matches("--remap-path-prefix=/work=").count(),
+            1,
+            "exactly one remap rule for the cwd prefix: {merged}"
+        );
+    }
 }

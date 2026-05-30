@@ -355,17 +355,19 @@ fn resolve_child_snapshot(snapshot: bool, no_snapshot: bool, head_at_tag: bool) 
 /// `.cosign.bundle`, `{{ .Artifact }}.sig` → `.sig`).
 ///
 /// Returns `None` when there is no usable dotted extension to anchor a
-/// `*.<ext>` allow-list pattern on (empty tail, or a template that signs
-/// in place without adding an extension). The dotted-prefix guard is
-/// load-bearing: an empty tail would otherwise yield a bare `*` pattern
-/// that allow-lists every artifact and silently suppresses all drift.
+/// `*.<ext>` allow-list pattern on (empty tail, a bare `.`, or a template
+/// that signs in place without adding an extension). The guard is
+/// load-bearing: a tail of `""` would yield a bare `*` (allow-listing every
+/// artifact) and a tail of `"."` would yield `*.` (matching any name ending
+/// in a dot) — both would silently suppress real drift. Require at least
+/// one extension character after the leading dot.
 fn signature_suffix(template: &str) -> Option<String> {
     let tail = match template.rfind("}}") {
         Some(idx) => &template[idx + 2..],
         None => template,
     };
     let tail = tail.trim();
-    if tail.is_empty() || !tail.starts_with('.') {
+    if tail.len() < 2 || !tail.starts_with('.') {
         return None;
     }
     Some(tail.to_string())
