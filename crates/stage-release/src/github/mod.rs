@@ -162,9 +162,9 @@ pub(crate) fn upload_retry_locals(
 // removed the Search API call entirely in commit 17315a5 (parity item P3),
 // leaving only the `users.noreply.github.com` pattern parser, which had no
 // callers in anodizer. The whole module was deleted to satisfy the no-
-// dead-code anti-pattern rule. When a future consumer (e.g. changelog
-// co-author enrichment in `stage-changelog/src/fetch/github.rs`) needs
-// noreply parsing, re-introduce a focused helper in that crate's module.
+// dead-code anti-pattern rule: a parser with no live call site is dead
+// code, so noreply parsing should be re-introduced as a focused helper at
+// its actual point of use rather than kept speculatively here.
 
 /// Runtime / context infrastructure for [`run_github_backend`].
 ///
@@ -2371,8 +2371,8 @@ mod orchestrator_tests {
     // ---------------------------------------------------------------------
     // replace_existing_draft = true with the NEW release published
     // (`draft: false`): the leftover draft must still be deleted. This pins
-    // the self-heal path cfgd relies on (publishes while replacing a stale
-    // draft from a prior failed run); gating the delete on the new release's
+    // the self-heal path: publishes while replacing a stale
+    // draft from a prior failed run; gating the delete on the new release's
     // draft flag would skip cleanup and the stale id later 404s on upload.
     // ---------------------------------------------------------------------
     #[test]
@@ -2440,7 +2440,7 @@ mod orchestrator_tests {
         let mut opts = base_opts();
         opts.replace_existing_draft = true;
         let anc = spec_ancillary_default();
-        // Publish (draft: false) while replacing a stale draft — the cfgd path.
+        // Publish (draft: false) while replacing a stale draft — the self-heal recovery path.
         let mut spec = make_spec(&anc);
         spec.draft = false;
         run_backend(&rt, &ctx, &token, &crate_cfg, &spec, &opts, &artifacts)

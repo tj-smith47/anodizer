@@ -88,11 +88,11 @@ fn skip_when_no_name() {
     ]);
     let registry = format!("http://{addr}");
 
-    let ctx = mcp_ctx(|mcp| {
+    let mut ctx = mcp_ctx(|mcp| {
         mcp.name = None;
     });
     let log = ctx.logger("mcp-test");
-    let result = publish_with_registry(&ctx, &log, &registry);
+    let result = publish_with_registry(&mut ctx, &log, &registry);
     assert!(result.is_ok(), "skip path must not error: {:?}", result);
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -112,11 +112,11 @@ fn skip_when_skip_evaluates_true() {
     ]);
     let registry = format!("http://{addr}");
 
-    let ctx = mcp_ctx(|mcp| {
+    let mut ctx = mcp_ctx(|mcp| {
         mcp.skip = Some(StringOrBool::String("{{ true }}".to_string()));
     });
     let log = ctx.logger("mcp-test");
-    let result = publish_with_registry(&ctx, &log, &registry);
+    let result = publish_with_registry(&mut ctx, &log, &registry);
     assert!(result.is_ok(), "skip=true must skip cleanly: {:?}", result);
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -142,9 +142,9 @@ fn publish_retries_on_500_then_succeeds() {
     ]);
     let registry = format!("http://{addr}");
 
-    let ctx = mcp_ctx(|_| {});
+    let mut ctx = mcp_ctx(|_| {});
     let log = ctx.logger("mcp-test");
-    let result = publish_with_registry(&ctx, &log, &registry);
+    let result = publish_with_registry(&mut ctx, &log, &registry);
     assert!(result.is_ok(), "5xx then 2xx must succeed: {:?}", result);
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -166,9 +166,9 @@ fn publish_unrecoverable_on_400() {
     ]);
     let registry = format!("http://{addr}");
 
-    let ctx = mcp_ctx(|_| {});
+    let mut ctx = mcp_ctx(|_| {});
     let log = ctx.logger("mcp-test");
-    let result = publish_with_registry(&ctx, &log, &registry);
+    let result = publish_with_registry(&mut ctx, &log, &registry);
     let err = result.expect_err("400 must surface as an error");
     let chain = format!("{err:#}");
     assert!(
@@ -199,9 +199,9 @@ fn oci_annotation_rejection_appends_actionable_hint() {
     ]);
     let registry = format!("http://{addr}");
 
-    let ctx = mcp_ctx(|_| {});
+    let mut ctx = mcp_ctx(|_| {});
     let log = ctx.logger("mcp-test");
-    let err = publish_with_registry(&ctx, &log, &registry)
+    let err = publish_with_registry(&mut ctx, &log, &registry)
         .expect_err("422 annotation rejection must surface as an error");
     let chain = format!("{err:#}");
     assert!(
@@ -318,7 +318,7 @@ fn dry_run_short_circuits_before_network() {
     ctx.template_vars_mut().set("Version", "1.0.0");
 
     let log = ctx.logger("mcp-test");
-    let result = publish_with_registry(&ctx, &log, &registry);
+    let result = publish_with_registry(&mut ctx, &log, &registry);
     assert!(result.is_ok(), "dry-run must return Ok(()): {:?}", result);
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -706,6 +706,23 @@ fn mcp_skips_for_non_owning_crate_pass() {
     // mcp must be skipped during its pass rather than firing spuriously.
     let ctx = owning_ctx(vec!["cfgd-core"], "ghcr.io/tj-smith47/cfgd:{{ .Version }}");
     assert!(!mcp_image_owned_by_selected(&ctx));
+}
+
+#[test]
+fn mcp_non_owning_pass_records_skipped_not_applicable() {
+    // The non-owning pass must surface `Skipped(NotApplicable)` so the
+    // publisher summary reads "Skipped" rather than a green "Succeeded" —
+    // mcp did not publish for this crate.
+    let mut ctx = owning_ctx(vec!["cfgd-core"], "ghcr.io/tj-smith47/cfgd:{{ .Version }}");
+    let log = ctx.logger("mcp-test");
+    let target = super::publish_to_mcp(&mut ctx, &log).expect("ok");
+    assert!(target.is_none(), "non-owning pass produces no target");
+    assert!(matches!(
+        ctx.take_pending_outcome(),
+        Some(anodizer_core::PublisherOutcome::Skipped(
+            anodizer_core::SkipReason::NotApplicable
+        ))
+    ));
 }
 
 #[test]

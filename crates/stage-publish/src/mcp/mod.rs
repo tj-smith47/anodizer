@@ -84,7 +84,7 @@ static EXPERIMENTAL_WARNED: AtomicBool = AtomicBool::new(false);
 /// returned target in `evidence.extra` only when `Some`, so a later
 /// `--rollback-only` cannot fire a PATCH against a server-version that
 /// was never published.
-pub(crate) fn publish_to_mcp(ctx: &Context, log: &StageLogger) -> Result<Option<McpTarget>> {
+pub(crate) fn publish_to_mcp(ctx: &mut Context, log: &StageLogger) -> Result<Option<McpTarget>> {
     // In per-crate iteration (workspace publish-only), `selected_crates`
     // is scoped to a single crate per pass. The mcp block is top-level
     // (one `mcp:` per config), so without this gate the publisher would
@@ -92,14 +92,19 @@ pub(crate) fn publish_to_mcp(ctx: &Context, log: &StageLogger) -> Result<Option<
     // image the manifest references, whose image may not even be built yet.
     // Run mcp only on the pass for the crate that owns the referenced image.
     if !mcp_image_owned_by_selected(ctx) {
+        // verbose (not status): this fires on N-1 of N crate passes in a
+        // workspace, so promoting it to status would flood normal output.
         log.verbose(
             "mcp: skipping — none of the selected crates own the OCI image \
              referenced by the mcp manifest (runs on the owning crate's pass)",
         );
+        ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
+            anodizer_core::SkipReason::NotApplicable,
+        ));
         return Ok(None);
     }
-    let registry_url = resolve_registry_url(&ctx.config.mcp);
-    publish_with_registry(ctx, log, registry_url)
+    let registry_url = resolve_registry_url(&ctx.config.mcp).to_string();
+    publish_with_registry(ctx, log, &registry_url)
 }
 
 /// Decide whether the mcp publisher should run for the current crate
@@ -182,17 +187,19 @@ pub(crate) fn resolve_registry_url(mcp: &McpConfig) -> &str {
 /// Returns `Some(McpTarget)` only after the `/v0/publish` POST succeeds.
 /// All short-circuit paths (skip-true, missing name, dry-run) return `None`.
 pub(crate) fn publish_with_registry(
-    ctx: &Context,
+    ctx: &mut Context,
     log: &StageLogger,
     registry_url: &str,
 ) -> Result<Option<McpTarget>> {
-    let mcp = &ctx.config.mcp;
-
     // ---- Skip gate (GR mcp.go::Skip parity) ----
-    if mcp.name.as_deref().unwrap_or("").is_empty() {
+    if ctx.config.mcp.name.as_deref().unwrap_or("").is_empty() {
         log.status("mcp: skipping — no mcp.name configured");
+        ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
+            anodizer_core::SkipReason::NotConfigured,
+        ));
         return Ok(None);
     }
+    let mcp = &ctx.config.mcp;
     if let Some(skip) = mcp.skip.as_ref() {
         let off = skip
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
@@ -233,6 +240,9 @@ pub(crate) fn publish_with_registry(
             registry_url,
             rendered_name,
             mcp_rendered.auth.method.as_str()
+        ));
+        ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
+            anodizer_core::SkipReason::DryRun,
         ));
         return Ok(None);
     }

@@ -460,7 +460,7 @@ mod publisher_tests {
         ctx.config.mcp.name = None;
 
         let log = ctx.logger("mcp-test");
-        let target = publish_with_registry(&ctx, &log, &registry).expect("ok");
+        let target = publish_with_registry(&mut ctx, &log, &registry).expect("ok");
         assert!(target.is_none(), "missing name must not produce a target");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
@@ -474,10 +474,10 @@ mod publisher_tests {
             "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
         ]);
         let registry = format!("http://{addr}");
-        let ctx = run_ctx("io.github.user/weather", &registry, false);
+        let mut ctx = run_ctx("io.github.user/weather", &registry, false);
 
         let log = ctx.logger("mcp-test");
-        let target = publish_with_registry(&ctx, &log, &registry)
+        let target = publish_with_registry(&mut ctx, &log, &registry)
             .expect("ok")
             .expect("target present on success");
         assert_eq!(target.server_name, "io.github.user/weather");
