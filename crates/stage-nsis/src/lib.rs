@@ -58,6 +58,28 @@ pub fn nsis_command(script_path: &str) -> Vec<String> {
     vec!["makensis".to_string(), script_path.to_string()]
 }
 
+/// Resolve the installer output path to an absolute, cwd-independent path.
+///
+/// makensis is invoked with the rendered `.nsi` script, and it chdir's to the
+/// script's directory — an ephemeral staging tempdir — before resolving a
+/// relative `OutFile`. The recorded `Artifact.path` is later relativized to the
+/// process cwd by the registry (for deterministic `artifacts.json`), so the
+/// OutFile makensis writes to must be the absolute path that resolves to that
+/// same cwd-relative location. `canonicalize` is tried first (it resolves
+/// symlinks and `.` components) but fails pre-build because the file does not
+/// exist yet, so the cwd-join branch is what fires for a relative input.
+fn absolutize_output_path(path: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&path).unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()
+                .map(|c| c.join(&path))
+                .unwrap_or(path)
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // NsisStage
 // ---------------------------------------------------------------------------
@@ -330,6 +352,15 @@ impl Stage for NsisStage {
                     // Output goes in dist/windows/
                     let output_dir = dist.join("windows");
                     let exe_path = output_dir.join(&exe_filename);
+
+                    // makensis chdir's to the .nsi script's directory (an
+                    // ephemeral staging tempdir) before resolving a relative
+                    // `OutFile`. Under the default `dist: ./dist`, `exe_path` is
+                    // relative, so a relative OutFile would land the installer
+                    // inside the staging tempdir (which then vanishes). The
+                    // absolute path is cwd-independent and points makensis at the
+                    // real `dist/windows/` location regardless of its chdir.
+                    let exe_path = absolutize_output_path(exe_path);
 
                     let binary_name = binary_name_raw;
 
@@ -1687,6 +1718,110 @@ crates:
         assert!(
             script.contains(&format!("OutFile \"{recorded_str}\"")),
             "OutFile must equal the recorded artifact path; script:\n{script}"
+        );
+    }
+
+    /// Under the DEFAULT `dist: ./dist` (relative, never canonicalized by
+    /// config), the path makensis is told to write — `NsisOutputFile`, derived
+    /// from the same `exe_path` `absolutize_output_path` produces — must be
+    /// ABSOLUTE. makensis chdir's to the .nsi script's staging tempdir before
+    /// resolving a relative `OutFile`, so a relative path would land the
+    /// installer in that tempdir (which then vanishes). The recorded
+    /// `Artifact.path` is separately relativized to cwd by the registry for a
+    /// stable `artifacts.json`; the absolute OutFile resolves to that same
+    /// cwd-relative location. This case must fail without the cwd-absolutize
+    /// (the join produces a relative path) and pass with it.
+    #[test]
+    fn test_relative_dist_output_path_is_absolute() {
+        // Exactly the shape the stage builds under default config:
+        // `dist.join("windows").join(<name>.exe)` with the default relative dist.
+        let relative = PathBuf::from("./dist")
+            .join("windows")
+            .join("myapp_x64_setup.exe");
+        assert!(
+            !relative.is_absolute(),
+            "precondition: the dist-relative path must start out relative"
+        );
+
+        let absolute = absolutize_output_path(relative);
+        assert!(
+            absolute.is_absolute(),
+            "OutFile/NsisOutputFile must be absolute under relative dist, got: {}",
+            absolute.display()
+        );
+        assert!(
+            absolute.to_string_lossy().ends_with("myapp_x64_setup.exe"),
+            "absolutize must preserve the rendered name + .exe, got: {}",
+            absolute.display()
+        );
+    }
+
+    /// An already-absolute output path passes through `absolutize_output_path`
+    /// unchanged (canonicalize fails pre-build, so the `is_absolute` branch
+    /// fires and returns it verbatim).
+    #[test]
+    fn test_absolutize_keeps_absolute_path() {
+        let absolute = PathBuf::from("/dist/windows/myapp_x64_setup.exe");
+        let out = absolutize_output_path(absolute.clone());
+        assert_eq!(out, absolute);
+    }
+
+    /// End-to-end under relative dist: the recorded `Installer` artifact must
+    /// still resolve to a file named `myapp_x64_setup.exe`. The registry
+    /// relativizes the absolute OutFile back to a cwd-relative path for
+    /// `artifacts.json` stability — both name the same on-disk location.
+    #[test]
+    fn test_relative_dist_records_resolvable_path() {
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = PathBuf::from("./dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nsis: Some(vec![NsisConfig::default()]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        NsisStage.run(&mut ctx).unwrap();
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(installers.len(), 1);
+        let recorded = installers[0].path.clone();
+        assert!(
+            recorded
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n == "myapp_x64_setup.exe"),
+            "recorded path must name the installer file, got: {}",
+            recorded.display()
+        );
+        // The recorded path resolves under dist/windows/ relative to cwd.
+        assert!(
+            recorded.to_string_lossy().contains("dist/windows/")
+                || recorded.to_string_lossy().contains("dist\\windows\\"),
+            "recorded path must live under dist/windows/, got: {}",
+            recorded.display()
         );
     }
 
