@@ -423,6 +423,26 @@ impl StageLogger {
         }
     }
 
+    /// Status message rendered under an explicit `stage` tag rather than
+    /// this logger's own [`Self::stage`]. The pipeline driver owns a single
+    /// `[release]`-tagged logger but opens a `group()` per stage; a skip /
+    /// no-binary note emitted from that driver must carry the *current*
+    /// stage's tag (so a note inside `::group::publish` reads `[publish]`,
+    /// not `[release]`). Identical formatting to [`Self::status`] otherwise.
+    pub fn status_as(&self, stage: &str, msg: &str) {
+        if self.verbosity >= Verbosity::Normal {
+            if msg.is_empty() {
+                eprintln!();
+            } else {
+                eprintln!("{}{} {}", indent(), format!("[{stage}]").dimmed(), msg);
+            }
+        }
+        #[cfg(feature = "test-helpers")]
+        if let Some(cap) = &self.capture {
+            cap.record(LogLevel::Status, msg);
+        }
+    }
+
     /// Cargo-style status line: a capitalized, right-aligned, bold-green
     /// `verb` in a fixed-width gutter followed by `msg`
     /// (`   Building build`, `   Signing sign`). Shown at Normal and
@@ -471,6 +491,27 @@ impl StageLogger {
         } else if in_github_actions() {
             // Keep group markers balanced even in quiet mode so the
             // Actions UI never shows an unterminated section.
+            eprintln!("::group::{title}");
+        } else {
+            SECTION_DEPTH.fetch_add(1, Ordering::Relaxed);
+        }
+        SectionGuard { _private: () }
+    }
+
+    /// Open a log section *without* emitting the Cargo-style verb header.
+    ///
+    /// Companion to [`Self::group`] for stages the pipeline skips: a skipped
+    /// stage has nothing to announce in the present-participle voice
+    /// (`Announcing announce` followed by `[announce] skipped` reads as a
+    /// contradiction), so the driver opens the section silently and emits a
+    /// single neutral `Skipped …` line itself. The `::group::`/`::endgroup::`
+    /// pair (and the local indent depth) is still balanced so the Actions UI
+    /// shows one collapsible block per stage exactly as [`Self::group`] does.
+    #[must_use = "the section stays open only while the guard is alive"]
+    pub fn group_silent(&self, title: &str) -> SectionGuard {
+        if in_github_actions() {
+            // Always emit the marker (even in quiet mode) so the Actions UI
+            // never shows an unterminated section.
             eprintln!("::group::{title}");
         } else {
             SECTION_DEPTH.fetch_add(1, Ordering::Relaxed);

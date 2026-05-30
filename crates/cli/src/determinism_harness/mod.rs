@@ -423,10 +423,13 @@ impl Harness {
         let effective_stages = gate.available;
         for (stage, tool) in &gate.skipped {
             eprintln!(
-                "warn: installer stage `{}` requested but `{}` is not on PATH; \
-                 skipping for this run (no artifacts emitted)",
-                stage.as_str(),
-                tool
+                "{}",
+                anodizer_core::log::render_warning(&format!(
+                    "installer stage `{}` requested but `{}` is not on PATH; \
+                     skipping for this run (no artifacts emitted)",
+                    stage.as_str(),
+                    tool
+                ))
             );
         }
 
@@ -534,12 +537,15 @@ impl Harness {
                             })
                             .collect();
                         eprintln!(
-                            "warn: --inject-drift={} matched no artifact on run {}; \
-                             discovered artifacts ({}):\n{}",
-                            stage,
-                            run_idx,
-                            artifacts.len(),
-                            summary.join("\n")
+                            "{}",
+                            anodizer_core::log::render_warning(&format!(
+                                "--inject-drift={} matched no artifact on run {}; \
+                                 discovered artifacts ({}):\n{}",
+                                stage,
+                                run_idx,
+                                artifacts.len(),
+                                summary.join("\n")
+                            ))
                         );
                     }
                 }
@@ -793,10 +799,13 @@ impl Harness {
         // covers a binary they will never actually publish.
         if self.docker_backend_hint.as_deref() == Some("podman") {
             eprintln!(
-                "warn: docker stage requested but project config has `use: podman` \
-                 (Linux-only); the determinism harness only probes BuildKit-based \
-                 builds, so the docker stage is skipped for this run. Verify podman \
-                 image byte-stability outside the harness."
+                "{}",
+                anodizer_core::log::render_warning(
+                    "docker stage requested but project config has `use: podman` \
+                     (Linux-only); the determinism harness only probes BuildKit-based \
+                     builds, so the docker stage is skipped for this run. Verify podman \
+                     image byte-stability outside the harness."
+                )
             );
             return Ok(());
         }
@@ -804,8 +813,11 @@ impl Harness {
             Ok(true) => {}
             Ok(false) | Err(_) => {
                 eprintln!(
-                    "warn: docker stage requested but `docker buildx` is not available on PATH; \
-                     skipping for this run (no artifacts emitted)"
+                    "{}",
+                    anodizer_core::log::render_warning(
+                        "docker stage requested but `docker buildx` is not available on PATH; \
+                         skipping for this run (no artifacts emitted)"
+                    )
                 );
                 return Ok(());
             }

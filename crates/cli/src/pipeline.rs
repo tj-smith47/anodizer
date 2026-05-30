@@ -1127,8 +1127,12 @@ impl Pipeline {
             // note sits inside the stage's own group (one section per
             // stage in CI) rather than ungrouped after the last endgroup.
             if ctx.should_skip(name) {
-                let _section = log.group(name);
-                log.status(&"skipped".yellow().to_string());
+                // Open the section silently (no present-participle verb header)
+                // so the skip reads as one neutral line under the stage's own
+                // tag instead of the contradictory `Announcing announce` ->
+                // `[announce] skipped` pair.
+                let _section = log.group_silent(name);
+                log.status_as(name, &"skipped".yellow().to_string());
                 continue;
             }
 
@@ -1140,8 +1144,8 @@ impl Pipeline {
             // individual stages (e.g., archive, upx) where it fires AFTER the stage
             // confirms it has work to do.
             if BINARY_DEPENDENT_STAGES.contains(&name) && !has_binaries {
-                let _section = log.group(name);
-                log.status(&"(no binaries, skipped)".yellow().to_string());
+                let _section = log.group_silent(name);
+                log.status_as(name, &"(no binaries, skipped)".yellow().to_string());
                 continue;
             }
 

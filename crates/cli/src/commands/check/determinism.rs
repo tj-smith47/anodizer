@@ -16,6 +16,7 @@ use anodizer_cli::CheckDeterminismArgs;
 use anodizer_core::{
     AllowList, AllowListEntry, DeterminismState,
     git::{head_commit_hash_in, head_commit_timestamp_in, head_is_at_tag, resolve_snapshot_sde},
+    log::{render_error, render_note},
 };
 use anyhow::{Context, Result};
 
@@ -115,7 +116,10 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
     // (so they fall through the diff cleanly).
     if all_builds_prebuilt_in_repo(&repo_root) {
         eprintln!(
-            "determinism harness skipped: no buildable targets (all builds use `builder: prebuilt`)"
+            "{}",
+            render_note(
+                "determinism harness skipped: no buildable targets (all builds use `builder: prebuilt`)"
+            )
         );
         return Ok(());
     }
@@ -156,12 +160,21 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         serde_json::to_string_pretty(&report).context("serializing determinism report to JSON")?;
     std::fs::write(&report_path, json)
         .with_context(|| format!("writing report to {}", report_path.display()))?;
-    eprintln!("Wrote determinism report to {}", report_path.display());
+    eprintln!(
+        "{}",
+        render_note(&format!(
+            "wrote determinism report to {}",
+            report_path.display()
+        ))
+    );
 
     if report.drift_count > 0 {
         eprintln!(
-            "DRIFT DETECTED: {} artifact(s) differed across {} runs",
-            report.drift_count, report.runs
+            "{}",
+            render_error(&format!(
+                "drift detected: {} artifact(s) differed across {} runs",
+                report.drift_count, report.runs
+            ))
         );
         for d in &report.drift {
             // Surface `differing_bytes_summary` alongside hashes. The

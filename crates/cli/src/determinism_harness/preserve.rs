@@ -295,9 +295,12 @@ pub(super) fn preserve_raw_binaries(worktree_path: &Path, dest: &Path) -> Result
         Ok(v) => v,
         Err(e) => {
             eprintln!(
-                "warn: preserved-dist {} present but malformed ({}); skipping raw-binary preservation",
-                manifest_path.display(),
-                e
+                "{}",
+                anodizer_core::log::render_warning(&format!(
+                    "preserved-dist {} present but malformed ({}); skipping raw-binary preservation",
+                    manifest_path.display(),
+                    e
+                ))
             );
             return Ok(());
         }
@@ -590,10 +593,13 @@ fn read_optional_json(path: &Path) -> Option<serde_json::Value> {
             Ok(v) => Some(v),
             Err(e) => {
                 eprintln!(
-                    "warn: preserved-dist {} present but malformed ({}); \
-                     proceeding with harness-supplied defaults",
-                    path.display(),
-                    e
+                    "{}",
+                    anodizer_core::log::render_warning(&format!(
+                        "preserved-dist {} present but malformed ({}); \
+                         proceeding with harness-supplied defaults",
+                        path.display(),
+                        e
+                    ))
                 );
                 None
             }
@@ -601,10 +607,13 @@ fn read_optional_json(path: &Path) -> Option<serde_json::Value> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
             eprintln!(
-                "warn: preserved-dist {} unreadable ({}); proceeding with \
-                 harness-supplied defaults",
-                path.display(),
-                e
+                "{}",
+                anodizer_core::log::render_warning(&format!(
+                    "preserved-dist {} unreadable ({}); proceeding with \
+                     harness-supplied defaults",
+                    path.display(),
+                    e
+                ))
             );
             None
         }
@@ -733,9 +742,12 @@ pub(super) fn remove_preserved_on_drift(dest: &Path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
             eprintln!(
-                "warn: failed to remove preserved-dist `{}` after drift detection: {}",
-                dest.display(),
-                e
+                "{}",
+                anodizer_core::log::render_warning(&format!(
+                    "failed to remove preserved-dist `{}` after drift detection: {}",
+                    dest.display(),
+                    e
+                ))
             );
         }
     }

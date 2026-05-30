@@ -253,44 +253,62 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     let runtime_nondeterministic_allowlist =
         parse_allow_nondeterministic(&opts.allow_nondeterministic)?;
 
-    let project_root = resolve_project_root(&config_path, Some(&log));
-
-    let ctx_opts = build_context_options(
-        &opts,
-        skip_stages,
-        selected_sorted,
-        rollback_mode,
-        simulate_failure_publishers,
-        runtime_nondeterministic_allowlist,
-        project_root,
-    );
-    let mut ctx = Context::new(config.clone(), ctx_opts);
-    helpers::resolve_scm_token_type(&mut ctx, &config);
-    ctx.populate_time_vars();
-    ctx.populate_runtime_vars();
-    ctx.populate_metadata_var()?;
-
-    if ctx.options.rollback_only {
-        return run_rollback_only(&mut ctx);
-    }
-
-    // Set explicitly to "true"/"false" so `{% if IsPrepare %}` evaluates
-    // correctly in either branch (a missing var would short-circuit the
-    // truthy arm even when prepare mode is requested).
-    ctx.template_vars_mut()
-        .set("IsPrepare", if opts.prepare { "true" } else { "false" });
-
-    // Group the pre-pipeline setup (env, git context, `before:` hooks,
-    // snapshot/nightly notes, deprecation warnings, milestone preflight)
-    // into one section so it renders as a collapsible stage in CI rather
-    // than ungrouped flush-left output ahead of the first `::group::`. The
-    // scope block drops the guard before the mode dispatch below, so each
-    // mode opens its own sections cleanly.
+    // Group the pre-pipeline setup (config-root resolution, env, git
+    // context, `before:` hooks, snapshot/nightly notes, deprecation
+    // warnings, milestone preflight) into one section so it renders as a
+    // collapsible stage in CI rather than ungrouped flush-left output ahead
+    // of the first `::group::`. Opened BEFORE `resolve_project_root` so its
+    // bare-filename fallback warnings land inside the section too. The scope
+    // block drops the guard before the mode dispatch below, so each mode
+    // opens its own sections cleanly.
+    let project_root;
+    let mut ctx;
     {
         let _setup = log.group("setup");
+
+        project_root = resolve_project_root(&config_path, Some(&log));
+
+        let ctx_opts = build_context_options(
+            &opts,
+            skip_stages,
+            selected_sorted,
+            rollback_mode,
+            simulate_failure_publishers,
+            runtime_nondeterministic_allowlist,
+            project_root,
+        );
+        ctx = Context::new(config.clone(), ctx_opts);
+        helpers::resolve_scm_token_type(&mut ctx, &config);
+        ctx.populate_time_vars();
+        ctx.populate_runtime_vars();
+        ctx.populate_metadata_var()?;
+
+        // Set explicitly to "true"/"false" so `{% if IsPrepare %}` evaluates
+        // correctly in either branch (a missing var would short-circuit the
+        // truthy arm even when prepare mode is requested).
+        ctx.template_vars_mut()
+            .set("IsPrepare", if opts.prepare { "true" } else { "false" });
+
+        // --rollback-only consumes a prior run's recorded state and never
+        // builds; short-circuit before the env / git / hooks setup work
+        // below (which it does not need). Returns from inside the setup
+        // group — the guard drops on the early return, balancing the
+        // section — so rollback's own output is not nested under later
+        // setup steps it skips.
+        if ctx.options.rollback_only {
+            return run_rollback_only(&mut ctx);
+        }
+
         // Dist-state enforcement (`--clean` removal / non-empty hard error)
         // emits its user-facing `would clean` note here so it sits inside
         // the setup section rather than ungrouped ahead of the run.
+        //
+        // Sequenced AFTER the tags-at-HEAD no-op short-circuit above on
+        // purpose: a no-op run (push carried no release tags) must NOT wipe
+        // a populated dist that a later --publish-only run will consume.
+        // A real --clean release is never a no-op (it has selected crates,
+        // or is --snapshot/--all/etc.), so it still falls through here and
+        // cleans dist before the build stage in the pipeline below.
         enforce_dist_state(&config, &opts, &log)?;
         helpers::setup_env(&mut ctx, &config, &log)?;
         helpers::resolve_git_context(&mut ctx, &config, &log)?;
