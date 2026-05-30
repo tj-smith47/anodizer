@@ -196,6 +196,15 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // whether the value was set per-crate or hoisted to defaults.
     anodizer_core::defaults_merge::apply_defaults(&mut config);
 
+    // Derive per-crate publisher metadata (description / license / homepage /
+    // authors) from each crate's `Cargo.toml [package]` so a plain Rust
+    // project's publishers (winget/snapcraft/nfpm/homebrew/nix/...) resolve
+    // these fields without a top-level `metadata:` YAML block. Runs after
+    // `apply_monorepo_defaults` so each crate's `path` is fully resolved; the
+    // crate dirs are read relative to the working directory (matching how the
+    // build/binstall stages read `<crate.path>/Cargo.toml`).
+    config.populate_derived_metadata(Path::new("."));
+
     Ok(config)
 }
 

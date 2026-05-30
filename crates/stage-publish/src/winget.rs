@@ -525,11 +525,12 @@ fn resolve_winget_publisher_name<'a>(
 fn resolve_winget_description(
     ctx: &Context,
     winget_cfg: &anodizer_core::config::WingetConfig,
+    crate_name: &str,
 ) -> String {
     let description_raw_cfg = winget_cfg
         .description
         .as_deref()
-        .or_else(|| ctx.config.meta_description())
+        .or_else(|| ctx.config.meta_description_for(crate_name))
         .unwrap_or("");
     let description_tmpl = ctx
         .render_template(description_raw_cfg)
@@ -549,7 +550,7 @@ fn resolve_winget_short_description(
         .short_description
         .as_deref()
         .or(winget_cfg.description.as_deref())
-        .or_else(|| ctx.config.meta_description())
+        .or_else(|| ctx.config.meta_description_for(crate_name))
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "winget: short_description is required but not configured for \
@@ -570,7 +571,7 @@ fn resolve_winget_license<'a>(
     winget_cfg
         .license
         .as_deref()
-        .or_else(|| ctx.config.meta_license())
+        .or_else(|| ctx.config.meta_license_for(crate_name))
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "winget: license is required but not configured for '{}'. \
@@ -896,6 +897,7 @@ struct RenderedWingetFields {
 fn render_winget_fields(
     ctx: &Context,
     winget_cfg: &anodizer_core::config::WingetConfig,
+    crate_name: &str,
     name: &str,
     publisher_name: &str,
     license: &str,
@@ -923,7 +925,7 @@ fn render_winget_fields(
             winget_cfg
                 .homepage
                 .as_deref()
-                .or_else(|| ctx.config.meta_homepage()),
+                .or_else(|| ctx.config.meta_homepage_for(crate_name)),
         ),
         author: render(winget_cfg.author.as_deref()),
         copyright: render(winget_cfg.copyright.as_deref()),
@@ -1144,7 +1146,7 @@ fn generate_and_submit_winget_manifest(
     repo_name: &str,
 ) -> Result<()> {
     let version = ctx.version();
-    let description = resolve_winget_description(ctx, winget_cfg);
+    let description = resolve_winget_description(ctx, winget_cfg, crate_name);
     let short_desc = resolve_winget_short_description(ctx, winget_cfg, crate_name)?;
     let license = resolve_winget_license(ctx, winget_cfg, crate_name)?;
 
@@ -1154,8 +1156,15 @@ fn generate_and_submit_winget_manifest(
     let release_date = resolve_winget_release_date(ctx);
     let release_date_ref = release_date.as_deref();
 
-    let rendered =
-        render_winget_fields(ctx, winget_cfg, name, publisher_name, license, &short_desc);
+    let rendered = render_winget_fields(
+        ctx,
+        winget_cfg,
+        crate_name,
+        name,
+        publisher_name,
+        license,
+        &short_desc,
+    );
 
     let (ver_yaml, inst_yaml, locale_yaml) = generate_manifests(&WingetManifestParams {
         package_id,
@@ -2587,6 +2596,125 @@ mod tests {
         assert!(
             locale.contains("PackageName: My Tool Pro"),
             "PackageName should use the override:\n{locale}"
+        );
+    }
+
+    use anodizer_core::config::{CrateConfig, WingetConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    /// Write a `Cargo.toml [package]` into `<dir>/<crate_path>` and populate
+    /// `ctx.config.derived_metadata` from it, exercising the real
+    /// Cargo.toml → derived_metadata → `meta_*_for` path.
+    fn derive_into(ctx: &mut Context, dir: &std::path::Path, crate_name: &str, cargo_toml: &str) {
+        let crate_dir = dir.join(crate_name);
+        std::fs::create_dir_all(&crate_dir).unwrap();
+        std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml).unwrap();
+        ctx.config.crates = vec![CrateConfig {
+            name: crate_name.to_string(),
+            path: crate_name.to_string(),
+            ..Default::default()
+        }];
+        ctx.config.populate_derived_metadata(dir);
+    }
+
+    #[test]
+    fn winget_required_fields_resolve_from_cargo_toml_when_no_metadata_block() {
+        // No top-level `metadata:` YAML — Cargo.toml [package] supplies the
+        // values the winget required-field paths previously bailed on.
+        let mut ctx = TestContextBuilder::new().build();
+        assert!(ctx.config.metadata.is_none(), "no metadata: block present");
+        let tmp = tempfile::tempdir().unwrap();
+        derive_into(
+            &mut ctx,
+            tmp.path(),
+            "demo",
+            r#"
+[package]
+name = "demo"
+description = "A demo CLI for winget"
+license = "MIT"
+"#,
+        );
+        let winget_cfg = WingetConfig::default();
+
+        // short_description previously: "short_description is required".
+        let short = resolve_winget_short_description(&ctx, &winget_cfg, "demo")
+            .expect("short_description resolves from Cargo.toml description");
+        assert_eq!(short, "A demo CLI for winget");
+
+        // license previously: "license is required".
+        let license = resolve_winget_license(&ctx, &winget_cfg, "demo")
+            .expect("license resolves from Cargo.toml [package].license");
+        assert_eq!(license, "MIT");
+    }
+
+    #[test]
+    fn winget_license_file_only_crate_still_errors_on_missing_license() {
+        // A crate using `license-file` (no SPDX `license`) must NOT have a
+        // license synthesised — the genuine-missing-license error must fire.
+        let mut ctx = TestContextBuilder::new().build();
+        let tmp = tempfile::tempdir().unwrap();
+        derive_into(
+            &mut ctx,
+            tmp.path(),
+            "demo",
+            r#"
+[package]
+name = "demo"
+description = "has a description but only a license-file"
+license-file = "LICENSE.txt"
+"#,
+        );
+        let winget_cfg = WingetConfig::default();
+
+        // description IS present, so short_description resolves...
+        assert_eq!(
+            resolve_winget_short_description(&ctx, &winget_cfg, "demo").unwrap(),
+            "has a description but only a license-file"
+        );
+        // ...but license-file is not an SPDX id, so license MUST still error.
+        let err = resolve_winget_license(&ctx, &winget_cfg, "demo")
+            .expect_err("license-file-only crate must still error on missing license");
+        assert!(
+            err.to_string().contains("license is required"),
+            "expected genuine missing-license error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn winget_per_crate_resolves_each_crates_own_description() {
+        // Two crates, different Cargo.toml descriptions: each resolves ITS OWN.
+        let mut ctx = TestContextBuilder::new().build();
+        let tmp = tempfile::tempdir().unwrap();
+        for (name, desc) in [("alpha", "Alpha tool"), ("beta", "Beta tool")] {
+            let crate_dir = tmp.path().join(name);
+            std::fs::create_dir_all(&crate_dir).unwrap();
+            std::fs::write(
+                crate_dir.join("Cargo.toml"),
+                format!(
+                    "[package]\nname = \"{name}\"\ndescription = \"{desc}\"\nlicense = \"MIT\"\n"
+                ),
+            )
+            .unwrap();
+        }
+        ctx.config.crates = ["alpha", "beta"]
+            .iter()
+            .map(|n| CrateConfig {
+                name: n.to_string(),
+                path: n.to_string(),
+                ..Default::default()
+            })
+            .collect();
+        ctx.config.populate_derived_metadata(tmp.path());
+
+        let cfg = WingetConfig::default();
+        assert_eq!(
+            resolve_winget_short_description(&ctx, &cfg, "alpha").unwrap(),
+            "Alpha tool"
+        );
+        assert_eq!(
+            resolve_winget_short_description(&ctx, &cfg, "beta").unwrap(),
+            "Beta tool"
         );
     }
 }

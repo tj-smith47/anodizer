@@ -5,6 +5,7 @@ use anodizer_core::config::{NfpmConfig, NfpmDebConfig, NfpmRpmConfig, NfpmSignat
 use anodizer_core::stage::Stage;
 use tempfile::TempDir;
 
+use super::run::render_nfpm_config_fields;
 use super::{
     KNOWN_FORMATS, NfpmLibraryPaths, NfpmStage, format_extension, generate_nfpm_yaml, nfpm_command,
     validate_format,
@@ -5004,4 +5005,88 @@ fn test_nfpm_goamd64_empty_vec_is_no_op() {
     NfpmStage.run(&mut ctx).unwrap();
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
     assert_eq!(pkgs.len(), 2, "empty goamd64 vec should be a no-op");
+}
+
+/// With no top-level `metadata:` block and a bare `nfpm:` config (no
+/// `maintainer`), the maintainer must resolve from the crate's
+/// `Cargo.toml [package].authors` so the deb path no longer hits the empty
+/// "maintainer is empty (required for deb packages)" condition.
+#[test]
+fn test_nfpm_maintainer_derived_from_cargo_toml_authors() {
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let crate_dir = tmp.path().join("mytool");
+    std::fs::create_dir_all(&crate_dir).unwrap();
+    std::fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\nname = \"mytool\"\nauthors = [\"Ada Lovelace <ada@example.com>\"]\ndescription = \"a tool\"\n",
+    )
+    .unwrap();
+
+    let mut config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: "mytool".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert!(config.metadata.is_none(), "no metadata: block present");
+    config.populate_derived_metadata(tmp.path());
+
+    let mut ctx = Context::new(config, ContextOptions::default());
+    // Bare nfpm config: no maintainer set by the user.
+    let nfpm_cfg = NfpmConfig::default();
+    assert!(nfpm_cfg.maintainer.is_none());
+
+    let rendered = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "mytool")
+        .expect("render nfpm config fields");
+    assert_eq!(
+        rendered.maintainer.as_deref(),
+        Some("Ada Lovelace <ada@example.com>"),
+        "maintainer must come from Cargo.toml [package].authors[0]"
+    );
+}
+
+/// Per-crate proof at the nfpm publisher boundary: a 2-crate workspace where
+/// each crate's `Cargo.toml` declares a DIFFERENT description — each crate's
+/// rendered nfpm config must carry ITS OWN description, never the primary
+/// crate's.
+#[test]
+fn test_nfpm_per_crate_description_is_each_crates_own() {
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    for (name, desc) in [("alpha", "Alpha package"), ("beta", "Beta package")] {
+        let dir = tmp.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\ndescription = \"{desc}\"\n"),
+        )
+        .unwrap();
+    }
+    let mut config = Config {
+        crates: ["alpha", "beta"]
+            .iter()
+            .map(|n| CrateConfig {
+                name: n.to_string(),
+                path: n.to_string(),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    config.populate_derived_metadata(tmp.path());
+
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let nfpm_cfg = NfpmConfig::default();
+
+    let alpha = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "alpha").unwrap();
+    let beta = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "beta").unwrap();
+    assert_eq!(alpha.description.as_deref(), Some("Alpha package"));
+    assert_eq!(beta.description.as_deref(), Some("Beta package"));
 }

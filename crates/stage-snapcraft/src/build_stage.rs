@@ -665,13 +665,23 @@ fn render_snap_cfg(
 ) -> Result<SnapcraftConfig> {
     let mut rendered_cfg = snap_cfg.clone();
     if rendered_cfg.description.is_none() {
-        rendered_cfg.description = ctx.config.meta_description().map(str::to_string);
+        rendered_cfg.description = ctx
+            .config
+            .meta_description_for(krate_name)
+            .map(str::to_string);
+    }
+    // `summary` is a snapcraft-required short tagline with no Cargo.toml
+    // counterpart. Fall back to the (possibly Cargo.toml-derived)
+    // description so a plain Rust project that declares only
+    // `package.description` does not hard-error on "summary is required".
+    if rendered_cfg.summary.is_none() {
+        rendered_cfg.summary = rendered_cfg.description.clone();
     }
     if let Some(ref s) = rendered_cfg.summary {
-        rendered_cfg.summary = Some(
-            ctx.render_template(s)
-                .with_context(|| format!("snapcraft: render summary for crate {}", krate_name))?,
-        );
+        let rendered = ctx
+            .render_template(s)
+            .with_context(|| format!("snapcraft: render summary for crate {}", krate_name))?;
+        rendered_cfg.summary = Some(truncate_snap_summary(&rendered));
     }
     if let Some(ref d) = rendered_cfg.description {
         rendered_cfg.description =
@@ -686,6 +696,20 @@ fn render_snap_cfg(
         );
     }
     Ok(rendered_cfg)
+}
+
+/// snapcraft's `summary` is hard-capped at 78 characters; a longer value
+/// fails at `snapcraft pack`. Deriving the summary from an arbitrarily long
+/// `package.description` (or a user-supplied over-long summary) can exceed
+/// it, so truncate to 78 characters here — the single point where the
+/// effective summary is finalised — applying the cap to derived and
+/// user-set summaries alike.
+fn truncate_snap_summary(summary: &str) -> String {
+    const MAX_SUMMARY_CHARS: usize = 78;
+    if summary.chars().count() <= MAX_SUMMARY_CHARS {
+        return summary.to_string();
+    }
+    summary.chars().take(MAX_SUMMARY_CHARS).collect()
 }
 
 /// Copy binaries into the prime dir root with mode 0555.
@@ -914,5 +938,88 @@ mod cache_tests {
         // Must not error or create anything.
         clear_snapcraft_cache(Some(xdg.to_str().unwrap()), None, &log);
         assert!(!xdg.join("snapcraft").exists());
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    /// Build a Context whose single crate's `Cargo.toml [package].description`
+    /// supplies derived metadata, with NO top-level `metadata:` block.
+    fn ctx_with_cargo_description(description: &str) -> (Context, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let crate_dir = tmp.path().join("demo");
+        std::fs::create_dir_all(&crate_dir).unwrap();
+        std::fs::write(
+            crate_dir.join("Cargo.toml"),
+            format!("[package]\nname = \"demo\"\ndescription = \"{description}\"\n"),
+        )
+        .unwrap();
+        let mut ctx = TestContextBuilder::new().build();
+        assert!(ctx.config.metadata.is_none(), "no metadata: block present");
+        ctx.config.crates = vec![CrateConfig {
+            name: "demo".to_string(),
+            path: "demo".to_string(),
+            ..Default::default()
+        }];
+        ctx.config.populate_derived_metadata(tmp.path());
+        (ctx, tmp)
+    }
+
+    #[test]
+    fn summary_resolves_from_cargo_toml_description() {
+        // Previously: snapcraft "summary is required" — now the summary falls
+        // back to the Cargo.toml description.
+        let (ctx, _tmp) = ctx_with_cargo_description("a concise demo summary");
+        let snap_cfg = SnapcraftConfig::default();
+        assert!(snap_cfg.summary.is_none());
+
+        let rendered = render_snap_cfg(&ctx, &snap_cfg, "demo").expect("render snap cfg");
+        assert_eq!(rendered.summary.as_deref(), Some("a concise demo summary"));
+    }
+
+    #[test]
+    fn derived_over_long_summary_is_capped_at_78_chars() {
+        // A >78-char description must not produce a summary that fails at
+        // `snapcraft pack`; the cap applies to the derived summary.
+        let long = "x".repeat(120);
+        let (ctx, _tmp) = ctx_with_cargo_description(&long);
+        let snap_cfg = SnapcraftConfig::default();
+
+        let rendered = render_snap_cfg(&ctx, &snap_cfg, "demo").unwrap();
+        let summary = rendered.summary.expect("summary derived");
+        assert_eq!(
+            summary.chars().count(),
+            78,
+            "derived summary must be capped at 78 chars; got {} chars",
+            summary.chars().count()
+        );
+    }
+
+    #[test]
+    fn user_set_over_long_summary_is_capped_at_78_chars() {
+        // The cap is applied consistently to a user-supplied over-long summary.
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.config = Config::default();
+        let snap_cfg = SnapcraftConfig {
+            summary: Some("y".repeat(100)),
+            ..Default::default()
+        };
+        let rendered = render_snap_cfg(&ctx, &snap_cfg, "demo").unwrap();
+        let summary = rendered.summary.expect("summary present");
+        assert!(
+            summary.chars().count() <= 78,
+            "user-set summary must be capped at <= 78 chars; got {} chars",
+            summary.chars().count()
+        );
+    }
+
+    #[test]
+    fn short_summary_is_left_unchanged() {
+        let summary = truncate_snap_summary("short and fine");
+        assert_eq!(summary, "short and fine");
     }
 }

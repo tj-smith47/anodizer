@@ -15,9 +15,14 @@ use anyhow::{Context as _, Result};
 /// Resolve the effective homepage for a top-level cask entry.
 ///
 /// Per-cask `homepage` wins; when unset, fall back to the project-level
-/// `metadata.homepage` so a monorepo only needs to declare it once.
-/// Mirrors the same `or_else(|| ctx.config.meta_homepage())` chain used
-/// by the per-crate cask renderer in `homebrew::cask`.
+/// homepage via [`Config::meta_homepage_project`]: the top-level
+/// `metadata.homepage` if set, else the primary crate's `Cargo.toml`-derived
+/// homepage. A top-level cask is not bound to a single crate, so this resolves
+/// project-level metadata rather than per-crate metadata — unlike the per-crate
+/// cask renderer in `homebrew::cask`, which keys on the owning crate via
+/// `meta_homepage_for(crate_name)`.
+///
+/// [`Config::meta_homepage_project`]: anodizer_core::config::Config::meta_homepage_project
 fn resolve_top_cask_homepage<'a>(
     cask_cfg: &'a HomebrewCaskConfig,
     ctx: &'a Context,
@@ -25,7 +30,7 @@ fn resolve_top_cask_homepage<'a>(
     cask_cfg
         .homepage
         .as_deref()
-        .or_else(|| ctx.config.meta_homepage())
+        .or_else(|| ctx.config.meta_homepage_project())
 }
 
 /// Resolve the effective description for a top-level cask entry.
@@ -40,7 +45,7 @@ fn resolve_top_cask_description<'a>(
     cask_cfg
         .description
         .as_deref()
-        .or_else(|| ctx.config.meta_description())
+        .or_else(|| ctx.config.meta_description_project())
 }
 /// Outcome shape returned by [`publish_top_level_homebrew_casks`].
 ///

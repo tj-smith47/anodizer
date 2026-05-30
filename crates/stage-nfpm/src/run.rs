@@ -250,7 +250,7 @@ fn process_nfpm_format(
         return Ok(());
     }
 
-    let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, ctx)?;
+    let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, ctx, crate_name)?;
 
     process_templated_contents(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
     process_templated_scripts(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
@@ -662,22 +662,29 @@ fn resolve_format_os_arch(
 /// participates in the generated YAML. Project-level `metadata.*` fall back
 /// values are applied before rendering when the per-config field is unset
 /// (GoReleaser Pro parity for `metadata.homepage/license/description/maintainers`).
-fn render_nfpm_config_fields(
+pub(crate) fn render_nfpm_config_fields(
     nfpm_cfg: &anodizer_core::config::NfpmConfig,
     ctx: &mut Context,
+    crate_name: &str,
 ) -> Result<anodizer_core::config::NfpmConfig> {
     let mut rendered_cfg = nfpm_cfg.clone();
     if rendered_cfg.description.is_none() {
-        rendered_cfg.description = ctx.config.meta_description().map(str::to_string);
+        rendered_cfg.description = ctx
+            .config
+            .meta_description_for(crate_name)
+            .map(str::to_string);
     }
     if rendered_cfg.maintainer.is_none() {
-        rendered_cfg.maintainer = ctx.config.meta_first_maintainer().map(str::to_string);
+        rendered_cfg.maintainer = ctx
+            .config
+            .meta_first_maintainer_for(crate_name)
+            .map(str::to_string);
     }
     if rendered_cfg.homepage.is_none() {
-        rendered_cfg.homepage = ctx.config.meta_homepage().map(str::to_string);
+        rendered_cfg.homepage = ctx.config.meta_homepage_for(crate_name).map(str::to_string);
     }
     if rendered_cfg.license.is_none() {
-        rendered_cfg.license = ctx.config.meta_license().map(str::to_string);
+        rendered_cfg.license = ctx.config.meta_license_for(crate_name).map(str::to_string);
     }
     render_in_place(&mut rendered_cfg.description, ctx)?;
     render_in_place(&mut rendered_cfg.maintainer, ctx)?;

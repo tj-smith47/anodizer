@@ -275,7 +275,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     let description_raw = scoop_cfg
         .description
         .as_deref()
-        .or_else(|| ctx.config.meta_description())
+        .or_else(|| ctx.config.meta_description_for(crate_name))
         .unwrap_or(crate_name);
     let description = ctx
         .render_template(description_raw)
@@ -288,7 +288,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     let license = scoop_cfg
         .license
         .clone()
-        .or_else(|| ctx.config.meta_license().map(str::to_string))
+        .or_else(|| ctx.config.meta_license_for(crate_name).map(str::to_string))
         .unwrap_or_default();
 
     // Use name override if set, otherwise crate name; render through template engine.
@@ -470,7 +470,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     let homepage_raw = scoop_cfg
         .homepage
         .as_deref()
-        .or_else(|| ctx.config.meta_homepage());
+        .or_else(|| ctx.config.meta_homepage_for(crate_name));
     let homepage_rendered = match homepage_raw {
         Some(h) => Some(
             ctx.render_template(h)

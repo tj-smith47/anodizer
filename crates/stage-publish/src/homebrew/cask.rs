@@ -959,12 +959,12 @@ pub(super) fn generate_cask_from_context(
             .homepage
             .as_deref()
             .or(hb_cfg.homepage.as_deref())
-            .or_else(|| ctx.config.meta_homepage()),
+            .or_else(|| ctx.config.meta_homepage_for(crate_name)),
         description: cask_cfg
             .description
             .as_deref()
             .or(hb_cfg.description.as_deref())
-            .or_else(|| ctx.config.meta_description()),
+            .or_else(|| ctx.config.meta_description_for(crate_name)),
         app: cask_cfg.app.as_deref(),
         binaries: &cask_binaries,
         caveats: cask_cfg.caveats.as_deref(),

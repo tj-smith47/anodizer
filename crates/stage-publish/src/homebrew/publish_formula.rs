@@ -67,7 +67,7 @@ fn resolve_homebrew_metadata(
     let description_raw = hb_cfg
         .description
         .as_deref()
-        .or_else(|| ctx.config.meta_description())
+        .or_else(|| ctx.config.meta_description_for(crate_name))
         .unwrap_or(crate_name);
     let description = ctx
         .render_template(description_raw)
@@ -75,12 +75,12 @@ fn resolve_homebrew_metadata(
     let license = hb_cfg
         .license
         .as_deref()
-        .or_else(|| ctx.config.meta_license())
+        .or_else(|| ctx.config.meta_license_for(crate_name))
         .map(|l| ctx.render_template(l).unwrap_or_else(|_| l.to_string()));
     let homepage = hb_cfg
         .homepage
         .as_deref()
-        .or_else(|| ctx.config.meta_homepage())
+        .or_else(|| ctx.config.meta_homepage_for(crate_name))
         .map(|h| ctx.render_template(h).unwrap_or_else(|_| h.to_string()));
     let formula_name_raw = hb_cfg.name.as_deref().unwrap_or(crate_name);
     let formula_name = ctx

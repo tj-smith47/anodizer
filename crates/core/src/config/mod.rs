@@ -224,6 +224,17 @@ pub struct Config {
     /// warning is emitted by [`warn_on_legacy_furies_alias`].
     #[serde(alias = "furies")]
     pub gemfury: Option<Vec<GemFuryConfig>>,
+    /// Per-crate metadata derived from each crate's `Cargo.toml [package]`
+    /// table (description / license / homepage / authors). Populated at
+    /// config-load time by [`Config::populate_derived_metadata`], keyed by
+    /// crate name. NOT a user-facing YAML field — it backs the
+    /// crate-aware `meta_*_for` accessors so a plain Rust project gets its
+    /// publisher metadata without repeating it in a top-level `metadata:`
+    /// block. A hand-written `metadata:` field and per-publisher overrides
+    /// still win.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub derived_metadata: BTreeMap<String, MetadataConfig>,
 }
 
 /// Helper schema function for the signs field (accepts object or array).
@@ -312,6 +323,7 @@ impl Default for Config {
             retry: None,
             mcp: McpConfig::default(),
             gemfury: None,
+            derived_metadata: BTreeMap::new(),
         }
     }
 }
@@ -334,33 +346,77 @@ impl Config {
     // --- Project metadata defaulting helpers (GoReleaser Pro parity) ---
     //
     // Publishers that expose homepage/license/description/maintainer fields
-    // should fall back to these when their own field is unset, so a project
-    // only needs to declare metadata once. Pattern:
+    // fall back to these when their own field is unset, so a project only
+    // needs to declare metadata once. Resolution precedence (highest first):
     //
-    //   let homepage = nfpm_cfg.homepage
-    //       .as_deref()
-    //       .or_else(|| cfg.meta_homepage());
+    //   1. the per-publisher override (the publisher's own config field)
+    //   2. a hand-written top-level `metadata:` YAML field
+    //   3. the value derived from the crate's `Cargo.toml [package]` table
+    //      (populated by `populate_derived_metadata`)
     //
-    // Returns None if the `metadata` section is missing or the field is unset.
+    // Steps 1 is enforced by the publisher's `or_else(|| cfg.meta_*_for(..))`
+    // chain; steps 2-3 are enforced inside the `meta_*_for` accessors. A
+    // publisher that knows which crate it is publishing for should call the
+    // crate-aware `meta_*_for(crate_name)` variant so workspace/per-crate
+    // configs resolve each crate's OWN Cargo.toml metadata. The crate-agnostic
+    // `meta_*` variants resolve the top-level `metadata:` block only (no
+    // Cargo.toml fallback) and exist for truly project-level callers.
 
-    /// Project homepage from `metadata.homepage` (Pro default source for publishers).
+    /// Per-crate derived metadata for `crate_name`, if `Cargo.toml` supplied any.
+    fn derived_for(&self, crate_name: &str) -> Option<&MetadataConfig> {
+        self.derived_metadata.get(crate_name)
+    }
+
+    /// Name of the primary crate (first declared `crates:` entry, else the
+    /// first workspace crate). Used as the metadata-derivation source for
+    /// project-level publishers (e.g. top-level `homebrew_casks:`) that are
+    /// not bound to a single crate.
+    fn primary_crate_name(&self) -> Option<&str> {
+        self.crates
+            .first()
+            .or_else(|| {
+                self.workspaces
+                    .iter()
+                    .flatten()
+                    .flat_map(|w| w.crates.iter())
+                    .next()
+            })
+            .map(|c| c.name.as_str())
+    }
+
+    /// Project homepage: top-level `metadata.homepage` wins, else the primary
+    /// crate's `Cargo.toml`-derived homepage. For project-level publishers
+    /// (top-level casks) with no owning crate.
+    pub fn meta_homepage_project(&self) -> Option<&str> {
+        self.meta_homepage()
+            .or_else(|| self.meta_homepage_for(self.primary_crate_name()?))
+    }
+
+    /// Project description: top-level `metadata.description` wins, else the
+    /// primary crate's `Cargo.toml`-derived description.
+    pub fn meta_description_project(&self) -> Option<&str> {
+        self.meta_description()
+            .or_else(|| self.meta_description_for(self.primary_crate_name()?))
+    }
+
+    /// Project homepage from `metadata.homepage` (top-level YAML only).
     pub fn meta_homepage(&self) -> Option<&str> {
         self.metadata.as_ref().and_then(|m| m.homepage.as_deref())
     }
 
-    /// Project license from `metadata.license`.
+    /// Project license from `metadata.license` (top-level YAML only).
     pub fn meta_license(&self) -> Option<&str> {
         self.metadata.as_ref().and_then(|m| m.license.as_deref())
     }
 
-    /// Project description from `metadata.description`.
+    /// Project description from `metadata.description` (top-level YAML only).
     pub fn meta_description(&self) -> Option<&str> {
         self.metadata
             .as_ref()
             .and_then(|m| m.description.as_deref())
     }
 
-    /// Project maintainers from `metadata.maintainers`.
+    /// Project maintainers from `metadata.maintainers` (top-level YAML only).
     pub fn meta_maintainers(&self) -> &[String] {
         self.metadata
             .as_ref()
@@ -372,6 +428,81 @@ impl Config {
     /// Returns None when no maintainers are configured.
     pub fn meta_first_maintainer(&self) -> Option<&str> {
         self.meta_maintainers().first().map(|s| s.as_str())
+    }
+
+    /// Homepage for `crate_name`: top-level `metadata.homepage` wins, else the
+    /// value derived from the crate's `Cargo.toml [package]`.
+    pub fn meta_homepage_for(&self, crate_name: &str) -> Option<&str> {
+        self.meta_homepage()
+            .or_else(|| self.derived_for(crate_name)?.homepage.as_deref())
+    }
+
+    /// License for `crate_name`: top-level `metadata.license` wins, else the
+    /// crate's `Cargo.toml [package].license` (never synthesised from
+    /// `license-file`).
+    pub fn meta_license_for(&self, crate_name: &str) -> Option<&str> {
+        self.meta_license()
+            .or_else(|| self.derived_for(crate_name)?.license.as_deref())
+    }
+
+    /// Description for `crate_name`: top-level `metadata.description` wins, else
+    /// the crate's `Cargo.toml [package].description`.
+    pub fn meta_description_for(&self, crate_name: &str) -> Option<&str> {
+        self.meta_description()
+            .or_else(|| self.derived_for(crate_name)?.description.as_deref())
+    }
+
+    /// Maintainers for `crate_name`: top-level `metadata.maintainers` wins
+    /// (when non-empty), else the crate's `Cargo.toml [package].authors`.
+    pub fn meta_maintainers_for(&self, crate_name: &str) -> &[String] {
+        let top = self.meta_maintainers();
+        if !top.is_empty() {
+            return top;
+        }
+        self.derived_for(crate_name)
+            .and_then(|m| m.maintainers.as_deref())
+            .unwrap_or(&[])
+    }
+
+    /// First maintainer for `crate_name` as "Name <email>" or just "Name".
+    pub fn meta_first_maintainer_for(&self, crate_name: &str) -> Option<&str> {
+        self.meta_maintainers_for(crate_name)
+            .first()
+            .map(|s| s.as_str())
+    }
+
+    /// Populate [`Config::derived_metadata`] by reading each crate's
+    /// `Cargo.toml [package]` table (description / license / homepage /
+    /// authors), so publishers resolve a plain Rust project's metadata without
+    /// requiring a top-level `metadata:` YAML block.
+    ///
+    /// Covers every crate the config knows about: top-level `crates:` plus
+    /// every `workspaces[].crates[]`, so single-crate, workspace-lockstep, and
+    /// per-crate configs all populate. Each crate is read from
+    /// `<crate.path>/Cargo.toml` relative to `base_dir` (the directory the
+    /// config was loaded from / the monorepo working directory).
+    ///
+    /// Idempotent and non-destructive: only fills entries; existing
+    /// `derived_metadata` keys are overwritten with a fresh read. Crates whose
+    /// `Cargo.toml` is missing or supplies nothing contribute an all-`None`
+    /// entry (harmless — the accessors treat it as "no value").
+    pub fn populate_derived_metadata(&mut self, base_dir: &std::path::Path) {
+        let crate_paths: Vec<(String, String)> = self
+            .crates
+            .iter()
+            .chain(
+                self.workspaces
+                    .iter()
+                    .flatten()
+                    .flat_map(|w| w.crates.iter()),
+            )
+            .map(|c| (c.name.clone(), c.path.clone()))
+            .collect();
+        for (name, path) in crate_paths {
+            let crate_dir = base_dir.join(&path);
+            let derived = derive_metadata_from_cargo_toml(&crate_dir);
+            self.derived_metadata.insert(name, derived);
+        }
     }
 
     /// `true` when any top-level / workspace `signs:` or `binary_signs:`
@@ -1656,6 +1787,9 @@ pub use upx::*;
 
 mod snapshot_nightly;
 pub use snapshot_nightly::*;
+
+mod cargo_metadata;
+pub use cargo_metadata::derive_metadata_from_cargo_toml;
 
 // ---------------------------------------------------------------------------
 // TemplateFileConfig

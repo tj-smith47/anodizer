@@ -18,7 +18,7 @@ use super::HookEntry;
 use super::{ArchivesConfig, ChecksumConfig, ContentSource, ExtraFileSpec};
 use super::{BuilderKind, all_builds_prebuilt, validate_builds};
 use super::{ChangelogConfig, MilestoneConfig, SbomConfig};
-use super::{CrateConfig, CrossStrategy};
+use super::{CrateConfig, CrossStrategy, MetadataConfig};
 use super::{
     EnvFilesConfig, EnvFilesTokenConfig, load_env_files, load_token_files, read_token_file,
 };
@@ -4633,6 +4633,175 @@ crates: []
     assert!(config.meta_description().is_none());
     assert!(config.meta_license().is_none());
     assert!(config.meta_first_maintainer().is_none());
+}
+
+// ---- Cargo.toml-derived metadata: per-crate accessors + precedence ----
+//
+// `populate_derived_metadata` reads each crate's `Cargo.toml [package]`
+// (description/license/homepage/authors) so a plain Rust project resolves
+// publisher metadata WITHOUT a top-level `metadata:` YAML block. The
+// crate-aware `meta_*_for(crate)` accessors layer it under the YAML block:
+// YAML wins, then Cargo.toml-derived, then None.
+
+fn write_cargo(dir: &std::path::Path, body: &str) {
+    std::fs::write(dir.join("Cargo.toml"), body).unwrap();
+}
+
+#[test]
+fn derived_metadata_fills_publisher_fields_without_yaml_block() {
+    let base = tempfile::tempdir().unwrap();
+    let crate_dir = base.path().join("app");
+    std::fs::create_dir_all(&crate_dir).unwrap();
+    write_cargo(
+        &crate_dir,
+        r#"
+[package]
+name = "app"
+description = "the app crate"
+license = "MIT"
+homepage = "https://app.example"
+authors = ["Ada <ada@example.com>"]
+"#,
+    );
+
+    let mut config = Config {
+        project_name: "test".into(),
+        crates: vec![CrateConfig {
+            name: "app".into(),
+            path: "app".into(),
+            tag_template: "v{{ .Version }}".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    // No top-level `metadata:` block at all.
+    assert!(config.metadata.is_none());
+    config.populate_derived_metadata(base.path());
+
+    // The crate-aware accessors now resolve the publisher metadata that
+    // winget/snapcraft/nfpm previously hard-errored on.
+    assert_eq!(config.meta_description_for("app"), Some("the app crate"));
+    assert_eq!(config.meta_license_for("app"), Some("MIT"));
+    assert_eq!(config.meta_homepage_for("app"), Some("https://app.example"));
+    assert_eq!(
+        config.meta_first_maintainer_for("app"),
+        Some("Ada <ada@example.com>")
+    );
+
+    // The crate-agnostic accessors stay None (no YAML block) — only the
+    // `_for` variants consult Cargo.toml.
+    assert!(config.meta_description().is_none());
+    assert!(config.meta_license().is_none());
+}
+
+#[test]
+fn yaml_metadata_block_wins_over_cargo_toml() {
+    let base = tempfile::tempdir().unwrap();
+    let crate_dir = base.path().join("app");
+    std::fs::create_dir_all(&crate_dir).unwrap();
+    write_cargo(
+        &crate_dir,
+        r#"
+[package]
+name = "app"
+description = "from cargo"
+license = "MIT"
+"#,
+    );
+
+    let mut config = Config {
+        project_name: "test".into(),
+        metadata: Some(MetadataConfig {
+            description: Some("from yaml".into()),
+            license: Some("Apache-2.0".into()),
+            ..Default::default()
+        }),
+        crates: vec![CrateConfig {
+            name: "app".into(),
+            path: "app".into(),
+            tag_template: "v{{ .Version }}".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    config.populate_derived_metadata(base.path());
+
+    // Hand-written `metadata:` wins; Cargo.toml only fills genuine gaps.
+    assert_eq!(config.meta_description_for("app"), Some("from yaml"));
+    assert_eq!(config.meta_license_for("app"), Some("Apache-2.0"));
+}
+
+#[test]
+fn per_crate_workspace_each_crate_gets_its_own_cargo_metadata() {
+    let base = tempfile::tempdir().unwrap();
+    for (name, desc) in [("core", "the core lib"), ("csi", "the csi plugin")] {
+        let dir = base.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_cargo(
+            &dir,
+            &format!("[package]\nname = \"{name}\"\ndescription = \"{desc}\"\nlicense = \"MIT\"\n"),
+        );
+    }
+
+    let mut config = Config {
+        project_name: "test".into(),
+        crates: vec![
+            CrateConfig {
+                name: "core".into(),
+                path: "core".into(),
+                tag_template: "v{{ .Version }}".into(),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "csi".into(),
+                path: "csi".into(),
+                tag_template: "csi-v{{ .Version }}".into(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    config.populate_derived_metadata(base.path());
+
+    // Each crate's publishers see THAT crate's own Cargo.toml description —
+    // csi's description must not leak the core crate's, and vice versa.
+    assert_eq!(config.meta_description_for("core"), Some("the core lib"));
+    assert_eq!(config.meta_description_for("csi"), Some("the csi plugin"));
+}
+
+#[test]
+fn license_file_only_leaves_license_empty_no_fabrication() {
+    let base = tempfile::tempdir().unwrap();
+    let crate_dir = base.path().join("app");
+    std::fs::create_dir_all(&crate_dir).unwrap();
+    write_cargo(
+        &crate_dir,
+        r#"
+[package]
+name = "app"
+description = "has a license file, not an SPDX id"
+license-file = "LICENSE"
+"#,
+    );
+
+    let mut config = Config {
+        project_name: "test".into(),
+        crates: vec![CrateConfig {
+            name: "app".into(),
+            path: "app".into(),
+            tag_template: "v{{ .Version }}".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    config.populate_derived_metadata(base.path());
+
+    // description still derives; license stays empty (no SPDX synthesised).
+    assert_eq!(
+        config.meta_description_for("app"),
+        Some("has a license file, not an SPDX id")
+    );
+    assert!(config.meta_license_for("app").is_none());
 }
 
 // ---- SnapcraftConfig disable StringOrBool tests ----

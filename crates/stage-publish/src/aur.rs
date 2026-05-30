@@ -496,7 +496,7 @@ fn aur_resolve_fields(
     let description_raw = aur_cfg
         .description
         .as_deref()
-        .or_else(|| ctx.config.meta_description())
+        .or_else(|| ctx.config.meta_description_for(crate_name))
         .unwrap_or(crate_name);
     let description = util::render_or_warn(ctx, log, "aur.description", description_raw);
 
@@ -509,7 +509,7 @@ fn aur_resolve_fields(
     let license = aur_cfg
         .license
         .clone()
-        .or_else(|| ctx.config.meta_license().map(str::to_string))
+        .or_else(|| ctx.config.meta_license_for(crate_name).map(str::to_string))
         .unwrap_or_default();
 
     // PKGBUILD `url=` resolves through `homepage:` → crate metadata
@@ -517,7 +517,7 @@ fn aur_resolve_fields(
     let url_override = aur_cfg
         .homepage
         .as_deref()
-        .or_else(|| ctx.config.meta_homepage())
+        .or_else(|| ctx.config.meta_homepage_for(crate_name))
         .map(|s| s.to_string());
     let url = if let Some(u) = url_override {
         u
@@ -534,7 +534,7 @@ fn aur_resolve_fields(
     let maintainers = aur_cfg
         .maintainers
         .clone()
-        .unwrap_or_else(|| ctx.config.meta_maintainers().to_vec());
+        .unwrap_or_else(|| ctx.config.meta_maintainers_for(crate_name).to_vec());
     // The Vec fields below default to empty when unset. The PKGBUILD_TEMPLATE
     // wraps each in a `{% if X | length > 0 %}...{% endif %}` guard so the
     // emitted PKGBUILD omits the corresponding `<key>=(...)` line entirely

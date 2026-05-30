@@ -122,7 +122,7 @@ fn effective_description(
         .map(str::to_string)
         .or_else(|| {
             ctx.config
-                .meta_description()
+                .meta_description_project()
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
         })

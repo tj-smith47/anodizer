@@ -134,7 +134,7 @@ pub fn publish_to_chocolatey(
         crate_name,
     )?;
 
-    let text_fields = render_text_fields(ctx, choco_cfg);
+    let text_fields = render_text_fields(ctx, choco_cfg, crate_name);
     let nuspec = build_nuspec(choco_cfg, crate_name, &version, &metadata, &text_fields)?;
     let install_script = build_install_script(pkg_name, &install_mode)?;
 
@@ -239,7 +239,7 @@ fn resolve_metadata(
     let description_raw = choco_cfg
         .description
         .as_deref()
-        .or_else(|| ctx.config.meta_description())
+        .or_else(|| ctx.config.meta_description_for(crate_name))
         .unwrap_or(crate_name);
     let description = ctx
         .render_template(description_raw)
@@ -247,7 +247,7 @@ fn resolve_metadata(
     let license = choco_cfg
         .license
         .clone()
-        .or_else(|| ctx.config.meta_license().map(str::to_string))
+        .or_else(|| ctx.config.meta_license_for(crate_name).map(str::to_string))
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "chocolatey: license is required but not configured for crate '{}'. \
@@ -262,7 +262,11 @@ fn resolve_metadata(
     let authors = choco_cfg
         .authors
         .clone()
-        .or_else(|| ctx.config.meta_first_maintainer().map(str::to_string))
+        .or_else(|| {
+            ctx.config
+                .meta_first_maintainer_for(crate_name)
+                .map(str::to_string)
+        })
         .unwrap_or_else(|| crate_name.to_string());
     let project_url = choco_cfg.project_url.clone().unwrap_or_else(|| {
         if repo_owner.is_empty() || repo_name.is_empty() {
@@ -492,6 +496,7 @@ fn build_install_mode(
 fn render_text_fields(
     ctx: &Context,
     choco_cfg: &anodizer_core::config::ChocolateyConfig,
+    crate_name: &str,
 ) -> ChocoTextFields {
     let title = choco_cfg
         .title
@@ -526,7 +531,7 @@ fn render_text_fields(
     // the choco block emitted an empty tag, which gallery moderators
     // flag as incomplete metadata.
     let summary = render(choco_cfg.summary.as_deref()).or_else(|| {
-        ctx.config.meta_description().map(|s| {
+        ctx.config.meta_description_for(crate_name).map(|s| {
             anodizer_core::template::render(s, ctx.template_vars())
                 .unwrap_or_else(|_| s.to_string())
         })
@@ -1256,7 +1261,7 @@ mod tests {
     fn render_text_fields_all_none_when_choco_unset_and_no_metadata() {
         let ctx = ctx_with_choco(ChocolateyConfig::default());
         let cfg = ChocolateyConfig::default();
-        let tf = render_text_fields(&ctx, &cfg);
+        let tf = render_text_fields(&ctx, &cfg, "mytool");
         assert!(tf.title.is_none());
         assert!(tf.copyright.is_none());
         assert!(tf.summary.is_none());
@@ -1279,7 +1284,7 @@ mod tests {
             copyright: Some("Copyright {{ ProjectName }}".to_string()),
             ..Default::default()
         };
-        let tf = render_text_fields(&ctx, &cfg);
+        let tf = render_text_fields(&ctx, &cfg, "mytool");
         assert_eq!(tf.title.as_deref(), Some("mytool CLI"));
         assert_eq!(tf.copyright.as_deref(), Some("Copyright mytool"));
     }
@@ -1299,7 +1304,7 @@ mod tests {
         }];
         let ctx = Context::new(config, ContextOptions::default());
         let cfg = ChocolateyConfig::default();
-        let tf = render_text_fields(&ctx, &cfg);
+        let tf = render_text_fields(&ctx, &cfg, "mytool");
         assert_eq!(tf.summary.as_deref(), Some("project summary"));
     }
 
@@ -1319,7 +1324,7 @@ mod tests {
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.populate_metadata_var().unwrap();
         let cfg = ChocolateyConfig::default();
-        let tf = render_text_fields(&ctx, &cfg);
+        let tf = render_text_fields(&ctx, &cfg, "mytool");
         assert_eq!(tf.release_notes.as_deref(), Some("long-form readme"));
     }
 
@@ -1332,7 +1337,7 @@ mod tests {
             release_notes: Some("Release notes:\n{{ Changelog }}".to_string()),
             ..Default::default()
         };
-        let tf = render_text_fields(&ctx, &cfg);
+        let tf = render_text_fields(&ctx, &cfg, "mytool");
         let rn = tf.release_notes.expect("release_notes set");
         assert!(rn.contains("## v1.0.0"));
         assert!(rn.contains("- one"));
@@ -1345,7 +1350,7 @@ mod tests {
             title: Some("{{ broken".to_string()),
             ..Default::default()
         };
-        let tf = render_text_fields(&ctx, &cfg);
+        let tf = render_text_fields(&ctx, &cfg, "mytool");
         assert_eq!(tf.title.as_deref(), Some("{{ broken"));
     }
 

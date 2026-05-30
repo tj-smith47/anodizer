@@ -354,7 +354,7 @@ fn resolve_nix_metadata(
     let description_raw = nix_cfg
         .description
         .as_deref()
-        .or_else(|| ctx.config.meta_description())
+        .or_else(|| ctx.config.meta_description_for(crate_name))
         .unwrap_or("");
     let description = ctx
         .render_template(description_raw)
@@ -363,7 +363,7 @@ fn resolve_nix_metadata(
     let homepage_raw = nix_cfg
         .homepage
         .as_deref()
-        .or_else(|| ctx.config.meta_homepage())
+        .or_else(|| ctx.config.meta_homepage_for(crate_name))
         .unwrap_or("");
     let homepage = ctx
         .render_template(homepage_raw)
@@ -372,7 +372,7 @@ fn resolve_nix_metadata(
     let license = nix_cfg
         .license
         .as_deref()
-        .or_else(|| ctx.config.meta_license())
+        .or_else(|| ctx.config.meta_license_for(crate_name))
         .unwrap_or("")
         .to_string();
     if !license.is_empty() {

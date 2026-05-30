@@ -649,14 +649,18 @@ pub fn publish_to_krew(
     let effective_description: Option<&str> = krew_cfg
         .description
         .as_deref()
-        .or_else(|| ctx.config.meta_description());
+        .or_else(|| ctx.config.meta_description_for(crate_name));
     if effective_description.is_none_or(str::is_empty) {
         anyhow::bail!("krew: manifest description is not set for '{}'", crate_name);
     }
+    // `short_description` is a krew-required tagline with no Cargo.toml
+    // counterpart; fall back to the (possibly Cargo.toml-derived) description
+    // so a plain Rust project does not hard-error on it.
     if krew_cfg
         .short_description
         .as_ref()
         .is_none_or(|s| s.is_empty())
+        && effective_description.is_none_or(str::is_empty)
     {
         anyhow::bail!(
             "krew: manifest short_description is not set for '{}'",
@@ -667,12 +671,16 @@ pub fn publish_to_krew(
     let description_raw = krew_cfg
         .description
         .as_deref()
-        .or_else(|| ctx.config.meta_description())
+        .or_else(|| ctx.config.meta_description_for(crate_name))
         .unwrap_or(crate_name);
     let description = ctx
         .render_template(description_raw)
         .unwrap_or_else(|_| description_raw.to_string());
-    let short_description_raw = krew_cfg.short_description.as_deref().unwrap_or(crate_name);
+    let short_description_raw = krew_cfg
+        .short_description
+        .as_deref()
+        .or(effective_description)
+        .unwrap_or(crate_name);
     let short_description = ctx
         .render_template(short_description_raw)
         .unwrap_or_else(|_| short_description_raw.to_string());
@@ -685,12 +693,16 @@ pub fn publish_to_krew(
     let github_slug = plugin_github
         .as_ref()
         .map(|(owner, name)| format!("{}/{}", owner, name));
-    let homepage_raw = krew_cfg.homepage.clone().unwrap_or_else(|| {
-        github_slug
-            .as_deref()
-            .map(|slug| format!("https://github.com/{}", slug))
-            .unwrap_or_else(|| format!("https://github.com/{}/{}", repo_owner, crate_name))
-    });
+    let homepage_raw = krew_cfg
+        .homepage
+        .clone()
+        .or_else(|| ctx.config.meta_homepage_for(crate_name).map(str::to_string))
+        .unwrap_or_else(|| {
+            github_slug
+                .as_deref()
+                .map(|slug| format!("https://github.com/{}", slug))
+                .unwrap_or_else(|| format!("https://github.com/{}/{}", repo_owner, crate_name))
+        });
     let homepage = ctx
         .render_template(&homepage_raw)
         .with_context(|| format!("krew: render homepage template for '{}'", crate_name))?;
@@ -2490,6 +2502,67 @@ mod publisher_tests {
         assert!(
             msg.contains("checksum stage"),
             "error must mention the checksum stage; got: {msg}"
+        );
+    }
+
+    /// The krew `short_description` gate intentionally bails only when BOTH
+    /// `short_description` AND the effective description (including the
+    /// Cargo.toml-derived one) are empty. A crate with no `short_description`
+    /// but a Cargo.toml `package.description` must get PAST the gate (and the
+    /// short_description fall back to that description), failing later on the
+    /// missing artifact/sha256 — never on "short_description is not set".
+    #[test]
+    fn krew_short_description_falls_back_to_cargo_toml_description() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let crate_dir = tmp.path().join("mytool");
+        std::fs::create_dir_all(&crate_dir).unwrap();
+        std::fs::write(
+            crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"mytool\"\ndescription = \"a derived kubectl plugin\"\n",
+        )
+        .unwrap();
+
+        let mut config = Config {
+            crates: vec![CrateConfig {
+                name: "mytool".to_string(),
+                path: "mytool".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    krew: Some(KrewConfig {
+                        repository: Some(RepositoryConfig {
+                            owner: Some("acme".to_string()),
+                            name: Some("krew-index-fork".to_string()),
+                            ..Default::default()
+                        }),
+                        // No short_description AND no description here — both
+                        // must come from the crate's Cargo.toml.
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        config.populate_derived_metadata(tmp.path());
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let log = StageLogger::new("publish", Verbosity::Quiet);
+        // No artifacts registered → fails downstream, but NOT on the gate.
+        let err = publish_to_krew(&mut ctx, "mytool", &log)
+            .expect_err("no artifacts → must still fail downstream");
+        let msg = format!("{err:#}");
+        assert!(
+            !msg.contains("short_description is not set"),
+            "short_description must fall back to Cargo.toml description, not gate-bail; got: {msg}"
+        );
+        assert!(
+            !msg.contains("description is not set"),
+            "description must resolve from Cargo.toml; got: {msg}"
         );
     }
 }

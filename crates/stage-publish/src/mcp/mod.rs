@@ -304,16 +304,64 @@ pub(crate) fn publish_with_registry(
 /// Mirrors the fallback pattern used by Homebrew (formula + cask),
 /// Snapcraft, and DockerHub.
 fn fill_from_project_metadata(ctx: &Context, mcp: &mut McpConfig) {
+    // The mcp block is top-level but runs on its owning crate's pass (the
+    // crate whose `docker_v2` image the manifest references); derive metadata
+    // from THAT crate's `Cargo.toml`, falling back to the project primary
+    // crate when no OCI package pins ownership.
+    let owner = mcp_owning_crate_name(ctx);
+    let description = owner
+        .and_then(|c| ctx.config.meta_description_for(c))
+        .or_else(|| ctx.config.meta_description_project());
+    let homepage = owner
+        .and_then(|c| ctx.config.meta_homepage_for(c))
+        .or_else(|| ctx.config.meta_homepage_project());
     if mcp.description.as_deref().is_none_or(str::is_empty)
-        && let Some(d) = ctx.config.meta_description()
+        && let Some(d) = description
     {
         mcp.description = Some(d.to_string());
     }
     if mcp.homepage.as_deref().is_none_or(str::is_empty)
-        && let Some(h) = ctx.config.meta_homepage()
+        && let Some(h) = homepage
     {
         mcp.homepage = Some(h.to_string());
     }
+}
+
+/// Name of the crate that owns the OCI image referenced by the mcp manifest,
+/// for per-crate metadata derivation. `None` when the manifest references no
+/// OCI package (no ownership to pin) — callers then fall back to the project
+/// primary crate.
+fn mcp_owning_crate_name(ctx: &Context) -> Option<&str> {
+    let mcp_repos: Vec<&str> = ctx
+        .config
+        .mcp
+        .packages
+        .iter()
+        .filter(|p| p.registry_type == anodizer_core::config::McpRegistryType::Oci)
+        .map(|p| image_repo(&p.identifier))
+        .collect();
+    if mcp_repos.is_empty() {
+        return None;
+    }
+    ctx.config
+        .crates
+        .iter()
+        .chain(
+            ctx.config
+                .workspaces
+                .iter()
+                .flatten()
+                .flat_map(|w| w.crates.iter()),
+        )
+        .find(|c| {
+            c.docker_v2
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .flat_map(|d| d.images.iter())
+                .any(|img| mcp_repos.contains(&image_repo(img)))
+        })
+        .map(|c| c.name.as_str())
 }
 
 /// Fill in `mcp.repository.url` / `mcp.repository.source` from the configured
