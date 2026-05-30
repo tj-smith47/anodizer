@@ -493,10 +493,14 @@ pub fn run(opts: TagOpts) -> Result<()> {
             None
         };
 
-        // Update dependency version specs in other workspace crates.
+        // Update dependency version specs in other crates that belong to the
+        // SAME Cargo workspace as the bumped crate. Scoping to the owning
+        // workspace prevents this bump from rewriting a path-dep pin in an
+        // independent release group on a different cadence.
         let dep_modified = if let Some(ref name) = crate_name {
             anodizer_stage_build::version_sync::sync_workspace_deps(
                 &workspace_root,
+                path,
                 name,
                 &new_version,
                 opts.dry_run,
@@ -946,17 +950,22 @@ fn run_per_crate_tag(
         // still references the pre-bump version after sync_version() rewrites
         // only `[package].version`, and `cargo publish` later fails with
         // "failed to select a version for the requirement <sibling> = ^<old>".
+        //
+        // Each propagation is scoped to the Cargo workspace that owns the
+        // bumped crate, so a bump in one release group never rewrites a pin in
+        // an independent group whose crates live in a separate Cargo workspace.
         let workspace_root = std::env::current_dir()?;
         let workspace_root_str = workspace_root.to_string_lossy().into_owned();
         let mut intra_ws_modified: Vec<String> = Vec::new();
         for group_result in &tag_results {
-            for (crate_name, (_, new_version)) in group_result
+            for (crate_name, (crate_path, new_version)) in group_result
                 .crate_names
                 .iter()
                 .zip(group_result.version_updates.iter())
             {
                 let modified = anodizer_stage_build::version_sync::sync_workspace_deps(
                     &workspace_root_str,
+                    crate_path,
                     crate_name,
                     new_version,
                     false,

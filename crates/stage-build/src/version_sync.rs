@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 
@@ -80,6 +80,13 @@ pub fn read_cargo_version(crate_path: &str) -> Result<String> {
 }
 
 /// Recursively find all Cargo.toml files, excluding root and target dirs.
+///
+/// A nested directory containing a `Cargo.toml` with a `[workspace]` table is
+/// treated as an INDEPENDENT Cargo workspace root and its subtree is NOT
+/// descended into: path-dep version pins only resolve within a single Cargo
+/// workspace, so a bump in this workspace must never rewrite a pin owned by a
+/// sibling workspace on its own release cadence. The starting `root` itself is
+/// always descended (its own `[workspace]` is the boundary we're scoping to).
 fn find_cargo_tomls(dir: &Path, root_toml: &Path, out: &mut Vec<std::path::PathBuf>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -92,6 +99,11 @@ fn find_cargo_tomls(dir: &Path, root_toml: &Path, out: &mut Vec<std::path::PathB
             if name == "target" || name == ".git" || name == "dist" {
                 continue;
             }
+            // A subdirectory that is itself a Cargo workspace root delimits a
+            // separate release group; do not cross the boundary.
+            if dir_is_workspace_root(&path) {
+                continue;
+            }
             find_cargo_tomls(&path, root_toml, out);
         } else if path.file_name().map(|n| n == "Cargo.toml").unwrap_or(false) && path != root_toml
         {
@@ -100,27 +112,84 @@ fn find_cargo_tomls(dir: &Path, root_toml: &Path, out: &mut Vec<std::path::PathB
     }
 }
 
+/// Returns true when `dir/Cargo.toml` declares a `[workspace]` table, marking
+/// `dir` as an independent Cargo workspace root.
+fn dir_is_workspace_root(dir: &Path) -> bool {
+    let manifest = dir.join("Cargo.toml");
+    std::fs::read_to_string(&manifest)
+        .ok()
+        .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
+        .map(|doc| doc.get("workspace").is_some())
+        .unwrap_or(false)
+}
+
+/// Resolve the Cargo workspace root that owns `crate_dir`: the nearest ancestor
+/// (including `crate_dir` itself) whose `Cargo.toml` declares a `[workspace]`
+/// table, bounded above by `repo_root`. Falls back to `repo_root` when no such
+/// ancestor exists (e.g. a flat single-crate repo whose root manifest is a
+/// plain `[package]`).
+///
+/// This is the scoping unit for intra-workspace dependency-pin propagation:
+/// path-dep `version` pins are Cargo-workspace-local, so a crate bump may only
+/// rewrite pins inside its own workspace, never a sibling group on a different
+/// cadence.
+pub fn cargo_workspace_root_for(repo_root: &Path, crate_dir: &Path) -> PathBuf {
+    let repo_root_canon =
+        std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+    let mut cur = std::fs::canonicalize(crate_dir).unwrap_or_else(|_| crate_dir.to_path_buf());
+
+    loop {
+        if dir_is_workspace_root(&cur) {
+            return cur;
+        }
+        if cur == repo_root_canon {
+            break;
+        }
+        match cur.parent() {
+            Some(parent) if parent.starts_with(&repo_root_canon) || parent == repo_root_canon => {
+                cur = parent.to_path_buf();
+            }
+            _ => break,
+        }
+    }
+    repo_root_canon
+}
+
 /// Update intra-workspace dependency version specs for a given crate name.
 ///
-/// Scans all Cargo.toml files under `workspace_root` for `[dependencies]`,
-/// `[dev-dependencies]`, and `[build-dependencies]` entries that reference
-/// `crate_name` with a `path` key (workspace-local deps). Updates their
-/// `version` field to match the new version.
+/// The scan is confined to the Cargo workspace that owns `crate_dir` — the
+/// nearest ancestor (bounded by `repo_root`) whose `Cargo.toml` declares a
+/// `[workspace]` table. Within that scope, every `[dependencies]`,
+/// `[dev-dependencies]`, and `[build-dependencies]` entry that references
+/// `crate_name` with a `path` key (a workspace-local dep) has its `version`
+/// field updated to match the new version.
+///
+/// Scoping to the owning Cargo workspace is what keeps a bump in one release
+/// group from rewriting a path-dep pin in an independent group on a separate
+/// cadence: path-dep `version` pins only resolve within a single Cargo
+/// workspace, so a sibling workspace's pins are never in this crate's scope.
 ///
 /// Returns a list of modified file paths (for staging).
 pub fn sync_workspace_deps(
-    workspace_root: &str,
+    repo_root: &str,
+    crate_dir: &str,
     crate_name: &str,
     version: &str,
     dry_run: bool,
     log: &StageLogger,
 ) -> Result<Vec<String>> {
     let mut modified = Vec::new();
-    let root = Path::new(workspace_root);
+    let repo_root = Path::new(repo_root);
+    let scope_root = cargo_workspace_root_for(repo_root, Path::new(crate_dir));
 
-    // Find all Cargo.toml files under workspace root
+    // Find all Cargo.toml files under the owning workspace root, stopping at
+    // any nested independent workspace boundary.
     let mut cargo_tomls = Vec::new();
-    find_cargo_tomls(root, &root.join("Cargo.toml"), &mut cargo_tomls);
+    find_cargo_tomls(
+        &scope_root,
+        &scope_root.join("Cargo.toml"),
+        &mut cargo_tomls,
+    );
 
     for path in &cargo_tomls {
         let content = match std::fs::read_to_string(path) {
@@ -255,6 +324,218 @@ edition = "2024"
         assert!(
             err.contains("failed to read"),
             "error should mention read failure, got: {err}"
+        );
+    }
+
+    fn write_toml(path: &Path, body: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    fn version_of_dep(manifest: &Path, section: &str, dep: &str) -> Option<String> {
+        let doc = std::fs::read_to_string(manifest)
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        doc.get(section)
+            .and_then(|s| s.get(dep))
+            .and_then(|d| d.get("version"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
+    /// Two independent Cargo workspaces under one repo root. Group B
+    /// path-depends on group A's crate. Bumping group A's crate must rewrite
+    /// the within-group-A dependent's pin but MUST NOT touch group B's pin —
+    /// B is on a separate release cadence.
+    #[test]
+    fn test_sync_workspace_deps_does_not_cross_workspace_boundary() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+
+        // Group A: its own Cargo workspace at group-a/.
+        write_toml(
+            &root.join("group-a/Cargo.toml"),
+            "[workspace]\nmembers = [\"core\", \"app\"]\n",
+        );
+        write_toml(
+            &root.join("group-a/core/Cargo.toml"),
+            "[package]\nname = \"a-core\"\nversion = \"0.1.0\"\n",
+        );
+        // Within-group-A dependent: pins a-core via path+version.
+        write_toml(
+            &root.join("group-a/app/Cargo.toml"),
+            "[package]\nname = \"a-app\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\na-core = { path = \"../core\", version = \"0.1.0\" }\n",
+        );
+
+        // Group B: a SEPARATE Cargo workspace at group-b/, on its own cadence,
+        // that also path-depends on group A's a-core.
+        write_toml(
+            &root.join("group-b/Cargo.toml"),
+            "[workspace]\nmembers = [\"b\"]\n",
+        );
+        write_toml(
+            &root.join("group-b/b/Cargo.toml"),
+            "[package]\nname = \"b-crate\"\nversion = \"9.9.9\"\n\n\
+             [dependencies]\na-core = { path = \"../../group-a/core\", version = \"0.1.0\" }\n",
+        );
+
+        let crate_dir = root.join("group-a/core");
+        let modified = sync_workspace_deps(
+            root.to_str().unwrap(),
+            crate_dir.to_str().unwrap(),
+            "a-core",
+            "0.2.0",
+            false,
+            &test_logger(),
+        )
+        .unwrap();
+
+        // Within-group-A dependent IS updated.
+        assert_eq!(
+            version_of_dep(
+                &root.join("group-a/app/Cargo.toml"),
+                "dependencies",
+                "a-core"
+            )
+            .as_deref(),
+            Some("0.2.0"),
+            "within-group-A dependent's pin must be propagated"
+        );
+
+        // Group B's pin is UNTOUCHED — bumping group A never rewrites group B.
+        assert_eq!(
+            version_of_dep(&root.join("group-b/b/Cargo.toml"), "dependencies", "a-core").as_deref(),
+            Some("0.1.0"),
+            "independent group B's pin must NOT be rewritten by a group-A bump"
+        );
+
+        // The modified list reflects only the in-scope manifest.
+        assert!(
+            modified
+                .iter()
+                .any(|m| m.contains("group-a") && m.ends_with("app/Cargo.toml")),
+            "group-a/app should be reported modified, got {modified:?}"
+        );
+        assert!(
+            !modified.iter().any(|m| m.contains("group-b")),
+            "no group-b manifest should be reported modified, got {modified:?}"
+        );
+    }
+
+    /// Regression guard: a single flat Cargo workspace still propagates pins to
+    /// every sibling member (within-group propagation must be preserved).
+    #[test]
+    fn test_sync_workspace_deps_single_workspace_propagates() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+
+        write_toml(
+            &root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"core\", \"cli\"]\n",
+        );
+        write_toml(
+            &root.join("core/Cargo.toml"),
+            "[package]\nname = \"core\"\nversion = \"1.0.0\"\n",
+        );
+        write_toml(
+            &root.join("cli/Cargo.toml"),
+            "[package]\nname = \"cli\"\nversion = \"1.0.0\"\n\n\
+             [dependencies]\ncore = { path = \"../core\", version = \"1.0.0\" }\n",
+        );
+
+        let crate_dir = root.join("core");
+        sync_workspace_deps(
+            root.to_str().unwrap(),
+            crate_dir.to_str().unwrap(),
+            "core",
+            "1.1.0",
+            false,
+            &test_logger(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            version_of_dep(&root.join("cli/Cargo.toml"), "dependencies", "core").as_deref(),
+            Some("1.1.0"),
+            "sibling member's pin must be propagated within a single workspace"
+        );
+    }
+
+    /// Mutation-effective guard for the `find_cargo_tomls` boundary-stop:
+    /// a nested INDEPENDENT workspace under the bumped crate's own workspace
+    /// root. Here `cargo_workspace_root_for` resolves to the root workspace, so
+    /// the scan walks the whole root tree and DOES encounter `nested/` — only
+    /// the boundary-stop (`if dir_is_workspace_root(&path) { continue; }`)
+    /// prevents the nested workspace's pin from being rewritten. Without that
+    /// line this test fails (the nested pin gets clobbered).
+    #[test]
+    fn test_sync_workspace_deps_prunes_nested_workspace() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+
+        // Root workspace: core + app, plus a nested member glob.
+        write_toml(
+            &root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"core\", \"app\", \"nested/n\"]\n",
+        );
+        write_toml(
+            &root.join("core/Cargo.toml"),
+            "[package]\nname = \"r-core\"\nversion = \"0.1.0\"\n",
+        );
+        // Same-workspace dependent: pins r-core via path+version.
+        write_toml(
+            &root.join("app/Cargo.toml"),
+            "[package]\nname = \"r-app\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\nr-core = { path = \"../core\", version = \"0.1.0\" }\n",
+        );
+        // Nested INDEPENDENT workspace under the root, on its own cadence,
+        // that also path-depends on the root's r-core.
+        write_toml(
+            &root.join("nested/Cargo.toml"),
+            "[workspace]\nmembers = [\"n\"]\n",
+        );
+        write_toml(
+            &root.join("nested/n/Cargo.toml"),
+            "[package]\nname = \"nested-n\"\nversion = \"5.0.0\"\n\n\
+             [dependencies]\nr-core = { path = \"../../core\", version = \"0.1.0\" }\n",
+        );
+
+        let crate_dir = root.join("core");
+        let modified = sync_workspace_deps(
+            root.to_str().unwrap(),
+            crate_dir.to_str().unwrap(),
+            "r-core",
+            "0.2.0",
+            false,
+            &test_logger(),
+        )
+        .unwrap();
+
+        // Same-workspace dependent IS updated.
+        assert_eq!(
+            version_of_dep(&root.join("app/Cargo.toml"), "dependencies", "r-core").as_deref(),
+            Some("0.2.0"),
+            "same-workspace dependent's pin must be propagated"
+        );
+
+        // Nested independent workspace's pin is PRUNED by the boundary-stop.
+        assert_eq!(
+            version_of_dep(&root.join("nested/n/Cargo.toml"), "dependencies", "r-core").as_deref(),
+            Some("0.1.0"),
+            "nested independent workspace's pin must NOT be rewritten (boundary-stop)"
+        );
+
+        assert!(
+            modified
+                .iter()
+                .any(|m| m.ends_with("app/Cargo.toml") && !m.contains("nested")),
+            "root/app should be reported modified, got {modified:?}"
+        );
+        assert!(
+            !modified.iter().any(|m| m.contains("nested")),
+            "no nested manifest should be reported modified, got {modified:?}"
         );
     }
 }
