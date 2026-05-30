@@ -389,10 +389,14 @@ pub(crate) fn run_github_backend(
         // Proactive rate limit check before draft search/release operations.
         check_github_rate_limit_with_env(&rate_limit_client, &token_str, 10, env_source).await;
 
-        // Handle replace_existing_draft: check if a draft release with
-        // the same NAME exists and delete it.
+        // Cleanup is unconditional on the NEW release's draft flag: a leftover
+        // draft is stale state to remove whether we are about to publish or
+        // re-draft. `find_draft_by_name` only ever matches `r.draft` releases,
+        // so deleting what it returns can never touch a published/live
+        // release — gating on `draft` would only leave the stale draft in
+        // place when publishing (`draft: false`), and that draft's id later
+        // goes 404 on the upload_url read, killing the publish.
         if replace_existing_draft
-            && draft
             && let Some(existing) =
                 find_draft_by_name(&octo, &github.owner, &github.name, release_name, &policy, Some(&retry_after_capture))
                     .await?
@@ -2361,6 +2365,94 @@ mod orchestrator_tests {
                 .iter()
                 .any(|e| e.method == "POST" && e.path == "/repos/o/r/releases"),
             "must POST a fresh release after the delete; calls: {entries:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // replace_existing_draft = true with the NEW release published
+    // (`draft: false`): the leftover draft must still be deleted. This pins
+    // the self-heal path cfgd relies on (publishes while replacing a stale
+    // draft from a prior failed run); gating the delete on the new release's
+    // draft flag would skip cleanup and the stale id later 404s on upload.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn replace_existing_draft_deletes_when_publishing() {
+        let tmp = TempDir::new().expect("tempdir");
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"payload");
+        let artifact_len = std::fs::metadata(&artifact_path).expect("meta").len();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        // Existing draft (id=99) returned by list-releases.
+        let list_body = format!("[{}]", release_json(addr, 99, true, "v1.2.3"));
+        // New PUBLISHED release (id=42, draft=false) created after the delete.
+        let new_release = release_json(addr, 42, false, "v1.2.3");
+
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases?per_page=100&page=1",
+                response: http_ok(list_body),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/repos/o/r/releases/99",
+                response: HTTP_204,
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/o/r/releases",
+                response: http_201(new_release.clone()),
+                times: Some(1),
+            },
+            // Un-draft PATCH: the release is created as a draft then flipped
+            // live because the spec requests `draft: false`.
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/repos/o/r/releases/42",
+                response: http_ok(new_release.clone()),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42",
+                response: http_ok(new_release),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/42?name=demo.tar.gz",
+                response: http_201(asset_json(7, "demo.tar.gz", artifact_len)),
+                times: Some(1),
+            },
+        ];
+        let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+
+        let mut opts = base_opts();
+        opts.replace_existing_draft = true;
+        let anc = spec_ancillary_default();
+        // Publish (draft: false) while replacing a stale draft — the cfgd path.
+        let mut spec = make_spec(&anc);
+        spec.draft = false;
+        run_backend(&rt, &ctx, &token, &crate_cfg, &spec, &opts, &artifacts)
+            .expect("backend succeeds")
+            .expect("returns Some");
+
+        let entries = log.lock().expect("log mutex");
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "DELETE" && e.path == "/repos/o/r/releases/99"),
+            "must DELETE the stale draft (id=99) even when publishing; calls: {entries:?}",
         );
     }
 
