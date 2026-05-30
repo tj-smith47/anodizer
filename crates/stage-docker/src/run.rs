@@ -877,6 +877,8 @@ fn queue_v2_build_for_platforms(
             staging_dir: staging_dir.to_path_buf(),
             id: v2_cfg.id.clone(),
             use_backend: Some(backend_label.to_string()),
+            is_podman,
+            push: should_push,
             dist: dist.to_path_buf(),
             skip_digest,
             digest_name_template,

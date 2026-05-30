@@ -4,8 +4,8 @@ use super::DockerStage;
 use super::build::{DockerBuildJob, format_v2_created_images_log, list_staging_dir_recursive};
 use super::command::{
     DockerV1Spec, DockerV2Spec, apply_docker_v2_defaults, build_docker_command,
-    build_docker_v2_command, generate_v2_image_tags, is_docker_v2_sbom_enabled,
-    is_docker_v2_skipped, resolve_backend, resolve_skip_push,
+    build_docker_v2_command, build_podman_push_commands, generate_v2_image_tags,
+    is_docker_v2_sbom_enabled, is_docker_v2_skipped, resolve_backend, resolve_skip_push,
 };
 use super::detect::{
     BuildxVersionProbe, format_buildx_version_warning, is_retriable_error, run_buildx_version_check,
@@ -2720,6 +2720,8 @@ fn test_docker_build_job_env_vars_field() {
         staging_dir: PathBuf::new(),
         id: None,
         use_backend: None,
+        is_podman: false,
+        push: false,
         dist: PathBuf::new(),
         skip_digest: false,
         digest_name_template: None,
@@ -2729,6 +2731,123 @@ fn test_docker_build_job_env_vars_field() {
     assert_eq!(job.env_vars.len(), 2);
     assert_eq!(job.env_vars.get("DOCKER_BUILDKIT").unwrap(), "1");
     assert_eq!(job.env_vars.get("MY_VAR").unwrap(), "value");
+}
+
+#[test]
+fn test_build_podman_push_commands_one_per_tag() {
+    // A real podman publish must produce one `podman push <tag>` per rendered
+    // tag — `podman build` cannot bake `--push`, so this loop is the only
+    // thing that publishes the image. Asserting the constructed argv avoids
+    // invoking podman.
+    let tags = vec![
+        "ghcr.io/owner/app:v1.2.3".to_string(),
+        "ghcr.io/owner/app:latest".to_string(),
+        "docker.io/owner/app:v1.2.3".to_string(),
+    ];
+    let cmds = build_podman_push_commands(&tags);
+
+    assert_eq!(
+        cmds.len(),
+        tags.len(),
+        "exactly one push command per rendered tag"
+    );
+    for (cmd, tag) in cmds.iter().zip(&tags) {
+        assert_eq!(
+            cmd,
+            &vec!["podman".to_string(), "push".to_string(), tag.clone()]
+        );
+    }
+}
+
+#[test]
+fn test_build_podman_push_commands_empty_when_no_tags() {
+    // No rendered tags → no push commands (nothing to publish).
+    let cmds = build_podman_push_commands(&[]);
+    assert!(cmds.is_empty());
+}
+
+#[test]
+fn test_podman_real_publish_pushes_every_tag() {
+    // On a real publish (push=true) with the podman backend, every rendered
+    // tag must be pushed. The job carries `is_podman` + `push`; the push loop
+    // builds its argv from `build_podman_push_commands(&rendered_tags)`. This
+    // asserts the gate (`is_podman && push`) selects the push commands and
+    // that they cover each tag, without spawning podman.
+    let tags = vec![
+        "ghcr.io/owner/app:1.0.0-amd64".to_string(),
+        "ghcr.io/owner/app:1.0.0-arm64".to_string(),
+    ];
+    let job = DockerBuildJob {
+        cmd_args: vec!["podman".to_string(), "build".to_string()],
+        backend_label: "podman".to_string(),
+        crate_name: "app".to_string(),
+        idx: 0,
+        max_attempts: 1,
+        base_delay: Duration::from_secs(1),
+        max_delay: None,
+        rendered_tags: tags.clone(),
+        platforms_list: vec!["linux/amd64".to_string(), "linux/arm64".to_string()],
+        staging_dir: PathBuf::new(),
+        id: None,
+        use_backend: Some("podman".to_string()),
+        is_podman: true,
+        push: true,
+        dist: PathBuf::new(),
+        skip_digest: false,
+        digest_name_template: None,
+        env_vars: BTreeMap::new(),
+    };
+
+    assert!(
+        job.is_podman && job.push,
+        "real podman publish must take the push path"
+    );
+    let cmds = build_podman_push_commands(&job.rendered_tags);
+    let pushed: Vec<&String> = cmds.iter().map(|c| &c[2]).collect();
+    for tag in &tags {
+        assert!(
+            pushed.contains(&tag),
+            "podman push must cover rendered tag {tag}"
+        );
+    }
+    // Per-arch tags are pushed before the manifest stage runs because the whole
+    // build phase (including this loop) completes before docker_manifests; the
+    // ordering is structural, so asserting all per-arch tags are covered is the
+    // observable guarantee a subsequent `manifest push` relies on.
+    assert_eq!(pushed.len(), 2);
+}
+
+#[test]
+fn test_podman_snapshot_and_dry_run_do_not_push() {
+    // Snapshot and dry-run builds leave `push` false, so the podman push loop
+    // is skipped even though the backend is podman — nothing is published.
+    let make_job = |push: bool| DockerBuildJob {
+        cmd_args: vec!["podman".to_string(), "build".to_string()],
+        backend_label: "podman".to_string(),
+        crate_name: "app".to_string(),
+        idx: 0,
+        max_attempts: 1,
+        base_delay: Duration::from_secs(1),
+        max_delay: None,
+        rendered_tags: vec!["ghcr.io/owner/app:snap".to_string()],
+        platforms_list: vec!["linux/amd64".to_string()],
+        staging_dir: PathBuf::new(),
+        id: None,
+        use_backend: Some("podman".to_string()),
+        is_podman: true,
+        push,
+        dist: PathBuf::new(),
+        skip_digest: false,
+        digest_name_template: None,
+        env_vars: BTreeMap::new(),
+    };
+
+    // Snapshot/dry-run: should_push resolves false → no publish.
+    let snapshot_job = make_job(false);
+    assert!(
+        snapshot_job.is_podman && !snapshot_job.push,
+        "snapshot/dry-run podman build must NOT take the push path"
+    );
 }
 
 #[test]

@@ -422,9 +422,15 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
         cmd.push("--attest=type=sbom".to_string());
     }
 
-    // --push / --load logic. Both are buildx-only flags: podman build does
-    // not accept them (a separate `podman push` per tag handles publication
-    // for the podman backend, mirroring the V1 plain-docker path).
+    // --push / --load logic. Both are buildx-only flags: `podman build` does
+    // not accept either. buildx bakes `--push` directly into the build so the
+    // image is published as a side-effect of the build. podman build can only
+    // write the image into local storage, so for the podman backend the build
+    // command never carries `--push`; publication is performed afterwards by an
+    // explicit `podman push <tag>` per rendered tag (see
+    // [`build_podman_push_commands`] and the podman push loop in
+    // `execute_docker_build`). That separate-push step is the reason the
+    // podman backend must not silently rely on a baked-in `--push`.
     if !is_podman {
         if push {
             cmd.push("--push".to_string());
@@ -448,6 +454,31 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
     cmd.push(staging_dir.to_string());
 
     Ok(cmd)
+}
+
+// ---------------------------------------------------------------------------
+// build_podman_push_commands
+// ---------------------------------------------------------------------------
+
+/// Construct the `podman push <tag>` argv for every rendered tag.
+///
+/// `podman build` cannot bake `--push` into the build the way `docker buildx
+/// build --push` does — it only writes the image (and, for multi-platform
+/// builds, a local manifest list) into podman's local storage. Publication for
+/// the podman backend therefore requires an explicit push of each rendered tag
+/// after the build succeeds. This helper produces the argv for those pushes so
+/// the spawn site in `execute_docker_build` stays a thin executor and the
+/// command shape is unit-testable without invoking podman.
+///
+/// For a multi-platform podman build the rendered tags name the local manifest
+/// list, so `podman push <tag>` publishes the full multi-arch list — which is
+/// also what a downstream `podman manifest push` (the separate
+/// `docker_manifests` feature) needs to already be in the registry before it
+/// resolves a manifest list from per-arch tags.
+pub fn build_podman_push_commands(tags: &[String]) -> Vec<Vec<String>> {
+    tags.iter()
+        .map(|tag| vec!["podman".to_string(), "push".to_string(), tag.clone()])
+        .collect()
 }
 
 /// Evaluate whether a Docker V2 config is skipped.

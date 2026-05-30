@@ -92,6 +92,16 @@ pub(crate) struct DockerBuildJob {
     pub(crate) id: Option<String>,
     /// Optional use_backend string.
     pub(crate) use_backend: Option<String>,
+    /// True when the build uses the podman backend. `podman build` cannot
+    /// bake `--push` into the build, so publication is performed by an
+    /// explicit `podman push <tag>` after a successful build (gated on
+    /// [`Self::push`]).
+    pub(crate) is_podman: bool,
+    /// Whether the built tags should be pushed to their registries. For
+    /// buildx this is already baked into the build via `--push`; for podman
+    /// it drives the explicit post-build `podman push` loop. False for
+    /// snapshot and dry-run builds (which never publish).
+    pub(crate) push: bool,
     /// Dist directory (for writing digest files).
     pub(crate) dist: PathBuf,
     /// Whether digest artifact creation is skipped.
@@ -242,9 +252,20 @@ pub(crate) fn execute_docker_build(
         )
     })?;
 
-    // V2 builds always use buildx with --push baked into the build invocation,
-    // so there is no separate "docker push" / "podman push" step here.
-    // Capture digests from the --iidfile written by buildx.
+    // buildx bakes `--push` into the build invocation, so for the buildx
+    // backend publication already happened above and there is no separate
+    // push step. `podman build` cannot bake `--push`, so for the podman
+    // backend the image now lives only in local storage — publish it here by
+    // pushing each rendered tag explicitly. This runs only on a real publish
+    // (`job.push`); snapshot and dry-run builds leave `push` false and never
+    // publish. Per-arch tags are pushed before any `docker_manifests`
+    // `manifest push` runs because the entire build phase (including this
+    // loop) completes before the manifest stage executes.
+    if job.is_podman && job.push {
+        push_podman_tags(job, log)?;
+    }
+
+    // Capture digests from the --iidfile (written by both buildx and podman).
     let mut tag_digests = BTreeMap::new();
     let mut digest_files = Vec::new();
 
@@ -295,4 +316,111 @@ pub(crate) fn execute_docker_build(
         tag_digests,
         digest_files,
     })
+}
+
+/// Publish a podman-backend build by running `podman push <tag>` for every
+/// rendered tag.
+///
+/// `podman build` writes the image (and, for multi-platform builds, a local
+/// manifest list) into local storage but cannot bake `--push` into the build
+/// the way `docker buildx build --push` does. This pushes each tag with the
+/// same retry policy as the build so a transient registry error is retried
+/// rather than failing the release. A push failure is a hard error: a release
+/// that builds an image but never publishes it has shipped nothing, so the
+/// error is propagated with context, never swallowed.
+fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<()> {
+    use anodizer_core::retry::{RetryPolicy, retry_sync};
+    use std::ops::ControlFlow;
+
+    let push_cmds = crate::command::build_podman_push_commands(&job.rendered_tags);
+    let policy = RetryPolicy {
+        max_attempts: job.max_attempts,
+        base_delay: job.base_delay,
+        max_delay: job.max_delay.unwrap_or(Duration::MAX),
+    };
+
+    for push_args in &push_cmds {
+        log.status(&format!("running: {}", push_args.join(" ")));
+        retry_sync(&policy, |attempt| {
+            if attempt > 1 {
+                log.warn(&format!(
+                    "podman push attempt {}/{} failed, retrying…",
+                    attempt - 1,
+                    job.max_attempts,
+                ));
+            }
+
+            let mut cmd = Command::new(&push_args[0]);
+            cmd.args(&push_args[1..])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            for (key, value) in &job.env_vars {
+                cmd.env(key, value);
+            }
+            let mut output = match cmd.output() {
+                Ok(o) => o,
+                Err(e) => {
+                    return Err(ControlFlow::Break(anyhow::Error::from(e).context(format!(
+                        "podman push: execute for crate {} index {} (attempt {}/{})",
+                        job.crate_name, job.idx, attempt, job.max_attempts
+                    ))));
+                }
+            };
+
+            // Redact secrets from stdout/stderr before any output or logging,
+            // mirroring the build path's redaction (registry auth tokens can
+            // appear in podman push diagnostics).
+            let env_pairs: Vec<(String, String)> = job
+                .env_vars
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .chain(std::env::vars())
+                .collect();
+            if !output.stdout.is_empty() {
+                let redacted = anodizer_core::redact::string(
+                    &String::from_utf8_lossy(&output.stdout),
+                    &env_pairs,
+                );
+                output.stdout = redacted.into_bytes();
+            }
+            if !output.stderr.is_empty() {
+                let redacted = anodizer_core::redact::string(
+                    &String::from_utf8_lossy(&output.stderr),
+                    &env_pairs,
+                );
+                output.stderr = redacted.into_bytes();
+            }
+            {
+                use std::io::Write;
+                std::io::stdout().write_all(&output.stdout).ok();
+                std::io::stderr().write_all(&output.stderr).ok();
+            }
+
+            match log.check_output(output, "podman push") {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    let err_msg = format!("{:#}", e);
+                    if is_retriable_error_v2(&err_msg) {
+                        Err(ControlFlow::Continue(e))
+                    } else {
+                        Err(ControlFlow::Break(e.context(format!(
+                            "podman push: non-retriable failure for crate {} index {}",
+                            job.crate_name, job.idx
+                        ))))
+                    }
+                }
+            }
+        })
+        .with_context(|| {
+            format!(
+                "podman push: all {} attempts failed for crate {} index {} ({})",
+                job.max_attempts,
+                job.crate_name,
+                job.idx,
+                push_args.last().map(String::as_str).unwrap_or(""),
+            )
+        })?;
+    }
+
+    Ok(())
 }
