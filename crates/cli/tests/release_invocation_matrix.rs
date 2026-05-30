@@ -8,8 +8,9 @@
 //! ever fires; the heavy compile / archive / sign stages are
 //! `--skip`ed where the table allows them to be, keeping each test
 //! cheap. The harness greps stderr for the canonical Pipeline-emitted
-//! "<stage> skipped" line (yellow, ANSI-stripped) — same shape the
-//! sibling `tests/integration.rs::test_release_prepare_matches_explicit_skip`
+//! stage-skip verdict (`[<stage>] skipped`, yellow, ANSI-stripped) — same
+//! shape the sibling
+//! `tests/integration.rs::test_release_prepare_matches_explicit_skip`
 //! relies on, so a logging-format change updates both at once.
 //!
 //! A docs row that drifts from the binary's behaviour fails one of
@@ -72,24 +73,51 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Collect stage names that the Pipeline emitted "<stage> skipped" for.
+/// Collect the stage names the Pipeline reported as skipped.
+///
+/// The output refactor moved the stage name out of the message and into
+/// the `[<stage>]` tag that `StageLogger` prepends to every line. A
+/// pipeline-level stage skip therefore looks like one of:
+///   `[release] skipped`              (operator/mode `--skip`)
+///   `[upx] (no binaries, skipped)`   (binary-dependent stage, no binaries)
+/// where the bracketed tag IS the skipped stage and the message is the
+/// reason. Both verdicts are emitted by `Pipeline::run` via
+/// `status_as(name, ...)` (see `crates/cli/src/pipeline.rs`), so they are
+/// the authoritative "this stage did not run" signal.
+///
+/// We intentionally do NOT treat per-crate / per-config body notes such as
+/// `[build] skipping build for crate 'X'` or `[release] no gitlab config
+/// for crate 'y', skipping` as a stage skip: those are progress lines
+/// emitted inside a running stage, not the stage's own pipeline-level
+/// verdict. Matching only the two exact strings below keeps the
+/// distinction precise.
 fn extract_skipped_stages(stderr: &str) -> std::collections::BTreeSet<String> {
     stderr
         .lines()
         .filter_map(|line| {
             let line = strip_ansi(line);
             let trimmed = line.trim_start();
-            // Optional `[<stage-label>]` prefix that StageLogger emits.
-            let after_prefix = trimmed
-                .strip_prefix('[')
-                .and_then(|s| s.find(']').map(|i| &s[i + 1..]))
-                .unwrap_or(trimmed)
-                .trim();
-            after_prefix
-                .strip_suffix(" skipped")
-                .map(|name| name.trim().to_string())
+            // Require the `[<stage>] ` tag — a skip is always tagged.
+            let inner = trimmed.strip_prefix('[')?;
+            let close = inner.find(']')?;
+            let stage = inner[..close].trim();
+            let msg = inner[close + 1..].trim();
+            if is_stage_skip_message(msg) {
+                Some(stage.to_string())
+            } else {
+                None
+            }
         })
         .collect()
+}
+
+/// True when `msg` (the text after the `[<stage>]` tag) is a stage's own
+/// pipeline-level skip verdict rather than a mid-stage progress note.
+/// Only the two exact verdicts `Pipeline::run` emits qualify; matching a
+/// looser `ends_with("skipping")` would wrongly capture per-crate body
+/// notes (e.g. `[release] no gitlab config ..., skipping`) as a stage skip.
+fn is_stage_skip_message(msg: &str) -> bool {
+    msg == "skipped" || msg == "(no binaries, skipped)"
 }
 
 /// Bootstrap a fixture cargo+git repo with the minimal anodizer config.
@@ -113,7 +141,7 @@ fn run_anodizer(tmp: &Path, args: &[&str]) -> std::process::Output {
         .expect("invoke anodizer")
 }
 
-/// Assert every `must_skip` stage appears as "<stage> skipped" in
+/// Assert every `must_skip` stage appears as `[<stage>] skipped` in
 /// stderr; assert every `must_not_skip` does NOT. Tests pin "did the
 /// stage skip" instead of "did the stage run" because skip is the
 /// load-bearing contract (a run that produces no artifacts is

@@ -760,19 +760,34 @@ fn test_e2e_snapshot_release_produces_artifacts() {
 fn test_release_prepare_matches_explicit_skip() {
     let host = detect_host_target();
 
-    // We extract the set of "<stage> skipped" lines emitted by the pipeline.
-    // Stage names appear after the `[release]` prefix and before ` skipped`.
+    // We extract the set of stages the pipeline reported as skipped.
+    //
+    // The output refactor moved the stage name out of the message and into
+    // the `[<stage>]` tag that StageLogger prepends. A pipeline-level skip
+    // now reads `[<stage>] skipped` (operator/mode `--skip`) or
+    // `[<stage>] (no binaries, skipped)` (binary-dependent stage with no
+    // binaries) — both emitted by `Pipeline::run` via `status_as`. The
+    // skipped stage is the bracketed tag; the message is the reason. We
+    // return the unbracketed tag so the assertions below can match
+    // `release` / `publish` / `announce` directly.
+    //
+    // Per-crate / per-config body notes (e.g. `[release] no gitlab config
+    // ..., skipping`) are progress lines inside a running stage, not a
+    // stage skip, so only the two exact verdict strings qualify.
     fn extract_skipped_stages(stderr: &str) -> std::collections::BTreeSet<String> {
         stderr
             .lines()
             .filter_map(|line| {
-                // Strip ANSI codes and the `[release]` prefix that the
-                // StageLogger adds, then look for "<name> skipped".
                 let line = strip_ansi(line);
-                let after_prefix = line.trim_start().trim_start_matches("[release]").trim();
-                after_prefix
-                    .strip_suffix(" skipped")
-                    .map(|name| name.to_string())
+                let inner = line.trim_start().strip_prefix('[')?;
+                let close = inner.find(']')?;
+                let stage = inner[..close].trim();
+                let msg = inner[close + 1..].trim();
+                if msg == "skipped" || msg == "(no binaries, skipped)" {
+                    Some(stage.to_string())
+                } else {
+                    None
+                }
             })
             .collect()
     }
