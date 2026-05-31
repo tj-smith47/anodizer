@@ -495,6 +495,21 @@ fn binstall_mismatch_msg(
 /// double to an asset the run actually produced. A system mapped to a missing
 /// asset fails: `nix build .#<name>` on that system would fetch a 404 URL.
 fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -> Result<()> {
+    // The validation twin must tolerate the dry-run / sharded zero-archive case
+    // the real publish never sees: `render_nix_for_validation` bails when the
+    // crate produced no Linux/Darwin archives (correct for publish — you cannot
+    // publish a derivation with no binaries), so guard the render here. With no
+    // produced assets there is nothing to cross-check; skip exactly as binstall.
+    let produced = produced_archives(ctx, &crate_cfg.name);
+    if produced.is_empty() {
+        log.verbose(&format!(
+            "nix: crate '{}' produced no archives in this snapshot shard; \
+             skipping nix emission validation (no assets to cross-check)",
+            crate_cfg.name,
+        ));
+        return Ok(());
+    }
+
     let Some(render) = nix::render_nix_for_validation(ctx, &crate_cfg.name, log)? else {
         // Publisher would skip (skip / if-falsy / skip_upload); nothing to
         // validate.
@@ -539,18 +554,13 @@ fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -
     // System -> asset cross-check. The flake exposes `packages.<system>` for
     // every FLAKE_SYSTEMS double; the derivation's urlMap (render.archives)
     // resolves each system to a release asset. Every system the derivation
-    // maps MUST point at an asset the run produced.
-    let produced = produced_archives(ctx, &crate_cfg.name);
+    // maps MUST point at an asset the run produced. `produced` is guaranteed
+    // non-empty here — the empty case returned early above.
     let produced_assets: std::collections::BTreeSet<&str> =
         produced.iter().map(|p| p.name.as_str()).collect();
 
     for (system, url, _hash) in &render.archives {
         let asset = asset_filename(url);
-        if produced.is_empty() {
-            // Sharded run with no archives for this crate — skip the
-            // cross-check (the derivation render itself was still validated).
-            continue;
-        }
         if !produced_assets.contains(asset.as_str()) {
             bail!(
                 "nix: crate '{}' derivation maps system '{}' to asset '{}' which the \
@@ -1037,6 +1047,20 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("x86_64-linux"), "names the nix system: {msg}");
         assert!(msg.contains("does not produce"), "explains the gap: {msg}");
+    }
+
+    /// A nix-configured crate that produced ZERO archives in this snapshot
+    /// shard (the `--dry-run` / `--single-target` case where the archive stage
+    /// emits nothing) must SKIP nix emission validation, not bail. The render
+    /// twin (`render_nix_for_validation` -> `build_archive_tuples`) hard-errors
+    /// on an empty archive set — correct for the real publish, wrong for the
+    /// validation pre-flight, which has no assets to cross-check.
+    #[test]
+    fn nix_no_produced_archives_skips() {
+        let cfg = nix_crate();
+        let mut ctx = scoped_ctx(cfg.clone());
+        // No `add_archive` calls — the crate produced nothing this shard.
+        validate_nix(&mut ctx, &cfg, &log()).expect("zero produced archives must skip, not bail");
     }
 
     // -- entry point --------------------------------------------------------
