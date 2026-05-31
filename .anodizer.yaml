@@ -108,7 +108,7 @@ before:
     - mkdir -p dist && cargo run --release --bin anodizer -- man > dist/anodizer.1
 
 after:
-  post:
+  hooks:
     - echo "Release complete for {{ ProjectName }} {{ Tag }}"
 
 crates:
@@ -733,7 +733,7 @@ snapshot:
 
 # Split/merge CI configuration for fan-out builds
 partial:
-  by: goos
+  by: os
 
 # Binary-level signing (separate from archive/checksum signing above)
 binary_signs:

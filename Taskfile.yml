@@ -42,10 +42,12 @@ tasks:
       - cargo run -p anodizer --release -- check determinism --runs=2
 
   check:config:
-    desc: "Validate the workspace's anodize config (post-restructure form)."
+    desc: "Validate this repo's anodize config (single-crate, post-restructure form)."
     deps: [_check:tmp-headroom]
     cmds:
-      - cargo run -p anodizer --release -- check config --workspace=.
+      # No --workspace: this repo is single-crate (no `workspaces:` block), so
+      # `--workspace=.` would error ("no workspaces defined") after validating.
+      - cargo run -p anodizer --release -- check config
 
   release:snapshot:
     # FULL pre-push gate (canonical). Unlike `task snapshot` (slim, single

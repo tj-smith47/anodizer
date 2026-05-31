@@ -122,4 +122,4 @@ config is rendered.
 | `git.tag_sort` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`git.tag_sort: "-version:refname"`) |
 | `git.prerelease_suffix` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`git.prerelease_suffix: "-"`) |
 | `git.ignore_tags` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`git.ignore_tags: ["nightly"]`) |
-| `partial.by` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`partial.by: goos` at file end) |
+| `partial.by` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`partial.by: os` at file end) |
