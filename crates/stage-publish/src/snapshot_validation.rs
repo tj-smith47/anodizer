@@ -982,8 +982,12 @@ mod tests {
     // -- nix ----------------------------------------------------------------
 
     fn nix_crate() -> CrateConfig {
+        nix_crate_named("cfgd")
+    }
+
+    fn nix_crate_named(name: &str) -> CrateConfig {
         CrateConfig {
-            name: "cfgd".to_string(),
+            name: name.to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
@@ -1061,6 +1065,57 @@ mod tests {
         let mut ctx = scoped_ctx(cfg.clone());
         // No `add_archive` calls — the crate produced nothing this shard.
         validate_nix(&mut ctx, &cfg, &log()).expect("zero produced archives must skip, not bail");
+    }
+
+    /// Per-crate mode: two nix-configured crates share one snapshot run, but only
+    /// `built` produced archives (the sharded case where one crate's targets land
+    /// in this shard and another's do not). The skip is keyed on each crate's own
+    /// `produced_archives` set, so it must not leak across crates: `empty` skips
+    /// while `built` still runs its full cross-check and catches a 404 mismatch.
+    /// A regression in per-crate isolation (e.g. seeing the sibling's archives)
+    /// would either wrongly fail the empty crate or wrongly pass the built one.
+    #[test]
+    fn nix_per_crate_mode_skip_does_not_leak_across_crates() {
+        // `built` carries a url_template that resolves to an asset name no
+        // produced archive matches — its cross-check MUST fail even though a
+        // sibling crate contributed archives to the same run.
+        let mut built = nix_crate_named("built");
+        if let Some(nc) = built.publish.as_mut().and_then(|p| p.nix.as_mut()) {
+            nc.url_template = Some(
+                "https://github.com/o/built/releases/download/v{{ version }}/built-{{ arch }}-WRONG.tar.gz"
+                    .to_string(),
+            );
+        }
+        let empty = nix_crate_named("empty");
+
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![built.clone(), empty.clone()])
+            .build();
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("RawVersion", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        // Only `built` produced an archive this shard; `empty` produced nothing.
+        add_archive(
+            &mut ctx,
+            "built",
+            "x86_64-unknown-linux-gnu",
+            "built-linux-amd64.tar.gz",
+        );
+
+        // `empty` produced nothing of its own — must skip, never borrowing
+        // `built`'s archive.
+        validate_nix(&mut ctx, &empty, &log())
+            .expect("empty crate produced nothing this shard; must skip, not borrow a sibling's");
+
+        // `built` produced an archive but maps it to a WRONG asset — its full
+        // cross-check must still fire and bail, unaffected by the sibling skip.
+        let err = validate_nix(&mut ctx, &built, &log())
+            .expect_err("built crate's 404 mismatch must fail despite a sibling skipping");
+        assert!(
+            format!("{err}").contains("does not produce"),
+            "built crate's cross-check must run, not skip: {err}"
+        );
     }
 
     // -- entry point --------------------------------------------------------

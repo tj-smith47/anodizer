@@ -382,6 +382,33 @@ mod tests {
     }
 
     #[test]
+    fn get_publish_config_resolves_crate_in_a_later_workspace() {
+        // Multi-workspace monorepo: the target crate lives in the SECOND
+        // workspace. The lookup flat_maps across every `workspaces[]` entry,
+        // so a crate is found regardless of which workspace declares it — a
+        // search that stopped at `workspaces[0]` would miss it here.
+        let ctx = TestContextBuilder::new()
+            .workspaces(vec![
+                WorkspaceConfig {
+                    name: "first".to_string(),
+                    crates: vec![nix_binstall_crate("alpha")],
+                    ..Default::default()
+                },
+                WorkspaceConfig {
+                    name: "second".to_string(),
+                    crates: vec![nix_binstall_crate("omega")],
+                    ..Default::default()
+                },
+            ])
+            .build();
+
+        let (crate_cfg, publish) = get_publish_config(&ctx, "omega", "nix")
+            .expect("crate in a later workspace must resolve by name");
+        assert_eq!(crate_cfg.name, "omega");
+        assert!(publish.nix.is_some(), "nix block must be reachable");
+    }
+
+    #[test]
     fn get_publish_config_unknown_crate_still_errors() {
         let ctx = TestContextBuilder::new()
             .workspaces(vec![WorkspaceConfig {
