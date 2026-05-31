@@ -21,14 +21,14 @@ This avoids slow cross-compilation and lets each job run on hardware that matche
 
 ```yaml
 partial:
-  by: goos    # "goos" (default) or "target"
+  by: os    # "os" (default) or "target"
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `by` | string | `goos` | How to group targets into split jobs: `goos` (one job per OS) or `target` (one job per full target triple). |
+| `by` | string | `os` | How to group targets into split jobs: `os` (one job per OS) or `target` (one job per full target triple). |
 
-### `by: goos` (recommended)
+### `by: os` (recommended)
 
 All architecture variants for the same OS run in a single job. A project with targets `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` produces one Linux job.
 
@@ -211,13 +211,13 @@ worker-completeness + collision checks) as `release --merge`.
 ## Divergence from GoReleaser
 
 The split layout aligns with GoReleaser's `dist/$GOOS` shape **only for
-`partial.by: goos`** — `dist/linux`, `dist/darwin`, `dist/windows` are
+`partial.by: os`** — `dist/linux`, `dist/darwin`, `dist/windows` are
 written byte-for-byte the same in both tools. The other variants
 diverge:
 
 | `partial.by` / variant   | GoReleaser layout       | Anodizer layout                  |
 |--------------------------|-------------------------|----------------------------------|
-| `by: goos` (default)     | `dist/$GOOS`            | `dist/<goos>` (same)             |
+| `by: os` (default)       | `dist/$GOOS`            | `dist/<os>` (same)               |
 | `by: target`             | `dist/$GOOS_$GOARCH`    | `dist/<rust-triple>` (full triple) |
 | anodizer `--targets=<csv>` | not present             | `dist/targets-<first-triple>` (harness only) |
 

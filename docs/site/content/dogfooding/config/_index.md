@@ -60,7 +60,7 @@ workspaces:
   - { name: cfgd-csi,      crates: [{ name: cfgd-csi,      tag_template: "csi-v{{ Version }}",      depends_on: [cfgd-core], ... }] }
 
 partial:
-  by: goos
+  by: os
 ```
 
 ## Top-level config

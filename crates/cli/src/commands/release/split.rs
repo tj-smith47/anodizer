@@ -26,9 +26,9 @@ pub struct SplitArtifact {
     /// Full path to the artifact file.
     pub path: String,
     /// OS component (e.g., "linux", "darwin", "windows").
-    pub goos: Option<String>,
+    pub os: Option<String>,
     /// Arch component (e.g., "amd64", "arm64").
-    pub goarch: Option<String>,
+    pub arch: Option<String>,
     /// Full target triple (e.g., "x86_64-unknown-linux-gnu").
     pub target: Option<String>,
     /// Artifact kind for internal routing.
@@ -97,7 +97,7 @@ pub struct SplitMatrix {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct MatrixEntry {
-    /// OS name (goos mode) or full target triple (target mode).
+    /// OS name (os mode) or full target triple (target mode).
     pub target: String,
     /// Suggested GitHub Actions runner.
     pub runner: String,
@@ -137,8 +137,8 @@ fn artifact_to_split(a: &artifact::Artifact) -> SplitArtifact {
     SplitArtifact {
         name: a.name().to_string(),
         path: a.path.to_string_lossy().into_owned(),
-        goos: a.goos(),
-        goarch: a.goarch(),
+        os: a.goos(),
+        arch: a.goarch(),
         target: a.target.clone(),
         kind: a.kind.as_str().to_string(),
         type_s: format!("{:?}", a.kind),
@@ -313,7 +313,7 @@ pub(super) fn run_split(
             .partial
             .as_ref()
             .and_then(|p| p.by.as_deref())
-            .unwrap_or("goos");
+            .unwrap_or("os");
 
         let matrix = build_matrix(&all_targets, split_by);
         let matrix_json = serde_json::to_string_pretty(&matrix).context("serialize matrix")?;
@@ -332,13 +332,13 @@ pub(super) fn run_split(
     Ok(())
 }
 
-/// Build a CI matrix from targets, deduplicating by OS when split_by=goos.
+/// Build a CI matrix from targets, deduplicating by OS when split_by=os.
 fn build_matrix(targets: &[String], split_by: &str) -> SplitMatrix {
     let mut entries = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for t in targets {
-        let entry_target = if split_by == "goos" {
+        let entry_target = if split_by == "os" {
             let (os, _) = anodizer_core::target::map_target(t);
             os
         } else {
@@ -828,8 +828,8 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
             path: path.to_string(),
-            goos: target.map(|t| anodizer_core::target::map_target(t).0),
-            goarch: target.map(|t| anodizer_core::target::map_target(t).1),
+            os: target.map(|t| anodizer_core::target::map_target(t).0),
+            arch: target.map(|t| anodizer_core::target::map_target(t).1),
             target: target.map(String::from),
             kind: kind.to_string(),
             type_s: kind.to_string(),
@@ -853,8 +853,8 @@ mod tests {
             deserialized.target.as_deref(),
             Some("x86_64-unknown-linux-gnu")
         );
-        assert_eq!(deserialized.goos.as_deref(), Some("linux"));
-        assert_eq!(deserialized.goarch.as_deref(), Some("amd64"));
+        assert_eq!(deserialized.os.as_deref(), Some("linux"));
+        assert_eq!(deserialized.arch.as_deref(), Some("amd64"));
         assert_eq!(deserialized.crate_name, "myapp");
     }
 
@@ -1077,7 +1077,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_matrix_goos_deduplicates() {
+    fn test_build_matrix_os_deduplicates() {
         let targets = vec![
             "x86_64-unknown-linux-gnu".to_string(),
             "aarch64-unknown-linux-gnu".to_string(),
@@ -1085,7 +1085,7 @@ mod tests {
             "aarch64-apple-darwin".to_string(),
             "x86_64-pc-windows-msvc".to_string(),
         ];
-        let matrix = build_matrix(&targets, "goos");
+        let matrix = build_matrix(&targets, "os");
         assert_eq!(matrix.include.len(), 3, "should deduplicate by OS");
         assert_eq!(matrix.include[0].target, "linux");
         assert_eq!(matrix.include[0].runner, "ubuntu-latest");
@@ -1199,7 +1199,7 @@ mod tests {
 
     fn write_matrix(dist: &Path, targets: &[&str]) {
         let matrix = SplitMatrix {
-            split_by: "goos".to_string(),
+            split_by: "os".to_string(),
             include: targets
                 .iter()
                 .map(|t| MatrixEntry {
@@ -1454,8 +1454,8 @@ mod tests {
             SplitArtifact {
                 name: name.to_string(),
                 path: file.to_string_lossy().into_owned(),
-                goos: Some(anodizer_core::target::map_target(target).0),
-                goarch: Some(anodizer_core::target::map_target(target).1),
+                os: Some(anodizer_core::target::map_target(target).0),
+                arch: Some(anodizer_core::target::map_target(target).1),
                 target: Some(target.to_string()),
                 kind: "binary".to_string(),
                 type_s: "binary".to_string(),
@@ -1545,8 +1545,8 @@ mod tests {
         let make_dup = || SplitArtifact {
             name: "dup".to_string(),
             path: dup.to_string_lossy().into_owned(),
-            goos: Some("linux".to_string()),
-            goarch: Some("amd64".to_string()),
+            os: Some("linux".to_string()),
+            arch: Some("amd64".to_string()),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             kind: "binary".to_string(),
             type_s: "binary".to_string(),

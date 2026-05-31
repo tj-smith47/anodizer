@@ -146,7 +146,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     anodizer_core::config::validate_version(&config).map_err(anyhow::Error::msg)?;
     // Validate git.tag_sort if present
     anodizer_core::config::validate_tag_sort(&config).map_err(anyhow::Error::msg)?;
-    // Validate archives[].format_overrides[].goos
+    // Validate archives[].format_overrides[].os
     anodizer_core::config::validate_format_overrides(&config).map_err(anyhow::Error::msg)?;
     // Validate release block does not configure multiple SCM backends.
     anodizer_core::config::validate_release_backends(&config).map_err(anyhow::Error::msg)?;

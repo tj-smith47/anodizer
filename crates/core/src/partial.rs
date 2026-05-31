@@ -160,16 +160,16 @@ pub fn resolve_partial_target_with_env<E: EnvSource + ?Sized>(
     let by = config
         .as_ref()
         .and_then(|c| c.by.as_deref())
-        .unwrap_or("goos");
+        .unwrap_or("os");
 
     match by {
-        "goos" => {
+        "os" => {
             let (os, _) = target::map_target(&host);
             Ok(PartialTarget::OsArch { os, arch: None })
         }
         "target" => Ok(PartialTarget::Exact(host)),
         other => anyhow::bail!(
-            "partial.by: unknown value '{}' (expected 'goos' or 'target')",
+            "partial.by: unknown value '{}' (expected 'os' or 'target')",
             other
         ),
     }
@@ -717,7 +717,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_resolve_with_goos_default() {
+    fn test_resolve_with_os_default() {
         // Clear env vars that might interfere
         // SAFETY: test-only, no concurrent env var access in these serial tests
         unsafe {
@@ -726,14 +726,14 @@ mod tests {
             std::env::remove_var("ANODIZER_ARCH");
         }
 
-        let config = None; // defaults to "goos"
+        let config = None; // defaults to "os"
         let target = resolve_partial_target(&config).unwrap();
 
         // Should be an OsArch with the host's OS
         match target {
             PartialTarget::OsArch { os, arch } => {
                 assert!(!os.is_empty());
-                assert!(arch.is_none()); // goos mode doesn't set arch
+                assert!(arch.is_none()); // os mode doesn't set arch
             }
             other => panic!("expected OsArch, got: {other:?}"),
         }
@@ -777,6 +777,31 @@ mod tests {
             by: Some("invalid".to_string()),
         });
         let err = resolve_partial_target(&config).unwrap_err();
+        assert!(err.to_string().contains("unknown value"), "got: {}", err);
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_by_os_works_and_legacy_goos_rejected() {
+        // SAFETY: test-only, no concurrent env var access in these serial tests
+        unsafe {
+            std::env::remove_var("TARGET");
+            std::env::remove_var("ANODIZER_OS");
+            std::env::remove_var("ANODIZER_ARCH");
+        }
+
+        let ok = resolve_partial_target(&Some(PartialConfig {
+            by: Some("os".to_string()),
+        }))
+        .unwrap();
+        assert!(matches!(ok, PartialTarget::OsArch { arch: None, .. }));
+
+        // The Go-named `goos` value was hard-renamed to `os`; the old
+        // spelling must no longer resolve.
+        let err = resolve_partial_target(&Some(PartialConfig {
+            by: Some("goos".to_string()),
+        }))
+        .unwrap_err();
         assert!(err.to_string().contains("unknown value"), "got: {}", err);
     }
 

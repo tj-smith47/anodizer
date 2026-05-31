@@ -608,11 +608,11 @@ pub fn validate_tag_sort(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
-/// Known GOOS values accepted by `archives[].format_overrides[].goos`.
+/// Known OS values accepted by `archives[].format_overrides[].os`.
 /// Mirrors the Go runtime's `runtime.GOOS` values GoReleaser's archive pipe
 /// recognises; anything outside this set is almost always a typo
 /// (e.g. a Rust target triple slice like `pc-windows-msvc`).
-const KNOWN_GOOS: &[&str] = &[
+const KNOWN_OS: &[&str] = &[
     "aix",
     "android",
     "darwin",
@@ -752,7 +752,7 @@ pub fn validate_defaults_axis(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate `archives[].format_overrides[].goos` values reject unknown OSes.
+/// Validate `archives[].format_overrides[].os` values reject unknown OSes.
 /// GoReleaser silently no-ops unknown overrides, which has burned users typing
 /// Rust triples like `apple` or `pc-windows-msvc`.
 ///
@@ -768,16 +768,16 @@ pub fn validate_format_overrides(config: &Config) -> Result<(), String> {
                 continue;
             };
             for over in overrides {
-                if !KNOWN_GOOS.contains(&over.os.as_str()) {
+                if !KNOWN_OS.contains(&over.os.as_str()) {
                     let archive_id = archive.id.as_deref().unwrap_or("default");
                     return Err(format!(
-                        "{}: archives[{}] (id={}): format_overrides.goos=\"{}\" is not a recognised OS. \
+                        "{}: archives[{}] (id={}): format_overrides.os=\"{}\" is not a recognised OS. \
                          Accepted values: {}.",
                         location,
                         idx,
                         archive_id,
                         over.os,
-                        KNOWN_GOOS.join(", ")
+                        KNOWN_OS.join(", ")
                     ));
                 }
             }

@@ -33,7 +33,7 @@ pub(crate) fn validate_archive_configs(
             if let Some(ref overrides) = cfg.format_overrides {
                 for ov in overrides {
                     if ov.os.is_empty() {
-                        log.warn("format_override has empty goos/os value");
+                        log.warn("format_override has empty os value");
                     }
                     if ov.formats.as_ref().is_none_or(|f| f.is_empty()) {
                         log.warn("format_override has empty formats value");

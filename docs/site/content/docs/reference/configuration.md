@@ -538,7 +538,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 ## `partial`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `by` | string | — | How to split builds: "goos" (by OS, default) or "target" (by full triple). "goos" groups all arch variants for the same OS into one split job. "target" gives each unique target triple its own split job. |
+| `by` | string | — | How to split builds: "os" (by OS, default) or "target" (by full triple). "os" groups all arch variants for the same OS into one split job. "target" gives each unique target triple its own split job. |
 
 ## `publishers`
 | Field | Type | Default | Description |

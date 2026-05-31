@@ -667,12 +667,12 @@ blobs:
 fn test_partial_config_parses() {
     let yaml = r#"
 partial:
-  by: goos
+  by: os
 "#;
     let config: anodizer_core::config::Config =
         serde_yaml_ng::from_str(&format!("project_name: test\ncrates: []\n{}", yaml)).unwrap();
     let partial = config.partial.unwrap();
-    assert_eq!(partial.by.as_deref(), Some("goos"));
+    assert_eq!(partial.by.as_deref(), Some("os"));
 }
 
 #[test]
@@ -686,7 +686,7 @@ fn test_partial_config_by_target() {
 fn test_partial_config_defaults() {
     let yaml = "project_name: test\ncrates: []\npartial: {}\n";
     let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-    // by defaults to None, which the runtime interprets as "goos"
+    // by defaults to None, which the runtime interprets as "os"
     assert!(config.partial.unwrap().by.is_none());
 }
 
