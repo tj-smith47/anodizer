@@ -149,6 +149,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR source config is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `aur_sources[].if:`. |
+| `install` | string | — | Content for a .install file (post-install/pre-remove scripts). |
 | `license` | string | — | SPDX license identifier. |
 | `maintainers` | list of string | — | PKGBUILD maintainer entries. |
 | `makedepends` | list of string | — | Build-time dependencies (source packages need these). |
@@ -408,7 +409,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `binaries` | list of HomebrewCaskBinary | — | Binary stubs to create in /usr/local/bin.
 
 Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a structured `{ name, target }` object (`{ name: "my-cli", target: "mycli" }` → emits `binary "my-cli", target: "mycli"`). The `target:` form mirrors the Homebrew Ruby cask DSL for binary renames — without it, a wrapped binary installs at the wrong path. Mirrors GoReleaser `internal/pipe/brew/templates/cask.rb.tmpl`. |
-| `binary` | string | — | Deprecated singular spelling of [`Self::binaries`]. GoReleaser v2.12.6 replaced `binary: foo` with `binaries: [foo]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_binary`](super::super::apply_homebrew_cask_legacy_binary) folds the value into [`Self::binaries`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
+| `binary` | string | — | Deprecated singular spelling of [`Self::binaries`]. GoReleaser v2.12.6 replaced `binary: foo` with `binaries: [foo]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::binaries`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
 | `caveats` | string | — | Custom caveats shown after install. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. Default: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}" |
@@ -424,6 +425,7 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `ids` | list of string | — | Build IDs filter: only include artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `homebrew_casks[].if:`. |
 | `license` | string | — | License identifier (SPDX). |
+| `manpage` | string | — | Deprecated singular spelling of [`Self::manpages`]. GoReleaser replaced `manpage: foo.1` with `manpages: [foo.1]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::manpages`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
 | `manpages` | list of string | — | Manual page references to install. |
 | `name` | string | — | Cask name (default: crate / project name). |
 | `repository` | RepositoryConfig | — | Unified repository config for the Homebrew tap. |

@@ -65,6 +65,8 @@ pub struct AurSourceConfig {
     /// Skip this config.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
+    /// Content for a .install file (post-install/pre-remove scripts).
+    pub install: Option<String>,
     /// Explicit architecture list (default: auto-detect from artifacts).
     pub arches: Option<Vec<String>>,
     /// `x86_64` micro-architecture variant — `v1` (baseline), `v2`, `v3`

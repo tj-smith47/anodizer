@@ -107,6 +107,59 @@ fn test_generate_snap_yaml_with_apps() {
 }
 
 #[test]
+fn test_generate_snap_yaml_app_missing_command_defaults_to_app_name() {
+    // GoReleaser (internal/pipe/snapcraft/snapcraft.go) defaults a missing
+    // app command to the app key name (`command := name`), NOT erroring.
+    let mut apps = BTreeMap::new();
+    apps.insert(
+        "myapp".to_string(),
+        SnapcraftApp {
+            command: None,
+            daemon: Some("simple".to_string()),
+            ..Default::default()
+        },
+    );
+    let cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        apps: Some(apps),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let yaml = generate_snap_yaml(&cfg, "1.0.0", &["bin/myapp"], None, None).unwrap();
+    assert!(
+        yaml.contains("command: myapp"),
+        "missing command must default to the app name (GR parity):\n{yaml}"
+    );
+}
+
+#[test]
+fn test_generate_snap_yaml_app_missing_command_with_args_defaults_to_app_name() {
+    // The app-name default must still pick up `args:` (appended to command).
+    let mut apps = BTreeMap::new();
+    apps.insert(
+        "server".to_string(),
+        SnapcraftApp {
+            command: None,
+            args: Some("--port 8080".to_string()),
+            ..Default::default()
+        },
+    );
+    let cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        apps: Some(apps),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let yaml = generate_snap_yaml(&cfg, "1.0.0", &["bin/server"], None, None).unwrap();
+    assert!(
+        yaml.contains("command: server --port 8080"),
+        "defaulted command must still append args:\n{yaml}"
+    );
+}
+
+#[test]
 fn test_generate_snapcraft_yaml_with_plugs_and_app_slots() {
     // Snapcraft has no top-level `slots:` concept; app-scoped slots remain
     // via `apps.<name>.slots` and that path is exercised here.

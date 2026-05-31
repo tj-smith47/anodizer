@@ -140,7 +140,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     anodizer_core::config::apply_archive_legacy_aliases(&mut config);
     // Fold the singular `binary:` cask field into the canonical `binaries:`
     // list (GR v2.12.6 rename) and emit a deprecation warning per occurrence.
-    anodizer_core::config::apply_homebrew_cask_legacy_binary(&mut config);
+    anodizer_core::config::apply_homebrew_cask_legacy_singulars(&mut config);
 
     // Validate config schema version
     anodizer_core::config::validate_version(&config).map_err(anyhow::Error::msg)?;

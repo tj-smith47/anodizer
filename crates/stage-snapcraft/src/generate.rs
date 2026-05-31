@@ -71,9 +71,15 @@ pub fn generate_snap_yaml(
         app_map
             .iter()
             .map(|(app_name, app_cfg)| {
+                // GoReleaser (internal/pipe/snapcraft/snapcraft.go) defaults a
+                // missing app command to the app key name (`command := name`),
+                // not erroring — snapcraft itself requires every app to carry a
+                // command, so the app name is the GR-exact fallback.
                 let command = match (&app_cfg.command, &app_cfg.args) {
                     (Some(cmd), Some(args)) => Some(format!("{cmd} {args}")),
-                    (cmd, _) => cmd.clone(),
+                    (Some(cmd), None) => Some(cmd.clone()),
+                    (None, Some(args)) => Some(format!("{app_name} {args}")),
+                    (None, None) => Some(app_name.clone()),
                 };
                 let yaml_app = SnapcraftYamlApp {
                     command,

@@ -113,7 +113,7 @@ Each entry under `apps` describes an application exposed by the snap.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `command` | string | Command path relative to the snap root. |
+| `command` | string | Command path relative to the snap root. Defaults to the app's name when omitted. |
 | `args` | string | Additional arguments appended to the command. |
 | `daemon` | string | Run as a daemon: `simple`, `forking`, `oneshot`, `notify`. |
 | `stop_mode` | string | Signal used to stop the daemon: `sigterm`, `sigkill`, etc. |

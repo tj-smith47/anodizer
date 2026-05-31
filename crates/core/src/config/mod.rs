@@ -1518,50 +1518,78 @@ pub(crate) fn legacy_docker_retry_warnings(config: &Config) -> Vec<String> {
     warnings
 }
 
-/// Fold the deprecated singular `binary:` field on Homebrew Cask configs
-/// into the canonical plural [`HomebrewCaskConfig::binaries`] list and emit
-/// a deprecation warning. GoReleaser v2.12.6 renamed the field from
-/// `binary: <name>` to `binaries: [<name>]`; anodizer accepts both for
-/// back-compat with imported configs.
+/// Fold the deprecated singular Homebrew Cask fields into their canonical
+/// plural lists and emit a one-time deprecation warning per folded field:
 ///
-/// When both spellings are present the legacy entry is prepended so the
-/// user's explicit ordering in `binaries:` is preserved at the tail. The
-/// captured value is moved out of [`HomebrewCaskConfig::legacy_binary`] so
-/// downstream code only ever reads the canonical field.
-pub fn apply_homebrew_cask_legacy_binary(config: &mut Config) {
-    fn fold_one(location: &str, cask: &mut HomebrewCaskConfig) -> Option<String> {
-        let legacy = cask.legacy_binary.take()?;
-        let entry = HomebrewCaskBinary::Name(legacy.clone());
-        match cask.binaries {
-            Some(ref mut list) => list.insert(0, entry),
-            None => cask.binaries = Some(vec![entry]),
+/// - `binary: <name>` → [`HomebrewCaskConfig::binaries`] (GoReleaser v2.12.6
+///   renamed `binary:` to `binaries:`).
+/// - `manpage: <page>` → [`HomebrewCaskConfig::manpages`].
+///
+/// anodizer accepts both spellings so imported GoReleaser configs keep parsing.
+/// The captured values are moved out of [`HomebrewCaskConfig::legacy_binary`]
+/// and [`HomebrewCaskConfig::legacy_manpage`] so downstream code only ever
+/// reads the canonical plural fields.
+///
+/// The two folds use different insertion order, matching GoReleaser: a legacy
+/// `binary` is **prepended** to `binaries` so any explicit `binaries:` ordering
+/// is preserved at the tail, whereas a legacy `manpage` is **appended** to
+/// `manpages` (GoReleaser `internal/pipe/cask/cask.go` does
+/// `brew.Manpages = append(brew.Manpages, brew.Manpage)`).
+///
+/// The fold runs across every config mode — top-level `homebrew_casks`,
+/// per-crate `publish.homebrew_cask`, `workspaces[].crates[].publish`, and
+/// `defaults.publish`.
+pub fn apply_homebrew_cask_legacy_singulars(config: &mut Config) {
+    /// Fold both deprecated singular fields (`binary:` → `binaries`,
+    /// `manpage:` → `manpages`) on one cask, returning a warning per folded
+    /// field. The singular `binary` is prepended to `binaries` so an explicit
+    /// `binaries[0]` ordering is preserved at the tail; the singular `manpage`
+    /// is appended to `manpages`, matching GoReleaser
+    /// `internal/pipe/cask/cask.go` (`brew.Manpages = append(...)`).
+    fn fold_one(location: &str, cask: &mut HomebrewCaskConfig) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if let Some(legacy) = cask.legacy_binary.take() {
+            let entry = HomebrewCaskBinary::Name(legacy.clone());
+            match cask.binaries {
+                Some(ref mut list) => list.insert(0, entry),
+                None => cask.binaries = Some(vec![entry]),
+            }
+            warnings.push(format!(
+                "DEPRECATION: {location}: singular `binary: {legacy}` is deprecated since \
+                 GoReleaser v2.12.6; use the plural `binaries: [{legacy}]` form. The legacy \
+                 value has been folded into binaries[0]."
+            ));
         }
-        Some(format!(
-            "DEPRECATION: {location}: singular `binary: {legacy}` is deprecated since \
-             GoReleaser v2.12.6; use the plural `binaries: [{legacy}]` form. The legacy \
-             value has been folded into binaries[0]."
-        ))
+        if let Some(legacy) = cask.legacy_manpage.take() {
+            match cask.manpages {
+                Some(ref mut list) => list.push(legacy.clone()),
+                None => cask.manpages = Some(vec![legacy.clone()]),
+            }
+            warnings.push(format!(
+                "DEPRECATION: {location}: singular `manpage: {legacy}` is deprecated; \
+                 use the plural `manpages: [{legacy}]` form. The legacy value has been \
+                 folded into manpages."
+            ));
+        }
+        warnings
     }
 
     let mut warnings = Vec::new();
 
     if let Some(ref mut casks) = config.homebrew_casks {
         for (i, cask) in casks.iter_mut().enumerate() {
-            if let Some(msg) = fold_one(&format!("homebrew_casks[{i}]"), cask) {
-                warnings.push(msg);
-            }
+            warnings.extend(fold_one(&format!("homebrew_casks[{i}]"), cask));
         }
     }
 
     for krate in &mut config.crates {
         if let Some(ref mut publish) = krate.publish
             && let Some(ref mut cask) = publish.homebrew_cask
-            && let Some(msg) = fold_one(
+        {
+            warnings.extend(fold_one(
                 &format!("crates[{}].publish.homebrew_cask", krate.name),
                 cask,
-            )
-        {
-            warnings.push(msg);
+            ));
         }
     }
 
@@ -1570,15 +1598,14 @@ pub fn apply_homebrew_cask_legacy_binary(config: &mut Config) {
             for krate in &mut ws.crates {
                 if let Some(ref mut publish) = krate.publish
                     && let Some(ref mut cask) = publish.homebrew_cask
-                    && let Some(msg) = fold_one(
+                {
+                    warnings.extend(fold_one(
                         &format!(
                             "workspaces[{}].crates[{}].publish.homebrew_cask",
                             ws.name, krate.name
                         ),
                         cask,
-                    )
-                {
-                    warnings.push(msg);
+                    ));
                 }
             }
         }
@@ -1587,9 +1614,8 @@ pub fn apply_homebrew_cask_legacy_binary(config: &mut Config) {
     if let Some(ref mut defaults) = config.defaults
         && let Some(ref mut publish) = defaults.publish
         && let Some(ref mut cask) = publish.homebrew_cask
-        && let Some(msg) = fold_one("defaults.publish.homebrew_cask", cask)
     {
-        warnings.push(msg);
+        warnings.extend(fold_one("defaults.publish.homebrew_cask", cask));
     }
 
     for msg in warnings {

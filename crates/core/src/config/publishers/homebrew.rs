@@ -198,7 +198,7 @@ pub struct HomebrewCaskConfig {
     /// Deprecated singular spelling of [`Self::binaries`]. GoReleaser v2.12.6
     /// replaced `binary: foo` with `binaries: [foo]`; this field captures the
     /// legacy spelling so imported configs keep parsing.
-    /// [`apply_homebrew_cask_legacy_binary`](super::super::apply_homebrew_cask_legacy_binary)
+    /// [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars)
     /// folds the value into [`Self::binaries`] at config-load time and emits
     /// a one-time deprecation warning per occurrence. The field is excluded
     /// from serialization so a round-tripped config emits only the canonical
@@ -225,6 +225,16 @@ pub struct HomebrewCaskConfig {
     // ----- Completions / manpages -----
     /// Manual page references to install.
     pub manpages: Option<Vec<String>>,
+    /// Deprecated singular spelling of [`Self::manpages`]. GoReleaser replaced
+    /// `manpage: foo.1` with `manpages: [foo.1]`; this field captures the
+    /// legacy spelling so imported configs keep parsing.
+    /// [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars)
+    /// folds the value into [`Self::manpages`] at config-load time and emits
+    /// a one-time deprecation warning per occurrence. The field is excluded
+    /// from serialization so a round-tripped config emits only the canonical
+    /// plural form.
+    #[serde(default, rename = "manpage", skip_serializing)]
+    pub legacy_manpage: Option<String>,
     /// Shell completion definitions.
     pub completions: Option<HomebrewCaskCompletions>,
     /// Auto-generate shell completions from an executable.

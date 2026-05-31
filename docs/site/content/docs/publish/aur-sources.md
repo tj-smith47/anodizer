@@ -73,6 +73,7 @@ aur_sources:
     prepare: ""                      # optional; custom prepare() body
     build: ""                        # optional; defaults to "cargo build --release --locked"
     package: ""                      # optional; custom package() body
+    install: ""                      # optional; .install file content
     url_template: ""                 # optional; source archive URL (template)
     git_url: "ssh://aur@aur.archlinux.org/myapp.git"  # optional; AUR repo URL
     git_ssh_command: ""              # optional; custom GIT_SSH_COMMAND
@@ -122,6 +123,7 @@ aur_sources:
 | `prepare` | string | none | Custom `prepare()` function body |
 | `build` | string | `cargo build --release --locked` | Custom `build()` function body |
 | `package` | string | auto-generated | Custom `package()` function body |
+| `install` | string | none | Content for a `.install` file (post-install/pre-remove scripts). When set, the PKGBUILD emits `install=<name>.install` and the file is written alongside it. |
 | `url_template` | string | auto-derived from git URL | Source archive download URL (template) |
 | `git_url` | string | none | AUR git repository URL (for pushing) |
 | `git_ssh_command` | string | none | Custom `GIT_SSH_COMMAND` |

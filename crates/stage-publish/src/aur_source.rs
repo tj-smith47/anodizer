@@ -131,6 +131,13 @@ fn publish_aur_source_entry(
         conflicts: &conflicts,
         provides: &provides,
     };
+    // `.install` file: GoReleaser registers `<pkgname>.install` when
+    // `install:` is set, emitting an `install=<pkgname>.install` line in the
+    // PKGBUILD. Mirror the `-bin` AUR publisher: the config value is the file
+    // *content*, written alongside PKGBUILD/.SRCINFO.
+    let install_filename = format!("{}.install", pkg_name);
+    let install_file_ref = cfg.install.as_ref().map(|_| install_filename.as_str());
+
     let extras = AurExtras {
         people: AurPeople {
             maintainers: &maintainers,
@@ -143,6 +150,7 @@ fn publish_aur_source_entry(
         },
         backup: &backup,
         binary_name: default_name,
+        install_file: install_file_ref,
     };
     let pkgbuild = generate_source_pkgbuild(&meta, &deps, &extras, &source_url);
     let srcinfo = generate_source_srcinfo(&meta, &deps, &source_url);
@@ -162,10 +170,14 @@ fn publish_aur_source_entry(
     std::fs::create_dir_all(&aur_dir)
         .with_context(|| format!("{}: create dir {}", label, aur_dir.display()))?;
 
-    std::fs::write(aur_dir.join("PKGBUILD"), &pkgbuild)
-        .with_context(|| format!("{}: write PKGBUILD", label))?;
-    std::fs::write(aur_dir.join(".SRCINFO"), &srcinfo)
-        .with_context(|| format!("{}: write .SRCINFO", label))?;
+    write_aur_source_files(
+        &aur_dir,
+        &pkgbuild,
+        &srcinfo,
+        &install_filename,
+        cfg.install.as_deref(),
+        label,
+    )?;
 
     // Register artifacts
     ctx.artifacts.add(anodizer_core::artifact::Artifact {
@@ -226,6 +238,12 @@ fn publish_aur_source_entry(
 
         std::fs::copy(aur_dir.join("PKGBUILD"), output_dir.join("PKGBUILD"))?;
         std::fs::copy(aur_dir.join(".SRCINFO"), output_dir.join(".SRCINFO"))?;
+        if cfg.install.is_some() {
+            std::fs::copy(
+                aur_dir.join(&install_filename),
+                output_dir.join(&install_filename),
+            )?;
+        }
 
         let commit_msg = crate::homebrew::render_commit_msg(
             cfg.commit_msg_template.as_deref(),
@@ -398,6 +416,33 @@ struct AurExtras<'a> {
     hooks: AurHooks<'a>,
     backup: &'a [String],
     binary_name: &'a str,
+    /// When set, the PKGBUILD emits `install=<name>.install` and the
+    /// `.install` file (post-install/pre-remove scripts) is written
+    /// alongside it. Mirrors GoReleaser `aursources` `install:`.
+    install_file: Option<&'a str>,
+}
+
+/// Write `PKGBUILD`, `.SRCINFO`, and the optional `.install` file into
+/// `aur_dir`. The `.install` file (`<install_filename>`) is only written when
+/// `install_content` is `Some`, mirroring the `-bin` AUR publisher's
+/// `aur_write_package_files`.
+fn write_aur_source_files(
+    aur_dir: &std::path::Path,
+    pkgbuild: &str,
+    srcinfo: &str,
+    install_filename: &str,
+    install_content: Option<&str>,
+    label: &str,
+) -> Result<()> {
+    std::fs::write(aur_dir.join("PKGBUILD"), pkgbuild)
+        .with_context(|| format!("{}: write PKGBUILD", label))?;
+    std::fs::write(aur_dir.join(".SRCINFO"), srcinfo)
+        .with_context(|| format!("{}: write .SRCINFO", label))?;
+    if let Some(content) = install_content {
+        std::fs::write(aur_dir.join(install_filename), content)
+            .with_context(|| format!("{}: write {}", label, install_filename))?;
+    }
+    Ok(())
 }
 
 /// Generate a .SRCINFO file for a source AUR package.
@@ -485,6 +530,7 @@ fn generate_source_pkgbuild(
         },
         backup,
         binary_name,
+        install_file,
     } = *extras;
 
     let mut lines = Vec::new();
@@ -533,6 +579,10 @@ fn generate_source_pkgbuild(
     if !backup.is_empty() {
         let d: Vec<String> = backup.iter().map(|s| format!("'{}'", s)).collect();
         lines.push(format!("backup=({})", d.join(" ")));
+    }
+
+    if let Some(install_file) = install_file {
+        lines.push(format!("install={}", install_file));
     }
 
     lines.push(format!("source=(\"{}\")", source_url));
@@ -1015,6 +1065,7 @@ mod tests {
             },
             backup: &[],
             binary_name: "myapp",
+            install_file: None,
         };
         let pkgbuild = generate_source_pkgbuild(
             &meta,
@@ -1063,6 +1114,7 @@ mod tests {
             },
             backup: &[],
             binary_name: "myapp",
+            install_file: None,
         };
         let pkgbuild =
             generate_source_pkgbuild(&meta, &deps, &extras, "https://example.com/source.tar.gz");
@@ -1071,6 +1123,99 @@ mod tests {
         assert!(pkgbuild.contains("patch -p1 < fix.patch"));
         assert!(pkgbuild.contains("make\n}"));
         assert!(pkgbuild.contains("make install DESTDIR=\"$pkgdir\""));
+    }
+
+    #[test]
+    fn test_generate_source_pkgbuild_install_file() {
+        let meta = AurMeta {
+            name: "myapp",
+            version: "1.0.0",
+            pkgrel: 1,
+            description: "Test",
+            homepage: "",
+            license: "MIT",
+        };
+        let deps = AurDeps {
+            depends: &[],
+            makedepends: &[],
+            optdepends: &[],
+            conflicts: &[],
+            provides: &[],
+        };
+        // install=<name>.install only emitted when install_file is Some.
+        let with = AurExtras {
+            people: AurPeople {
+                maintainers: &[],
+                contributors: &[],
+            },
+            hooks: AurHooks {
+                prepare: None,
+                build: None,
+                package: None,
+            },
+            backup: &[],
+            binary_name: "myapp",
+            install_file: Some("myapp.install"),
+        };
+        let pkgbuild =
+            generate_source_pkgbuild(&meta, &deps, &with, "https://example.com/source.tar.gz");
+        assert!(
+            pkgbuild.contains("install=myapp.install"),
+            "PKGBUILD must emit install=<name>.install when set:\n{pkgbuild}"
+        );
+
+        let without = AurExtras {
+            install_file: None,
+            ..with
+        };
+        let pkgbuild_none =
+            generate_source_pkgbuild(&meta, &deps, &without, "https://example.com/source.tar.gz");
+        assert!(
+            !pkgbuild_none.contains("install="),
+            "PKGBUILD must NOT emit install= when unset:\n{pkgbuild_none}"
+        );
+    }
+
+    #[test]
+    fn test_write_aur_source_files_writes_install() {
+        let dir = tempfile::tempdir().unwrap();
+        // With install content: the .install file is written.
+        write_aur_source_files(
+            dir.path(),
+            "PKGBUILD-body",
+            "SRCINFO-body",
+            "myapp.install",
+            Some("post_install() { echo hi; }"),
+            "aur_source",
+        )
+        .unwrap();
+        assert!(dir.path().join("PKGBUILD").exists());
+        assert!(dir.path().join(".SRCINFO").exists());
+        let install_path = dir.path().join("myapp.install");
+        assert!(
+            install_path.exists(),
+            ".install file must be written when content is set"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&install_path).unwrap(),
+            "post_install() { echo hi; }"
+        );
+
+        // Without install content: no .install file appears.
+        let dir2 = tempfile::tempdir().unwrap();
+        write_aur_source_files(
+            dir2.path(),
+            "PKGBUILD-body",
+            "SRCINFO-body",
+            "myapp.install",
+            None,
+            "aur_source",
+        )
+        .unwrap();
+        assert!(
+            !dir2.path().join("myapp.install").exists(),
+            ".install file must NOT be written when content is unset"
+        );
     }
 
     #[test]

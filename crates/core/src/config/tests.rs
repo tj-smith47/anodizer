@@ -6429,7 +6429,7 @@ crates:
     }
 }
 
-// ---- M8: amd64_variant field on DMG/MSI/NSIS/nfpm ----
+// ---- amd64_variant field on DMG/MSI/NSIS/nfpm ----
 //
 // Mirrors GR's `Goamd64` field; previously absent on these surfaces, so
 // multi-amd64-variant builds couldn't filter. Tests assert the YAML round-
@@ -6736,7 +6736,7 @@ crates:
     assert_eq!(conflicts[1].name(), "bar");
 }
 
-// ---- M3: legacy GR V1 `dockers:` block rejection ----
+// ---- legacy GR V1 `dockers:` block rejection ----
 
 #[test]
 fn test_v1_dockers_block_rejected_with_migration_message() {
@@ -7892,7 +7892,7 @@ homebrew_casks:
     binary: my-cli
 "#;
     let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    super::apply_homebrew_cask_legacy_binary(&mut config);
+    super::apply_homebrew_cask_legacy_singulars(&mut config);
     let cask = &config.homebrew_casks.as_ref().unwrap()[0];
     let binaries = cask
         .binaries
@@ -7921,7 +7921,7 @@ homebrew_casks:
       - new-cli
 "#;
     let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    super::apply_homebrew_cask_legacy_binary(&mut config);
+    super::apply_homebrew_cask_legacy_singulars(&mut config);
     let binaries = config.homebrew_casks.as_ref().unwrap()[0]
         .binaries
         .as_ref()
@@ -7945,7 +7945,7 @@ homebrew_casks:
       - just-cli
 "#;
     let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    super::apply_homebrew_cask_legacy_binary(&mut config);
+    super::apply_homebrew_cask_legacy_singulars(&mut config);
     let binaries = config.homebrew_casks.as_ref().unwrap()[0]
         .binaries
         .as_ref()
@@ -7970,7 +7970,7 @@ crates:
         binary: per-crate-cli
 "#;
     let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    super::apply_homebrew_cask_legacy_binary(&mut config);
+    super::apply_homebrew_cask_legacy_singulars(&mut config);
     let cask = config.crates[0]
         .publish
         .as_ref()
@@ -7982,6 +7982,151 @@ crates:
     assert_eq!(binaries.len(), 1);
     assert_eq!(binaries[0].name(), "per-crate-cli");
     assert!(cask.legacy_binary.is_none());
+}
+
+// ---- Row 6b: homebrew_casks[].manpage singular → manpages plural ----
+
+#[test]
+fn legacy_homebrew_cask_manpage_singular_folds_into_manpages() {
+    let yaml = r#"
+project_name: test
+crates: []
+homebrew_casks:
+  - name: mycask
+    repository:
+      owner: o
+      name: tap
+    manpage: foo.1
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    super::apply_homebrew_cask_legacy_singulars(&mut config);
+    let cask = &config.homebrew_casks.as_ref().unwrap()[0];
+    let manpages = cask
+        .manpages
+        .as_ref()
+        .expect("legacy manpage must fold into manpages");
+    assert_eq!(manpages, &vec!["foo.1".to_string()]);
+    assert!(
+        cask.legacy_manpage.is_none(),
+        "legacy_manpage must be consumed"
+    );
+}
+
+#[test]
+fn legacy_homebrew_cask_manpage_appended_when_both_present() {
+    let yaml = r#"
+project_name: test
+crates: []
+homebrew_casks:
+  - name: mycask
+    repository:
+      owner: o
+      name: tap
+    manpage: legacy.1
+    manpages:
+      - new.1
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    super::apply_homebrew_cask_legacy_singulars(&mut config);
+    let manpages = config.homebrew_casks.as_ref().unwrap()[0]
+        .manpages
+        .as_ref()
+        .unwrap();
+    // GR appends the legacy singular to the END of manpages.
+    assert_eq!(manpages, &vec!["new.1".to_string(), "legacy.1".to_string()]);
+}
+
+#[test]
+fn legacy_homebrew_cask_manpage_not_reserialized() {
+    let yaml = r#"
+project_name: test
+crates: []
+homebrew_casks:
+  - name: mycask
+    repository:
+      owner: o
+      name: tap
+    manpage: foo.1
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    super::apply_homebrew_cask_legacy_singulars(&mut config);
+    let out = serde_yaml_ng::to_string(&config).unwrap();
+    // skip_serializing: only the canonical plural form round-trips.
+    assert!(
+        !out.contains("manpage:"),
+        "legacy `manpage:` must not be re-serialized:\n{out}"
+    );
+    assert!(
+        out.contains("manpages:"),
+        "canonical `manpages:` must be serialized:\n{out}"
+    );
+}
+
+#[test]
+fn legacy_homebrew_cask_manpage_folds_in_per_crate_publish() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew_cask:
+        repository:
+          owner: o
+          name: tap
+        manpage: per-crate.1
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    super::apply_homebrew_cask_legacy_singulars(&mut config);
+    let cask = config.crates[0]
+        .publish
+        .as_ref()
+        .unwrap()
+        .homebrew_cask
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        cask.manpages.as_ref().unwrap(),
+        &vec!["per-crate.1".to_string()]
+    );
+    assert!(cask.legacy_manpage.is_none());
+}
+
+#[test]
+fn legacy_homebrew_cask_manpage_folds_in_workspace_per_crate_publish() {
+    // The fold must reach the workspaces[].crates[].publish.homebrew_cask
+    // arm too — config-mode parity (single-crate, lockstep, per-crate).
+    let yaml = r#"
+project_name: test
+crates: []
+workspaces:
+  - name: ws1
+    crates:
+      - name: a
+        path: "."
+        tag_template: "v{{ .Version }}"
+        publish:
+          homebrew_cask:
+            repository:
+              owner: o
+              name: tap
+            manpage: ws.1
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    super::apply_homebrew_cask_legacy_singulars(&mut config);
+    let cask = config.workspaces.as_ref().unwrap()[0].crates[0]
+        .publish
+        .as_ref()
+        .unwrap()
+        .homebrew_cask
+        .as_ref()
+        .unwrap();
+    assert_eq!(cask.manpages.as_ref().unwrap(), &vec!["ws.1".to_string()]);
+    assert!(
+        cask.legacy_manpage.is_none(),
+        "legacy_manpage must be consumed in the workspace arm"
+    );
 }
 
 // ---------------------------------------------------------------------------
