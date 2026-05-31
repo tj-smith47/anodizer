@@ -41,12 +41,29 @@ deep-merged into each crate's first `docker_v2[]` entry).
 
 ## Minimal config
 
+`images` defaults to `ghcr.io/<owner>/<crate>` — the owner is resolved from
+`release.github` or the `origin` git remote, and each crate gets its own name.
+So a typical project only declares the `dockerfile` and `tags`:
+
 ```yaml
 crates:
   - name: myapp
     docker_v2:
       - dockerfile: Dockerfile
-        images: ["ghcr.io/myorg/myapp"]
+        tags: ["{{ .Version }}", "latest"]
+```
+
+Set `images` explicitly to publish under a different registry/name (e.g.
+`docker.io/<owner>/<name>`), or when the owner can't be resolved (no GitHub
+remote and no `release.github`) — an unresolvable owner leaves `images` empty
+and the pipe emits no tags.
+
+```yaml
+crates:
+  - name: myapp
+    docker_v2:
+      - dockerfile: Dockerfile
+        images: ["docker.io/myorg/myapp"]   # override the ghcr.io default
         tags: ["{{ .Version }}", "latest"]
 ```
 
@@ -59,7 +76,7 @@ crates:
       - id: myapp                      # optional; unique handle (for --id filters)
         ids: [myapp]                    # optional; build-ID filter
         dockerfile: Dockerfile          # required; path to Dockerfile
-        images:                         # required; base image names
+        images:                         # optional; default ghcr.io/<owner>/<crate>
           - ghcr.io/myorg/myapp
         tags:                           # required; one image:tag per (image × tag)
           - "{{ .Version }}"
@@ -136,7 +153,7 @@ image. There is no `replace_existing_*` flag — registry semantics handle it.
 | `id` | string | — | Unique handle for this entry (for `--id` filters) |
 | `ids` | list | — | Build-ID filter: only include artifacts whose `id` is in this list |
 | `dockerfile` | string | — | Path to Dockerfile (required) |
-| `images` | list | — | Base image names (e.g., `["ghcr.io/owner/app"]`) |
+| `images` | list | `ghcr.io/<owner>/<crate>` | Base image names. Defaults to the per-crate ghcr.io image — owner from `release.github` or the `origin` remote. Empty (no tags emitted) when the owner can't be resolved. Set to override. |
 | `tags` | list | — | Tag suffixes — one full image ref per (image × tag) |
 | `labels` | map | none | OCI labels via `--label key=value` |
 | `annotations` | map | none | OCI annotations via `--annotation key=value` |

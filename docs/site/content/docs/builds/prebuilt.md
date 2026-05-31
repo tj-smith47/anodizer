@@ -268,18 +268,42 @@ anodizer does not derive `cargo publish` metadata for prebuilt imports;
 disable binstall per-crate via `binstall: { enabled: false }` if you do not
 want a placeholder metadata block written into the crate's `Cargo.toml`.
 
-### Per-target `pkg_url` overrides (GoReleaser-style asset names)
+### binstall metadata is auto-derived — `enabled: true` is the norm
+
+You do **not** hand-write `pkg_url` or per-target `overrides`. When `binstall`
+is enabled and you supply neither, anodizer derives a per-target
+`overrides.<rust-triple>` for every configured build target. Each derived
+`pkg-url` is the asset's GitHub release download URL, built from the **same**
+`archive.name_template` the archive stage uses — so the URL can never name an
+asset the release doesn't actually upload. The "binstall installs the wrong
+URL and 404s" class is eliminated by construction.
+
+```yaml
+crates:
+  - name: cfgd
+    path: "."
+    binstall:
+      enabled: true   # that's it — overrides are derived from archive.name_template
+```
+
+In snapshot/dry-run the [emission-validate stage](@/docs/publish/snapshots.md#emission-validate)
+cross-checks each emitted binstall URL against the artifacts the run produced
+and fails loud if any reference drifts, so a broken binstall block is caught
+locally before a release.
+
+### Escape hatch: explicit per-target `pkg_url` overrides
+
+Auto-derivation covers the GoReleaser-style asset-name case automatically, so
+you rarely need this. Reach for it only when your assets are named in a way
+the archive template can't express — supplying a top-level `pkg_url` **or** any
+`overrides` entry suppresses derivation entirely (manual values always win).
 
 `cargo-binstall`'s own tokens only ever expand to its target words —
 `{ target }` yields the Rust triple and the OS/arch tokens resolve to
-`macos`/`x86_64`/`aarch64`, never `darwin`/`amd64`/`arm64`. If your release
-archives use GoReleaser-style `<os>-<goarch>` names
-(`cfgd-1.2.3-linux-amd64.tar.gz`, `cfgd-1.2.3-darwin-arm64.tar.gz`), a single
-`pkg_url` cannot match every asset and `cargo binstall` 404s.
-
-Use `binstall.overrides` to map each Rust target triple to its real asset
-name. Each entry overrides `pkg_url`/`pkg_fmt`/`bin_dir` for that triple and
-is emitted as a `[package.metadata.binstall.overrides.<triple>]` sub-table.
+`macos`/`x86_64`/`aarch64`, never `darwin`/`amd64`/`arm64`. To pin each Rust
+target triple to a specific asset name, map it under `binstall.overrides`.
+Each entry overrides `pkg_url`/`pkg_fmt`/`bin_dir` for that triple and is
+emitted as a `[package.metadata.binstall.overrides.<triple>]` sub-table.
 anodize templates (`{{ .Version }}`) are rendered; cargo-binstall's own
 `{ ... }` tokens are left intact.
 

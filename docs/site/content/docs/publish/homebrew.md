@@ -68,8 +68,8 @@ crates:
 | `repository.owner` | string | — | GitHub owner of the tap repo |
 | `repository.name` | string | — | Tap repository name |
 | `folder` | string | `Formula` | Folder within the tap repo |
-| `description` | string | none | Formula description |
-| `license` | string | none | License identifier |
+| `description` | string | Cargo `[package].description` | Formula description. Derived from `Cargo.toml`; set to override. |
+| `license` | string | Cargo `[package].license` | License identifier. Derived from `Cargo.toml`; set to override. |
 | `install` | string | auto | Custom install block (Ruby) |
 | `test` | string | none | Custom test block (Ruby) |
 
@@ -113,8 +113,8 @@ Casks are configured under `publish.homebrew.cask:` (per-crate) or `homebrew_cas
 | `directory` | string | `Casks` | Subdirectory in the tap for the `.rb` file |
 | `app` | string | none | macOS `.app` bundle name |
 | `binaries` | list | none | Binary stubs to install |
-| `description` | string | none | Cask description |
-| `homepage` | string | none | Project homepage |
+| `description` | string | Cargo `[package].description` | Cask description. Derived from `Cargo.toml`; set to override. |
+| `homepage` | string | Cargo `[package].homepage` | Project homepage. Derived from `Cargo.toml`; set to override. |
 | `skip_upload` | bool or string | `false` | Skip publishing; `true` always skips, `"auto"` skips for prereleases |
 | `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch instead of skipping. See [Cask existing PR behavior](#cask-existing-pr-behavior). |
 

@@ -194,9 +194,7 @@ workspaces:
           - name_template: "{{ ProjectName }}"
             replace: false
         binstall:
-          enabled: true
-          pkg_url: "https://github.com/tj-smith47/cfgd/releases/download/v{{ Version }}/cfgd-{{ Version }}-{ target }.tar.gz"
-          pkg_fmt: tgz
+          enabled: true   # pkg-url + per-target overrides derived from archive.name_template
   # ... cfgd-operator, cfgd-csi
 ```
 

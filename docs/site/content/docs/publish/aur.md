@@ -163,10 +163,10 @@ crates:
 |-------|------|---------|-------------|
 | `name` | string | `<crate>-bin` | Override the AUR package name |
 | `git_url` | string | **required** | AUR SSH git URL (e.g. `ssh://aur@aur.archlinux.org/<pkg>.git`) |
-| `description` | string | crate name | Short description for `pkgdesc` |
-| `homepage` | string | none | Project homepage URL. Falls back to `url`, then `release.github` owner/name |
+| `description` | string | Cargo `[package].description` | Short description for `pkgdesc`. Derived from `Cargo.toml` (falls back to crate name). |
+| `homepage` | string | Cargo `[package].homepage` | Project homepage URL. Derived from `Cargo.toml`; falls back to `url`, then `release.github` owner/name |
 | `url` | string | none | Legacy alias for `homepage` |
-| `license` | string | none | SPDX license identifier (e.g. `MIT`, `Apache-2.0`) |
+| `license` | string | Cargo `[package].license` | SPDX license identifier (e.g. `MIT`, `Apache-2.0`). Derived from `Cargo.toml`; set to override. |
 | `depends` | string[] | `[]` | Runtime dependencies (e.g. `glibc`) |
 | `optdepends` | string[] | `[]` | Optional dependencies with descriptions (e.g. `fzf: fuzzy finder support`) |
 | `conflicts` | string[] | `[<base_name>]` | Packages this conflicts with. Defaults to the package name without `-bin` |

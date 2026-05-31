@@ -38,6 +38,10 @@ See [Publish overview — the `required:` field](../) for the full semantics.
 
 ## Minimal config
 
+`description` and `license` are derived from the crate's `Cargo.toml`
+`[package]` (`description` / `license`), so a typical Rust project supplies
+only the repository:
+
 ```yaml
 crates:
   - name: myapp
@@ -46,9 +50,11 @@ crates:
         repository:
           owner: my-org
           name: nixpkgs
-        description: "A fast CLI tool"
-        license: mit
 ```
+
+Set `description` / `license` explicitly only to override the Cargo-derived
+value (see [License identifiers](#license-identifiers) for the accepted
+forms).
 
 ## Full config reference
 
@@ -59,9 +65,9 @@ crates:
       nix:
         name: myapp                          # optional; derivation pname (default: crate name)
         path: pkgs/myapp/default.nix         # optional; output path in the repo
-        description: ""                      # optional; meta.description
-        homepage: ""                         # optional; meta.homepage
-        license: mit                         # optional; lib.licenses attribute (lowercase)
+        description: ""                      # optional; meta.description (derived from Cargo.toml)
+        homepage: ""                         # optional; meta.homepage (derived from Cargo.toml)
+        license: mit                         # optional; lib.licenses attr OR SPDX id; derived from Cargo SPDX if omitted
         ids: []                              # optional; filter by build IDs
         url_template: ""                     # optional; override download URL
         skip_upload: false                   # optional; "auto" skips prereleases
@@ -98,7 +104,7 @@ The token can also be set via `repository.token` in the config.
 ## Common gotchas
 
 - **Linux/macOS only**: only Linux and Darwin artifacts are included. Windows artifacts are ignored.
-- **License identifier**: the `license` field must be a valid `lib.licenses` attribute (e.g. `mit`, not `MIT`). Run `anodizer check` to validate before releasing.
+- **License identifier**: `license` accepts either a `lib.licenses` attribute (`mit`, `asl20`) or an SPDX id (`MIT`, `Apache-2.0`) — anodizer maps the SPDX form to the nix attribute. Omit it and it derives from your `Cargo.toml` SPDX `license`. A compound SPDX expression (`MIT OR Apache-2.0`) has no single nix attribute, so it must be set explicitly to one `lib.licenses` attribute. Run `anodizer check` to validate before releasing.
 - **SHA256 format**: checksums are automatically converted from hex to Nix SRI format (`sha256-<base64>`). Do not manually convert.
 - **`formatter`**: if `alejandra` or `nixfmt` is set but not on `PATH`, the derivation is written without formatting (no error). Ensure the formatter is available in CI.
 
@@ -119,7 +125,7 @@ The token can also be set via `repository.token` in the config.
 | `post_install` | string | | Commands for the `postInstall` phase. |
 | `description` | string | | Short description for the derivation's `meta.description`. |
 | `homepage` | string | | Project homepage URL for `meta.homepage`. |
-| `license` | string | `mit` | Nix license identifier (e.g. `mit`, `asl20`, `gpl3Only`). Must be a valid `lib.licenses` attribute. |
+| `license` | string | Cargo SPDX | `lib.licenses` attribute (`mit`, `asl20`) or an SPDX id (`MIT`, `Apache-2.0`); SPDX is mapped to the nix attribute. Derived from `Cargo.toml [package].license` when omitted. Compound SPDX requires an explicit single attribute. |
 | `dependencies` | list | | Runtime dependencies as Nix package names. |
 | `formatter` | string | | Nix formatter to run on the generated file: `alejandra` or `nixfmt`. |
 
@@ -279,9 +285,24 @@ Only Linux and macOS (Darwin) artifacts are included. Nix system strings are der
 
 ## License identifiers
 
-The `license` field must be a valid `lib.licenses` attribute from nixpkgs. Common values include `mit`, `asl20`, `gpl3Only`, `gpl3Plus`, `lgpl21Only`, `mpl20`, `isc`, `bsd2`, `bsd3`, `unlicense`, `asl20`.
+`license` accepts either form, and anodizer normalizes it to a nix
+`lib.licenses` attribute for the derivation:
 
-Run `anodizer check` to validate the license identifier before releasing.
+- **`lib.licenses` attribute** — used verbatim. Common values: `mit`, `asl20`,
+  `gpl3Only`, `gpl3Plus`, `lgpl21Only`, `mpl20`, `isc`, `bsd2`, `bsd3`,
+  `unlicense`.
+- **SPDX id** — e.g. `MIT`, `Apache-2.0`, `BSD-3-Clause` — mapped to the
+  matching nix attribute (`MIT` → `mit`, `Apache-2.0` → `asl20`).
+
+Omit `license` entirely and it derives from your `Cargo.toml`
+`[package].license` (an SPDX expression), so a plain Rust crate needs no nix
+`license` at all. A **compound** SPDX expression (`MIT OR Apache-2.0`,
+`Apache-2.0 WITH LLVM-exception`) has no single `lib.licenses` attribute and
+cannot be auto-mapped — set `nix.license` to one explicit attribute in that
+case.
+
+Run `anodizer check` to validate the resolved license identifier before
+releasing.
 
 ## Skipping prereleases
 

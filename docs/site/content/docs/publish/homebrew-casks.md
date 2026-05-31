@@ -123,8 +123,8 @@ Cask files are updated in-place on each release; no recovery flag is required fo
 | `name` | string | project name | Cask name |
 | `repository` | object | **required** | Tap repository (`owner`, `name`) |
 | `directory` | string | `Casks` | Directory in the tap repo |
-| `description` | string | none | Cask description |
-| `homepage` | string | none | Homepage URL |
+| `description` | string | Cargo `[package].description` | Cask description. Derived from `Cargo.toml`; set to override. |
+| `homepage` | string | Cargo `[package].homepage` | Homepage URL. Derived from `Cargo.toml`; set to override. |
 | `license` | string | none | License identifier |
 | `app` | string | none | Application name for `app` stanza |
 | `binaries` | list | none | Binaries to symlink |

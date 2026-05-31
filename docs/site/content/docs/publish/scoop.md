@@ -52,8 +52,8 @@ crates:
 |-------|------|---------|-------------|
 | `repository.owner` | string | — | GitHub owner of the bucket repo |
 | `repository.name` | string | — | Bucket repository name |
-| `description` | string | none | Manifest description |
-| `license` | string | none | License identifier |
+| `description` | string | Cargo `[package].description` | Manifest description. Derived from `Cargo.toml`; set to override. |
+| `license` | string | Cargo `[package].license` | License identifier. Derived from `Cargo.toml`; set to override. |
 
 ## Full config reference
 
@@ -67,8 +67,8 @@ crates:
           name: scoop-bucket        # required
           token: ""                 # falls back to GITHUB_TOKEN
           branch: ""                # default: repo default branch
-        description: "A fast CLI tool"
-        license: MIT
+        description: "A fast CLI tool"   # optional; derived from Cargo.toml description
+        license: MIT                     # optional; derived from Cargo.toml license
         skip_upload: false          # true | false | "auto" (skip prereleases)
 ```
 

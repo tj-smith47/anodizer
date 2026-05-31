@@ -59,8 +59,12 @@ crates:
         repository:
           owner: myorg
           name: myapp
-        license: MIT
 ```
+
+`license` (and `description` / `summary`) derive from the crate's
+`Cargo.toml` `[package]`. Chocolatey manifests require a license, so set
+`publish.chocolatey.license` only to override the derived value, or if the
+crate has no SPDX `license`.
 
 ## Full config reference
 
@@ -140,8 +144,8 @@ When `republish_in_moderation: true`, anodizer re-pushes a queued nupkg if the f
 | `url_template` | string | release URL | Custom URL template for download URLs (overrides the release asset URL) |
 | `icon_url` | string | none | URL to the package icon image |
 | `copyright` | string | none | Copyright notice (supports templates) |
-| `description` | string | crate name | Package description (supports templates) |
-| `license` | string | none | SPDX license identifier (e.g., `MIT`, `Apache-2.0`) |
+| `description` | string | Cargo `[package].description` | Package description (supports templates). Derived from `Cargo.toml`; falls back to crate name. |
+| `license` | string | Cargo `[package].license` | SPDX license identifier (e.g., `MIT`, `Apache-2.0`). Derived from `Cargo.toml`; required by Chocolatey, so set this if the crate has none. |
 | `license_url` | string | auto | Explicit license URL. Falls back to `https://opensource.org/licenses/<license>` |
 | `require_license_acceptance` | bool | `false` | Require users to accept the license before install |
 | `project_source_url` | string | none | Source code repository URL |

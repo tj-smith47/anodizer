@@ -57,16 +57,14 @@ workspaces:
         universal_binaries:
           - { name_template: "{{ ProjectName }}", replace: false }
         binstall:
-          enabled: true
-          pkg_url: "https://github.com/tj-smith47/cfgd/releases/download/v{{ Version }}/cfgd-{{ Version }}-{ target }.tar.gz"
-          pkg_fmt: tgz
+          enabled: true   # pkg_url + per-target overrides derived from archive.name_template
   # ... cfgd-operator, cfgd-csi follow the same shape
 ```
 
 | Feature | Status | Notes |
 |---|---|---|
 | `crates.io publish` | ✅ Verified | Dependency-aware ordering. [anodizer on crates.io](https://crates.io/crates/anodizer) · [cfgd on crates.io](https://crates.io/crates/cfgd). cfgd publishes 4 crates in dependency order on every release |
-| `binstall metadata` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`binstall.pkg_url` + `binstall.pkg_fmt: tgz`) |
+| `binstall metadata` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`binstall.enabled: true` — `pkg-url` + per-target `overrides` auto-derived from `archive.name_template`, no hand-written URL) |
 | `cargo_workspace` detection | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (4 `workspaces:` entries) |
 | `version_sync` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`version_sync.enabled: true` + `mode: cargo` per crate) |
 | `tag_pre_hooks` | ✅ Verified | [`crates/core/src/config/tag.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/config/tag.rs) (`tag_pre_hooks` field) |

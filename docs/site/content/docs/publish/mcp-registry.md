@@ -108,10 +108,10 @@ mcp:
   homepage: ""                       # optional; project URL (template)
   skip: false                        # optional; bool or template string
   registry: "https://registry.modelcontextprotocol.io"  # optional; override endpoint
-  repository:                        # optional; inferred from release context if omitted
-    url: "https://github.com/myorg/myapp"
-    source: github                   # github | gitlab | gitea
-    id: ""                           # optional; source-specific repo ID
+  repository:                        # optional; url + source derived from the GitHub origin remote
+    url: "https://github.com/myorg/myapp"   # derived from `git remote get-url origin` (GitHub only)
+    source: github                   # github | gitlab | gitea; derived as `github` only for a GitHub remote
+    id: ""                           # optional; source-specific repo ID (left blank — no blocking API call)
     subfolder: ""                    # optional; monorepo subfolder
   packages:                          # required; one or more distribution packages
     - registry_type: oci             # oci | npm | pypi | nuget | mcpb
@@ -231,7 +231,11 @@ repository:
   subfolder: ""           # optional, e.g. "servers/myapp" inside a monorepo
 ```
 
-All fields support Tera templates. If omitted, anodizer infers `url` and `source` from the release context.
+All fields support Tera templates. The whole `repository` block is optional:
+when omitted, anodizer derives `url` and `source` from the `origin` git remote.
+Derivation is GitHub-only — a non-GitHub remote (self-hosted, GitLab) is left
+for you to supply rather than forced to a wrong `source`. A user-set
+`repository` always wins.
 
 ### Packages
 

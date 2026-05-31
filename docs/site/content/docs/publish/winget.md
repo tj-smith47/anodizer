@@ -60,9 +60,12 @@ crates:
           owner: myorg
           name: winget-pkgs
         publisher: "My Organization"
-        license: MIT
         package_identifier: "MyOrg.MyApp"
 ```
+
+`license` is omitted here — it derives from the crate's `Cargo.toml`
+`[package].license`. Set `publish.winget.license` only to override it (or if
+the crate has no SPDX `license`, since winget manifests require one).
 
 ## How it works
 
@@ -95,11 +98,11 @@ If `package_identifier` is not set, Anodizer auto-generates it as `Publisher.Nam
 | `author` | string | none | Author name |
 | `copyright` | string | none | Copyright notice |
 | `copyright_url` | string | none | Copyright URL |
-| `license` | string | **required** | SPDX license identifier (e.g. `MIT`) |
+| `license` | string | Cargo `[package].license` | SPDX license identifier (e.g. `MIT`). Derived from `Cargo.toml`; winget manifests require a license, so set this if the crate has none. |
 | `license_url` | string | none | License URL |
-| `short_description` | string | `description` or crate name | Short description (max 256 chars) |
-| `description` | string | none | Full package description |
-| `homepage` | string | none | Project homepage URL |
+| `short_description` | string | `description` | Short description (max 256 chars). Falls back to the (Cargo-derived) description. |
+| `description` | string | Cargo `[package].description` | Full package description. Derived from `Cargo.toml`; set to override. |
+| `homepage` | string | Cargo `[package].homepage` | Project homepage URL. Derived from `Cargo.toml`; set to override. |
 | `url_template` | string | release URL | Custom download URL template |
 | `ids` | list of strings | all | Build IDs filter: only include matching artifacts |
 | `skip_upload` | bool or string | `false` | Skip publishing (`true` always skips, `"auto"` skips for prereleases) |
@@ -161,11 +164,11 @@ crates:
         author: ""
         copyright: ""
         copyright_url: ""
-        license: MIT                       # required; SPDX
+        license: MIT                       # SPDX; derived from Cargo.toml license if omitted
         license_url: ""
-        short_description: ""             # max 256 chars
-        description: ""
-        homepage: ""
+        short_description: ""             # max 256 chars; derived from Cargo.toml description if omitted
+        description: ""                   # derived from Cargo.toml description if omitted
+        homepage: ""                      # derived from Cargo.toml homepage if omitted
         url_template: ""
         ids: []
         skip_upload: false               # bool | "auto" | template

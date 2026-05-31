@@ -48,7 +48,11 @@ crates:
         short_description: "A kubectl plugin for managing things"
 ```
 
-Both `repository` and `short_description` are required. The publisher will error if either is missing.
+`repository` is required. The plugin manifest needs a description and a
+`short_description`; both derive from the crate's `Cargo.toml`
+`[package].description` when omitted (`short_description` falls back to the
+description), so a plain Rust crate supplies only `repository`. Set them
+explicitly only to override, or if the crate has no `description`.
 
 ## Krew config fields
 
@@ -60,8 +64,8 @@ Both `repository` and `short_description` are required. The publisher will error
 | `repository` | object | **required** | Unified repository config — supports `owner`, `name`, `token`, `branch`, `git`, and `pull_request` |
 | `commit_author` | object | none | Commit author name, email, and optional signing config |
 | `commit_msg_template` | string | auto | Custom commit message template |
-| `description` | string | **required** | Full description of the kubectl plugin |
-| `short_description` | string | **required** | One-line summary of the plugin (max 255 characters) |
+| `description` | string | Cargo `[package].description` | Full description of the kubectl plugin. Derived from `Cargo.toml`; set this if the crate has no description. |
+| `short_description` | string | `description` | One-line summary of the plugin (max 255 characters). Falls back to the (possibly Cargo-derived) description when omitted. |
 | `homepage` | string | inferred | Project homepage URL; falls back to `https://github.com/<owner>/<repo>` |
 | `url_template` | string | release URL | Custom URL template for artifact download URLs |
 | `caveats` | string | none | Post-install message shown to users after `kubectl krew install` |
@@ -105,8 +109,8 @@ crates:
     publish:
       krew:
         name: ""                          # override plugin name (default: crate name)
-        short_description: "..."          # required; max 255 chars
-        description: "..."               # required; full description
+        short_description: "..."          # max 255 chars; falls back to description if omitted
+        description: "..."               # full description; derived from Cargo.toml description if omitted
         homepage: ""                     # falls back to github.com/<owner>/<repo>
         url_template: ""                 # override download URL template
         caveats: ""                      # post-install message
@@ -202,7 +206,7 @@ krew:
 
 ## Common gotchas
 
-- **`repository` and `short_description` are required**: omitting either causes a hard error.
+- **`repository` is required**: the description and `short_description` derive from the crate's `Cargo.toml` `[package].description`, so the manifest only hard-errors if `repository` is missing or the crate has no description to fall back on.
 - **PR-based submission**: the krew-index is managed via PR, not direct push. Anodizer creates a PR against `kubernetes-sigs/krew-index` from your fork. PR review and merge are manual.
 - **Version updates are self-contained**: once a plugin is in krew-index, anodizer submits each version bump directly via the hosted krew-release-bot webhook — no separate workflow step. See [Version updates](#version-updates-self-contained-no-extra-workflow-step).
 - **Duplicate PRs**: if a prior run already opened a PR for the same tag, use `update_existing_pr: true` to force-push instead of opening a second PR.

@@ -68,7 +68,7 @@ defaults:
 anodizer release --targets=x86_64-pc-windows-msvc
 ```
 
-## `--host-targets`
+## `--host-targets` {#host-targets}
 
 Build **every** configured target this host can build, automatically skipping
 only the ones that need a cross-toolchain the host lacks. In practice the only
