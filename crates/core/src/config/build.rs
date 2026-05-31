@@ -16,6 +16,7 @@ use super::{
 
 /// Exclude a specific os/arch combination from the build matrix.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BuildIgnore {
     /// Operating system to exclude (e.g., "linux", "darwin", "windows").
     pub os: String,
@@ -29,7 +30,7 @@ pub struct BuildIgnore {
 
 /// Override env, flags, or features for targets matching glob patterns.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct BuildOverride {
     /// Glob patterns to match against target triples (e.g., `["x86_64-*", "*-linux-*"]`).
     pub targets: Vec<String>,
@@ -83,7 +84,7 @@ pub enum BuilderKind {
 /// Per-build options for `builder: prebuilt`. Required when `builder: prebuilt`
 /// is set on the same `builds[]` entry.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PrebuiltConfig {
     /// Template path to the imported binary on disk. Rendered once per
     /// target with these template variables available in addition to the
@@ -124,7 +125,7 @@ pub struct PrebuiltConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct CrateConfig {
     /// Crate name as published (must match the Cargo.toml package name).
     pub name: String,
@@ -246,7 +247,7 @@ impl Default for CrateConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct UniversalBinaryConfig {
     /// Unique identifier for this universal binary, propagated into the
     /// artifact's metadata as `id` (GoReleaser universalbinary.go:42-44).
@@ -269,7 +270,7 @@ pub struct UniversalBinaryConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct BuildConfig {
     /// Unique identifier for this build, used to reference it from archives and other configs.
     pub id: Option<String>,
@@ -329,13 +330,6 @@ pub struct BuildConfig {
     /// instead of dist/{target}/. Overrides the crate-level setting.
     #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
     pub no_unique_dist_dir: Option<StringOrBool>,
-    /// Deprecated: GoReleaser's `gobinary:` field selects the cargo-like build
-    /// command (named after `go build`). Anodizer's tool is always `cargo`,
-    /// so the field is captured for back-compat YAML import only and
-    /// `apply_build_legacy_aliases` emits a deprecation warning at config-load
-    /// time. GR ref: `internal/pipe/build/build.go:93-95`.
-    #[serde(default, rename = "gobinary")]
-    pub legacy_gobinary: Option<String>,
     /// Builder to use for this entry. `cargo` (the default when omitted)
     /// runs `cargo build`. `prebuilt` skips compilation and imports a
     /// binary the operator already produced via the `prebuilt:` block.
@@ -356,7 +350,7 @@ pub struct BuildConfig {
 /// **Not** to be confused with the top-level `HooksConfig` (which carries a
 /// flat `hooks: Vec<String>` list for `before`/`after` lifecycle hooks).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct BuildHooksConfig {
     /// Commands to run before the build step.
     pub pre: Option<Vec<HookEntry>>,

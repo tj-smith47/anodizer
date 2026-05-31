@@ -3416,10 +3416,10 @@ fn test_wrong_type_for_crates_field() {
 }
 
 #[test]
-fn test_unknown_field_in_crate_config_accepted() {
-    // CrateConfig uses #[serde(default)] without deny_unknown_fields, so
-    // unknown fields are silently ignored (intentional — keeps user YAML
-    // forward-compatible across anodizer versions).
+fn test_unknown_field_in_crate_config_rejected() {
+    // CrateConfig uses #[serde(default, deny_unknown_fields)], so an unknown
+    // crate-level field is a hard parse error — surfacing typos and removed
+    // fields instead of silently dropping them.
     let yaml = r#"
 project_name: test
 crates:
@@ -3429,9 +3429,14 @@ crates:
     unknown_field: some_value
 "#;
     let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
-    assert!(result.is_ok(), "unknown fields should be silently ignored");
-    let config = result.unwrap();
-    assert_eq!(config.crates[0].name, "myapp");
+    assert!(
+        result.is_err(),
+        "unknown crate-level fields should be rejected"
+    );
+    assert!(
+        result.unwrap_err().to_string().contains("unknown field"),
+        "error should mention unknown field"
+    );
 }
 
 // ---- Archive disabled form ----

@@ -103,7 +103,7 @@ impl<'de> Deserialize<'de> for HooksConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct StructuredHook {
     /// Command to run.
     ///

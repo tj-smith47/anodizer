@@ -138,9 +138,6 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // warnings. Done before validation so unique-id checks see the
     // post-fold state.
     anodizer_core::config::apply_archive_legacy_aliases(&mut config);
-    // Emit deprecation warning + ignore any `gobinary:` field on builds
-    // (Go-only — anodizer always uses cargo).
-    anodizer_core::config::apply_build_legacy_aliases(&mut config);
     // Fold the singular `binary:` cask field into the canonical `binaries:`
     // list (GR v2.12.6 rename) and emit a deprecation warning per occurrence.
     anodizer_core::config::apply_homebrew_cask_legacy_binary(&mut config);

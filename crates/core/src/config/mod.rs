@@ -1597,49 +1597,6 @@ pub fn apply_homebrew_cask_legacy_binary(config: &mut Config) {
     }
 }
 
-/// Emit a deprecation warning for any `builds[].gobinary` field. The field
-/// is captured by [`BuildConfig::legacy_gobinary`] purely for back-compat
-/// YAML import; anodizer's tool is always `cargo` so the value is unused.
-pub fn apply_build_legacy_aliases(config: &mut Config) {
-    let warn_one = |location: &str, legacy: &mut Option<String>| {
-        if let Some(go_bin) = legacy.take() {
-            tracing::warn!(
-                "DEPRECATION: {location}: 'gobinary: {go_bin}' is a Go-only field; anodizer \
-                 builds with cargo unconditionally. The value has been ignored."
-            );
-        }
-    };
-    for krate in &mut config.crates {
-        if let Some(ref mut builds) = krate.builds {
-            for (i, b) in builds.iter_mut().enumerate() {
-                warn_one(
-                    &format!("crates[{}].builds[{i}]", krate.name),
-                    &mut b.legacy_gobinary,
-                );
-            }
-        }
-    }
-    if let Some(ref mut workspaces) = config.workspaces {
-        for ws in workspaces {
-            for krate in &mut ws.crates {
-                if let Some(ref mut builds) = krate.builds {
-                    for (i, b) in builds.iter_mut().enumerate() {
-                        warn_one(
-                            &format!("workspaces[{}].crates[{}].builds[{i}]", ws.name, krate.name),
-                            &mut b.legacy_gobinary,
-                        );
-                    }
-                }
-            }
-        }
-    }
-    if let Some(ref mut defaults) = config.defaults
-        && let Some(ref mut b) = defaults.builds
-    {
-        warn_one("defaults.builds", &mut b.legacy_gobinary);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // EnvFilesConfig — accepts list of .env paths OR structured token file paths
 // ---------------------------------------------------------------------------

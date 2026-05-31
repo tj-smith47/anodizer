@@ -2551,7 +2551,11 @@ crates:
 }
 
 #[test]
-fn test_unknown_crate_level_fields_ignored() {
+fn test_unknown_crate_level_fields_rejected() {
+    // The build config subtree (`CrateConfig` and its nested `builds[]` shape)
+    // is strict: an unknown crate-level field is a hard parse error, matching
+    // the top-level `Config` strictness. This catches typos and removed fields
+    // (e.g. the old `docker:` block) instead of silently dropping them.
     let yaml = r#"
 project_name: test
 crates:
@@ -2561,8 +2565,15 @@ crates:
     nonexistent_field: true
     something_else: "hello"
 "#;
-    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert_eq!(config.crates[0].name, "a");
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+    assert!(
+        result.is_err(),
+        "unknown crate-level fields should be rejected"
+    );
+    assert!(
+        result.unwrap_err().to_string().contains("unknown field"),
+        "error should mention unknown field"
+    );
 }
 
 #[test]
@@ -6853,7 +6864,11 @@ crates:
 }
 
 #[test]
-fn test_builds_gobinary_legacy_field_captured_then_drained() {
+fn test_builds_gobinary_field_is_rejected() {
+    // The Go-only `gobinary:` shim has been removed entirely (no serde alias,
+    // no back-compat capture). `BuildConfig` carries `deny_unknown_fields`, so a
+    // stray `gobinary:` is a hard parse error rather than being silently
+    // dropped — surfacing the removed field instead of swallowing it.
     let yaml = r#"
 project_name: test
 crates:
@@ -6864,12 +6879,142 @@ crates:
       - id: legacy
         gobinary: /usr/local/bin/go
 "#;
-    let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = serde_yaml_ng::from_str::<Config>(yaml)
+        .expect_err("gobinary: must be rejected as an unknown build field");
+    assert!(
+        err.to_string().contains("gobinary"),
+        "error should name the unknown field, got: {err}"
+    );
+}
+
+#[test]
+fn test_builds_all_known_fields_still_parse() {
+    // Guard: strictness must reject ONLY unknown fields. A build entry that
+    // exercises the full known `BuildConfig` surface (plus nested ignore /
+    // overrides / hooks / prebuilt) must still parse cleanly.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - id: main
+        binary: a
+        skip: false
+        targets: ["x86_64-unknown-linux-gnu"]
+        features: ["foo"]
+        no_default_features: true
+        env:
+          x86_64-unknown-linux-gnu:
+            RUSTFLAGS: "-C target-cpu=native"
+        copy_from: other
+        flags: ["--locked"]
+        reproducible: true
+        hooks:
+          pre: ["echo pre"]
+          post: ["echo post"]
+        ignore:
+          - os: windows
+            arch: arm64
+        overrides:
+          - targets: ["*-linux-*"]
+            env: ["FOO=bar"]
+            flags: ["--offline"]
+            features: ["bar"]
+        cross_tool: /usr/bin/cross
+        mod_timestamp: "{{ .CommitTimestamp }}"
+        command: "auditable build"
+        no_unique_dist_dir: true
+        builder: prebuilt
+        prebuilt:
+          path: "bin/{{ .Target }}/a"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).expect("known-good build config must parse");
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
-    assert_eq!(build.legacy_gobinary.as_deref(), Some("/usr/local/bin/go"));
-    super::apply_build_legacy_aliases(&mut config);
-    let build = &config.crates[0].builds.as_ref().unwrap()[0];
-    assert!(build.legacy_gobinary.is_none(), "should be drained");
+    assert_eq!(build.id.as_deref(), Some("main"));
+    assert_eq!(build.command.as_deref(), Some("auditable build"));
+    assert_eq!(build.prebuilt.as_ref().unwrap().path, "bin/{{ .Target }}/a");
+    assert_eq!(build.ignore.as_ref().unwrap()[0].os, "windows");
+    assert_eq!(
+        build.overrides.as_ref().unwrap()[0].features,
+        Some(vec!["bar".to_owned()])
+    );
+}
+
+#[test]
+fn test_builds_structured_hook_unknown_field_rejected() {
+    // `StructuredHook` carries `deny_unknown_fields`, so a typo inside the
+    // object form of a build hook is a hard error rather than being silently
+    // dropped — closing the strictness hole at `builds[].hooks.pre[].{...}`.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - id: app
+        hooks:
+          pre:
+            - cmd: "echo hi"
+              typo_here: true
+"#;
+    let err = serde_yaml_ng::from_str::<Config>(yaml)
+        .expect_err("a typo'd structured-hook field must be rejected");
+    assert!(
+        err.to_string().contains("typo_here"),
+        "error should name the unknown hook field, got: {err}"
+    );
+}
+
+#[test]
+fn test_builds_structured_hook_all_fields_parse() {
+    // Guard: hook strictness must reject ONLY unknown fields. A structured
+    // build hook exercising every modeled `StructuredHook` field (cmd, dir,
+    // env, output, if, ids, artifacts) must still parse cleanly.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - id: app
+        hooks:
+          pre:
+            - cmd: "echo hi"
+              dir: "./sub"
+              env: ["FOO=bar"]
+              output: true
+              if: '{{ eq .Os "linux" }}'
+              ids: ["app"]
+              artifacts: all
+"#;
+    let config: Config =
+        serde_yaml_ng::from_str(yaml).expect("fully-populated structured hook must parse");
+    let hooks = config.crates[0].builds.as_ref().unwrap()[0]
+        .hooks
+        .as_ref()
+        .unwrap();
+    let pre = &hooks.pre.as_ref().unwrap()[0];
+    // Prove all 7 fields round-trip into the struct, not just that it parsed.
+    let HookEntry::Structured(hook) = pre else {
+        panic!("expected object-form hook to deserialize as HookEntry::Structured, got {pre:?}");
+    };
+    assert_eq!(hook.cmd, "echo hi");
+    assert_eq!(hook.dir.as_deref(), Some("./sub"));
+    assert_eq!(hook.env.as_deref(), Some(&["FOO=bar".to_owned()][..]));
+    assert_eq!(hook.output, Some(true));
+    assert_eq!(
+        hook.if_condition.as_deref(),
+        Some(r#"{{ eq .Os "linux" }}"#)
+    );
+    assert_eq!(hook.ids.as_deref(), Some(&["app".to_owned()][..]));
+    assert_eq!(
+        hook.artifacts,
+        Some(super::BeforePublishArtifactFilter::All)
+    );
 }
 
 #[test]

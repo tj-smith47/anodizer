@@ -2255,14 +2255,6 @@
             "type": "string"
           }
         },
-        "gobinary": {
-          "description": "Deprecated: GoReleaser's `gobinary:` field selects the cargo-like build command (named after `go build`). Anodizer's tool is always `cargo`, so the field is captured for back-compat YAML import only and `apply_build_legacy_aliases` emits a deprecation warning at config-load time. GR ref: `internal/pipe/build/build.go:93-95`.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "hooks": {
           "description": "Per-build hooks executed before and after compilation.",
           "default": null,
@@ -2376,7 +2368,8 @@
             "type": "string"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "BuildHooksConfig": {
       "description": "Pre/post hook configuration shared across multiple stages. Despite the `Build` prefix in the name, this type is used by both the **build** stage (pre/post compilation hooks) and the **archive** stage (pre/post archiving hooks). The name is kept for backward compatibility with existing configs. **Not** to be confused with the top-level `HooksConfig` (which carries a flat `hooks: Vec<String>` list for `before`/`after` lifecycle hooks).",
@@ -2404,7 +2397,8 @@
             "$ref": "#/definitions/HookEntry"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "BuildIgnore": {
       "description": "Exclude a specific os/arch combination from the build matrix.",
@@ -2422,7 +2416,8 @@
           "description": "Operating system to exclude (e.g., \"linux\", \"darwin\", \"windows\").",
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "BuildOverride": {
       "description": "Override env, flags, or features for targets matching glob patterns.",
@@ -2469,7 +2464,8 @@
             "type": "string"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "BuilderKind": {
       "description": "Selects which builder a `builds[]` entry uses. `Cargo` (the default) runs `cargo build` and discovers the resulting binary under `target/<triple>/<profile>/`. `Prebuilt` skips compilation entirely and imports a binary the operator already placed on disk via the per-build `prebuilt:` block.",
@@ -3902,7 +3898,8 @@
             }
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "CrossStrategy": {
       "type": "string",
@@ -9950,7 +9947,8 @@
           "default": "",
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "PublishConfig": {
       "type": "object",
@@ -12489,7 +12487,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "TagConfig": {
       "type": "object",
@@ -12925,7 +12924,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "UploadConfig": {
       "type": "object",

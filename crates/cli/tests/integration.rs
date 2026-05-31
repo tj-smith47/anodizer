@@ -1029,9 +1029,11 @@ crates:
     checksum:
       name_template: "checksums.txt"
       algorithm: sha256
-    docker:
-      - image_templates:
-          - "myregistry/test-project:{{ .Version }}"
+    docker_v2:
+      - images:
+          - "myregistry/test-project"
+        tags:
+          - "{{ .Version }}"
         dockerfile: Dockerfile
     nfpm:
       - formats:
