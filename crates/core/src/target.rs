@@ -83,6 +83,18 @@ pub fn is_windows(triple: &str) -> bool {
     triple.contains("windows")
 }
 
+/// Returns `true` if the target triple is a Windows-MSVC target
+/// (e.g. `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`).
+///
+/// MSVC targets are distinguished from `*-windows-gnu` because they cannot
+/// be cross-compiled off a Windows host: they need the MSVC SDK / CRT
+/// headers (e.g. `assert.h`) that cargo-zigbuild does not bundle, whereas
+/// `*-windows-gnu` links against the MinGW runtime zig ships and builds
+/// from any host.
+pub fn is_windows_msvc(triple: &str) -> bool {
+    triple.contains("windows-msvc")
+}
+
 /// Returns `true` if the target triple represents an iOS target.
 pub fn is_ios(triple: &str) -> bool {
     triple.contains("ios")
@@ -137,6 +149,15 @@ mod tests {
         let (os, arch) = map_target("x86_64-pc-windows-msvc");
         assert_eq!(os, "windows");
         assert_eq!(arch, "amd64");
+    }
+
+    #[test]
+    fn test_is_windows_msvc() {
+        assert!(is_windows_msvc("x86_64-pc-windows-msvc"));
+        assert!(is_windows_msvc("aarch64-pc-windows-msvc"));
+        assert!(!is_windows_msvc("x86_64-pc-windows-gnu"));
+        assert!(!is_windows_msvc("x86_64-unknown-linux-gnu"));
+        assert!(!is_windows_msvc("aarch64-apple-darwin"));
     }
 
     #[test]

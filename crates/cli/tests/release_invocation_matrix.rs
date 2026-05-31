@@ -677,15 +677,19 @@ fn host_targets_empty_result_hard_errors_on_linux() {
     );
 }
 
-/// On a non-apple host, a mixed config emits the loud skip line naming the
-/// apple triples and the macOS-host reason, then proceeds to build the
-/// remaining (linux) targets. Heavy stages are skipped to keep the test
-/// cheap; the assertion is purely on the loud-log line.
+/// On a non-apple, non-windows host (this CI runner is Linux), a mixed config
+/// emits ONE loud skip line that groups both reasons: apple triples need a
+/// macOS host, windows-msvc needs a Windows host. `*-windows-gnu` and linux
+/// stay. Heavy stages are skipped to keep the test cheap; the assertion is
+/// purely on the loud-log line.
 ///
-/// Skipped on an apple host (no targets are skipped there).
+/// Skipped on apple/windows hosts (the skip set differs there).
 #[test]
-fn host_targets_logs_skipped_apple_targets_on_linux() {
-    if anodizer_core::partial::host_is_apple(&host_target()) {
+fn host_targets_logs_skipped_apple_and_msvc_on_linux() {
+    let host = host_target();
+    if anodizer_core::partial::host_is_apple(&host)
+        || anodizer_core::partial::host_is_windows(&host)
+    {
         return;
     }
     let tmp = TempDir::new().unwrap();
@@ -693,8 +697,10 @@ fn host_targets_logs_skipped_apple_targets_on_linux() {
         tmp.path(),
         &[
             "x86_64-unknown-linux-gnu",
+            "x86_64-pc-windows-gnu",
             "x86_64-apple-darwin",
             "aarch64-apple-darwin",
+            "x86_64-pc-windows-msvc",
         ],
     );
     let out = run_anodizer(
@@ -709,11 +715,21 @@ fn host_targets_logs_skipped_apple_targets_on_linux() {
     );
     let stderr = strip_ansi(&String::from_utf8_lossy(&out.stderr));
     assert!(
-        stderr.contains("host-targets: skipping 2 target(s)")
+        stderr.contains("host-targets: skipping 3 target(s)")
             && stderr.contains("x86_64-apple-darwin")
             && stderr.contains("aarch64-apple-darwin")
-            && stderr.contains("macOS host"),
-        "must emit the loud skip line naming both apple triples + reason.\nstderr:\n{stderr}"
+            && stderr.contains("apple targets require a macOS host")
+            && stderr.contains("x86_64-pc-windows-msvc")
+            && stderr.contains("windows-msvc targets require a Windows host"),
+        "must emit one grouped skip line naming both apple + msvc reasons.\nstderr:\n{stderr}"
+    );
+    let skip_line = stderr
+        .lines()
+        .find(|l| l.contains("host-targets: skipping"))
+        .expect("a skip line is emitted");
+    assert!(
+        !skip_line.contains("x86_64-pc-windows-gnu"),
+        "windows-gnu must NOT be in the skip set (cross-builds from linux).\nskip line:\n{skip_line}"
     );
 }
 

@@ -43,7 +43,10 @@ pub struct ReleaseOpts {
     pub targets: Option<Vec<String>>,
     /// `--host-targets`: build every configured target this host can build,
     /// skipping only the ones that need a cross-toolchain anodizer doesn't
-    /// have (apple targets off a non-macOS host). Resolved into the same
+    /// have (apple targets off a non-macOS host; windows-msvc targets off a
+    /// non-Windows host — both need a native SDK cargo-zigbuild can't supply;
+    /// `*-windows-gnu` and linux targets cross-build from any host). Resolved
+    /// into the same
     /// `targets` intersection-filter at the top of [`run`]: the configured
     /// target union is partitioned via
     /// [`anodizer_core::partial::host_buildable_targets`], the skipped set is
@@ -914,7 +917,9 @@ fn resolve_host_targets(
 /// Hard-errors when the host can build NONE of the configured targets
 /// (e.g. an apple-darwin-only config on a Linux host): proceeding would
 /// emit an empty snapshot that breaks the downstream archive / checksum
-/// stages, so the operator is told to run on a macOS host instead.
+/// stages, so the operator is told which native host each skipped group
+/// requires (a macOS host for apple targets, a Windows host for
+/// windows-msvc) rather than a hardcoded single remedy.
 fn apply_host_targets_filter(
     opts: &mut ReleaseOpts,
     config: &Config,
@@ -938,13 +943,18 @@ fn apply_host_targets_filter(
     }
 
     if kept.is_empty() {
+        // Every configured target was skipped — name the native host each
+        // group needs (reusing the grouped skip clauses) rather than a
+        // hardcoded macOS remedy, which would mislead a windows-msvc-only
+        // config skipped purely for lack of a Windows host.
+        let reasons = anodizer_core::partial::host_targets_skip_reasons(host, &skipped);
         anyhow::bail!(
             "--host-targets: none of the {} configured target(s) can be built on this host \
-             ({}); all require a different toolchain (configured: [{}]). Run on a macOS host \
-             to build the apple-darwin targets, or adjust build.targets.",
+             ({}); all require a different native host: {}. Adjust build.targets, or run on \
+             a host that satisfies the constraint above.",
             configured.len(),
             host,
-            configured.join(", "),
+            reasons,
         );
     }
 
@@ -1727,9 +1737,11 @@ mod tests {
     // race on the process `TARGET`/`GGOOS` env vars `resolve_host_target` reads).
     const LINUX_HOST: &str = "x86_64-unknown-linux-gnu";
     const MAC_HOST: &str = "aarch64-apple-darwin";
+    const WINDOWS_HOST: &str = "x86_64-pc-windows-msvc";
 
     /// The mixed-target / linux-host expectation, asserted identically in
-    /// every config mode: apple targets drop, linux/windows stay, and the
+    /// every config mode: apple AND windows-msvc targets drop (neither
+    /// cross-builds from a linux host), linux + `*-windows-gnu` stay, and the
     /// kept set is written to `opts.targets`. Host is injected (LINUX_HOST)
     /// so the assertion holds on any test machine.
     fn assert_linux_host_filter(config: &Config, selected: &[String]) {
@@ -1742,8 +1754,14 @@ mod tests {
             "linux target kept: {kept:?}"
         );
         assert!(
-            kept.contains(&"x86_64-pc-windows-msvc".to_string()),
-            "windows target kept (cross-buildable): {kept:?}"
+            kept.contains(&"x86_64-pc-windows-gnu".to_string()),
+            "windows-gnu target kept (cross-buildable via zig MinGW): {kept:?}"
+        );
+        assert!(
+            !kept
+                .iter()
+                .any(|t| anodizer_core::target::is_windows_msvc(t)),
+            "windows-msvc dropped on a non-windows host (needs MSVC SDK): {kept:?}"
         );
         assert!(
             !kept.iter().any(|t| anodizer_core::target::is_darwin(t)),
@@ -1761,6 +1779,7 @@ mod tests {
                     "app",
                     &[
                         "x86_64-unknown-linux-gnu",
+                        "x86_64-pc-windows-gnu",
                         "x86_64-apple-darwin",
                         "aarch64-apple-darwin",
                         "x86_64-pc-windows-msvc",
@@ -1800,6 +1819,7 @@ mod tests {
             targets: Some(
                 [
                     "x86_64-unknown-linux-gnu",
+                    "x86_64-pc-windows-gnu",
                     "x86_64-apple-darwin",
                     "aarch64-apple-darwin",
                     "x86_64-pc-windows-msvc",
@@ -1831,7 +1851,11 @@ mod tests {
                     "win-tool",
                     vec![build_with_targets(
                         "win-tool",
-                        &["x86_64-pc-windows-msvc", "aarch64-apple-darwin"],
+                        &[
+                            "x86_64-pc-windows-gnu",
+                            "x86_64-pc-windows-msvc",
+                            "aarch64-apple-darwin",
+                        ],
                     )],
                 ),
             ],
@@ -1840,18 +1864,19 @@ mod tests {
         assert_linux_host_filter(&config, &["linux-svc".to_string(), "win-tool".to_string()]);
     }
 
-    #[test]
-    fn host_targets_apple_host_keeps_all() {
-        // On an injected apple host, no targets are skipped — every configured
-        // target (including the linux/windows ones) is kept verbatim.
+    /// Mixed config (linux + apple + windows-gnu + windows-msvc), asserted on
+    /// every host. Returns the kept set so each host test asserts its own
+    /// expectation.
+    fn run_filter(host: &str) -> Vec<String> {
         let config = Config {
-            project_name: "mac".to_string(),
+            project_name: "mixed".to_string(),
             crates: vec![crate_with_builds(
                 "app",
                 vec![build_with_targets(
                     "app",
                     &[
                         "x86_64-unknown-linux-gnu",
+                        "x86_64-pc-windows-gnu",
                         "x86_64-apple-darwin",
                         "aarch64-apple-darwin",
                         "x86_64-pc-windows-msvc",
@@ -1862,23 +1887,45 @@ mod tests {
         };
         let log = StageLogger::new("test", Verbosity::Quiet);
         let mut opts = host_targets_opts();
-        apply_host_targets_filter(&mut opts, &config, &["app".to_string()], MAC_HOST, &log)
-            .unwrap();
-        let kept = opts.targets.expect("host_targets must set opts.targets");
+        apply_host_targets_filter(&mut opts, &config, &["app".to_string()], host, &log).unwrap();
+        opts.targets.expect("host_targets must set opts.targets")
+    }
+
+    #[test]
+    fn host_targets_apple_host_keeps_apple_still_skips_msvc() {
+        // A macOS host builds apple + linux + windows-gnu, but windows-msvc
+        // still needs a Windows host (the MSVC SDK isn't present on a Mac).
+        let kept = run_filter(MAC_HOST);
         assert_eq!(
             kept,
             vec![
                 "x86_64-unknown-linux-gnu",
+                "x86_64-pc-windows-gnu",
                 "x86_64-apple-darwin",
                 "aarch64-apple-darwin",
-                "x86_64-pc-windows-msvc",
             ],
-            "an apple host keeps every configured target: {kept:?}"
+            "apple host keeps apple but not windows-msvc: {kept:?}"
         );
     }
 
     #[test]
-    fn host_targets_empty_result_bails() {
+    fn host_targets_windows_host_keeps_msvc_skips_apple() {
+        // A Windows host builds windows-msvc + linux + windows-gnu, but apple
+        // still needs a macOS host.
+        let kept = run_filter(WINDOWS_HOST);
+        assert_eq!(
+            kept,
+            vec![
+                "x86_64-unknown-linux-gnu",
+                "x86_64-pc-windows-gnu",
+                "x86_64-pc-windows-msvc",
+            ],
+            "windows host keeps windows-msvc but not apple: {kept:?}"
+        );
+    }
+
+    #[test]
+    fn host_targets_empty_result_bails_apple_only_names_macos() {
         let config = Config {
             project_name: "darwin-only".to_string(),
             crates: vec![crate_with_builds(
@@ -1898,7 +1945,36 @@ mod tests {
         let msg = err.to_string();
         assert!(
             msg.contains("none of the") && msg.contains("macOS host"),
-            "empty-result guard names the cause + remedy: {msg}"
+            "empty-result guard names the cause + macOS remedy: {msg}"
+        );
+    }
+
+    #[test]
+    fn host_targets_empty_result_bails_msvc_only_names_windows_not_macos() {
+        // A windows-msvc-only config on a linux host must bail naming a
+        // Windows host — NOT a hardcoded macOS remedy.
+        let config = Config {
+            project_name: "msvc-only".to_string(),
+            crates: vec![crate_with_builds(
+                "app",
+                vec![build_with_targets("app", &["x86_64-pc-windows-msvc"])],
+            )],
+            ..Default::default()
+        };
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let mut opts = host_targets_opts();
+        let err =
+            apply_host_targets_filter(&mut opts, &config, &["app".to_string()], LINUX_HOST, &log)
+                .expect_err("msvc-only config on a linux host must bail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("none of the")
+                && msg.contains("windows-msvc targets require a Windows host"),
+            "empty-result guard names the Windows-host constraint: {msg}"
+        );
+        assert!(
+            !msg.contains("macOS"),
+            "msvc-only bail must not mention macOS: {msg}"
         );
     }
 
