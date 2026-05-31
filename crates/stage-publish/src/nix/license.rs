@@ -24,31 +24,57 @@ use super::generate::validate_nix_license;
 /// Map from SPDX license identifier to the corresponding nix
 /// `lib.licenses` attribute name.
 ///
-/// Source of truth for a refresh: nixpkgs `lib/licenses.nix` — each
-/// license attribute carries an `spdxId` field; this table is the
-/// inverse (`spdxId` -> attribute name) for every entry whose attribute
-/// is also present in the [`super::generate`] `VALID_NIX_LICENSES`
-/// allow-list (so a mapped value always passes validation). SPDX ids are
-/// matched case-insensitively (SPDX treats them as case-insensitive),
-/// so keys here are lowercased at lookup time.
+/// Source of truth for a refresh: nixpkgs `lib/licenses/licenses.nix` —
+/// each license attribute carries an `spdxId` field, and this table is the
+/// inverse (`spdxId` -> attribute name) for every entry whose attribute is
+/// also present in the [`super::generate`] `VALID_NIX_LICENSES` allow-list
+/// (so a mapped value always passes validation). Every key here is a real
+/// SPDX *license* identifier (per the SPDX license list) — SPDX *exception*
+/// identifiers (e.g. `LLVM-exception`, `Classpath-exception-2.0`) are
+/// deliberately excluded: an exception never appears as a bare
+/// `Cargo.toml` `[package].license` value (it only follows `WITH` in a
+/// compound expression, which is rejected), and the corresponding nix
+/// attribute is still reachable via direct `nix.license` passthrough.
+///
+/// One key (`CC-PDDC`) maps to `publicDomain`, which nixpkgs does not tag
+/// with an `spdxId`; it is kept as the honest nixpkgs public-domain
+/// equivalent for that SPDX id.
+///
+/// SPDX ids are matched case-insensitively (SPDX treats them as
+/// case-insensitive), so keys here are lowercased at lookup time.
 ///
 /// Entries are sorted by SPDX id for readability; lookup is linear over a
 /// small table and case-folds the needle.
 static SPDX_TO_NIX: &[(&str, &str)] = &[
+    ("0BSD", "bsd0"),
+    ("Abstyles", "abstyles"),
+    ("Adobe-Display-PostScript", "adobeDisplayPostScript"),
+    ("Adobe-Utopia", "adobeUtopia"),
     ("AFL-2.0", "afl20"),
     ("AFL-2.1", "afl21"),
     ("AFL-3.0", "afl3"),
     ("AGPL-3.0-only", "agpl3Only"),
     ("AGPL-3.0-or-later", "agpl3Plus"),
-    ("AMD", "amd"),
+    ("Aladdin", "aladdin"),
     ("AML", "aml"),
-    ("AOM", "aom"),
+    ("AMPAS", "ampas"),
+    ("Apache-1.1", "asl11"),
+    ("Apache-2.0", "asl20"),
     ("APSL-1.0", "apsl10"),
     ("APSL-2.0", "apsl20"),
-    ("Apache-2.0", "asl20"),
+    ("Arphic-1999", "arphicpl"),
     ("Artistic-1.0", "artistic1"),
     ("Artistic-1.0-cl8", "artistic1-cl8"),
     ("Artistic-2.0", "artistic2"),
+    ("Baekmuk", "baekmuk"),
+    ("Beerware", "beerware"),
+    ("Bitstream-Charter", "bitstreamCharter"),
+    ("Bitstream-Vera", "bitstreamVera"),
+    ("BitTorrent-1.0", "bitTorrent10"),
+    ("BitTorrent-1.1", "bitTorrent11"),
+    ("BlueOak-1.0.0", "blueOak100"),
+    ("Boehm-GC", "boehmGC"),
+    ("BOLA-1.1", "bola11"),
     ("BSD-1-Clause", "bsd1"),
     ("BSD-2-Clause", "bsd2"),
     ("BSD-2-Clause-Patent", "bsd2Patent"),
@@ -56,6 +82,7 @@ static SPDX_TO_NIX: &[(&str, &str)] = &[
     ("BSD-3-Clause", "bsd3"),
     ("BSD-3-Clause-Clear", "bsd3Clear"),
     ("BSD-3-Clause-LBNL", "bsd3Lbnl"),
+    ("BSD-3-Clause-Tso", "bsd3ClauseTso"),
     ("BSD-4-Clause", "bsdOriginal"),
     ("BSD-4-Clause-Shortened", "bsdOriginalShortened"),
     ("BSD-4-Clause-UC", "bsdOriginalUC"),
@@ -63,10 +90,10 @@ static SPDX_TO_NIX: &[(&str, &str)] = &[
     ("BSD-Source-Code", "bsdSourceCode"),
     ("BSL-1.0", "boost"),
     ("BUSL-1.1", "bsl11"),
-    ("Beerware", "beerware"),
-    ("BlueOak-1.0.0", "blueOak100"),
-    ("Bitstream-Vera", "bitstreamVera"),
+    ("bzip2-1.0.6", "bzip2"),
     ("CAL-1.0", "cal10"),
+    ("Caldera", "caldera"),
+    ("CAPEC-tou", "capec"),
     ("CC-BY-1.0", "cc-by-10"),
     ("CC-BY-2.0", "cc-by-20"),
     ("CC-BY-3.0", "cc-by-30"),
@@ -87,126 +114,175 @@ static SPDX_TO_NIX: &[(&str, &str)] = &[
     ("CC-BY-SA-3.0", "cc-by-sa-30"),
     ("CC-BY-SA-4.0", "cc-by-sa-40"),
     ("CC-PDDC", "publicDomain"),
+    ("CC-SA-1.0", "cc-sa-10"),
     ("CC0-1.0", "cc0"),
     ("CDDL-1.0", "cddl"),
     ("CECILL-2.0", "cecill20"),
     ("CECILL-2.1", "cecill21"),
     ("CECILL-B", "cecill-b"),
     ("CECILL-C", "cecill-c"),
+    ("ClArtistic", "clArtistic"),
+    ("CNRI-Python", "cnri-python"),
     ("CPAL-1.0", "cpal10"),
     ("CPL-1.0", "cpl10"),
-    ("ClArtistic", "clArtistic"),
-    ("Classpath-exception-2.0", "classpathException20"),
+    ("Cronyx", "cronyx"),
     ("Curl", "curl"),
+    ("DEC-3-Clause", "dec3Clause"),
+    ("DOC", "doc"),
+    ("DRL-1.0", "drl10"),
+    ("dtoa", "dtoa"),
     ("ECL-2.0", "ecl20"),
     ("EFL-1.0", "efl10"),
     ("EFL-2.0", "efl20"),
+    ("Elastic-2.0", "elastic20"),
     ("EPL-1.0", "epl10"),
     ("EPL-2.0", "epl20"),
     ("EUPL-1.1", "eupl11"),
     ("EUPL-1.2", "eupl12"),
-    ("Elastic-2.0", "elastic20"),
-    ("FTL", "ftl"),
     ("Fair", "fair"),
+    ("FDK-AAC", "fraunhofer-fdk"),
+    ("FSL-1.1-ALv2", "fsl11Asl20"),
+    ("FSL-1.1-MIT", "fsl11Mit"),
+    ("FTL", "ftl"),
     ("GFDL-1.1-only", "fdl11Only"),
     ("GFDL-1.1-or-later", "fdl11Plus"),
     ("GFDL-1.2-only", "fdl12Only"),
     ("GFDL-1.2-or-later", "fdl12Plus"),
     ("GFDL-1.3-only", "fdl13Only"),
     ("GFDL-1.3-or-later", "fdl13Plus"),
-    ("GPL-1.0-only", "gpl1Only"),
-    ("GPL-1.0-or-later", "gpl1Plus"),
-    ("GPL-2.0-only", "gpl2Only"),
-    ("GPL-2.0-or-later", "gpl2Plus"),
-    ("GPL-3.0-only", "gpl3Only"),
-    ("GPL-3.0-or-later", "gpl3Plus"),
     ("Giftware", "giftware"),
     ("Gnuplot", "gnuplot"),
+    ("GPL-1.0-only", "gpl1Only"),
+    ("GPL-1.0-or-later", "gpl1Plus"),
+    ("GPL-2.0", "gpl2"),
+    ("GPL-2.0-only", "gpl2Only"),
+    ("GPL-2.0-or-later", "gpl2Plus"),
+    ("GPL-3.0", "gpl3"),
+    ("GPL-3.0-only", "gpl3Only"),
+    ("GPL-3.0-or-later", "gpl3Plus"),
     ("HPND", "hpnd"),
+    ("HPND-DEC", "hpndDec"),
+    ("HPND-doc", "hpndDoc"),
+    ("HPND-doc-sell", "hpndDocSell"),
+    (
+        "HPND-sell-MIT-disclaimer-xserver",
+        "hpndSellVariantMitDisclaimerXserver",
+    ),
     ("HPND-sell-variant", "hpndSellVariant"),
+    (
+        "HPND-sell-variant-critical-systems",
+        "hpndSellVariantSafetyClause",
+    ),
+    ("HPND-UC", "hpndUc"),
+    ("hyphen-bulgarian", "hyphenBulgarian"),
     ("ICU", "icu"),
     ("IJG", "ijg"),
-    ("IPA", "ipa"),
-    ("IPL-1.0", "ipl10"),
-    ("ISC", "isc"),
     ("ImageMagick", "imagemagick"),
     ("Imlib2", "imlib2"),
     ("Info-ZIP", "info-zip"),
-    ("Intel", "intel-eula"),
+    ("Intel-ACPI", "iasl"),
     ("Interbase-1.0", "interbase"),
+    ("IPA", "ipa"),
+    ("IPL-1.0", "ipl10"),
+    ("ISC", "isc"),
     ("Knuth-CTAN", "knuth"),
     ("LAL-1.2", "lal12"),
     ("LAL-1.3", "lal13"),
+    ("LGPL-2.0", "lgpl2"),
     ("LGPL-2.0-only", "lgpl2Only"),
     ("LGPL-2.0-or-later", "lgpl2Plus"),
+    ("LGPL-2.1", "lgpl21"),
     ("LGPL-2.1-only", "lgpl21Only"),
     ("LGPL-2.1-or-later", "lgpl21Plus"),
+    ("LGPL-3.0", "lgpl3"),
     ("LGPL-3.0-only", "lgpl3Only"),
     ("LGPL-3.0-or-later", "lgpl3Plus"),
-    ("LLGPL", "llgpl21"),
-    ("LLVM-exception", "llvm-exception"),
+    ("LGPLLR", "lgpllr"),
+    ("Libpng", "libpng"),
+    ("libpng-2.0", "libpng2"),
+    ("libtiff", "libtiff"),
     ("LPL-1.02", "lpl-102"),
     ("LPPL-1.0", "lppl1"),
     ("LPPL-1.2", "lppl12"),
     ("LPPL-1.3a", "lppl13a"),
     ("LPPL-1.3c", "lppl13c"),
-    ("Libpng", "libpng"),
-    ("Linux-OpenIB", "bsd3"),
+    ("lsof", "lsof"),
+    ("MirOS", "miros"),
     ("MIT", "mit"),
     ("MIT-0", "mit0"),
-    ("MIT-CMU", "mit-cmu"),
     ("MIT-advertising", "mitAdvertising"),
+    ("MIT-CMU", "mit-cmu"),
     ("MIT-enna", "mit-enna"),
     ("MIT-feh", "mit-feh"),
-    ("MITNFA", "mitAdvertising"),
+    ("MIT-Modern-Variant", "mit-modern"),
+    ("MIT-open-group", "mitOpenGroup"),
     ("MPL-1.0", "mpl10"),
     ("MPL-1.1", "mpl11"),
     ("MPL-2.0", "mpl20"),
+    ("mplus", "mplus"),
     ("MS-PL", "mspl"),
     ("MulanPSL-2.0", "mulan-psl2"),
+    ("NAIST-2003", "naist-2003"),
     ("NASA-1.3", "nasa13"),
+    ("NCBI-PD", "ncbiPd"),
     ("NCSA", "ncsa"),
+    ("NGPL", "ngpl"),
+    ("NIST-Software", "nistSoftware"),
     ("NLPL", "nlpl"),
     ("NPOSL-3.0", "nposl3"),
     ("NTP", "ntp"),
-    ("OCaml-LGPL-linking-exception", "ocamlLgplLinkingException"),
     ("ODbL-1.0", "odbl"),
     ("OFL-1.1", "ofl"),
     ("OLDAP-2.8", "openldap"),
     ("OML", "oml"),
     ("OpenSSL", "openssl"),
+    ("OPUBL-1.0", "opubl"),
     ("OSL-2.0", "osl2"),
     ("OSL-2.1", "osl21"),
     ("OSL-3.0", "osl3"),
+    ("ParaType-Free-Font-1.3", "paratype"),
+    ("Parity-7.0.0", "parity70"),
     ("PHP-3.01", "php301"),
+    ("Pixar", "tost"),
     ("PostgreSQL", "postgresql"),
     ("Python-2.0", "psfl"),
-    ("QPL-1.0", "qpl"),
     ("Qhull", "qhull"),
+    ("QPL-1.0", "qpl"),
     ("Ruby", "ruby"),
+    ("Sendmail", "sendmail"),
     ("SGI-B-2.0", "sgi-b-20"),
+    ("SGMLUG-PM", "sgmlug"),
     ("SISSL", "sissl11"),
+    ("Sleepycat", "sleepycat"),
+    ("SMAIL-GPL", "smail"),
     ("SMLNJ", "smlnj"),
     ("SSPL-1.0", "sspl"),
-    ("Sendmail", "sendmail"),
-    ("Sleepycat", "sleepycat"),
+    ("SUL-1.0", "sustainableUse"),
     ("TCL", "tcltk"),
-    ("UPL-1.0", "upl"),
+    ("TCP-wrappers", "tcpWrappers"),
+    ("TekHVC", "tekHvcLicense"),
+    ("TORQUE-1.1", "torque11"),
+    ("Ubuntu-font-1.0", "ufl"),
+    ("Unicode-3.0", "unicode-30"),
     ("Unicode-DFS-2015", "unicode-dfs-2015"),
     ("Unicode-DFS-2016", "unicode-dfs-2016"),
+    ("Unicode-TOU", "unicodeTOU"),
     ("Unlicense", "unlicense"),
-    ("VSL-1.0", "vsl10"),
+    ("UPL-1.0", "upl"),
     ("Vim", "vim"),
+    ("VSL-1.0", "vsl10"),
     ("W3C", "w3c"),
-    ("WTFPL", "wtfpl"),
     ("Watcom-1.0", "watcom"),
+    ("WTFPL", "wtfpl"),
     ("X11", "x11"),
-    ("XFree86-1.1", "x11"),
+    ("X11-no-permit-persons", "x11NoPermitPersons"),
     ("Xerox", "xerox"),
+    ("Xfig", "xfig"),
+    ("xinetd", "xinetd"),
+    ("XSkat", "xskat"),
     ("Zlib", "zlib"),
     ("ZPL-2.0", "zpl20"),
     ("ZPL-2.1", "zpl21"),
-    ("xinetd", "xinetd"),
 ];
 
 /// Look up the nix `lib.licenses` attribute name for an SPDX id.
@@ -312,6 +388,63 @@ mod tests {
                 "mapped attr `{attr}` for SPDX `{spdx}` is not a valid nix license"
             );
         }
+    }
+
+    #[test]
+    fn map_keys_are_unique_under_case_folding() {
+        // SPDX lookup case-folds the needle; two keys that collide when
+        // lowercased would make the resolved attr order-dependent. The map
+        // must have no such collision.
+        let mut seen: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
+        for (spdx, attr) in SPDX_TO_NIX {
+            let key = spdx.to_ascii_lowercase();
+            if let Some(prev) = seen.insert(key.clone(), attr) {
+                assert_eq!(
+                    prev, *attr,
+                    "case-folded key `{key}` maps to two different attrs (`{prev}` vs `{attr}`)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn maps_common_legacy_and_added_spdx_ids() {
+        // Regression for the source-of-truth refresh: common ids a Cargo.toml
+        // `license` field carries must each resolve to nixpkgs' attribute.
+        // `0BSD` and the SPDX-deprecated-but-still-used bare `GPL-*`/`LGPL-*`
+        // legacy ids appear in real crates.
+        assert_eq!(resolve_nix_license("0BSD").unwrap(), "bsd0");
+        assert_eq!(resolve_nix_license("GPL-2.0").unwrap(), "gpl2");
+        assert_eq!(resolve_nix_license("GPL-3.0").unwrap(), "gpl3");
+        assert_eq!(resolve_nix_license("LGPL-2.1").unwrap(), "lgpl21");
+        assert_eq!(resolve_nix_license("Apache-1.1").unwrap(), "asl11");
+        assert_eq!(resolve_nix_license("Unicode-3.0").unwrap(), "unicode-30");
+    }
+
+    #[test]
+    fn distinct_licenses_are_not_aliased_onto_a_neighbor_attr() {
+        // These SPDX ids name licenses that are NOT the nixpkgs attr a naive
+        // recall-built table reached for, which silently mislabeled them:
+        //   MITNFA       != MIT-advertising (mitAdvertising)
+        //   Linux-OpenIB != BSD-3-Clause    (bsd3)
+        //   XFree86-1.1  != X11             (x11)
+        //   Intel        != intel-eula      (the unrelated unfree Intel EULA)
+        // nixpkgs has no attr for them, so they must hard-error rather than
+        // silently mislabel the release as a different license.
+        for id in ["MITNFA", "Linux-OpenIB", "XFree86-1.1", "Intel"] {
+            let err = resolve_nix_license(id).unwrap_err().to_string();
+            assert!(
+                err.contains(id) && err.contains("neither a known SPDX"),
+                "`{id}` must hard-error, not alias onto a wrong attr; got: {err}"
+            );
+        }
+        // The legitimately-mapped neighbors still resolve.
+        assert_eq!(
+            resolve_nix_license("MIT-advertising").unwrap(),
+            "mitAdvertising"
+        );
+        assert_eq!(resolve_nix_license("BSD-3-Clause").unwrap(), "bsd3");
+        assert_eq!(resolve_nix_license("X11").unwrap(), "x11");
     }
 
     #[test]

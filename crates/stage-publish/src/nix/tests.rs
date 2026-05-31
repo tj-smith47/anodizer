@@ -1458,3 +1458,84 @@ fn per_crate_workspace_each_crate_derives_its_own_nix_license() {
         "beta (Apache-2.0) must emit `asl20`; got:\n{beta}"
     );
 }
+
+/// Workspace lockstep mode: two crates released at one shared workspace
+/// version, each with its own Cargo SPDX id, both publishing nix. The
+/// derived-license path keys off the per-crate `Cargo.toml` `license`, so a
+/// shared version must NOT collapse the two crates onto one license — each
+/// still resolves its own nix attribute. Mirrors the per-crate test but
+/// with `version` fixed across both crates to model lockstep.
+#[test]
+fn lockstep_workspace_each_crate_derives_its_own_nix_license() {
+    use anodizer_core::config::{Config, CrateConfig, NixConfig, PublishConfig, RepositoryConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let base = tempfile::tempdir().unwrap();
+    write_crate_cargo(base.path(), "alpha", "ISC");
+    write_crate_cargo(base.path(), "beta", "MPL-2.0");
+
+    let nix_cfg = || {
+        Some(PublishConfig {
+            nix: Some(NixConfig {
+                repository: Some(RepositoryConfig {
+                    owner: Some("myorg".to_string()),
+                    name: Some("nixpkgs-overlay".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    };
+    // Lockstep: both crates carry the SAME tag_template (one shared version
+    // across the workspace), unlike per-crate independent tags.
+    let mut config = Config {
+        crates: vec![
+            CrateConfig {
+                name: "alpha".to_string(),
+                path: "alpha".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: nix_cfg(),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "beta".to_string(),
+                path: "beta".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: nix_cfg(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    config.populate_derived_metadata(base.path());
+
+    let mut ctx = Context::new(config, ContextOptions::default());
+    // One shared release version for the whole workspace (lockstep).
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    add_linux_darwin_archives(&mut ctx, "alpha");
+    add_linux_darwin_archives(&mut ctx, "beta");
+
+    let alpha = render_nix_for_validation(&mut ctx, "alpha", &nix_log())
+        .unwrap()
+        .expect("alpha render should not skip")
+        .expr;
+    let beta = render_nix_for_validation(&mut ctx, "beta", &nix_log())
+        .unwrap()
+        .expect("beta render should not skip")
+        .expr;
+
+    assert!(
+        alpha.contains("license = lib.licenses.isc;"),
+        "alpha (ISC) must emit `isc` even at the shared workspace version; got:\n{alpha}"
+    );
+    assert!(
+        beta.contains("license = lib.licenses.mpl20;"),
+        "beta (MPL-2.0) must emit `mpl20` even at the shared workspace version; got:\n{beta}"
+    );
+    // Both crates share the one workspace version (lockstep invariant).
+    assert!(
+        alpha.contains("version = \"1.2.3\";") && beta.contains("version = \"1.2.3\";"),
+        "lockstep: both derivations must carry the shared version 1.2.3"
+    );
+}
