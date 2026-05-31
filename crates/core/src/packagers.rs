@@ -16,6 +16,7 @@ use crate::config::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // MakeselfConfig
@@ -175,14 +176,16 @@ pub struct SrpmConfig {
     /// RPM signature configuration. Shares the unified
     /// [`NfpmSignatureConfig`] type with nFPM.
     pub signature: Option<NfpmSignatureConfig>,
-    /// Build IDs whose binaries are bundled into the source RPM. When set,
-    /// only artifacts produced by builds with these IDs are packaged.
-    /// Mirrors GR `NFPM.Builds`.
-    pub bins: Option<Vec<String>>,
-    /// Project import path (Go-style; for Rust this is the canonical
-    /// repository URL, e.g. `github.com/owner/repo`). Used in spec file
-    /// generation for downstream tooling that expects a vcs-rooted path.
-    pub import_path: Option<String>,
+    /// Map of binary name → install path declared in the spec's `%files`
+    /// section, mirroring GR `SRPM.Bins`. Each entry tells the generated
+    /// `.spec` which installed file the package owns. When omitted, each
+    /// binary produced by the build for this crate defaults to
+    /// `%{_bindir}/<name>` (i.e. `/usr/bin/<name>`, the RPM-idiomatic
+    /// location for a built binary). Provide this only to override the
+    /// install path or to declare extra owned paths. Stored as a
+    /// `BTreeMap` so the emitted `%files` section iterates in
+    /// deterministic key order.
+    pub bins: Option<BTreeMap<String, String>>,
     /// Filesystem prefixes the package may install to (RPM `Prefix:` tag).
     /// Each entry becomes one `Prefix:` directive — relocatable RPMs need
     /// at least one prefix declared.

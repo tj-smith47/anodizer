@@ -448,6 +448,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "glob",
+ "serde_json",
  "serde_yaml_ng",
 ]
 

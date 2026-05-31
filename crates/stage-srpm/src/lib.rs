@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -74,6 +74,17 @@ impl Stage for SrpmStage {
             );
         }
 
+        // Resolve the `%files` binary→install-path map (see `resolve_bins`).
+        // Computed here, before the mutable template-var borrows below, so the
+        // immutable `ctx.artifacts` read does not overlap them.
+        let effective_bins: BTreeMap<String, String> = resolve_bins(
+            srpm_cfg.bins.as_ref(),
+            ctx.artifacts
+                .by_kind(ArtifactKind::Binary)
+                .iter()
+                .filter_map(|a| a.extra_binary()),
+        );
+
         let source_archive = &source_archives[0];
         // Template-render `package_name` so users can reference template
         // vars (e.g. `{{ ProjectName }}` or `{{ .Env.PKG_OVERRIDE }}`).
@@ -99,6 +110,7 @@ impl Stage for SrpmStage {
                 &version,
                 &srpm_cfg,
                 &source_archive.name,
+                &effective_bins,
                 ctx.env_source(),
             )
         } else {
@@ -135,9 +147,6 @@ impl Stage for SrpmStage {
             }
             // Surface the optional RPM-spec fields as template vars so
             // user-supplied spec files can reference them with `{{ .Foo }}`.
-            if let Some(ref import_path) = srpm_cfg.import_path {
-                ctx.template_vars_mut().set("ImportPath", import_path);
-            }
             if let Some(ref build_host) = srpm_cfg.build_host {
                 ctx.template_vars_mut().set("BuildHost", build_host);
             }
@@ -167,10 +176,17 @@ impl Stage for SrpmStage {
                     .join("\n");
                 ctx.template_vars_mut().set("Prefixes", &joined);
             }
-            if let Some(bins) = srpm_cfg.bins.as_deref()
-                && !bins.is_empty()
-            {
-                ctx.template_vars_mut().set("Bins", &bins.join(","));
+            // Expose `Bins` as a structured binary→install-path map so
+            // user spec templates can range over it
+            // (`{% for bin, path in Bins %}`), mirroring GR's
+            // `map[string]string` template field.
+            if !effective_bins.is_empty() {
+                let map: serde_json::Map<String, serde_json::Value> = effective_bins
+                    .iter()
+                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                    .collect();
+                ctx.template_vars_mut()
+                    .set_structured("Bins", serde_json::Value::Object(map));
             }
 
             ctx.render_template(&template)
@@ -320,6 +336,34 @@ impl Stage for SrpmStage {
     }
 }
 
+/// Resolve the effective `bins` map (binary name → `%files` install path).
+///
+/// A user-supplied `bins:` map (`override_bins`) is authoritative and is
+/// returned verbatim. When absent, every binary the build produced
+/// (`built_binaries`) defaults to `%{_bindir}/<name>` (i.e. `/usr/bin/<name>`,
+/// the RPM-idiomatic install location for a built binary). Mirrors GR's
+/// `SRPM.Bins` default, with `%{_bindir}/<name>` substituted for Go's
+/// `%{goipath}` since Rust has no import path.
+///
+/// The source RPM is project-global (one `.spec` for the whole repo), so the
+/// caller passes ALL produced binaries across every crate. Collecting into a
+/// `BTreeMap` dedupes a binary that appears under multiple build targets to a
+/// single entry and yields deterministic key order.
+fn resolve_bins(
+    override_bins: Option<&BTreeMap<String, String>>,
+    built_binaries: impl Iterator<Item = String>,
+) -> BTreeMap<String, String> {
+    if let Some(bins) = override_bins {
+        return bins.clone();
+    }
+    built_binaries
+        .map(|name| {
+            let path = format!("%{{_bindir}}/{name}");
+            (name, path)
+        })
+        .collect()
+}
+
 /// Generate a minimal RPM spec file when no user template is provided.
 ///
 /// Folds in every SrpmConfig field so that
@@ -333,15 +377,16 @@ impl Stage for SrpmStage {
 /// - `build_host` → emitted as a `BuildHost:` tag override.
 /// - `pretrans` / `posttrans` → inlined as `%pretrans` / `%posttrans`
 ///   scriptlets that source the configured script file at install time.
-/// - `import_path` → added as a comment line near the header so downstream
-///   tooling (vendor tooling that scans spec headers for VCS roots) sees it.
-/// - `bins` → emitted as a `# Bins:` comment summarising which build IDs
-///   the SRPM bundles, mirroring the spec_file template variable surface.
+/// - `bins` (the resolved binary→install-path map passed in `bins`) →
+///   emitted as real `%files` ownership entries (one install path per
+///   line), declaring which installed files the package owns. Mirrors
+///   GR `SRPM.Bins`, whose values feed the spec's `%files` section.
 fn generate_default_spec(
     package_name: &str,
     version: &str,
     cfg: &SrpmConfig,
     source_name: &str,
+    bins: &BTreeMap<String, String>,
     env: &dyn anodizer_core::env_source::EnvSource,
 ) -> String {
     let summary = cfg.summary.as_deref().unwrap_or(package_name);
@@ -393,14 +438,6 @@ fn generate_default_spec(
     if let Some(packager) = cfg.packager.as_deref() {
         header_extras.push_str(&format!("Packager:       {packager}\n"));
     }
-    if let Some(import_path) = cfg.import_path.as_deref() {
-        header_extras.push_str(&format!("# ImportPath: {import_path}\n"));
-    }
-    if let Some(bins) = cfg.bins.as_deref()
-        && !bins.is_empty()
-    {
-        header_extras.push_str(&format!("# Bins: {}\n", bins.join(",")));
-    }
     if let Some(host) = cfg.build_host.as_deref() {
         header_extras.push_str(&format!("BuildHost:      {host}\n"));
     }
@@ -445,6 +482,14 @@ fn generate_default_spec(
     let mut files_block = String::new();
     if let Some(license_name) = cfg.license_file_name.as_deref() {
         files_block.push_str(&format!("%license {license_name}\n"));
+    }
+    // Binary ownership entries — one install path per binary, in
+    // deterministic key order (BTreeMap). These declare which installed
+    // files the package owns (GR `SRPM.Bins` semantics). The map values
+    // are the install paths; the keys (binary names) are not emitted
+    // verbatim because RPM `%files` lists paths, not logical names.
+    for install_path in bins.values() {
+        files_block.push_str(&format!("{install_path}\n"));
     }
     if let Some(docs) = cfg.docs.as_deref() {
         for d in docs {
@@ -604,6 +649,7 @@ mod tests {
             "1.0.0",
             &cfg,
             "myapp-1.0.0.tar.gz",
+            &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
         );
         assert!(spec.contains("Name:           myapp"));
@@ -614,8 +660,8 @@ mod tests {
     }
 
     // The optional RPM-spec fields (prerelease/version_metadata/prefixes/
-    // build_host/pretrans/posttrans/import_path/bins) must be folded into
-    // the auto-generated default spec, not only into the user-supplied
+    // build_host/pretrans/posttrans/bins) must be folded into the
+    // auto-generated default spec, not only into the user-supplied
     // `spec_file:` template surface.
     /// `generate_default_spec` must honor `SOURCE_DATE_EPOCH` for the
     /// `%changelog` header date — without this, two from-clean
@@ -627,7 +673,14 @@ mod tests {
         let cfg = SrpmConfig::default();
         let env =
             anodizer_core::env_source::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1715000000");
-        let spec = generate_default_spec("myapp", "1.0.0", &cfg, "myapp-1.0.0.tar.gz", &env);
+        let spec = generate_default_spec(
+            "myapp",
+            "1.0.0",
+            &cfg,
+            "myapp-1.0.0.tar.gz",
+            &BTreeMap::new(),
+            &env,
+        );
         // 1715000000 → 2024-05-06 Mon (UTC).
         assert!(
             spec.contains("* Mon May 06 2024"),
@@ -644,8 +697,6 @@ mod tests {
             prefixes: Some(vec!["/opt".to_string(), "/usr/local".to_string()]),
             pretrans: Some("scripts/pretrans.sh".to_string()),
             posttrans: Some("scripts/posttrans.sh".to_string()),
-            import_path: Some("github.com/me/myapp".to_string()),
-            bins: Some(vec!["myapp-cli".to_string()]),
             ..Default::default()
         };
         let spec = generate_default_spec(
@@ -653,6 +704,7 @@ mod tests {
             "1.0.0",
             &cfg,
             "myapp-1.0.0.tar.gz",
+            &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
         );
         // Version field carries prerelease (~) and metadata (+) suffixes.
@@ -668,10 +720,186 @@ mod tests {
         // Pretrans + posttrans scriptlets sourcing the configured files.
         assert!(spec.contains("%pretrans\n. scripts/pretrans.sh"));
         assert!(spec.contains("%posttrans\n. scripts/posttrans.sh"));
-        // Import path + bins surface as header comments (mirrors spec_file
-        // template-var semantics — downstream tooling can grep them out).
-        assert!(spec.contains("# ImportPath: github.com/me/myapp"));
-        assert!(spec.contains("# Bins: myapp-cli"));
+    }
+
+    /// An explicit `bins:` override is emitted verbatim into the `%files`
+    /// section (binary→install-path map, GR `SRPM.Bins` semantics), in
+    /// deterministic key order.
+    #[test]
+    fn test_generate_default_spec_emits_bins_override_in_files() {
+        let mut bins = BTreeMap::new();
+        bins.insert("myapp".to_string(), "/opt/myapp/bin/myapp".to_string());
+        bins.insert(
+            "myapp-helper".to_string(),
+            "%{_bindir}/myapp-helper".to_string(),
+        );
+        let cfg = SrpmConfig {
+            bins: Some(bins.clone()),
+            ..Default::default()
+        };
+        // `bins` passed to generate_default_spec is the already-resolved map,
+        // which for an override equals the config map.
+        let resolved = resolve_bins(cfg.bins.as_ref(), std::iter::empty());
+        assert_eq!(resolved, bins, "override must pass through verbatim");
+        let spec = generate_default_spec(
+            "myapp",
+            "1.0.0",
+            &cfg,
+            "myapp-1.0.0.tar.gz",
+            &resolved,
+            &anodizer_core::env_source::MapEnvSource::new(),
+        );
+        // Both install paths land in %files, sorted by binary name
+        // (myapp before myapp-helper).
+        let files_idx = spec.find("%files").expect("spec has %files");
+        let files_tail = &spec[files_idx..];
+        assert!(
+            files_tail.contains("/opt/myapp/bin/myapp\n"),
+            "override install path must appear in %files; got:\n{spec}"
+        );
+        assert!(
+            files_tail.contains("%{_bindir}/myapp-helper\n"),
+            "second override install path must appear in %files; got:\n{spec}"
+        );
+        let a = files_tail.find("/opt/myapp/bin/myapp").unwrap();
+        let b = files_tail.find("%{_bindir}/myapp-helper").unwrap();
+        assert!(a < b, "%files entries must be in deterministic key order");
+    }
+
+    /// When `bins:` is omitted, each binary the build produced for the crate
+    /// defaults to `%{_bindir}/<name>` (`/usr/bin/<name>`). Derived from the
+    /// per-crate binary names — no user config required.
+    #[test]
+    fn test_resolve_bins_derives_default_bindir_paths() {
+        let built = vec!["myapp".to_string(), "myapp-helper".to_string()];
+        let resolved = resolve_bins(None, built.into_iter());
+        let mut expected = BTreeMap::new();
+        expected.insert("myapp".to_string(), "%{_bindir}/myapp".to_string());
+        expected.insert(
+            "myapp-helper".to_string(),
+            "%{_bindir}/myapp-helper".to_string(),
+        );
+        assert_eq!(resolved, expected);
+
+        // …and those default paths reach the %files section.
+        let cfg = SrpmConfig::default();
+        let spec = generate_default_spec(
+            "myapp",
+            "1.0.0",
+            &cfg,
+            "myapp-1.0.0.tar.gz",
+            &resolved,
+            &anodizer_core::env_source::MapEnvSource::new(),
+        );
+        let files_tail = &spec[spec.find("%files").unwrap()..];
+        assert!(files_tail.contains("%{_bindir}/myapp\n"), "got:\n{spec}");
+        assert!(
+            files_tail.contains("%{_bindir}/myapp-helper\n"),
+            "got:\n{spec}"
+        );
+    }
+
+    /// Add a `Binary` artifact carrying the `binary` metadata key that
+    /// `extra_binary()` reads, under the given crate name + target. Mirrors
+    /// how the build stage registers binaries so the test drives the real
+    /// `ctx.artifacts.by_kind(Binary)` query the stage runs.
+    #[cfg(test)]
+    fn add_binary(ctx: &mut Context, crate_name: &str, bin: &str, target: &str) {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from(format!("dist/{target}/{bin}")),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: HashMap::from([("binary".to_string(), bin.to_string())]),
+            size: None,
+        });
+    }
+
+    /// The default `%files` derivation runs the SAME project-global
+    /// `ctx.artifacts.by_kind(Binary)` query the stage uses — NOT a stubbed
+    /// iterator. The source RPM is project-global, so binaries from EVERY
+    /// crate land in the one `.spec` regardless of crate identity. The same
+    /// binary across two targets dedupes to one entry, in deterministic key
+    /// order.
+    #[test]
+    fn test_default_bins_derive_project_global_from_ctx_artifacts() {
+        // project_name is set distinct from every crate name because the
+        // default %files must derive from all produced binaries regardless of
+        // crate identity; a crate-name-scoped lookup would match nothing here.
+        let config = anodizer_core::config::Config {
+            project_name: "myproject".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+
+        // Two distinct crates; `cli` builds the same binary for two targets
+        // (must dedupe), `daemon` builds its own.
+        add_binary(&mut ctx, "cli", "alpha", "x86_64-unknown-linux-gnu");
+        add_binary(&mut ctx, "cli", "alpha", "aarch64-unknown-linux-gnu");
+        add_binary(&mut ctx, "daemon", "beta", "x86_64-unknown-linux-gnu");
+
+        // Exactly the expression the stage runs to build `effective_bins`.
+        let effective_bins: BTreeMap<String, String> = resolve_bins(
+            None,
+            ctx.artifacts
+                .by_kind(ArtifactKind::Binary)
+                .iter()
+                .filter_map(|a| a.extra_binary()),
+        );
+
+        // Both crates' binaries present, deduped to one entry each.
+        let mut expected = BTreeMap::new();
+        expected.insert("alpha".to_string(), "%{_bindir}/alpha".to_string());
+        expected.insert("beta".to_string(), "%{_bindir}/beta".to_string());
+        assert_eq!(
+            effective_bins, expected,
+            "project-global default must own every produced binary, deduped"
+        );
+
+        let spec = generate_default_spec(
+            "myproject",
+            "1.0.0",
+            &SrpmConfig::default(),
+            "myproject-1.0.0.tar.gz",
+            &effective_bins,
+            &anodizer_core::env_source::MapEnvSource::new(),
+        );
+        let files = &spec[spec.find("%files").unwrap()..];
+        assert!(files.contains("%{_bindir}/alpha\n"), "got:\n{spec}");
+        assert!(files.contains("%{_bindir}/beta\n"), "got:\n{spec}");
+        // alpha before beta — deterministic key order, single alpha entry.
+        let a = files.find("%{_bindir}/alpha").unwrap();
+        let b = files.find("%{_bindir}/beta").unwrap();
+        assert!(a < b, "%files entries must be in deterministic key order");
+        assert_eq!(
+            files.matches("%{_bindir}/alpha\n").count(),
+            1,
+            "alpha built for two targets must appear once; got:\n{spec}"
+        );
+    }
+
+    /// Single-crate positive case: one crate, one binary, default derives
+    /// `%{_bindir}/<name>` from the real artifact query.
+    #[test]
+    fn test_default_bins_single_crate_from_ctx_artifacts() {
+        let config = anodizer_core::config::Config {
+            project_name: "solo".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        add_binary(&mut ctx, "solo", "solo", "x86_64-unknown-linux-gnu");
+
+        let effective_bins: BTreeMap<String, String> = resolve_bins(
+            None,
+            ctx.artifacts
+                .by_kind(ArtifactKind::Binary)
+                .iter()
+                .filter_map(|a| a.extra_binary()),
+        );
+        let mut expected = BTreeMap::new();
+        expected.insert("solo".to_string(), "%{_bindir}/solo".to_string());
+        assert_eq!(effective_bins, expected);
     }
 
     /// Cover the six optional fields surfaced through
@@ -715,6 +943,7 @@ mod tests {
             "1.0.0",
             &cfg,
             "myapp-1.0.0.tar.gz",
+            &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
         );
 
@@ -763,6 +992,7 @@ mod tests {
             "1.0.0",
             &cfg,
             "myapp-1.0.0.tar.gz",
+            &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
         );
         assert!(spec.contains("%define _source_payload      w9.lz4io"));
@@ -798,8 +1028,8 @@ crates:
     #[test]
     fn test_srpm_new_rpm_spec_fields_parse() {
         // The optional RPM-spec fields (prerelease/version_metadata/prefixes/
-        // build_host/pretrans/posttrans/import_path/bins) parse and surface
-        // on the SrpmConfig struct.
+        // build_host/pretrans/posttrans/bins) parse and surface on the
+        // SrpmConfig struct. `bins` is a binary→install-path map.
         use anodizer_core::config::Config;
 
         let yaml = r#"
@@ -808,8 +1038,7 @@ srpm:
   enabled: true
   package_name: myapp
   bins:
-    - myapp-cli
-  import_path: github.com/me/myapp
+    myapp-cli: "%{_bindir}/myapp-cli"
   prefixes:
     - /opt/myapp
   build_host: build.local
@@ -824,8 +1053,11 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let srpm = config.srpms.as_ref().unwrap();
-        assert_eq!(srpm.bins.as_ref().unwrap(), &vec!["myapp-cli".to_string()]);
-        assert_eq!(srpm.import_path.as_deref(), Some("github.com/me/myapp"));
+        let bins = srpm.bins.as_ref().unwrap();
+        assert_eq!(
+            bins.get("myapp-cli").map(String::as_str),
+            Some("%{_bindir}/myapp-cli")
+        );
         assert_eq!(
             srpm.prefixes.as_ref().unwrap(),
             &vec!["/opt/myapp".to_string()]

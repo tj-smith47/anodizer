@@ -654,7 +654,7 @@ All fields are optional in YAML; missing fields fall back to GoReleaser's defaul
 ## `srpms`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `bins` | list of string | — | Build IDs whose binaries are bundled into the source RPM. When set, only artifacts produced by builds with these IDs are packaged. Mirrors GR `NFPM.Builds`. |
+| `bins` | map | — | Map of binary name → install path declared in the spec's `%files` section, mirroring GR `SRPM.Bins`. Each entry tells the generated `.spec` which installed file the package owns. When omitted, each binary produced by the build for this crate defaults to `%{_bindir}/<name>` (i.e. `/usr/bin/<name>`, the RPM-idiomatic location for a built binary). Provide this only to override the install path or to declare extra owned paths. Stored as a `BTreeMap` so the emitted `%files` section iterates in deterministic key order. |
 | `build_host` | string | — | Override the build host recorded in the RPM header. Useful for reproducible builds where the actual hostname leaks build-env detail. |
 | `compression` | string | — | Compression algorithm (gzip, xz, zstd, none). |
 | `contents` | list of NfpmContent | — | Additional contents to include in the source RPM. Shares the unified [`NfpmContent`] type with nFPM contents; SRPM-style `source:` / `destination:` / `type:` keys are accepted via serde aliases. |
@@ -664,7 +664,6 @@ All fields are optional in YAML; missing fields fall back to GoReleaser's defaul
 | `epoch` | string | — | RPM epoch. |
 | `file_name_template` | string | — | Output filename template. |
 | `group` | string | — | RPM group. |
-| `import_path` | string | — | Project import path (Go-style; for Rust this is the canonical repository URL, e.g. `github.com/owner/repo`). Used in spec file generation for downstream tooling that expects a vcs-rooted path. |
 | `license` | string | — | License identifier. |
 | `license_file_name` | string | — | License file name to include. |
 | `maintainer` | string | — | Package maintainer. |

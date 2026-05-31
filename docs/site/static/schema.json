@@ -12165,13 +12165,13 @@
       "type": "object",
       "properties": {
         "bins": {
-          "description": "Build IDs whose binaries are bundled into the source RPM. When set, only artifacts produced by builds with these IDs are packaged. Mirrors GR `NFPM.Builds`.",
+          "description": "Map of binary name → install path declared in the spec's `%files` section, mirroring GR `SRPM.Bins`. Each entry tells the generated `.spec` which installed file the package owns. When omitted, each binary produced by the build for this crate defaults to `%{_bindir}/<name>` (i.e. `/usr/bin/<name>`, the RPM-idiomatic location for a built binary). Provide this only to override the install path or to declare extra owned paths. Stored as a `BTreeMap` so the emitted `%files` section iterates in deterministic key order.",
           "default": null,
           "type": [
-            "array",
+            "object",
             "null"
           ],
-          "items": {
+          "additionalProperties": {
             "type": "string"
           }
         },
@@ -12247,14 +12247,6 @@
         },
         "group": {
           "description": "RPM group.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "import_path": {
-          "description": "Project import path (Go-style; for Rust this is the canonical repository URL, e.g. `github.com/owner/repo`). Used in spec file generation for downstream tooling that expects a vcs-rooted path.",
           "default": null,
           "type": [
             "string",
