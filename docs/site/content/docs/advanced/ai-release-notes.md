@@ -32,7 +32,8 @@ anodize release
 The flow:
 
 1. The native changelog generator produces the SCM-style body (or
-   `--release-notes-tmpl` does, if set — see [Precedence](#precedence)).
+   `--release-notes-tmpl` does, if set — see [Interaction with
+   `--release-notes` / `--release-notes-tmpl`](#interaction-with-release-notes-release-notes-tmpl)).
 2. The prompt is rendered through Tera with the full template context
    plus a one-shot `ReleaseNotes` variable bound to that body.
 3. The configured provider is called once per crate.

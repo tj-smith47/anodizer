@@ -180,7 +180,7 @@ Anodizer auto-generates `Info.plist` with:
 | `CFBundleIconFile` | Icon filename (when `icon` is set) |
 
 If you need a key not in this list, supply your own `Info.plist` via the
-[override pattern](#overriding-the-generated-infoplist).
+[override pattern](#overriding-the-generated-info-plist).
 
 ## Defaults vs GoReleaser
 
