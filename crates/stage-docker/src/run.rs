@@ -277,7 +277,7 @@ fn run_docker_post_hooks(
             "post-docker_v2[{}]",
             cph.id.as_deref().unwrap_or(&cph.idx.to_string())
         );
-        run_hooks(&cph.hooks, &post_label, false, log, Some(&hook_vars))?;
+        run_hooks(&cph.hooks, &post_label, false, log, Some(&hook_vars), None)?;
     }
     Ok(())
 }
@@ -621,7 +621,7 @@ fn prepare_v2_config(
             "pre-docker_v2[{}]",
             v2_cfg.id.as_deref().unwrap_or(&idx.to_string())
         );
-        if let Err(e) = run_hooks(&pre_hooks, &pre_label, dry_run, log, Some(&hook_vars)) {
+        if let Err(e) = run_hooks(&pre_hooks, &pre_label, dry_run, log, Some(&hook_vars), None) {
             log.warn(&format!(
                 "{}: pre-hook failed; skipping this config's build (other configs continue): {:#}",
                 pre_label, e
@@ -667,7 +667,14 @@ fn prepare_v2_config(
             "post-docker_v2[{}]",
             v2_cfg.id.as_deref().unwrap_or(&idx.to_string())
         );
-        run_hooks(&post_hooks, &post_label, dry_run, log, Some(&hook_vars))?;
+        run_hooks(
+            &post_hooks,
+            &post_label,
+            dry_run,
+            log,
+            Some(&hook_vars),
+            None,
+        )?;
     } else if !dry_run && !post_hooks.is_empty() {
         config_post_hooks.push(PerConfigPostHook {
             idx,

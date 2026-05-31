@@ -239,7 +239,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
         }
 
         if !pre_hooks.is_empty() {
-            run_hooks(&pre_hooks, "tag-pre", dry_run, &log, Some(&tv))?;
+            run_hooks(&pre_hooks, "tag-pre", dry_run, &log, Some(&tv), None)?;
         }
 
         if cfg.git_api_tagging {
@@ -250,7 +250,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
         }
 
         if !post_hooks.is_empty() {
-            run_hooks(&post_hooks, "tag-post", dry_run, &log, Some(&tv))?;
+            run_hooks(&post_hooks, "tag-post", dry_run, &log, Some(&tv), None)?;
         }
         Ok(())
     };

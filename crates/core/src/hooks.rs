@@ -37,12 +37,21 @@ fn render_hook_template(template: &str, vars: &TemplateVars, label: &str) -> Res
 /// Note: Rust's `Command` inherits the process environment by default.
 /// Pipeline env vars (VERSION, TAG, etc.) should be set in the process
 /// environment before calling `run_hooks`, which `setup_env()` handles.
+///
+/// `build_env` carries the active build's per-target `builds[].env` map
+/// (already rendered/expanded by the build planner). It layers BETWEEN the
+/// inherited process env (base) and each hook's own `env:` (most specific),
+/// matching GoReleaser's `append(buildEnv, hook.Env...)` precedence
+/// (`internal/pipe/build/build.go` `runHook`): a key present in both the
+/// build env and a hook's `env:` resolves to the hook value. Pass `None`
+/// (or an empty map) at non-build hook sites — they have no build env.
 pub fn run_hooks(
     hooks: &[HookEntry],
     label: &str,
     dry_run: bool,
     log: &StageLogger,
     template_vars: Option<&TemplateVars>,
+    build_env: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<()> {
     for hook in hooks {
         let (raw_cmd, raw_dir, env, output_flag, if_cond) = match hook {
@@ -123,6 +132,15 @@ pub fn run_hooks(
             // by `redact_secrets` on the output side.
             if let Some(ref d) = dir_str {
                 command.current_dir(d);
+            }
+            // GoReleaser precedence: process env (inherited, base) < build env
+            // < hook env. Apply the per-target build env first so a same-key
+            // hook `env:` entry below overrides it (matching GR's
+            // `append(buildEnv, hook.Env...)`).
+            if let Some(be) = build_env {
+                for (k, v) in be {
+                    command.env(k, v);
+                }
             }
             if let Some(ref envs) = expanded_env {
                 for (k, v) in envs {
@@ -256,7 +274,8 @@ fn run_before_publish_entry(
         // to the lifecycle hook sites — only the per-artifact iteration is
         // new here.
         let single = std::slice::from_ref(entry);
-        run_hooks(single, "before-publish", dry_run, log, Some(&vars))?;
+        // before_publish hooks are not build hooks — no per-target build env.
+        run_hooks(single, "before-publish", dry_run, log, Some(&vars), None)?;
     }
     Ok(())
 }
@@ -296,6 +315,7 @@ mod tests {
     use super::*;
     use crate::config::StructuredHook;
     use crate::log::{StageLogger, Verbosity};
+    use std::collections::HashMap;
 
     fn test_logger() -> StageLogger {
         StageLogger::new("test", Verbosity::Normal)
@@ -321,7 +341,7 @@ mod tests {
         let vars = vars_with_snapshot(true);
         let hooks = vec![structured("true", Some("{{ IsSnapshot }}"))];
         // dry_run=true → no actual exec; the function still walks the gate.
-        run_hooks(&hooks, "test", true, &log, Some(&vars))
+        run_hooks(&hooks, "test", true, &log, Some(&vars), None)
             .expect("snapshot=true must let the hook proceed");
     }
 
@@ -333,7 +353,7 @@ mod tests {
             "false-cmd-must-be-skipped",
             Some("{{ IsSnapshot }}"),
         )];
-        run_hooks(&hooks, "test", false, &log, Some(&vars))
+        run_hooks(&hooks, "test", false, &log, Some(&vars), None)
             .expect("falsy `if:` must skip without spawning the cmd");
     }
 
@@ -342,7 +362,7 @@ mod tests {
         let log = test_logger();
         let vars = vars_with_snapshot(false);
         let hooks = vec![structured("true", Some("true"))];
-        run_hooks(&hooks, "test", true, &log, Some(&vars)).expect("`if: true` must proceed");
+        run_hooks(&hooks, "test", true, &log, Some(&vars), None).expect("`if: true` must proceed");
     }
 
     #[test]
@@ -350,8 +370,119 @@ mod tests {
         let log = test_logger();
         let vars = vars_with_snapshot(false);
         let hooks = vec![structured("true", Some(""))];
-        run_hooks(&hooks, "test", true, &log, Some(&vars))
+        run_hooks(&hooks, "test", true, &log, Some(&vars), None)
             .expect("empty `if:` literal must be a no-op (always proceed)");
+    }
+
+    /// Run a single real (non-dry-run) hook that appends `KEY=$KEY` lines to
+    /// `out_file` for each requested key, so the caller can assert what the
+    /// hook actually saw in its process environment.
+    fn run_env_probe_hook(
+        out_file: &std::path::Path,
+        keys: &[&str],
+        hook_env: Option<Vec<String>>,
+        build_env: Option<&HashMap<String, String>>,
+    ) -> Result<()> {
+        let log = test_logger();
+        let probe = keys
+            .iter()
+            .map(|k| format!("echo {k}=${k} >> {}", out_file.display()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let hooks = vec![HookEntry::Structured(StructuredHook {
+            cmd: probe,
+            env: hook_env,
+            ..Default::default()
+        })];
+        let vars = TemplateVars::new();
+        run_hooks(&hooks, "build", false, &log, Some(&vars), build_env)
+    }
+
+    #[test]
+    fn build_env_reaches_build_hook() {
+        let dir = std::env::temp_dir().join(format!("anodizer-be-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("reaches.txt");
+        let _ = std::fs::remove_file(&out);
+
+        let mut build_env = HashMap::new();
+        build_env.insert("MY_BUILD_VAR".to_string(), "from-build-env".to_string());
+
+        run_env_probe_hook(&out, &["MY_BUILD_VAR"], None, Some(&build_env)).expect("hook must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            contents.contains("MY_BUILD_VAR=from-build-env"),
+            "build env var must reach the hook; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn hook_env_overrides_build_env_on_key_conflict() {
+        let dir = std::env::temp_dir().join(format!("anodizer-be-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("precedence.txt");
+        let _ = std::fs::remove_file(&out);
+
+        let mut build_env = HashMap::new();
+        build_env.insert("SHARED".to_string(), "build-loses".to_string());
+
+        run_env_probe_hook(
+            &out,
+            &["SHARED"],
+            Some(vec!["SHARED=hook-wins".to_string()]),
+            Some(&build_env),
+        )
+        .expect("hook must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            contents.contains("SHARED=hook-wins"),
+            "hook env must override build env on key conflict (GR append order); got: {contents:?}"
+        );
+        assert!(
+            !contents.contains("SHARED=build-loses"),
+            "build env value must not survive a hook-env override; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn absent_build_env_is_unchanged_behavior() {
+        let dir = std::env::temp_dir().join(format!("anodizer-be-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("absent.txt");
+        let _ = std::fs::remove_file(&out);
+
+        // No build env at all, and the probed key is unset → empty value, no panic.
+        run_env_probe_hook(&out, &["NOT_SET_ANYWHERE"], None, None).expect("hook must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            contents.contains("NOT_SET_ANYWHERE="),
+            "absent build env must leave behavior unchanged; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn empty_build_env_map_adds_nothing() {
+        let dir = std::env::temp_dir().join(format!("anodizer-be-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("empty.txt");
+        let _ = std::fs::remove_file(&out);
+
+        let build_env: HashMap<String, String> = HashMap::new();
+        run_env_probe_hook(&out, &["NOT_SET_ANYWHERE"], None, Some(&build_env))
+            .expect("hook must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            contents.contains("NOT_SET_ANYWHERE="),
+            "empty build env map must be a no-op; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
     }
 
     #[test]
@@ -359,7 +490,7 @@ mod tests {
         let log = test_logger();
         let vars = vars_with_snapshot(false);
         let hooks = vec![structured("true", Some("{{ UndefinedSymbol }}"))];
-        let err = run_hooks(&hooks, "test", true, &log, Some(&vars))
+        let err = run_hooks(&hooks, "test", true, &log, Some(&vars), None)
             .expect_err("unrenderable template must surface as Err");
         let chain = format!("{err:#}");
         assert!(

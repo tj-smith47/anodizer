@@ -747,7 +747,7 @@ fn archive_one_config(
                     && let Some(pre) = archive_cfg.hooks.as_ref().and_then(|h| h.before.as_ref())
                 {
                     let hook_vars = ctx.template_vars().clone();
-                    run_hooks(pre, &pre_label, dry_run, log, Some(&hook_vars))?;
+                    run_hooks(pre, &pre_label, dry_run, log, Some(&hook_vars), None)?;
                 }
 
                 // Render archive-scoped templated_files into a temp
@@ -969,7 +969,7 @@ fn archive_one_config(
                     && let Some(post) = archive_cfg.hooks.as_ref().and_then(|h| h.after.as_ref())
                 {
                     let hook_vars = ctx.template_vars().clone();
-                    run_hooks(post, &post_label, dry_run, log, Some(&hook_vars))?;
+                    run_hooks(post, &post_label, dry_run, log, Some(&hook_vars), None)?;
                 }
             }
         }

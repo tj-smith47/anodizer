@@ -1074,6 +1074,7 @@ fn run_before_hooks(
             opts.dry_run,
             log,
             Some(ctx.template_vars()),
+            None,
         )?;
     }
     Ok(())
@@ -1452,7 +1453,14 @@ pub(super) fn run_post_pipeline_after_hooks_only(
     if let Some(after) = &config.after
         && let Some(ref hooks) = after.hooks
     {
-        pipeline::run_hooks(hooks, "after", dry_run, log, Some(ctx.template_vars()))?;
+        pipeline::run_hooks(
+            hooks,
+            "after",
+            dry_run,
+            log,
+            Some(ctx.template_vars()),
+            None,
+        )?;
     }
 
     Ok(())

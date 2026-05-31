@@ -207,12 +207,15 @@ pub(crate) fn build_universal_binary(
     if let Some(ref hooks) = ub.hooks
         && let Some(ref pre) = hooks.pre
     {
+        // Universal-binary hooks are not build hooks (no builds[].env applies);
+        // GoReleaser's universalbinary runHook injects only ctx.Env + hook.Env.
         run_hooks(
             pre,
             "pre-universal-binary",
             dry_run,
             &log,
             Some(&template_vars),
+            None,
         )?;
     }
 
@@ -275,6 +278,7 @@ pub(crate) fn build_universal_binary(
             dry_run,
             &log,
             Some(&template_vars),
+            None,
         )?;
     }
 

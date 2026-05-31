@@ -1333,6 +1333,71 @@ fn test_resolve_target_env_merges_multiple_matches() {
 }
 
 #[test]
+fn test_per_target_build_env_reaches_only_its_targets_hook() {
+    // End-to-end no-leak invariant: the per-target env that the planner feeds
+    // into `BuildJob.build_env` is resolved by `resolve_target_env` for the
+    // SPECIFIC (crate, target) being built, then layered into that job's build
+    // hooks by `run_hooks`. Target A's hook must see A's env, target B's hook
+    // must see B's env — never the other's. This covers the multi-target /
+    // workspace-per-crate axis where each build resolves independently.
+    use anodizer_core::config::{HookEntry, StructuredHook};
+    use anodizer_core::hooks::run_hooks;
+    use anodizer_core::template::TemplateVars;
+
+    let log = test_logger();
+    let env: HashMap<String, HashMap<String, String>> = HashMap::from([
+        (
+            "x86_64-unknown-linux-gnu".to_string(),
+            HashMap::from([("TARGET_TAG".to_string(), "linux-amd64".to_string())]),
+        ),
+        (
+            "aarch64-apple-darwin".to_string(),
+            HashMap::from([("TARGET_TAG".to_string(), "darwin-arm64".to_string())]),
+        ),
+    ]);
+
+    let dir = std::env::temp_dir().join(format!("anodizer-mt-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let probe = |target: &str, out: &std::path::Path| {
+        let resolved = resolve_target_env(Some(&env), target, &log, false)
+            .unwrap()
+            .unwrap_or_default();
+        let hooks = vec![HookEntry::Structured(StructuredHook {
+            cmd: format!("echo TARGET_TAG=$TARGET_TAG > {}", out.display()),
+            ..Default::default()
+        })];
+        let vars = TemplateVars::new();
+        run_hooks(
+            &hooks,
+            "post-build",
+            false,
+            &log,
+            Some(&vars),
+            Some(&resolved),
+        )
+        .unwrap();
+        std::fs::read_to_string(out).unwrap()
+    };
+
+    let a_out = dir.join("a.txt");
+    let b_out = dir.join("b.txt");
+    let a = probe("x86_64-unknown-linux-gnu", &a_out);
+    let b = probe("aarch64-apple-darwin", &b_out);
+
+    assert!(
+        a.contains("TARGET_TAG=linux-amd64") && !a.contains("darwin-arm64"),
+        "linux target's hook must see only linux env; got: {a:?}"
+    );
+    assert!(
+        b.contains("TARGET_TAG=darwin-arm64") && !b.contains("linux-amd64"),
+        "darwin target's hook must see only darwin env; got: {b:?}"
+    );
+    let _ = std::fs::remove_file(&a_out);
+    let _ = std::fs::remove_file(&b_out);
+}
+
+#[test]
 fn test_resolve_target_env_invalid_glob_strict_errors() {
     let log = test_logger();
     let env: HashMap<String, HashMap<String, String>> = HashMap::from([(

@@ -657,6 +657,14 @@ fn plan_build_jobs(
                         crate_path: crate_cfg.path.clone(),
                         mod_timestamp: build.mod_timestamp.clone(),
                         amd64_variant: copy_variant,
+                        // copy_from jobs run no pre/post hooks (empty above), so
+                        // this is inert. It carries the RAW (un-rendered)
+                        // per-target env — the rendered `target_env` (with
+                        // RUSTFLAGS/SOURCE_DATE_EPOCH + override merges folded
+                        // in) is built only on the compile path below. Anyone
+                        // later attaching hooks here must switch to that
+                        // rendered map, not this pre-render one.
+                        build_env: raw_target_env.clone().unwrap_or_default(),
                     });
                     continue;
                 }
@@ -794,6 +802,11 @@ fn plan_build_jobs(
                     crate_path: crate_cfg.path.clone(),
                     mod_timestamp: build.mod_timestamp.clone(),
                     amd64_variant: detect_amd64_variant(target, &target_env),
+                    // Fully-rendered per-target build env (overrides + the
+                    // reproducible RUSTFLAGS/SOURCE_DATE_EPOCH merges already
+                    // folded in) flows into this job's build hooks beneath the
+                    // hook's own env:, matching GoReleaser precedence.
+                    build_env: target_env.clone(),
                 });
             }
         }

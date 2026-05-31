@@ -42,6 +42,11 @@ pub(crate) struct BuildJob {
     pub crate_path: String,
     pub mod_timestamp: Option<String>,
     pub amd64_variant: Option<String>,
+    /// Fully-rendered per-(crate, target) `builds[].env` map for THIS job.
+    /// Layered into this job's build hooks beneath each hook's own `env:`,
+    /// matching GoReleaser's build-hook env precedence. Empty when the build
+    /// declares no `env:` for the active target.
+    pub build_env: HashMap<String, String>,
 }
 
 pub(crate) struct BuildResult {
@@ -320,6 +325,7 @@ pub(crate) fn run_dry_run(
                 true,
                 exec.log,
                 Some(exec.template_vars),
+                Some(&job.build_env),
             )?;
         }
         if let Some(ref cmd) = job.cmd {
@@ -339,6 +345,7 @@ pub(crate) fn run_dry_run(
                 true,
                 exec.log,
                 Some(exec.template_vars),
+                Some(&job.build_env),
             )?;
         }
         add_artifact(
@@ -382,6 +389,7 @@ pub(crate) fn run_sequential(
                 false,
                 exec.log,
                 Some(exec.template_vars),
+                Some(&job.build_env),
             )?;
         }
 
@@ -443,6 +451,7 @@ pub(crate) fn run_sequential(
                 false,
                 exec.log,
                 Some(exec.template_vars),
+                Some(&job.build_env),
             )?;
         }
 
@@ -517,6 +526,7 @@ pub(crate) fn run_parallel(
                     let commit_ts = commit_timestamp.to_string();
                     let pre_hooks = job.pre_hooks.clone();
                     let post_hooks = job.post_hooks.clone();
+                    let build_env = job.build_env.clone();
                     let job_mod_timestamp = job.mod_timestamp.clone();
                     let job_amd64_variant = job.amd64_variant.clone();
                     let thread_tvars = template_vars.clone();
@@ -541,7 +551,7 @@ pub(crate) fn run_parallel(
                             })?;
                         }
                         if !pre_hooks.is_empty() {
-                            run_hooks(&pre_hooks, "pre-build", false, &thread_log, Some(&thread_tvars))?;
+                            run_hooks(&pre_hooks, "pre-build", false, &thread_log, Some(&thread_tvars), Some(&build_env))?;
                         }
 
                         thread_log.status(&format!("running: {} {}", program, args.join(" ")));
@@ -612,7 +622,7 @@ pub(crate) fn run_parallel(
                         }
 
                         if !post_hooks.is_empty() {
-                            run_hooks(&post_hooks, "post-build", false, &thread_log, Some(&thread_tvars))?;
+                            run_hooks(&post_hooks, "post-build", false, &thread_log, Some(&thread_tvars), Some(&build_env))?;
                         }
 
                         Ok(BuildResult {

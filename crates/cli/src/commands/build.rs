@@ -66,7 +66,14 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         && let Some(before) = &config.before
         && let Some(ref hooks) = before.hooks
     {
-        pipeline::run_hooks(hooks, "before", false, &log, Some(ctx.template_vars()))?;
+        pipeline::run_hooks(
+            hooks,
+            "before",
+            false,
+            &log,
+            Some(ctx.template_vars()),
+            None,
+        )?;
     }
 
     // Dump effective (resolved) config to dist/config.yaml before the build runs.
