@@ -78,16 +78,21 @@ pub(crate) fn resolve_secret_name(
 
 /// Look up a crate's config and its `publish` section by name, returning a
 /// descriptive error when either is missing.
+///
+/// Resolves against the full crate universe — top-level `ctx.config.crates`
+/// PLUS every `ctx.config.workspaces[].crates` — so a workspace-only crate
+/// (the only shape in a pure-workspace config like a multi-crate monorepo)
+/// is found by name. Top-level entries take precedence on a name collision,
+/// matching [`all_crates`]'s dedup order. Without the workspace fallthrough
+/// every per-publisher lookup (nix, homebrew, scoop, aur, krew, winget,
+/// chocolatey) — and the snapshot emission validator that drives them —
+/// would `bail!` "not found" for a crate defined under `workspaces:`.
 pub(crate) fn get_publish_config<'a>(
     ctx: &'a Context,
     crate_name: &str,
     label: &str,
 ) -> Result<(&'a CrateConfig, &'a PublishConfig)> {
-    let crate_cfg = ctx
-        .config
-        .crates
-        .iter()
-        .find(|c| c.name == crate_name)
+    let crate_cfg = find_crate_in_universe(ctx, crate_name)
         .ok_or_else(|| anyhow::anyhow!("{label}: crate '{crate_name}' not found in config"))?;
 
     let publish = crate_cfg
@@ -96,6 +101,23 @@ pub(crate) fn get_publish_config<'a>(
         .ok_or_else(|| anyhow::anyhow!("{label}: no publish config for '{crate_name}'"))?;
 
     Ok((crate_cfg, publish))
+}
+
+/// Borrow a crate by name from the full crate universe: `ctx.config.crates`
+/// first (top-level wins, mirroring [`all_crates`] dedup precedence), then
+/// the first matching `ctx.config.workspaces[].crates` entry. Returns a
+/// reference tied to `ctx` so callers can keep zero-copy `&CrateConfig`
+/// access without cloning the whole universe.
+fn find_crate_in_universe<'a>(ctx: &'a Context, crate_name: &str) -> Option<&'a CrateConfig> {
+    if let Some(c) = ctx.config.crates.iter().find(|c| c.name == crate_name) {
+        return Some(c);
+    }
+    ctx.config
+        .workspaces
+        .as_ref()?
+        .iter()
+        .flat_map(|ws| ws.crates.iter())
+        .find(|c| c.name == crate_name)
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +293,9 @@ pub(crate) fn resolve_repo_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodizer_core::config::{CrateConfig, WorkspaceConfig};
+    use anodizer_core::config::{
+        BinstallConfig, CrateConfig, NixConfig, PublishConfig, WorkspaceConfig,
+    };
     use anodizer_core::log::LogCapture;
     use anodizer_core::test_helpers::TestContextBuilder;
 
@@ -282,6 +306,95 @@ mod tests {
             tag_template: "v{{ .Version }}".to_string(),
             ..Default::default()
         }
+    }
+
+    /// A crate carrying a `publish.nix` block plus an enabled binstall
+    /// emission — the shape `get_publish_config` and the snapshot validator
+    /// must resolve by name.
+    fn nix_binstall_crate(name: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            binstall: Some(BinstallConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            publish: Some(PublishConfig {
+                nix: Some(NixConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn get_publish_config_resolves_workspace_only_crate() {
+        // A pure-workspace config (no top-level `crates:`) is cfgd's shape:
+        // every crate lives under `workspaces:`. Before the universe-aware
+        // lookup, `get_publish_config` searched only `ctx.config.crates`
+        // (empty here) and bailed "crate 'cfgd' not found in config",
+        // breaking emission-validate for nix/binstall/homebrew/scoop/...
+        let ctx = TestContextBuilder::new()
+            .workspaces(vec![WorkspaceConfig {
+                name: "cfgd".to_string(),
+                crates: vec![nix_binstall_crate("cfgd")],
+                ..Default::default()
+            }])
+            .build();
+
+        let (crate_cfg, publish) =
+            get_publish_config(&ctx, "cfgd", "nix").expect("workspace crate must resolve by name");
+        assert_eq!(crate_cfg.name, "cfgd");
+        assert!(publish.nix.is_some(), "nix block must be reachable");
+        assert!(
+            crate_cfg
+                .binstall
+                .as_ref()
+                .is_some_and(|b| b.enabled == Some(true)),
+            "binstall block must be reachable on the resolved crate"
+        );
+    }
+
+    #[test]
+    fn get_publish_config_top_level_wins_over_workspace_on_name_collision() {
+        // Mirrors `all_crates` precedence: a top-level entry shadows a
+        // workspace entry sharing its name.
+        let mut top = nix_binstall_crate("dup");
+        top.path = "crates/top".to_string();
+        let mut ws = nix_binstall_crate("dup");
+        ws.path = "ws/dup".to_string();
+        let ctx = TestContextBuilder::new()
+            .crates(vec![top])
+            .workspaces(vec![WorkspaceConfig {
+                name: "ws-a".to_string(),
+                crates: vec![ws],
+                ..Default::default()
+            }])
+            .build();
+
+        let (crate_cfg, _publish) =
+            get_publish_config(&ctx, "dup", "nix").expect("collision must resolve");
+        assert_eq!(
+            crate_cfg.path, "crates/top",
+            "top-level entry must win on name collision"
+        );
+    }
+
+    #[test]
+    fn get_publish_config_unknown_crate_still_errors() {
+        let ctx = TestContextBuilder::new()
+            .workspaces(vec![WorkspaceConfig {
+                name: "ws-a".to_string(),
+                crates: vec![nix_binstall_crate("present")],
+                ..Default::default()
+            }])
+            .build();
+        let err = get_publish_config(&ctx, "absent", "nix").expect_err("must error");
+        assert!(
+            err.to_string().contains("not found in config"),
+            "missing crate must still bail: {err}"
+        );
     }
 
     #[test]
