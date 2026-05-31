@@ -10,7 +10,7 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DmgConfig {
     /// Unique identifier for this DMG config.
     pub id: Option<String>,
@@ -54,7 +54,7 @@ pub struct DmgConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MsiConfig {
     /// Unique identifier for this MSI config.
     pub id: Option<String>,
@@ -154,7 +154,7 @@ pub struct PkgConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NsisConfig {
     /// Unique identifier for this NSIS config.
     pub id: Option<String>,

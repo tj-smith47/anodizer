@@ -608,6 +608,34 @@ pub fn validate_tag_sort(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate `partial.by` up front so a stale value is rejected at config-load
+/// time regardless of which target-resolution path runs.
+///
+/// `partial.by` is read in two unrelated places: the host-detection branch of
+/// [`crate::partial::resolve_partial_target`] (which already rejects unknown
+/// values) and the split-matrix generator (which treats anything that is not
+/// `"os"` as `"target"`). Those two readers disagree on an out-of-set value
+/// like the pre-rename `"goos"`: one errors, the other silently mis-groups the
+/// matrix. Centralising the check means a typo fails loudly once, before
+/// either reader can diverge.
+pub fn validate_partial(config: &Config) -> Result<(), String> {
+    if let Some(ref partial) = config.partial
+        && let Some(ref by) = partial.by
+    {
+        match by.as_str() {
+            "os" | "target" => {}
+            other => {
+                return Err(format!(
+                    "unsupported partial.by value: \"{}\". \
+                     Accepted values: \"os\", \"target\".",
+                    other
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Known OS values accepted by `archives[].format_overrides[].os`.
 /// Mirrors the Go runtime's `runtime.GOOS` values GoReleaser's archive pipe
 /// recognises; anything outside this set is almost always a typo
@@ -1416,6 +1444,64 @@ pub fn warn_on_legacy_furies_alias(raw_yaml: &serde_yaml_ng::Value) {
              key will be removed in a future release."
         );
     }
+}
+
+/// Emit a one-time deprecation warning for each nfpm config object that uses
+/// the legacy `builds:` key. Serde transparently folds `builds:` into `ids:`
+/// via `#[serde(alias = "builds")]` on [`NfpmConfig::ids`], so this function
+/// consults the raw YAML pre-parse value to detect the legacy spelling that the
+/// typed parse would otherwise erase.
+///
+/// Mirrors GoReleaser's `NFPM.Builds` field, marked `// Deprecated: use [IDs]`.
+///
+/// nfpm config objects appear under the key `nfpm` or `nfpms` (a single map or
+/// a sequence of maps) at multiple nesting depths — top-level, under
+/// `defaults:`, under each `crates[]` entry, and under each
+/// `workspaces[].crates[]` entry. Rather than enumerate every path, this walks
+/// the tree recursively and inspects a node as an nfpm config only when it is
+/// the value of an `nfpm:`/`nfpms:` key, so an unrelated `builds:` key
+/// elsewhere (e.g. archives) is not double-counted.
+pub fn warn_on_legacy_nfpm_builds(raw_yaml: &serde_yaml_ng::Value) {
+    fn warn_for_nfpm_value(value: &serde_yaml_ng::Value) {
+        match value {
+            serde_yaml_ng::Value::Mapping(_) => {
+                if value.get("builds").is_some() {
+                    tracing::warn!(
+                        "DEPRECATION: nfpm `builds:` is deprecated; use `ids:` instead. \
+                         Both spellings are accepted but the legacy key will be removed in \
+                         a future release."
+                    );
+                }
+            }
+            serde_yaml_ng::Value::Sequence(items) => {
+                for item in items {
+                    warn_for_nfpm_value(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn descend(value: &serde_yaml_ng::Value) {
+        match value {
+            serde_yaml_ng::Value::Mapping(map) => {
+                for (key, child) in map {
+                    if matches!(key.as_str(), Some("nfpm") | Some("nfpms")) {
+                        warn_for_nfpm_value(child);
+                    }
+                    descend(child);
+                }
+            }
+            serde_yaml_ng::Value::Sequence(items) => {
+                for item in items {
+                    descend(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    descend(raw_yaml);
 }
 
 /// Reject the GoReleaser pre-v2.13.1 nested `mcp.github:` block with a

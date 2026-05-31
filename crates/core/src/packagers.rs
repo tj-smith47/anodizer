@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MakeselfConfig {
     /// Unique identifier for this makeself config (default: "default").
     pub id: Option<String>,
@@ -57,7 +57,13 @@ pub struct MakeselfConfig {
     /// Target architecture filter.
     pub arch: Option<Vec<String>>,
     /// Skip this config. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat
+    /// with imported GoReleaser configs (GR makeself uses `disable: string`).
+    #[serde(
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt",
+        default
+    )]
     pub skip: Option<StringOrBool>,
 }
 
@@ -65,8 +71,14 @@ pub struct MakeselfConfig {
 #[serde(default)]
 pub struct MakeselfFile {
     /// Source file path (relative to project root).
+    /// Accepts the GoReleaser `src:` spelling via serde alias for back-compat
+    /// with imported configs (GR `MakeselfFile.Source` is keyed `src`).
+    #[serde(alias = "src")]
     pub source: String,
     /// Destination path inside the archive.
+    /// Accepts the GoReleaser `dst:` spelling via serde alias for back-compat
+    /// with imported configs (GR `MakeselfFile.Destination` is keyed `dst`).
+    #[serde(alias = "dst")]
     pub destination: Option<String>,
     /// Strip the parent directory from the source path.
     pub strip_parent: Option<bool>,

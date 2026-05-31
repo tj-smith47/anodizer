@@ -10,7 +10,7 @@ use super::{FileInfo, StringOrU32};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmConfig {
     /// Unique identifier for cross-referencing this nFPM config.
     pub id: Option<String>,
@@ -51,6 +51,10 @@ pub struct NfpmConfig {
     /// Virtual packages provided by this package.
     pub provides: Option<Vec<String>>,
     /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
+    /// Accepts the deprecated GoReleaser `builds:` spelling via serde alias for
+    /// back-compat with imported configs (GR NFPM keeps `Builds []string`
+    /// marked `deprecated`, aliasing `ids`).
+    #[serde(alias = "builds")]
     pub ids: Option<Vec<String>>,
     /// amd64 microarchitecture variant filter (`["v1"]`, `["v2", "v3"]`, etc.).
     /// When set, only amd64 binaries with `amd64_variant` matching one of the

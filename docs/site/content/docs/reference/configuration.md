@@ -460,7 +460,7 @@ Cannot be combined with `url.template:` — set one or the other. If both are pr
 | `name` | string | — | Display name embedded in the self-extracting archive. |
 | `os` | list of string | — | Target OS filter (default: ["linux", "darwin"]). |
 | `script` | string | — | Startup script to run when the archive is extracted and executed. Required — the archive will not be created without this. |
-| `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. |
+| `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR makeself uses `disable: string`). |
 
 ## `mcp`
 MCP server registry publisher configuration.

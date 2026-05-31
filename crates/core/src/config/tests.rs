@@ -4285,6 +4285,49 @@ git:
     assert!(validate_tag_sort(&config).is_ok());
 }
 
+// ---- partial.by validation tests ----
+
+#[test]
+fn test_validate_partial_none_is_ok() {
+    let config = Config::default();
+    assert!(super::validate_partial(&config).is_ok());
+}
+
+#[test]
+fn test_validate_partial_accepts_os_and_target() {
+    for by in ["os", "target"] {
+        let config = Config {
+            partial: Some(super::PartialConfig {
+                by: Some(by.to_string()),
+            }),
+            ..Default::default()
+        };
+        assert!(
+            super::validate_partial(&config).is_ok(),
+            "partial.by={by} must validate"
+        );
+    }
+}
+
+#[test]
+fn test_validate_partial_rejects_pre_rename_goos() {
+    let config = Config {
+        partial: Some(super::PartialConfig {
+            by: Some("goos".to_string()),
+        }),
+        ..Default::default()
+    };
+    let err = super::validate_partial(&config).unwrap_err();
+    assert!(
+        err.contains("goos"),
+        "error should name the bad value: {err}"
+    );
+    assert!(
+        err.contains("\"os\"") && err.contains("\"target\""),
+        "error should list accepted values: {err}"
+    );
+}
+
 // ---- defaults axis-mismatch validation tests ----
 
 #[test]
@@ -6889,6 +6932,69 @@ crates:
 }
 
 #[test]
+fn test_makeself_config_rejects_renamed_go_fields() {
+    // `goos`/`goarch` were hard-renamed to `os`/`arch`. With
+    // `deny_unknown_fields` the old keys fail loudly instead of being
+    // silently ignored (which would revert the filter to its default and
+    // ship the wrong platforms).
+    for old in ["goos", "goarch"] {
+        let err = serde_yaml_ng::from_str::<super::MakeselfConfig>(&format!("{old}: [linux]\n"))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains(old),
+            "makeself {old}: must be rejected, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn test_makeself_config_accepts_disable_alias() {
+    // GoReleaser makeself uses `disable: string` as its skip mechanism. With
+    // `deny_unknown_fields` on MakeselfConfig the GR spelling would hard-reject
+    // unless aliased — assert the alias folds `disable:` into `skip`.
+    let cfg: super::MakeselfConfig = serde_yaml_ng::from_str("disable: true\n").unwrap();
+    match cfg.skip {
+        Some(super::StringOrBool::Bool(true)) => {}
+        other => panic!("expected disable: true to populate skip=Bool(true), got: {other:?}"),
+    }
+}
+
+#[test]
+fn test_makeself_file_accepts_src_dst_aliases() {
+    // GoReleaser's MakeselfFile keys its fields `src`/`dst`; anodizer renamed
+    // them to source/destination. Assert the GR spellings still parse via alias.
+    let f: super::MakeselfFile =
+        serde_yaml_ng::from_str("src: bin/app\ndst: usr/bin/app\n").unwrap();
+    assert_eq!(f.source, "bin/app");
+    assert_eq!(f.destination.as_deref(), Some("usr/bin/app"));
+}
+
+#[test]
+fn test_nfpm_config_accepts_builds_alias_into_ids() {
+    // GoReleaser NFPM keeps a deprecated `builds []string` aliasing `ids`. With
+    // `deny_unknown_fields` on NfpmConfig the GR spelling would hard-reject
+    // unless aliased — assert `builds:` lands in `ids`.
+    let cfg: super::NfpmConfig = serde_yaml_ng::from_str("builds: [foo, bar]\n").unwrap();
+    assert_eq!(
+        cfg.ids.as_deref(),
+        Some(&[String::from("foo"), String::from("bar")][..])
+    );
+}
+
+#[test]
+fn test_installer_and_nfpm_configs_reject_renamed_goamd64() {
+    // `goamd64` was hard-renamed to `amd64_variant` across dmg/msi/nsis/nfpm.
+    let err = serde_yaml_ng::from_str::<super::DmgConfig>("goamd64: v3\n").unwrap_err();
+    assert!(err.to_string().contains("goamd64"), "dmg: {err}");
+    let err = serde_yaml_ng::from_str::<super::MsiConfig>("goamd64: v3\n").unwrap_err();
+    assert!(err.to_string().contains("goamd64"), "msi: {err}");
+    let err = serde_yaml_ng::from_str::<super::NsisConfig>("goamd64: v3\n").unwrap_err();
+    assert!(err.to_string().contains("goamd64"), "nsis: {err}");
+    let err = serde_yaml_ng::from_str::<super::NfpmConfig>("goamd64: [v3]\n").unwrap_err();
+    assert!(err.to_string().contains("goamd64"), "nfpm: {err}");
+}
+
+#[test]
 fn test_builds_all_known_fields_still_parse() {
     // Guard: strictness must reject ONLY unknown fields. A build entry that
     // exercises the full known `BuildConfig` surface (plus nested ignore /
@@ -7837,6 +7943,88 @@ crates: []
         "canonical gemfury key must not look like the legacy furies alias"
     );
     assert!(raw.get("gemfury").is_some());
+}
+
+#[test]
+fn legacy_nfpm_builds_warn_runs_for_crates_nfpms() {
+    // crates[].nfpms[] with a legacy `builds:` key — the recursive probe must
+    // reach it and run without panicking (the helper emits via tracing and
+    // returns ()).
+    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+        r#"
+project_name: test
+crates:
+  - name: app
+    nfpms:
+      - id: deb
+        builds: [foo]
+      - id: rpm
+        ids: [bar]
+"#,
+    )
+    .unwrap();
+    super::warn_on_legacy_nfpm_builds(&raw);
+}
+
+#[test]
+fn legacy_nfpm_builds_warn_runs_for_defaults_nfpms() {
+    // defaults.nfpms[] depth.
+    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+        r#"
+project_name: test
+crates: []
+defaults:
+  nfpms:
+    - id: deb
+      builds: [foo, bar]
+"#,
+    )
+    .unwrap();
+    super::warn_on_legacy_nfpm_builds(&raw);
+}
+
+#[test]
+fn legacy_nfpm_builds_warn_runs_for_nested_workspace_crates() {
+    // workspaces[].crates[].nfpms[] — deepest nesting the recursive descent
+    // must reach. Also exercises a single-map `nfpm:` value, not a sequence.
+    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+        r#"
+project_name: test
+crates: []
+workspaces:
+  - members:
+      - core
+    crates:
+      - name: core
+        nfpm:
+          id: deb
+          builds: [foo]
+"#,
+    )
+    .unwrap();
+    super::warn_on_legacy_nfpm_builds(&raw);
+}
+
+#[test]
+fn legacy_nfpm_builds_warn_runs_cleanly_without_builds_key() {
+    // A config whose nfpm uses the canonical `ids:` and an unrelated archive
+    // `builds:` elsewhere must still run cleanly (no panic). The archive
+    // `builds:` is NOT an nfpm value, so it is not inspected by this probe.
+    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+        r#"
+project_name: test
+crates:
+  - name: app
+    nfpms:
+      - id: deb
+        ids: [bar]
+    archives:
+      - id: default
+        builds: [foo]
+"#,
+    )
+    .unwrap();
+    super::warn_on_legacy_nfpm_builds(&raw);
 }
 
 // ---- Row 5: nested mcp.github (v2.13.1) ----

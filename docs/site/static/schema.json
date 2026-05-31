@@ -4484,7 +4484,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "DockerDigestConfig": {
       "description": "Controls docker image digest file creation.\n\nAfter each docker image push, a digest file (containing the sha256 digest) is written to the dist directory. This config controls whether that happens and how the files are named.",
@@ -7539,7 +7540,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this config. Accepts bool or template string.",
+          "description": "Skip this config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR makeself uses `disable: string`).",
           "default": null,
           "anyOf": [
             {
@@ -7550,13 +7551,14 @@
             }
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "MakeselfFile": {
       "type": "object",
       "properties": {
         "destination": {
-          "description": "Destination path inside the archive.",
+          "description": "Destination path inside the archive. Accepts the GoReleaser `dst:` spelling via serde alias for back-compat with imported configs (GR `MakeselfFile.Destination` is keyed `dst`).",
           "default": null,
           "type": [
             "string",
@@ -7564,7 +7566,7 @@
           ]
         },
         "source": {
-          "description": "Source file path (relative to project root).",
+          "description": "Source file path (relative to project root). Accepts the GoReleaser `src:` spelling via serde alias for back-compat with imported configs (GR `MakeselfFile.Source` is keyed `src`).",
           "default": "",
           "type": "string"
         },
@@ -8254,7 +8256,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "NfpmApkConfig": {
       "type": "object",
@@ -8512,7 +8515,7 @@
           ]
         },
         "ids": {
-          "description": "Build IDs filter: only include artifacts from builds whose `id` is in this list.",
+          "description": "Build IDs filter: only include artifacts from builds whose `id` is in this list. Accepts the deprecated GoReleaser `builds:` spelling via serde alias for back-compat with imported configs (GR NFPM keeps `Builds []string` marked `deprecated`, aliasing `ids`).",
           "default": null,
           "type": [
             "array",
@@ -8752,7 +8755,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "NfpmContent": {
       "description": "A single file/directory entry in an nFPM (or SRPM) package's `contents` list. Merged the formerly-separate `NfpmContentConfig` (used for SRPM) into this struct — `source` / `destination` / `type` are accepted as aliases for `src` / `dst` / the renamed `type` so srpm-style keys still parse.\n\n`Default` is intentionally **not** derived because `src` and `dst` are required fields with no meaningful defaults — forcing callers to provide them explicitly prevents accidentally packaging empty paths.",
@@ -9738,7 +9742,8 @@
             "$ref": "#/definitions/TemplatedExtraFile"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "OpenCollectiveAnnounce": {
       "type": "object",

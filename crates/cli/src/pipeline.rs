@@ -123,6 +123,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     {
         anodizer_core::config::warn_on_legacy_snapshot_name_template(&raw);
         anodizer_core::config::warn_on_legacy_furies_alias(&raw);
+        anodizer_core::config::warn_on_legacy_nfpm_builds(&raw);
         anodizer_core::config::validate_no_docker_v1(&raw).map_err(anyhow::Error::msg)?;
         anodizer_core::config::validate_no_mcp_github(&raw).map_err(anyhow::Error::msg)?;
     }
@@ -146,6 +147,9 @@ pub fn load_config(path: &Path) -> Result<Config> {
     anodizer_core::config::validate_version(&config).map_err(anyhow::Error::msg)?;
     // Validate git.tag_sort if present
     anodizer_core::config::validate_tag_sort(&config).map_err(anyhow::Error::msg)?;
+    // Validate partial.by ("os" | "target") before either target-resolution
+    // path reads it (one rejects unknowns, the other silently mis-groups).
+    anodizer_core::config::validate_partial(&config).map_err(anyhow::Error::msg)?;
     // Validate archives[].format_overrides[].os
     anodizer_core::config::validate_format_overrides(&config).map_err(anyhow::Error::msg)?;
     // Validate release block does not configure multiple SCM backends.
