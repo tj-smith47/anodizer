@@ -25,34 +25,66 @@ fn render_hook_template(template: &str, vars: &TemplateVars, label: &str) -> Res
         .with_context(|| format!("{} hook: render template '{}'", label, template))
 }
 
+/// Cross-cutting inputs for [`run_hooks`] that stay constant across every
+/// hook in a single invocation. Bundled into one struct so call sites read
+/// as named fields instead of a run of positional `bool` / `Option`
+/// arguments. Cheap to pass by value — every field is `Copy`.
+#[derive(Clone, Copy)]
+pub struct HookRunContext<'a> {
+    /// Log each hook command instead of executing it.
+    pub dry_run: bool,
+    /// Sink for status lines and captured command output.
+    pub log: &'a StageLogger,
+    /// When set, hook `cmd` / `dir` / `env` / `if` are Tera-expanded with
+    /// these vars before execution (like GoReleaser), supporting
+    /// conditionals, filters, and `{{ .Env.VAR }}`. `None` runs the literal
+    /// command with no rendering.
+    pub template_vars: Option<&'a TemplateVars>,
+    /// The active build's per-target `builds[].env` map (already
+    /// rendered/expanded by the build planner). It layers BETWEEN the
+    /// inherited process env (base) and each hook's own `env:` (most
+    /// specific), matching GoReleaser's `append(buildEnv, hook.Env...)`
+    /// precedence (`internal/pipe/build/build.go` `runHook`): a key present
+    /// in both resolves to the hook value. `None` (the default via
+    /// [`HookRunContext::new`]) at non-build hook sites — they have no
+    /// build env.
+    pub build_env: Option<&'a std::collections::HashMap<String, String>>,
+}
+
+impl<'a> HookRunContext<'a> {
+    /// Context for a non-build hook run (the common case): no per-target
+    /// `build_env`. Build sites construct the struct directly and set
+    /// [`HookRunContext::build_env`].
+    pub fn new(
+        dry_run: bool,
+        log: &'a StageLogger,
+        template_vars: Option<&'a TemplateVars>,
+    ) -> Self {
+        Self {
+            dry_run,
+            log,
+            template_vars,
+            build_env: None,
+        }
+    }
+}
+
 /// Execute a list of shell hook commands.
 ///
 /// In dry-run mode, log but do not execute.
 /// Supports both simple string hooks and structured hooks with cmd/dir/env/output.
 ///
-/// When `template_vars` is provided, hook commands, directories, and environment
-/// values are template-expanded through the full Tera engine before execution
-/// (like GoReleaser), supporting conditionals, filters, and `{{ .Env.VAR }}`.
-///
 /// Note: Rust's `Command` inherits the process environment by default.
 /// Pipeline env vars (VERSION, TAG, etc.) should be set in the process
-/// environment before calling `run_hooks`, which `setup_env()` handles.
-///
-/// `build_env` carries the active build's per-target `builds[].env` map
-/// (already rendered/expanded by the build planner). It layers BETWEEN the
-/// inherited process env (base) and each hook's own `env:` (most specific),
-/// matching GoReleaser's `append(buildEnv, hook.Env...)` precedence
-/// (`internal/pipe/build/build.go` `runHook`): a key present in both the
-/// build env and a hook's `env:` resolves to the hook value. Pass `None`
-/// (or an empty map) at non-build hook sites — they have no build env.
-pub fn run_hooks(
-    hooks: &[HookEntry],
-    label: &str,
-    dry_run: bool,
-    log: &StageLogger,
-    template_vars: Option<&TemplateVars>,
-    build_env: Option<&std::collections::HashMap<String, String>>,
-) -> Result<()> {
+/// environment before calling `run_hooks`, which `setup_env()` handles. See
+/// [`HookRunContext`] for how `template_vars` and `build_env` are applied.
+pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> Result<()> {
+    let HookRunContext {
+        dry_run,
+        log,
+        template_vars,
+        build_env,
+    } = ctx;
     for hook in hooks {
         let (raw_cmd, raw_dir, env, output_flag, if_cond) = match hook {
             HookEntry::Simple(s) => (s.as_str(), None, None, None, None),
@@ -275,7 +307,11 @@ fn run_before_publish_entry(
         // new here.
         let single = std::slice::from_ref(entry);
         // before_publish hooks are not build hooks — no per-target build env.
-        run_hooks(single, "before-publish", dry_run, log, Some(&vars), None)?;
+        run_hooks(
+            single,
+            "before-publish",
+            HookRunContext::new(dry_run, log, Some(&vars)),
+        )?;
     }
     Ok(())
 }
@@ -341,7 +377,7 @@ mod tests {
         let vars = vars_with_snapshot(true);
         let hooks = vec![structured("true", Some("{{ IsSnapshot }}"))];
         // dry_run=true → no actual exec; the function still walks the gate.
-        run_hooks(&hooks, "test", true, &log, Some(&vars), None)
+        run_hooks(&hooks, "test", HookRunContext::new(true, &log, Some(&vars)))
             .expect("snapshot=true must let the hook proceed");
     }
 
@@ -353,8 +389,12 @@ mod tests {
             "false-cmd-must-be-skipped",
             Some("{{ IsSnapshot }}"),
         )];
-        run_hooks(&hooks, "test", false, &log, Some(&vars), None)
-            .expect("falsy `if:` must skip without spawning the cmd");
+        run_hooks(
+            &hooks,
+            "test",
+            HookRunContext::new(false, &log, Some(&vars)),
+        )
+        .expect("falsy `if:` must skip without spawning the cmd");
     }
 
     #[test]
@@ -362,7 +402,8 @@ mod tests {
         let log = test_logger();
         let vars = vars_with_snapshot(false);
         let hooks = vec![structured("true", Some("true"))];
-        run_hooks(&hooks, "test", true, &log, Some(&vars), None).expect("`if: true` must proceed");
+        run_hooks(&hooks, "test", HookRunContext::new(true, &log, Some(&vars)))
+            .expect("`if: true` must proceed");
     }
 
     #[test]
@@ -370,7 +411,7 @@ mod tests {
         let log = test_logger();
         let vars = vars_with_snapshot(false);
         let hooks = vec![structured("true", Some(""))];
-        run_hooks(&hooks, "test", true, &log, Some(&vars), None)
+        run_hooks(&hooks, "test", HookRunContext::new(true, &log, Some(&vars)))
             .expect("empty `if:` literal must be a no-op (always proceed)");
     }
 
@@ -395,7 +436,16 @@ mod tests {
             ..Default::default()
         })];
         let vars = TemplateVars::new();
-        run_hooks(&hooks, "build", false, &log, Some(&vars), build_env)
+        run_hooks(
+            &hooks,
+            "build",
+            HookRunContext {
+                dry_run: false,
+                log: &log,
+                template_vars: Some(&vars),
+                build_env,
+            },
+        )
     }
 
     #[test]
@@ -490,7 +540,7 @@ mod tests {
         let log = test_logger();
         let vars = vars_with_snapshot(false);
         let hooks = vec![structured("true", Some("{{ UndefinedSymbol }}"))];
-        let err = run_hooks(&hooks, "test", true, &log, Some(&vars), None)
+        let err = run_hooks(&hooks, "test", HookRunContext::new(true, &log, Some(&vars)))
             .expect_err("unrenderable template must surface as Err");
         let chain = format!("{err:#}");
         assert!(

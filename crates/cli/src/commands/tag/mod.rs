@@ -2,7 +2,7 @@ pub mod rollback;
 
 use anodizer_core::config::{CrateConfig, GitConfig, TagConfig};
 use anodizer_core::git;
-use anodizer_core::hooks::run_hooks;
+use anodizer_core::hooks::{HookRunContext, run_hooks};
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::template::TemplateVars;
 use anyhow::{Result, bail};
@@ -239,7 +239,11 @@ pub fn run(opts: TagOpts) -> Result<()> {
         }
 
         if !pre_hooks.is_empty() {
-            run_hooks(&pre_hooks, "tag-pre", dry_run, &log, Some(&tv), None)?;
+            run_hooks(
+                &pre_hooks,
+                "tag-pre",
+                HookRunContext::new(dry_run, &log, Some(&tv)),
+            )?;
         }
 
         if cfg.git_api_tagging {
@@ -250,7 +254,11 @@ pub fn run(opts: TagOpts) -> Result<()> {
         }
 
         if !post_hooks.is_empty() {
-            run_hooks(&post_hooks, "tag-post", dry_run, &log, Some(&tv), None)?;
+            run_hooks(
+                &post_hooks,
+                "tag-post",
+                HookRunContext::new(dry_run, &log, Some(&tv)),
+            )?;
         }
         Ok(())
     };

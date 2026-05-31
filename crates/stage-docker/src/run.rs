@@ -9,7 +9,7 @@ use anyhow::{Context as _, Result};
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::HookEntry;
 use anodizer_core::context::Context;
-use anodizer_core::hooks::run_hooks;
+use anodizer_core::hooks::{HookRunContext, run_hooks};
 use anodizer_core::stage::Stage;
 
 /// Per-docker_v2-config post-hook state captured during config preparation
@@ -277,7 +277,11 @@ fn run_docker_post_hooks(
             "post-docker_v2[{}]",
             cph.id.as_deref().unwrap_or(&cph.idx.to_string())
         );
-        run_hooks(&cph.hooks, &post_label, false, log, Some(&hook_vars), None)?;
+        run_hooks(
+            &cph.hooks,
+            &post_label,
+            HookRunContext::new(false, log, Some(&hook_vars)),
+        )?;
     }
     Ok(())
 }
@@ -621,7 +625,11 @@ fn prepare_v2_config(
             "pre-docker_v2[{}]",
             v2_cfg.id.as_deref().unwrap_or(&idx.to_string())
         );
-        if let Err(e) = run_hooks(&pre_hooks, &pre_label, dry_run, log, Some(&hook_vars), None) {
+        if let Err(e) = run_hooks(
+            &pre_hooks,
+            &pre_label,
+            HookRunContext::new(dry_run, log, Some(&hook_vars)),
+        ) {
             log.warn(&format!(
                 "{}: pre-hook failed; skipping this config's build (other configs continue): {:#}",
                 pre_label, e
@@ -670,10 +678,7 @@ fn prepare_v2_config(
         run_hooks(
             &post_hooks,
             &post_label,
-            dry_run,
-            log,
-            Some(&hook_vars),
-            None,
+            HookRunContext::new(dry_run, log, Some(&hook_vars)),
         )?;
     } else if !dry_run && !post_hooks.is_empty() {
         config_post_hooks.push(PerConfigPostHook {

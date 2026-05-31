@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodizer_core::config::{ArchiveConfig, ArchiveFileSpec, ArchivesConfig, FormatOverride};
 use anodizer_core::context::Context;
-use anodizer_core::hooks::run_hooks;
+use anodizer_core::hooks::{HookRunContext, run_hooks};
 use anodizer_core::stage::Stage;
 use anodizer_core::target::map_target;
 use anodizer_core::template_file_render::render_templated_file_entry;
@@ -747,7 +747,11 @@ fn archive_one_config(
                     && let Some(pre) = archive_cfg.hooks.as_ref().and_then(|h| h.before.as_ref())
                 {
                     let hook_vars = ctx.template_vars().clone();
-                    run_hooks(pre, &pre_label, dry_run, log, Some(&hook_vars), None)?;
+                    run_hooks(
+                        pre,
+                        &pre_label,
+                        HookRunContext::new(dry_run, log, Some(&hook_vars)),
+                    )?;
                 }
 
                 // Render archive-scoped templated_files into a temp
@@ -969,7 +973,11 @@ fn archive_one_config(
                     && let Some(post) = archive_cfg.hooks.as_ref().and_then(|h| h.after.as_ref())
                 {
                     let hook_vars = ctx.template_vars().clone();
-                    run_hooks(post, &post_label, dry_run, log, Some(&hook_vars), None)?;
+                    run_hooks(
+                        post,
+                        &post_label,
+                        HookRunContext::new(dry_run, log, Some(&hook_vars)),
+                    )?;
                 }
             }
         }

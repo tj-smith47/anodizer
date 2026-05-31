@@ -6,7 +6,7 @@ use anyhow::Context as _;
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::UniversalBinaryConfig;
 use anodizer_core::context::Context;
-use anodizer_core::hooks::run_hooks;
+use anodizer_core::hooks::{HookRunContext, run_hooks};
 use anodizer_core::util::find_binary;
 
 // ---------------------------------------------------------------------------
@@ -212,10 +212,7 @@ pub(crate) fn build_universal_binary(
         run_hooks(
             pre,
             "pre-universal-binary",
-            dry_run,
-            &log,
-            Some(&template_vars),
-            None,
+            HookRunContext::new(dry_run, &log, Some(&template_vars)),
         )?;
     }
 
@@ -275,10 +272,7 @@ pub(crate) fn build_universal_binary(
         run_hooks(
             post,
             "post-universal-binary",
-            dry_run,
-            &log,
-            Some(&template_vars),
-            None,
+            HookRunContext::new(dry_run, &log, Some(&template_vars)),
         )?;
     }
 

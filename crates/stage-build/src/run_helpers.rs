@@ -13,7 +13,7 @@ use anodizer_core::context::Context;
 use anodizer_core::crate_scope::{
     apply_var_overrides, crate_template_overrides, resolve_crate_tag, restore_var_overrides,
 };
-use anodizer_core::hooks::run_hooks;
+use anodizer_core::hooks::{HookRunContext, run_hooks};
 use anodizer_core::log::StageLogger;
 use anodizer_core::template::TemplateVars;
 
@@ -322,10 +322,12 @@ pub(crate) fn run_dry_run(
             run_hooks(
                 &job.pre_hooks,
                 "pre-build",
-                true,
-                exec.log,
-                Some(exec.template_vars),
-                Some(&job.build_env),
+                HookRunContext {
+                    dry_run: true,
+                    log: exec.log,
+                    template_vars: Some(exec.template_vars),
+                    build_env: Some(&job.build_env),
+                },
             )?;
         }
         if let Some(ref cmd) = job.cmd {
@@ -342,10 +344,12 @@ pub(crate) fn run_dry_run(
             run_hooks(
                 &job.post_hooks,
                 "post-build",
-                true,
-                exec.log,
-                Some(exec.template_vars),
-                Some(&job.build_env),
+                HookRunContext {
+                    dry_run: true,
+                    log: exec.log,
+                    template_vars: Some(exec.template_vars),
+                    build_env: Some(&job.build_env),
+                },
             )?;
         }
         add_artifact(
@@ -386,10 +390,12 @@ pub(crate) fn run_sequential(
             run_hooks(
                 &job.pre_hooks,
                 "pre-build",
-                false,
-                exec.log,
-                Some(exec.template_vars),
-                Some(&job.build_env),
+                HookRunContext {
+                    dry_run: false,
+                    log: exec.log,
+                    template_vars: Some(exec.template_vars),
+                    build_env: Some(&job.build_env),
+                },
             )?;
         }
 
@@ -448,10 +454,12 @@ pub(crate) fn run_sequential(
             run_hooks(
                 &job.post_hooks,
                 "post-build",
-                false,
-                exec.log,
-                Some(exec.template_vars),
-                Some(&job.build_env),
+                HookRunContext {
+                    dry_run: false,
+                    log: exec.log,
+                    template_vars: Some(exec.template_vars),
+                    build_env: Some(&job.build_env),
+                },
             )?;
         }
 
@@ -551,7 +559,16 @@ pub(crate) fn run_parallel(
                             })?;
                         }
                         if !pre_hooks.is_empty() {
-                            run_hooks(&pre_hooks, "pre-build", false, &thread_log, Some(&thread_tvars), Some(&build_env))?;
+                            run_hooks(
+                                &pre_hooks,
+                                "pre-build",
+                                HookRunContext {
+                                    dry_run: false,
+                                    log: &thread_log,
+                                    template_vars: Some(&thread_tvars),
+                                    build_env: Some(&build_env),
+                                },
+                            )?;
                         }
 
                         thread_log.status(&format!("running: {} {}", program, args.join(" ")));
@@ -622,7 +639,16 @@ pub(crate) fn run_parallel(
                         }
 
                         if !post_hooks.is_empty() {
-                            run_hooks(&post_hooks, "post-build", false, &thread_log, Some(&thread_tvars), Some(&build_env))?;
+                            run_hooks(
+                                &post_hooks,
+                                "post-build",
+                                HookRunContext {
+                                    dry_run: false,
+                                    log: &thread_log,
+                                    template_vars: Some(&thread_tvars),
+                                    build_env: Some(&build_env),
+                                },
+                            )?;
                         }
 
                         Ok(BuildResult {

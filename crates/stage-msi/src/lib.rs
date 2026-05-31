@@ -907,14 +907,17 @@ fn run_msi_hook(
         return Ok(());
     };
     let tmpl_vars = ctx.template_vars().clone();
-    anodizer_core::hooks::run_hooks(hook, kind, dry_run, log, Some(&tmpl_vars), None).with_context(
-        || {
-            format!(
-                "msi config '{}' for crate '{}': {} hooks failed",
-                msi_id_for_log, crate_name, kind
-            )
-        },
+    anodizer_core::hooks::run_hooks(
+        hook,
+        kind,
+        anodizer_core::hooks::HookRunContext::new(dry_run, log, Some(&tmpl_vars)),
     )
+    .with_context(|| {
+        format!(
+            "msi config '{}' for crate '{}': {} hooks failed",
+            msi_id_for_log, crate_name, kind
+        )
+    })
 }
 
 /// Run the post-MSI hook chain for one target with artifact path variables
@@ -937,13 +940,17 @@ fn run_msi_post_hook(
         return Ok(());
     };
     let tmpl_vars = build_post_hook_template_vars(ctx, msi_path);
-    anodizer_core::hooks::run_hooks(hook, "post-msi", dry_run, log, Some(&tmpl_vars), None)
-        .with_context(|| {
-            format!(
-                "msi config '{}' for crate '{}': post-msi hooks failed",
-                msi_id_for_log, crate_name
-            )
-        })
+    anodizer_core::hooks::run_hooks(
+        hook,
+        "post-msi",
+        anodizer_core::hooks::HookRunContext::new(dry_run, log, Some(&tmpl_vars)),
+    )
+    .with_context(|| {
+        format!(
+            "msi config '{}' for crate '{}': post-msi hooks failed",
+            msi_id_for_log, crate_name
+        )
+    })
 }
 
 /// Build the per-target post-hook template-var snapshot.

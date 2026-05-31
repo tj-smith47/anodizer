@@ -1341,7 +1341,7 @@ fn test_per_target_build_env_reaches_only_its_targets_hook() {
     // must see B's env — never the other's. This covers the multi-target /
     // workspace-per-crate axis where each build resolves independently.
     use anodizer_core::config::{HookEntry, StructuredHook};
-    use anodizer_core::hooks::run_hooks;
+    use anodizer_core::hooks::{HookRunContext, run_hooks};
     use anodizer_core::template::TemplateVars;
 
     let log = test_logger();
@@ -1371,10 +1371,12 @@ fn test_per_target_build_env_reaches_only_its_targets_hook() {
         run_hooks(
             &hooks,
             "post-build",
-            false,
-            &log,
-            Some(&vars),
-            Some(&resolved),
+            HookRunContext {
+                dry_run: false,
+                log: &log,
+                template_vars: Some(&vars),
+                build_env: Some(&resolved),
+            },
         )
         .unwrap();
         std::fs::read_to_string(out).unwrap()

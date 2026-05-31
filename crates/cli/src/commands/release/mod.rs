@@ -10,6 +10,7 @@ use crate::pipeline;
 use anodizer_core::config::{Config, CrateConfig, WorkspaceConfig};
 use anodizer_core::context::{Context, ContextOptions, RollbackMode};
 use anodizer_core::git;
+use anodizer_core::hooks::HookRunContext;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::template;
 use anyhow::{Context as _, Result};
@@ -1071,10 +1072,7 @@ fn run_before_hooks(
         pipeline::run_hooks(
             hooks,
             "before",
-            opts.dry_run,
-            log,
-            Some(ctx.template_vars()),
-            None,
+            HookRunContext::new(opts.dry_run, log, Some(ctx.template_vars())),
         )?;
     }
     Ok(())
@@ -1456,10 +1454,7 @@ pub(super) fn run_post_pipeline_after_hooks_only(
         pipeline::run_hooks(
             hooks,
             "after",
-            dry_run,
-            log,
-            Some(ctx.template_vars()),
-            None,
+            HookRunContext::new(dry_run, log, Some(ctx.template_vars())),
         )?;
     }
 

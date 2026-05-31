@@ -1,6 +1,7 @@
 use super::helpers;
 use crate::pipeline;
 use anodizer_core::context::{Context, ContextOptions};
+use anodizer_core::hooks::HookRunContext;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::stage::Stage;
 use anyhow::{Context as _, Result};
@@ -69,10 +70,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         pipeline::run_hooks(
             hooks,
             "before",
-            false,
-            &log,
-            Some(ctx.template_vars()),
-            None,
+            HookRunContext::new(false, &log, Some(ctx.template_vars())),
         )?;
     }
 
