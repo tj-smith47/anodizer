@@ -236,13 +236,16 @@ fn publish_aur_source_entry(
             repo_path.to_path_buf()
         };
 
-        std::fs::copy(aur_dir.join("PKGBUILD"), output_dir.join("PKGBUILD"))?;
-        std::fs::copy(aur_dir.join(".SRCINFO"), output_dir.join(".SRCINFO"))?;
+        std::fs::copy(aur_dir.join("PKGBUILD"), output_dir.join("PKGBUILD"))
+            .with_context(|| format!("{label}: copy PKGBUILD to output dir"))?;
+        std::fs::copy(aur_dir.join(".SRCINFO"), output_dir.join(".SRCINFO"))
+            .with_context(|| format!("{label}: copy .SRCINFO to output dir"))?;
         if cfg.install.is_some() {
             std::fs::copy(
                 aur_dir.join(&install_filename),
                 output_dir.join(&install_filename),
-            )?;
+            )
+            .with_context(|| format!("{label}: copy {install_filename} to output dir"))?;
         }
 
         let commit_msg = crate::homebrew::render_commit_msg(
