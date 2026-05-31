@@ -7384,6 +7384,17 @@
     "MakeselfConfig": {
       "type": "object",
       "properties": {
+        "arch": {
+          "description": "Target architecture filter.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "compression": {
           "description": "Compression algorithm: gzip, bzip2, xz, lzo, compress, or none.",
           "default": null,
@@ -7428,28 +7439,6 @@
           ],
           "items": {
             "$ref": "#/definitions/MakeselfFile"
-          }
-        },
-        "goarch": {
-          "description": "Target architecture filter.",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "goos": {
-          "description": "Target OS filter (default: [\"linux\", \"darwin\"]).",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
           }
         },
         "homepage": {
@@ -7513,6 +7502,17 @@
             "string",
             "null"
           ]
+        },
+        "os": {
+          "description": "Target OS filter (default: [\"linux\", \"darwin\"]).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         },
         "script": {
           "description": "Startup script to run when the archive is extracted and executed. Required — the archive will not be created without this.",

@@ -443,13 +443,12 @@ Cannot be combined with `url.template:` — set one or the other. If both are pr
 ## `makeselfs`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `arch` | list of string | — | Target architecture filter. |
 | `compression` | string | — | Compression algorithm: gzip, bzip2, xz, lzo, compress, or none. |
 | `description` | string | — | Description for LSM metadata. |
 | `extra_args` | list of string | — | Extra arguments passed to the makeself command. |
 | `filename` | string | — | Output filename template (default includes project, version, os, arch). |
 | `files` | list of MakeselfFile | — | Additional files to include in the archive. |
-| `goarch` | list of string | — | Target architecture filter. |
-| `goos` | list of string | — | Target OS filter (default: ["linux", "darwin"]). |
 | `homepage` | string | — | Homepage URL for LSM metadata. |
 | `id` | string | — | Unique identifier for this makeself config (default: "default"). |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
@@ -457,6 +456,7 @@ Cannot be combined with `url.template:` — set one or the other. If both are pr
 | `license` | string | — | License for LSM metadata. |
 | `maintainer` | string | — | Maintainer for LSM metadata. |
 | `name` | string | — | Display name embedded in the self-extracting archive. |
+| `os` | list of string | — | Target OS filter (default: ["linux", "darwin"]). |
 | `script` | string | — | Startup script to run when the archive is extracted and executed. Required — the archive will not be created without this. |
 | `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. |
 

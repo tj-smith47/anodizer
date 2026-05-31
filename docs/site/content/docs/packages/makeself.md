@@ -35,8 +35,8 @@ makeselfs:
     compression: ""                  # optional; gzip | bzip2 | xz | lzo | compress | none
     extra_args: []                   # optional; extra makeself CLI arguments
     files: []                        # optional; additional files to include
-    goos: ["linux", "darwin"]        # optional; target OS filter
-    goarch: []                       # optional; target architecture filter
+    os: ["linux", "darwin"]          # optional; target OS filter
+    arch: []                         # optional; target architecture filter
     disable: false                   # optional
 ```
 
@@ -47,7 +47,7 @@ Not applicable — makeself archive creation is a local build step with no exter
 ## Common gotchas
 
 - **`makeself` must be on `PATH`**: the stage errors if `makeself` is not found.
-- **One `.run` per platform**: artifacts are grouped by OS + arch; each group produces one self-extracting archive. Use `goos` and `goarch` to restrict which targets are packaged.
+- **One `.run` per platform**: artifacts are grouped by OS + arch; each group produces one self-extracting archive. Use `os` and `arch` to restrict which targets are packaged.
 - **Artifact ordering**: the makeself stage uses a `BTreeMap` (sorted by platform key) internally to ensure the artifact registration order is deterministic across builds, preventing drift in `dist/artifacts.json`.
 
 ## Republish / update behavior
@@ -71,8 +71,8 @@ Not applicable — this is a local packaging stage, not a publisher.
 | `compression` | string | makeself default | Compression: `gzip`, `bzip2`, `xz`, `lzo`, `compress`, or `none` |
 | `extra_args` | list | none | Extra `makeself` CLI arguments |
 | `files` | list | none | Additional files to include |
-| `goos` | list | `["linux", "darwin"]` | Target OS filter |
-| `goarch` | list | all | Target architecture filter |
+| `os` | list | `["linux", "darwin"]` | Target OS filter |
+| `arch` | list | all | Target architecture filter |
 | `disable` | string/bool | none | Disable this config |
 
 ### File entries
@@ -119,7 +119,7 @@ makeselfs:
     license: MIT
     homepage: "https://example.com/myapp"
     compression: xz
-    goos:
+    os:
       - linux
     files:
       - src: config.example.yaml

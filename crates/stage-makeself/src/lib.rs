@@ -182,13 +182,13 @@ fn validate_unique_ids(configs: &[anodizer_core::config::MakeselfConfig]) -> Res
 }
 
 /// Filter and clone the binary-like artifacts that match a makeself config's
-/// id-filter + goos/goarch selectors. The result is owned so the surrounding
+/// id-filter + os/arch selectors. The result is owned so the surrounding
 /// loop can drop its borrow on `ctx.artifacts` before re-borrowing `ctx` for
 /// template rendering.
 fn collect_matching_binaries(
     ctx: &Context,
     cfg: &anodizer_core::config::MakeselfConfig,
-    goos_filter: &[String],
+    os_filter: &[String],
 ) -> Vec<Artifact> {
     ctx.artifacts
         .all()
@@ -207,16 +207,16 @@ fn collect_matching_binaries(
         .filter(|a| {
             if let Some(ref target) = a.target {
                 let (os, _) = anodizer_core::target::map_target(target);
-                goos_filter.iter().any(|g| g == &os)
+                os_filter.iter().any(|o| o == &os)
             } else {
                 false
             }
         })
         .filter(|a| {
-            if let Some(ref goarch) = cfg.goarch {
+            if let Some(ref arch_filter) = cfg.arch {
                 if let Some(ref target) = a.target {
                     let (_, arch) = anodizer_core::target::map_target(target);
-                    goarch.iter().any(|g| g == &arch)
+                    arch_filter.iter().any(|a| a == &arch)
                 } else {
                     false
                 }
@@ -597,18 +597,18 @@ fn collect_makeself_config_jobs(
         anyhow::bail!("makeself: 'script' is required for config id '{}'", id);
     }
 
-    let goos_filter: Vec<String> = cfg
-        .goos
+    let os_filter: Vec<String> = cfg
+        .os
         .clone()
         .unwrap_or_else(|| vec!["linux".to_string(), "darwin".to_string()]);
 
-    let all_binaries = collect_matching_binaries(ctx, cfg, &goos_filter);
+    let all_binaries = collect_matching_binaries(ctx, cfg, &os_filter);
 
     if all_binaries.is_empty() {
         anyhow::bail!(
-            "makeself: no binaries found for config '{}' with goos {:?}",
+            "makeself: no binaries found for config '{}' with os {:?}",
             id,
-            goos_filter
+            os_filter
         );
     }
 
@@ -991,7 +991,7 @@ makeselfs:
   - id: default
     script: install.sh
     compression: xz
-    goos:
+    os:
       - linux
     files:
       - src: README.md
@@ -1007,7 +1007,7 @@ crates:
         assert_eq!(ms.id.as_deref(), Some("default"));
         assert_eq!(ms.script.as_deref(), Some("install.sh"));
         assert_eq!(ms.compression.as_deref(), Some("xz"));
-        assert_eq!(ms.goos.as_ref().unwrap(), &["linux"]);
+        assert_eq!(ms.os.as_ref().unwrap(), &["linux"]);
         assert_eq!(ms.files.as_ref().unwrap().len(), 1);
     }
 

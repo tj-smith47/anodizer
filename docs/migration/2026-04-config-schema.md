@@ -109,6 +109,7 @@ to the right-hand spelling before upgrading.
 | `FormatOverride` | `format: zip` | `formats: [zip]` (singular `format` field deleted) |
 | `ExtraFileSpec::Detailed` | `name: "..."` | `name_template: "..."` |
 | `MakeselfConfig` | `name_template: "..."` | `filename: "..."` |
+| `MakeselfConfig` | `goos:` / `goarch:` | `os:` / `arch:` |
 | `MakeselfFile` | `src:` / `dst:` | `source:` / `destination:` |
 | `SnapshotConfig` | `name_template: "..."` | `version_template: "..."` |
 | `EmailAnnounce` | `body_template:` | `message_template:` |

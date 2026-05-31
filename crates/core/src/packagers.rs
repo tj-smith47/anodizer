@@ -53,9 +53,9 @@ pub struct MakeselfConfig {
     /// Additional files to include in the archive.
     pub files: Option<Vec<MakeselfFile>>,
     /// Target OS filter (default: ["linux", "darwin"]).
-    pub goos: Option<Vec<String>>,
+    pub os: Option<Vec<String>>,
     /// Target architecture filter.
-    pub goarch: Option<Vec<String>>,
+    pub arch: Option<Vec<String>>,
     /// Skip this config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
