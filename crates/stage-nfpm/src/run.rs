@@ -357,7 +357,7 @@ pub(crate) fn format_extension(format: &str) -> &str {
 /// entry into the rendered nfpm config, then clear the now-orphaned
 /// `lintian_overrides:` field so the YAML output stays clean.
 ///
-/// M5: GoReleaser's `setupLintian` (`internal/pipe/nfpm/nfpm.go:601-623`)
+/// GoReleaser's `setupLintian` (`internal/pipe/nfpm/nfpm.go:601-623`)
 /// writes a file to `<dist>/<format>/<package>_<arch>/lintian` whose body
 /// is one `<package>: <override>` line per entry in `deb.lintian_overrides`,
 /// then appends a `Content` mapping that path into the package at
@@ -544,8 +544,8 @@ fn build_platform_groups(
         linux_binaries.iter().collect()
     };
 
-    // M8 — `goamd64: []string` filter
-    let filtered: Vec<_> = if let Some(ref wants) = nfpm_cfg.goamd64
+    // `amd64_variant: []string` filter
+    let filtered: Vec<_> = if let Some(ref wants) = nfpm_cfg.amd64_variant
         && !wants.is_empty()
     {
         id_filtered

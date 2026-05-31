@@ -336,11 +336,11 @@ impl Stage for DmgStage {
                     });
                 }
 
-                // M8 — `goamd64` filter (GR Pro `dmg.goamd64: string`).
+                // `amd64_variant` filter (GR Pro `dmg.goamd64: string`).
                 // Mirrors `goreleaser/internal/artifact/artifact.go::ByGoamd64`:
                 // only constrains `amd64` artifacts. Non-amd64 always passes.
                 // Unset `amd64_variant` metadata is treated as `v1`.
-                if let Some(ref want) = dmg_cfg.goamd64 {
+                if let Some(ref want) = dmg_cfg.amd64_variant {
                     filtered.retain(|b| {
                         let target = b.target.as_deref().unwrap_or("");
                         let (_, arch) = anodizer_core::target::map_target(target);
@@ -1940,14 +1940,14 @@ crates:
     }
 
     // -------------------------------------------------------------------
-    // M8 — `dmg.goamd64` filter (GR Pro `dmg.goamd64: string`)
+    // `dmg.amd64_variant` filter (GR Pro `dmg.goamd64: string`)
     // -------------------------------------------------------------------
 
     /// Build a context with three darwin/amd64 binaries (variants v1/v2/v3)
-    /// and one darwin/arm64 binary. The `goamd64` field on the config
+    /// and one darwin/arm64 binary. The `amd64_variant` field on the config
     /// drives which subset of amd64 binaries makes it into DiskImage
     /// artifacts; arm64 is always included regardless.
-    fn dmg_goamd64_test_ctx(goamd64: Option<&str>) -> anodizer_core::context::Context {
+    fn dmg_amd64_variant_test_ctx(amd64_variant: Option<&str>) -> anodizer_core::context::Context {
         use anodizer_core::config::{Config, CrateConfig, DmgConfig};
         use anodizer_core::context::{Context, ContextOptions};
         let tmp = tempfile::TempDir::new().unwrap();
@@ -1956,7 +1956,7 @@ crates:
         config.dist = tmp.path().join("dist");
         std::fs::create_dir_all(&config.dist).unwrap();
         let dmg_cfg = DmgConfig {
-            goamd64: goamd64.map(str::to_string),
+            amd64_variant: amd64_variant.map(str::to_string),
             ..Default::default()
         };
         config.crates = vec![CrateConfig {
@@ -2000,8 +2000,8 @@ crates:
     }
 
     #[test]
-    fn test_dmg_goamd64_unset_passes_all_amd64_variants() {
-        let mut ctx = dmg_goamd64_test_ctx(None);
+    fn test_dmg_amd64_variant_unset_passes_all_amd64_variants() {
+        let mut ctx = dmg_amd64_variant_test_ctx(None);
         DmgStage.run(&mut ctx).unwrap();
         // 3 amd64 variants share one target -> grouped into ONE DMG;
         // 1 arm64 -> one DMG. Total: 2 DMGs.
@@ -2009,13 +2009,13 @@ crates:
         assert_eq!(
             dmgs.len(),
             2,
-            "unset goamd64 should pass every variant; one DMG per target"
+            "unset amd64_variant should pass every variant; one DMG per target"
         );
     }
 
     #[test]
-    fn test_dmg_goamd64_v3_only_keeps_matching_variant() {
-        let mut ctx = dmg_goamd64_test_ctx(Some("v3"));
+    fn test_dmg_amd64_variant_v3_only_keeps_matching_variant() {
+        let mut ctx = dmg_amd64_variant_test_ctx(Some("v3"));
         DmgStage.run(&mut ctx).unwrap();
         let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
         // Only the v3 amd64 binary survives (one amd64 DMG) + the arm64
@@ -2027,10 +2027,10 @@ crates:
     }
 
     #[test]
-    fn test_dmg_goamd64_filter_does_not_drop_arm64() {
+    fn test_dmg_amd64_variant_filter_does_not_drop_arm64() {
         // Pin: filter only constrains amd64 — arm64 must still pass even
         // when the filter rejects every amd64 variant present.
-        let mut ctx = dmg_goamd64_test_ctx(Some("v9000")); // matches no variant
+        let mut ctx = dmg_amd64_variant_test_ctx(Some("v9000")); // matches no variant
         DmgStage.run(&mut ctx).unwrap();
         let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
         // No amd64 survives; arm64 still produces one DMG.

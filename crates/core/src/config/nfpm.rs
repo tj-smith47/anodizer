@@ -57,7 +57,7 @@ pub struct NfpmConfig {
     /// listed values are included. Mirrors GoReleaser nfpm's
     /// `goamd64: []string` (`pkg/config/config.go:711`, `nfpm.go:147`).
     /// When unset, all amd64 variants are included (no filtering).
-    pub goamd64: Option<Vec<String>>,
+    pub amd64_variant: Option<Vec<String>>,
     /// Package epoch for versioning (integer as string).
     pub epoch: Option<String>,
     /// Package release number.

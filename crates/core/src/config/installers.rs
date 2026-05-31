@@ -38,7 +38,7 @@ pub struct DmgConfig {
     /// When set, only artifacts with the matching `amd64_variant` metadata
     /// are included. Mirrors GoReleaser Pro DMG's `goamd64: string` field.
     /// When unset, all amd64 variants are included (no filtering).
-    pub goamd64: Option<String>,
+    pub amd64_variant: Option<String>,
     /// Template-conditional: skip this DMG config if rendered result is "false"
     /// or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).
     #[serde(rename = "if")]
@@ -82,7 +82,7 @@ pub struct MsiConfig {
     /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
     /// When set, only artifacts with the matching `amd64_variant` metadata
     /// are included. Mirrors GoReleaser Pro MSI's `goamd64: string` field.
-    pub goamd64: Option<String>,
+    pub amd64_variant: Option<String>,
     /// Additional files available in the WiX build context (simple filenames).
     pub extra_files: Option<Vec<String>>,
     /// WiX extensions to enable (e.g., "WixUIExtension"). Templates allowed.
@@ -182,7 +182,7 @@ pub struct NsisConfig {
     /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
     /// When set, only artifacts with the matching `amd64_variant` metadata
     /// are included. Mirrors GoReleaser Pro NSIS's `goamd64: string` field.
-    pub goamd64: Option<String>,
+    pub amd64_variant: Option<String>,
     /// Remove source archives from artifacts, keeping only the installer.
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.

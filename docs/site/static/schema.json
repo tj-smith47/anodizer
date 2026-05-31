@@ -4367,6 +4367,14 @@
     "DmgConfig": {
       "type": "object",
       "properties": {
+        "amd64_variant": {
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. Mirrors GoReleaser Pro DMG's `goamd64: string` field. When unset, all amd64 variants are included (no filtering).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "extra_files": {
           "description": "Additional files to include in the DMG (glob or {glob, name_template}).",
           "default": null,
@@ -4377,14 +4385,6 @@
           "items": {
             "$ref": "#/definitions/ExtraFileSpec"
           }
-        },
-        "goamd64": {
-          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. Mirrors GoReleaser Pro DMG's `goamd64: string` field. When unset, all amd64 variants are included (no filtering).",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "id": {
           "description": "Unique identifier for this DMG config.",
@@ -8117,6 +8117,14 @@
     "MsiConfig": {
       "type": "object",
       "properties": {
+        "amd64_variant": {
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. Mirrors GoReleaser Pro MSI's `goamd64: string` field.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "extensions": {
           "description": "WiX extensions to enable (e.g., \"WixUIExtension\"). Templates allowed.",
           "default": null,
@@ -8138,14 +8146,6 @@
           "items": {
             "type": "string"
           }
-        },
-        "goamd64": {
-          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. Mirrors GoReleaser Pro MSI's `goamd64: string` field.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "hooks": {
           "description": "Pre/post MSI-build hooks (GoReleaser Pro v2.14+). Accepts `pre`/`post` or `before`/`after` via BuildHooksConfig's serde aliases. Runs before / after candle+light for each matched artifact.",
@@ -8348,6 +8348,17 @@
     "NfpmConfig": {
       "type": "object",
       "properties": {
+        "amd64_variant": {
+          "description": "amd64 microarchitecture variant filter (`[\"v1\"]`, `[\"v2\", \"v3\"]`, etc.). When set, only amd64 binaries with `amd64_variant` matching one of the listed values are included. Mirrors GoReleaser nfpm's `goamd64: []string` (`pkg/config/config.go:711`, `nfpm.go:147`). When unset, all amd64 variants are included (no filtering).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "apk": {
           "description": "APK-specific configuration.",
           "default": null,
@@ -8464,17 +8475,6 @@
           "description": "Package formats to produce: deb, rpm, apk, archlinux (at least one required).",
           "default": [],
           "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "goamd64": {
-          "description": "amd64 microarchitecture variant filter (`[\"v1\"]`, `[\"v2\", \"v3\"]`, etc.). When set, only amd64 binaries with `amd64_variant` matching one of the listed values are included. Mirrors GoReleaser nfpm's `goamd64: []string` (`pkg/config/config.go:711`, `nfpm.go:147`). When unset, all amd64 variants are included (no filtering).",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
           "items": {
             "type": "string"
           }
@@ -9621,6 +9621,14 @@
     "NsisConfig": {
       "type": "object",
       "properties": {
+        "amd64_variant": {
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. Mirrors GoReleaser Pro NSIS's `goamd64: string` field.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "extra_files": {
           "description": "Additional files to include alongside the installer (glob or {glob, name_template}).",
           "default": null,
@@ -9631,14 +9639,6 @@
           "items": {
             "$ref": "#/definitions/ExtraFileSpec"
           }
-        },
-        "goamd64": {
-          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. Mirrors GoReleaser Pro NSIS's `goamd64: string` field.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "id": {
           "description": "Unique identifier for this NSIS config.",

@@ -4725,7 +4725,7 @@ fn test_nfpm_falls_back_to_project_metadata() {
 }
 
 // ---------------------------------------------------------------------------
-// M5: setup_lintian_overrides
+// setup_lintian_overrides
 // ---------------------------------------------------------------------------
 
 /// Round-trips: lintian file content equals "<pkg>: <override>" lines, a
@@ -4878,7 +4878,7 @@ fn test_setup_lintian_overrides_dry_run_skips_write_but_injects_content() {
 }
 
 // -----------------------------------------------------------------------
-// M8 — `nfpm.goamd64` filter
+// `nfpm.amd64_variant` filter
 // -----------------------------------------------------------------------
 //
 // GR `internal/pipe/nfpm/nfpm.go:147` calls
@@ -4887,9 +4887,11 @@ fn test_setup_lintian_overrides_dry_run_skips_write_but_injects_content() {
 // filter.
 
 /// Build a context with three linux/amd64 binaries (variants v1/v2/v3) +
-/// one linux/arm64 binary, all under one crate. The `goamd64` field on
+/// one linux/arm64 binary, all under one crate. The `amd64_variant` field on
 /// the nfpm config drives which subset of amd64 binaries is packaged.
-fn nfpm_goamd64_test_ctx(goamd64: Option<Vec<&str>>) -> anodizer_core::context::Context {
+fn nfpm_amd64_variant_test_ctx(
+    amd64_variant: Option<Vec<&str>>,
+) -> anodizer_core::context::Context {
     use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -4897,7 +4899,7 @@ fn nfpm_goamd64_test_ctx(goamd64: Option<Vec<&str>>) -> anodizer_core::context::
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
-        goamd64: goamd64.map(|v| v.into_iter().map(str::to_string).collect()),
+        amd64_variant: amd64_variant.map(|v| v.into_iter().map(str::to_string).collect()),
         ..Default::default()
     };
 
@@ -4946,24 +4948,24 @@ fn nfpm_goamd64_test_ctx(goamd64: Option<Vec<&str>>) -> anodizer_core::context::
 }
 
 #[test]
-fn test_nfpm_goamd64_unset_passes_all_amd64_variants() {
-    // Unset goamd64 => all amd64 variants pass; one nfpm package per
+fn test_nfpm_amd64_variant_unset_passes_all_amd64_variants() {
+    // Unset amd64_variant => all amd64 variants pass; one nfpm package per
     // platform group (target). 3 amd64 binaries share one target =>
     // grouped into ONE deb (with multiple binaries). 1 arm64 binary =>
     // ONE deb. Total: 2 deb packages.
-    let mut ctx = nfpm_goamd64_test_ctx(None);
+    let mut ctx = nfpm_amd64_variant_test_ctx(None);
     NfpmStage.run(&mut ctx).unwrap();
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
     assert_eq!(
         pkgs.len(),
         2,
-        "unset goamd64 should pass every variant; one deb per target"
+        "unset amd64_variant should pass every variant; one deb per target"
     );
 }
 
 #[test]
-fn test_nfpm_goamd64_v3_only_keeps_matching_variant() {
-    let mut ctx = nfpm_goamd64_test_ctx(Some(vec!["v3"]));
+fn test_nfpm_amd64_variant_v3_only_keeps_matching_variant() {
+    let mut ctx = nfpm_amd64_variant_test_ctx(Some(vec!["v3"]));
     NfpmStage.run(&mut ctx).unwrap();
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
     // Only v3 amd64 (one package) + arm64 (one package) -> 2 debs.
@@ -4971,10 +4973,10 @@ fn test_nfpm_goamd64_v3_only_keeps_matching_variant() {
 }
 
 #[test]
-fn test_nfpm_goamd64_multiple_variants_pass_listed() {
+fn test_nfpm_amd64_variant_multiple_variants_pass_listed() {
     // GR's `goamd64: [v2, v3]` form passes BOTH v2 and v3 amd64 binaries
     // (autoOr semantics).
-    let mut ctx = nfpm_goamd64_test_ctx(Some(vec!["v2", "v3"]));
+    let mut ctx = nfpm_amd64_variant_test_ctx(Some(vec!["v2", "v3"]));
     NfpmStage.run(&mut ctx).unwrap();
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
     // v2 and v3 both share the amd64 target — they're grouped into ONE
@@ -4983,10 +4985,10 @@ fn test_nfpm_goamd64_multiple_variants_pass_listed() {
 }
 
 #[test]
-fn test_nfpm_goamd64_filter_does_not_drop_arm64() {
+fn test_nfpm_amd64_variant_filter_does_not_drop_arm64() {
     // Pin: filter only constrains amd64; arm64 must still pass even
     // when the filter rejects every amd64 variant.
-    let mut ctx = nfpm_goamd64_test_ctx(Some(vec!["v9000"]));
+    let mut ctx = nfpm_amd64_variant_test_ctx(Some(vec!["v9000"]));
     NfpmStage.run(&mut ctx).unwrap();
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
     assert_eq!(
@@ -4997,14 +4999,14 @@ fn test_nfpm_goamd64_filter_does_not_drop_arm64() {
 }
 
 #[test]
-fn test_nfpm_goamd64_empty_vec_is_no_op() {
+fn test_nfpm_amd64_variant_empty_vec_is_no_op() {
     // GR `autoOr` with zero args is a passthrough (no filter applied) —
-    // mirror that semantics here so `goamd64: []` doesn't accidentally
+    // mirror that semantics here so `amd64_variant: []` doesn't accidentally
     // filter every amd64 out.
-    let mut ctx = nfpm_goamd64_test_ctx(Some(Vec::new()));
+    let mut ctx = nfpm_amd64_variant_test_ctx(Some(Vec::new()));
     NfpmStage.run(&mut ctx).unwrap();
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
-    assert_eq!(pkgs.len(), 2, "empty goamd64 vec should be a no-op");
+    assert_eq!(pkgs.len(), 2, "empty amd64_variant vec should be a no-op");
 }
 
 /// With no top-level `metadata:` block and a bare `nfpm:` config (no

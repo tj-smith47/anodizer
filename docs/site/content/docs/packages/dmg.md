@@ -34,7 +34,7 @@ crates:
         replace: false                # optional; remove archive artifacts, keep DMG only
         mod_timestamp: ""             # optional; fixed timestamp for reproducible builds
         use: binary                   # optional; "binary" (default) or "appbundle"
-        goamd64: v1                   # optional; amd64 variant filter
+        amd64_variant: v1             # optional; amd64 variant filter
         if: ""                        # optional; template-conditional skip
         skip: false                   # optional
 ```
@@ -82,7 +82,7 @@ DMG only processes binary artifacts targeting Darwin (macOS). Binaries for other
 | `replace` | bool | `false` | Remove matching archive artifacts, keeping only the DMG. |
 | `mod_timestamp` | string | | Fixed timestamp for reproducible builds. Supports templates (e.g. `{{ CommitTimestamp }}`). |
 | `use` | string | `binary` | Which artifact type to package: `binary` or `appbundle`. |
-| `goamd64` | string | | amd64 microarchitecture variant filter (`v1`/`v2`/`v3`/`v4`). |
+| `amd64_variant` | string | | amd64 microarchitecture variant filter (`v1`/`v2`/`v3`/`v4`). |
 | `if` | string | | Template-conditional: skip this config when rendered result is falsy. |
 | `skip` | bool/string | `false` | Skip this DMG config. Accepts bool or template string. |
 

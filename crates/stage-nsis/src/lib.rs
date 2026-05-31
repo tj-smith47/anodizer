@@ -221,11 +221,11 @@ impl Stage for NsisStage {
                     });
                 }
 
-                // M8 — `goamd64` filter (GR Pro `nsis.goamd64: string`).
+                // `amd64_variant` filter (GR Pro `nsis.goamd64: string`).
                 // Mirrors `goreleaser/internal/artifact/artifact.go::ByGoamd64`:
                 // only constrains `amd64` artifacts. Non-amd64 always passes.
                 // Unset `amd64_variant` metadata is treated as `v1`.
-                if let Some(ref want) = nsis_cfg.goamd64 {
+                if let Some(ref want) = nsis_cfg.amd64_variant {
                     filtered.retain(|b| {
                         let target = b.target.as_deref().unwrap_or("");
                         let (_, arch) = anodizer_core::target::map_target(target);
@@ -1549,13 +1549,13 @@ crates:
     }
 
     // -------------------------------------------------------------------
-    // M8 — `nsis.goamd64` filter (GR Pro `nsis.goamd64: string`)
+    // `nsis.amd64_variant` filter (GR Pro `nsis.goamd64: string`)
     // -------------------------------------------------------------------
 
     /// Build a context with three windows/amd64 binaries (v1/v2/v3) +
-    /// one windows/arm64 binary. The `goamd64` field on the config drives
+    /// one windows/arm64 binary. The `amd64_variant` field on the config drives
     /// which subset of amd64 binaries reaches NSIS Installer artifact creation.
-    fn nsis_goamd64_test_ctx(goamd64: Option<&str>) -> anodizer_core::context::Context {
+    fn nsis_amd64_variant_test_ctx(amd64_variant: Option<&str>) -> anodizer_core::context::Context {
         use anodizer_core::artifact::Artifact;
         use anodizer_core::config::{CrateConfig, NsisConfig};
         use anodizer_core::context::{Context, ContextOptions};
@@ -1566,7 +1566,7 @@ crates:
 
         let nsis_cfg = NsisConfig {
             script: Some(script_path.to_string_lossy().into_owned()),
-            goamd64: goamd64.map(str::to_string),
+            amd64_variant: amd64_variant.map(str::to_string),
             ..Default::default()
         };
 
@@ -1615,8 +1615,8 @@ crates:
     }
 
     #[test]
-    fn test_nsis_goamd64_unset_passes_all_amd64_variants() {
-        let mut ctx = nsis_goamd64_test_ctx(None);
+    fn test_nsis_amd64_variant_unset_passes_all_amd64_variants() {
+        let mut ctx = nsis_amd64_variant_test_ctx(None);
         NsisStage.run(&mut ctx).unwrap();
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
         // 3 amd64 variants + 1 arm64 -> 4 NSIS installers.
@@ -1624,8 +1624,8 @@ crates:
     }
 
     #[test]
-    fn test_nsis_goamd64_v3_only_keeps_matching_variant() {
-        let mut ctx = nsis_goamd64_test_ctx(Some("v3"));
+    fn test_nsis_amd64_variant_v3_only_keeps_matching_variant() {
+        let mut ctx = nsis_amd64_variant_test_ctx(Some("v3"));
         NsisStage.run(&mut ctx).unwrap();
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
         // Only v3 amd64 + arm64 -> 2 installers.
@@ -1639,9 +1639,9 @@ crates:
     }
 
     #[test]
-    fn test_nsis_goamd64_filter_does_not_drop_arm64() {
+    fn test_nsis_amd64_variant_filter_does_not_drop_arm64() {
         // Pin: amd64 filter never affects arm64.
-        let mut ctx = nsis_goamd64_test_ctx(Some("v9000"));
+        let mut ctx = nsis_amd64_variant_test_ctx(Some("v9000"));
         NsisStage.run(&mut ctx).unwrap();
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
         assert_eq!(installers.len(), 1);

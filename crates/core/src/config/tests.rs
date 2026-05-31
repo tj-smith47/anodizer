@@ -6429,7 +6429,7 @@ crates:
     }
 }
 
-// ---- M8: goamd64 field on DMG/MSI/NSIS/nfpm ----
+// ---- M8: amd64_variant field on DMG/MSI/NSIS/nfpm ----
 //
 // Mirrors GR's `Goamd64` field; previously absent on these surfaces, so
 // multi-amd64-variant builds couldn't filter. Tests assert the YAML round-
@@ -6438,7 +6438,7 @@ crates:
 // and is tracked separately — this commit adds the surface only.
 
 #[test]
-fn test_dmg_goamd64_field_deserializes() {
+fn test_dmg_amd64_variant_field_deserializes() {
     let yaml = r#"
 project_name: test
 crates:
@@ -6447,15 +6447,15 @@ crates:
     tag_template: "v{{ .Version }}"
     dmgs:
       - id: my_dmg
-        goamd64: v3
+        amd64_variant: v3
 "#;
-    let config: Config = serde_yaml_ng::from_str(yaml).expect("dmg goamd64 must parse");
+    let config: Config = serde_yaml_ng::from_str(yaml).expect("dmg amd64_variant must parse");
     let dmg = &config.crates[0].dmgs.as_ref().unwrap()[0];
-    assert_eq!(dmg.goamd64.as_deref(), Some("v3"));
+    assert_eq!(dmg.amd64_variant.as_deref(), Some("v3"));
 }
 
 #[test]
-fn test_msi_goamd64_field_deserializes() {
+fn test_msi_amd64_variant_field_deserializes() {
     let yaml = r#"
 project_name: test
 crates:
@@ -6464,15 +6464,15 @@ crates:
     tag_template: "v{{ .Version }}"
     msis:
       - id: my_msi
-        goamd64: v2
+        amd64_variant: v2
 "#;
-    let config: Config = serde_yaml_ng::from_str(yaml).expect("msi goamd64 must parse");
+    let config: Config = serde_yaml_ng::from_str(yaml).expect("msi amd64_variant must parse");
     let msi = &config.crates[0].msis.as_ref().unwrap()[0];
-    assert_eq!(msi.goamd64.as_deref(), Some("v2"));
+    assert_eq!(msi.amd64_variant.as_deref(), Some("v2"));
 }
 
 #[test]
-fn test_nsis_goamd64_field_deserializes() {
+fn test_nsis_amd64_variant_field_deserializes() {
     let yaml = r#"
 project_name: test
 crates:
@@ -6481,15 +6481,15 @@ crates:
     tag_template: "v{{ .Version }}"
     nsis:
       - id: my_nsis
-        goamd64: v4
+        amd64_variant: v4
 "#;
-    let config: Config = serde_yaml_ng::from_str(yaml).expect("nsis goamd64 must parse");
+    let config: Config = serde_yaml_ng::from_str(yaml).expect("nsis amd64_variant must parse");
     let nsis = &config.crates[0].nsis.as_ref().unwrap()[0];
-    assert_eq!(nsis.goamd64.as_deref(), Some("v4"));
+    assert_eq!(nsis.amd64_variant.as_deref(), Some("v4"));
 }
 
 #[test]
-fn test_nfpm_goamd64_field_deserializes_as_list() {
+fn test_nfpm_amd64_variant_field_deserializes_as_list() {
     // GR nfpm uses `[]string` (multi-variant filter), not `string`.
     let yaml = r#"
 project_name: test
@@ -6500,18 +6500,18 @@ crates:
     nfpms:
       - id: my_nfpm
         formats: [deb]
-        goamd64: [v2, v3]
+        amd64_variant: [v2, v3]
 "#;
-    let config: Config = serde_yaml_ng::from_str(yaml).expect("nfpm goamd64 list must parse");
+    let config: Config = serde_yaml_ng::from_str(yaml).expect("nfpm amd64_variant list must parse");
     let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     assert_eq!(
-        nfpm.goamd64.as_deref(),
+        nfpm.amd64_variant.as_deref(),
         Some(&[String::from("v2"), String::from("v3")][..])
     );
 }
 
 #[test]
-fn test_nfpm_goamd64_omitted_is_none() {
+fn test_nfpm_amd64_variant_omitted_is_none() {
     let yaml = r#"
 project_name: test
 crates:
@@ -6522,9 +6522,10 @@ crates:
       - id: my_nfpm
         formats: [deb]
 "#;
-    let config: Config = serde_yaml_ng::from_str(yaml).expect("nfpm without goamd64 must parse");
+    let config: Config =
+        serde_yaml_ng::from_str(yaml).expect("nfpm without amd64_variant must parse");
     let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
-    assert!(nfpm.goamd64.is_none());
+    assert!(nfpm.amd64_variant.is_none());
 }
 
 // ---- Q-arch2: ID uniqueness for archives[] and universal_binaries[] ----

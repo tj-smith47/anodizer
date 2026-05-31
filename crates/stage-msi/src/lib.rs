@@ -548,7 +548,7 @@ fn should_skip_msi_config(
     Ok(false)
 }
 
-/// Apply the ids + goamd64 filters to the collected Windows binaries.
+/// Apply the ids + amd64_variant filters to the collected Windows binaries.
 /// Returns `Some` with `(target, binary_path)` pairs to drive the per-target
 /// build, or `None` when the caller should `continue` (no matching binaries).
 fn filter_msi_binaries(
@@ -574,7 +574,7 @@ fn filter_msi_binaries(
         });
     }
 
-    if let Some(ref want) = msi_cfg.goamd64 {
+    if let Some(ref want) = msi_cfg.amd64_variant {
         filtered.retain(|b| {
             let target = b.target.as_deref().unwrap_or("");
             let (_, arch) = anodizer_core::target::map_target(target);
@@ -2552,13 +2552,13 @@ crates:
     }
 
     // -------------------------------------------------------------------
-    // `msi.goamd64` filter (GoReleaser Pro `msi.goamd64: string`)
+    // `msi.amd64_variant` filter (GoReleaser Pro `msi.goamd64: string`)
     // -------------------------------------------------------------------
 
     /// Build a context with three windows/amd64 binaries (variants v1/v2/v3)
-    /// plus one windows/arm64 binary. The `goamd64` field on the config drives
-    /// which subset of amd64 binaries reaches `Installer` artifact creation.
-    fn msi_goamd64_test_ctx(goamd64: Option<&str>) -> anodizer_core::context::Context {
+    /// plus one windows/arm64 binary. The `amd64_variant` field on the config
+    /// drives which subset of amd64 binaries reaches `Installer` artifact creation.
+    fn msi_amd64_variant_test_ctx(amd64_variant: Option<&str>) -> anodizer_core::context::Context {
         use anodizer_core::artifact::Artifact;
         use anodizer_core::config::{Config, CrateConfig, MsiConfig};
         use anodizer_core::context::{Context, ContextOptions};
@@ -2569,7 +2569,7 @@ crates:
 
         let msi_cfg = MsiConfig {
             wxs: Some(wxs_path.to_string_lossy().into_owned()),
-            goamd64: goamd64.map(str::to_string),
+            amd64_variant: amd64_variant.map(str::to_string),
             ..Default::default()
         };
 
@@ -2620,21 +2620,21 @@ crates:
     }
 
     #[test]
-    fn test_msi_goamd64_unset_passes_all_amd64_variants() {
-        let mut ctx = msi_goamd64_test_ctx(None);
+    fn test_msi_amd64_variant_unset_passes_all_amd64_variants() {
+        let mut ctx = msi_amd64_variant_test_ctx(None);
         MsiStage.run(&mut ctx).unwrap();
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
         // 3 amd64 binaries + 1 arm64 binary -> 4 MSIs (one per binary path).
         assert_eq!(
             installers.len(),
             4,
-            "unset goamd64 should pass every amd64 variant + non-amd64"
+            "unset amd64_variant should pass every amd64 variant + non-amd64"
         );
     }
 
     #[test]
-    fn test_msi_goamd64_v3_only_keeps_matching_variant() {
-        let mut ctx = msi_goamd64_test_ctx(Some("v3"));
+    fn test_msi_amd64_variant_v3_only_keeps_matching_variant() {
+        let mut ctx = msi_amd64_variant_test_ctx(Some("v3"));
         MsiStage.run(&mut ctx).unwrap();
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
         // Only v3 amd64 + arm64 (always passes) -> 2 MSIs.
@@ -2648,10 +2648,10 @@ crates:
     }
 
     #[test]
-    fn test_msi_goamd64_filter_does_not_drop_arm64() {
+    fn test_msi_amd64_variant_filter_does_not_drop_arm64() {
         // Pin: filter only constrains amd64. arm64 must still pass even
         // when no amd64 variant matches.
-        let mut ctx = msi_goamd64_test_ctx(Some("v9000"));
+        let mut ctx = msi_amd64_variant_test_ctx(Some("v9000"));
         MsiStage.run(&mut ctx).unwrap();
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
         assert_eq!(installers.len(), 1);
