@@ -1,7 +1,7 @@
 //! Tests for the Nix publisher submodules.
 
 use super::binary::is_dynamically_linked;
-use super::generate::{NixParams, generate_nix_expression, nix_system};
+use super::generate::{NixParams, VALID_NIX_LICENSES, generate_nix_expression, nix_system};
 use super::hashing::{hex_sha256_to_nix_base32, hex_sha256_to_sri};
 use super::publish::{publish_to_nix, render_nix_for_validation};
 use super::validate_nix_license;
@@ -523,6 +523,62 @@ fn test_validate_nix_license_invalid() {
     assert!(
         msg.contains("unknown license"),
         "error should say unknown license"
+    );
+}
+
+// Vendored snapshot of GoReleaser's authoritative `validLicenses` list,
+// copied verbatim from upstream `internal/pipe/nix/licenses.go`. The vendored
+// file's header pins the exact GoReleaser revision it came from (currently
+// v2.17.0-da7ce304-nightly@da7ce30) so a refresh diffs against a known base.
+// Refresh by re-copying that file over `goreleaser_licenses.go.vendored` and
+// updating the pinned revision in its header; the diff at refresh time
+// surfaces exactly which identifiers GoReleaser added or removed, and
+// `test_nix_licenses_match_goreleaser` fails until VALID_NIX_LICENSES is
+// brought back in sync. This is what catches a GoReleaser bump automatically.
+const GORELEASER_LICENSES_GO: &str = include_str!("goreleaser_licenses.go.vendored");
+
+/// Parse the quoted license identifiers out of the vendored GoReleaser
+/// `licenses.go` snapshot (one `"id",` per line inside the `validLicenses`
+/// slice literal).
+fn goreleaser_valid_licenses() -> Vec<String> {
+    GORELEASER_LICENSES_GO
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let inner = line.strip_prefix('"')?;
+            let id = inner
+                .strip_suffix("\",")
+                .or_else(|| inner.strip_suffix('"'))?;
+            (!id.is_empty()).then(|| id.to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn test_nix_licenses_match_goreleaser() {
+    use std::collections::BTreeSet;
+
+    let ours: BTreeSet<&str> = VALID_NIX_LICENSES.iter().copied().collect();
+    let theirs_vec = goreleaser_valid_licenses();
+    let theirs: BTreeSet<&str> = theirs_vec.iter().map(String::as_str).collect();
+
+    let missing: Vec<&&str> = theirs.difference(&ours).collect();
+    let extra: Vec<&&str> = ours.difference(&theirs).collect();
+
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "VALID_NIX_LICENSES has diverged from GoReleaser's validLicenses.\n  \
+         missing (in GoReleaser, not in anodizer): {missing:?}\n  \
+         extra (in anodizer, not in GoReleaser): {extra:?}\n  \
+         Refresh crates/stage-publish/src/nix/goreleaser_licenses.go.vendored from \
+         goreleaser internal/pipe/nix/licenses.go and reconcile VALID_NIX_LICENSES."
+    );
+
+    // Sanity-check the parser itself isn't silently matching nothing.
+    assert!(
+        theirs.len() > 100,
+        "parsed only {} GoReleaser license ids — vendored snapshot or parser is broken",
+        theirs.len()
     );
 }
 
