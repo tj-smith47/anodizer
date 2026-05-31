@@ -5,6 +5,7 @@ mod binary;
 mod flake;
 mod generate;
 mod hashing;
+mod license;
 mod publish;
 pub mod publisher;
 
@@ -16,5 +17,6 @@ pub use generate::{NixParams, SourceRootEntry, generate_nix_expression, validate
 pub use hashing::hex_sha256_to_nix_base32;
 #[cfg(test)]
 pub use hashing::hex_sha256_to_sri;
+pub use license::resolve_nix_license;
 pub use publish::publish_to_nix;
 pub(crate) use publish::render_nix_for_validation;

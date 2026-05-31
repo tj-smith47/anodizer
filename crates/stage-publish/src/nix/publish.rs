@@ -13,7 +13,7 @@ use crate::util::{self, OsArtifact};
 use super::binary::is_dynamically_linked;
 use super::generate::{NixParams, SourceRootEntry, generate_nix_expression, nix_system};
 use super::hashing::hex_sha256_to_nix_base32;
-use super::validate_nix_license;
+use super::resolve_nix_license;
 
 /// Render and push the Nix derivation for `crate_name`.
 ///
@@ -369,15 +369,20 @@ fn resolve_nix_metadata(
         .render_template(homepage_raw)
         .with_context(|| format!("nix: render homepage template for '{}'", crate_name))?;
 
-    let license = nix_cfg
+    // The raw value can be a nix `lib.licenses` attribute (config-supplied,
+    // GoReleaser-style) OR an SPDX id derived from `Cargo.toml`
+    // `[package].license`. Resolve to a nix attribute so both paths emit a
+    // valid `lib.licenses.<attr>`; an empty value suppresses `meta.license`.
+    let license_raw = nix_cfg
         .license
         .as_deref()
         .or_else(|| ctx.config.meta_license_for(crate_name))
-        .unwrap_or("")
-        .to_string();
-    if !license.is_empty() {
-        validate_nix_license(&license)?;
-    }
+        .unwrap_or("");
+    let license = if license_raw.is_empty() {
+        String::new()
+    } else {
+        resolve_nix_license(license_raw)?
+    };
 
     let main_program_raw = nix_cfg.main_program.as_deref().unwrap_or("");
     let main_program = ctx

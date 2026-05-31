@@ -3,7 +3,7 @@
 use super::binary::is_dynamically_linked;
 use super::generate::{NixParams, generate_nix_expression, nix_system};
 use super::hashing::{hex_sha256_to_nix_base32, hex_sha256_to_sri};
-use super::publish::publish_to_nix;
+use super::publish::{publish_to_nix, render_nix_for_validation};
 use super::validate_nix_license;
 
 #[test]
@@ -1211,4 +1211,250 @@ fn test_publish_to_nix_formatter_not_invoked_before_archive_resolution() {
     let err = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap_err();
     // Confirms the failure was the archives guard, not a formatter spawn.
     assert!(format!("{err}").contains("no Linux/Darwin archive"));
+}
+
+// ---------------------------------------------------------------------------
+// Derived-license resolution — the auto-derive (derive-don't-require) path
+// feeds a Cargo SPDX id (e.g. `MIT`, `Apache-2.0`) into the nix emission,
+// which must end up as a `lib.licenses.<attr>` nix attribute, NOT the raw
+// SPDX id. Exercised through `render_nix_for_validation`, the in-memory twin
+// of the publish render path, so the assertion is on the actual emitted
+// derivation string.
+// ---------------------------------------------------------------------------
+
+/// Write a minimal `Cargo.toml` with the given `[package].license` to
+/// `<dir>/<name>/Cargo.toml`, creating the crate dir.
+fn write_crate_cargo(base: &std::path::Path, name: &str, license: &str) {
+    let dir = base.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"{name}\"\ndescription = \"the {name} crate\"\nlicense = \"{license}\"\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// Add a Linux+Darwin archive pair for `crate_name` so the nix render path
+/// resolves at least one `lib.licenses`-bearing derivation.
+fn add_linux_darwin_archives(ctx: &mut anodizer_core::context::Context, crate_name: &str) {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    for (target, url) in [
+        (
+            "x86_64-unknown-linux-gnu",
+            format!("https://example.com/{crate_name}-linux-amd64.tar.gz"),
+        ),
+        (
+            "aarch64-apple-darwin",
+            format!("https://example.com/{crate_name}-darwin-arm64.tar.gz"),
+        ),
+    ] {
+        let mut m = std::collections::HashMap::new();
+        m.insert("url".to_string(), url.clone());
+        m.insert(
+            "sha256".to_string(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+        );
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: url.rsplit('/').next().unwrap().to_string(),
+            path: std::path::PathBuf::from(format!("dist/{}", url.rsplit('/').next().unwrap())),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: m,
+            size: None,
+        });
+    }
+}
+
+/// Render `crate_name`'s nix derivation in-memory from a single-crate config
+/// whose license is *derived* from a Cargo.toml `[package].license` SPDX id
+/// (no explicit `nix.license`). Returns the emitted expression.
+fn render_with_derived_license(spdx: &str) -> anyhow::Result<String> {
+    use anodizer_core::config::{Config, CrateConfig, NixConfig, PublishConfig, RepositoryConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let base = tempfile::tempdir().unwrap();
+    write_crate_cargo(base.path(), "mytool", spdx);
+
+    let mut config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: "mytool".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                nix: Some(NixConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("myorg".to_string()),
+                        name: Some("nixpkgs-overlay".to_string()),
+                        ..Default::default()
+                    }),
+                    // No explicit `license` — force the derived path.
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    config.populate_derived_metadata(base.path());
+
+    let mut ctx = Context::new(config, ContextOptions::default());
+    add_linux_darwin_archives(&mut ctx, "mytool");
+
+    render_nix_for_validation(&mut ctx, "mytool", &nix_log())
+        .map(|r| r.expect("render should not skip").expr)
+}
+
+#[test]
+fn derived_spdx_mit_emits_lib_licenses_mit() {
+    let expr = render_with_derived_license("MIT").unwrap();
+    assert!(
+        expr.contains("license = lib.licenses.mit;"),
+        "derived SPDX `MIT` must map to nix attr `mit`; got:\n{expr}"
+    );
+}
+
+#[test]
+fn derived_spdx_apache_emits_lib_licenses_asl20() {
+    let expr = render_with_derived_license("Apache-2.0").unwrap();
+    assert!(
+        expr.contains("license = lib.licenses.asl20;"),
+        "derived SPDX `Apache-2.0` must map to nix attr `asl20`; got:\n{expr}"
+    );
+}
+
+#[test]
+fn derived_spdx_nontrivial_mappings_emit_correct_attrs() {
+    for (spdx, attr) in [
+        ("BSD-3-Clause", "bsd3"),
+        ("GPL-3.0-or-later", "gpl3Plus"),
+        ("MPL-2.0", "mpl20"),
+    ] {
+        let expr = render_with_derived_license(spdx).unwrap();
+        assert!(
+            expr.contains(&format!("license = lib.licenses.{attr};")),
+            "derived SPDX `{spdx}` must map to nix attr `{attr}`; got:\n{expr}"
+        );
+    }
+}
+
+#[test]
+fn explicit_nix_attr_license_passes_through_unchanged() {
+    // cfgd writes `nix.license: mit` (already a nix attr) — must not break.
+    use anodizer_core::config::{NixConfig, RepositoryConfig};
+    let cfg = NixConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("nixpkgs-overlay".to_string()),
+            ..Default::default()
+        }),
+        license: Some("mit".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = nix_ctx(cfg, false);
+    add_linux_darwin_archives(&mut ctx, "mytool");
+    let expr = render_nix_for_validation(&mut ctx, "mytool", &nix_log())
+        .unwrap()
+        .expect("render should not skip")
+        .expr;
+    assert!(
+        expr.contains("license = lib.licenses.mit;"),
+        "explicit nix attr `mit` must pass through unchanged; got:\n{expr}"
+    );
+}
+
+#[test]
+fn derived_unknown_spdx_id_hard_errors() {
+    let err = render_with_derived_license("Foo-1.0")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("Foo-1.0"), "must name the bad value: {err}");
+    assert!(
+        err.contains("neither a known SPDX"),
+        "must explain neither SPDX nor nix attr: {err}"
+    );
+}
+
+#[test]
+fn derived_compound_spdx_expression_hard_errors() {
+    let err = render_with_derived_license("MIT OR Apache-2.0")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("compound"), "must flag compound: {err}");
+    assert!(
+        err.contains("nix.license"),
+        "must hint setting nix.license explicitly: {err}"
+    );
+}
+
+/// Workspace per-crate mode: two crates with *different* Cargo SPDX ids each
+/// resolve their own nix attribute. Pins that the derived-license path is
+/// per-crate, not a single shared value.
+#[test]
+fn per_crate_workspace_each_crate_derives_its_own_nix_license() {
+    use anodizer_core::config::{Config, CrateConfig, NixConfig, PublishConfig, RepositoryConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let base = tempfile::tempdir().unwrap();
+    write_crate_cargo(base.path(), "alpha", "MIT");
+    write_crate_cargo(base.path(), "beta", "Apache-2.0");
+
+    let nix_cfg = || {
+        Some(PublishConfig {
+            nix: Some(NixConfig {
+                repository: Some(RepositoryConfig {
+                    owner: Some("myorg".to_string()),
+                    name: Some("nixpkgs-overlay".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    };
+    let mut config = Config {
+        crates: vec![
+            CrateConfig {
+                name: "alpha".to_string(),
+                path: "alpha".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: nix_cfg(),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "beta".to_string(),
+                path: "beta".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: nix_cfg(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    config.populate_derived_metadata(base.path());
+
+    let mut ctx = Context::new(config, ContextOptions::default());
+    add_linux_darwin_archives(&mut ctx, "alpha");
+    add_linux_darwin_archives(&mut ctx, "beta");
+
+    let alpha = render_nix_for_validation(&mut ctx, "alpha", &nix_log())
+        .unwrap()
+        .expect("alpha render should not skip")
+        .expr;
+    let beta = render_nix_for_validation(&mut ctx, "beta", &nix_log())
+        .unwrap()
+        .expect("beta render should not skip")
+        .expr;
+
+    assert!(
+        alpha.contains("license = lib.licenses.mit;"),
+        "alpha (MIT) must emit `mit`; got:\n{alpha}"
+    );
+    assert!(
+        beta.contains("license = lib.licenses.asl20;"),
+        "beta (Apache-2.0) must emit `asl20`; got:\n{beta}"
+    );
 }
