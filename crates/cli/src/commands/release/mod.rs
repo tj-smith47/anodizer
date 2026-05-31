@@ -41,6 +41,16 @@ pub struct ReleaseOpts {
     /// trims the configured list down to the intersection. Mutually
     /// exclusive with `single_target` (clap-level `conflicts_with`).
     pub targets: Option<Vec<String>>,
+    /// `--host-targets`: build every configured target this host can build,
+    /// skipping only the ones that need a cross-toolchain anodizer doesn't
+    /// have (apple targets off a non-macOS host). Resolved into the same
+    /// `targets` intersection-filter at the top of [`run`]: the configured
+    /// target union is partitioned via
+    /// [`anodizer_core::partial::host_buildable_targets`], the skipped set is
+    /// logged once, and the kept set is fed through the existing
+    /// `PartialTarget::Targets` plumbing. Gated to snapshot / dry-run at the
+    /// CLI layer so a real release can never ship an incomplete target set.
+    pub host_targets: bool,
     pub release_notes: Option<PathBuf>,
     pub release_notes_tmpl: Option<PathBuf>,
     pub workspace: Option<String>,
@@ -243,6 +253,16 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     {
         log.status("no release tags at HEAD — nothing to do");
         return Ok(());
+    }
+
+    // --host-targets: resolve the configured target union for the selected
+    // crates down to the host-buildable subset, then feed it through the same
+    // `targets` intersection-filter the Determinism Harness uses. Done here
+    // (after crate selection, before the build context is assembled) so the
+    // partition reflects the same per-crate build.targets / defaults.targets /
+    // builds.ignore resolution every config mode shares.
+    if opts.host_targets {
+        resolve_host_targets(&mut opts, &config, &selected_sorted, &log)?;
     }
 
     let skip_stages = compute_skip_stages(opts.skip.clone(), &workspace_skip, opts.snapshot);
@@ -863,6 +883,73 @@ fn resolve_project_root(
         }
     };
     Some(std::fs::canonicalize(&candidate).unwrap_or(candidate))
+}
+
+/// Resolve `--host-targets` into `opts.targets` against the detected host
+/// triple. Thin wrapper over [`apply_host_targets_filter`] that supplies the
+/// real host via `rustc -vV`; the filter itself is host-injectable so its
+/// per-config-mode behaviour can be unit-tested deterministically.
+fn resolve_host_targets(
+    opts: &mut ReleaseOpts,
+    config: &Config,
+    selected_crates: &[String],
+    log: &StageLogger,
+) -> Result<()> {
+    let host = anodizer_core::partial::resolve_host_target()
+        .context("--host-targets: failed to detect the host target triple")?;
+    apply_host_targets_filter(opts, config, selected_crates, &host, log)
+}
+
+/// Partition the configured target union for `selected_crates` into the
+/// host-buildable subset and write it to `opts.targets`.
+///
+/// Collects the union (honoring per-build `targets`, `defaults.targets`, and
+/// `builds.ignore` exactly as the build stage does — so every config mode,
+/// single-crate / workspace-lockstep / workspace-per-crate, resolves the same
+/// list the builds will), partitions it via
+/// [`anodizer_core::partial::host_buildable_targets`] against `host`, logs the
+/// skipped set once, and feeds the kept set through the existing
+/// `PartialTarget::Targets` intersection filter.
+///
+/// Hard-errors when the host can build NONE of the configured targets
+/// (e.g. an apple-darwin-only config on a Linux host): proceeding would
+/// emit an empty snapshot that breaks the downstream archive / checksum
+/// stages, so the operator is told to run on a macOS host instead.
+fn apply_host_targets_filter(
+    opts: &mut ReleaseOpts,
+    config: &Config,
+    selected_crates: &[String],
+    host: &str,
+    log: &StageLogger,
+) -> Result<()> {
+    let configured = helpers::collect_build_targets(config, selected_crates);
+
+    // A config with no build targets at all has nothing to filter; leave
+    // `opts.targets` untouched so downstream stages handle the no-build case
+    // (e.g. lib-only crates) exactly as they would without --host-targets.
+    if configured.is_empty() {
+        return Ok(());
+    }
+
+    let (kept, skipped) = anodizer_core::partial::host_buildable_targets(host, &configured);
+
+    if let Some(msg) = anodizer_core::partial::host_targets_skip_message(host, &skipped) {
+        log.warn(&msg);
+    }
+
+    if kept.is_empty() {
+        anyhow::bail!(
+            "--host-targets: none of the {} configured target(s) can be built on this host \
+             ({}); all require a different toolchain (configured: [{}]). Run on a macOS host \
+             to build the apple-darwin targets, or adjust build.targets.",
+            configured.len(),
+            host,
+            configured.join(", "),
+        );
+    }
+
+    opts.targets = Some(kept);
+    Ok(())
 }
 
 /// Assemble the [`ContextOptions`] from parsed flags + derived state.
@@ -1549,6 +1636,293 @@ mod tests {
             workspaces: Some(workspaces),
             ..Default::default()
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_host_targets (--host-targets) — all three config modes
+    // -----------------------------------------------------------------------
+
+    use anodizer_core::config::{BuildConfig, Defaults};
+
+    fn build_with_targets(binary: &str, targets: &[&str]) -> BuildConfig {
+        BuildConfig {
+            binary: Some(binary.to_string()),
+            targets: Some(targets.iter().map(|s| s.to_string()).collect()),
+            ..Default::default()
+        }
+    }
+
+    fn crate_with_builds(name: &str, builds: Vec<BuildConfig>) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            builds: Some(builds),
+            ..Default::default()
+        }
+    }
+
+    fn base_release_opts() -> ReleaseOpts {
+        ReleaseOpts {
+            crate_names: vec![],
+            all: false,
+            force: false,
+            snapshot: false,
+            nightly: false,
+            dry_run: false,
+            clean: false,
+            skip: vec![],
+            token: None,
+            verbose: false,
+            debug: false,
+            quiet: false,
+            config_override: None,
+            parallelism: 1,
+            single_target: None,
+            targets: None,
+            host_targets: false,
+            release_notes: None,
+            release_notes_tmpl: None,
+            workspace: None,
+            draft: false,
+            release_header: None,
+            release_header_tmpl: None,
+            release_footer: None,
+            release_footer_tmpl: None,
+            fail_fast: false,
+            split: false,
+            merge: false,
+            publish_only: false,
+            strict: false,
+            prepare: false,
+            announce_only: false,
+            resume_release: false,
+            replace_existing: false,
+            preflight: false,
+            no_preflight: false,
+            strict_preflight: false,
+            no_post_publish_poll: false,
+            no_gate_submitter: false,
+            rollback: None,
+            simulate_failure: vec![],
+            rollback_only: false,
+            from_run: None,
+            allow_rerun: false,
+            allow_nondeterministic: vec![],
+            summary_json: None,
+            allow_ai_failure: false,
+        }
+    }
+
+    fn host_targets_opts() -> ReleaseOpts {
+        ReleaseOpts {
+            host_targets: true,
+            snapshot: true,
+            ..base_release_opts()
+        }
+    }
+
+    // A fixed Linux host triple injected into the filter so the per-config-mode
+    // tests are deterministic regardless of what machine runs them (and never
+    // race on the process `TARGET`/`GGOOS` env vars `resolve_host_target` reads).
+    const LINUX_HOST: &str = "x86_64-unknown-linux-gnu";
+    const MAC_HOST: &str = "aarch64-apple-darwin";
+
+    /// The mixed-target / linux-host expectation, asserted identically in
+    /// every config mode: apple targets drop, linux/windows stay, and the
+    /// kept set is written to `opts.targets`. Host is injected (LINUX_HOST)
+    /// so the assertion holds on any test machine.
+    fn assert_linux_host_filter(config: &Config, selected: &[String]) {
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let mut opts = host_targets_opts();
+        apply_host_targets_filter(&mut opts, config, selected, LINUX_HOST, &log).unwrap();
+        let kept = opts.targets.expect("host_targets must set opts.targets");
+        assert!(
+            kept.contains(&"x86_64-unknown-linux-gnu".to_string()),
+            "linux target kept: {kept:?}"
+        );
+        assert!(
+            kept.contains(&"x86_64-pc-windows-msvc".to_string()),
+            "windows target kept (cross-buildable): {kept:?}"
+        );
+        assert!(
+            !kept.iter().any(|t| anodizer_core::target::is_darwin(t)),
+            "apple targets dropped on a non-apple host: {kept:?}"
+        );
+    }
+
+    #[test]
+    fn host_targets_single_crate_mode() {
+        let config = Config {
+            project_name: "single".to_string(),
+            crates: vec![crate_with_builds(
+                "app",
+                vec![build_with_targets(
+                    "app",
+                    &[
+                        "x86_64-unknown-linux-gnu",
+                        "x86_64-apple-darwin",
+                        "aarch64-apple-darwin",
+                        "x86_64-pc-windows-msvc",
+                    ],
+                )],
+            )],
+            ..Default::default()
+        };
+        assert_linux_host_filter(&config, &["app".to_string()]);
+    }
+
+    #[test]
+    fn host_targets_workspace_lockstep_mode() {
+        // Lockstep: per-build `targets` omitted; the shared `defaults.targets`
+        // supplies the target union for every crate.
+        let mut config = Config {
+            project_name: "lockstep".to_string(),
+            crates: vec![
+                crate_with_builds(
+                    "a",
+                    vec![BuildConfig {
+                        binary: Some("a".to_string()),
+                        ..Default::default()
+                    }],
+                ),
+                crate_with_builds(
+                    "b",
+                    vec![BuildConfig {
+                        binary: Some("b".to_string()),
+                        ..Default::default()
+                    }],
+                ),
+            ],
+            ..Default::default()
+        };
+        config.defaults = Some(Defaults {
+            targets: Some(
+                [
+                    "x86_64-unknown-linux-gnu",
+                    "x86_64-apple-darwin",
+                    "aarch64-apple-darwin",
+                    "x86_64-pc-windows-msvc",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            ),
+            ..Default::default()
+        });
+        assert_linux_host_filter(&config, &["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn host_targets_workspace_per_crate_mode() {
+        // Per-crate: each crate declares its own per-build `targets`. The
+        // union across crates is partitioned; apple drops, the rest stays.
+        let config = Config {
+            project_name: "per-crate".to_string(),
+            crates: vec![
+                crate_with_builds(
+                    "linux-svc",
+                    vec![build_with_targets(
+                        "linux-svc",
+                        &["x86_64-unknown-linux-gnu", "x86_64-apple-darwin"],
+                    )],
+                ),
+                crate_with_builds(
+                    "win-tool",
+                    vec![build_with_targets(
+                        "win-tool",
+                        &["x86_64-pc-windows-msvc", "aarch64-apple-darwin"],
+                    )],
+                ),
+            ],
+            ..Default::default()
+        };
+        assert_linux_host_filter(&config, &["linux-svc".to_string(), "win-tool".to_string()]);
+    }
+
+    #[test]
+    fn host_targets_apple_host_keeps_all() {
+        // On an injected apple host, no targets are skipped — every configured
+        // target (including the linux/windows ones) is kept verbatim.
+        let config = Config {
+            project_name: "mac".to_string(),
+            crates: vec![crate_with_builds(
+                "app",
+                vec![build_with_targets(
+                    "app",
+                    &[
+                        "x86_64-unknown-linux-gnu",
+                        "x86_64-apple-darwin",
+                        "aarch64-apple-darwin",
+                        "x86_64-pc-windows-msvc",
+                    ],
+                )],
+            )],
+            ..Default::default()
+        };
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let mut opts = host_targets_opts();
+        apply_host_targets_filter(&mut opts, &config, &["app".to_string()], MAC_HOST, &log)
+            .unwrap();
+        let kept = opts.targets.expect("host_targets must set opts.targets");
+        assert_eq!(
+            kept,
+            vec![
+                "x86_64-unknown-linux-gnu",
+                "x86_64-apple-darwin",
+                "aarch64-apple-darwin",
+                "x86_64-pc-windows-msvc",
+            ],
+            "an apple host keeps every configured target: {kept:?}"
+        );
+    }
+
+    #[test]
+    fn host_targets_empty_result_bails() {
+        let config = Config {
+            project_name: "darwin-only".to_string(),
+            crates: vec![crate_with_builds(
+                "app",
+                vec![build_with_targets(
+                    "app",
+                    &["x86_64-apple-darwin", "aarch64-apple-darwin"],
+                )],
+            )],
+            ..Default::default()
+        };
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let mut opts = host_targets_opts();
+        let err =
+            apply_host_targets_filter(&mut opts, &config, &["app".to_string()], LINUX_HOST, &log)
+                .expect_err("apple-only config on a linux host must bail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("none of the") && msg.contains("macOS host"),
+            "empty-result guard names the cause + remedy: {msg}"
+        );
+    }
+
+    #[test]
+    fn host_targets_no_builds_is_noop() {
+        // A config with no build targets at all leaves opts.targets untouched.
+        let config = Config {
+            project_name: "no-builds".to_string(),
+            crates: vec![CrateConfig {
+                name: "lib".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let mut opts = host_targets_opts();
+        apply_host_targets_filter(&mut opts, &config, &["lib".to_string()], LINUX_HOST, &log)
+            .unwrap();
+        assert!(
+            opts.targets.is_none(),
+            "no configured targets => no filter, opts.targets stays None"
+        );
     }
 
     #[test]
@@ -2474,54 +2848,7 @@ mod tests {
     /// real root rather than a hard-coded `None`.
     #[test]
     fn build_context_options_propagates_project_root() {
-        let opts = ReleaseOpts {
-            crate_names: vec![],
-            all: false,
-            force: false,
-            snapshot: false,
-            nightly: false,
-            dry_run: false,
-            clean: false,
-            skip: vec![],
-            token: None,
-            verbose: false,
-            debug: false,
-            quiet: false,
-            config_override: None,
-            parallelism: 1,
-            single_target: None,
-            targets: None,
-            release_notes: None,
-            release_notes_tmpl: None,
-            workspace: None,
-            draft: false,
-            release_header: None,
-            release_header_tmpl: None,
-            release_footer: None,
-            release_footer_tmpl: None,
-            fail_fast: false,
-            split: false,
-            merge: false,
-            publish_only: false,
-            strict: false,
-            prepare: false,
-            announce_only: false,
-            resume_release: false,
-            replace_existing: false,
-            preflight: false,
-            no_preflight: false,
-            strict_preflight: false,
-            no_post_publish_poll: false,
-            no_gate_submitter: false,
-            rollback: None,
-            simulate_failure: vec![],
-            rollback_only: false,
-            from_run: None,
-            allow_rerun: false,
-            allow_nondeterministic: vec![],
-            summary_json: None,
-            allow_ai_failure: false,
-        };
+        let opts = base_release_opts();
         let root = std::path::PathBuf::from("/tmp/example-project");
         let ctx_opts = build_context_options(
             &opts,

@@ -44,6 +44,7 @@ Run the full release pipeline
 | `--auto-snapshot` | — | — | Automatically set --snapshot if the git repo is dirty |
 | `--single-target` | — | — | Build only for the host target triple |
 | `--targets` | — | — | Restrict the build to a comma-separated subset of configured target triples (e.g. x86_64-apple-darwin,aarch64-apple-darwin). Used by the Determinism Harness's sharded job matrix; conflicts with --single-target. |
+| `--host-targets` | — | — | Build every configured target this host can build, skipping cross-compile-only targets (apple targets on a non-macOS host). Only valid with --snapshot or --dry-run. Used by `task prepush` to do a real host-scoped build without aborting on un-buildable targets. |
 | `--release-notes` | — | — | Path to a custom release notes file (overrides changelog) |
 | `--workspace` | — | — | Release a specific workspace in a monorepo config |
 | `--preflight` | — | — | Run pre-flight publisher-state check and exit (don't start the pipeline) |

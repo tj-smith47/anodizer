@@ -49,24 +49,25 @@ tasks:
 
   release:snapshot:
     # FULL pre-push gate (canonical). Unlike `task snapshot` (slim, single
-    # target, the fast `task commit` gate), this snapshots ALL configured
-    # targets and runs the whole pipeline including the emission-validate
-    # stage — so a broken binstall/nix/version-sync emission is caught locally
-    # before push. Emission validation is build-independent and covers every
-    # configured target; the per-target builds only cover targets THIS host
-    # can produce (no cross-compile of foreign OS targets from one host), so
-    # "full" = all host-buildable targets + emission validation across all
-    # configured targets. `task prepush` aliases this so there's one source
-    # of truth for the flag set.
-    desc: "FULL pre-push dry-run: ALL targets + emission-validate (binstall/nix/version-sync). Slower than `task snapshot`."
+    # target, dry-run — the fast `task commit` gate), this runs a REAL build
+    # of every host-buildable target plus the whole snapshot pipeline
+    # (archive/sign/checksum/sbom) and the emission-validate stage — so a
+    # broken binstall/nix/version-sync emission is caught locally before push.
+    # `--host-targets` drops only the targets this host cannot cross-compile
+    # (apple targets off a non-macOS host) so the real build never aborts;
+    # the dropped triples are logged loudly. Snapshot mode auto-skips
+    # publish/snapcraft-publish/blob/announce, so this is "everything this
+    # host can build, minus publish/announce". `task prepush` aliases this so
+    # there's one source of truth for the flag set.
+    desc: "FULL pre-push: REAL build of all host-buildable targets + archive/sign/checksum + emission-validate (binstall/nix/version-sync). Slower than `task snapshot`."
     deps: [_check:tmp-headroom]
     cmds:
-      - cargo run -p anodizer --release -- release --snapshot --clean --dry-run --summary-json=dist/snapshot-summary.json
+      - cargo run -p anodizer --release -- release --snapshot --clean --host-targets --summary-json=dist/snapshot-summary.json
 
   prepush:
     # Discoverable alias for the canonical full gate; reuses `release:snapshot`
     # rather than duplicating its flag set so the two can never drift.
-    desc: "Run before pushing: FULL snapshot across all targets + emission-validate. Alias of `release:snapshot`."
+    desc: "Run before pushing: FULL real build across all host-buildable targets + emission-validate. Alias of `release:snapshot`."
     cmds:
       - task: release:snapshot
 
@@ -127,10 +128,11 @@ tasks:
       - cargo package --workspace --no-verify --allow-dirty --exclude xtask
 
   snapshot:
-    # SLIM, fast gate wired into `task commit` (via `task lint`). Single target
-    # only — kept fast on purpose. For the thorough pre-push check across all
-    # targets + emission-validate, use `task prepush` / `task release:snapshot`.
-    desc: "SLIM commit gate: dry-run pipeline, single target, no publish (fast). For the full pre-push check use `task prepush`."
+    # SLIM, fast gate wired into `task commit` (via `task lint`). Single target,
+    # dry-run (compiles nothing) — kept fast on purpose. For the thorough
+    # pre-push check (a REAL build of every host-buildable target +
+    # emission-validate), use `task prepush` / `task release:snapshot`.
+    desc: "SLIM commit gate: dry-run pipeline, single target, no publish (fast). For the full pre-push real build use `task prepush`."
     deps: [build]
     cmds:
       - ./target/release/anodizer release --snapshot --single-target --clean --dry-run

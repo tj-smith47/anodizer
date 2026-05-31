@@ -563,6 +563,160 @@ fn continue_merge_does_not_trigger_build_pipeline() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// `--host-targets` — host-scoped real build subset (used by `task prepush`)
+// ---------------------------------------------------------------------------
+
+/// Single-crate config with an explicit `targets:` list. Used to drive the
+/// `--host-targets` partition through the binary's startup path: the safety
+/// gate and empty-result guard both fire BEFORE any compilation, so these
+/// tests stay cheap on any host.
+fn config_with_targets(triples: &[&str]) -> String {
+    let targets = triples
+        .iter()
+        .map(|t| format!("          - {t}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r#"project_name: matrix-fixture
+crates:
+  - name: matrix-fixture
+    path: "."
+    tag_template: "v{{{{ .Version }}}}"
+    builds:
+      - binary: matrix-fixture
+        targets:
+{targets}
+    archives:
+      - name_template: "{{{{ .ProjectName }}}}-{{{{ .Os }}}}-{{{{ .Arch }}}}"
+        formats: [tar.gz]
+    checksum:
+      name_template: "checksums.txt"
+      algorithm: sha256
+"#,
+    )
+}
+
+fn setup_fixture_with_targets(tmp: &Path, triples: &[&str]) {
+    create_test_project(tmp);
+    init_git_repo(tmp);
+    create_config(tmp, &config_with_targets(triples));
+}
+
+/// `--host-targets` without `--snapshot`/`--dry-run` must hard-error at
+/// startup: silently dropping configured targets in a real release would
+/// ship a broken release.
+#[test]
+fn host_targets_requires_snapshot_or_dry_run() {
+    let tmp = TempDir::new().unwrap();
+    setup_fixture_with_targets(tmp.path(), &["x86_64-unknown-linux-gnu"]);
+    let out = run_anodizer(tmp.path(), &["release", "--host-targets", "--force"]);
+    assert!(
+        !out.status.success(),
+        "--host-targets without --snapshot/--dry-run must fail.\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&out.stderr));
+    assert!(
+        stderr.contains("--host-targets is only valid with --snapshot or --dry-run"),
+        "must explain the snapshot/dry-run gate.\nstderr:\n{stderr}"
+    );
+}
+
+/// `--host-targets --dry-run` satisfies the safety gate (no real release is
+/// produced), so startup proceeds past the gate.
+#[test]
+fn host_targets_allowed_with_dry_run() {
+    let tmp = TempDir::new().unwrap();
+    setup_fixture_with_targets(tmp.path(), &["x86_64-unknown-linux-gnu"]);
+    let out = run_anodizer(
+        tmp.path(),
+        &[
+            "release",
+            "--dry-run",
+            "--host-targets",
+            "--skip=build,archive,sign,checksum,sbom,docker",
+        ],
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&out.stderr));
+    assert!(
+        !stderr.contains("--host-targets is only valid with"),
+        "the safety gate must NOT trip under --dry-run.\nstderr:\n{stderr}"
+    );
+}
+
+/// Empty-result guard: a non-apple host (this CI runner is Linux) with an
+/// apple-darwin-only config can build NOTHING, so `--host-targets` must
+/// hard-error and tell the operator to run on a macOS host — never emit an
+/// empty snapshot that breaks downstream archive/checksum stages.
+///
+/// Skipped on an apple host (where every target is buildable and the guard
+/// never fires).
+#[test]
+fn host_targets_empty_result_hard_errors_on_linux() {
+    if anodizer_core::partial::host_is_apple(&host_target()) {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    setup_fixture_with_targets(tmp.path(), &["x86_64-apple-darwin", "aarch64-apple-darwin"]);
+    let out = run_anodizer(
+        tmp.path(),
+        &["release", "--snapshot", "--host-targets", "--force"],
+    );
+    assert!(
+        !out.status.success(),
+        "apple-only config on a non-apple host must hard-error.\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&out.stderr));
+    assert!(
+        stderr.contains("none of the")
+            && stderr.contains("can be built on this host")
+            && stderr.contains("macOS host"),
+        "empty-result guard must name the cause and the macOS-host remedy.\nstderr:\n{stderr}"
+    );
+}
+
+/// On a non-apple host, a mixed config emits the loud skip line naming the
+/// apple triples and the macOS-host reason, then proceeds to build the
+/// remaining (linux) targets. Heavy stages are skipped to keep the test
+/// cheap; the assertion is purely on the loud-log line.
+///
+/// Skipped on an apple host (no targets are skipped there).
+#[test]
+fn host_targets_logs_skipped_apple_targets_on_linux() {
+    if anodizer_core::partial::host_is_apple(&host_target()) {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    setup_fixture_with_targets(
+        tmp.path(),
+        &[
+            "x86_64-unknown-linux-gnu",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+        ],
+    );
+    let out = run_anodizer(
+        tmp.path(),
+        &[
+            "release",
+            "--snapshot",
+            "--host-targets",
+            "--force",
+            "--skip=build,archive,sign,checksum,sbom,docker",
+        ],
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&out.stderr));
+    assert!(
+        stderr.contains("host-targets: skipping 2 target(s)")
+            && stderr.contains("x86_64-apple-darwin")
+            && stderr.contains("aarch64-apple-darwin")
+            && stderr.contains("macOS host"),
+        "must emit the loud skip line naming both apple triples + reason.\nstderr:\n{stderr}"
+    );
+}
+
 /// Helper: ensures the args parse at the clap layer. Trait-resolution
 /// adapter so the test body reads `Cli::try_parse_from_with_args` —
 /// keeps callers from importing `clap::Parser` just for the test.

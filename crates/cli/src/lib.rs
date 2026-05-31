@@ -91,6 +91,13 @@ pub enum Commands {
         )]
         targets: Option<String>,
         #[arg(
+            long = "host-targets",
+            conflicts_with = "single_target",
+            conflicts_with = "targets",
+            help = "Build every configured target this host can build, skipping cross-compile-only targets (apple targets on a non-macOS host). Only valid with --snapshot or --dry-run. Used by `task prepush` to do a real host-scoped build without aborting on un-buildable targets."
+        )]
+        host_targets: bool,
+        #[arg(
             long,
             help = "Path to a custom release notes file (overrides changelog)"
         )]

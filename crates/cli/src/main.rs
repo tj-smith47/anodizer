@@ -280,6 +280,7 @@ fn main() {
             auto_snapshot,
             single_target,
             targets,
+            host_targets,
             release_notes,
             workspace,
             preflight,
@@ -326,6 +327,23 @@ fn main() {
                     snapshot
                 };
 
+            // --host-targets silently drops the targets this host can't
+            // cross-compile (apple targets off a non-mac), which is only ever
+            // safe when no real release is produced. Gate it to snapshot /
+            // dry-run so a real release can never ship a partial target set.
+            if host_targets && !effective_snapshot && !dry_run {
+                eprintln!(
+                    "{}",
+                    anodizer_core::log::render_error(
+                        "--host-targets is only valid with --snapshot or --dry-run: \
+                         it skips configured targets this host cannot build, which would \
+                         ship an incomplete real release. Add --snapshot (or --dry-run), \
+                         or run on a host that can build every configured target."
+                    )
+                );
+                std::process::exit(1);
+            }
+
             let resolved_single_target = resolve_single_target(single_target);
 
             // --targets=<csv> mirrors --stages=<csv>: comma-split, trim,
@@ -364,6 +382,7 @@ fn main() {
                     parallelism,
                     single_target: resolved_single_target,
                     targets: resolved_targets,
+                    host_targets,
                     release_notes,
                     release_notes_tmpl,
                     workspace,
@@ -1342,6 +1361,50 @@ mod tests {
         } else {
             panic!("expected Release command");
         }
+    }
+
+    #[test]
+    fn host_targets_parses_with_snapshot() {
+        let cli = Cli::try_parse_from(["anodizer", "release", "--snapshot", "--host-targets"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse --snapshot --host-targets: {:?}",
+            cli.err()
+        );
+        if let Some(Commands::Release {
+            host_targets,
+            snapshot,
+            ..
+        }) = cli.unwrap().command
+        {
+            assert!(host_targets, "host_targets flag should be true");
+            assert!(snapshot);
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn host_targets_conflicts_with_single_target() {
+        let cli = Cli::try_parse_from(["anodizer", "release", "--host-targets", "--single-target"]);
+        assert!(
+            cli.is_err(),
+            "--host-targets and --single-target must be mutually exclusive"
+        );
+    }
+
+    #[test]
+    fn host_targets_conflicts_with_targets() {
+        let cli = Cli::try_parse_from([
+            "anodizer",
+            "release",
+            "--host-targets",
+            "--targets=x86_64-unknown-linux-gnu",
+        ]);
+        assert!(
+            cli.is_err(),
+            "--host-targets and --targets must be mutually exclusive"
+        );
     }
 
     #[test]

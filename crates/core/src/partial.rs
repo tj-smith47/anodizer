@@ -313,6 +313,84 @@ fn synthesize_triple_with_overrides(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Host-buildable target filtering (--host-targets)
+// ---------------------------------------------------------------------------
+
+/// The single un-buildable cross-compile case anodizer actually hits:
+/// Apple (`*-apple-*`, including `*-apple-darwin` and iOS) targets cannot
+/// be built from a non-Apple host. cargo-zigbuild can link Linux and
+/// Windows targets from any host, but Apple targets need the macOS SDK
+/// (Security / CoreFoundation frameworks) only present on a real Mac.
+fn target_needs_apple_host(triple: &str) -> bool {
+    crate::target::is_darwin(triple)
+}
+
+/// `true` when the host triple is an Apple/Darwin host (and can therefore
+/// build Apple targets in addition to everything else).
+pub fn host_is_apple(host: &str) -> bool {
+    crate::target::is_darwin(host)
+}
+
+/// Partition `configured` targets into `(buildable, skipped)` for the
+/// given host triple, per the `--host-targets` rule.
+///
+/// Every configured target is kept EXCEPT Apple (`*-apple-*`) targets when
+/// the host is not itself an Apple host — those require a macOS SDK that is
+/// only present on a real Mac. Linux, Windows, and all other targets are
+/// kept from any host (cargo-zigbuild cross-links them). On an Apple host
+/// nothing is skipped. Order is preserved within each partition.
+///
+/// ```
+/// use anodizer_core::partial::host_buildable_targets;
+///
+/// let configured = vec![
+///     "x86_64-unknown-linux-gnu".to_string(),
+///     "x86_64-apple-darwin".to_string(),
+/// ];
+/// let (kept, skipped) =
+///     host_buildable_targets("x86_64-unknown-linux-gnu", &configured);
+/// assert_eq!(kept, vec!["x86_64-unknown-linux-gnu"]);
+/// assert_eq!(skipped, vec!["x86_64-apple-darwin"]);
+/// ```
+pub fn host_buildable_targets(host: &str, configured: &[String]) -> (Vec<String>, Vec<String>) {
+    if host_is_apple(host) {
+        return (configured.to_vec(), Vec::new());
+    }
+    let mut kept = Vec::new();
+    let mut skipped = Vec::new();
+    for t in configured {
+        if target_needs_apple_host(t) {
+            skipped.push(t.clone());
+        } else {
+            kept.push(t.clone());
+        }
+    }
+    (kept, skipped)
+}
+
+/// Render the single loud-log line emitted when `--host-targets` skips
+/// configured targets, naming the host OS, the count, the reason, and the
+/// skipped triples. Returns `None` when nothing was skipped.
+///
+/// Example:
+/// `host-targets: skipping 2 target(s) not buildable on this linux host
+/// (apple targets require a macOS host): aarch64-apple-darwin,
+/// x86_64-apple-darwin`
+pub fn host_targets_skip_message(host: &str, skipped: &[String]) -> Option<String> {
+    if skipped.is_empty() {
+        return None;
+    }
+    let (host_os, _) = crate::target::map_target(host);
+    Some(format!(
+        "host-targets: skipping {} target(s) not buildable on this {} host \
+         (apple targets require a macOS host): {}",
+        skipped.len(),
+        host_os,
+        skipped.join(", "),
+    ))
+}
+
 /// Suggest a GitHub Actions runner for a given OS.
 pub fn suggest_runner(os: &str) -> &'static str {
     match os {
@@ -719,5 +797,89 @@ mod tests {
         let configured = vec!["aarch64-apple-darwin".to_string()];
         let m = find_runtime_target("x86_64-unknown-linux-gnu", &configured);
         assert!(m.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // host_buildable_targets (--host-targets)
+    // -----------------------------------------------------------------------
+
+    fn mixed_targets() -> Vec<String> {
+        vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "aarch64-unknown-linux-gnu".to_string(),
+            "x86_64-apple-darwin".to_string(),
+            "aarch64-apple-darwin".to_string(),
+            "x86_64-pc-windows-msvc".to_string(),
+        ]
+    }
+
+    #[test]
+    fn host_buildable_linux_keeps_non_apple_skips_apple() {
+        let (kept, skipped) = host_buildable_targets("x86_64-unknown-linux-gnu", &mixed_targets());
+        assert_eq!(
+            kept,
+            vec![
+                "x86_64-unknown-linux-gnu",
+                "aarch64-unknown-linux-gnu",
+                "x86_64-pc-windows-msvc",
+            ],
+            "linux + windows targets are cross-buildable from a linux host"
+        );
+        assert_eq!(
+            skipped,
+            vec!["x86_64-apple-darwin", "aarch64-apple-darwin"],
+            "apple targets are skipped on a non-apple host"
+        );
+    }
+
+    #[test]
+    fn host_buildable_apple_host_keeps_everything() {
+        let (kept, skipped) = host_buildable_targets("aarch64-apple-darwin", &mixed_targets());
+        assert_eq!(kept, mixed_targets());
+        assert!(
+            skipped.is_empty(),
+            "an apple host can build every configured target"
+        );
+    }
+
+    #[test]
+    fn host_buildable_linux_only_config_keeps_all() {
+        let configured = vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "x86_64-pc-windows-msvc".to_string(),
+        ];
+        let (kept, skipped) = host_buildable_targets("x86_64-unknown-linux-gnu", &configured);
+        assert_eq!(kept, configured);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn host_buildable_linux_apple_only_config_skips_all() {
+        let configured = vec![
+            "x86_64-apple-darwin".to_string(),
+            "aarch64-apple-darwin".to_string(),
+        ];
+        let (kept, skipped) = host_buildable_targets("x86_64-unknown-linux-gnu", &configured);
+        assert!(kept.is_empty(), "a linux host can build no apple targets");
+        assert_eq!(skipped, configured);
+    }
+
+    #[test]
+    fn host_targets_skip_message_names_count_host_and_triples() {
+        let skipped = vec![
+            "aarch64-apple-darwin".to_string(),
+            "x86_64-apple-darwin".to_string(),
+        ];
+        let msg = host_targets_skip_message("x86_64-unknown-linux-gnu", &skipped).unwrap();
+        assert!(msg.contains("2 target(s)"), "names the count: {msg}");
+        assert!(msg.contains("linux host"), "names the host OS: {msg}");
+        assert!(msg.contains("macOS host"), "names the reason: {msg}");
+        assert!(msg.contains("aarch64-apple-darwin"), "lists triple: {msg}");
+        assert!(msg.contains("x86_64-apple-darwin"), "lists triple: {msg}");
+    }
+
+    #[test]
+    fn host_targets_skip_message_is_none_when_nothing_skipped() {
+        assert!(host_targets_skip_message("x86_64-unknown-linux-gnu", &[]).is_none());
     }
 }
