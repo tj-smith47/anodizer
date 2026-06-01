@@ -962,7 +962,7 @@ mod tests {
     /// Mirrors GoReleaser's `shouldRelPath` / `relPath`
     /// (`internal/artifact/artifact.go:529-560`).
     #[test]
-    #[serial_test::serial(cwd)]
+    #[serial_test::serial]
     fn to_artifacts_json_strips_absolute_worktree_prefix() {
         let cwd_guard = tempfile::tempdir().unwrap();
         let original_cwd = std::env::current_dir().unwrap();
@@ -1069,7 +1069,7 @@ mod tests {
     /// `docker push` the value verbatim. Mirrors `shouldRelPath`'s
     /// docker-kind carve-out.
     #[test]
-    #[serial_test::serial(cwd)]
+    #[serial_test::serial]
     fn to_artifacts_json_preserves_docker_image_refs() {
         let mut registry = ArtifactRegistry::new();
         registry.add(Artifact {

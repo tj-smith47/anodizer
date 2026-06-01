@@ -49,6 +49,12 @@ use std::process::Command;
 ///
 /// Pair with `#[serial]` (from the `serial_test` crate) when multiple tests
 /// in a file mutate cwd, since changing cwd is a process-wide side effect.
+/// The whole crate's cwd-touching tests must share ONE serial key so they
+/// mutually exclude: process-global cwd is also read by tests that spawn a
+/// cwd-sensitive subprocess (e.g. `rustc -vV` in `partial.rs`), which inherit
+/// the cwd and fail spuriously if a concurrent test moved it. Use the default
+/// (unnamed) `#[serial]` key everywhere — a distinct keyed group would run in
+/// parallel and reopen the race.
 ///
 /// # Example
 ///

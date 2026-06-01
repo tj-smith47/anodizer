@@ -728,6 +728,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[serial]
     fn test_detect_host_target() {
         // This test runs on whatever machine the test suite runs on.
         // It should always succeed if rustc is available.
@@ -865,6 +866,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolve_host_target_blank_target_falls_through() {
         // A whitespace-only TARGET should be ignored (matches GR's
         // `if t := os.Getenv("TARGET"); t != ""` early-return).
@@ -1140,6 +1142,7 @@ host: aarch64-apple-darwin\n";
     }
 
     #[test]
+    #[serial]
     fn detect_rustc_version_live_returns_nonempty() {
         // Requires rustc on PATH — skip gracefully if absent.
         if let Some(ver) = detect_rustc_version() {
