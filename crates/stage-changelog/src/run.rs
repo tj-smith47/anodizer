@@ -298,7 +298,7 @@ fn handle_github_native_changelog(
         } else {
             Some(current_tag.as_str())
         };
-        let prev_tag = resolve_prev_tag(ctx, crate_cfg, monorepo_prefix, current_tag_opt);
+        let prev_tag = resolve_prev_tag(ctx, crate_cfg, monorepo_prefix, current_tag_opt)?;
 
         let body = if dry_run_or_snapshot {
             log.status(&format!(
@@ -507,14 +507,33 @@ fn render_group_titles(
 /// used. In both cases the result is filtered against `current_tag` so a
 /// range start equal to the upper bound (which would collapse the range to
 /// zero commits) is dropped.
+///
+/// An explicit `--from` is validated against git: a ref that doesn't resolve
+/// to a commit `bail!`s (naming the bad ref) rather than silently degrading
+/// to an empty changelog — `fetch_git_commits_in` returns `Ok(vec![])` on a
+/// `git log` non-zero, so an unchecked typo would emit a blank changelog with
+/// no error. Auto-discovered tags are always valid, so the check is gated on
+/// the explicit-`--from` arm only.
 fn resolve_prev_tag(
     ctx: &Context,
     crate_cfg: &anodizer_core::config::CrateConfig,
     monorepo_prefix: Option<&str>,
     current_tag: Option<&str>,
-) -> Option<String> {
+) -> Result<Option<String>> {
     let candidate = match ctx.options.changelog_from.as_deref() {
-        Some(from) if !from.trim().is_empty() => Some(from.to_string()),
+        Some(from) if !from.trim().is_empty() => {
+            let from = from.trim();
+            let cwd = std::env::current_dir()
+                .context("changelog: resolve current dir to validate --from ref")?;
+            anodizer_core::git::rev_verify_commit_in(&cwd, from).with_context(|| {
+                format!(
+                    "changelog: --from ref {:?} does not resolve to a commit \
+                     (check the tag/sha/branch name)",
+                    from
+                )
+            })?;
+            Some(from.to_string())
+        }
         _ => find_latest_tag_matching_with_prefix(
             &crate_cfg.tag_template,
             ctx.config.git.as_ref(),
@@ -523,7 +542,7 @@ fn resolve_prev_tag(
         )
         .unwrap_or(None),
     };
-    candidate.filter(|t| current_tag != Some(t.as_str()))
+    Ok(candidate.filter(|t| current_tag != Some(t.as_str())))
 }
 
 /// Pick the effective path filter for a crate. Precedence:
@@ -663,7 +682,7 @@ fn render_crate_changelog(
     // the auto-discovered tag as the range start.
     let monorepo_prefix = ctx.config.monorepo_tag_prefix();
     let current_tag = ctx.template_vars().get("Tag").cloned();
-    let prev_tag = resolve_prev_tag(ctx, crate_cfg, monorepo_prefix, current_tag.as_deref());
+    let prev_tag = resolve_prev_tag(ctx, crate_cfg, monorepo_prefix, current_tag.as_deref())?;
 
     let monorepo_dir = ctx.config.monorepo_dir().map(str::to_string);
     let paths = effective_paths(&opts.paths, &crate_cfg.path, monorepo_dir.as_deref());

@@ -647,6 +647,18 @@ pub fn rev_parse_in(cwd: &Path, rev: &str) -> Result<String> {
     git_output_in(cwd, &["rev-parse", rev])
 }
 
+/// `git rev-parse --verify <rev>^{commit}` — resolve `rev` to a commit SHA,
+/// erroring when it does not name an existing commit. Stricter than
+/// [`rev_parse_in`]: `--verify` rejects ambiguous / non-existent refs (rather
+/// than echoing the input back), and the `^{commit}` peel rejects a ref that
+/// resolves to a non-commit object (e.g. a tree or blob SHA).
+pub fn rev_verify_commit_in(cwd: &Path, rev: &str) -> Result<String> {
+    git_output_in(
+        cwd,
+        &["rev-parse", "--verify", &format!("{}^{{commit}}", rev)],
+    )
+}
+
 /// `git rev-list <sha>..HEAD` — list the commit hashes (newest-first) that
 /// sit on top of `sha` but aren't in `sha`.
 ///

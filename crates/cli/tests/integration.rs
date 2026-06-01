@@ -2750,6 +2750,70 @@ crates:
     );
 }
 
+/// `changelog --from <nonexistent>` must ERROR (naming the bad ref), not
+/// silently degrade to an empty changelog. The git fetch returns Ok(vec![])
+/// on a bad range, so without validation a typo'd ref ships a blank changelog.
+#[test]
+fn changelog_from_nonexistent_ref_errors() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(tmp.path())
+            .output()
+            .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    let config = r#"project_name: test-project
+changelog:
+  snapshot: true
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    create_config(tmp.path(), config);
+
+    git(&["init"]);
+    git(&["config", "user.email", "test@test.com"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "initial"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["changelog", "--snapshot", "--from", "v9.9.9-does-not-exist"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "changelog --from <nonexistent> must fail, not emit an empty changelog.\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("v9.9.9-does-not-exist"),
+        "error must name the bad ref, got:\n{stderr}"
+    );
+    // The error must come from the up-front `--from` validation (which guards
+    // EVERY fetch path, including the SCM-fallback `fetch_git_commits_in` that
+    // silently returns Ok(vec![]) on a bad range), not from an incidental
+    // downstream git failure that some fetch paths swallow.
+    assert!(
+        stderr.contains("does not resolve to a commit"),
+        "error must be the up-front --from validation message, got:\n{stderr}"
+    );
+}
+
 /// E2E #4: Config validation round-trip — `init` generates config, `check` validates it,
 /// `build --snapshot` succeeds using the generated config.
 #[test]

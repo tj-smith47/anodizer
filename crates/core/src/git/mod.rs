@@ -28,7 +28,8 @@ pub use commits::{
     has_changes_since_in, has_commits_since_tag, has_commits_since_tag_in, head_commit_hash_in,
     head_commit_timestamp_in, is_branchlike, log_subjects_for_range, paths_changed_since_tag,
     paths_changed_since_tag_in, push_branch_in, reset_hard_in, resolve_rollback_identity,
-    rev_parse_in, revert_commit_in, short_commit_str, stage_and_commit, stage_and_commit_in,
+    rev_parse_in, rev_verify_commit_in, revert_commit_in, short_commit_str, stage_and_commit,
+    stage_and_commit_in,
 };
 pub use detect::{GitInfo, detect_git_info, detect_git_info_in};
 pub use github_api::{
