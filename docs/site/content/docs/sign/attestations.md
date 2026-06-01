@@ -69,27 +69,52 @@ the Action's OIDC identity does. This is the path used by fd, biome, and gping.
 ]
 ```
 
-### How anodizer-action consumes it
+### How the manifest is consumed
 
-Two consumption paths — either works:
+The JSON manifest is INPUT to **anodizer-action's own code**, which iterates the
+entries and fans each out to the stock action via `subject-name` +
+`subject-digest` (one subject per `{ name, digest.sha256 }` pair):
 
 ```yaml
-# Path 1 — subject-digest from the JSON manifest (primary deliverable)
+# anodizer-action reads dist/attestation-subjects.json and, per entry, calls:
 - uses: actions/attest-build-provenance@v1
   with:
-    subject-path: dist/attestation-subjects.json   # array of { name, digest }
+    subject-name: myapp-1.0.0-linux-amd64.tar.gz
+    subject-digest: sha256:9f86d0818...
+```
 
-# Path 2 — subject-checksums pointing at the existing checksums.txt
-#           (sha256sum format `<hex>  <name>`); no extra file is generated
+> **Do not** point the stock action's `subject-path:` at
+> `attestation-subjects.json`. `subject-path` expects the ACTUAL artifact files
+> (the action hashes them itself); aiming it at the manifest would attest the
+> JSON file's own hash, not your artifacts.
+
+### Consuming directly with the stock action
+
+If you drive `actions/attest-build-provenance` yourself (without
+anodizer-action), the recommended path is `subject-checksums` pointed at the
+checksum file anodizer's `checksum` stage already writes:
+
+```yaml
+# Recommended: subject-checksums reads the existing checksums.txt
+# (sha256sum format `<hex>  <name>`); no extra file is generated.
 - uses: actions/attest-build-provenance@v1
   with:
     subject-checksums: dist/checksums.txt
 ```
 
-anodizer does **not** duplicate the sha256sum file: the `checksum` stage already
-writes `checksums.txt` in `<hex>  <name>` format, which `subject-checksums`
-accepts directly. The JSON manifest is the primary deliverable; reusing
-`checksums.txt` is a zero-cost bonus.
+Alternatively, point `subject-path` at the real artifact globs (NOT the
+manifest) so the action hashes the files itself:
+
+```yaml
+- uses: actions/attest-build-provenance@v1
+  with:
+    subject-path: "dist/*.tar.gz,dist/checksums.txt"
+```
+
+anodizer does **not** duplicate the sha256sum file: `checksums.txt` is in
+`<hex>  <name>` format, which `subject-checksums` accepts directly. The JSON
+manifest is the primary deliverable for anodizer-action; reusing
+`checksums.txt` for the stock-action path is a zero-cost bonus.
 
 ## Mode `emit` — self-contained (GoReleaser Pro parity)
 
