@@ -559,6 +559,19 @@
         "type": "string"
       }
     },
+    "verify_release": {
+      "description": "Opt-in post-release verification gate. Runs LAST (after the release is created and every publisher has run) and REPORTS post-publish defects — missing assets, failed install smoke-tests, glibc-ceiling violations. Because it runs after the irreversible publish, a failure exits non-zero to flag CI but never undoes the release. Off unless `verify_release.enabled: true`.",
+      "default": {
+        "assert_assets": true,
+        "enabled": false,
+        "install_smoke": null
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/VerifyReleaseConfig"
+        }
+      ]
+    },
     "version": {
       "description": "Schema version. Currently supports 1 (implicit default) and 2.",
       "default": null,
@@ -7255,6 +7268,46 @@
         }
       }
     },
+    "InstallSmokeConfig": {
+      "description": "Per-package install smoke-test image overrides.\n\nEach field is the container image used to install + version-check that package type. A `None` field falls back to its sane default ([`DEFAULT_DEB_IMAGE`], [`DEFAULT_RPM_IMAGE`], [`DEFAULT_APK_IMAGE`]).",
+      "type": "object",
+      "properties": {
+        "apk": {
+          "description": "Image override for `.apk` packages. Default [`DEFAULT_APK_IMAGE`].",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SmokeImage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deb": {
+          "description": "Image override for `.deb` packages. Default [`DEFAULT_DEB_IMAGE`].",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SmokeImage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rpm": {
+          "description": "Image override for `.rpm` packages. Default [`DEFAULT_RPM_IMAGE`].",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SmokeImage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "KrewConfig": {
       "type": "object",
       "properties": {
@@ -12220,6 +12273,20 @@
         }
       }
     },
+    "SmokeImage": {
+      "description": "A single per-package smoke-test image selection.",
+      "type": "object",
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "image": {
+          "description": "The container image reference (e.g. `debian:12`, `fedora:40`).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "SnapcraftApp": {
       "type": "object",
       "properties": {
@@ -13970,6 +14037,42 @@
           }
         }
       }
+    },
+    "VerifyReleaseConfig": {
+      "description": "Top-level `verify_release:` block.\n\nSee the module-level docs for the verification lifecycle. The gate is a no-op unless `enabled: true`.",
+      "type": "object",
+      "properties": {
+        "assert_assets": {
+          "description": "Assert that every produced artifact has a matching uploaded asset on the published release. Default `true` (no extra config: anodizer already knows the produced set and can fetch the release's asset list). Independent of Docker and the network smoke-test.",
+          "default": true,
+          "type": "boolean"
+        },
+        "enabled": {
+          "description": "Whether to run the post-release verification gate at all. Default `false` — the gate is opt-in because it needs the published release to already exist (it runs after publish) and, for install-smoke, a Docker daemon.",
+          "default": false,
+          "type": "boolean"
+        },
+        "glibc_ceiling": {
+          "description": "glibc version ceiling, e.g. `\"2.36\"`. When any glibc-linked `.deb` requires a glibc NEWER than this floor, the gate reports it and exits non-zero. `None` (the default) disables the libc check entirely. musl binaries have no glibc requirement and are skipped.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "install_smoke": {
+          "description": "Per-package install smoke-test images. When `None`, smoke-testing is off. When present, each package type that produced an artifact is installed in its (configured or default) container and `<bin> --version` is run.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InstallSmokeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "VersionSyncConfig": {
       "type": "object",

@@ -71,6 +71,7 @@ List of `KEY=VALUE` strings (matches GoReleaser): `env: ["MY_VAR=hello", "DEPLOY
 | `variables` | map | — | Custom template variables accessible as `{{ .Var.<key> }}` in templates. Provides a way to define reusable values, especially useful with config includes.
 
 Stored as a `BTreeMap` so rendering iterates in deterministic (sorted) key order — without this guarantee, a value that references another variable (`b: "{{ .Var.a }}_v2"`) could render before its dependency on a different process / host. The current resolver is single-pass (one render per value), so cross-variable references only resolve when the referenced key sorts earlier. |
+| `verify_release` | VerifyReleaseConfig | `{"assert_assets":true,"enabled":false,"install_smoke":null}` | Opt-in post-release verification gate. Runs LAST (after the release is created and every publisher has run) and REPORTS post-publish defects — missing assets, failed install smoke-tests, glibc-ceiling violations. Because it runs after the irreversible publish, a failure exits non-zero to flag CI but never undoes the release. Off unless `verify_release.enabled: true`. |
 | `version` | integer | — | Schema version. Currently supports 1 (implicit default) and 2. |
 | `workspaces` | list of WorkspaceConfig | — | Independent workspace roots in a monorepo. |
 
@@ -846,6 +847,17 @@ Strongly prefer `{{ .Env.UPLOAD_PASSWORD }}` (or any other env-var template) ove
 | `lzma` | bool | — | Use LZMA compression (--lzma flag). |
 | `required` | bool | `false` | When true, fail the build if UPX is not found. |
 | `targets` | list of string | — | Target triples to compress binaries for (empty means all targets). |
+
+## `verify_release`
+Top-level `verify_release:` block.
+
+See the module-level docs for the verification lifecycle. The gate is a no-op unless `enabled: true`.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `assert_assets` | bool | `true` | Assert that every produced artifact has a matching uploaded asset on the published release. Default `true` (no extra config: anodizer already knows the produced set and can fetch the release's asset list). Independent of Docker and the network smoke-test. |
+| `enabled` | bool | `false` | Whether to run the post-release verification gate at all. Default `false` — the gate is opt-in because it needs the published release to already exist (it runs after publish) and, for install-smoke, a Docker daemon. |
+| `glibc_ceiling` | string | — | glibc version ceiling, e.g. `"2.36"`. When any glibc-linked `.deb` requires a glibc NEWER than this floor, the gate reports it and exits non-zero. `None` (the default) disables the libc check entirely. musl binaries have no glibc requirement and are skipped. |
+| `install_smoke` | InstallSmokeConfig | — | Per-package install smoke-test images. When `None`, smoke-testing is off. When present, each package type that produced an artifact is installed in its (configured or default) container and `<bin> --version` is run. |
 
 ## `workspaces`
 A workspace represents an independent project root within a monorepo. Each workspace has its own crates, changelog, and release configuration, allowing independently-versioned components that aren't Cargo workspace members.

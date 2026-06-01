@@ -208,6 +208,14 @@ pub struct Config {
     #[serde(default, deserialize_with = "deserialize_appimages")]
     #[schemars(schema_with = "appimages_schema")]
     pub appimages: Vec<AppImageConfig>,
+    /// Opt-in post-release verification gate. Runs LAST (after the release is
+    /// created and every publisher has run) and REPORTS post-publish defects —
+    /// missing assets, failed install smoke-tests, glibc-ceiling violations.
+    /// Because it runs after the irreversible publish, a failure exits
+    /// non-zero to flag CI but never undoes the release. Off unless
+    /// `verify_release.enabled: true`.
+    #[serde(default)]
+    pub verify_release: VerifyReleaseConfig,
     /// Source RPM configuration. Renamed from `srpm:` (singular) for spelling
     /// parity with `Defaults.srpms` and the rest of the plural-name packaging
     /// fields. The `srpm:` spelling is still accepted via serde alias for
@@ -336,6 +344,7 @@ impl Default for Config {
             monorepo: None,
             makeselfs: Vec::new(),
             appimages: Vec::new(),
+            verify_release: VerifyReleaseConfig::default(),
             srpms: None,
             milestones: None,
             uploads: None,
@@ -1979,6 +1988,13 @@ pub use retry::*;
 
 mod post_publish_poll;
 pub use post_publish_poll::*;
+
+// ---------------------------------------------------------------------------
+// VerifyReleaseConfig (top-level `verify_release:` post-publish gate)
+// ---------------------------------------------------------------------------
+
+mod verify_release;
+pub use verify_release::*;
 
 // ---------------------------------------------------------------------------
 // StringOrBool — accepts bool or template string in YAML
