@@ -49,6 +49,7 @@ Publishers that **skip on nightly** by default:
 - `krew` — kubectl plugin index is semver-gated
 - `nix` — nixpkgs and tap entries track stable releases
 - `cargo` — crates.io does not allow pre-release overwrites
+- `npm` — npm does not allow re-publishing the same version
 - `chocolatey` — community gallery is moderation-gated
 - `winget` — PR-based; nightly versions are rejected by automated review
 
