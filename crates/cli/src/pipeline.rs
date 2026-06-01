@@ -124,6 +124,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
         anodizer_core::config::warn_on_legacy_snapshot_name_template(&raw);
         anodizer_core::config::warn_on_legacy_furies_alias(&raw);
         anodizer_core::config::warn_on_legacy_nfpm_builds(&raw);
+        anodizer_core::config::warn_on_legacy_disable_alias(&raw);
         anodizer_core::config::validate_no_docker_v1(&raw).map_err(anyhow::Error::msg)?;
         anodizer_core::config::validate_no_mcp_github(&raw).map_err(anyhow::Error::msg)?;
     }

@@ -1724,6 +1724,114 @@ pub fn warn_on_legacy_nfpm_builds(raw_yaml: &serde_yaml_ng::Value) {
     descend(raw_yaml);
 }
 
+/// Emit a one-time deprecation warning for each block that carries the legacy
+/// `disable:` spelling of the canonical `skip:` field. Many config blocks
+/// (`release`, `changelog`, `snapcraft`, the docker / installer / packager
+/// blocks, …) accept `disable:` via `#[serde(alias = "disable")]` for
+/// back-compat with imported GoReleaser configs; serde folds the alias into
+/// `skip` on parse, erasing which spelling the user wrote. This helper
+/// consults the raw YAML pre-parse value so porting users get a migration
+/// prompt pointing at the canonical `skip:`.
+///
+/// Detection is allow-listed by enclosing block key, NOT a blind tree walk,
+/// for two correctness reasons:
+///   * `npm` and `gemfury` carry a *genuine, live* `disable:` field that is
+///     NOT an alias of `skip` (read at publish time in
+///     `stage-publish/src/{npm,gemfury}/publish.rs`). Warning on those would
+///     be wrong, so their block keys are deliberately absent from the
+///     allow-list.
+///   * Free-form string-keyed maps (`variables`, `derived_metadata`,
+///     `build_args`, `labels`, `annotations`, `env`, header maps, …) let a
+///     user legitimately name a key `disable`. Matching only when the key's
+///     immediate enclosing block is allow-listed skips those — the nearest
+///     named ancestor of such a key is the map's own key (e.g. `build_args`),
+///     never an allow-listed block.
+///
+/// Axis-agnostic: the enclosing block key is identical whether the block sits
+/// at the top level, under `defaults.publish.<block>`, under `crates[].<block>`,
+/// or under `workspaces[].crates[].publish.<block>`, so a single nearest-named-
+/// ancestor rule covers every placement.
+pub fn warn_on_legacy_disable_alias(raw_yaml: &serde_yaml_ng::Value) {
+    for msg in legacy_disable_alias_warnings(raw_yaml) {
+        tracing::warn!("{}", msg);
+    }
+}
+
+/// Pure helper: returns one warning string per offending `disable:` key,
+/// each naming the YAML path to the key. Exposed for tests; production callers
+/// use [`warn_on_legacy_disable_alias`].
+pub(crate) fn legacy_disable_alias_warnings(raw_yaml: &serde_yaml_ng::Value) -> Vec<String> {
+    // Block key names whose struct exposes `skip` with `#[serde(alias =
+    // "disable")]`. Resolved from the field's serde key on its parent (see the
+    // `alias = "disable"` sites in core). `makeselfs` (top-level) and
+    // `makeselves` (defaults.) both map to MakeselfConfig, so both are listed.
+    // `npm`/`gemfury` are intentionally excluded — their `disable:` is a live,
+    // non-aliased field.
+    const ALLOWLIST: &[&str] = &[
+        "mcp",
+        "makeselfs",
+        "makeselves",
+        "appimages",
+        "msis",
+        "pkgs",
+        "nsis",
+        "dockerhub",
+        "release",
+        "docker_v2",
+        "changelog",
+        "snapcrafts",
+    ];
+
+    fn disable_warning(path: &str) -> String {
+        format!(
+            "DEPRECATION: {path}: legacy `disable:` is deprecated; rename it to `skip:`. \
+             Both spellings are accepted but the legacy key will be removed in a future release."
+        )
+    }
+
+    // `enclosing_block`: the nearest named (non-list-index) ancestor key — the
+    // block the `disable:` key belongs to. Only warn when it is allow-listed.
+    fn descend(
+        value: &serde_yaml_ng::Value,
+        path: &str,
+        enclosing_block: Option<&str>,
+        warnings: &mut Vec<String>,
+    ) {
+        match value {
+            serde_yaml_ng::Value::Mapping(map) => {
+                for (key, child) in map {
+                    let Some(key) = key.as_str() else { continue };
+                    let child_path = if path.is_empty() {
+                        key.to_string()
+                    } else {
+                        format!("{path}.{key}")
+                    };
+                    if key == "disable"
+                        && enclosing_block.is_some_and(|block| ALLOWLIST.contains(&block))
+                    {
+                        warnings.push(disable_warning(&child_path));
+                    }
+                    descend(child, &child_path, Some(key), warnings);
+                }
+            }
+            serde_yaml_ng::Value::Sequence(items) => {
+                for (idx, item) in items.iter().enumerate() {
+                    let item_path = format!("{path}[{idx}]");
+                    // A list index is not a named ancestor: keep the enclosing
+                    // block (the list's own key) so e.g. `snapcrafts[0].disable`
+                    // still resolves to the `snapcrafts` block.
+                    descend(item, &item_path, enclosing_block, warnings);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut warnings = Vec::new();
+    descend(raw_yaml, "", None, &mut warnings);
+    warnings
+}
+
 /// Reject the GoReleaser pre-v2.13.1 nested `mcp.github:` block with a
 /// clear migration error.
 ///

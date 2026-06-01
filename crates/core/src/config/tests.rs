@@ -8211,6 +8211,270 @@ crates:
     super::warn_on_legacy_nfpm_builds(&raw);
 }
 
+// ---- legacy `disable:` → `skip:` alias deprecation ----
+
+fn disable_alias_warnings(yaml: &str) -> Vec<String> {
+    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml).unwrap();
+    super::legacy_disable_alias_warnings(&raw)
+}
+
+#[test]
+fn legacy_disable_alias_top_level_release_warns_with_path() {
+    let warnings = disable_alias_warnings(
+        r#"
+project_name: test
+crates: []
+release:
+  disable: true
+"#,
+    );
+    assert_eq!(warnings.len(), 1, "expected one warning, got {warnings:?}");
+    assert!(
+        warnings[0].contains("release.disable"),
+        "warning must name the path: {}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn legacy_disable_alias_top_level_changelog_warns() {
+    let warnings = disable_alias_warnings(
+        r#"
+project_name: test
+crates: []
+changelog:
+  disable: true
+"#,
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("changelog.disable"));
+}
+
+#[test]
+fn legacy_disable_alias_top_level_dockerhub_warns() {
+    let warnings = disable_alias_warnings(
+        r#"
+project_name: test
+crates: []
+dockerhub:
+  - username: u
+    disable: true
+"#,
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("dockerhub[0].disable"),
+        "{}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn legacy_disable_alias_top_level_mcp_warns() {
+    let warnings = disable_alias_warnings(
+        r#"
+project_name: test
+crates: []
+mcp:
+  name: srv
+  disable: true
+"#,
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("mcp.disable"));
+}
+
+#[test]
+fn legacy_disable_alias_top_level_makeselfs_warns() {
+    let warnings = disable_alias_warnings(
+        r#"
+project_name: test
+crates: []
+makeselfs:
+  - id: app
+    disable: true
+"#,
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("makeselfs[0].disable"));
+}
+
+#[test]
+fn legacy_disable_alias_top_level_appimages_warns() {
+    let warnings = disable_alias_warnings(
+        r#"
+project_name: test
+crates: []
+appimages:
+  - id: app
+    disable: true
+"#,
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("appimages[0].disable"));
+}
+
+#[test]
+fn legacy_disable_alias_nested_crates_snapcrafts_warns() {
+    // crates[].snapcrafts[] — proves the nearest-named-ancestor rule fires
+    // axis-agnostically under a crate's publish-axis blocks.
+    let warnings = disable_alias_warnings(
+        r#"
+project_name: test
+crates:
+  - name: app
+    snapcrafts:
+      - name: app
+        disable: true
+"#,
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("crates[0].snapcrafts[0].disable"),
+        "{}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn legacy_disable_alias_nested_defaults_installers_warn() {
+    // defaults.{msis,pkgs,nsis,docker_v2} all map to skip-with-disable-alias
+    // structs; one config exercises several blocks at the defaults axis.
+    let warnings = disable_alias_warnings(
+        r#"
+project_name: test
+crates: []
+defaults:
+  msis:
+    disable: true
+  pkgs:
+    disable: true
+  nsis:
+    disable: true
+  makeselves:
+    disable: true
+  docker_v2:
+    disable: true
+"#,
+    );
+    assert_eq!(warnings.len(), 5, "{warnings:?}");
+    for block in ["msis", "pkgs", "nsis", "makeselves", "docker_v2"] {
+        let needle = format!("defaults.{block}.disable");
+        assert!(
+            warnings.iter().any(|w| w.contains(&needle)),
+            "missing warning for {needle}: {warnings:?}"
+        );
+    }
+}
+
+#[test]
+fn legacy_disable_alias_nested_workspace_crates_release_warns() {
+    // Deepest axis: workspaces[].crates[].release.disable.
+    let warnings = disable_alias_warnings(
+        r#"
+project_name: test
+crates: []
+workspaces:
+  - members: [core]
+    crates:
+      - name: core
+        release:
+          disable: true
+"#,
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("workspaces[0].crates[0].release.disable"),
+        "{}",
+        warnings[0]
+    );
+}
+
+// ---- NEGATIVE guards: the correctness constraint ----
+
+#[test]
+fn legacy_disable_alias_skips_live_npm_disable_field() {
+    // `npm.disable` is a genuine live field (mirrors GR Pro), NOT a `skip`
+    // alias — must not warn. Covered at both top-level and publish axes.
+    let warnings = disable_alias_warnings(
+        r#"
+project_name: test
+crates:
+  - name: app
+    npm:
+      disable: true
+npm:
+  disable: true
+"#,
+    );
+    assert!(
+        warnings.is_empty(),
+        "npm.disable is a live field, not an alias: {warnings:?}"
+    );
+}
+
+#[test]
+fn legacy_disable_alias_skips_live_gemfury_disable_field() {
+    // `gemfury[].disable` is a genuine live field — must not warn.
+    let warnings = disable_alias_warnings(
+        r#"
+project_name: test
+crates: []
+gemfury:
+  - id: x
+    disable: true
+"#,
+    );
+    assert!(
+        warnings.is_empty(),
+        "gemfury.disable is a live field, not an alias: {warnings:?}"
+    );
+}
+
+#[test]
+fn legacy_disable_alias_silent_for_canonical_skip() {
+    // Using the canonical `skip:` in an allow-listed block must not warn.
+    let warnings = disable_alias_warnings(
+        r#"
+project_name: test
+crates: []
+release:
+  skip: true
+changelog:
+  skip: true
+"#,
+    );
+    assert!(
+        warnings.is_empty(),
+        "canonical skip must not warn: {warnings:?}"
+    );
+}
+
+#[test]
+fn legacy_disable_alias_skips_freeform_map_user_key() {
+    // A user may legitimately name a key `disable` inside a free-form map
+    // (`variables`, `build_args`, `labels`, …). The nearest named ancestor of
+    // such a key is the map's own key — never an allow-listed block — so no
+    // warning fires. Includes `docker_v2[].build_args.disable`: `docker_v2` IS
+    // allow-listed, but the immediate enclosing block of the key is
+    // `build_args`, so it is correctly skipped.
+    let warnings = disable_alias_warnings(
+        r#"
+project_name: test
+crates: []
+variables:
+  disable: hello
+docker_v2:
+  - build_args:
+      disable: "1"
+"#,
+    );
+    assert!(
+        warnings.is_empty(),
+        "free-form map keys named disable must not warn: {warnings:?}"
+    );
+}
+
 // ---- Row 5: nested mcp.github (v2.13.1) ----
 
 #[test]
