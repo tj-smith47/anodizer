@@ -294,27 +294,15 @@ pub(crate) struct UploadOpts {
     /// upload loop runs against an existing release left by a prior failed
     /// attempt.
     pub resume_release: bool,
-    /// Nightly `keep_single_release: true`: delete the existing release that
-    /// points at the same tag before creating the new one, so the rolling
-    /// nightly tag always resolves to a single live release. Destructive —
-    /// the prior release (and any unique assets the user uploaded out-of-band)
-    /// is removed via the GitHub Releases API.
-    ///
-    /// Best-effort delete: a concurrent process that already removed the
-    /// release between our lookup and delete is treated as success, since
-    /// the post-condition (no prior release at this tag) is satisfied.
-    ///
-    /// This is the `keep_last: 1` special case of [`Self::retention_keep_last`]:
-    /// the single-delete path runs when `keep_single_release` is set, while
-    /// `retention_keep_last >= 2` drives the multi-release sweep. Resolution
-    /// of the legacy alias vs the `retention:` block happens upstream in
-    /// [`anodizer_core::config::NightlyConfig::resolved_keep_last`].
-    pub keep_single_release: bool,
-    /// Nightly `retention.keep_last`: keep the N newest nightly releases
-    /// (matched by the nightly tag/name) and delete the rest, including the
-    /// git tags anodizer created for them. `None` (or `Some(1)`, which the
-    /// single-delete path covers) disables the multi-release sweep. Operates
-    /// on [`Self::publish_repo_override`] when set.
+    /// Nightly retention: keep the N newest nightly releases (matched by the
+    /// rendered nightly name) and delete the rest before creating the new
+    /// one, including the git tags anodizer created for them. `keep_last: 1`
+    /// is the rolling-single-release case (`keep_single_release`); `None`
+    /// disables the sweep. Operates on [`Self::publish_repo_override`] when
+    /// set. Resolution of the legacy `keep_single_release` alias vs the
+    /// `retention:` block happens upstream in
+    /// [`anodizer_core::config::NightlyConfig::resolved_keep_last`], so this
+    /// field is the single source of truth for the backend.
     pub retention_keep_last: Option<usize>,
     /// Nightly `publish_repo`: redirect the release create, asset upload, AND
     /// retention delete calls to a DIFFERENT `(owner, repo)` than the source
@@ -400,15 +388,17 @@ pub(crate) fn classify_already_exists(
 /// Decide which nightly releases to prune so that — after the about-to-be-created
 /// release is added — exactly `keep_last` nightly releases survive.
 ///
-/// `releases` is the set of existing releases whose `name` matches the nightly
-/// release name, sorted NEWEST-FIRST by the caller. Because the new release will
-/// become the newest of the kept set, the prune target is "every release beyond
-/// the newest `keep_last - 1`": that leaves `keep_last - 1` old releases plus the
-/// new one = `keep_last`.
+/// `releases` is the set of existing releases (`(id, tag)`) whose `name` matches
+/// the nightly release name. They are sorted newest-first internally by release
+/// `id` descending — monotonic with creation order on a single repo — so
+/// correctness does not depend on the order GitHub returns them. Because the new
+/// release will become the newest of the kept set, the prune target is "every
+/// release beyond the newest `keep_last - 1`": that leaves `keep_last - 1` old
+/// releases plus the new one = `keep_last`.
 ///
 /// For `keep_last = 1` this returns ALL existing nightly releases — the rolling
-/// `keep_single_release` semantics (only the just-created release survives). This
-/// is the single function both `keep_single_release` and `retention.keep_last: N`
+/// single-release semantics (only the just-created release survives). This is the
+/// single function both the `keep_single_release` alias and `retention.keep_last`
 /// route through; there is no parallel single-delete path.
 ///
 /// Pure (no I/O) so the keep/delete arithmetic is unit-testable without octocrab.
@@ -417,9 +407,13 @@ pub(crate) fn nightly_releases_to_prune(
     keep_last: usize,
 ) -> Vec<(u64, String)> {
     let keep_last = keep_last.max(1);
+    // Sort newest-first by id descending so the keep/prune split is correct
+    // regardless of the API response order.
+    let mut sorted = releases.to_vec();
+    sorted.sort_by_key(|r| std::cmp::Reverse(r.0));
     // The new release occupies one of the kept slots, so retain `keep_last - 1`
     // of the existing (newest-first) set and prune the remainder.
-    releases.iter().skip(keep_last - 1).cloned().collect()
+    sorted.into_iter().skip(keep_last - 1).collect()
 }
 
 /// List all releases on `{owner}/{repo}` whose `name` field equals `name`,
@@ -508,7 +502,6 @@ pub(crate) fn run_github_backend(
         replace_existing_artifacts,
         use_existing_draft,
         resume_release,
-        keep_single_release,
         retention_keep_last,
         publish_repo_override,
     } = upload_opts;
@@ -517,7 +510,6 @@ pub(crate) fn run_github_backend(
     let replace_existing_artifacts = *replace_existing_artifacts;
     let use_existing_draft = *use_existing_draft;
     let resume_release = *resume_release;
-    let keep_single_release = *keep_single_release;
     let retention_keep_last = *retention_keep_last;
     let github = match resolve_release_repo(release_cfg, ctx.token_type, ctx)? {
         Some(r) => r,
@@ -647,10 +639,10 @@ pub(crate) fn run_github_backend(
         // Nightly retention sweep: keep the N newest nightly releases (matched
         // by the rendered nightly release name) and delete the rest before
         // creating the new one, so after this run exactly `keep_last` nightly
-        // releases survive. `keep_single_release` is the `keep_last: 1` special
-        // case (rolling single release); `retention.keep_last: N` keeps N (e.g.
-        // nushell keeps 10). Both route through the same prune arithmetic
-        // ([`nightly_releases_to_prune`]) — no parallel single-delete path.
+        // releases survive. `keep_last: 1` is the rolling-single-release case
+        // (the `keep_single_release` alias resolves to it upstream); larger N
+        // keeps N (e.g. nushell keeps 10). All route through the same prune
+        // arithmetic ([`nightly_releases_to_prune`]) — no parallel path.
         //
         // Skipped when an existing-draft reuse is in play (the draft IS the
         // release we'll PATCH).
@@ -660,12 +652,7 @@ pub(crate) fn run_github_backend(
         // create POST below reuse it instead of dangling. For distinct-tag
         // schemes (nushell `…-nightly.<build>+<sha>`) every pruned tag differs
         // from the current one, so all stale refs are cleaned up.
-        let resolved_keep_last = retention_keep_last.or(if keep_single_release {
-            Some(1)
-        } else {
-            None
-        });
-        if let Some(keep_last) = resolved_keep_last
+        if let Some(keep_last) = retention_keep_last
             && existing_draft.is_none()
         {
             let existing = list_releases_by_name(
@@ -2152,9 +2139,9 @@ mod spec_struct_surface_tests {
     }
 
     #[test]
-    fn upload_opts_round_trips_every_boolean() {
-        // Six independent booleans -> a drift in field order or a silent
-        // removal would let the caller in `run.rs` send `replace_existing_draft`
+    fn upload_opts_round_trips_every_field() {
+        // Independent fields -> a drift in field order or a silent removal
+        // would let the caller in `run.rs` send `replace_existing_draft`
         // where `skip_upload` was wanted. Pin each one by name.
         let opts = UploadOpts {
             skip_upload: true,
@@ -2162,7 +2149,6 @@ mod spec_struct_surface_tests {
             replace_existing_artifacts: true,
             use_existing_draft: false,
             resume_release: true,
-            keep_single_release: true,
             retention_keep_last: Some(10),
             publish_repo_override: Some(("nushell".to_string(), "nightly".to_string())),
         };
@@ -2172,7 +2158,6 @@ mod spec_struct_surface_tests {
         assert!(copy.replace_existing_artifacts);
         assert!(!copy.use_existing_draft);
         assert!(copy.resume_release);
-        assert!(copy.keep_single_release);
         assert_eq!(copy.retention_keep_last, Some(10));
         assert_eq!(
             copy.publish_repo_override,
@@ -2192,7 +2177,6 @@ mod spec_struct_surface_tests {
             replace_existing_artifacts: false,
             use_existing_draft: false,
             resume_release: false,
-            keep_single_release: false,
             retention_keep_last: None,
             publish_repo_override: None,
         };
@@ -2201,7 +2185,6 @@ mod spec_struct_surface_tests {
         assert!(!opts.replace_existing_artifacts);
         assert!(!opts.use_existing_draft);
         assert!(!opts.resume_release);
-        assert!(!opts.keep_single_release);
         assert_eq!(opts.retention_keep_last, None);
         assert_eq!(opts.publish_repo_override, None);
     }
@@ -2247,6 +2230,25 @@ mod spec_struct_surface_tests {
         let existing = vec![(1u64, "t1".to_string())];
         // keep_last=0 floored to 1 -> prune everything.
         assert_eq!(nightly_releases_to_prune(&existing, 0), existing);
+    }
+
+    #[test]
+    fn nightly_releases_to_prune_sorts_out_of_order_input() {
+        // API response order must not matter: feed ids out of order and
+        // assert the newest (highest id) is the one kept.
+        let existing = vec![
+            (1u64, "t1".to_string()),
+            (3u64, "t3".to_string()),
+            (2u64, "t2".to_string()),
+        ];
+        // keep_last=2: keep the single newest existing (id=3), prune 2 and 1
+        // in newest-first order.
+        let pruned = nightly_releases_to_prune(&existing, 2);
+        assert_eq!(
+            pruned,
+            vec![(2u64, "t2".to_string()), (1u64, "t1".to_string())],
+            "must keep the highest-id release regardless of input order",
+        );
     }
 }
 
@@ -2507,7 +2509,6 @@ mod orchestrator_tests {
             replace_existing_artifacts: false,
             use_existing_draft: false,
             resume_release: false,
-            keep_single_release: false,
             retention_keep_last: None,
             publish_repo_override: None,
         }

@@ -311,6 +311,11 @@ pub fn has_commits_since_tag_in(cwd: &Path, tag: &str) -> Result<bool> {
 /// tag (a repo whose first version tag has not landed yet), the total
 /// commit count on HEAD is returned instead (`git rev-list --count HEAD`).
 ///
+/// `monorepo_prefix` constrains the `describe` to tags matching
+/// `<prefix>*` (via `--match`), so in a per-crate workspace the count is
+/// since the matching crate's tag rather than the nearest tag from ANY
+/// subproject. `None` considers all tags.
+///
 /// This is the stateless basis for the `{{ .NightlyBuild }}` template var:
 /// the count resets to a small number the moment a new version tag lands,
 /// so a nightly build counter increments per base version with no state
@@ -318,16 +323,23 @@ pub fn has_commits_since_tag_in(cwd: &Path, tag: &str) -> Result<bool> {
 ///
 /// Returns `Ok(0)` for an empty repository (no commits) so callers never
 /// have to special-case the unborn-HEAD state.
-pub fn count_commits_since_last_tag() -> Result<u64> {
-    count_commits_since_last_tag_in(&cwd_or_dot())
-}
-
-/// Path-taking sibling of [`count_commits_since_last_tag`].
-pub fn count_commits_since_last_tag_in(cwd: &Path) -> Result<u64> {
+pub fn count_commits_since_last_tag_in(cwd: &Path, monorepo_prefix: Option<&str>) -> Result<u64> {
     // `--abbrev=0` yields the bare tag name (no `-<n>-g<sha>` suffix).
     // A repo with no reachable tag exits non-zero here; treat that as
     // "count every commit on HEAD" rather than an error.
-    let range = match git_output_in(cwd, &["describe", "--tags", "--abbrev=0", "HEAD"]) {
+    //
+    // `--match=<prefix>*` (when a monorepo prefix is set) restricts the
+    // describe to the matching crate's tags — without it, describe returns
+    // the nearest reachable tag from ANY subproject and the count would be
+    // since the wrong crate's tag. Mirrors `find_previous_tag_with_prefix_in`.
+    let match_arg;
+    let mut describe_args: Vec<&str> = vec!["describe", "--tags", "--abbrev=0"];
+    if let Some(prefix) = monorepo_prefix {
+        match_arg = format!("--match={}*", prefix);
+        describe_args.push(&match_arg);
+    }
+    describe_args.push("HEAD");
+    let range = match git_output_in(cwd, &describe_args) {
         Ok(tag) if !tag.is_empty() => format!("{tag}..HEAD"),
         _ => "HEAD".to_string(),
     };
@@ -1056,7 +1068,7 @@ mod tests {
             git_in(dir, &["add", "."]);
             git_in(dir, &["commit", "-m", f]);
         }
-        assert_eq!(count_commits_since_last_tag_in(dir).unwrap(), 3);
+        assert_eq!(count_commits_since_last_tag_in(dir, None).unwrap(), 3);
     }
 
     #[test]
@@ -1070,14 +1082,14 @@ mod tests {
             git_in(dir, &["add", "."]);
             git_in(dir, &["commit", "-m", f]);
         }
-        assert_eq!(count_commits_since_last_tag_in(dir).unwrap(), 2);
+        assert_eq!(count_commits_since_last_tag_in(dir, None).unwrap(), 2);
         // A newer version tag lands -> counter resets to 0 at the tag.
         git_in(dir, &["tag", "v1.1.0"]);
-        assert_eq!(count_commits_since_last_tag_in(dir).unwrap(), 0);
+        assert_eq!(count_commits_since_last_tag_in(dir, None).unwrap(), 0);
         std::fs::write(dir.join("d"), "x").unwrap();
         git_in(dir, &["add", "."]);
         git_in(dir, &["commit", "-m", "d"]);
-        assert_eq!(count_commits_since_last_tag_in(dir).unwrap(), 1);
+        assert_eq!(count_commits_since_last_tag_in(dir, None).unwrap(), 1);
     }
 
     #[test]
@@ -1086,7 +1098,42 @@ mod tests {
         let dir = tmp.path();
         init_repo_with_commits(dir, &["a", "b", "c"]);
         // No tag at all -> count every commit on HEAD.
-        assert_eq!(count_commits_since_last_tag_in(dir).unwrap(), 3);
+        assert_eq!(count_commits_since_last_tag_in(dir, None).unwrap(), 3);
+    }
+
+    #[test]
+    fn count_commits_since_last_tag_respects_monorepo_prefix() {
+        // Per-crate workspace: tags for two subprojects interleave on one
+        // branch. The `core/` count must be since the latest `core/*` tag,
+        // NOT the nearer `api/*` tag from a different subproject.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_commits(dir, &["a"]);
+        git_in(dir, &["tag", "core/v1.0.0"]); // matching-prefix tag (older)
+        for f in ["b", "c"] {
+            std::fs::write(dir.join(f), "x").unwrap();
+            git_in(dir, &["add", "."]);
+            git_in(dir, &["commit", "-m", f]);
+        }
+        git_in(dir, &["tag", "api/v2.0.0"]); // DIFFERENT prefix, NEARER to HEAD
+        std::fs::write(dir.join("d"), "x").unwrap();
+        git_in(dir, &["add", "."]);
+        git_in(dir, &["commit", "-m", "d"]);
+
+        // With prefix filtering: count since core/v1.0.0 = 3 commits (b, c, d).
+        assert_eq!(
+            count_commits_since_last_tag_in(dir, Some("core/")).unwrap(),
+            3,
+            "must count since the matching-prefix tag, ignoring api/v2.0.0",
+        );
+        // Without filtering (None): describe picks the nearer api/v2.0.0,
+        // so the count is only 1 (d). This is the mutation-check baseline
+        // proving the --match arg is load-bearing.
+        assert_eq!(
+            count_commits_since_last_tag_in(dir, None).unwrap(),
+            1,
+            "unfiltered count picks the nearest (wrong) subproject tag",
+        );
     }
 
     #[test]

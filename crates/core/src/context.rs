@@ -848,13 +848,18 @@ impl Context {
         // `"{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}"`.
         // Defaults to "0" outside a git repo (synthetic snapshot/scratch
         // builds) and on any git error so templates never fail to render.
+        //
+        // The monorepo prefix constrains the last-tag lookup to the active
+        // crate's tags so per-crate workspace runs count since the right
+        // tag (not the nearest tag from another subproject).
         let nightly_build = if self.git_info.is_some() {
             let root = self
                 .options
                 .project_root
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("."));
-            crate::git::count_commits_since_last_tag_in(&root).unwrap_or(0)
+            let monorepo_prefix = self.config.monorepo_tag_prefix();
+            crate::git::count_commits_since_last_tag_in(&root, monorepo_prefix).unwrap_or(0)
         } else {
             0
         };
