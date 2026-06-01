@@ -989,15 +989,13 @@ pub fn auto_detect_github(config: &mut Config, log: &StageLogger) {
 /// `Context`:
 ///   1. Resolve SCM token type from config/environment
 ///   2. Populate time template variables
-///   3. Populate runtime template variables
-///   4. Populate rustc version template variable
-///   5. Load environment variables and `.env` files
-///   6. Resolve git context (tag discovery, git info)
+///   3. Populate runtime template variables (host OS/arch + rustc version)
+///   4. Load environment variables and `.env` files
+///   5. Resolve git context (tag discovery, git info)
 pub fn setup_context(ctx: &mut Context, config: &Config, log: &StageLogger) -> Result<()> {
     resolve_scm_token_type(ctx, config);
     ctx.populate_time_vars();
     ctx.populate_runtime_vars();
-    ctx.populate_rustc_vars();
     // Default the GR-Pro `IsPrepare` template var to `"false"` for every
     // command that flows through `setup_context`. The release command
     // overrides this when `--prepare` is passed (see

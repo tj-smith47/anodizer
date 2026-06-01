@@ -175,14 +175,17 @@ pub fn resolve_partial_target_with_env<E: EnvSource + ?Sized>(
     }
 }
 
-/// Detect the host target triple via `rustc -vV`.
-pub fn detect_host_target() -> Result<String> {
+/// Spawn `rustc -vV` once and return its stdout.
+///
+/// Both [`detect_host_target`] (the `host:` line) and
+/// [`detect_rustc_version`] (the `release:` line) parse the same `rustc -vV`
+/// block, so the spawn is centralized here to avoid invoking rustc twice in a
+/// single build/release run. Returns the raw stdout as a `String`.
+fn run_rustc_vv() -> Result<String> {
     let mut cmd = std::process::Command::new("rustc");
     cmd.args(["-vV"]);
-    tracing::debug!(args = ?cmd.get_args(), "spawning rustc for host target detection");
-    let output = cmd
-        .output()
-        .context("failed to run `rustc -vV` for host target detection")?;
+    tracing::debug!(args = ?cmd.get_args(), "spawning rustc -vV for host/version detection");
+    let output = cmd.output().context("failed to run `rustc -vV`")?;
 
     if !output.status.success() {
         anyhow::bail!(
@@ -190,14 +193,27 @@ pub fn detect_host_target() -> Result<String> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Some(host) = line.strip_prefix("host: ") {
-            return Ok(host.trim().to_string());
-        }
-    }
-    anyhow::bail!("could not detect host target from `rustc -vV` output")
+/// Extract the `host:` target triple from a `rustc -vV` output block.
+pub(crate) fn parse_host_from_output(output: &str) -> Option<String> {
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix("host: ").map(|h| h.trim().to_string()))
+}
+
+/// Extract the `release:` version (e.g. `"1.96.0"`) from a `rustc -vV` block.
+pub(crate) fn parse_rustc_version_from_output(output: &str) -> Option<String> {
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix("release: ").map(|v| v.trim().to_string()))
+}
+
+/// Detect the host target triple via `rustc -vV`.
+pub fn detect_host_target() -> Result<String> {
+    let stdout = run_rustc_vv()?;
+    parse_host_from_output(&stdout).context("could not detect host target from `rustc -vV` output")
 }
 
 /// Detect the rustc release version string via `rustc -vV`.
@@ -206,20 +222,8 @@ pub fn detect_host_target() -> Result<String> {
 /// Returns `None` gracefully when rustc is unavailable, the command fails,
 /// or the line is absent — callers treat a missing version as an empty string.
 pub fn detect_rustc_version() -> Option<String> {
-    let output = std::process::Command::new("rustc")
-        .args(["-vV"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Some(ver) = line.strip_prefix("release: ") {
-            return Some(ver.trim().to_string());
-        }
-    }
-    None
+    let stdout = run_rustc_vv().ok()?;
+    parse_rustc_version_from_output(&stdout)
 }
 
 /// Resolve the effective host target triple for `--single-target`.
@@ -1096,18 +1100,8 @@ mod tests {
         assert!(host_targets_skip_message(LINUX_HOST, &[]).is_none());
     }
 
-    // Parse the release: line from a representative rustc -vV block.
-    fn parse_rustc_release(output: &str) -> Option<String> {
-        for line in output.lines() {
-            if let Some(ver) = line.strip_prefix("release: ") {
-                return Some(ver.trim().to_string());
-            }
-        }
-        None
-    }
-
     #[test]
-    fn detect_rustc_version_parses_release_line() {
+    fn parse_rustc_version_from_output_parses_release_line() {
         let sample = "\
 rustc 1.96.0 (ac68faa20 2026-05-25)\n\
 binary: rustc\n\
@@ -1116,25 +1110,33 @@ commit-date: 2026-05-25\n\
 host: x86_64-unknown-linux-gnu\n\
 release: 1.96.0\n\
 LLVM version: 22.1.2\n";
-        assert_eq!(parse_rustc_release(sample), Some("1.96.0".to_string()));
+        assert_eq!(
+            parse_rustc_version_from_output(sample),
+            Some("1.96.0".to_string())
+        );
+        // The same block must yield the host triple via the sibling parser.
+        assert_eq!(
+            parse_host_from_output(sample),
+            Some("x86_64-unknown-linux-gnu".to_string())
+        );
     }
 
     #[test]
-    fn detect_rustc_version_parses_prerelease_line() {
+    fn parse_rustc_version_from_output_parses_prerelease_line() {
         let sample = "\
 rustc 1.97.0-nightly (abc123 2026-06-01)\n\
 release: 1.97.0-nightly\n\
 host: aarch64-apple-darwin\n";
         assert_eq!(
-            parse_rustc_release(sample),
+            parse_rustc_version_from_output(sample),
             Some("1.97.0-nightly".to_string())
         );
     }
 
     #[test]
-    fn detect_rustc_version_returns_none_when_line_absent() {
+    fn parse_rustc_version_from_output_returns_none_when_line_absent() {
         let sample = "binary: rustc\nhost: x86_64-unknown-linux-gnu\n";
-        assert_eq!(parse_rustc_release(sample), None);
+        assert_eq!(parse_rustc_version_from_output(sample), None);
     }
 
     #[test]

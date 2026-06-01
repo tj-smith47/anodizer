@@ -948,6 +948,8 @@ impl Context {
     /// - `RuntimeGoos` — host OS in Go-compatible naming (e.g. "linux", "darwin", "windows")
     /// - `RuntimeGoarch` — host architecture in Go-compatible naming (e.g. "amd64", "arm64")
     /// - `Runtime_Goos` / `Runtime_Goarch` — GoReleaser-compatible nested aliases
+    /// - `RustcVersion` — host rustc release version (e.g. "1.96.0"), or "" when
+    ///   rustc is unavailable
     pub fn populate_runtime_vars(&mut self) {
         let goos = map_os_to_goos(std::env::consts::OS);
         let goarch = map_arch_to_goarch(std::env::consts::ARCH);
@@ -957,6 +959,10 @@ impl Context {
         // the dot becomes an underscore-separated flat key. We expose both forms.
         self.template_vars.set("Runtime_Goos", goos);
         self.template_vars.set("Runtime_Goarch", goarch);
+        // RustcVersion is a host-environment fact like OS/arch, so it is set in
+        // the same call — keeping it a separate populate step risks a call-site
+        // forgetting to invoke the sibling.
+        self.populate_rustc_vars();
     }
 
     /// Populate the `RustcVersion` built-in template variable.
@@ -965,7 +971,7 @@ impl Context {
     /// Sets `RustcVersion` to the extracted string, or to `""` when rustc is
     /// unavailable or the line is absent — templates that reference
     /// `{{ .RustcVersion }}` degrade to an empty value rather than erroring.
-    pub fn populate_rustc_vars(&mut self) {
+    fn populate_rustc_vars(&mut self) {
         let ver = crate::partial::detect_rustc_version().unwrap_or_default();
         self.template_vars.set("RustcVersion", &ver);
     }
@@ -2646,15 +2652,17 @@ mod tests {
     }
 
     #[test]
-    fn populate_rustc_vars_sets_nonempty_version() {
+    fn populate_runtime_vars_sets_rustc_version() {
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.populate_rustc_vars();
+        // RustcVersion is folded into populate_runtime_vars — exercising the
+        // public entry point proves the delegation wires the var through.
+        ctx.populate_runtime_vars();
 
         let ver = ctx
             .template_vars()
             .get("RustcVersion")
-            .expect("RustcVersion should be set after populate_rustc_vars");
+            .expect("RustcVersion should be set after populate_runtime_vars");
         // On a host with rustc on PATH the var must be non-empty and start
         // with a digit (e.g. "1.96.0").  On a host without rustc the var is
         // empty but must still be present (no missing-key footgun).
