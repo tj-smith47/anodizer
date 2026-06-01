@@ -382,6 +382,12 @@ fn push_non_fast_forward_leaves_no_orphan_branch_or_tag() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+    // The error must be actionable, not a raw refspec dump.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("non-fast-forward") && stderr.contains("Pull/rebase"),
+        "expected an actionable non-fast-forward hint: {stderr}"
+    );
 
     let remote_master_after = remote_branch_sha(bare.path(), "master").unwrap();
     assert_eq!(
@@ -502,5 +508,118 @@ fn per_crate_default_pushes_branch_and_tags_atomically() {
         remote_tag_target(bare.path(), "core-v0.1.1").as_deref(),
         Some(local_head.as_str()),
         "per-crate default must push the tag"
+    );
+}
+
+#[test]
+fn crate_targeted_push_lands_bump_commit_atomically() {
+    // The cfgd rollout path: `tag --crate <name> --push` drives the
+    // single-crate fall-through (version_sync, not apply_workspace_bump) and
+    // must push the bump commit + tag atomically.
+    let (work, bare) = per_crate_with_origin();
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--crate", "core", "--push"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag --crate core --push failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let local_head = head_sha(work.path());
+    let remote_master = remote_branch_sha(bare.path(), "master").expect("master on remote");
+    let tag_target = remote_tag_target(bare.path(), "core-v0.1.1").expect("tag pushed");
+
+    assert_eq!(
+        remote_master, local_head,
+        "remote master must reach the bump commit (no orphan)"
+    );
+    assert_eq!(
+        tag_target, local_head,
+        "remote tag must point at the bump commit"
+    );
+    assert_eq!(
+        remote_master, tag_target,
+        "remote branch and tag must agree (atomic push)"
+    );
+    // The untargeted crate must NOT be tagged.
+    assert_eq!(
+        remote_tag_target(bare.path(), "cli-v0.1.1"),
+        None,
+        "cli must not be tagged when only core was targeted"
+    );
+}
+
+#[test]
+fn push_dry_run_creates_tag_locally_but_pushes_nothing() {
+    // --push-dry-run still creates the tag + bump commit locally but only
+    // PRINTS the git push commands; the remote must be untouched.
+    let (work, bare) = lockstep_with_origin();
+    let remote_master_before = remote_branch_sha(bare.path(), "master").unwrap();
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--push-dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag --push-dry-run must exit 0: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Tagging combined stdout+stderr should announce a dry-run push.
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("(dry-run) would push"),
+        "expected a '(dry-run) would push' line: {combined}"
+    );
+
+    // The remote must be untouched: master unchanged, no new tag.
+    let remote_master_after = remote_branch_sha(bare.path(), "master").unwrap();
+    assert_eq!(
+        remote_master_after, remote_master_before,
+        "--push-dry-run must NOT advance remote master"
+    );
+    assert_eq!(
+        remote_tag_target(bare.path(), "v0.1.1"),
+        None,
+        "--push-dry-run must NOT push the tag"
+    );
+}
+
+#[test]
+fn tag_rollback_rejects_push_flags() {
+    // The --push family lives on the parent `tag` command, so `tag rollback
+    // --push` parses but is meaningless — it must be rejected, not silently
+    // ignored.
+    let (work, _bare) = lockstep_with_origin();
+
+    // `--push` placed BEFORE the subcommand binds to the parent `tag` command
+    // and parses cleanly; the runtime guard must reject it.
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--push", "rollback", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "tag --push rollback must be rejected: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--push family") && stderr.contains("tag rollback"),
+        "expected a clear rollback rejection message: {stderr}"
     );
 }
