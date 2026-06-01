@@ -664,3 +664,72 @@ fn gemfury_push_genuine_failure_still_errors() {
         "a genuine 400 failure must error, not be swallowed as idempotent"
     );
 }
+
+/// A successful push records a rollback target keyed on the Fury-visible
+/// package NAME (`demo`), not the full artifact filename. Rollback's DELETE
+/// /packages/<name>/versions/… must hit the same name the push registered —
+/// a full-filename key 404s and orphans the artifact.
+#[test]
+#[serial_test::serial]
+fn gemfury_recorded_rollback_target_uses_derived_package_name() {
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let art_path = tmp.path().join("demo_1.2.3_amd64.deb");
+    std::fs::write(&art_path, b"fake-deb").unwrap();
+
+    let probe_404 = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+    let push_200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+    let (api_addr, _api_calls) = spawn_oneshot_http_responder(vec![probe_404]);
+    let (push_addr, _push_calls) = spawn_oneshot_http_responder(vec![push_200]);
+
+    let config = Config {
+        project_name: "demo".to_string(),
+        gemfury: Some(vec![GemFuryConfig {
+            account: Some("acme".into()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+    ctx.config = config;
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_TOKEN", "fake-token"));
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::LinuxPackage,
+        path: art_path.clone(),
+        name: "demo_1.2.3_amd64.deb".to_string(),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "demo".to_string(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    });
+
+    unsafe {
+        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
+        std::env::set_var("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}"));
+    }
+    let log = StageLogger::new("gemfury", Verbosity::Quiet);
+    let result = publish_to_gemfury(&ctx, &log);
+    unsafe {
+        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
+        std::env::remove_var("ANODIZE_GEMFURY_PUSH_BASE");
+    }
+
+    let pushed = result.expect("successful push should return a target");
+    assert_eq!(
+        pushed.len(),
+        1,
+        "expected one recorded target, got {pushed:?}"
+    );
+    assert_eq!(
+        pushed[0].package, "demo",
+        "rollback target must key on the derived Fury package name, not the filename"
+    );
+    assert_eq!(pushed[0].version, "1.2.3");
+    assert_eq!(pushed[0].account, "acme");
+}

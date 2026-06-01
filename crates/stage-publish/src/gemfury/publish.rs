@@ -29,7 +29,9 @@ use anyhow::{Context as _, Result, bail};
 pub struct GemFuryTarget {
     /// GemFury account name.
     pub account: String,
-    /// Package basename pushed (e.g. `mytool_1.2.3_amd64.deb`).
+    /// Fury-visible package name (e.g. `mytool`), derived from the artifact
+    /// filename via [`fury_package_name`]. The rollback DELETE keys on this,
+    /// so it must match the name Fury exposes — NOT the full artifact filename.
     pub package: String,
     /// Published version (semver string).
     pub version: String,
@@ -520,7 +522,11 @@ pub fn publish_to_gemfury(ctx: &Context, log: &StageLogger) -> Result<Vec<GemFur
 
             pushed.push(GemFuryTarget {
                 account: account.clone(),
-                package: art_name,
+                // Record the Fury-visible package name (not the artifact
+                // filename) so rollback's DELETE /packages/<name>/versions/…
+                // keys on the same name the probe / skip-log / conflict-log
+                // use — a full-filename key 404s and orphans the artifact.
+                package: fury_pkg,
                 version: version.clone(),
                 format,
                 push_token_env_var: push_token_env_var(cfg).to_string(),
