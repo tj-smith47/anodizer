@@ -39,6 +39,18 @@
         "$ref": "#/definitions/ArtifactoryConfig"
       }
     },
+    "attestations": {
+      "description": "SLSA build-provenance / attestation configuration for binaries and archives. In the default `subjects` mode, anodizer writes a subjects manifest for `actions/attest-build-provenance`; in `emit` mode it generates and signs a self-contained in-toto SLSA provenance statement. When omitted (or `enabled: false`), the attestation stage is a no-op.",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AttestationConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "aur_sources": {
       "description": "AUR source package publishing configurations (source-only PKGBUILD, not -bin).",
       "default": null,
@@ -1326,6 +1338,98 @@
           ]
         }
       }
+    },
+    "AttestationArtifactKind": {
+      "description": "A selectable artifact KIND for attestation. Maps to one or more concrete [`crate::artifact::ArtifactKind`] values at subject-collection time.",
+      "oneOf": [
+        {
+          "description": "Packaged archives (`.tar.gz`, `.zip`, ...) and self-extracting archives.",
+          "type": "string",
+          "enum": [
+            "archive"
+          ]
+        },
+        {
+          "description": "Raw uploadable binaries (uploaded as bare release assets).",
+          "type": "string",
+          "enum": [
+            "binary"
+          ]
+        },
+        {
+          "description": "Checksum file(s) (`checksums.txt` and split sidecars).",
+          "type": "string",
+          "enum": [
+            "checksum"
+          ]
+        }
+      ]
+    },
+    "AttestationConfig": {
+      "description": "SLSA build-provenance / attestation configuration for binaries and archives.\n\nTwo modes select how anodizer participates in attestation:\n\n- [`AttestationMode::Subjects`] (the default) emits a **subjects manifest** (`dist/attestation-subjects.json`) that `anodizer-action` feeds to GitHub's `actions/attest-build-provenance`. anodizer does NOT mint a GitHub-trusted attestation itself in this mode — the Action's OIDC identity does. This is the path fd / biome / gping use. - [`AttestationMode::Emit`] generates a self-contained in-toto v1 statement carrying an SLSA provenance v1 predicate over the selected artifacts, writes it as a release asset (`attestation.intoto.jsonl`), and lets the existing `signs:` stage sign it (keyed, not OIDC). This is for users who can't run the Action (GoReleaser Pro `--with-provenance` parity).\n\nYAML: ```yaml attestations: enabled: true mode: subjects          # or: emit ; default = subjects artifacts: [archive, binary, checksum] ```",
+      "type": "object",
+      "properties": {
+        "artifacts": {
+          "description": "Which produced-artifact kinds to attest. Each entry selects a KIND (`archive`, `binary`, `checksum`); the concrete subject set (filenames + sha256) is DERIVED from the artifacts anodizer already produced.\n\nDefaults to `[archive, binary, checksum]` when omitted.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/AttestationArtifactKind"
+          }
+        },
+        "enabled": {
+          "description": "Enable attestation. When false (the default), the stage is a no-op.",
+          "default": false,
+          "type": "boolean"
+        },
+        "mode": {
+          "description": "Participation mode: `subjects` (default) writes a manifest for `actions/attest-build-provenance`; `emit` generates and signs an in-toto SLSA provenance statement as a release asset.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AttestationMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "skip": {
+          "description": "Skip the attestation stage. Accepts a bool or a template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "AttestationMode": {
+      "description": "Attestation participation mode. See [`AttestationConfig`].",
+      "oneOf": [
+        {
+          "description": "Emit a subjects manifest for `actions/attest-build-provenance` (OIDC).",
+          "type": "string",
+          "enum": [
+            "subjects"
+          ]
+        },
+        {
+          "description": "Generate + sign a self-contained in-toto SLSA provenance statement.",
+          "type": "string",
+          "enum": [
+            "emit"
+          ]
+        }
+      ]
     },
     "AurConfig": {
       "type": "object",

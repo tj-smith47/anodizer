@@ -16,6 +16,7 @@ Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root.
 | `after` | HooksConfig | — | Hooks run after the release pipeline completes. |
 | `announce` | AnnounceConfig | — | Announcement configuration (Slack, Discord, email, etc.). |
 | `artifactories` | list of ArtifactoryConfig | — | Artifactory upload configurations. |
+| `attestations` | AttestationConfig | — | SLSA build-provenance / attestation configuration for binaries and archives. In the default `subjects` mode, anodizer writes a subjects manifest for `actions/attest-build-provenance`; in `emit` mode it generates and signs a self-contained in-toto SLSA provenance statement. When omitted (or `enabled: false`), the attestation stage is a no-op. |
 | `aur_sources` | list of AurSourceConfig | — | AUR source package publishing configurations (source-only PKGBUILD, not -bin). |
 | `before` | HooksConfig | — | Hooks run before the release pipeline starts. |
 | `before_publish` | HooksConfig | — | Hooks run after build/archive/sign/sbom/checksum complete but immediately before the publish phase dispatches any publisher.
@@ -130,6 +131,23 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `target` | string | — | Target URL template for uploads (supports template variables). |
 | `trusted_certificates` | string | — | PEM-encoded trusted CA certificates for TLS verification. Appended to the system certificate pool. |
 | `username` | string | — | Artifactory username for authentication. |
+
+## `attestations`
+SLSA build-provenance / attestation configuration for binaries and archives.
+
+Two modes select how anodizer participates in attestation:
+
+- [`AttestationMode::Subjects`] (the default) emits a **subjects manifest** (`dist/attestation-subjects.json`) that `anodizer-action` feeds to GitHub's `actions/attest-build-provenance`. anodizer does NOT mint a GitHub-trusted attestation itself in this mode — the Action's OIDC identity does. This is the path fd / biome / gping use. - [`AttestationMode::Emit`] generates a self-contained in-toto v1 statement carrying an SLSA provenance v1 predicate over the selected artifacts, writes it as a release asset (`attestation.intoto.jsonl`), and lets the existing `signs:` stage sign it (keyed, not OIDC). This is for users who can't run the Action (GoReleaser Pro `--with-provenance` parity).
+
+YAML: ```yaml attestations: enabled: true mode: subjects          # or: emit ; default = subjects artifacts: [archive, binary, checksum] ```
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `artifacts` | list of AttestationArtifactKind | — | Which produced-artifact kinds to attest. Each entry selects a KIND (`archive`, `binary`, `checksum`); the concrete subject set (filenames + sha256) is DERIVED from the artifacts anodizer already produced.
+
+Defaults to `[archive, binary, checksum]` when omitted. |
+| `enabled` | bool | `false` | Enable attestation. When false (the default), the stage is a no-op. |
+| `mode` | AttestationMode | — | Participation mode: `subjects` (default) writes a manifest for `actions/attest-build-provenance`; `emit` generates and signs an in-toto SLSA provenance statement as a release asset. |
+| `skip` | StringOrBool | — | Skip the attestation stage. Accepts a bool or a template string. |
 
 ## `aur_sources`
 | Field | Type | Default | Description |
