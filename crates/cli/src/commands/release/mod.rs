@@ -2693,6 +2693,34 @@ mod tests {
     }
 
     #[test]
+    fn nightly_version_template_supports_nightly_build_and_base() {
+        // nushell-style: <base>-nightly.<build>+<sha6>. NightlyBuild + Base
+        // are set by populate_git_vars in production; here we set them
+        // directly to prove the template references resolve.
+        let config = Config {
+            project_name: "myproj".to_string(),
+            nightly: Some(NightlyConfig {
+                version_template: Some(
+                    "{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}".to_string(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config.clone(), ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "0.103.0");
+        ctx.template_vars_mut().set("Base", "0.103.0");
+        ctx.template_vars_mut().set("NightlyBuild", "42");
+        ctx.template_vars_mut().set("ProjectName", "myproj");
+        ctx.template_vars_mut().set("ShortCommit", "a1b2c3");
+        apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("0.103.0-nightly.42+a1b2c3"),
+        );
+    }
+
+    #[test]
     fn nightly_tag_name_renders_version_template() {
         let (config, mut ctx) = setup_nightly_ctx(Some("nightly-{{ .Version }}"), "1.2.3");
         apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();

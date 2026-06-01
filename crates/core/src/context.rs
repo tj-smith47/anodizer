@@ -720,6 +720,11 @@ impl Context {
             self.template_vars.set("Tag", &info.tag);
             self.template_vars.set("Version", &version);
             self.template_vars.set("RawVersion", &raw_version);
+            // `Base`: the numeric base semver (no prerelease / build metadata),
+            // captured before snapshot/nightly version templating overwrites
+            // `Version`. Lets a nightly `version_template` reference the stable
+            // base for schemes like `"{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}"`.
+            self.template_vars.set("Base", &raw_version);
             self.template_vars
                 .set("Major", &info.semver.major.to_string());
             self.template_vars
@@ -834,6 +839,27 @@ impl Context {
                 );
             }
         }
+
+        // `NightlyBuild`: stateless per-base-version build counter derived
+        // from `git rev-list --count <last-tag>..HEAD`. Resets automatically
+        // when a new version tag lands (no state anodizer persists). Set
+        // unconditionally (it is just a count), but intended for nightly /
+        // snapshot `version_template`s such as
+        // `"{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}"`.
+        // Defaults to "0" outside a git repo (synthetic snapshot/scratch
+        // builds) and on any git error so templates never fail to render.
+        let nightly_build = if self.git_info.is_some() {
+            let root = self
+                .options
+                .project_root
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("."));
+            crate::git::count_commits_since_last_tag_in(&root).unwrap_or(0)
+        } else {
+            0
+        };
+        self.template_vars
+            .set("NightlyBuild", &nightly_build.to_string());
 
         self.template_vars.set(
             "IsSnapshot",
@@ -1277,6 +1303,23 @@ mod tests {
         );
         assert_eq!(v.get("CommitTimestamp"), Some(&"1774463400".to_string()));
         assert_eq!(v.get("PreviousTag"), Some(&"v1.2.2".to_string()));
+        // Base mirrors the numeric base semver, set before any
+        // snapshot/nightly version templating overwrites Version.
+        assert_eq!(v.get("Base"), Some(&"1.2.3".to_string()));
+    }
+
+    #[test]
+    fn test_nightly_build_defaults_to_zero_without_git_info() {
+        // No git_info (synthetic snapshot/scratch build): NightlyBuild must
+        // render as "0" so version_templates referencing it never fail.
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = None;
+        ctx.populate_git_vars();
+        assert_eq!(
+            ctx.template_vars().get("NightlyBuild"),
+            Some(&"0".to_string())
+        );
     }
 
     #[test]

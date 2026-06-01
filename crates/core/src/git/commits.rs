@@ -304,6 +304,41 @@ pub fn has_commits_since_tag_in(cwd: &Path, tag: &str) -> Result<bool> {
     Ok(!output.is_empty())
 }
 
+/// Count the commits on HEAD since the most recent reachable tag.
+///
+/// Resolves the last tag with `git describe --tags --abbrev=0 HEAD`, then
+/// returns `git rev-list --count <tag>..HEAD`. When HEAD has no reachable
+/// tag (a repo whose first version tag has not landed yet), the total
+/// commit count on HEAD is returned instead (`git rev-list --count HEAD`).
+///
+/// This is the stateless basis for the `{{ .NightlyBuild }}` template var:
+/// the count resets to a small number the moment a new version tag lands,
+/// so a nightly build counter increments per base version with no state
+/// anodizer must persist.
+///
+/// Returns `Ok(0)` for an empty repository (no commits) so callers never
+/// have to special-case the unborn-HEAD state.
+pub fn count_commits_since_last_tag() -> Result<u64> {
+    count_commits_since_last_tag_in(&cwd_or_dot())
+}
+
+/// Path-taking sibling of [`count_commits_since_last_tag`].
+pub fn count_commits_since_last_tag_in(cwd: &Path) -> Result<u64> {
+    // `--abbrev=0` yields the bare tag name (no `-<n>-g<sha>` suffix).
+    // A repo with no reachable tag exits non-zero here; treat that as
+    // "count every commit on HEAD" rather than an error.
+    let range = match git_output_in(cwd, &["describe", "--tags", "--abbrev=0", "HEAD"]) {
+        Ok(tag) if !tag.is_empty() => format!("{tag}..HEAD"),
+        _ => "HEAD".to_string(),
+    };
+    // An empty repo (unborn HEAD) makes `rev-list` fail; map that to 0.
+    let count = match git_output_in(cwd, &["rev-list", "--count", &range]) {
+        Ok(s) => s.trim().parse::<u64>().unwrap_or(0),
+        Err(_) => 0,
+    };
+    Ok(count)
+}
+
 /// Get the short commit hash of HEAD.
 pub fn get_short_commit() -> Result<String> {
     get_short_commit_in(&cwd_or_dot())
@@ -994,6 +1029,64 @@ mod tests {
         };
         run(&["tag", "v1.0.0"]);
         assert!(!has_commits_since_tag_in(dir, "v1.0.0").unwrap());
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t.com")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed");
+    }
+
+    #[test]
+    fn count_commits_since_last_tag_counts_commits_after_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // 2 commits, tag v1.0.0 at the 2nd, then 3 more commits.
+        init_repo_with_commits(dir, &["a", "b"]);
+        git_in(dir, &["tag", "v1.0.0"]);
+        for f in ["c", "d", "e"] {
+            std::fs::write(dir.join(f), "x").unwrap();
+            git_in(dir, &["add", "."]);
+            git_in(dir, &["commit", "-m", f]);
+        }
+        assert_eq!(count_commits_since_last_tag_in(dir).unwrap(), 3);
+    }
+
+    #[test]
+    fn count_commits_since_last_tag_resets_on_newer_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_commits(dir, &["a"]);
+        git_in(dir, &["tag", "v1.0.0"]);
+        for f in ["b", "c"] {
+            std::fs::write(dir.join(f), "x").unwrap();
+            git_in(dir, &["add", "."]);
+            git_in(dir, &["commit", "-m", f]);
+        }
+        assert_eq!(count_commits_since_last_tag_in(dir).unwrap(), 2);
+        // A newer version tag lands -> counter resets to 0 at the tag.
+        git_in(dir, &["tag", "v1.1.0"]);
+        assert_eq!(count_commits_since_last_tag_in(dir).unwrap(), 0);
+        std::fs::write(dir.join("d"), "x").unwrap();
+        git_in(dir, &["add", "."]);
+        git_in(dir, &["commit", "-m", "d"]);
+        assert_eq!(count_commits_since_last_tag_in(dir).unwrap(), 1);
+    }
+
+    #[test]
+    fn count_commits_since_last_tag_counts_all_when_no_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_commits(dir, &["a", "b", "c"]);
+        // No tag at all -> count every commit on HEAD.
+        assert_eq!(count_commits_since_last_tag_in(dir).unwrap(), 3);
     }
 
     #[test]
