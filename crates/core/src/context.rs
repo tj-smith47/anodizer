@@ -79,6 +79,7 @@ pub const VALID_RELEASE_SKIPS: &[&str] = &[
     "nsis",
     "pkg",
     "appbundle",
+    "verify-release",
 ];
 
 /// Valid --skip values for the `build` command.

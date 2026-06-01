@@ -1360,6 +1360,7 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodizer_stage_srpm::SrpmStage;
     use anodizer_stage_templatefiles::TemplateFilesStage;
     use anodizer_stage_upx::UpxStage;
+    use anodizer_stage_verify_release::VerifyReleaseStage;
 
     // Stage order matches GoReleaser pipeline.go for parity.
     // Anodizer-specific stages (appbundle, dmg, msi, pkg, nsis, templatefiles,
@@ -1425,6 +1426,13 @@ pub fn build_release_pipeline() -> Pipeline {
     p.add(Box::new(BlobStage));
     p.add(Box::new(SnapcraftPublishStage));
     p.add(Box::new(AnnounceStage));
+
+    // ── Post-publish verification ────────────────────────────────────────
+    // VerifyReleaseStage runs LAST — after the release exists and every
+    // publisher has run — because it needs the published release to verify
+    // against. A no-op unless `verify_release.enabled`; on a detected defect
+    // it reports + exits non-zero but never undoes the (already-live) release.
+    p.add(Box::new(VerifyReleaseStage));
     p
 }
 

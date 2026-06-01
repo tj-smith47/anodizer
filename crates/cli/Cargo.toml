@@ -46,6 +46,7 @@ anodizer-stage-srpm.workspace = true
 anodizer-stage-sbom.workspace = true
 anodizer-stage-attest.workspace = true
 anodizer-stage-appimage.workspace = true
+anodizer-stage-verify-release.workspace = true
 brontes.workspace = true
 anyhow.workspace = true
 toml_edit.workspace = true
