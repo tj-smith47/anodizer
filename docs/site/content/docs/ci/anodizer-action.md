@@ -116,8 +116,13 @@ the caller needing to know the harness CLI. See
 | `crate-path` | Path to the resolved crate directory (e.g. `crates/my-lib`). Set only when `resolve-workspace: true`. |
 | `has-builds` | `true` or `false` — whether the resolved crate has binary builds configured. Useful for conditionally skipping archive/docker stages for library-only crates. Set only when `resolve-workspace: true`. |
 | `split-matrix` | JSON matrix for `strategy.matrix` covering all configured build targets, derived from `.anodizer.yaml` via `anodizer targets --json`. Each entry has `os`, `target`, and `artifact` fields. Set only when `install-only: true`. |
-| `crates` | JSON array of crate names that received a new tag (e.g. `["core","bin-a"]`). Set when `args: tag` is used. Empty array (`[]`) means nothing changed and downstream jobs should be skipped via `if: needs.<job>.outputs.crates != '[]'`. |
-| `versions` | JSON object mapping crate name to its new version string (e.g. `{"core":"1.2.0","bin-a":"0.5.1"}`). Set when `args: tag` is used. |
+| `crates` | JSON array of crate names that received a new tag (e.g. `["core","bin-a"]`). Set when `args: tag` is used on a **per-crate workspace**. Empty array (`[]`) means nothing changed and downstream jobs should be skipped via `if: needs.<job>.outputs.crates != '[]'`. |
+| `versions` | JSON object mapping crate name to its new version string (e.g. `{"core":"1.2.0","bin-a":"0.5.1"}`). Set when `args: tag` is used on a per-crate workspace. |
+| `new-tag` | New tag `anodizer tag` created (e.g. `v1.2.3`), for **single-crate and lockstep-workspace** repos. Empty when no tag was cut. |
+| `old-tag` | Previous tag `anodizer tag` bumped from. Empty on a first release. |
+| `part` | Semver part bumped: `major` / `minor` / `patch` / `none` / `custom`. |
+| `tagged` | `'true'` when this run cut a new tag (`new-tag` non-empty and differs from `old-tag`), `'false'` on a no-op. Gate downstream release jobs on `if: needs.<job>.outputs.tagged == 'true'` for single-crate / lockstep repos (the lockstep counterpart to the per-crate `crates != '[]'` gate). |
+| `head-sha` | Commit at HEAD after `anodizer tag --push` (the tag target — the version-sync bump commit, or the original HEAD when no bump was needed). Check this out in downstream jobs so the tree matches the tag. |
 
 ## Common patterns
 
