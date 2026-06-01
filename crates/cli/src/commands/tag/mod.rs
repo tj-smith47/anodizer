@@ -18,11 +18,36 @@ pub struct TagOpts {
     pub default_bump: Option<String>,
     /// When set, select a specific crate's tag_template for tagging.
     pub crate_name: Option<String>,
+    /// Force-push the version-sync bump commit alongside the tag.
+    pub push: bool,
+    /// Suppress pushing the version-sync bump commit (push the tag only).
+    pub no_push: bool,
+    /// Remote to push to; defaults to `origin` when unset.
+    pub push_remote: Option<String>,
+    /// Preview the `git push` commands `--push` would run, without executing.
+    pub push_dry_run: bool,
     pub config_override: Option<std::path::PathBuf>,
     pub verbose: bool,
     pub debug: bool,
     pub quiet: bool,
     pub strict: bool,
+}
+
+/// Resolve whether the version-sync bump commit (the branch HEAD) should be
+/// pushed alongside the tag.
+///
+/// `--no-push` always wins; then an explicit `--push` or `tag.push = true`
+/// forces a branch push; otherwise the per-path default applies (`false` for
+/// the single / lockstep / `--crate` paths, `true` for per-crate
+/// auto-dispatch, whose atomic branch+tags push is the long-standing default).
+fn resolve_effective_push(opts: &TagOpts, config_push: Option<bool>, path_default: bool) -> bool {
+    if opts.no_push {
+        false
+    } else if opts.push || config_push == Some(true) {
+        true
+    } else {
+        path_default
+    }
 }
 
 /// Resolved tag configuration with defaults applied.
@@ -116,6 +141,12 @@ pub fn run(opts: TagOpts) -> Result<()> {
 
     let mut cfg = ResolvedConfig::from_tag_config(&tag_config, &opts);
 
+    // Push controls shared by every tagging path. `remote` defaults to origin;
+    // `effective_push` per-path resolution is computed at each call site so the
+    // per-crate path can carry its own (true) default.
+    let remote = opts.push_remote.as_deref().unwrap_or("origin").to_string();
+    let config_push = tag_config.push;
+
     // When --crate is given, look up the crate in config and derive the tag
     // prefix from its tag_template.  Also capture the crate path so we can
     // scope change detection to only that directory.
@@ -174,6 +205,8 @@ pub fn run(opts: TagOpts) -> Result<()> {
                     &cfg,
                     git_config.as_ref(),
                     loaded_config.as_ref(),
+                    &remote,
+                    config_push,
                     &log,
                 );
             }
@@ -216,6 +249,23 @@ pub fn run(opts: TagOpts) -> Result<()> {
     let tag_prefix_for_hooks = cfg.tag_prefix.clone();
     let pre_hooks = tag_config.tag_pre_hooks.clone().unwrap_or_default();
     let post_hooks = tag_config.tag_post_hooks.clone().unwrap_or_default();
+
+    // Single / lockstep / --crate share a `false` push default: today's
+    // behavior pushes only the tag and leaves the bump commit local. `--push`,
+    // `tag.push=true`, or `--push-dry-run` (preview) opt into also pushing the
+    // bump commit (the branch HEAD) atomically with the tag.
+    let effective_push = resolve_effective_push(&opts, config_push, false);
+    // `--push-dry-run` previews the push commands `--push` would run: treat it
+    // as push-mode-on, but every `git push` is replaced by a "(dry-run) would
+    // push …" log line.
+    let push_mode = effective_push || opts.push_dry_run;
+    let push_preview = opts.push_dry_run;
+    let push_branch = if push_mode {
+        Some(git::get_current_branch()?)
+    } else {
+        None
+    };
+
     let create_tag = |tag: &str, message: &str, dry_run: bool, prev: Option<&str>| -> Result<()> {
         let mut tv = TemplateVars::new();
         tv.set("Tag", tag);
@@ -246,9 +296,41 @@ pub fn run(opts: TagOpts) -> Result<()> {
             )?;
         }
 
+        // Whether the actual push step runs in dry-run/preview mode (creates
+        // the tag locally but only prints the push commands).
+        let push_dry = dry_run || push_preview;
+
+        let cwd = std::env::current_dir()?;
         if cfg.git_api_tagging {
             log.verbose("using GitHub API for tagging (git_api_tagging=true)");
+            if push_mode {
+                // Push the branch first so the bump commit lands on the remote,
+                // THEN create the tag via the API (which references the
+                // now-pushed HEAD commit).
+                git::push_branch_and_tags_atomic_in(
+                    &cwd,
+                    &remote,
+                    push_branch.as_deref(),
+                    &[],
+                    push_dry,
+                    &log,
+                    strict,
+                )?;
+            }
             git::create_tag_via_github_api(tag, message, dry_run, &log, strict)?;
+        } else if push_mode {
+            // Create the tag locally, then push branch + tag atomically so
+            // neither an orphan tag NOR an orphan bump commit is possible.
+            git::create_tag_local_only(&cwd, tag, message, dry_run, &log)?;
+            git::push_branch_and_tags_atomic_in(
+                &cwd,
+                &remote,
+                push_branch.as_deref(),
+                std::slice::from_ref(&tag.to_string()),
+                push_dry,
+                &log,
+                strict,
+            )?;
         } else {
             git::create_and_push_tag(tag, message, dry_run, &log, strict)?;
         }
@@ -913,12 +995,15 @@ fn compute_per_crate_tags(
 /// Runs change detection → computes new tags for changed groups → writes one
 /// bump commit for all changed crates → creates all tags → pushes commit and
 /// tags atomically → emits `anodizer-output crates=[...]` line.
+#[allow(clippy::too_many_arguments)]
 fn run_per_crate_tag(
     groups: Vec<Vec<CrateConfig>>,
     opts: &TagOpts,
     cfg: &ResolvedConfig,
     git_config: Option<&GitConfig>,
     anodizer_config: Option<&anodizer_core::config::Config>,
+    remote: &str,
+    config_push: Option<bool>,
     log: &StageLogger,
 ) -> Result<()> {
     let tag_results = compute_per_crate_tags(&groups, opts, cfg, git_config, anodizer_config, log)?;
@@ -1065,16 +1150,26 @@ fn run_per_crate_tag(
     let versions_json = serde_json::to_string(&versions_map).unwrap_or_else(|_| "{}".to_string());
     println!("anodizer-output versions={}", versions_json);
 
-    if !opts.dry_run {
-        // Push the bump commit and all tags atomically.
-        let current_branch = git::get_current_branch()?;
-        git::push_branch_and_tags_atomic(&current_branch, &all_new_tags, false, log, opts.strict)?;
+    // Per-crate auto-dispatch defaults to pushing the bump commit + tags
+    // atomically (path_default = true). `--no-push` pushes the tags only,
+    // leaving the bump commit local; `--push-dry-run` previews the push.
+    let effective_push = resolve_effective_push(opts, config_push, true);
+    let push_dry = opts.dry_run || opts.push_dry_run;
+    let cwd = std::env::current_dir()?;
+    let push_branch = if effective_push {
+        Some(git::get_current_branch()?)
     } else {
-        log.status(&format!(
-            "(dry-run) would push tags: {}",
-            all_new_tags.join(", ")
-        ));
-    }
+        None
+    };
+    git::push_branch_and_tags_atomic_in(
+        &cwd,
+        remote,
+        push_branch.as_deref(),
+        &all_new_tags,
+        push_dry,
+        log,
+        opts.strict,
+    )?;
 
     Ok(())
 }
@@ -1691,6 +1786,10 @@ mod tests {
             custom_tag: None,
             default_bump: None,
             crate_name: None,
+            push: false,
+            no_push: false,
+            push_remote: None,
+            push_dry_run: false,
             config_override: None,
             verbose: false,
             debug: false,
@@ -1724,6 +1823,10 @@ mod tests {
             custom_tag: Some("v9.9.9".to_string()),
             default_bump: Some("major".to_string()),
             crate_name: None,
+            push: false,
+            no_push: false,
+            push_remote: None,
+            push_dry_run: false,
             config_override: None,
             verbose: false,
             debug: false,
@@ -1754,6 +1857,7 @@ mod tests {
             patch_string_token: Some("fix:".to_string()),
             none_string_token: Some("skip".to_string()),
             git_api_tagging: Some(false),
+            push: None,
             verbose: Some(false),
             tag_pre_hooks: None,
             tag_post_hooks: None,
@@ -1763,6 +1867,10 @@ mod tests {
             custom_tag: None,
             default_bump: None,
             crate_name: None,
+            push: false,
+            no_push: false,
+            push_remote: None,
+            push_dry_run: false,
             config_override: None,
             verbose: false,
             debug: false,

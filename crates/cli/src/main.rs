@@ -514,6 +514,10 @@ fn main() {
             custom_tag,
             default_bump,
             crate_name,
+            push,
+            no_push,
+            push_remote,
+            push_dry_run,
             sub,
         } => match sub {
             Some(TagSub::Rollback {
@@ -546,6 +550,10 @@ fn main() {
                 custom_tag,
                 default_bump,
                 crate_name,
+                push,
+                no_push,
+                push_remote,
+                push_dry_run,
                 config_override: cli.config.clone(),
                 verbose: cli.verbose,
                 debug: cli.debug,

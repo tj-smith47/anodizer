@@ -42,6 +42,11 @@ pub struct TagConfig {
     pub none_string_token: Option<String>,
     /// When true, use the GitHub/GitLab API for tagging instead of git CLI.
     pub git_api_tagging: Option<bool>,
+    /// When true, `anodizer tag` also pushes the version-sync bump commit to the
+    /// release branch (atomically with the tag), not just the tag. CLI `--push` /
+    /// `--no-push` override this. Default false preserves the "push the tag,
+    /// inspect the branch locally before pushing" workflow.
+    pub push: Option<bool>,
     /// When true, print verbose tag calculation output.
     pub verbose: Option<bool>,
     /// Commands to run before `anodizer tag` creates the tag. Useful for updating

@@ -366,6 +366,28 @@ pub enum Commands {
         default_bump: Option<String>,
         #[arg(long = "crate", help = "Tag a specific crate in a workspace")]
         crate_name: Option<String>,
+        #[arg(
+            long,
+            help = "Push the version-sync bump commit to the release branch atomically with the tag"
+        )]
+        push: bool,
+        #[arg(
+            long,
+            conflicts_with = "push",
+            help = "Do not push the version-sync bump commit (push the tag only)"
+        )]
+        no_push: bool,
+        #[arg(
+            long,
+            value_name = "NAME",
+            help = "Remote to push to (default: origin)"
+        )]
+        push_remote: Option<String>,
+        #[arg(
+            long,
+            help = "Print the git push commands that --push would run, without executing"
+        )]
+        push_dry_run: bool,
         /// `anodize tag rollback [...]` — failure-recovery counterpart.
         ///
         /// Subcommand is optional: bare `anodize tag` keeps its
