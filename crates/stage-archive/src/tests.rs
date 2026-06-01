@@ -4953,3 +4953,388 @@ fn test_archive_templated_files_per_format() {
         ".Format must resolve to 'zip' inside the rendered file body"
     );
 }
+
+// ---------------------------------------------------------------------------
+// completions / manpages generation (mode A run-binary, B harvest, C copy)
+// ---------------------------------------------------------------------------
+
+use anodizer_core::config::{CompletionsConfig, ManpagesConfig};
+use anodizer_core::context::{Context, ContextOptions};
+
+/// Build a minimal single-crate Context with one binary registered for the
+/// host-native target, so mode-A generation (which runs the host binary) is
+/// exercisable. `archives` holds the (single) archive config under test.
+fn host_completion_ctx(
+    tmp: &TempDir,
+    dist: &std::path::Path,
+    archive: anodizer_core::config::ArchiveConfig,
+    binary_path: &std::path::Path,
+) -> Context {
+    use anodizer_core::config::{ArchivesConfig, Config, CrateConfig};
+    let host = anodizer_core::partial::detect_host_target()
+        .expect("host target detection must succeed in test env");
+
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        archives: ArchivesConfig::Configs(vec![archive]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = dist.to_path_buf();
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.options.project_root = Some(tmp.path().to_path_buf());
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: binary_path.to_path_buf(),
+        target: Some(host),
+        crate_name: "myapp".to_string(),
+        metadata: {
+            let mut m = HashMap::new();
+            m.insert("binary".to_string(), "myapp".to_string());
+            m
+        },
+        size: None,
+    });
+    ctx
+}
+
+/// Read the single produced archive's entries.
+fn read_only_archive(ctx: &Context) -> HashMap<String, Vec<u8>> {
+    let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+    assert_eq!(archives.len(), 1, "expected exactly one archive");
+    let file = File::open(&archives[0].path).unwrap();
+    let dec = flate2::read::GzDecoder::new(file);
+    read_tar_entries(tar::Archive::new(dec))
+}
+
+#[test]
+fn mode_a_generates_one_file_per_shell_and_bundles() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+
+    // Fake "binary": a shell script that emits per-shell completion text.
+    // mode-A renders `{{ .ArtifactPath }} completions {{ .Shell }}`.
+    let bin = tmp.path().join("myapp");
+    fs::write(&bin, b"#!/bin/sh\necho \"completion-for-$2\"\n").unwrap();
+    let mut perms = fs::metadata(&bin).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    perms.set_mode(0o755);
+    fs::set_permissions(&bin, perms).unwrap();
+
+    let archive = anodizer_core::config::ArchiveConfig {
+        name_template: Some("{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}".to_string()),
+        formats: Some(vec!["tar.gz".to_string()]),
+        completions: Some(CompletionsConfig {
+            generate: Some("{{ .ArtifactPath }} completions {{ .Shell }}".to_string()),
+            // Arbitrary shells incl. nushell + elvish (NOT just the 4 common).
+            shells: Some(vec![
+                "bash".to_string(),
+                "zsh".to_string(),
+                "fish".to_string(),
+                "nushell".to_string(),
+                "elvish".to_string(),
+            ]),
+            dst: Some("completions/".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let mut ctx = host_completion_ctx(&tmp, &dist, archive, &bin);
+    ArchiveStage.run(&mut ctx).unwrap();
+
+    let entries = read_only_archive(&ctx);
+    // clap_complete filename convention per shell:
+    let want = [
+        ("completions/myapp", "completion-for-bash\n"),
+        ("completions/_myapp", "completion-for-zsh\n"),
+        ("completions/myapp.fish", "completion-for-fish\n"),
+        ("completions/myapp.nu", "completion-for-nushell\n"),
+        ("completions/myapp.elv", "completion-for-elvish\n"),
+    ];
+    for (name, body) in want {
+        let got = entries.get(name).unwrap_or_else(|| {
+            panic!(
+                "archive missing {name}; have {:?}",
+                entries.keys().collect::<Vec<_>>()
+            )
+        });
+        assert_eq!(String::from_utf8_lossy(got), body, "wrong body for {name}");
+    }
+
+    // Shared dist staging location for nfpm single-source-of-truth.
+    let staged = dist.join(".completions").join("myapp").join("myapp.fish");
+    assert!(
+        staged.exists(),
+        "generated file must persist in dist staging for nfpm reuse"
+    );
+}
+
+#[test]
+fn mode_a_manpage_generates_and_bundles() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let bin = tmp.path().join("myapp");
+    fs::write(&bin, b"#!/bin/sh\necho '.TH MYAPP 1'\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = fs::metadata(&bin).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&bin, perms).unwrap();
+
+    let archive = anodizer_core::config::ArchiveConfig {
+        name_template: Some("{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}".to_string()),
+        formats: Some(vec!["tar.gz".to_string()]),
+        manpages: Some(ManpagesConfig {
+            generate: Some("{{ .ArtifactPath }} --man".to_string()),
+            dst: Some("man/man1/".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = host_completion_ctx(&tmp, &dist, archive, &bin);
+    ArchiveStage.run(&mut ctx).unwrap();
+
+    let entries = read_only_archive(&ctx);
+    let man = entries.get("man/man1/myapp.1").unwrap_or_else(|| {
+        panic!(
+            "missing man page; have {:?}",
+            entries.keys().collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(String::from_utf8_lossy(man), ".TH MYAPP 1\n");
+}
+
+#[test]
+fn mode_b_harvests_build_out_glob() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let bin = tmp.path().join("myapp");
+    fs::write(&bin, b"binary").unwrap();
+
+    // Simulate a build.rs OUT_DIR with completion files already written.
+    let out_dir = tmp.path().join("target/x/release/build/myapp-abc/out");
+    fs::create_dir_all(&out_dir).unwrap();
+    fs::write(out_dir.join("myapp.bash"), b"bash-comp").unwrap();
+    fs::write(out_dir.join("myapp.fish"), b"fish-comp").unwrap();
+
+    let glob = format!(
+        "{}/**/out/{{{{ .Binary }}}}.{{bash,fish}}",
+        tmp.path().display()
+    );
+    let archive = anodizer_core::config::ArchiveConfig {
+        name_template: Some("{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}".to_string()),
+        formats: Some(vec!["tar.gz".to_string()]),
+        completions: Some(CompletionsConfig {
+            from_build_out: Some(glob),
+            dst: Some("completions/".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = host_completion_ctx(&tmp, &dist, archive, &bin);
+    ArchiveStage.run(&mut ctx).unwrap();
+
+    let entries = read_only_archive(&ctx);
+    assert_eq!(
+        String::from_utf8_lossy(
+            entries
+                .get("completions/myapp.bash")
+                .expect("bash harvested")
+        ),
+        "bash-comp"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(
+            entries
+                .get("completions/myapp.fish")
+                .expect("fish harvested")
+        ),
+        "fish-comp"
+    );
+}
+
+#[test]
+fn mode_c_copies_committed_files() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let bin = tmp.path().join("myapp");
+    fs::write(&bin, b"binary").unwrap();
+
+    // Committed completion files under the crate dir (project_root = tmp).
+    let contrib = tmp.path().join("contrib/completion");
+    fs::create_dir_all(&contrib).unwrap();
+    fs::write(contrib.join("myapp.bash"), b"committed-bash").unwrap();
+
+    let archive = anodizer_core::config::ArchiveConfig {
+        name_template: Some("{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}".to_string()),
+        formats: Some(vec!["tar.gz".to_string()]),
+        completions: Some(CompletionsConfig {
+            copy: Some("contrib/completion/*".to_string()),
+            dst: Some("completions/".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = host_completion_ctx(&tmp, &dist, archive, &bin);
+    ArchiveStage.run(&mut ctx).unwrap();
+
+    let entries = read_only_archive(&ctx);
+    assert_eq!(
+        String::from_utf8_lossy(entries.get("completions/myapp.bash").expect("copied")),
+        "committed-bash"
+    );
+}
+
+#[test]
+fn mode_a_no_host_native_artifact_errors() {
+    use anodizer_core::config::{ArchivesConfig, Config, CrateConfig};
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let bin = tmp.path().join("myapp");
+    fs::write(&bin, b"binary").unwrap();
+
+    let archive = anodizer_core::config::ArchiveConfig {
+        formats: Some(vec!["tar.gz".to_string()]),
+        completions: Some(CompletionsConfig {
+            generate: Some("{{ .ArtifactPath }} completions {{ .Shell }}".to_string()),
+            shells: Some(vec!["bash".to_string()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        archives: ArchivesConfig::Configs(vec![archive]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = dist.clone();
+    config.crates = vec![crate_cfg];
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.options.project_root = Some(tmp.path().to_path_buf());
+
+    // Register the binary for a deliberately NON-host target (pure cross).
+    let cross = "aarch64-unknown-linux-musl";
+    let host = anodizer_core::partial::detect_host_target().unwrap();
+    let cross = if cross == host {
+        "x86_64-pc-windows-gnu"
+    } else {
+        cross
+    };
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: bin.clone(),
+        target: Some(cross.to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: {
+            let mut m = HashMap::new();
+            m.insert("binary".to_string(), "myapp".to_string());
+            m
+        },
+        size: None,
+    });
+
+    let err = ArchiveStage.run(&mut ctx).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("host-native binary") && msg.contains("from_build_out"),
+        "expected clear mode-A host-missing error, got: {msg}"
+    );
+}
+
+#[test]
+fn workspace_per_crate_completions_resolve_per_crate() {
+    use anodizer_core::config::{ArchivesConfig, Config, CrateConfig};
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let host = anodizer_core::partial::detect_host_target().unwrap();
+
+    use std::os::unix::fs::PermissionsExt;
+    let make_bin = |name: &str| {
+        let p = tmp.path().join(name);
+        fs::write(&p, format!("#!/bin/sh\necho \"{name}-$2\"\n")).unwrap();
+        let mut perms = fs::metadata(&p).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&p, perms).unwrap();
+        p
+    };
+    let bin_a = make_bin("aaa");
+    let bin_b = make_bin("bbb");
+
+    let mk_crate = |name: &str| CrateConfig {
+        name: name.to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        archives: ArchivesConfig::Configs(vec![anodizer_core::config::ArchiveConfig {
+            name_template: Some("{{ .CrateName }}-{{ .Os }}-{{ .Arch }}".to_string()),
+            formats: Some(vec!["tar.gz".to_string()]),
+            completions: Some(CompletionsConfig {
+                generate: Some("{{ .ArtifactPath }} completions {{ .Shell }}".to_string()),
+                shells: Some(vec!["fish".to_string()]),
+                dst: Some("completions/".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "ws".to_string();
+    config.dist = dist.clone();
+    config.crates = vec![mk_crate("aaa"), mk_crate("bbb")];
+
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.options.project_root = Some(tmp.path().to_path_buf());
+
+    for (cname, bpath, binname) in [("aaa", &bin_a, "aaa"), ("bbb", &bin_b, "bbb")] {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bpath.clone(),
+            target: Some(host.clone()),
+            crate_name: cname.to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("binary".to_string(), binname.to_string());
+                m
+            },
+            size: None,
+        });
+    }
+
+    ArchiveStage.run(&mut ctx).unwrap();
+
+    // Each crate's archive must carry ITS binary's completion output.
+    let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+    assert_eq!(archives.len(), 2);
+    for ar in archives {
+        let file = File::open(&ar.path).unwrap();
+        let dec = flate2::read::GzDecoder::new(file);
+        let entries = read_tar_entries(tar::Archive::new(dec));
+        let body = entries
+            .get(&format!("completions/{}.fish", ar.crate_name))
+            .unwrap_or_else(|| panic!("crate {} missing its completion file", ar.crate_name));
+        assert_eq!(
+            String::from_utf8_lossy(body),
+            format!("{}-fish\n", ar.crate_name),
+            "per-crate completion resolution: {} must run its own binary",
+            ar.crate_name
+        );
+    }
+}

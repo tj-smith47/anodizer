@@ -240,6 +240,21 @@ fn collect_archivable_crates(
         .collect())
 }
 
+/// Pick the host-native binary artifact from a crate's binaries, for mode-A
+/// completion/man generation (running the binary requires it execute on the
+/// host). Matches by exact target triple against the detected host target.
+///
+/// Returns `None` when host detection fails (e.g. `rustc` unavailable) or no
+/// built artifact targets the host — a pure cross build. The generation layer
+/// turns that `None` into a clear, actionable error for mode A while leaving
+/// modes B/C (which don't run the binary) unaffected.
+fn resolve_host_binary(all_binaries: &[Artifact]) -> Option<&Artifact> {
+    let host = anodizer_core::partial::detect_host_target().ok()?;
+    all_binaries
+        .iter()
+        .find(|b| b.target.as_deref() == Some(host.as_str()))
+}
+
 /// Collect all archivable binary artifacts for a single crate.
 fn collect_crate_archivable_artifacts(ctx: &Context, crate_name: &str) -> Vec<Artifact> {
     ctx.artifacts
@@ -393,6 +408,28 @@ fn archive_one_config(
 
         // strip_binary_directory: place binaries at archive root
         let strip_bin_dir = archive_cfg.strip_binary_directory.unwrap_or(false);
+
+        // Generate (or harvest/copy) completion + man files ONCE for this
+        // archive config and stage them in dist so the SAME files feed both
+        // the archive and nfpm `contents:` globs. Mode A reuses the
+        // host-native binary's output for every target (arch-independent).
+        let aux_files: Vec<ResolvedExtraFile> =
+            if archive_cfg.completions.is_some() || archive_cfg.manpages.is_some() {
+                let host_binary = resolve_host_binary(all_binaries);
+                crate::completions_gen::generate_archive_aux_files(
+                    ctx,
+                    archive_cfg.completions.as_ref(),
+                    archive_cfg.manpages.as_ref(),
+                    crate_name,
+                    crate_dir,
+                    host_binary,
+                    dist,
+                    dry_run,
+                    log,
+                )?
+            } else {
+                Vec::new()
+            };
 
         // Hook firing happens INSIDE the format loop below so each
         // (target, format) pair gets its own before/after pair with
@@ -599,6 +636,21 @@ fn archive_one_config(
             } else {
                 resolve_default_extra_files(crate_dir)
             };
+
+            // Append the staged completion/man files (target-independent —
+            // generated once above, reused for every target). They carry
+            // their own archive `dst:` (e.g. `completions/rg.fish`) and pick
+            // up the same `wrap_in_directory` prefix as user `files:`.
+            let mut extra_files = extra_files;
+            for aux in &aux_files {
+                extra_files.push(ResolvedExtraFile {
+                    src: aux.src.clone(),
+                    dst: aux.dst.clone(),
+                    info: aux.info.clone(),
+                    strip_parent: aux.strip_parent,
+                    default: aux.default,
+                });
+            }
 
             // builds_info: permissions applied to binary entries.
             // GoReleaser archive.go:99 always forces BuildsInfo.Mode = 0o755

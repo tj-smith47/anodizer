@@ -85,6 +85,60 @@ archives:
       - config.example.yaml
 ```
 
+## Shell completions & man pages
+
+Auto-generate (or harvest, or copy) shell completions and man pages and bundle
+them into every archive. Three mutually-exclusive modes per block — set exactly
+one of `generate` / `from_build_out` / `copy`:
+
+```yaml
+archives:
+  - id: default
+    completions:
+      # Mode A — run the host-native binary once per shell, reuse for all targets.
+      generate: "{{ .ArtifactPath }} completions {{ .Shell }}"
+      shells: [bash, zsh, fish, powershell, nushell, elvish]   # arbitrary list
+      dst: "completions/"
+      # Mode B — harvest a build.rs OUT_DIR (clap_complete) via a per-target glob:
+      #   from_build_out: "**/out/{{ .Binary }}.{bash,fish,zsh}"
+      # Mode C — copy committed files:
+      #   copy: "contrib/completion/*"
+    manpages:
+      generate: "{{ .ArtifactPath }} --man"     # or from_build_out / copy
+      dst: "man/man1/"
+```
+
+Mode A generates **once on the host-native target** (completions/man pages do
+not vary by architecture) and reuses the output for every target's archive. A
+pure cross build with no host-native artifact errors clearly — use
+`from_build_out` or `copy` instead, or add the host target.
+
+Per-shell filenames follow the clap_complete convention so files drop straight
+into the shell's lookup path: bash `<bin>`, zsh `_<bin>`, fish `<bin>.fish`,
+powershell `_<bin>.ps1`, elvish `<bin>.elv`, nushell `<bin>.nu`. Man pages are
+written as `<bin>.1`.
+
+### Single source of truth for nfpm
+
+Generated files are staged under the dist directory so the **same** files feed
+both the archive and any nfpm package — generate once, ship everywhere:
+
+```text
+dist/.completions/<crate>/   # e.g. dist/.completions/rg/rg.fish
+dist/.manpages/<crate>/      # e.g. dist/.manpages/rg/rg.1
+```
+
+Point an nfpm `contents:` entry at the staging dir to install them system-wide:
+
+```yaml
+nfpm:
+  - contents:
+      - src: "dist/.completions/rg/*"
+        dst: /usr/share/bash-completion/completions/
+      - src: "dist/.manpages/rg/*"
+        dst: /usr/share/man/man1/
+```
+
 ## Raw binary (no archive)
 
 Use `format: binary` to skip archiving and distribute the raw binary:

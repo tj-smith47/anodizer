@@ -189,6 +189,9 @@ pub(crate) fn clear_archive_template_vars(ctx: &mut anodizer_core::context::Cont
     tvars.set("Arch", "");
     tvars.set("Target", "");
     tvars.set("Binary", "");
+    // `Shell` is bound transiently during mode-A completion generation; clear
+    // it so it does not leak into downstream stages' template scope.
+    tvars.set("Shell", "");
     tvars.set("ArtifactName", "");
     tvars.set("ArtifactPath", "");
     tvars.set("ArtifactExt", "");

@@ -13,6 +13,7 @@ use anodizer_core::config::FormatOverride;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::target::map_target;
 
+mod completions_gen;
 mod entries;
 mod file_specs;
 mod formats;
