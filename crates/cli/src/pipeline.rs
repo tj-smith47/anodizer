@@ -1524,6 +1524,7 @@ pub(crate) fn build_publish_only_pipeline() -> Pipeline {
     use anodizer_stage_release::ReleaseStage;
     use anodizer_stage_sign::{DockerSignStage, SignStage};
     use anodizer_stage_snapcraft::SnapcraftPublishStage;
+    use anodizer_stage_verify_release::VerifyReleaseStage;
 
     let mut p = Pipeline::new();
     p.add(Box::new(ChangelogStage));
@@ -1552,6 +1553,9 @@ pub(crate) fn build_publish_only_pipeline() -> Pipeline {
     p.add(Box::new(BlobStage));
     p.add(Box::new(SnapcraftPublishStage));
     p.add(Box::new(AnnounceStage));
+    // Post-publish verification runs LAST here too: `release --publish-only`
+    // creates a real release + publishes, so the same gate applies.
+    p.add(Box::new(VerifyReleaseStage));
     p
 }
 
@@ -1591,6 +1595,7 @@ pub fn build_merge_pipeline() -> Pipeline {
     use anodizer_stage_source::SourceStage;
     use anodizer_stage_srpm::SrpmStage;
     use anodizer_stage_templatefiles::TemplateFilesStage;
+    use anodizer_stage_verify_release::VerifyReleaseStage;
 
     // Merge pipeline: same order as build_release_pipeline minus Build/UPX.
     let mut p = Pipeline::new();
@@ -1628,6 +1633,9 @@ pub fn build_merge_pipeline() -> Pipeline {
     p.add(Box::new(BlobStage));
     p.add(Box::new(SnapcraftPublishStage));
     p.add(Box::new(AnnounceStage));
+    // Merge mode produces + publishes a real release, so the post-publish
+    // gate runs last here too.
+    p.add(Box::new(VerifyReleaseStage));
     p
 }
 
