@@ -225,6 +225,14 @@ fn host_missing_error(crate_name: &str, kind: &str) -> anyhow::Error {
     )
 }
 
+/// Unbind the transient `Shell` template var so it never outlives a single
+/// mode-A generation call. Setting it to empty (rather than leaving the last
+/// shell bound) keeps `{{ .Shell }}` rendering as empty everywhere outside
+/// completion generation.
+fn clear_shell_var(ctx: &mut Context) {
+    ctx.template_vars_mut().set("Shell", "");
+}
+
 /// Mode A: render the `generate:` command (binding `{{ .Shell }}` /
 /// `{{ .Binary }}` / `{{ .ArtifactPath }}`), run it once via `sh -c`, and
 /// capture stdout into `staging/<file_name>`.
@@ -245,7 +253,12 @@ fn run_generate(
         .with_context(|| format!("{kind}: create staging dir {}", staging.display()))?;
     let out_path = staging.join(file_name);
 
-    // Bind the mode-A template surface, then render the command.
+    // Bind the mode-A template surface, then render the command. `Shell` is
+    // bound only for the duration of THIS render and cleared immediately
+    // after (see `clear_shell_var` below) so it never outlives the call:
+    // a leftover `Shell` would otherwise bleed into the man-page `generate:`
+    // command (which runs with shell=None) and every subsequent archive-name
+    // / templated_files render for the rest of the crate.
     let tvars = ctx.template_vars_mut();
     tvars.set("ArtifactPath", &host.path.to_string_lossy());
     tvars.set("Binary", bin);
@@ -254,7 +267,11 @@ fn run_generate(
     }
     let cmd = ctx
         .render_template(cmd_tmpl)
-        .with_context(|| format!("{kind}: render generate command '{cmd_tmpl}'"))?;
+        .with_context(|| format!("{kind}: render generate command '{cmd_tmpl}'"));
+    // Clear `Shell` before any early return so the binding cannot leak even
+    // when rendering or the command itself fails.
+    clear_shell_var(ctx);
+    let cmd = cmd?;
 
     if dry_run {
         log.status(&format!(

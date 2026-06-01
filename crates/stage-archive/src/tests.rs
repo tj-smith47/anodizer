@@ -5338,3 +5338,79 @@ fn workspace_per_crate_completions_resolve_per_crate() {
         );
     }
 }
+
+#[test]
+fn mode_a_shell_var_does_not_leak_into_manpage_or_archive_name() {
+    // After mode-A completion generation binds `{{ .Shell }}` per shell, the
+    // var MUST be cleared so it does not bleed into the man-page `generate:`
+    // command (shell=None) or subsequent archive-name rendering. Regression
+    // for the per-crate-scoped clear that ran too late.
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+
+    let bin = tmp.path().join("myapp");
+    // Completions echo their shell; the man "command" echoes whatever Shell
+    // resolves to at man-gen time — proving the leak (or its absence).
+    fs::write(
+        &bin,
+        b"#!/bin/sh\nif [ \"$1\" = completions ]; then echo \"comp-$2\"; else echo \"shell=[$SHELL_PROBE]\"; fi\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = fs::metadata(&bin).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&bin, perms).unwrap();
+
+    let archive = anodizer_core::config::ArchiveConfig {
+        // Archive name embeds {{ .Shell }} too: after a mode-A run it must
+        // render empty, so the stem is "myapp--linux-amd64" (no shell).
+        name_template: Some("{{ .ProjectName }}-{{ .Shell }}-{{ .Os }}-{{ .Arch }}".to_string()),
+        formats: Some(vec!["tar.gz".to_string()]),
+        completions: Some(CompletionsConfig {
+            generate: Some("{{ .ArtifactPath }} completions {{ .Shell }}".to_string()),
+            shells: Some(vec!["bash".to_string(), "zsh".to_string()]),
+            dst: Some("completions/".to_string()),
+            ..Default::default()
+        }),
+        manpages: Some(ManpagesConfig {
+            // SHELL_PROBE is set from {{ .Shell }} — a stale binding would make
+            // the man body read `shell=[zsh]` (the last completion shell).
+            generate: Some("SHELL_PROBE='{{ .Shell }}' {{ .ArtifactPath }} --man".to_string()),
+            dst: Some("man/man1/".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let mut ctx = host_completion_ctx(&tmp, &dist, archive, &bin);
+    ArchiveStage.run(&mut ctx).unwrap();
+
+    let entries = read_only_archive(&ctx);
+
+    // 1. Man page must see an EMPTY Shell (cleared after completion gen).
+    let man = entries.get("man/man1/myapp.1").unwrap_or_else(|| {
+        panic!(
+            "missing man page; have {:?}",
+            entries.keys().collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(
+        String::from_utf8_lossy(man),
+        "shell=[]\n",
+        "Shell leaked into man-page generation (should be empty, got stale completion shell)"
+    );
+
+    // 2. Archive name must render {{ .Shell }} as empty, not "zsh".
+    let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+    assert_eq!(archives.len(), 1);
+    let stem = archives[0]
+        .path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert_eq!(
+        stem, "myapp--linux-amd64.tar.gz",
+        "Shell leaked into archive name template (should be empty)"
+    );
+}
