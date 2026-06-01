@@ -1,0 +1,777 @@
+//! NPM publish orchestration — assembles the package tarball(s) and invokes
+//! `npm publish` with a per-run `.npmrc` that carries the auth token.
+//!
+//! Two modes (see [`anodizer_core::config::NpmMode`]):
+//!   * `optional-deps` (default): packs + publishes each per-platform package
+//!     then the metapackage (so the metapackage's `optionalDependencies`
+//!     resolve). The biome / git-cliff pattern — npm's native resolution
+//!     selects the matching prebuilt package, no postinstall.
+//!   * `postinstall`: packs + publishes a single package whose `postinstall.js`
+//!     downloads the matching archive at install time (GoReleaser Pro parity).
+//!
+//! Token handling:
+//!   * The token is resolved from `cfg.token` (templated) or the `NPM_TOKEN`
+//!     env var and is **never** placed on the `npm publish` argv — npm reads
+//!     `_authToken` from a process-private `.npmrc` written to a `TempDir`.
+
+use std::fs;
+use std::io::Write;
+use std::ops::ControlFlow;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use anodizer_core::config::{ArchivesConfig, NpmConfig, NpmMode, NpmTemplatedExtraFile};
+use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
+use anodizer_core::retry::{RetryPolicy, retry_sync};
+use anodizer_core::template_file_render::render_templated_file_entry;
+use anyhow::{Context as _, Result, bail};
+use tempfile::TempDir;
+
+use super::manifest::{
+    PlatformBinary, render_launcher_js, render_package_json, render_postinstall_js, resolve_access,
+    resolve_extra_files, resolve_name, resolve_registry, resolve_tag, token_env_var,
+};
+use super::optional_deps::generate_layout;
+
+/// Outcome of [`publish_to_npm`] for one published package: the coordinates
+/// recorded in evidence so a later `--rollback-only --from-run` can attempt
+/// `npm unpublish`. `None` is returned for every skip path (skip / disable /
+/// dry-run / no-binaries / `if:` falsy) so rollback never targets a package
+/// the run did not push.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NpmTarget {
+    /// Package name as published (e.g. `@scope/foo`).
+    pub package: String,
+    /// Published version (semver string).
+    pub version: String,
+    /// Registry endpoint (e.g. `https://registry.npmjs.org`).
+    pub registry: String,
+    /// Dist-tag the version was pushed under.
+    pub dist_tag: String,
+    /// Env var NAME the rollback path consults to re-resolve the token.
+    pub token_env_var: String,
+}
+
+/// Result of [`assemble_postinstall_tarball`] — the produced `.tgz` and the
+/// staging temp dir kept alive so the tarball stays on disk for `npm publish`.
+pub struct StagedTarball {
+    /// Staging temp dir holding the rendered package + tarball.
+    _staging: TempDir,
+    /// Path to the `<name>-<version>.tgz` inside the staging dir.
+    pub tarball_path: PathBuf,
+    /// Resolved package name (scoped or unscoped).
+    pub package: String,
+}
+
+/// Assemble the postinstall-mode npm tarball: write `package.json`,
+/// `postinstall.js`, `bin/<name>.js`, and any `extra_files` into a staging
+/// `package/` directory, then tar+gzip it. Every file is written with a fixed
+/// mode/mtime so repeated runs produce byte-identical tarballs.
+pub fn assemble_postinstall_tarball(
+    ctx: &Context,
+    cfg: &NpmConfig,
+    crate_name: &str,
+    version: &str,
+    binaries: &[PlatformBinary],
+) -> Result<StagedTarball> {
+    let staging = TempDir::new().context("npm: create staging dir")?;
+    let pkg_dir = staging.path().join("package");
+    fs::create_dir_all(&pkg_dir).context("npm: create package/ in staging dir")?;
+
+    let pkg_name = resolve_name(cfg, crate_name).to_string();
+    let pkg_json = render_package_json(ctx, cfg, &pkg_name, version, binaries)?;
+    write_deterministic(&pkg_dir.join("package.json"), pkg_json.as_bytes())?;
+
+    let postinstall = render_postinstall_js(&pkg_name);
+    write_deterministic(&pkg_dir.join("postinstall.js"), postinstall.as_bytes())?;
+
+    fs::create_dir_all(pkg_dir.join("bin")).context("npm: create package/bin in staging dir")?;
+    let launcher = render_launcher_js(&pkg_name);
+    let launcher_basename = pkg_name.rsplit('/').next().unwrap_or(&pkg_name);
+    write_deterministic(
+        &pkg_dir
+            .join("bin")
+            .join(format!("{}.js", launcher_basename)),
+        launcher.as_bytes(),
+    )?;
+
+    copy_extra_files(cfg, &pkg_dir)?;
+    render_templated_extra_files(ctx, cfg, &pkg_dir)?;
+
+    let tarball_name = format!("{}-{}.tgz", sanitize_tarball_basename(&pkg_name), version);
+    let tarball_path = staging.path().join(&tarball_name);
+    pack_tarball(&pkg_dir, &tarball_path)?;
+
+    Ok(StagedTarball {
+        _staging: staging,
+        tarball_path,
+        package: pkg_name,
+    })
+}
+
+/// Assemble one `optional-deps` package (per-platform OR metapackage) into a
+/// staging `package/` dir and pack it to a `.tgz`. Per-platform packages embed
+/// the binary at mode `0o755`; the metapackage embeds `shim.js`. `extra_files`
+/// (README/LICENSE) are copied into both.
+pub fn assemble_optional_deps_tarball(
+    ctx: &Context,
+    cfg: &NpmConfig,
+    pkg_name: &str,
+    version: &str,
+    package_json: &str,
+    embedded: &[(String, Vec<u8>, u32)],
+) -> Result<StagedTarball> {
+    let staging = TempDir::new().context("npm: create staging dir")?;
+    let pkg_dir = staging.path().join("package");
+    fs::create_dir_all(&pkg_dir).context("npm: create package/ in staging dir")?;
+
+    write_deterministic(&pkg_dir.join("package.json"), package_json.as_bytes())?;
+    for (name, bytes, mode) in embedded {
+        write_with_mode(&pkg_dir.join(name), bytes, *mode)?;
+    }
+    copy_extra_files(cfg, &pkg_dir)?;
+    render_templated_extra_files(ctx, cfg, &pkg_dir)?;
+
+    let tarball_name = format!("{}-{}.tgz", sanitize_tarball_basename(pkg_name), version);
+    let tarball_path = staging.path().join(&tarball_name);
+    pack_tarball(&pkg_dir, &tarball_path)?;
+
+    Ok(StagedTarball {
+        _staging: staging,
+        tarball_path,
+        package: pkg_name.to_string(),
+    })
+}
+
+/// Copy `extra_files`-matching files (README/LICENSE globs) into `pkg_dir`.
+fn copy_extra_files(cfg: &NpmConfig, pkg_dir: &Path) -> Result<()> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    for pattern in resolve_extra_files(cfg) {
+        let absolute_pattern = if Path::new(&pattern).is_absolute() {
+            pattern.clone()
+        } else {
+            cwd.join(&pattern).to_string_lossy().into_owned()
+        };
+        let entries = match glob::glob(&absolute_pattern) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            if !entry.is_file() {
+                continue;
+            }
+            let basename = match entry.file_name() {
+                Some(n) => n,
+                None => continue,
+            };
+            let dst = pkg_dir.join(basename);
+            let bytes = match fs::read(&entry) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            write_deterministic(&dst, &bytes)?;
+        }
+    }
+    Ok(())
+}
+
+/// Render `templated_extra_files` entries into `pkg_dir` via the shared
+/// template-file pipeline (skip / render-src / render-dst / traversal-reject).
+fn render_templated_extra_files(ctx: &Context, cfg: &NpmConfig, pkg_dir: &Path) -> Result<()> {
+    if let Some(specs) = cfg.templated_extra_files.as_ref() {
+        for (idx, spec) in specs.iter().enumerate() {
+            let bridged = npm_to_template_file_config(spec);
+            let label = format!("npm: templated_extra_files[{}]", idx);
+            let render = match render_templated_file_entry(ctx, &bridged, &label)? {
+                Some(r) => r,
+                None => continue,
+            };
+            let dst_path = pkg_dir.join(&render.rendered_dst);
+            write_deterministic(&dst_path, render.rendered_contents.as_bytes())?;
+        }
+    }
+    Ok(())
+}
+
+/// Encode a package name into a tarball-basename-safe form: scoped
+/// `@org/name` collapses to `org-name`, unscoped `name` stays as-is.
+fn sanitize_tarball_basename(pkg_name: &str) -> String {
+    if let Some(rest) = pkg_name.strip_prefix('@') {
+        rest.replace('/', "-")
+    } else {
+        pkg_name.to_string()
+    }
+}
+
+/// Bridge an [`NpmTemplatedExtraFile`] into the shared
+/// [`anodizer_core::config::TemplateFileConfig`] consumed by
+/// [`render_templated_file_entry`].
+fn npm_to_template_file_config(
+    spec: &NpmTemplatedExtraFile,
+) -> anodizer_core::config::TemplateFileConfig {
+    anodizer_core::config::TemplateFileConfig {
+        id: None,
+        src: spec.src.clone(),
+        dst: spec.dst.clone(),
+        mode: None,
+        skip: None,
+    }
+}
+
+/// Hard-error when an `archives:` block declares multiple `formats:` AND the
+/// postinstall publisher's own `format:` is unset — the postinstall script
+/// cannot pick which archive to download. Only relevant in postinstall mode.
+fn preflight_multi_format_unambiguous(
+    ctx: &Context,
+    cfg: &NpmConfig,
+    crate_name: &str,
+) -> Result<()> {
+    if cfg
+        .format
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+    {
+        return Ok(());
+    }
+    let id_filter = cfg.ids.as_ref();
+    for krate in &ctx.config.crates {
+        let matches = if let Some(ids) = id_filter {
+            ids.iter().any(|id| id == &krate.name)
+        } else {
+            krate.name == crate_name
+        };
+        if !matches {
+            continue;
+        }
+        let configs = match &krate.archives {
+            ArchivesConfig::Configs(c) => c,
+            ArchivesConfig::Disabled => continue,
+        };
+        for archive in configs {
+            let Some(formats) = archive.formats.as_ref() else {
+                continue;
+            };
+            if formats.len() > 1 {
+                bail!(
+                    "npm publisher for crate {}: archive has multiple formats {:?} \
+                     and npm publisher's `format:` is unset — set format: tgz \
+                     (or zip) explicitly",
+                    krate.name,
+                    formats
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Probe the registry for an existing `<name>@<version>` publication via
+/// `npm view`. Returns `Ok(true)` when already published, `Ok(false)` on
+/// `E404` or any other failure shape (so a transient glitch doesn't block).
+pub(crate) fn version_already_published(
+    name: &str,
+    version: &str,
+    cfg_dir: &Path,
+    registry: &str,
+) -> Result<bool> {
+    let mut cmd = Command::new("npm");
+    cmd.arg("view")
+        .arg(format!("{}@{}", name, version))
+        .arg("version")
+        .arg("--registry")
+        .arg(registry)
+        .arg("--userconfig")
+        .arg(cfg_dir.join(".npmrc"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let out = match cmd.output() {
+        Ok(o) => o,
+        Err(_) => return Ok(false),
+    };
+    if out.status.success() {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        return Ok(!stdout.trim().is_empty());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if stderr.contains("E404") {
+        return Ok(false);
+    }
+    Ok(false)
+}
+
+/// Classify an `npm publish` stderr blob as transient (worth retrying) vs.
+/// terminal: HTTP 5xx, ECONNRESET / ETIMEDOUT / EAI_AGAIN socket failures.
+fn is_transient_npm_publish_stderr(stderr: &str) -> bool {
+    let s = stderr.to_ascii_uppercase();
+    s.contains("5XX")
+        || s.contains("503")
+        || s.contains("502")
+        || s.contains("504")
+        || s.contains("ECONNRESET")
+        || s.contains("ETIMEDOUT")
+        || s.contains("EAI_AGAIN")
+}
+
+/// Write `bytes` to `path` with a deterministic mode (`.js` → `0o755`, else
+/// `0o644`) so the resulting `.tgz` is byte-identical across runs.
+fn write_deterministic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let is_js = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.ends_with(".js"))
+        .unwrap_or(false);
+    let mode = if is_js { 0o755 } else { 0o644 };
+    write_with_mode(path, bytes, mode)
+}
+
+/// Write `bytes` to `path` with an explicit unix mode.
+fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("npm: create parent of {}", path.display()))?;
+    }
+    let mut f =
+        fs::File::create(path).with_context(|| format!("npm: create {}", path.display()))?;
+    f.write_all(bytes)
+        .with_context(|| format!("npm: write {}", path.display()))?;
+    drop(f);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).ok();
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    Ok(())
+}
+
+/// Pack the `package/` directory into a `.tgz` with deterministic
+/// mtimes/modes (no subprocess).
+fn pack_tarball(pkg_dir: &Path, tarball_path: &Path) -> Result<()> {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    let f = fs::File::create(tarball_path)
+        .with_context(|| format!("npm: create tarball {}", tarball_path.display()))?;
+    let enc = GzEncoder::new(f, Compression::default());
+    let mut builder = tar::Builder::new(enc);
+    builder.mode(tar::HeaderMode::Deterministic);
+    builder
+        .append_dir_all("package", pkg_dir)
+        .context("npm: append package/ to tarball")?;
+    builder
+        .into_inner()
+        .context("npm: finalize tar builder")?
+        .finish()
+        .context("npm: finalize gzip stream")?;
+    Ok(())
+}
+
+/// Resolve the auth token: `cfg.token` (templated) precedence, then the
+/// `NPM_TOKEN` env var. Empty when both are unset — the caller surfaces a
+/// clear "missing token" error.
+pub(crate) fn resolve_token(ctx: &Context, cfg: &NpmConfig) -> Result<String> {
+    if let Some(raw) = cfg.token.as_deref()
+        && !raw.is_empty()
+    {
+        let rendered = ctx
+            .render_template(raw)
+            .context("npm: render token template")?;
+        if !rendered.is_empty() {
+            return Ok(rendered);
+        }
+    }
+    let env = ctx.env_source();
+    Ok(env.var(token_env_var(cfg)).unwrap_or_default().to_string())
+}
+
+/// Write a per-run `.npmrc` carrying `_authToken` for `registry` under
+/// `cfg_dir` (0600). The caller keeps `cfg_dir` alive across `npm publish`.
+pub(crate) fn write_npmrc(
+    cfg_dir: &Path,
+    registry: &str,
+    token: &str,
+    access: Option<&str>,
+) -> Result<PathBuf> {
+    let path = cfg_dir.join(".npmrc");
+    let registry_host = registry
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/');
+    let mut body = String::new();
+    body.push_str(&format!("registry={}\n", registry));
+    body.push_str(&format!("//{}/:_authToken={}\n", registry_host, token));
+    if let Some(a) = access {
+        body.push_str(&format!("access={}\n", a));
+    }
+    body.push_str("always-auth=true\n");
+    write_deterministic(&path, body.as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .context("npm: chmod .npmrc to 0600")?;
+    }
+    Ok(path)
+}
+
+/// Top-level publish entrypoint for one `npms[]` entry. Dispatches on
+/// [`NpmConfig::mode`]. Returns the pushed-package coordinates (one per
+/// published package), or an empty vec for every skip path.
+pub fn publish_to_npm(
+    ctx: &Context,
+    cfg: &NpmConfig,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Vec<NpmTarget>> {
+    if let Some(skip) = cfg.skip.as_ref() {
+        let off = skip
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .context("npm: render skip template")?;
+        if off {
+            log.status("npm: skipping — skip evaluates true");
+            return Ok(Vec::new());
+        }
+    }
+    if let Some(disable) = cfg.disable.as_ref() {
+        let off = disable
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .context("npm: render disable template")?;
+        if off {
+            log.status("npm: skipping — disable evaluates true");
+            return Ok(Vec::new());
+        }
+    }
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        cfg.if_condition.as_deref(),
+        "npm publisher",
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status("npm: skipping — `if` condition evaluated falsy");
+        return Ok(Vec::new());
+    }
+
+    match cfg.mode {
+        NpmMode::OptionalDeps => publish_optional_deps(ctx, cfg, crate_name, log),
+        NpmMode::Postinstall => publish_postinstall(ctx, cfg, crate_name, log),
+    }
+}
+
+/// `optional-deps` publish: pack + publish each per-platform package, then the
+/// metapackage last (so its `optionalDependencies` already resolve).
+fn publish_optional_deps(
+    ctx: &Context,
+    cfg: &NpmConfig,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Vec<NpmTarget>> {
+    let version = ctx.version();
+    let registry = resolve_registry(cfg);
+    let dist_tag = resolve_tag(cfg).to_string();
+    let access = resolve_access(cfg);
+
+    let layout = generate_layout(ctx, cfg, crate_name, &version)?;
+
+    if ctx.is_dry_run() {
+        log.status(&format!(
+            "(dry-run) would publish npm metapackage '{}@{}' + {} platform package(s) to {} (tag={})",
+            layout.metapackage,
+            version,
+            layout.platforms.len(),
+            registry,
+            dist_tag
+        ));
+        return Ok(Vec::new());
+    }
+
+    let token = resolve_token(ctx, cfg)?;
+    if token.is_empty() {
+        bail!(
+            "npm: NPM_TOKEN env var (or cfg.token) is required to publish '{}@{}' to {}",
+            layout.metapackage,
+            version,
+            registry
+        );
+    }
+    let cfg_dir = TempDir::new().context("npm: create .npmrc temp dir")?;
+    write_npmrc(cfg_dir.path(), &registry, &token, access.as_deref())?;
+
+    let mut targets: Vec<NpmTarget> = Vec::new();
+    let policy = ctx.retry_policy();
+
+    // Per-platform packages first so the metapackage's optionalDependencies
+    // resolve at install time.
+    for plat in &layout.platforms {
+        let binary = fs::read(&plat.binary_src)
+            .with_context(|| format!("npm: read binary {}", plat.binary_src.display()))?;
+        let embedded = vec![(plat.binary_name.clone(), binary, 0o755u32)];
+        let staged = assemble_optional_deps_tarball(
+            ctx,
+            cfg,
+            &plat.name,
+            &version,
+            &plat.package_json,
+            &embedded,
+        )?;
+        if let Some(t) = publish_one_tarball(
+            &staged,
+            &version,
+            &registry,
+            &dist_tag,
+            &access,
+            cfg_dir.path(),
+            &policy,
+            cfg,
+            log,
+        )? {
+            targets.push(t);
+        }
+    }
+
+    // Metapackage last.
+    let meta_embedded = vec![(
+        "shim.js".to_string(),
+        layout.shim_js.clone().into_bytes(),
+        0o755u32,
+    )];
+    let staged = assemble_optional_deps_tarball(
+        ctx,
+        cfg,
+        &layout.metapackage,
+        &version,
+        &layout.metapackage_json,
+        &meta_embedded,
+    )?;
+    if let Some(t) = publish_one_tarball(
+        &staged,
+        &version,
+        &registry,
+        &dist_tag,
+        &access,
+        cfg_dir.path(),
+        &policy,
+        cfg,
+        log,
+    )? {
+        targets.push(t);
+    }
+
+    Ok(targets)
+}
+
+/// `postinstall` publish: pack + publish a single download-shim package.
+fn publish_postinstall(
+    ctx: &Context,
+    cfg: &NpmConfig,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Vec<NpmTarget>> {
+    preflight_multi_format_unambiguous(ctx, cfg, crate_name)?;
+
+    let version = ctx.version();
+    let pkg_name = resolve_name(cfg, crate_name).to_string();
+    let registry = resolve_registry(cfg);
+    let dist_tag = resolve_tag(cfg).to_string();
+    let access = resolve_access(cfg);
+
+    let binaries = super::manifest::collect_platform_binaries(ctx, cfg, &pkg_name, &version)?;
+    if binaries.is_empty() {
+        log.warn(&format!(
+            "npm: '{}' has no archive artifacts matching any node platform/cpu pair; \
+             nothing to publish",
+            pkg_name
+        ));
+        return Ok(Vec::new());
+    }
+
+    let staged = assemble_postinstall_tarball(ctx, cfg, crate_name, &version, &binaries)?;
+
+    if ctx.is_dry_run() {
+        log.status(&format!(
+            "(dry-run) would publish npm package '{}@{}' to {} (tag={})",
+            staged.package, version, registry, dist_tag
+        ));
+        return Ok(Vec::new());
+    }
+
+    let token = resolve_token(ctx, cfg)?;
+    if token.is_empty() {
+        bail!(
+            "npm: NPM_TOKEN env var (or cfg.token) is required to publish '{}@{}' to {}",
+            staged.package,
+            version,
+            registry
+        );
+    }
+    let cfg_dir = TempDir::new().context("npm: create .npmrc temp dir")?;
+    write_npmrc(cfg_dir.path(), &registry, &token, access.as_deref())?;
+
+    let policy = ctx.retry_policy();
+    let mut targets = Vec::new();
+    if let Some(t) = publish_one_tarball(
+        &staged,
+        &version,
+        &registry,
+        &dist_tag,
+        &access,
+        cfg_dir.path(),
+        &policy,
+        cfg,
+        log,
+    )? {
+        targets.push(t);
+    }
+    Ok(targets)
+}
+
+/// Idempotently publish one staged tarball: short-circuit when the exact
+/// `<name>@<version>` already exists on the registry, else `npm publish` with
+/// retry. Returns the recorded [`NpmTarget`].
+#[allow(clippy::too_many_arguments)]
+fn publish_one_tarball(
+    staged: &StagedTarball,
+    version: &str,
+    registry: &str,
+    dist_tag: &str,
+    access: &Option<String>,
+    cfg_dir: &Path,
+    policy: &RetryPolicy,
+    cfg: &NpmConfig,
+    log: &StageLogger,
+) -> Result<Option<NpmTarget>> {
+    if version_already_published(&staged.package, version, cfg_dir, registry)? {
+        log.status(&format!(
+            "npm: '{}@{}' already published to {} — skipping (idempotent re-run)",
+            staged.package, version, registry
+        ));
+        return Ok(Some(NpmTarget {
+            package: staged.package.clone(),
+            version: version.to_string(),
+            registry: registry.to_string(),
+            dist_tag: dist_tag.to_string(),
+            token_env_var: token_env_var(cfg).to_string(),
+        }));
+    }
+
+    run_npm_publish(
+        &staged.tarball_path,
+        cfg_dir,
+        registry,
+        dist_tag,
+        access.as_deref(),
+        policy,
+        log,
+    )?;
+
+    Ok(Some(NpmTarget {
+        package: staged.package.clone(),
+        version: version.to_string(),
+        registry: registry.to_string(),
+        dist_tag: dist_tag.to_string(),
+        token_env_var: token_env_var(cfg).to_string(),
+    }))
+}
+
+/// `npm publish <tarball> --userconfig <.npmrc> --registry <url> --tag
+/// <dist_tag> [--access <a>]`, wrapped in [`retry_sync`]. Token is read from
+/// `.npmrc`, never argv. Transient registry failures retry; others break.
+fn run_npm_publish(
+    tarball: &Path,
+    cfg_dir: &Path,
+    registry: &str,
+    dist_tag: &str,
+    access: Option<&str>,
+    policy: &RetryPolicy,
+    log: &StageLogger,
+) -> Result<()> {
+    let max_attempts = policy.max_attempts.max(1);
+    retry_sync(policy, |attempt| {
+        if attempt > 1 {
+            log.warn(&format!(
+                "npm: publish attempt {}/{} failed (transient), retrying…",
+                attempt - 1,
+                max_attempts
+            ));
+        }
+        let mut cmd = Command::new("npm");
+        cmd.arg("publish")
+            .arg(tarball)
+            .arg("--userconfig")
+            .arg(cfg_dir.join(".npmrc"))
+            .arg("--registry")
+            .arg(registry)
+            .arg("--tag")
+            .arg(dist_tag);
+        if let Some(a) = access {
+            cmd.arg("--access").arg(a);
+        }
+        log.status(&format!(
+            "npm: publish {} --registry {} --tag {}",
+            tarball.display(),
+            registry,
+            dist_tag
+        ));
+        let out = match cmd.output() {
+            Ok(o) => o,
+            Err(e) => {
+                return Err(ControlFlow::Break(anyhow::Error::from(e).context(format!(
+                    "npm: invoke `npm publish` for {}",
+                    tarball.display()
+                ))));
+            }
+        };
+        if out.status.success() {
+            return Ok(());
+        }
+        let stderr_raw = String::from_utf8_lossy(&out.stderr);
+        let stderr_trimmed = stderr_raw.trim();
+        let err = anyhow::anyhow!(
+            "npm: `npm publish` exited with status {}: {}",
+            out.status,
+            anodizer_core::redact::redact_bearer_tokens(stderr_trimmed)
+        );
+        if is_transient_npm_publish_stderr(stderr_trimmed) {
+            Err(ControlFlow::Continue(err))
+        } else {
+            Err(ControlFlow::Break(err))
+        }
+    })
+}
+
+/// `npm unpublish <package>@<version> --force` invocation used by rollback.
+/// Within the 72h window this returns Ok; outside it npm returns non-zero and
+/// we surface the "cannot unpublish past 72h" error (warn-only at the caller).
+pub(crate) fn run_npm_unpublish(
+    package: &str,
+    version: &str,
+    cfg_dir: &Path,
+    registry: &str,
+    log: &StageLogger,
+) -> Result<()> {
+    let mut cmd = Command::new("npm");
+    cmd.arg("unpublish")
+        .arg(format!("{}@{}", package, version))
+        .arg("--userconfig")
+        .arg(cfg_dir.join(".npmrc"))
+        .arg("--registry")
+        .arg(registry)
+        .arg("--force");
+    log.status(&format!(
+        "npm: unpublish {}@{} --registry {}",
+        package, version, registry
+    ));
+    let out = cmd
+        .output()
+        .with_context(|| format!("npm: invoke `npm unpublish` for {}@{}", package, version))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!(
+            "npm: `npm unpublish` exited with status {}: {}",
+            out.status,
+            anodizer_core::redact::redact_bearer_tokens(stderr.trim())
+        );
+    }
+    Ok(())
+}

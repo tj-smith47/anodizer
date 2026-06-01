@@ -363,6 +363,17 @@
         }
       ]
     },
+    "npms": {
+      "description": "NPM package registry publishing configurations. One entry per published package. In the default `optional-deps` mode anodizer emits npm's native per-platform packages (biome / git-cliff pattern); in `postinstall` mode it emits a download shim (GoReleaser Pro `npms:` parity).",
+      "default": null,
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/definitions/NpmConfig"
+      }
+    },
     "partial": {
       "description": "Partial/split build configuration for fan-out CI pipelines.",
       "default": null,
@@ -9753,6 +9764,291 @@
               "type": "null"
             }
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NpmConfig": {
+      "description": "NPM package registry publisher configuration.\n\nIn the default `optional-deps` mode anodizer emits one thin npm package per built platform (with `os`/`cpu`/`libc` selectors derived from the target triple) plus a metapackage whose `optionalDependencies` lists every platform package; npm's native resolution installs only the one matching the host. In `postinstall` mode a single package carries a `postinstall` script that downloads the matching release archive at `npm install` time. Each `npms[]` entry produces one publish.",
+      "type": "object",
+      "properties": {
+        "access": {
+          "description": "NPM access level for scoped packages. Accepts `\"public\"` / `\"restricted\"`. Scoped packages on npmjs.org default to `restricted` unless this is set to `public`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "author": {
+          "description": "Templated `author` field for `package.json`. Falls back to `metadata.maintainers[0]` when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bin": {
+          "description": "Command name installed by the metapackage's `bin` map (`optional-deps` mode). Falls back to the metapackage basename when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bugs": {
+          "description": "Templated bug tracker URL. Emitted as `bugs.url` in `package.json`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "Templated package description. Falls back to the project-level `metadata.description` when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "disable": {
+          "description": "Disable this publisher entry. Mirrors GoReleaser Pro `npms[].disable:`. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "extra": {
+          "description": "Free-form root-level `package.json` fields. Shallow-merged into the generated `package.json`. Useful for `engines`, `mcpName`, or other npm metadata fields anodizer does not surface.",
+          "default": null,
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "extra_files": {
+          "description": "Additional files to include in the published package alongside the generated metadata. Default `[\"README*\", \"LICENSE*\"]` (applied at the `Default` pass).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "format": {
+          "description": "Archive format the `postinstall` script downloads (`tgz`, `tar.gz`, `zip`, `binary`). Default `tgz`. Only consulted in `postinstall` mode.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "homepage": {
+          "description": "Templated homepage URL. Falls back to `metadata.homepage` when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Unique identifier for selecting this entry from the CLI (`--id=...`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ids": {
+          "description": "Build IDs filter: only include artifacts whose archive `id` is in this list.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "if": {
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the NPM publisher entry is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `npms[].if:`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "keywords": {
+          "description": "NPM `keywords` list.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "libc_aware": {
+          "description": "In `optional-deps` mode, emit separate per-platform packages for linux `musl` vs `glibc` (distinguished by the npm `libc` selector). When `false`, a single linux package per cpu is emitted with no `libc` selector. Default `true` — musl and glibc binaries are not interchangeable, so collapsing them risks installing the wrong one.",
+          "default": true,
+          "type": "boolean"
+        },
+        "license": {
+          "description": "Templated SPDX license identifier (e.g. `MIT`, `Apache-2.0`). Falls back to `metadata.license` when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metapackage": {
+          "description": "Metapackage name for `optional-deps` mode (e.g. `biome`). This is the package users `npm install`; it lists every per-platform package under `optionalDependencies` and ships the `bin` shim. Falls back to `name` (or the crate name) when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "description": "Binary-distribution strategy. `optional-deps` (default) emits npm's native per-platform packages; `postinstall` emits a download shim (GoReleaser Pro parity).",
+          "default": "optional-deps",
+          "allOf": [
+            {
+              "$ref": "#/definitions/NpmMode"
+            }
+          ]
+        },
+        "name": {
+          "description": "NPM package name (the metapackage / postinstall package). May be scoped (`@org/foo`) or unscoped (`foo`). Falls back to the crate name when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "registry": {
+          "description": "Override the registry endpoint (default `https://registry.npmjs.org`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repository": {
+          "description": "Templated repository URL. Emitted as `repository.url` in `package.json` with `type: git`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required": {
+          "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `true` — NPM is a Manager-group publisher (one-way 72-hour unpublish window), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "scope": {
+          "description": "npm scope for the per-platform packages emitted in `optional-deps` mode (e.g. `@biomejs`). The per-platform packages are named `<scope>/<bin>-<os>-<cpu>[-<libc>]`. Required for `optional-deps` mode; ignored in `postinstall` mode.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip this publisher. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tag": {
+          "description": "NPM dist-tag for the publish (default `latest`). Templated.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "templated_extra_files": {
+          "description": "Template-rendered file mappings (`src` may be a glob; rendered contents written to `dst`).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/NpmTemplatedExtraFile"
+          }
+        },
+        "token": {
+          "description": "Auth token for the registry. Falls back to the `NPM_TOKEN` env var when unset. Stored in `.npmrc` as `//<registry>/:_authToken=...` at publish time and never passed via argv.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url_template": {
+          "description": "Override the download URL emitted into the postinstall script (templated). When unset, anodizer derives the URL from the release context. Only consulted in `postinstall` mode.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NpmMode": {
+      "description": "Binary-distribution strategy for an [`NpmConfig`] entry.\n\n`optional-deps` (the default for a Rust release) emits npm's native platform-resolution layout: one thin per-platform package whose `os`/`cpu`/`libc` selectors are derived from the built target triples, plus a metapackage that lists every platform package under `optionalDependencies` and ships a `bin` shim resolving the installed one via `require.resolve`. npm installs only the matching platform package; there is no download and no postinstall script. This is the pattern leading Rust CLIs ship binaries through npm with (biome, git-cliff).\n\n`postinstall` emits GoReleaser Pro's binary-via-npm shape: a single package carrying a `postinstall.js` shim that downloads + sha256-verifies the OS/arch-matching release archive at `npm install` time. Kept for GR-Pro parity.",
+      "oneOf": [
+        {
+          "description": "Emit per-platform packages + a metapackage with `optionalDependencies` and a `require.resolve` bin shim. npm's native `os`/`cpu`/`libc` resolution selects the right prebuilt package — no download, no postinstall. Default.",
+          "type": "string",
+          "enum": [
+            "optional-deps"
+          ]
+        },
+        {
+          "description": "Emit a single package with a `postinstall.js` shim that downloads and sha256-verifies the matching archive at install time (GoReleaser Pro parity).",
+          "type": "string",
+          "enum": [
+            "postinstall"
+          ]
+        }
+      ]
+    },
+    "NpmTemplatedExtraFile": {
+      "description": "Template-rendered file mapping for [`NpmConfig::templated_extra_files`].",
+      "type": "object",
+      "properties": {
+        "dst": {
+          "description": "Destination path inside the published package.",
+          "default": "",
+          "type": "string"
+        },
+        "src": {
+          "description": "Source path (may be a glob; relative to the project root).",
+          "default": "",
+          "type": "string"
         }
       },
       "additionalProperties": false
