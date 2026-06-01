@@ -47,6 +47,14 @@ pub fn cloudsmith_format_matches(filename: &str, formats: &[impl AsRef<str>]) ->
 /// Cloudsmith API base URL (used for files/create and packages/upload/*).
 const CLOUDSMITH_API_BASE: &str = "https://api.cloudsmith.io/v1";
 
+/// Resolve the Cloudsmith API base URL. Defaults to [`CLOUDSMITH_API_BASE`];
+/// `ANODIZE_CLOUDSMITH_API_BASE` overrides it so tests can point the 3-step
+/// upload flow at a local responder without a real network call. The env
+/// read is the only test seam — production runs never set the variable.
+fn cloudsmith_api_base() -> String {
+    std::env::var("ANODIZE_CLOUDSMITH_API_BASE").unwrap_or_else(|_| CLOUDSMITH_API_BASE.to_string())
+}
+
 /// Build the CloudSmith upload URL for the given org, repo, format, and distribution.
 ///
 /// Retained for dry-run logging parity with prior versions. The live code
@@ -224,6 +232,119 @@ where
             )
         },
     )
+}
+
+/// Stage a file for upload: request a `files/create` slot (step 1) and push
+/// the bytes to the returned S3 presigned URL (step 2). Returns the
+/// single-use `identifier` the caller passes to `packages/upload` (step 3).
+///
+/// A Cloudsmith files/create slot is consumed by exactly one package-create,
+/// so a caller uploading to N distributions must call this once per
+/// distribution to obtain N distinct identifiers.
+#[allow(clippy::too_many_arguments)]
+fn stage_cloudsmith_file(
+    client: &reqwest::blocking::Client,
+    api_base: &str,
+    organization: &str,
+    repository: &str,
+    art_name: &str,
+    md5_hex: &str,
+    file_bytes: &[u8],
+    token: &str,
+    policy: &RetryPolicy,
+    log: &StageLogger,
+) -> Result<String> {
+    // --- Step 1/3: request a files/create slot ---
+    //
+    // POST /v1/files/{org}/{repo}/ with the filename + md5 returns a
+    // short-lived S3 presigned upload URL plus the fields the upload POST
+    // must include. This matches what the official Cloudsmith CLI's
+    // `request_file_upload` helper does.
+    let files_create_url = format!("{}/files/{}/{}/", api_base, organization, repository);
+    let files_create_body = serde_json::json!({
+        "filename": art_name,
+        "md5_checksum": md5_hex,
+        "method": "post",
+    });
+
+    log.verbose(&format!("[step 1/3] POST {}", files_create_url));
+    let (_create_status, create_body) =
+        retry_request("files/create", art_name, policy, log, || {
+            client
+                .post(&files_create_url)
+                .header("Authorization", format!("token {}", token))
+                .header("Accept", "application/json")
+                .json(&files_create_body)
+                .send()
+        })?;
+    let create_json: serde_json::Value = serde_json::from_str(&create_body).with_context(|| {
+        format!(
+            "cloudsmith files/create for '{}' returned non-JSON body: {}",
+            art_name,
+            create_body.trim()
+        )
+    })?;
+    let identifier = create_json
+        .get("identifier")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "cloudsmith files/create response missing 'identifier' for '{}': {}",
+                art_name,
+                create_body.trim()
+            )
+        })?
+        .to_string();
+    let presigned_url = create_json
+        .get("upload_url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "cloudsmith files/create response missing 'upload_url' for '{}'",
+                art_name
+            )
+        })?
+        .to_string();
+    let upload_fields = create_json
+        .get("upload_fields")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    // --- Step 2/3: upload bytes to the presigned S3 URL ---
+    //
+    // The presigned URL is AWS S3 POST form — no Cloudsmith auth header is
+    // added here. The fields returned in step 1 (policy, signature, key, ...)
+    // MUST be included as multipart form text parts exactly as given, and the
+    // actual file goes under the `file` key (not `package_file`).
+    log.verbose(&format!("[step 2/3] POST {} (presigned)", presigned_url));
+    // Multipart Form is move-only, so we rebuild it on every retry attempt.
+    // Cloning `file_bytes` and `upload_fields` per-attempt is the price of
+    // retriability; the bytes are already in memory.
+    let _ = retry_request("presigned upload", art_name, policy, log, || {
+        let mut form = reqwest::blocking::multipart::Form::new();
+        for (k, v) in &upload_fields {
+            let val = v
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| v.to_string());
+            form = form.text(k.clone(), val);
+        }
+        let file_part = match reqwest::blocking::multipart::Part::bytes(file_bytes.to_vec())
+            .file_name(art_name.to_string())
+            .mime_str("application/octet-stream")
+        {
+            Ok(p) => p,
+            // `mime_str` only fails on unparsable MIME; the literal
+            // `"application/octet-stream"` is hard-coded and a valid RFC-2045
+            // token, so this arm is structurally unreachable.
+            Err(_) => unreachable!("application/octet-stream is a valid MIME type"),
+        };
+        form = form.part("file", file_part);
+        client.post(&presigned_url).multipart(form).send()
+    })?;
+
+    Ok(identifier)
 }
 
 // ---------------------------------------------------------------------------
@@ -498,10 +619,8 @@ pub(crate) fn publish_to_cloudsmith(
             // step-3 409-recovery path below can re-issue the same query
             // when an upload races against another concurrent CI loop
             // submitting the same package between pre-check and step-3.
-            let check_url = format!(
-                "{}/packages/{}/{}/",
-                CLOUDSMITH_API_BASE, organization, repository
-            );
+            let api_base = cloudsmith_api_base();
+            let check_url = format!("{}/packages/{}/{}/", api_base, organization, repository);
             let check_query = format!("filename:{}", art_name);
             if !republish {
                 match check_cloudsmith_package_exists(
@@ -562,106 +681,7 @@ pub(crate) fn publish_to_cloudsmith(
                 },
             ));
 
-            // --- Step 1/3: request a files/create slot ---
-            //
-            // POST /v1/files/{org}/{repo}/ with the filename + md5 returns
-            // a short-lived S3 presigned upload URL plus the fields the
-            // upload POST must include. This matches what the official
-            // Cloudsmith CLI's `request_file_upload` helper does.
-            let files_create_url = format!(
-                "{}/files/{}/{}/",
-                CLOUDSMITH_API_BASE, organization, repository
-            );
-            let files_create_body = serde_json::json!({
-                "filename": art_name,
-                "md5_checksum": md5_hex,
-                "method": "post",
-            });
-
-            log.verbose(&format!("[step 1/3] POST {}", files_create_url));
-            let (_create_status, create_body) =
-                retry_request("files/create", art_name, &policy, log, || {
-                    client
-                        .post(&files_create_url)
-                        .header("Authorization", format!("token {}", token))
-                        .header("Accept", "application/json")
-                        .json(&files_create_body)
-                        .send()
-                })?;
-            let create_json: serde_json::Value =
-                serde_json::from_str(&create_body).with_context(|| {
-                    format!(
-                        "cloudsmith files/create for '{}' returned non-JSON body: {}",
-                        art_name,
-                        create_body.trim()
-                    )
-                })?;
-            let identifier = create_json
-                .get("identifier")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "cloudsmith files/create response missing 'identifier' for '{}': {}",
-                        art_name,
-                        create_body.trim()
-                    )
-                })?
-                .to_string();
-            let presigned_url = create_json
-                .get("upload_url")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "cloudsmith files/create response missing 'upload_url' for '{}'",
-                        art_name
-                    )
-                })?
-                .to_string();
-            let upload_fields = create_json
-                .get("upload_fields")
-                .and_then(|v| v.as_object())
-                .cloned()
-                .unwrap_or_default();
-
-            // --- Step 2/3: upload bytes to the presigned S3 URL ---
-            //
-            // The presigned URL is AWS S3 POST form — no Cloudsmith auth
-            // header is added here. The fields returned in step 1 (policy,
-            // signature, key, ...) MUST be included as multipart form text
-            // parts exactly as given, and the actual file goes under the
-            // `file` key (not `package_file`).
-            log.verbose(&format!("[step 2/3] POST {} (presigned)", presigned_url));
-            // Multipart Form is move-only, so we rebuild it on every retry
-            // attempt. Cloning `file_bytes` and `upload_fields` per-attempt
-            // is the price of retriability; the bytes are already in memory.
-            let _ = retry_request("presigned upload", art_name, &policy, log, || {
-                let mut form = reqwest::blocking::multipart::Form::new();
-                for (k, v) in &upload_fields {
-                    let val = v
-                        .as_str()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| v.to_string());
-                    form = form.text(k.clone(), val);
-                }
-                let file_part = match reqwest::blocking::multipart::Part::bytes(file_bytes.clone())
-                    .file_name(art_name.to_string())
-                    .mime_str("application/octet-stream")
-                {
-                    Ok(p) => p,
-                    // `mime_str` only fails on unparsable MIME; the literal
-                    // `"application/octet-stream"` is hard-coded and a valid
-                    // RFC-2045 token, so this arm is structurally unreachable.
-                    // Use `unreachable!` (rather than the previous "synthesize
-                    // a transport error against `data:,`" hack) — that hack
-                    // produced spurious URL-scheme errors that masked real
-                    // bugs and tripped the anti-pattern hook on `unwrap_or`.
-                    Err(_) => unreachable!("application/octet-stream is a valid MIME type"),
-                };
-                form = form.part("file", file_part);
-                client.post(&presigned_url).multipart(form).send()
-            })?;
-
-            // --- Step 3/3: create the package record in the repo ---
+            // --- Step 3/3 prep: package-create URL + component gating ---
             //
             // POST /v1/packages/{org}/{repo}/upload/{format}/ with the
             // identifier + distribution tells Cloudsmith to take the
@@ -670,10 +690,14 @@ pub(crate) fn publish_to_cloudsmith(
             //
             // When multiple distributions are configured (GR Pro v2.8+
             // array form), step 3 is issued once per slug — CloudSmith's
-            // API accepts only one `distribution` per call.
+            // API accepts only one `distribution` per call. Each
+            // files/create slot (`identifier`) is consumed by a single
+            // package-create, so the file stage (steps 1+2) runs once PER
+            // distribution inside the loop — reusing one identifier across
+            // distributions 4xx's on the 2nd+ call (the slot is spent).
             let package_upload_url = format!(
                 "{}/packages/{}/{}/upload/{}/",
-                CLOUDSMITH_API_BASE, organization, repository, fmt
+                api_base, organization, repository, fmt
             );
             let component_for_format = component
                 .as_ref()
@@ -686,6 +710,22 @@ pub(crate) fn publish_to_cloudsmith(
             }
 
             for distro in &upload_slugs {
+                // Stage a fresh files/create slot + presigned upload for THIS
+                // distribution. The identifier is single-use, so every
+                // distribution needs its own.
+                let identifier = stage_cloudsmith_file(
+                    &client,
+                    &api_base,
+                    &organization,
+                    &repository,
+                    art_name,
+                    &md5_hex,
+                    &file_bytes,
+                    &token,
+                    &policy,
+                    log,
+                )?;
+
                 let mut package_body = serde_json::json!({
                     "package_file": identifier,
                 });
@@ -1557,6 +1597,126 @@ mod tests {
         assert!(
             chain.contains("<redacted>"),
             "expected `<redacted>` marker in error chain: {chain}"
+        );
+    }
+
+    /// Multi-distribution upload must stage a fresh files/create slot +
+    /// presigned upload PER distribution: a Cloudsmith identifier is consumed
+    /// by a single package-create, so reusing one across distributions makes
+    /// the 2nd+ package-create 4xx.
+    ///
+    /// Two distributions ⇒ each needs its own (files/create + presigned +
+    /// package-create) = 6 served connections. The bug (file stage hoisted
+    /// out of the loop) would serve only 4 (1 files/create + 1 presigned +
+    /// 2 package-creates). The connection count is the load-bearing assertion.
+    #[test]
+    #[serial_test::serial]
+    fn cloudsmith_multi_distribution_stages_one_file_per_distro() {
+        use anodizer_core::MapEnvSource;
+        use anodizer_core::config::CloudSmithDistributions;
+        use anodizer_core::log::{StageLogger, Verbosity};
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder_with;
+        use std::sync::atomic::Ordering;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let art_path = tmp.path().join("app_1.0.0_amd64.deb");
+        std::fs::write(&art_path, b"fake-deb-bytes").unwrap();
+
+        let http_json = |body: String| -> String {
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+        };
+        let presigned_ok = || "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n".to_string();
+
+        // Build the response queue AFTER the responder binds so the
+        // files/create `upload_url` can point the presigned upload (step 2)
+        // back at this same responder. Served one-per-connection, in order;
+        // per distribution the client opens three connections in sequence:
+        //   files/create -> presigned upload -> packages/upload.
+        let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+            let base = format!("http://{addr}");
+            let files_create = |id: &str| {
+                http_json(format!(
+                    r#"{{"identifier":"{id}","upload_url":"{base}/s3-presigned/","upload_fields":{{"key":"v"}}}}"#
+                ))
+            };
+            vec![
+                files_create("id-distro-1"),
+                presigned_ok(),
+                http_json(r#"{"slug_perm":"slug-1"}"#.to_string()),
+                files_create("id-distro-2"),
+                presigned_ok(),
+                http_json(r#"{"slug_perm":"slug-2"}"#.to_string()),
+            ]
+        });
+        let base = format!("http://{addr}");
+
+        let mut distros: HashMap<String, CloudSmithDistributions> = HashMap::new();
+        distros.insert(
+            "deb".to_string(),
+            CloudSmithDistributions::Multiple(vec![
+                "ubuntu/focal".to_string(),
+                "ubuntu/jammy".to_string(),
+            ]),
+        );
+
+        let mut config = Config::default();
+        config.project_name = "app".to_string();
+        config.cloudsmiths = Some(vec![CloudSmithConfig {
+            organization: Some("myorg".to_string()),
+            repository: Some("myrepo".to_string()),
+            distributions: Some(distros),
+            // republish=true skips the pre-check packages-list query so the
+            // response queue stays exactly the 3-per-distro upload sequence.
+            republish: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        }]);
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.set_env_source(
+            MapEnvSource::new()
+                .with("CLOUDSMITH_TOKEN", "fake-token")
+                .with("ANODIZE_CLOUDSMITH_API_BASE", &base),
+        );
+        // `cloudsmith_api_base()` reads the process env (not ctx.env_var),
+        // so the base override must be set there too. Serialized via #[serial].
+        unsafe {
+            std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base);
+        }
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::LinuxPackage,
+            name: "app_1.0.0_amd64.deb".to_string(),
+            path: art_path.clone(),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let log = StageLogger::new("cloudsmith", Verbosity::Quiet);
+        let result = publish_to_cloudsmith(&ctx, &log);
+
+        unsafe {
+            std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE");
+        }
+
+        let uploaded = result.expect("multi-distribution upload should succeed");
+        // One CloudsmithTarget recorded per distribution package-create.
+        assert_eq!(
+            uploaded.len(),
+            2,
+            "expected one recorded target per distribution, got {uploaded:?}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            6,
+            "two distributions must each stage their own file (3 connections \
+             each: files/create + presigned + package-create); a hoisted file \
+             stage would serve only 4"
         );
     }
 

@@ -138,6 +138,56 @@ pub fn spawn_oneshot_http_responder(responses: Vec<&'static str>) -> (SocketAddr
     (addr, counter)
 }
 
+/// Like [`spawn_oneshot_http_responder`], but the response queue is built
+/// AFTER the listener binds, via `make_responses(addr)`. Use this when a
+/// canned response must embed the responder's own URL — e.g. a Cloudsmith
+/// `files/create` body whose `upload_url` points the follow-up presigned
+/// upload back at this same responder.
+///
+/// Owned `String` responses (rather than `&'static str`) so the closure can
+/// `format!` the bound address in. Same one-per-connection serving + drain
+/// semantics and the same call counter (canned responses only).
+pub fn spawn_oneshot_http_responder_with<F>(make_responses: F) -> (SocketAddr, Arc<AtomicU32>)
+where
+    F: FnOnce(SocketAddr) -> Vec<String>,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local_addr");
+    let responses = make_responses(addr);
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_inner = counter.clone();
+
+    std::thread::spawn(move || {
+        for resp in responses.iter() {
+            let (stream, _) = match listener.accept() {
+                Ok(pair) => pair,
+                Err(_) => return,
+            };
+            counter_inner.fetch_add(1, Ordering::SeqCst);
+            serve_one(stream, resp);
+        }
+        let _ = listener.set_nonblocking(true);
+        let drain_deadline = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < drain_deadline {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
+                    serve_one(
+                        stream,
+                        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+                    );
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    (addr, counter)
+}
+
 /// Capture the first request bytes and reply with a canned response so a
 /// caller can assert specific headers were sent verbatim. Serves
 /// **exactly one** connection (no retry/drain phase) — pair with a test
