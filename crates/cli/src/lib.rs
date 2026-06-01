@@ -374,7 +374,7 @@ pub enum Commands {
         #[arg(
             long,
             conflicts_with = "push",
-            help = "Do not push the version-sync bump commit (push the tag only)"
+            help = "Push the tag only, leaving the version-sync bump commit local"
         )]
         no_push: bool,
         #[arg(
@@ -385,7 +385,7 @@ pub enum Commands {
         push_remote: Option<String>,
         #[arg(
             long,
-            help = "Print the git push commands that --push would run, without executing"
+            help = "Create the tag + bump commit locally but only print (not run) the git push commands --push would use; pass --dry-run to also preview tagging"
         )]
         push_dry_run: bool,
         /// `anodize tag rollback [...]` — failure-recovery counterpart.

@@ -18,9 +18,9 @@ pub struct TagOpts {
     pub default_bump: Option<String>,
     /// When set, select a specific crate's tag_template for tagging.
     pub crate_name: Option<String>,
-    /// Force-push the version-sync bump commit alongside the tag.
+    /// Push the version-sync bump commit to the release branch atomically with the tag.
     pub push: bool,
-    /// Suppress pushing the version-sync bump commit (push the tag only).
+    /// Do not push the version-sync bump commit; push the tag only (leaves the bump commit local).
     pub no_push: bool,
     /// Remote to push to; defaults to `origin` when unset.
     pub push_remote: Option<String>,
@@ -37,7 +37,7 @@ pub struct TagOpts {
 /// pushed alongside the tag.
 ///
 /// `--no-push` always wins; then an explicit `--push` or `tag.push = true`
-/// forces a branch push; otherwise the per-path default applies (`false` for
+/// selects a branch push; otherwise the per-path default applies (`false` for
 /// the single / lockstep / `--crate` paths, `true` for per-crate
 /// auto-dispatch, whose atomic branch+tags push is the long-standing default).
 fn resolve_effective_push(opts: &TagOpts, config_push: Option<bool>, path_default: bool) -> bool {
@@ -47,6 +47,23 @@ fn resolve_effective_push(opts: &TagOpts, config_push: Option<bool>, path_defaul
         true
     } else {
         path_default
+    }
+}
+
+/// Resolve the branch to push the bump commit to, or `None` when the bump
+/// commit should stay local (tag-only push).
+///
+/// Returns `Some(current_branch)` when [`resolve_effective_push`] selects a
+/// branch push for the given `path_default`; otherwise `None`.
+fn resolve_push_branch(
+    opts: &TagOpts,
+    config_push: Option<bool>,
+    path_default: bool,
+) -> Result<Option<String>> {
+    if resolve_effective_push(opts, config_push, path_default) {
+        Ok(Some(git::get_current_branch()?))
+    } else {
+        Ok(None)
     }
 }
 
@@ -205,8 +222,10 @@ pub fn run(opts: TagOpts) -> Result<()> {
                     &cfg,
                     git_config.as_ref(),
                     loaded_config.as_ref(),
-                    &remote,
-                    config_push,
+                    PushControls {
+                        remote: &remote,
+                        config_push,
+                    },
                     &log,
                 );
             }
@@ -254,17 +273,20 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // behavior pushes only the tag and leaves the bump commit local. `--push`,
     // `tag.push=true`, or `--push-dry-run` (preview) opt into also pushing the
     // bump commit (the branch HEAD) atomically with the tag.
-    let effective_push = resolve_effective_push(&opts, config_push, false);
+    //
     // `--push-dry-run` previews the push commands `--push` would run: treat it
     // as push-mode-on, but every `git push` is replaced by a "(dry-run) would
     // push …" log line.
-    let push_mode = effective_push || opts.push_dry_run;
+    let push_mode = resolve_effective_push(&opts, config_push, false) || opts.push_dry_run;
     let push_preview = opts.push_dry_run;
     let push_branch = if push_mode {
         Some(git::get_current_branch()?)
     } else {
         None
     };
+
+    // cwd is invariant for the command — bind once and reuse across every tag.
+    let cwd = std::env::current_dir()?;
 
     let create_tag = |tag: &str, message: &str, dry_run: bool, prev: Option<&str>| -> Result<()> {
         let mut tv = TemplateVars::new();
@@ -300,7 +322,6 @@ pub fn run(opts: TagOpts) -> Result<()> {
         // the tag locally but only prints the push commands).
         let push_dry = dry_run || push_preview;
 
-        let cwd = std::env::current_dir()?;
         if cfg.git_api_tagging {
             log.verbose("using GitHub API for tagging (git_api_tagging=true)");
             if push_mode {
@@ -309,12 +330,14 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 // now-pushed HEAD commit).
                 git::push_branch_and_tags_atomic_in(
                     &cwd,
-                    &remote,
-                    push_branch.as_deref(),
-                    &[],
-                    push_dry,
+                    &git::AtomicPushSpec {
+                        remote: &remote,
+                        branch: push_branch.as_deref(),
+                        tags: &[],
+                        dry_run: push_dry,
+                        strict,
+                    },
                     &log,
-                    strict,
                 )?;
             }
             git::create_tag_via_github_api(tag, message, dry_run, &log, strict)?;
@@ -324,12 +347,14 @@ pub fn run(opts: TagOpts) -> Result<()> {
             git::create_tag_local_only(&cwd, tag, message, dry_run, &log)?;
             git::push_branch_and_tags_atomic_in(
                 &cwd,
-                &remote,
-                push_branch.as_deref(),
-                std::slice::from_ref(&tag.to_string()),
-                push_dry,
+                &git::AtomicPushSpec {
+                    remote: &remote,
+                    branch: push_branch.as_deref(),
+                    tags: std::slice::from_ref(&tag.to_string()),
+                    dry_run: push_dry,
+                    strict,
+                },
                 &log,
-                strict,
             )?;
         } else {
             git::create_and_push_tag(tag, message, dry_run, &log, strict)?;
@@ -552,11 +577,12 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // CI, but the autotag job on that re-run no-ops because no new
     // release-worthy commits are present since the freshly-created tag
     // (see the conventional-commit gate in detect_bump).
+    let mut bump_commit_created = false;
     if let Some(ws) = workspace_info {
         let root = workspace_root_path
             .as_deref()
             .unwrap_or_else(|| Path::new("."));
-        apply_workspace_bump(root, ws, &new_version, opts.dry_run, &log)?;
+        bump_commit_created = apply_workspace_bump(root, ws, &new_version, opts.dry_run, &log)?;
     } else if let Some(ref path) = crate_path
         && version_sync_enabled
     {
@@ -624,6 +650,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 &files_to_stage,
                 &format!("chore: bump {} to {} [skip ci]", path, new_version),
             );
+            bump_commit_created = true;
         }
     }
 
@@ -639,6 +666,24 @@ pub fn run(opts: TagOpts) -> Result<()> {
         opts.dry_run,
         prev_for_hook,
     )?;
+
+    // When a version-sync bump commit was created but the branch will NOT be
+    // pushed, the freshly-pushed tag references a commit absent from the remote
+    // branch — the orphan footgun this feature exists to kill. Surface a gentle
+    // one-line hint on the implicit tag-only default; stay silent when the user
+    // explicitly chose --no-push (they acknowledged the tradeoff) or in any
+    // dry-run/preview mode (nothing was pushed).
+    if bump_commit_created
+        && push_branch.is_none()
+        && !opts.no_push
+        && !opts.dry_run
+        && !opts.push_dry_run
+    {
+        log.status(
+            "tagged a version-sync bump commit but left it local; \
+             pass --push to push the bump commit + tag atomically (or push the branch yourself)",
+        );
+    }
 
     let part_str = match bump {
         BumpKind::Major => "major",
@@ -661,13 +706,16 @@ pub fn run(opts: TagOpts) -> Result<()> {
 /// `[dependencies].*.version` pin for bumped crates. Then regenerates
 /// Cargo.lock and creates a single `chore(release): bump workspace → X`
 /// commit covering the edits.
+///
+/// Returns `true` when a bump commit was actually created, `false` when the
+/// workspace was already at the target (or in `dry_run`).
 fn apply_workspace_bump(
     workspace_root: &Path,
     ws: &WorkspaceInfo,
     new_version: &str,
     dry_run: bool,
     log: &StageLogger,
-) -> Result<()> {
+) -> Result<bool> {
     let rows: Vec<PlanRow> = ws
         .members
         .iter()
@@ -700,7 +748,7 @@ fn apply_workspace_bump(
             "workspace already at {}, nothing to sync",
             new_version
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     if dry_run {
@@ -709,7 +757,7 @@ fn apply_workspace_bump(
             rows.iter().filter(|r| r.level != BumpLevel::Skip).count(),
             new_version
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     apply_plan(workspace_root, &rows, false, log)?;
@@ -754,7 +802,7 @@ fn apply_workspace_bump(
     )?;
 
     log.status(&format!("workspace version-sync: bumped → {}", new_version));
-    Ok(())
+    Ok(true)
 }
 
 /// Resolve the config file path from CLI overrides or auto-detection.
@@ -995,17 +1043,24 @@ fn compute_per_crate_tags(
 /// Runs change detection → computes new tags for changed groups → writes one
 /// bump commit for all changed crates → creates all tags → pushes commit and
 /// tags atomically → emits `anodizer-output crates=[...]` line.
-#[allow(clippy::too_many_arguments)]
+/// Push-target controls threaded into the tagging paths: the remote name and
+/// the resolved `tag.push` config value (CLI flags on [`TagOpts`] override it).
+#[derive(Debug, Clone, Copy)]
+struct PushControls<'a> {
+    remote: &'a str,
+    config_push: Option<bool>,
+}
+
 fn run_per_crate_tag(
     groups: Vec<Vec<CrateConfig>>,
     opts: &TagOpts,
     cfg: &ResolvedConfig,
     git_config: Option<&GitConfig>,
     anodizer_config: Option<&anodizer_core::config::Config>,
-    remote: &str,
-    config_push: Option<bool>,
+    push: PushControls<'_>,
     log: &StageLogger,
 ) -> Result<()> {
+    let cwd = std::env::current_dir()?;
     let tag_results = compute_per_crate_tags(&groups, opts, cfg, git_config, anodizer_config, log)?;
 
     if tag_results.is_empty() {
@@ -1121,7 +1176,6 @@ fn run_per_crate_tag(
         )?;
 
         // Create all tags locally; push happens atomically below.
-        let cwd = std::env::current_dir()?;
         for group_result in &tag_results {
             for (tag, message) in &group_result.new_tags {
                 git::create_tag_local_only(&cwd, tag, message, false, log)?;
@@ -1153,22 +1207,18 @@ fn run_per_crate_tag(
     // Per-crate auto-dispatch defaults to pushing the bump commit + tags
     // atomically (path_default = true). `--no-push` pushes the tags only,
     // leaving the bump commit local; `--push-dry-run` previews the push.
-    let effective_push = resolve_effective_push(opts, config_push, true);
     let push_dry = opts.dry_run || opts.push_dry_run;
-    let cwd = std::env::current_dir()?;
-    let push_branch = if effective_push {
-        Some(git::get_current_branch()?)
-    } else {
-        None
-    };
+    let push_branch = resolve_push_branch(opts, push.config_push, true)?;
     git::push_branch_and_tags_atomic_in(
         &cwd,
-        remote,
-        push_branch.as_deref(),
-        &all_new_tags,
-        push_dry,
+        &git::AtomicPushSpec {
+            remote: push.remote,
+            branch: push_branch.as_deref(),
+            tags: &all_new_tags,
+            dry_run: push_dry,
+            strict: opts.strict,
+        },
         log,
-        opts.strict,
     )?;
 
     Ok(())
@@ -1467,6 +1517,57 @@ pub(crate) fn apply_bump(major: u64, minor: u64, patch: u64, bump: &BumpKind) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Push resolution tests ----
+
+    /// Build a `TagOpts` carrying only the two push toggles under test;
+    /// everything else is left at its inert default.
+    fn push_opts(push: bool, no_push: bool) -> TagOpts {
+        TagOpts {
+            dry_run: false,
+            custom_tag: None,
+            default_bump: None,
+            crate_name: None,
+            push,
+            no_push,
+            push_remote: None,
+            push_dry_run: false,
+            config_override: None,
+            verbose: false,
+            debug: false,
+            quiet: false,
+            strict: false,
+        }
+    }
+
+    #[test]
+    fn resolve_effective_push_matrix() {
+        // (push, no_push, config_push, path_default) -> expected
+        let cases: &[(bool, bool, Option<bool>, bool, bool)] = &[
+            // --no-push wins over everything.
+            (false, true, Some(true), true, false),
+            (true, true, Some(true), true, false), // (clap forbids push+no_push, but the resolver must still be safe)
+            (false, true, None, true, false),
+            // --push forces a branch push even on a false default.
+            (true, false, None, false, true),
+            // config push=true forces a branch push on a false default.
+            (false, false, Some(true), false, true),
+            // config push=false does not force; default passes through.
+            (false, false, Some(false), false, false),
+            (false, false, Some(false), true, true),
+            // No signal: the per-path default passes through (both polarities).
+            (false, false, None, false, false),
+            (false, false, None, true, true),
+        ];
+        for &(push, no_push, config_push, path_default, expected) in cases {
+            let opts = push_opts(push, no_push);
+            assert_eq!(
+                resolve_effective_push(&opts, config_push, path_default),
+                expected,
+                "push={push} no_push={no_push} config_push={config_push:?} path_default={path_default}"
+            );
+        }
+    }
 
     // ---- Bump detection tests ----
 

@@ -523,19 +523,28 @@ fn main() {
             Some(TagSub::Rollback {
                 sha,
                 dry_run: rb_dry_run,
-                no_push,
+                no_push: rb_no_push,
                 scope,
                 mode,
                 branch,
             }) => {
                 use commands::tag::rollback::{Mode, RollbackOpts, Scope};
                 (|| -> anyhow::Result<()> {
+                    // The --push family lives on the parent `tag` command, so
+                    // `tag rollback --push` parses but has no meaning here —
+                    // reject it loudly rather than silently ignoring it.
+                    if push || no_push || push_dry_run || push_remote.is_some() {
+                        anyhow::bail!(
+                            "the --push family (--push/--no-push/--push-remote/--push-dry-run) \
+                             applies to `anodizer tag`, not `tag rollback`"
+                        );
+                    }
                     let scope: Scope = scope.parse().map_err(anyhow::Error::msg)?;
                     let mode: Mode = mode.parse().map_err(anyhow::Error::msg)?;
                     commands::tag::rollback::run(RollbackOpts {
                         sha,
                         dry_run: rb_dry_run,
-                        no_push,
+                        no_push: rb_no_push,
                         scope,
                         mode,
                         branch,
