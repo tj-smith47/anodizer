@@ -92,49 +92,7 @@ pub fn spawn_oneshot_http_responder(responses: Vec<&'static str>) -> (SocketAddr
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
     let addr = listener.local_addr().expect("local_addr");
     let counter = Arc::new(AtomicU32::new(0));
-    let counter_inner = counter.clone();
-
-    std::thread::spawn(move || {
-        for resp in responses.iter() {
-            let (stream, _) = match listener.accept() {
-                Ok(pair) => pair,
-                Err(_) => return,
-            };
-            counter_inner.fetch_add(1, Ordering::SeqCst);
-            serve_one(stream, resp);
-        }
-        // Drain phase — soak up any in-flight connect attempts that the
-        // client may have initiated before its retry returned success.
-        // Without this, a stray SYN arriving after the listener is
-        // dropped sees `Connection refused (os error 111)` on Linux and
-        // the test goes flaky on slow CI runners. We keep accepting
-        // briefly and serve any straggler an empty 503; the client
-        // logic (which has already returned success) ignores it.
-        let _ = listener.set_nonblocking(true);
-        let drain_deadline = Instant::now() + Duration::from_millis(250);
-        while Instant::now() < drain_deadline {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    // Drain-phase connections are NOT counted: tests
-                    // pin `counter.load() == <canned attempts>` and an
-                    // over-eager client middleware (e.g. octocrab's
-                    // tower retry layer making extra connects beyond
-                    // the user-level retry policy) must not inflate
-                    // that assertion.
-                    let _ = stream.set_nonblocking(false);
-                    serve_one(
-                        stream,
-                        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
-                    );
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
+    spawn_serve_thread(listener, counter.clone(), responses);
     (addr, counter)
 }
 
@@ -155,16 +113,37 @@ where
     let addr = listener.local_addr().expect("local_addr");
     let responses = make_responses(addr);
     let counter = Arc::new(AtomicU32::new(0));
-    let counter_inner = counter.clone();
+    spawn_serve_thread(listener, counter.clone(), responses);
+    (addr, counter)
+}
 
+/// Serve `responses` one-per-connection (incrementing `counter` per canned
+/// response), then enter a drain phase. Generic over `AsRef<str>` so both
+/// the `&'static str` and owned-`String` spawners delegate here.
+///
+/// Drain phase — soak up any in-flight connect attempts that the client may
+/// have initiated before its retry returned success. Without this, a stray
+/// SYN arriving after the listener is dropped sees `Connection refused (os
+/// error 111)` on Linux and the test goes flaky on slow CI runners. We keep
+/// accepting briefly and serve any straggler an empty 503; the client logic
+/// (which has already returned success) ignores it. Drain-phase connections
+/// are NOT counted: tests pin `counter.load() == <canned attempts>` and an
+/// over-eager client middleware (e.g. octocrab's tower retry layer making
+/// extra connects beyond the user-level retry policy) must not inflate that
+/// assertion.
+fn spawn_serve_thread<R: AsRef<str> + Send + 'static>(
+    listener: TcpListener,
+    counter: Arc<AtomicU32>,
+    responses: Vec<R>,
+) {
     std::thread::spawn(move || {
         for resp in responses.iter() {
             let (stream, _) = match listener.accept() {
                 Ok(pair) => pair,
                 Err(_) => return,
             };
-            counter_inner.fetch_add(1, Ordering::SeqCst);
-            serve_one(stream, resp);
+            counter.fetch_add(1, Ordering::SeqCst);
+            serve_one(stream, resp.as_ref());
         }
         let _ = listener.set_nonblocking(true);
         let drain_deadline = Instant::now() + Duration::from_millis(250);
@@ -184,8 +163,6 @@ where
             }
         }
     });
-
-    (addr, counter)
 }
 
 /// Capture the first request bytes and reply with a canned response so a
