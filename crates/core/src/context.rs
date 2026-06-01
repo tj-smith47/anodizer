@@ -44,6 +44,7 @@ pub const VALID_RELEASE_SKIPS: &[&str] = &[
     "sign",
     "validate",
     "sbom",
+    "attest",
     "docker",
     "docker-sign",
     "winget",

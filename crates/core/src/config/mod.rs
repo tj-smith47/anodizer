@@ -170,6 +170,12 @@ pub struct Config {
     #[serde(default, deserialize_with = "deserialize_sboms")]
     #[schemars(schema_with = "sboms_schema")]
     pub sboms: Vec<SbomConfig>,
+    /// SLSA build-provenance / attestation configuration for binaries and
+    /// archives. In the default `subjects` mode, anodizer writes a subjects
+    /// manifest for `actions/attest-build-provenance`; in `emit` mode it
+    /// generates and signs a self-contained in-toto SLSA provenance statement.
+    /// When omitted (or `enabled: false`), the attestation stage is a no-op.
+    pub attestations: Option<AttestationConfig>,
     /// GitHub release configuration shared by all crates.
     pub release: Option<ReleaseConfig>,
     /// Custom GitHub API/upload/download URLs for GitHub Enterprise installations.
@@ -312,6 +318,7 @@ impl Default for Config {
             workspaces: None,
             source: None,
             sboms: Vec::new(),
+            attestations: None,
             release: None,
             github_urls: None,
             gitlab_urls: None,
@@ -1828,6 +1835,13 @@ pub use source::*;
 
 mod sbom;
 pub use sbom::*;
+
+// ---------------------------------------------------------------------------
+// AttestationConfig
+// ---------------------------------------------------------------------------
+
+mod attestation;
+pub use attestation::*;
 
 // ---------------------------------------------------------------------------
 // VersionSyncConfig

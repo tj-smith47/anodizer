@@ -1332,6 +1332,7 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodizer_stage_announce::AnnounceStage;
     use anodizer_stage_appbundle::AppBundleStage;
     use anodizer_stage_archive::ArchiveStage;
+    use anodizer_stage_attest::AttestStage;
     use anodizer_stage_blob::BlobStage;
     use anodizer_stage_build::BuildStage;
     use anodizer_stage_changelog::ChangelogStage;
@@ -1389,6 +1390,11 @@ pub fn build_release_pipeline() -> Pipeline {
 
     // ── Integrity ────────────────────────────────────────────────────────
     p.add(Box::new(ChecksumStage));
+    // AttestStage runs after Checksum (so subject digests reuse the computed
+    // sha256) and before Sign: in `emit` mode it registers the in-toto
+    // statement as an UploadableFile, which the following SignStage then signs
+    // and ReleaseStage uploads — no new signing path.
+    p.add(Box::new(AttestStage));
     p.add(Box::new(SignStage));
 
     // ── Publish ──────────────────────────────────────────────────────────
@@ -1495,6 +1501,7 @@ pub fn build_publish_pipeline() -> Pipeline {
 /// not re-run any artifact-producing stages.
 pub(crate) fn build_publish_only_pipeline() -> Pipeline {
     use anodizer_stage_announce::AnnounceStage;
+    use anodizer_stage_attest::AttestStage;
     use anodizer_stage_blob::BlobStage;
     use anodizer_stage_changelog::ChangelogStage;
     use anodizer_stage_checksum::ChecksumStage;
@@ -1513,6 +1520,12 @@ pub(crate) fn build_publish_only_pipeline() -> Pipeline {
     // schema requires. The recompute is byte-deterministic, so this
     // is idempotent across re-runs.
     p.add(Box::new(ChecksumStage));
+    // AttestStage re-derives the subjects manifest from the recomputed
+    // digests and re-registers the emit-mode in-toto statement (byte-stable,
+    // so its preserved upstream signature still matches) so ReleaseStage
+    // uploads both. The emit-mode statement is signed in the upstream harness
+    // run that produced the preserved dist; no re-sign happens here.
+    p.add(Box::new(AttestStage));
     p.add(Box::new(anodizer_core::hooks::BeforePublishStage));
     p.add(Box::new(ReleaseStage));
     // Docker build+sign land between the GitHub release and PublishStage:
@@ -1542,6 +1555,7 @@ pub fn build_merge_pipeline() -> Pipeline {
     use anodizer_stage_announce::AnnounceStage;
     use anodizer_stage_appbundle::AppBundleStage;
     use anodizer_stage_archive::ArchiveStage;
+    use anodizer_stage_attest::AttestStage;
     use anodizer_stage_blob::BlobStage;
     use anodizer_stage_changelog::ChangelogStage;
     use anodizer_stage_checksum::ChecksumStage;
@@ -1583,6 +1597,7 @@ pub fn build_merge_pipeline() -> Pipeline {
     p.add(Box::new(SbomStage));
     p.add(Box::new(TemplateFilesStage));
     p.add(Box::new(ChecksumStage));
+    p.add(Box::new(AttestStage));
     p.add(Box::new(SignStage));
     // Snapshot/dry-run emission validation; no-op in a real release.
     p.add(Box::new(EmissionValidateStage));
