@@ -7417,6 +7417,78 @@ crates:
     }
 }
 
+#[test]
+fn submitter_required_true_warns_on_defaults_publish_axis() {
+    // The submitter walker must cover the defaults.publish axis, not just
+    // crates[].publish — config-mode parity (defaults feed every crate).
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+defaults:
+  publish:
+    chocolatey:
+      required: true
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::submitter_required_warnings(&config);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected one warning for defaults.publish chocolatey, got: {:?}",
+        warnings
+    );
+    assert!(
+        warnings[0].contains("chocolatey"),
+        "expected chocolatey in warning, got: {}",
+        warnings[0]
+    );
+    assert!(
+        warnings[0].contains("defaults.publish"),
+        "expected defaults.publish location in warning, got: {}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn submitter_required_true_warns_on_workspace_crate_publish_axis() {
+    // The submitter walker must cover the workspaces[].crates[].publish axis
+    // — config-mode parity (workspace per-crate mode).
+    let yaml = r#"
+project_name: test
+crates: []
+workspaces:
+  - name: ws1
+    crates:
+      - name: a
+        path: "."
+        tag_template: "v{{ .Version }}"
+        publish:
+          winget:
+            required: true
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::submitter_required_warnings(&config);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected one warning for workspace crate winget, got: {:?}",
+        warnings
+    );
+    assert!(
+        warnings[0].contains("winget"),
+        "expected winget in warning, got: {}",
+        warnings[0]
+    );
+    assert!(
+        warnings[0].contains("workspaces[ws1].crates[a]"),
+        "expected workspace crate location in warning, got: {}",
+        warnings[0]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // warn_on_legacy_homebrew_formula — GR v2.16 deprecation of brews / publish.homebrew
 // ---------------------------------------------------------------------------
