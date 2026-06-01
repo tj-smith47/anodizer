@@ -1736,10 +1736,9 @@ pub fn warn_on_legacy_nfpm_builds(raw_yaml: &serde_yaml_ng::Value) {
 /// Detection is allow-listed by enclosing block key, NOT a blind tree walk,
 /// for two correctness reasons:
 ///   * `npm` and `gemfury` carry a *genuine, live* `disable:` field that is
-///     NOT an alias of `skip` (read at publish time in
-///     `stage-publish/src/{npm,gemfury}/publish.rs`). Warning on those would
-///     be wrong, so their block keys are deliberately absent from the
-///     allow-list.
+///     NOT an alias of `skip` (read at publish time), so writing `disable:`
+///     there is legitimate and must not be flagged. Their block keys are
+///     deliberately absent from the allow-list.
 ///   * Free-form string-keyed maps (`variables`, `derived_metadata`,
 ///     `build_args`, `labels`, `annotations`, `env`, header maps, …) let a
 ///     user legitimately name a key `disable`. Matching only when the key's
@@ -1748,9 +1747,9 @@ pub fn warn_on_legacy_nfpm_builds(raw_yaml: &serde_yaml_ng::Value) {
 ///     never an allow-listed block.
 ///
 /// Axis-agnostic: the enclosing block key is identical whether the block sits
-/// at the top level, under `defaults.publish.<block>`, under `crates[].<block>`,
-/// or under `workspaces[].crates[].publish.<block>`, so a single nearest-named-
-/// ancestor rule covers every placement.
+/// at the top level, under `defaults.<block>`, under `crates[].<block>`, or
+/// under `workspaces[].crates[].<block>`, so a single nearest-named-ancestor
+/// rule covers every placement.
 pub fn warn_on_legacy_disable_alias(raw_yaml: &serde_yaml_ng::Value) {
     for msg in legacy_disable_alias_warnings(raw_yaml) {
         tracing::warn!("{}", msg);
