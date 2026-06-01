@@ -1,33 +1,59 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: write
-  actions: read  # needed for cross-workflow artifact download
+  actions: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.repository }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  tag:
+    name: Auto-tag
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      sha: ${{ steps.tag.outputs.head-sha }}
+      tagged: ${{ steps.tag.outputs.tagged }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - id: tag
+        name: Auto-tag release
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          from-artifact: anodizer-linux
+          artifact-workflow: ci.yml
+          artifact-run-id: auto
+          args: tag --push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   determinism-check:
     name: Determinism Harness (${{ matrix.shard }})
-    # The harness is also the build step on a tag-push run. With
-    # `preserve-dist: true` and the action's `--no-snapshot` shim on
-    # tag refs, run-0 of each shard's worktree produces byte-stable
-    # artifacts named with the actual release version. Those bytes are
-    # uploaded under `dist-<shard>` and consumed downstream by the
-    # `release:` job's `--publish-only` step — eliminating a separate
-    # recompile job. Shard the matrix per-target when a runner's
-    # cross-compile combo is the critical path; otherwise group the
-    # targets that a runner can natively build into one shard.
+    needs: tag
+    if: needs.tag.result == 'success' && needs.tag.outputs.tagged == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -46,9 +72,9 @@ jobs:
             targets: 'aarch64-pc-windows-msvc'
     runs-on: ${{ matrix.os }}
     steps:
-      # Shallow clone is sufficient: the harness only reads HEAD's
-      # commit hash + timestamp.
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.tag.outputs.sha }}
       - uses: tj-smith47/anodizer-action@v1
         with:
           determinism: true
@@ -58,11 +84,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
-      # Upload the byte-stable dist tree on green so the `release:`
-      # job can ship it via `--publish-only`. `if: success()` is the
-      # load-bearing invariant: a drift-failed shard MUST NOT upload
-      # preserved bytes — shippable artifacts may only ever originate
-      # from a green determinism run.
       - name: Upload dist artifacts
         if: success()
         uses: actions/upload-artifact@v4
@@ -71,9 +92,6 @@ jobs:
           path: preserved-dist/
           if-no-files-found: error
 
-      # Preserve the harness report even when this job fails. Without
-      # this, a drift failure loses the `differing_bytes_summary` and
-      # `drift-bins` diagnostic the moment the run's artifacts expire.
       - name: Upload determinism report
         if: always()
         uses: actions/upload-artifact@v4
@@ -86,7 +104,8 @@ jobs:
 
   release:
     name: Publish Release
-    needs: determinism-check
+    needs: [tag, determinism-check]
+    if: needs.tag.result == 'success' && needs.tag.outputs.tagged == 'true' && needs.determinism-check.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -97,6 +116,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ needs.tag.outputs.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -108,10 +128,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Download every shard's preserved dist into dist/. `merge-multiple:
-      # true` flattens them on top of each other; the action renames each
-      # shard's `context.json` / `artifacts.json` with a `-<shard>` suffix
-      # at upload time so no two files collide.
       - name: Download preserved dist artifacts
         uses: actions/download-artifact@v4
         with:
@@ -130,8 +146,6 @@ jobs:
           printf 'Found %d preserved-dist context manifest(s):\n' "${#files[@]}"
           printf '  %s\n' "${files[@]}"
 
-      # `fail-fast: false` above allows one drift failure to leave the
-      # other shards green. Reject a partial dist tree before signing.
       - name: Assert all shards present
         run: |
           set -euo pipefail
@@ -173,13 +187,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: anodizer tag rollback "$GITHUB_SHA"
+        run: anodizer tag rollback "${{ needs.tag.outputs.sha }}"
 
       - name: Upload run summary
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: run-summary-${{ github.sha }}
+          name: run-summary-${{ needs.tag.outputs.sha }}
           path: |
             dist/run-*/summary.json
             dist/run-*/determinism.json
