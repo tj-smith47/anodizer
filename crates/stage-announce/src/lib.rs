@@ -25,6 +25,7 @@ mod util;
 pub mod webhook;
 
 // Stage orchestration — extracted by the lib.rs carve.
+mod announcers;
 mod dispatch;
 mod helpers;
 mod run;
