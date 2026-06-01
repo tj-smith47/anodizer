@@ -431,7 +431,7 @@ pub fn create_and_push_tag_in(
 ///
 /// Writes `git tag -a <tag> -m <message>` in `cwd`. Does NOT push. The caller
 /// is responsible for pushing all tags (typically atomically via
-/// [`push_branch_and_tags_atomic`]).
+/// [`push_branch_and_tags_atomic_in`]).
 pub fn create_tag_local_only(
     cwd: &Path,
     tag: &str,
@@ -838,58 +838,59 @@ pub fn delete_remote_tag_in(cwd: &Path, tag: &str) -> Result<()> {
     Ok(())
 }
 
-/// Push `branch` and all `tags` to `origin` in a single atomic operation.
+/// Inputs to [`push_branch_and_tags_atomic_in`].
 ///
-/// Uses `git push --atomic origin <branch> <tag1> <tag2> …`. When
-/// `dry_run` is true, logs what would happen without executing. When no
-/// origin remote exists and `strict` is true, returns an error; otherwise
-/// logs a warning and returns `Ok(())`.
+/// Groups the push target (`remote` + optional `branch`), the `tags` to push,
+/// and the `dry_run` / `strict` toggles so the public helper reads cleanly at
+/// call sites instead of carrying a long positional argument list.
 ///
-/// Thin wrapper over [`push_branch_and_tags_atomic_in`] pinned to
-/// `remote = "origin"` and `branch = Some(branch)`.
-pub fn push_branch_and_tags_atomic(
-    branch: &str,
-    tags: &[String],
-    dry_run: bool,
-    log: &crate::log::StageLogger,
-    strict: bool,
-) -> Result<()> {
-    push_branch_and_tags_atomic_in(
-        &std::env::current_dir()?,
-        "origin",
-        Some(branch),
-        tags,
-        dry_run,
-        log,
-        strict,
-    )
-}
-
-/// Push an optional `branch` and all `tags` to `remote` atomically.
-///
-/// Ref combinations:
+/// Ref combinations the helper accepts:
 /// - `branch = Some` + non-empty `tags` → `git push --atomic <remote> HEAD:refs/heads/<branch> <tags…>`
 /// - `branch = Some` + empty `tags` → `git push <remote> HEAD:refs/heads/<branch>`
 /// - `branch = None` + non-empty `tags` → `git push --atomic <remote> <tags…>`
 /// - `branch = None` + empty `tags` → no-op (logs a warning)
+#[derive(Debug, Clone)]
+pub struct AtomicPushSpec<'a> {
+    /// Remote name to push to (e.g. `"origin"`).
+    pub remote: &'a str,
+    /// Branch to push HEAD to as `refs/heads/<branch>`, or `None` to push tags only.
+    pub branch: Option<&'a str>,
+    /// Tags to push.
+    pub tags: &'a [String],
+    /// When true, log the would-run push instead of executing it.
+    pub dry_run: bool,
+    /// When true, a missing remote is an error rather than a skipped no-op.
+    pub strict: bool,
+}
+
+/// Push an optional `branch` and all `tags` to a `remote` atomically.
 ///
-/// When `dry_run` is true, logs what would happen without executing. When the
-/// `remote` does not exist and `strict` is true, returns an error; otherwise
-/// logs a warning and returns `Ok(())`.
+/// See [`AtomicPushSpec`] for the accepted ref combinations.
+///
+/// When `spec.dry_run` is true, logs what would happen without executing. When
+/// the remote does not exist and `spec.strict` is true, returns an error;
+/// otherwise logs a warning and returns `Ok(())`.
 ///
 /// HEAD is pushed to `refs/heads/<branch>` (rather than `<branch>` alone) so
 /// detached-HEAD checkouts (notably `actions/checkout@v4` with `ref: <sha>`)
 /// work without a local branch ref.
-#[allow(clippy::too_many_arguments)]
+///
+/// A non-fast-forward rejection — the most likely failure when pushing a
+/// version-sync bump commit — is rewrapped with an actionable message before
+/// the raw (redacted) git output.
 pub fn push_branch_and_tags_atomic_in(
     cwd: &Path,
-    remote: &str,
-    branch: Option<&str>,
-    tags: &[String],
-    dry_run: bool,
+    spec: &AtomicPushSpec<'_>,
     log: &crate::log::StageLogger,
-    strict: bool,
 ) -> Result<()> {
+    let AtomicPushSpec {
+        remote,
+        branch,
+        tags,
+        dry_run,
+        strict,
+    } = *spec;
+
     if dry_run {
         let tag_list = tags.join(", ");
         match branch {
@@ -931,14 +932,16 @@ pub fn push_branch_and_tags_atomic_in(
     // plain branch push. --atomic with a single ref is valid git syntax but
     // misleading in log output and unnecessary for atomicity guarantees.
     if tags.is_empty() {
-        let b = branch.expect("branch is Some when tags is empty (checked above)");
+        let Some(b) = branch else {
+            // branch=None + tags empty is rejected by the guard above.
+            unreachable!("branch is Some whenever tags is empty (guarded above)")
+        };
         log.verbose(&format!(
             "no tags to push; pushing branch '{}' to '{}' without --atomic",
             b, remote
         ));
         let head_refspec = format!("HEAD:refs/heads/{}", b);
-        git_output_in(cwd, &["push", remote, &head_refspec])?;
-        return Ok(());
+        return push_with_ff_hint(cwd, &["push", remote, &head_refspec], remote, branch);
     }
 
     let head_refspec = branch.map(|b| format!("HEAD:refs/heads/{}", b));
@@ -949,8 +952,36 @@ pub fn push_branch_and_tags_atomic_in(
     for tag in tags {
         args.push(tag.as_str());
     }
-    git_output_in(cwd, &args)?;
-    Ok(())
+    push_with_ff_hint(cwd, &args, remote, branch)
+}
+
+/// Run a `git push …` invocation and, on a non-fast-forward rejection, prepend
+/// an actionable hint before the raw (already-redacted) git error.
+///
+/// `branch` names the release branch in the hint when known; falls back to a
+/// generic ref message when pushing tags only.
+fn push_with_ff_hint(cwd: &Path, args: &[&str], remote: &str, branch: Option<&str>) -> Result<()> {
+    match git_output_in(cwd, args) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let raw = e.to_string();
+            // `! [rejected]` / `non-fast-forward` are git's stable English
+            // markers for a stale-ref rejection (`LC_ALL=C` is pinned on the
+            // spawn, so the wording does not localize).
+            if raw.contains("[rejected]") || raw.contains("non-fast-forward") {
+                let target = match branch {
+                    Some(b) => format!("{remote}/{b}"),
+                    None => format!("a tag ref on '{remote}'"),
+                };
+                anyhow::bail!(
+                    "push rejected (non-fast-forward): {target} moved since checkout. \
+                     Pull/rebase the release branch and re-run, or drop --push to push \
+                     the tag only.\n{raw}"
+                );
+            }
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]
