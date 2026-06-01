@@ -29,10 +29,24 @@ so neither an orphan tag nor an orphan commit can ever exist on the remote.
 | `--push` | Push the bump commit (branch HEAD) atomically with the tag |
 | `--no-push` | Push the tag only; leave the bump commit local (the per-crate path's opt-out, since it pushes branch+tags by default) |
 | `--push-remote <name>` | Push to `<name>` instead of `origin` |
-| `--push-dry-run` | Print the `git push` commands `--push` would run, without executing |
+| `--push-dry-run` | Create the tag + bump commit locally, but only **print** the `git push` commands `--push` would run instead of executing them |
 
 `tag.push: true` in config is the persistent equivalent of `--push`; the CLI
 flags override it per invocation.
+
+`--push-dry-run` vs `--dry-run`: `--dry-run` previews the whole run, touching
+nothing (no bump commit, no tag, no push). `--push-dry-run` is narrower — it
+still creates the tag and the version-sync bump commit **locally**, then prints
+the `git push …` commands the push step would run rather than executing them.
+Use it to confirm exactly which refs `--push` would publish (and to which
+remote) before you commit to the push; combine with `--dry-run` to preview the
+tagging too.
+
+A non-fast-forward rejection is the most likely `--push` failure (someone
+pushed to the release branch after your checkout). Because the push is atomic,
+neither the branch nor the tag lands when it's rejected, and the error names
+the stale ref and tells you to pull/rebase and re-run (or drop `--push` to
+publish the tag only).
 
 ## Commit message directives
 

@@ -186,6 +186,9 @@ jobs:
         uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: anodizer-linux
-          args: tag
+          # --push lands the version-sync bump commit on master atomically with
+          # the tag, so the tag never references a commit missing from the
+          # branch (anodizer dogfooding its own tag --push).
+          args: tag --push
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}

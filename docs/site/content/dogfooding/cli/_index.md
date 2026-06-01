@@ -21,8 +21,9 @@ and [cfgd's `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.githu
 # anodizer ci.yml — snapshot dry-run on every master push
 args: release --snapshot --single-target --clean --dry-run
 
-# anodizer ci.yml — auto-tag from commit directives on master
-args: tag
+# anodizer ci.yml — auto-tag from commit directives on master; --push lands
+# the version-sync bump commit on master atomically with the tag.
+args: tag --push
 
 # anodizer release.yml — determinism shard runs the build pipeline,
 # preserves dist/, then the release job calls release --publish-only.
@@ -44,7 +45,7 @@ args: release --verbose --debug --strict --split --clean --crate ${{ needs.resol
 | `completion` | ✅ Verified | [`crates/cli/src/commands/completion.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/completion.rs) |
 | `jsonschema` | ✅ Verified | [`docs.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/docs.yml) regenerates [`schema.json`](https://github.com/tj-smith47/anodizer/blob/master/docs/site/static/schema.json) via `anodizer jsonschema` |
 | `healthcheck` | ✅ Verified | [`crates/cli/src/commands/healthcheck.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/healthcheck.rs) |
-| `tag` | ✅ Verified | [anodizer `ci.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/ci.yml) (`args: tag` step on master pushes) |
+| `tag` | ✅ Verified | [anodizer `ci.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/ci.yml) (`args: tag --push` step on master pushes the bump commit + tag atomically) |
 | `tag rollback` | ⏳ Pending | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) wires `anodizer tag rollback "$GITHUB_SHA"` as the `if: (failure() \|\| cancelled())` step on the release job. Awaits the next release cycle that hits the failure path |
 | `targets --json` | ✅ Verified | Consumed by [anodizer-action](https://github.com/tj-smith47/anodizer-action) as a matrix input |
 | `resolve-tag` | ✅ Verified | [cfgd `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml) (`resolve-workspace: 'true'` invokes `anodizer resolve-tag`) |
@@ -59,6 +60,7 @@ args: release --verbose --debug --strict --split --clean --crate ${{ needs.resol
 | Flag | Status | Notes |
 |---|---|---|
 | `--single-target` | ✅ Verified | [anodizer `ci.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/ci.yml) (`args: release --snapshot --single-target --clean --dry-run`) |
+| `tag --push` | ✅ Verified | [anodizer `ci.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/ci.yml) (Auto-tag step runs `tag --push` so anodizer's own lockstep self-release lands the version-sync bump commit on master atomically with the tag — no orphaned bump commit) |
 | `--split` | ✅ Verified | [`crates/cli/src/commands/release/split.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/release/split.rs) (cfgd's `release.yml` uses it for per-OS split build) |
 | `--merge` | ✅ Verified | [`crates/cli/src/commands/release/mod.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/release/mod.rs) (merge counterpart to `--split`) |
 | `--publish-only` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (`args: release --publish-only`) |

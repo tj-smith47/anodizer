@@ -201,9 +201,9 @@ Auto-tag based on commit message directives
 | `--default-bump` | — | — | Override default bump type (patch/minor/major) |
 | `--crate` | — | — | Tag a specific crate in a workspace |
 | `--push` | — | — | Push the version-sync bump commit to the release branch atomically with the tag |
-| `--no-push` | — | — | Do not push the version-sync bump commit (push the tag only) |
+| `--no-push` | — | — | Push the tag only, leaving the version-sync bump commit local |
 | `--push-remote` | — | — | Remote to push to (default: origin) |
-| `--push-dry-run` | — | — | Print the git push commands that --push would run, without executing |
+| `--push-dry-run` | — | — | Create the tag + bump commit locally but only print (not run) the git push commands --push would use; pass --dry-run to also preview tagging |
 
 
 ### `anodizer tag rollback`
