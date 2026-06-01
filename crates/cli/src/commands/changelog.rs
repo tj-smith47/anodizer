@@ -78,6 +78,11 @@ pub fn run(opts: ChangelogOpts) -> Result<()> {
         debug,
         selected_crates,
         snapshot,
+        // `--from` is the explicit range start. Carried as a dedicated option
+        // so the changelog stage overrides its auto-discovered previous tag
+        // only when the user supplied one (the always-auto-populated
+        // `PreviousTag` template var cannot signal "user asked for this").
+        changelog_from: from.clone(),
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
@@ -90,9 +95,11 @@ pub fn run(opts: ChangelogOpts) -> Result<()> {
 
     // Apply --from / --to overrides AFTER `resolve_git_context` has filled
     // the default `Tag` / `PreviousTag` so the user override wins. `--to`
-    // becomes `Tag` (the upper bound of the range) and `--from` becomes
-    // `PreviousTag` (the lower bound — matches the changelog stage's
-    // `find_latest_tag_matching_with_prefix` semantics).
+    // becomes `Tag` (the upper bound of the range — the stage reads `Tag`
+    // directly). `--from` sets `PreviousTag` here only so header/footer
+    // templates that reference it see the override; the range-start that
+    // actually drives commit collection flows via `ctx_opts.changelog_from`
+    // (the template var alone never reached the stage's range computation).
     if let Some(ref t) = to {
         ctx.template_vars_mut().set("Tag", t);
     }

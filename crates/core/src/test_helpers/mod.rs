@@ -143,6 +143,7 @@ pub struct TestContextBuilder {
     sboms: Vec<crate::config::SbomConfig>,
     project_root: Option<PathBuf>,
     env_overrides: Vec<(String, String)>,
+    changelog_from: Option<String>,
 }
 
 impl Default for TestContextBuilder {
@@ -185,6 +186,7 @@ impl Default for TestContextBuilder {
             sboms: Vec::new(),
             project_root: None,
             env_overrides: Vec::new(),
+            changelog_from: None,
         }
     }
 }
@@ -363,6 +365,12 @@ impl TestContextBuilder {
         self
     }
 
+    /// Set the explicit changelog range start (`changelog --from <ref>`).
+    pub fn changelog_from(mut self, from: Option<&str>) -> Self {
+        self.changelog_from = from.map(str::to_string);
+        self
+    }
+
     /// Add an environment variable override. Calling [`env`](Self::env)
     /// at least once swaps the built context's env source to a
     /// [`MapEnvSource`](crate::MapEnvSource) seeded from the
@@ -423,6 +431,7 @@ impl TestContextBuilder {
             runtime_nondeterministic_allowlist: Vec::new(),
             summary_json_path: None,
             allow_ai_failure: false,
+            changelog_from: self.changelog_from,
         };
 
         let mut ctx = Context::new(config, options);

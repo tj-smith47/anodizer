@@ -225,6 +225,13 @@ pub struct ContextOptions {
     /// "any hook failure aborts" pattern: a silent fall-back to the
     /// raw notes ships the wrong body without the operator noticing.
     pub allow_ai_failure: bool,
+    /// `changelog --from <ref>`: explicit lower bound (range start) for
+    /// changelog commit collection. When set, the changelog stage uses this
+    /// ref as the previous tag instead of auto-discovering the latest matching
+    /// tag. A dedicated option (rather than the always-auto-populated
+    /// `PreviousTag` template var) so a full release run's per-crate
+    /// auto-discovery is never overridden — only an explicit `--from` is.
+    pub changelog_from: Option<String>,
 }
 
 impl Default for ContextOptions {
@@ -260,6 +267,7 @@ impl Default for ContextOptions {
             runtime_nondeterministic_allowlist: Vec::new(),
             summary_json_path: None,
             allow_ai_failure: false,
+            changelog_from: None,
         }
     }
 }

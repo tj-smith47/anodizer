@@ -2647,6 +2647,109 @@ crates:
     );
 }
 
+/// `anodizer changelog --from <ref>` must use `<ref>` as the range START,
+/// overriding the auto-discovered latest matching tag. Regression guard for
+/// the dead `--from` flag: the stage previously recomputed the previous tag
+/// unconditionally and ignored the supplied range start.
+#[test]
+fn changelog_from_overrides_auto_discovered_previous_tag() {
+    let tmp = TempDir::new().unwrap();
+
+    create_test_project(tmp.path());
+
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(tmp.path())
+            .output()
+            .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    let config = r#"project_name: test-project
+changelog:
+  snapshot: true
+  sort: asc
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    create_config(tmp.path(), config);
+
+    git(&["init"]);
+    git(&["config", "user.email", "test@test.com"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "initial"]);
+    git(&["tag", "v0.1.0"]);
+
+    // Commit that lives BETWEEN v0.1.0 and v0.2.0. It is in range only when
+    // the range starts at v0.1.0 — auto-discovery (latest tag = v0.2.0) drops it.
+    fs::write(tmp.path().join("src/main.rs"), "fn main() { /* a */ }").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "feat: between-tags feature"]);
+    git(&["tag", "v0.2.0"]);
+
+    // Commit AFTER v0.2.0 — always in range regardless of `--from`.
+    fs::write(tmp.path().join("src/main.rs"), "fn main() { /* b */ }").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "fix: after-latest-tag fix"]);
+
+    // `--to HEAD` pins the range UPPER bound to a ref distinct from any tag,
+    // so the auto-discovered previous tag (v0.2.0) is not filtered out as
+    // "equal to the current tag" — making the with/without `--from` contrast
+    // observable.
+    let run_changelog = |from: Option<&str>| -> String {
+        let mut args = vec!["changelog", "--snapshot", "--to", "HEAD"];
+        if let Some(f) = from {
+            args.push("--from");
+            args.push(f);
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+            .args(&args)
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "changelog {:?} should succeed.\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).to_string()
+    };
+
+    // Baseline: WITHOUT --from, auto-discovery starts at v0.2.0, so the
+    // between-tags feature is NOT in the changelog.
+    let auto = run_changelog(None);
+    assert!(
+        !auto.contains("between-tags feature"),
+        "auto-discovery should start at v0.2.0 and exclude the between-tags commit, got:\n{auto}"
+    );
+    assert!(
+        auto.contains("after-latest-tag fix"),
+        "auto-discovery should include the post-v0.2.0 commit, got:\n{auto}"
+    );
+
+    // WITH --from v0.1.0, the range starts at v0.1.0, so BOTH commits appear.
+    let with_from = run_changelog(Some("v0.1.0"));
+    assert!(
+        with_from.contains("between-tags feature"),
+        "--from v0.1.0 must include the between-tags commit (range start override), got:\n{with_from}"
+    );
+    assert!(
+        with_from.contains("after-latest-tag fix"),
+        "--from v0.1.0 must still include the post-v0.2.0 commit, got:\n{with_from}"
+    );
+}
+
 /// E2E #4: Config validation round-trip — `init` generates config, `check` validates it,
 /// `build --snapshot` succeeds using the generated config.
 #[test]

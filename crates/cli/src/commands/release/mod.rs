@@ -1023,6 +1023,10 @@ fn build_context_options(
         runtime_nondeterministic_allowlist,
         summary_json_path: opts.summary_json.clone(),
         allow_ai_failure: opts.allow_ai_failure,
+        // The full release pipeline has no `--from`; changelog range starts
+        // are auto-discovered per crate. Only `anodizer changelog --from`
+        // sets this.
+        changelog_from: None,
     }
 }
 

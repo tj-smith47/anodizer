@@ -293,14 +293,12 @@ fn handle_github_native_changelog(
             continue;
         };
 
-        let prev_tag = find_latest_tag_matching_with_prefix(
-            &crate_cfg.tag_template,
-            ctx.config.git.as_ref(),
-            Some(ctx.template_vars()),
-            monorepo_prefix,
-        )
-        .unwrap_or(None)
-        .filter(|t| t.as_str() != current_tag.as_str());
+        let current_tag_opt = if current_tag.is_empty() {
+            None
+        } else {
+            Some(current_tag.as_str())
+        };
+        let prev_tag = resolve_prev_tag(ctx, crate_cfg, monorepo_prefix, current_tag_opt);
 
         let body = if dry_run_or_snapshot {
             log.status(&format!(
@@ -501,6 +499,33 @@ fn render_group_titles(
     Ok(out)
 }
 
+/// Resolve the changelog range start (the "previous tag") for a crate.
+///
+/// An explicit `--from <ref>` (carried as `ctx.options.changelog_from`)
+/// overrides the auto-discovered tag, letting the operator pin the lower
+/// bound. Otherwise the latest tag matching the crate's `tag_template` is
+/// used. In both cases the result is filtered against `current_tag` so a
+/// range start equal to the upper bound (which would collapse the range to
+/// zero commits) is dropped.
+fn resolve_prev_tag(
+    ctx: &Context,
+    crate_cfg: &anodizer_core::config::CrateConfig,
+    monorepo_prefix: Option<&str>,
+    current_tag: Option<&str>,
+) -> Option<String> {
+    let candidate = match ctx.options.changelog_from.as_deref() {
+        Some(from) if !from.trim().is_empty() => Some(from.to_string()),
+        _ => find_latest_tag_matching_with_prefix(
+            &crate_cfg.tag_template,
+            ctx.config.git.as_ref(),
+            Some(ctx.template_vars()),
+            monorepo_prefix,
+        )
+        .unwrap_or(None),
+    };
+    candidate.filter(|t| current_tag != Some(t.as_str()))
+}
+
 /// Pick the effective path filter for a crate. Precedence:
 /// changelog-level `paths` > per-crate `path` > monorepo dir.
 fn effective_paths(
@@ -634,17 +659,11 @@ fn render_crate_changelog(
 
     // Find the previous tag for this crate, excluding the current tag
     // (otherwise the "latest matching tag" IS the current tag and the
-    // commit range collapses to zero).
+    // commit range collapses to zero). An explicit `--from <ref>` overrides
+    // the auto-discovered tag as the range start.
     let monorepo_prefix = ctx.config.monorepo_tag_prefix();
     let current_tag = ctx.template_vars().get("Tag").cloned();
-    let prev_tag = find_latest_tag_matching_with_prefix(
-        &crate_cfg.tag_template,
-        ctx.config.git.as_ref(),
-        Some(ctx.template_vars()),
-        monorepo_prefix,
-    )
-    .unwrap_or(None)
-    .filter(|t| current_tag.as_deref() != Some(t.as_str()));
+    let prev_tag = resolve_prev_tag(ctx, crate_cfg, monorepo_prefix, current_tag.as_deref());
 
     let monorepo_dir = ctx.config.monorepo_dir().map(str::to_string);
     let paths = effective_paths(&opts.paths, &crate_cfg.path, monorepo_dir.as_deref());
