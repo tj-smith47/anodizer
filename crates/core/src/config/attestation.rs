@@ -59,8 +59,10 @@ pub enum AttestationMode {
     Emit,
 }
 
-/// A selectable artifact KIND for attestation. Maps to one or more concrete
-/// [`crate::artifact::ArtifactKind`] values at subject-collection time.
+/// A selectable artifact KIND for attestation. Each variant maps to one or
+/// more concrete [`crate::artifact::ArtifactKind`] values at subject-collection
+/// time; together the variants cover the full release-uploadable surface so any
+/// artifact that lands on the release can be attested.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum AttestationArtifactKind {
@@ -70,16 +72,17 @@ pub enum AttestationArtifactKind {
     Binary,
     /// Checksum file(s) (`checksums.txt` and split sidecars).
     Checksum,
+    /// Linux packages (`.deb` / `.rpm` / `.apk`) and source RPMs.
+    Package,
+    /// Source archives (`source:` tarball).
+    Source,
+    /// Generated SBOM documents.
+    Sbom,
+    /// OS installers: Windows MSI/NSIS, macOS DMG (disk image), and macOS PKG.
+    Installer,
 }
 
 impl AttestationConfig {
-    /// Default `artifacts` selection when the user omits the field.
-    pub const DEFAULT_ARTIFACTS: &'static [AttestationArtifactKind] = &[
-        AttestationArtifactKind::Archive,
-        AttestationArtifactKind::Binary,
-        AttestationArtifactKind::Checksum,
-    ];
-
     /// Filename of the subjects manifest written in `subjects` mode (single
     /// crate / lockstep). Per-crate workspace mode prefixes the crate name.
     pub const SUBJECTS_MANIFEST_NAME: &'static str = "attestation-subjects.json";
@@ -93,12 +96,16 @@ impl AttestationConfig {
         self.mode.unwrap_or(AttestationMode::Subjects)
     }
 
-    /// Resolve the selected artifact kinds, defaulting to
-    /// `[archive, binary, checksum]`.
-    pub fn resolved_artifacts(&self) -> Vec<AttestationArtifactKind> {
-        self.artifacts
-            .clone()
-            .unwrap_or_else(|| Self::DEFAULT_ARTIFACTS.to_vec())
+    /// The configured artifact-kind selection, or `None` when `artifacts:` is
+    /// omitted.
+    ///
+    /// `None` is NOT a hand-curated subset — the stage interprets it as "attest
+    /// every release-uploadable artifact" (the full `release_uploadable_kinds()`
+    /// set minus signatures/certificates and the attestation outputs
+    /// themselves), so a `.deb`/`.rpm`/SBOM/installer the user ships is attested
+    /// by default rather than silently dropped.
+    pub fn resolved_artifacts(&self) -> Option<Vec<AttestationArtifactKind>> {
+        self.artifacts.clone()
     }
 }
 
@@ -113,16 +120,25 @@ mod tests {
     }
 
     #[test]
-    fn default_artifacts_cover_archive_binary_checksum() {
+    fn omitted_artifacts_resolve_to_none_meaning_attest_everything() {
+        // None signals the stage to attest the full release-uploadable set,
+        // not a hand-curated subset.
         let cfg = AttestationConfig::default();
-        let kinds = cfg.resolved_artifacts();
+        assert_eq!(cfg.resolved_artifacts(), None);
+    }
+
+    #[test]
+    fn parses_newly_selectable_kinds() {
+        let yaml = "enabled: true\nartifacts: [package, source, sbom, installer]\n";
+        let cfg: AttestationConfig = serde_yaml_ng::from_str(yaml).expect("parse");
         assert_eq!(
-            kinds,
-            vec![
-                AttestationArtifactKind::Archive,
-                AttestationArtifactKind::Binary,
-                AttestationArtifactKind::Checksum,
-            ]
+            cfg.resolved_artifacts(),
+            Some(vec![
+                AttestationArtifactKind::Package,
+                AttestationArtifactKind::Source,
+                AttestationArtifactKind::Sbom,
+                AttestationArtifactKind::Installer,
+            ])
         );
     }
 
@@ -139,10 +155,10 @@ mod tests {
         assert_eq!(cfg.resolved_mode(), AttestationMode::Emit);
         assert_eq!(
             cfg.resolved_artifacts(),
-            vec![
+            Some(vec![
                 AttestationArtifactKind::Archive,
                 AttestationArtifactKind::Binary
-            ]
+            ])
         );
     }
 

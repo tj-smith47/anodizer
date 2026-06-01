@@ -31,21 +31,45 @@ attestation itself. The `mode:` field selects how anodizer participates.
 attestations:
   enabled: true
   mode: subjects          # or: emit ; default = subjects
-  artifacts: [archive, binary, checksum]
+  # artifacts: omitted → attest ALL release artifacts (see below)
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `false` | Enable the stage. When false, no-op. |
 | `mode` | `subjects` \| `emit` | `subjects` | Participation mode (see below). |
-| `artifacts` | list | `[archive, binary, checksum]` | Which produced-artifact **kinds** to attest. The concrete subject set (filenames + sha256) is derived from the artifacts anodizer already produced — never hand-listed. |
+| `artifacts` | list | *all release artifacts* | Which produced-artifact **kinds** to attest. The concrete subject set (filenames + sha256) is derived from the artifacts anodizer already produced — never hand-listed. |
 | `skip` | bool \| template | — | Skip the stage (also `--skip=attest`). |
 
-`artifacts` selects KINDS, not files:
+### What gets attested
 
-- `archive` — packaged archives (`.tar.gz`, `.zip`) and self-extracting archives
-- `binary` — raw uploadable binaries
-- `checksum` — checksum files (`checksums.txt` and split sidecars)
+When `artifacts:` is **omitted**, anodizer attests **every release artifact** —
+the full set that lands on the GitHub release, minus signatures/certificates
+(which sign other artifacts) and the attestation outputs themselves (no
+self-attestation). A `.deb`, SBOM, or installer you ship is attested by default
+rather than silently dropped.
+
+To narrow the set, list one or more KINDS (not files):
+
+| Kind | Covers |
+|---|---|
+| `archive` | packaged archives (`.tar.gz`, `.zip`) + self-extracting archives |
+| `binary` | raw uploadable binaries |
+| `checksum` | checksum files (`checksums.txt` + split sidecars) |
+| `package` | Linux packages (`.deb` / `.rpm` / `.apk`) + source RPMs |
+| `source` | source archive tarball |
+| `sbom` | generated SBOM documents |
+| `installer` | Windows MSI/NSIS, macOS DMG, macOS PKG |
+
+```yaml
+# Example: attest only Linux packages and their checksums
+attestations:
+  enabled: true
+  artifacts: [package, checksum]
+```
+
+If `attestations` is enabled but the selected kinds match no produced
+artifacts, the stage emits a warning (it does not silently produce nothing).
 
 ## Mode `subjects` (default) — the OIDC path
 

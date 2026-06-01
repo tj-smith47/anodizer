@@ -1340,7 +1340,7 @@
       }
     },
     "AttestationArtifactKind": {
-      "description": "A selectable artifact KIND for attestation. Maps to one or more concrete [`crate::artifact::ArtifactKind`] values at subject-collection time.",
+      "description": "A selectable artifact KIND for attestation. Each variant maps to one or more concrete [`crate::artifact::ArtifactKind`] values at subject-collection time; together the variants cover the full release-uploadable surface so any artifact that lands on the release can be attested.",
       "oneOf": [
         {
           "description": "Packaged archives (`.tar.gz`, `.zip`, ...) and self-extracting archives.",
@@ -1361,6 +1361,34 @@
           "type": "string",
           "enum": [
             "checksum"
+          ]
+        },
+        {
+          "description": "Linux packages (`.deb` / `.rpm` / `.apk`) and source RPMs.",
+          "type": "string",
+          "enum": [
+            "package"
+          ]
+        },
+        {
+          "description": "Source archives (`source:` tarball).",
+          "type": "string",
+          "enum": [
+            "source"
+          ]
+        },
+        {
+          "description": "Generated SBOM documents.",
+          "type": "string",
+          "enum": [
+            "sbom"
+          ]
+        },
+        {
+          "description": "OS installers: Windows MSI/NSIS, macOS DMG (disk image), and macOS PKG.",
+          "type": "string",
+          "enum": [
+            "installer"
           ]
         }
       ]

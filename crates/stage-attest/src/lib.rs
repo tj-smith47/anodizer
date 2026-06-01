@@ -149,6 +149,11 @@ impl InTotoStatement {
                         id: ANODIZER_BUILDER_ID.to_string(),
                     },
                     metadata: RunMetadata {
+                        // The tag is a deterministic stand-in for the build
+                        // invocation: every re-run of the same tag shares the
+                        // same id, so the statement stays byte-identical (no
+                        // wall-clock / random run id that would break the
+                        // reproducible-release contract).
                         invocation_id: tag.to_string(),
                     },
                 },
@@ -164,16 +169,45 @@ impl InTotoStatement {
 /// Map a configured [`AttestationArtifactKind`] to the concrete
 /// [`ArtifactKind`]s it selects from the registry.
 ///
-/// `archive` covers packaged archives + self-extracting archives;
-/// `binary` covers uploadable raw binaries (the bare-binary release-asset
-/// kind, NOT the intermediate build output); `checksum` covers checksum
-/// files and split sidecars.
+/// Between them the variants reach every release-uploadable kind (the
+/// `release_uploadable_kinds()` set minus signatures/certificates), so an
+/// explicit `artifacts:` selection can name anything that lands on the release.
 fn concrete_kinds(kind: AttestationArtifactKind) -> &'static [ArtifactKind] {
     match kind {
+        // archive: packaged + self-extracting archives.
         AttestationArtifactKind::Archive => &[ArtifactKind::Archive, ArtifactKind::Makeself],
+        // binary: uploadable raw binaries (the bare-binary release-asset kind,
+        // NOT the intermediate build output).
         AttestationArtifactKind::Binary => &[ArtifactKind::UploadableBinary],
+        // checksum: checksum files + split sidecars.
         AttestationArtifactKind::Checksum => &[ArtifactKind::Checksum],
+        // package: Linux packages (.deb/.rpm/.apk) + source RPMs.
+        AttestationArtifactKind::Package => &[ArtifactKind::LinuxPackage, ArtifactKind::SourceRpm],
+        // source: the source-archive tarball.
+        AttestationArtifactKind::Source => &[ArtifactKind::SourceArchive],
+        // sbom: generated SBOM documents.
+        AttestationArtifactKind::Sbom => &[ArtifactKind::Sbom],
+        // installer: Windows MSI/NSIS, macOS DMG, macOS PKG.
+        AttestationArtifactKind::Installer => &[
+            ArtifactKind::Installer,
+            ArtifactKind::DiskImage,
+            ArtifactKind::MacOsPackage,
+        ],
     }
+}
+
+/// The concrete [`ArtifactKind`]s attested when `artifacts:` is omitted: the
+/// canonical release-uploadable set minus the integrity outputs that are
+/// either signatures over other artifacts (`Signature`/`Certificate`) or the
+/// attestation outputs themselves. Derived from `release_uploadable_kinds()`
+/// rather than hand-curated so a kind added to the release surface is attested
+/// by default rather than silently dropped.
+fn default_attestable_kinds() -> Vec<ArtifactKind> {
+    anodizer_core::artifact::release_uploadable_kinds()
+        .iter()
+        .copied()
+        .filter(|k| !matches!(k, ArtifactKind::Signature | ArtifactKind::Certificate))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -197,36 +231,56 @@ fn resolve_sha256(artifact: &Artifact) -> Result<String> {
     })
 }
 
+/// An artifact is one of attestation's OWN outputs (the subjects manifest or an
+/// emit-mode in-toto statement). Excluded from the subject set so attestation
+/// never attests itself (self-reference / recursion across re-runs).
+fn is_attestation_output(artifact: &Artifact) -> bool {
+    artifact.metadata.contains_key("attestation_subjects")
+        || artifact.metadata.contains_key("attestation_statement")
+}
+
 /// Collect attestation subjects for one crate, in a deterministic order.
 ///
-/// Walks the configured artifact KINDS, maps each to its concrete
-/// [`ArtifactKind`]s, and derives a [`Subject`] per matching artifact. Skips
-/// binary-sign intermediates (never release assets). De-duplicates by name so
-/// a kind that registers the same file twice doesn't produce a duplicate
+/// Resolves the concrete [`ArtifactKind`] set — the explicit `artifacts:`
+/// selection mapped via [`concrete_kinds`], or the full
+/// [`default_attestable_kinds`] when omitted — and derives a [`Subject`] per
+/// matching artifact. Skips binary-sign intermediates (never release assets)
+/// and attestation's own outputs (no self-attestation). De-duplicates by name
+/// so a kind that registers the same file twice doesn't produce a duplicate
 /// subject. Sorted by name for byte-stable output.
 fn collect_subjects(
     ctx: &Context,
     crate_name: &str,
-    selected: &[AttestationArtifactKind],
+    selected: Option<&[AttestationArtifactKind]>,
 ) -> Result<Vec<Subject>> {
+    let kinds: Vec<ArtifactKind> = match selected {
+        Some(sel) => sel
+            .iter()
+            .flat_map(|s| concrete_kinds(*s))
+            .copied()
+            .collect(),
+        None => default_attestable_kinds(),
+    };
+
     let mut subjects: Vec<Subject> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for sel in selected {
-        for &kind in concrete_kinds(*sel) {
-            for artifact in ctx.artifacts.by_kind_and_crate(kind, crate_name) {
-                if anodizer_core::artifact::is_binary_sign_output(artifact) {
-                    continue;
-                }
-                if !seen.insert(artifact.name.clone()) {
-                    continue;
-                }
-                let sha256 = resolve_sha256(artifact)?;
-                subjects.push(Subject {
-                    name: artifact.name.clone(),
-                    digest: SubjectDigest { sha256 },
-                });
+    for kind in kinds {
+        for artifact in ctx.artifacts.by_kind_and_crate(kind, crate_name) {
+            if anodizer_core::artifact::is_binary_sign_output(artifact) {
+                continue;
             }
+            if is_attestation_output(artifact) {
+                continue;
+            }
+            if !seen.insert(artifact.name.clone()) {
+                continue;
+            }
+            let sha256 = resolve_sha256(artifact)?;
+            subjects.push(Subject {
+                name: artifact.name.clone(),
+                digest: SubjectDigest { sha256 },
+            });
         }
     }
 
@@ -249,6 +303,24 @@ fn output_name(base: &str, crate_name: &str, multi_crate: bool) -> String {
         format!("{crate_name}.{base}")
     } else {
         base.to_string()
+    }
+}
+
+/// Human-readable description of the kind selection for the empty-match warn:
+/// the explicit list, or `all release artifacts` when `artifacts:` is omitted.
+fn describe_selection(selected: Option<&[AttestationArtifactKind]>) -> String {
+    match selected {
+        None => "all release artifacts".to_string(),
+        Some(sel) => sel
+            .iter()
+            .map(|k| {
+                serde_json::to_value(k)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_else(|| format!("{k:?}"))
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
     }
 }
 
@@ -304,13 +376,20 @@ impl Stage for AttestStage {
         let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
         let version = ctx.version();
 
+        let selected_desc = describe_selection(selected.as_deref());
+
         let mut new_artifacts: Vec<Artifact> = Vec::new();
 
         for crate_name in &crates {
-            let subjects = collect_subjects(ctx, crate_name, &selected)?;
+            let subjects = collect_subjects(ctx, crate_name, selected.as_deref())?;
             if subjects.is_empty() {
-                log.verbose(&format!(
-                    "no attestable artifacts for crate {crate_name}; skipping"
+                // Enabled but nothing matched: surface a warn (not a silent
+                // verbose line) so a misconfigured filter doesn't ship a green
+                // run with zero attestation output. Mirrors the empty-match
+                // warn convention in stage-archive / stage-nfpm.
+                log.warn(&format!(
+                    "attestations enabled but no artifacts matched for crate \
+                     {crate_name} (selected kinds: {selected_desc})"
                 ));
                 continue;
             }

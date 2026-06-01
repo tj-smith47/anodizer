@@ -575,3 +575,273 @@ fn statement_is_byte_deterministic() {
     let b = serialize_statement(&InTotoStatement::new(subjects, "v1.0.0", "1.0.0")).unwrap();
     assert_eq!(a, b, "statement bytes must be deterministic");
 }
+
+// ---------------------------------------------------------------------------
+// release-uploadable coverage (finding #1)
+// ---------------------------------------------------------------------------
+
+/// Selecting `package` attests a `.deb` (LinuxPackage) — the gap that left a
+/// shipped `.deb` un-attested with no way to select it.
+#[test]
+fn package_kind_attests_linux_package() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    fs::create_dir_all(&dist).unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist.clone())
+        .crates(vec![crate_cfg("myapp")])
+        .build();
+    ctx.config.attestations = Some(attest_config(
+        AttestationMode::Subjects,
+        Some(vec![AttestationArtifactKind::Package]),
+    ));
+
+    add_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::LinuxPackage,
+        "myapp_1.0.0_amd64.deb",
+        "myapp",
+        b"deb bytes",
+    );
+    // An archive present but NOT selected must be excluded.
+    add_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::Archive,
+        "app.tar.gz",
+        "myapp",
+        b"archive",
+    );
+
+    AttestStage.run(&mut ctx).unwrap();
+
+    let subjects: Vec<Subject> = serde_json::from_slice(
+        &fs::read(dist.join(AttestationConfig::SUBJECTS_MANIFEST_NAME)).unwrap(),
+    )
+    .unwrap();
+    let names: Vec<&str> = subjects.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["myapp_1.0.0_amd64.deb"],
+        "only the .deb selected"
+    );
+}
+
+/// The default (no `artifacts:`) attests the full release-uploadable surface
+/// together — archive + checksum + sbom + .deb in one manifest — derived from
+/// `release_uploadable_kinds()` rather than a hand-curated subset.
+#[test]
+fn default_attests_all_release_uploadable_kinds_together() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    fs::create_dir_all(&dist).unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist.clone())
+        .crates(vec![crate_cfg("myapp")])
+        .build();
+    // enabled, mode + artifacts both omitted → subjects mode, attest everything.
+    ctx.config.attestations = Some(AttestationConfig {
+        enabled: true,
+        mode: None,
+        artifacts: None,
+        skip: None,
+    });
+
+    add_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::Archive,
+        "app.tar.gz",
+        "myapp",
+        b"a",
+    );
+    add_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::Checksum,
+        "checksums.txt",
+        "myapp",
+        b"c",
+    );
+    add_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::Sbom,
+        "app.sbom.json",
+        "myapp",
+        b"s",
+    );
+    add_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::LinuxPackage,
+        "app_1.0.0_amd64.deb",
+        "myapp",
+        b"d",
+    );
+    // Signatures/certificates are NOT attestable and must be excluded.
+    add_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::Signature,
+        "app.tar.gz.sig",
+        "myapp",
+        b"sig",
+    );
+    add_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::Certificate,
+        "app.tar.gz.pem",
+        "myapp",
+        b"crt",
+    );
+
+    AttestStage.run(&mut ctx).unwrap();
+
+    let subjects: Vec<Subject> = serde_json::from_slice(
+        &fs::read(dist.join(AttestationConfig::SUBJECTS_MANIFEST_NAME)).unwrap(),
+    )
+    .unwrap();
+    let names: std::collections::BTreeSet<&str> =
+        subjects.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "app.tar.gz",
+            "app.sbom.json",
+            "app_1.0.0_amd64.deb",
+            "checksums.txt"
+        ]
+        .into_iter()
+        .collect(),
+        "default attests archive+checksum+sbom+deb; signatures/certs excluded"
+    );
+}
+
+/// emit mode does NOT list the in-toto statement itself as a subject, and
+/// subjects mode does NOT list its own manifest — no self-attestation even
+/// under the attest-everything default.
+#[test]
+fn attestation_outputs_are_not_self_attested() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    fs::create_dir_all(&dist).unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist.clone())
+        .crates(vec![crate_cfg("myapp")])
+        .build();
+    ctx.config.attestations = Some(AttestationConfig {
+        enabled: true,
+        mode: Some(AttestationMode::Emit),
+        artifacts: None,
+        skip: None,
+    });
+
+    add_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::Archive,
+        "app.tar.gz",
+        "myapp",
+        b"a",
+    );
+    // Simulate a prior run's attestation outputs already in the registry
+    // (publish-only re-run): they must be excluded from the subject set. The
+    // UploadableFile statement is the recursion risk; the Metadata manifest is
+    // also excluded.
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::UploadableFile,
+        name: AttestationConfig::STATEMENT_NAME.to_string(),
+        path: dist.join(AttestationConfig::STATEMENT_NAME),
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata: std::collections::HashMap::from([(
+            "attestation_statement".to_string(),
+            "true".to_string(),
+        )]),
+        size: None,
+    });
+
+    AttestStage.run(&mut ctx).unwrap();
+
+    let v: serde_json::Value =
+        serde_json::from_slice(&fs::read(dist.join(AttestationConfig::STATEMENT_NAME)).unwrap())
+            .unwrap();
+    let names: Vec<String> = v["subject"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        !names.iter().any(|n| n == AttestationConfig::STATEMENT_NAME
+            || n == AttestationConfig::SUBJECTS_MANIFEST_NAME),
+        "attestation outputs must not appear as their own subjects: {names:?}"
+    );
+    assert_eq!(
+        names,
+        vec!["app.tar.gz"],
+        "only the real artifact is a subject"
+    );
+}
+
+/// Enabled but no artifacts match → a WARN fires (not a silent verbose line),
+/// so a misconfigured filter can't ship a green run with zero output.
+#[test]
+fn empty_match_emits_warn() {
+    use anodizer_core::log::LogCapture;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    fs::create_dir_all(&dist).unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist.clone())
+        .crates(vec![crate_cfg("myapp")])
+        .build();
+    let cap = LogCapture::new();
+    ctx.with_log_capture(cap.clone());
+    // Select `package` but register only an archive → zero matches.
+    ctx.config.attestations = Some(attest_config(
+        AttestationMode::Subjects,
+        Some(vec![AttestationArtifactKind::Package]),
+    ));
+    add_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::Archive,
+        "app.tar.gz",
+        "myapp",
+        b"a",
+    );
+
+    AttestStage.run(&mut ctx).unwrap();
+
+    assert_eq!(cap.warn_count(), 1, "exactly one empty-match warn expected");
+    assert!(
+        cap.warn_messages()
+            .iter()
+            .any(|m| m.contains("no artifacts matched") && m.contains("package")),
+        "warn must name the empty match and the selected kinds: {:?}",
+        cap.warn_messages()
+    );
+    assert!(
+        !dist
+            .join(AttestationConfig::SUBJECTS_MANIFEST_NAME)
+            .exists(),
+        "no manifest written when nothing matched"
+    );
+}
