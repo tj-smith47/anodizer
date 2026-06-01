@@ -555,6 +555,55 @@ fn crate_targeted_push_lands_bump_commit_atomically() {
 }
 
 #[test]
+fn failed_version_sync_bump_commit_aborts_before_tagging() {
+    // Safety guard: the single-crate version_sync path must propagate a bump
+    // commit failure BEFORE creating the tag. A pre-commit hook that rejects
+    // the `chore: bump …` commit must abort the whole `tag` run — otherwise
+    // the tag would point at a commit whose Cargo.toml is NOT at the tagged
+    // version (an orphan tag at a mismatched commit).
+    let (work, bare) = per_crate_with_origin();
+
+    // Install a pre-commit hook that always rejects, so stage_and_commit's
+    // `git commit` fails. The tag must NOT be created locally or pushed.
+    let hooks_dir = work.path().join(".git/hooks");
+    fs::create_dir_all(&hooks_dir).unwrap();
+    let hook = hooks_dir.join("pre-commit");
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&hook).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&hook, perms).unwrap();
+    }
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--crate", "core", "--push"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "tag must fail when the version_sync bump commit is rejected: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // No tag may exist locally...
+    let local_tags = git_out(work.path(), &["tag", "--list", "core-v0.1.1"]);
+    assert!(
+        local_tags.is_empty(),
+        "a failed bump must not leave a local tag: {local_tags:?}"
+    );
+    // ...nor on the remote.
+    assert_eq!(
+        remote_tag_target(bare.path(), "core-v0.1.1"),
+        None,
+        "a failed bump must not produce a pushed tag"
+    );
+}
+
+#[test]
 fn push_dry_run_creates_tag_locally_but_pushes_nothing() {
     // --push-dry-run still creates the tag + bump commit locally but only
     // PRINTS the git push commands; the remote must be untouched.

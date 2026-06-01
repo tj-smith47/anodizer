@@ -659,7 +659,12 @@ pub fn run(opts: TagOpts) -> Result<()> {
             for f in &dep_modified {
                 files_to_stage.push(f);
             }
-            let _ = git::stage_and_commit(
+            // Propagate a commit failure (index lock, hook rejection, …)
+            // before any tag is created: tagging a commit whose Cargo.toml is
+            // NOT at `new_version` would ship an orphan tag pointing at the
+            // wrong version. `Ok(false)` (no diff to commit) likewise means no
+            // bump commit was produced, so the orphan-bump hint must not fire.
+            bump_commit_created = git::stage_and_commit(
                 &files_to_stage,
                 &format!(
                     "chore: bump {} to {}{}",
@@ -667,8 +672,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
                     new_version,
                     skip_ci_suffix(cfg.skip_ci_on_bump)
                 ),
-            );
-            bump_commit_created = true;
+            )?;
         }
     }
 
