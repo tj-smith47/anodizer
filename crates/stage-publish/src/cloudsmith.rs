@@ -1049,7 +1049,10 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
 
             let url = format!(
                 "{}/packages/{}/{}/{}/",
-                CLOUDSMITH_API_BASE, target.org, target.repo, slug
+                cloudsmith_api_base(),
+                target.org,
+                target.repo,
+                slug
             );
             log.status(&format!("cloudsmith: DELETE {}", url));
             let label = "packages/delete";
