@@ -143,6 +143,10 @@ service calls.
   omits it.
 - **Harvest needs a host-native binary**: a pure cross build (no artifact for
   the host target) errors instead of silently skipping the harvest.
+- **Distinct configs sharing an arch must set `filename:`**: two `appimages:`
+  entries that differ only by `id` and target the same arch render the same
+  default output name and clobber on disk — give each an explicit `filename:`
+  to disambiguate.
 
 ## Republish / update behavior
 

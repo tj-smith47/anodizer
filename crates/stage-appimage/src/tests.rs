@@ -267,6 +267,46 @@ fn harvest_command_renders_artifact_and_dir_vars() {
     assert_eq!(ctx.template_vars().get("HarvestDir"), Some(&String::new()));
 }
 
+/// The harvest vars (`ArtifactPath` / `HarvestDir`) must NOT leak into a
+/// later AppImage render (desktop / icon / filename template). Guards the
+/// Task-3 precedent: a stale host-binary path bleeding into the archive
+/// name_template shipped a per-run worktree prefix into downstream output.
+/// This asserts that a subsequent render of a `{{ .ArtifactPath }}` /
+/// `{{ .HarvestDir }}`-bearing template resolves EMPTY after the harvest
+/// render. Mutation check: removing the post-render clear in
+/// `render_harvest_command` makes this fail (the render then resolves to the
+/// host-binary path / harvest dir instead of empty strings).
+#[test]
+fn harvest_vars_do_not_leak_into_later_render() {
+    let mut ctx = ctx_v("1.2.3");
+    let host = Artifact {
+        kind: ArtifactKind::Binary,
+        name: "hx".to_string(),
+        path: PathBuf::from("/build/hx"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "helix".to_string(),
+        metadata: Default::default(),
+        size: None,
+    };
+    render_harvest_command(
+        &mut ctx,
+        "{{ .ArtifactPath }} --populate-runtime {{ .HarvestDir }}",
+        &host,
+        &PathBuf::from("/dist/.appimage-runtime/helix"),
+    )
+    .unwrap();
+
+    // A downstream filename/desktop template that references the harvest vars
+    // must render them empty — they were cleared after the harvest render.
+    let rendered = ctx
+        .render_template("app[{{ .ArtifactPath }}][{{ .HarvestDir }}].desktop")
+        .unwrap();
+    assert_eq!(
+        rendered, "app[][].desktop",
+        "harvest vars leaked into a later render: {rendered}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // host-binary resolution
 // ---------------------------------------------------------------------------

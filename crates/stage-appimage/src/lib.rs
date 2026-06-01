@@ -188,7 +188,7 @@ fn collect_matching_binaries(
 /// the host (a pure cross build) — the caller turns that into a clear error.
 ///
 /// Mirrors `stage-archive::run::resolve_host_binary` (the same host-once
-/// pattern Task 3's completions use).
+/// pattern the archive completion harvest uses).
 fn resolve_host_binary(binaries: &[Artifact]) -> Option<Artifact> {
     let host = anodizer_core::partial::detect_host_target().ok()?;
     binaries
@@ -238,9 +238,15 @@ fn set_per_target_template_vars(ctx: &mut Context, target: Option<&str>, os: &st
 /// Render the `.AppImage` output filename for one (target, platform) combo.
 ///
 /// Honors `cfg.filename` as a Tera template when set (appending `.AppImage`
-/// if absent); otherwise composes `<project>-<version>-<os>-<arch>.AppImage`.
-/// The arch is the AppImage-flavoured arch token so multi-arch builds for the
-/// same project never collide on disk.
+/// if absent); otherwise composes `<project>-<version>-<arch>.AppImage`
+/// (AppImage is Linux-only, so the os segment is omitted). The arch is the
+/// AppImage-flavoured arch token so multi-arch builds for the same project
+/// never collide on disk.
+///
+/// Two `appimages:` configs that differ only by `id` (no custom `filename`)
+/// and target the same arch render the same default output name and would
+/// clobber on disk — set an explicit `filename:` on each to disambiguate.
+/// This matches the sibling makeself stage's default-naming behaviour.
 fn resolve_appimage_filename(
     ctx: &Context,
     name_template: Option<&str>,
