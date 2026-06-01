@@ -1131,6 +1131,7 @@ impl Pipeline {
             "upx",
             "archive",
             "makeself",
+            "appimage",
             "nfpm",
             "snapcraft",
             "appbundle",
@@ -1334,6 +1335,7 @@ fn write_pre_release_metadata(ctx: &mut anodizer_core::context::Context) -> anyh
 pub fn build_release_pipeline() -> Pipeline {
     use anodizer_stage_announce::AnnounceStage;
     use anodizer_stage_appbundle::AppBundleStage;
+    use anodizer_stage_appimage::AppImageStage;
     use anodizer_stage_archive::ArchiveStage;
     use anodizer_stage_attest::AttestStage;
     use anodizer_stage_blob::BlobStage;
@@ -1386,6 +1388,7 @@ pub fn build_release_pipeline() -> Pipeline {
     p.add(Box::new(NfpmStage));
     p.add(Box::new(SrpmStage));
     p.add(Box::new(MakeselfStage));
+    p.add(Box::new(AppImageStage));
     p.add(Box::new(SnapcraftStage));
     p.add(Box::new(FlatpakStage));
     p.add(Box::new(SbomStage));
@@ -1557,6 +1560,7 @@ pub fn build_announce_pipeline() -> Pipeline {
 pub fn build_merge_pipeline() -> Pipeline {
     use anodizer_stage_announce::AnnounceStage;
     use anodizer_stage_appbundle::AppBundleStage;
+    use anodizer_stage_appimage::AppImageStage;
     use anodizer_stage_archive::ArchiveStage;
     use anodizer_stage_attest::AttestStage;
     use anodizer_stage_blob::BlobStage;
@@ -1595,6 +1599,7 @@ pub fn build_merge_pipeline() -> Pipeline {
     p.add(Box::new(NfpmStage));
     p.add(Box::new(SrpmStage));
     p.add(Box::new(MakeselfStage));
+    p.add(Box::new(AppImageStage));
     p.add(Box::new(SnapcraftStage));
     p.add(Box::new(FlatpakStage));
     p.add(Box::new(SbomStage));

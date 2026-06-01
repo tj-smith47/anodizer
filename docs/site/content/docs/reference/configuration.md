@@ -15,6 +15,7 @@ Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root.
 |-------|------|---------|-------------|
 | `after` | HooksConfig | — | Hooks run after the release pipeline completes. |
 | `announce` | AnnounceConfig | — | Announcement configuration (Slack, Discord, email, etc.). |
+| `appimages` | list of AppImageConfig | `[]` | AppImage configurations. Each entry bundles a built Linux binary plus its desktop integration into a single self-contained `.AppImage` via linuxdeploy. |
 | `artifactories` | list of ArtifactoryConfig | — | Artifactory upload configurations. |
 | `attestations` | AttestationConfig | — | SLSA build-provenance / attestation configuration for binaries and archives. In the default `subjects` mode, anodizer writes a subjects manifest for `actions/attest-build-provenance`; in `emit` mode it generates and signs a self-contained in-toto SLSA provenance statement. When omitted (or `enabled: false`), the attestation stage is a no-op. |
 | `aur_sources` | list of AurSourceConfig | — | AUR source package publishing configurations (source-only PKGBUILD, not -bin). |
@@ -102,6 +103,28 @@ The canonical key is `hooks:` for both `before:` and `after:` to match GoRelease
 | `telegram` | TelegramAnnounce | — | Telegram announcement configuration. |
 | `twitter` | TwitterAnnounce | — | Twitter/X announcement configuration. |
 | `webhook` | WebhookConfig | — | Generic webhook announcement configuration. |
+
+## `appimages`
+AppImage packaging configuration.
+
+Drives the [AppImage](https://appimage.org/) stage, which bundles a built Linux binary plus its desktop integration (a `.desktop` entry + icon) into a single self-contained, runnable `.AppImage` file via [`linuxdeploy`](https://github.com/linuxdeploy/linuxdeploy)'s `appimage` output plugin. One `.AppImage` is produced per matching Linux target so a multi-arch build yields distinct, non-colliding outputs.
+
+YAML: ```yaml appimages: - id: helix ids: [helix-bin] desktop: contrib/Helix.desktop icon: contrib/helix.png appdir_extra: - src: runtime/ dst: usr/lib/helix/runtime update_information: "gh-releases-zsync|helix-editor|helix|latest|helix-*.AppImage.zsync" runtime_harvest: command: "{{ .ArtifactPath }} --populate-runtime {{ .HarvestDir }}" dir: runtime/ ```
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `appdir_extra` | list of AppImageExtra | — | Extra files / directories copied into the AppDir before linuxdeploy runs (e.g. a harvested `runtime/` tree). Each entry's `dst` is interpreted relative to the AppDir root. |
+| `arch` | list of string | — | Target architecture filter. When omitted, every architecture in the build matrix produces its own `.AppImage`. |
+| `desktop` | string | — | Path to the `.desktop` entry file (template). Required — linuxdeploy will not assemble an AppImage without a desktop file. |
+| `extra_args` | list of string | — | Extra arguments appended to the linuxdeploy command line. |
+| `filename` | string | — | Output filename template (default includes project, version, os, arch). The `.AppImage` extension is appended automatically when absent. |
+| `icon` | string | — | Path to the application icon (template). Required. |
+| `id` | string | — | Unique identifier for this AppImage config (default: "default"). |
+| `ids` | list of string | — | Build IDs filter: only bundle binaries whose `id` is in this list. When omitted, every Linux binary in the build matrix is eligible. |
+| `name` | string | — | Application name passed to linuxdeploy via the `APP` env var and used as the AppDir basename. Defaults to the project name. |
+| `os` | list of string | — | Target OS filter (default: ["linux"]). AppImage is a Linux-only format. |
+| `runtime_harvest` | RuntimeHarvest | — | Runtime-asset harvest hook: run the freshly-built binary ONCE on the host to populate a directory, then bundle that directory into the AppDir. The harvested data is architecture-independent (grammars, themes, queries), so it is produced once on the host-native binary and reused for every target's AppImage. |
+| `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. |
+| `update_information` | string | — | zsync delta-update metadata embedded in the AppImage, passed to linuxdeploy via the `UPDATE_INFORMATION` env var. When omitted, the AppImage carries no update information and `UPDATE_INFORMATION` is left unset (matching linuxdeploy's default). |
 
 ## `artifactories`
 Artifactory upload configuration. Uploads artifacts to JFrog Artifactory repositories.

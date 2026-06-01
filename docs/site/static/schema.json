@@ -28,6 +28,14 @@
         }
       ]
     },
+    "appimages": {
+      "description": "AppImage configurations. Each entry bundles a built Linux binary plus its desktop integration into a single self-contained `.AppImage` via linuxdeploy.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/AppImageConfig"
+      }
+    },
     "artifactories": {
       "description": "Artifactory upload configurations.",
       "default": null,
@@ -909,6 +917,157 @@
           }
         }
       }
+    },
+    "AppImageConfig": {
+      "description": "AppImage packaging configuration.\n\nDrives the [AppImage](https://appimage.org/) stage, which bundles a built Linux binary plus its desktop integration (a `.desktop` entry + icon) into a single self-contained, runnable `.AppImage` file via [`linuxdeploy`](https://github.com/linuxdeploy/linuxdeploy)'s `appimage` output plugin. One `.AppImage` is produced per matching Linux target so a multi-arch build yields distinct, non-colliding outputs.\n\nYAML: ```yaml appimages: - id: helix ids: [helix-bin] desktop: contrib/Helix.desktop icon: contrib/helix.png appdir_extra: - src: runtime/ dst: usr/lib/helix/runtime update_information: \"gh-releases-zsync|helix-editor|helix|latest|helix-*.AppImage.zsync\" runtime_harvest: command: \"{{ .ArtifactPath }} --populate-runtime {{ .HarvestDir }}\" dir: runtime/ ```",
+      "type": "object",
+      "properties": {
+        "appdir_extra": {
+          "description": "Extra files / directories copied into the AppDir before linuxdeploy runs (e.g. a harvested `runtime/` tree). Each entry's `dst` is interpreted relative to the AppDir root.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/AppImageExtra"
+          }
+        },
+        "arch": {
+          "description": "Target architecture filter. When omitted, every architecture in the build matrix produces its own `.AppImage`.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "desktop": {
+          "description": "Path to the `.desktop` entry file (template). Required — linuxdeploy will not assemble an AppImage without a desktop file.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extra_args": {
+          "description": "Extra arguments appended to the linuxdeploy command line.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "filename": {
+          "description": "Output filename template (default includes project, version, os, arch). The `.AppImage` extension is appended automatically when absent.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "icon": {
+          "description": "Path to the application icon (template). Required.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Unique identifier for this AppImage config (default: \"default\").",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ids": {
+          "description": "Build IDs filter: only bundle binaries whose `id` is in this list. When omitted, every Linux binary in the build matrix is eligible.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Application name passed to linuxdeploy via the `APP` env var and used as the AppDir basename. Defaults to the project name.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "os": {
+          "description": "Target OS filter (default: [\"linux\"]). AppImage is a Linux-only format.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "runtime_harvest": {
+          "description": "Runtime-asset harvest hook: run the freshly-built binary ONCE on the host to populate a directory, then bundle that directory into the AppDir. The harvested data is architecture-independent (grammars, themes, queries), so it is produced once on the host-native binary and reused for every target's AppImage.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RuntimeHarvest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "skip": {
+          "description": "Skip this config. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "update_information": {
+          "description": "zsync delta-update metadata embedded in the AppImage, passed to linuxdeploy via the `UPDATE_INFORMATION` env var. When omitted, the AppImage carries no update information and `UPDATE_INFORMATION` is left unset (matching linuxdeploy's default).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "AppImageExtra": {
+      "description": "A file or directory copied into the AppDir before linuxdeploy assembles the AppImage. Mirrors [`MakeselfFile`]'s `src` / `dst` shape.",
+      "type": "object",
+      "properties": {
+        "dst": {
+          "description": "Destination path inside the AppDir (relative to the AppDir root, e.g. `usr/lib/helix/runtime`).",
+          "default": "",
+          "type": "string"
+        },
+        "src": {
+          "description": "Source path (file or directory, relative to project root). A trailing `/` is not required; directories are copied recursively.",
+          "default": "",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     },
     "ArchiveConfig": {
       "type": "object",
@@ -11426,6 +11585,23 @@
               "$ref": "#/definitions/HumanDuration"
             }
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "RuntimeHarvest": {
+      "description": "Runtime-asset harvest hook for an AppImage config. The `command` template runs the freshly-built host-native binary to populate `dir`; the resulting directory is then bundled into the AppDir (and staged at a stable dist path so an archive `extra_files` glob can reuse it).",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "Command template run once on the host to populate the harvest dir. `{{ .ArtifactPath }}` resolves to the host-native binary's path and `{{ .HarvestDir }}` to the absolute harvest output directory. Run via `sh -c`.",
+          "default": "",
+          "type": "string"
+        },
+        "dir": {
+          "description": "Directory (relative to the AppDir root) the harvested assets are bundled into. Also the AppDir-relative destination for the staged host-harvested tree.",
+          "default": "",
+          "type": "string"
         }
       },
       "additionalProperties": false

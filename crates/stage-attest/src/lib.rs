@@ -174,8 +174,13 @@ impl InTotoStatement {
 /// explicit `artifacts:` selection can name anything that lands on the release.
 fn concrete_kinds(kind: AttestationArtifactKind) -> &'static [ArtifactKind] {
     match kind {
-        // archive: packaged + self-extracting archives.
-        AttestationArtifactKind::Archive => &[ArtifactKind::Archive, ArtifactKind::Makeself],
+        // archive: packaged + self-extracting archives + AppImages (a single
+        // self-contained, runnable Linux bundle, same shape as makeself).
+        AttestationArtifactKind::Archive => &[
+            ArtifactKind::Archive,
+            ArtifactKind::Makeself,
+            ArtifactKind::AppImage,
+        ],
         // binary: uploadable raw binaries (the bare-binary release-asset kind,
         // NOT the intermediate build output).
         AttestationArtifactKind::Binary => &[ArtifactKind::UploadableBinary],
