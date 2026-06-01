@@ -918,6 +918,17 @@
             }
           ]
         },
+        "completions": {
+          "description": "Turnkey shell-completion generation: auto-generate (or harvest, or copy) completion files and bundle them into every archive produced by this entry. See [`CompletionsConfig`] for the three generation modes.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CompletionsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "files": {
           "description": "Extra files to include in the archive (glob patterns or detailed src/dst specs).",
           "type": [
@@ -981,6 +992,17 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "manpages": {
+          "description": "Turnkey man-page generation: auto-generate (or harvest, or copy) man pages and bundle them into every archive produced by this entry. See [`ManpagesConfig`] for the three generation modes.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ManpagesConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "meta": {
@@ -3539,6 +3561,56 @@
           ]
         }
       }
+    },
+    "CompletionsConfig": {
+      "description": "Shell-completion generation for an archive entry.\n\nExactly one of `generate` / `from_build_out` / `copy` must be set (validated at deserialize time). Setting none is a no-op; setting more than one is a config error.\n\nYAML examples: ```yaml completions: generate: \"{{ .ArtifactPath }} completions {{ .Shell }}\"   # mode A shells: [bash, zsh, fish, powershell, nushell, elvish] dst: \"completions/\" # mode B: from_build_out: \"**/out/{{ .Binary }}.{bash,fish}\" # mode C: copy: \"contrib/completion/*\" ```",
+      "type": "object",
+      "properties": {
+        "copy": {
+          "description": "Mode C: glob/path of committed completion files to copy verbatim.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dst": {
+          "description": "Destination directory inside the archive (and dist staging tree) for the generated files. Defaults to `\"completions/\"`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from_build_out": {
+          "description": "Mode B: per-target glob harvesting files a `build.rs` wrote into the crate's `OUT_DIR` (e.g. `\"**/out/{{ .Binary }}.{bash,fish}\"`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generate": {
+          "description": "Mode A: command run once on the host-native binary, per shell. The `{{ .Shell }}` template var is bound to each entry in `shells`, and `{{ .ArtifactPath }}` / `{{ .Binary }}` reference the built binary. Stdout is captured into one file per shell under `dst`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shells": {
+          "description": "Shells to generate for in mode A. Arbitrary user-supplied list — not limited to bash/zsh/fish/powershell; `nushell`, `elvish`, `fig`, etc. are all valid. Ignored by modes B and C. Defaults to the four common shells when omitted in mode A.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "ContentFromFile": {
       "description": "Load content from a local file.",
@@ -7579,6 +7651,45 @@
           ]
         }
       }
+    },
+    "ManpagesConfig": {
+      "description": "Man-page generation for an archive entry.\n\nSame three mutually-exclusive modes as [`CompletionsConfig`], minus the per-shell `shells` axis (man pages are shell-agnostic).\n\nYAML examples: ```yaml manpages: generate: \"{{ .ArtifactPath }} --man\"     # mode A dst: \"man/man1/\" # mode B: from_build_out: \"**/out/{{ .Binary }}.1\" # mode C: copy: \"man/*.1\" ```",
+      "type": "object",
+      "properties": {
+        "copy": {
+          "description": "Mode C: glob/path of committed man files to copy verbatim.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dst": {
+          "description": "Destination directory inside the archive (and dist staging tree) for the generated man files. Defaults to `\"man/man1/\"`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from_build_out": {
+          "description": "Mode B: per-target glob harvesting man files a `build.rs` wrote into the crate's `OUT_DIR` (e.g. `\"**/out/{{ .Binary }}.1\"`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generate": {
+          "description": "Mode A: command run once on the host-native binary; stdout is captured into a single man file under `dst` named `<binary>.1`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "MastodonAnnounce": {
       "type": "object",
