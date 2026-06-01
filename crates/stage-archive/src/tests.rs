@@ -5414,3 +5414,88 @@ fn mode_a_shell_var_does_not_leak_into_manpage_or_archive_name() {
         "Shell leaked into archive name template (should be empty)"
     );
 }
+
+#[test]
+fn mode_a_artifact_path_does_not_leak_into_name_or_templated_files() {
+    use anodizer_core::config::TemplateFileConfig;
+    // Generation binds ArtifactPath (= host binary path) and runs BEFORE the
+    // per-target loop, which only re-binds ArtifactPath AFTER the archive
+    // write. Without a per-call clear, the stale host path leaks into the
+    // archive name_template and templated_files renders for the crate.
+    // Regression: ArtifactPath was empty during this window at base.
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+
+    // Host binary with a DISTINCTIVE basename ("hostbin") so a leak is visible
+    // in the rendered name / templated body; the recorded binary name stays
+    // "myapp" (Binary is re-set per-target and must NOT be affected).
+    let bin = tmp.path().join("hostbin");
+    fs::write(&bin, b"#!/bin/sh\necho \"comp-$2\"\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = fs::metadata(&bin).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&bin, perms).unwrap();
+
+    // templated_files body echoes ArtifactPath — must render empty post-gen.
+    let tpl = tmp.path().join("probe.tpl");
+    fs::write(&tpl, "path=[{{ .ArtifactPath }}]\n").unwrap();
+
+    let archive = anodizer_core::config::ArchiveConfig {
+        // name_template embeds ArtifactPath: a leak would inject the host
+        // path (containing "hostbin") into the archive filename.
+        name_template: Some(
+            "{{ .ProjectName }}{{ .ArtifactPath }}-{{ .Os }}-{{ .Arch }}".to_string(),
+        ),
+        formats: Some(vec!["tar.gz".to_string()]),
+        completions: Some(CompletionsConfig {
+            generate: Some("{{ .ArtifactPath }} completions {{ .Shell }}".to_string()),
+            shells: Some(vec!["bash".to_string()]),
+            dst: Some("completions/".to_string()),
+            ..Default::default()
+        }),
+        templated_files: Some(vec![TemplateFileConfig {
+            id: Some("probe".to_string()),
+            src: tpl.to_string_lossy().to_string(),
+            dst: "probe.txt".to_string(),
+            mode: None,
+            skip: None,
+        }]),
+        ..Default::default()
+    };
+
+    let mut ctx = host_completion_ctx(&tmp, &dist, archive, &bin);
+    ArchiveStage.run(&mut ctx).unwrap();
+
+    // 1. Archive name must NOT contain the host binary path (ArtifactPath
+    //    rendered empty → stem is "myapp-linux-amd64").
+    let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+    assert_eq!(archives.len(), 1);
+    let stem = archives[0]
+        .path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert!(
+        !stem.contains("hostbin"),
+        "ArtifactPath leaked into archive name: {stem}"
+    );
+    assert_eq!(
+        stem, "myapp-linux-amd64.tar.gz",
+        "name must render ArtifactPath empty"
+    );
+
+    // 2. templated_files body must render ArtifactPath empty (not host path).
+    let entries = read_only_archive(&ctx);
+    let body = entries.get("probe.txt").unwrap_or_else(|| {
+        panic!(
+            "missing probe.txt; have {:?}",
+            entries.keys().collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(
+        String::from_utf8_lossy(body),
+        "path=[]\n",
+        "ArtifactPath leaked into templated_files body (should be empty)"
+    );
+}

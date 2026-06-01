@@ -118,6 +118,11 @@ into the shell's lookup path: bash `<bin>`, zsh `_<bin>`, fish `<bin>.fish`,
 powershell `_<bin>.ps1`, elvish `<bin>.elv`, nushell `<bin>.nu`. Man pages are
 written as `<bin>.1`.
 
+In `from_build_out` / `copy` globs, `{{ .Binary }}` resolves to the
+host-native binary's name — but on a pure cross build (no host artifact) it
+falls back to the **crate name**. If your binary name differs from the crate
+name, spell it literally in the glob instead of relying on `{{ .Binary }}`.
+
 ### Single source of truth for nfpm
 
 Generated files are staged under the dist directory so the **same** files feed
