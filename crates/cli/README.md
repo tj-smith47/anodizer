@@ -6,7 +6,7 @@
 
 # anodizer
 
-A Rust-native release pipeline — GoReleaser parity, signed and deterministic by default.
+The release pipeline built for Rust — workspace-aware, reproducible, and signed by default.
 
 [![CI](https://github.com/tj-smith47/anodizer/actions/workflows/ci.yml/badge.svg)](https://github.com/tj-smith47/anodizer/actions/workflows/ci.yml)
 [![Release](https://github.com/tj-smith47/anodizer/actions/workflows/release.yml/badge.svg)](https://github.com/tj-smith47/anodizer/actions/workflows/release.yml)
@@ -17,11 +17,24 @@ A Rust-native release pipeline — GoReleaser parity, signed and deterministic b
 
 </div>
 
-Anodizer reads a declarative config file and executes a full release pipeline: build, archive, checksum, changelog, sign, release, publish, and announce — all from a single `anodizer release` command. The same declarative, config-driven release pipeline that [GoReleaser](https://goreleaser.com/) provides for Go — built for Rust.
+Anodizer reads a declarative config file and runs your entire release from a single `anodizer release` command: build, archive, checksum, changelog, sign, release, publish, and announce. It's built around the Rust ecosystem — Cargo workspaces, `Cargo.lock`-aware version bumps, crates.io, and byte-reproducible artifacts.
 
 Written by [Claude](https://claude.ai); maintained by us.
 
 See [What works (with proof)](https://tj-smith47.github.io/anodizer/dogfooding/) for a per-feature status — every "live" claim links to a real published artifact you can verify yourself.
+
+## Why anodizer?
+
+Built for the Rust release workflow, end to end:
+
+- **Workspace-native.** Per-crate release cadences, per-crate tags, a tag resolver, and cross-crate version syncing — single crates and monorepos use the same config.
+- **Cargo- and lockfile-aware versioning.** `anodizer tag` and `anodizer bump` edit `Cargo.toml` + `Cargo.lock`, commit, tag, and push the bump and tag atomically — no orphaned commits, no hand-rolled `git push`.
+- **crates.io, ordered correctly.** Dependency-aware publish ordering with sparse-index polling (`wait_for_workspace_deps`), so workspace crates publish in the right order instead of racing propagation.
+- **Reproducible by default — and verified.** Deterministic artifacts out of the box, plus a determinism harness (`anodizer check determinism`) that rebuilds and byte-compares to prove it.
+- **Zero-config cross-compilation.** musl, glibc, Windows, and macOS targets via `cargo-zigbuild` or `cross` — no per-target toolchain wrangling.
+- **Rust-ecosystem niceties.** Generated crate READMEs, `cargo-binstall` metadata derived from your config, and a GitHub Action that can build straight from a branch.
+
+Coming from GoReleaser? It supports Rust too; anodizer is Rust-first. See the [migration guide](https://tj-smith47.github.io/anodizer/migration/goreleaser/).
 
 ## Features
 
