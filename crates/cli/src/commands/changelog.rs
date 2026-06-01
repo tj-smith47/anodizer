@@ -84,6 +84,7 @@ pub fn run(opts: ChangelogOpts) -> Result<()> {
     helpers::resolve_scm_token_type(&mut ctx, &config);
     ctx.populate_time_vars();
     ctx.populate_runtime_vars();
+    ctx.populate_rustc_vars();
 
     // Resolve git info (shared with release.rs and build.rs)
     helpers::resolve_git_context(&mut ctx, &config, &log)?;

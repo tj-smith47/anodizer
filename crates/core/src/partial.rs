@@ -200,6 +200,28 @@ pub fn detect_host_target() -> Result<String> {
     anyhow::bail!("could not detect host target from `rustc -vV` output")
 }
 
+/// Detect the rustc release version string via `rustc -vV`.
+///
+/// Parses the `release:` line from `rustc -vV` output (e.g. `"1.96.0"`).
+/// Returns `None` gracefully when rustc is unavailable, the command fails,
+/// or the line is absent — callers treat a missing version as an empty string.
+pub fn detect_rustc_version() -> Option<String> {
+    let output = std::process::Command::new("rustc")
+        .args(["-vV"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(ver) = line.strip_prefix("release: ") {
+            return Some(ver.trim().to_string());
+        }
+    }
+    None
+}
+
 /// Resolve the effective host target triple for `--single-target`.
 ///
 /// Priority chain (mirrors GoReleaser's `partial.Pipe.Run` +
@@ -1072,5 +1094,58 @@ mod tests {
     #[test]
     fn host_targets_skip_message_is_none_when_nothing_skipped() {
         assert!(host_targets_skip_message(LINUX_HOST, &[]).is_none());
+    }
+
+    // Parse the release: line from a representative rustc -vV block.
+    fn parse_rustc_release(output: &str) -> Option<String> {
+        for line in output.lines() {
+            if let Some(ver) = line.strip_prefix("release: ") {
+                return Some(ver.trim().to_string());
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn detect_rustc_version_parses_release_line() {
+        let sample = "\
+rustc 1.96.0 (ac68faa20 2026-05-25)\n\
+binary: rustc\n\
+commit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\n\
+commit-date: 2026-05-25\n\
+host: x86_64-unknown-linux-gnu\n\
+release: 1.96.0\n\
+LLVM version: 22.1.2\n";
+        assert_eq!(parse_rustc_release(sample), Some("1.96.0".to_string()));
+    }
+
+    #[test]
+    fn detect_rustc_version_parses_prerelease_line() {
+        let sample = "\
+rustc 1.97.0-nightly (abc123 2026-06-01)\n\
+release: 1.97.0-nightly\n\
+host: aarch64-apple-darwin\n";
+        assert_eq!(
+            parse_rustc_release(sample),
+            Some("1.97.0-nightly".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_rustc_version_returns_none_when_line_absent() {
+        let sample = "binary: rustc\nhost: x86_64-unknown-linux-gnu\n";
+        assert_eq!(parse_rustc_release(sample), None);
+    }
+
+    #[test]
+    fn detect_rustc_version_live_returns_nonempty() {
+        // Requires rustc on PATH — skip gracefully if absent.
+        if let Some(ver) = detect_rustc_version() {
+            assert!(!ver.is_empty(), "live rustc version should not be empty");
+            assert!(
+                ver.chars().next().is_some_and(|c| c.is_ascii_digit()),
+                "live rustc version should start with a digit: {ver}"
+            );
+        }
     }
 }

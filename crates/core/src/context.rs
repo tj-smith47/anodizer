@@ -959,6 +959,17 @@ impl Context {
         self.template_vars.set("Runtime_Goarch", goarch);
     }
 
+    /// Populate the `RustcVersion` built-in template variable.
+    ///
+    /// Probes `rustc -vV` and extracts the `release:` line (e.g. `"1.96.0"`).
+    /// Sets `RustcVersion` to the extracted string, or to `""` when rustc is
+    /// unavailable or the line is absent — templates that reference
+    /// `{{ .RustcVersion }}` degrade to an empty value rather than erroring.
+    pub fn populate_rustc_vars(&mut self) {
+        let ver = crate::partial::detect_rustc_version().unwrap_or_default();
+        self.template_vars.set("RustcVersion", &ver);
+    }
+
     /// Populate the `ReleaseNotes` template variable from stored changelogs.
     ///
     /// Should be called after the changelog stage has run and populated
@@ -2632,5 +2643,26 @@ mod tests {
         // in every realistic execution environment, but the map does not
         // know about it, so the read must return `None`.
         assert_eq!(ctx.env_var("PATH"), None);
+    }
+
+    #[test]
+    fn populate_rustc_vars_sets_nonempty_version() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.populate_rustc_vars();
+
+        let ver = ctx
+            .template_vars()
+            .get("RustcVersion")
+            .expect("RustcVersion should be set after populate_rustc_vars");
+        // On a host with rustc on PATH the var must be non-empty and start
+        // with a digit (e.g. "1.96.0").  On a host without rustc the var is
+        // empty but must still be present (no missing-key footgun).
+        if !ver.is_empty() {
+            assert!(
+                ver.chars().next().is_some_and(|c| c.is_ascii_digit()),
+                "RustcVersion should start with a digit: {ver}"
+            );
+        }
     }
 }

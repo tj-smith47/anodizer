@@ -308,6 +308,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         helpers::resolve_scm_token_type(&mut ctx, &config);
         ctx.populate_time_vars();
         ctx.populate_runtime_vars();
+        ctx.populate_rustc_vars();
         ctx.populate_metadata_var()?;
 
         // Set explicitly to "true"/"false" so `{% if IsPrepare %}` evaluates

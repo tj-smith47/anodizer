@@ -27,6 +27,10 @@ pub fn map_target(triple: &str) -> (String, String) {
         "openbsd"
     } else if triple.contains("aix") {
         "aix"
+    } else if triple.contains("solaris") {
+        "solaris"
+    } else if triple.contains("illumos") {
+        "illumos"
     } else {
         "unknown"
     };
@@ -59,6 +63,7 @@ pub fn map_target(triple: &str) -> (String, String) {
             "mips64" | "mips64el" => first,
             "mips" | "mipsel" => first,
             "loongarch64" => "loong64",
+            "sparcv9" | "sparc64" => "sparc64",
             other => other,
         }
     };
@@ -235,6 +240,27 @@ mod tests {
         let (os, arch) = map_target("powerpc64-ibm-aix");
         assert_eq!(os, "aix");
         assert_eq!(arch, "ppc64");
+    }
+
+    #[test]
+    fn test_solaris_sparcv9() {
+        let (os, arch) = map_target("sparcv9-sun-solaris");
+        assert_eq!(os, "solaris");
+        assert_eq!(arch, "sparc64");
+    }
+
+    #[test]
+    fn test_sparc64_linux() {
+        let (os, arch) = map_target("sparc64-unknown-linux-gnu");
+        assert_eq!(os, "linux");
+        assert_eq!(arch, "sparc64");
+    }
+
+    #[test]
+    fn test_illumos() {
+        let (os, arch) = map_target("x86_64-unknown-illumos");
+        assert_eq!(os, "illumos");
+        assert_eq!(arch, "amd64");
     }
 
     #[test]
