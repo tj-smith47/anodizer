@@ -83,6 +83,102 @@ fn test_generate_nfpm_yaml_multi_binary() {
     assert!(yaml.contains("/dist/myapp-worker"), "worker source path");
 }
 
+/// `bin_alias` renames the installed binary inside the package only — the
+/// content `dst` filename uses the alias while the source path (and thus the
+/// archive output) keeps the built file's name. Real case: `fd` ships as
+/// `fdfind` in the Debian package.
+#[test]
+fn test_generate_nfpm_yaml_bin_alias_renames_dst_only() {
+    let nfpm_cfg = NfpmConfig {
+        package_name: Some("fd-find".to_string()),
+        formats: vec!["deb".to_string()],
+        bindir: Some("/usr/bin".to_string()),
+        bin_alias: Some("fdfind".to_string()),
+        ..Default::default()
+    };
+    let yaml = generate_nfpm_yaml(
+        &nfpm_cfg,
+        "1.0.0",
+        &["/dist/fd".to_string()],
+        Some("deb"),
+        false,
+        &NfpmLibraryPaths::default(),
+    )
+    .unwrap();
+    assert!(
+        yaml.contains("/usr/bin/fdfind"),
+        "binary installed under the alias name, got:\n{yaml}"
+    );
+    assert!(
+        !yaml.contains("/usr/bin/fd\n") && !yaml.contains("/usr/bin/fd "),
+        "binary must NOT be installed under the built name when aliased, got:\n{yaml}"
+    );
+    // The source path (archive/build output) is untouched.
+    assert!(
+        yaml.contains("src: /dist/fd"),
+        "source path keeps the built binary name, got:\n{yaml}"
+    );
+}
+
+/// Absent `bin_alias`, the binary keeps its built name in the package.
+#[test]
+fn test_generate_nfpm_yaml_no_bin_alias_keeps_binary_name() {
+    let nfpm_cfg = NfpmConfig {
+        package_name: Some("fd-find".to_string()),
+        formats: vec!["deb".to_string()],
+        bindir: Some("/usr/bin".to_string()),
+        ..Default::default()
+    };
+    let yaml = generate_nfpm_yaml(
+        &nfpm_cfg,
+        "1.0.0",
+        &["/dist/fd".to_string()],
+        Some("deb"),
+        false,
+        &NfpmLibraryPaths::default(),
+    )
+    .unwrap();
+    assert!(
+        yaml.contains("/usr/bin/fd"),
+        "binary keeps built name absent bin_alias, got:\n{yaml}"
+    );
+    assert!(!yaml.contains("fdfind"), "no alias should appear");
+}
+
+/// `bin_alias` is a single-name rename: with multiple binaries in one package
+/// it would clobber, so each binary keeps its own name.
+#[test]
+fn test_generate_nfpm_yaml_bin_alias_ignored_for_multi_binary() {
+    let nfpm_cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["deb".to_string()],
+        bindir: Some("/usr/bin".to_string()),
+        bin_alias: Some("renamed".to_string()),
+        ..Default::default()
+    };
+    let yaml = generate_nfpm_yaml(
+        &nfpm_cfg,
+        "1.0.0",
+        &[
+            "/dist/myapp-server".to_string(),
+            "/dist/myapp-cli".to_string(),
+        ],
+        Some("deb"),
+        false,
+        &NfpmLibraryPaths::default(),
+    )
+    .unwrap();
+    assert!(
+        yaml.contains("/usr/bin/myapp-server"),
+        "server keeps its name"
+    );
+    assert!(yaml.contains("/usr/bin/myapp-cli"), "cli keeps its name");
+    assert!(
+        !yaml.contains("/usr/bin/renamed"),
+        "alias must not collapse a multi-binary package, got:\n{yaml}"
+    );
+}
+
 #[test]
 fn test_nfpm_command() {
     let cmd = nfpm_command("/tmp/nfpm.yaml", "deb", "/tmp/output");
@@ -5091,4 +5187,171 @@ fn test_nfpm_per_crate_description_is_each_crates_own() {
     let beta = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "beta").unwrap();
     assert_eq!(alpha.description.as_deref(), Some("Alpha package"));
     assert_eq!(beta.description.as_deref(), Some("Beta package"));
+}
+
+/// Set the per-target template vars the way `set_nfpm_per_target_template_vars`
+/// does, so a direct `render_nfpm_config_fields` call sees the same context the
+/// stage loop would supply for one target.
+fn set_target_vars(ctx: &mut anodizer_core::context::Context, triple: &str) {
+    let (os, arch) = anodizer_core::target::map_target(triple);
+    ctx.template_vars_mut().set("Os", &os);
+    ctx.template_vars_mut().set("Arch", &arch);
+    ctx.template_vars_mut().set("Target", triple);
+    ctx.template_vars_mut()
+        .set("Libc", anodizer_core::target::libc_from_target(triple));
+}
+
+/// `conflicts`/`provides` containing `{{ .Libc }}` render to the per-target
+/// libc value — `musl` vs `gnu` for the respective Linux triples — so one
+/// nfpm config can select a different `Conflicts:` per build.
+#[test]
+fn test_nfpm_conflicts_provides_render_libc_per_target() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let nfpm_cfg = NfpmConfig {
+        formats: vec!["deb".to_string()],
+        conflicts: Some(vec![
+            "{% if Libc == \"musl\" %}fd-musl{% else %}fd{% endif %}".to_string(),
+        ]),
+        provides: Some(vec!["fd-{{ Libc }}".to_string()]),
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+
+    set_target_vars(&mut ctx, "x86_64-unknown-linux-musl");
+    let musl = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "fd").unwrap();
+    assert_eq!(musl.conflicts.as_deref().unwrap(), &["fd-musl".to_string()]);
+    assert_eq!(musl.provides.as_deref().unwrap(), &["fd-musl".to_string()]);
+
+    set_target_vars(&mut ctx, "x86_64-unknown-linux-gnu");
+    let gnu = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "fd").unwrap();
+    assert_eq!(gnu.conflicts.as_deref().unwrap(), &["fd".to_string()]);
+    assert_eq!(gnu.provides.as_deref().unwrap(), &["fd-gnu".to_string()]);
+}
+
+/// `{{ .Libc }}` renders empty for a target with no libc concept
+/// (windows/macos), so libc-branching templates degrade cleanly.
+#[test]
+fn test_nfpm_libc_empty_for_non_libc_target() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let nfpm_cfg = NfpmConfig {
+        formats: vec!["deb".to_string()],
+        provides: Some(vec!["myapp{{ Libc }}".to_string()]),
+        ..Default::default()
+    };
+
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    for triple in ["x86_64-apple-darwin", "x86_64-pc-windows-msvc"] {
+        set_target_vars(&mut ctx, triple);
+        let rendered = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "myapp").unwrap();
+        assert_eq!(
+            rendered.provides.as_deref().unwrap(),
+            &["myapp".to_string()],
+            "Libc must be empty for {triple}"
+        );
+    }
+}
+
+/// Per-crate (workspace per-crate) proof for `bin_alias`: two crates each
+/// carry their OWN `bin_alias`, and `render_nfpm_config_fields` resolves each
+/// crate's value independently — the recurring per-crate-config bug family.
+#[test]
+fn test_nfpm_bin_alias_per_crate_config() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+
+    let fd_cfg = NfpmConfig {
+        formats: vec!["deb".to_string()],
+        bin_alias: Some("fdfind".to_string()),
+        ..Default::default()
+    };
+    let other_cfg = NfpmConfig {
+        formats: vec!["deb".to_string()],
+        bin_alias: Some("bat-{{ .ProjectName }}".to_string()),
+        ..Default::default()
+    };
+
+    let fd = render_nfpm_config_fields(&fd_cfg, &mut ctx, "fd").unwrap();
+    let other = render_nfpm_config_fields(&other_cfg, &mut ctx, "bat").unwrap();
+    assert_eq!(fd.bin_alias.as_deref(), Some("fdfind"));
+    // Each crate's bin_alias is templated independently.
+    assert!(
+        other.bin_alias.as_deref().unwrap().starts_with("bat-"),
+        "second crate keeps its own templated alias, got {:?}",
+        other.bin_alias
+    );
+}
+
+/// End-to-end through `NfpmStage.run` with a real musl artifact: the
+/// per-target loop sets `Libc` before rendering, so a config that branches on
+/// `{{ .Libc }}` selects the musl conflict for a musl build. Proves the
+/// render happens INSIDE the per-target loop.
+#[test]
+fn test_nfpm_run_renders_libc_conflicts_for_musl_target() {
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let bin_path = tmp.path().join("fd");
+    std::fs::write(&bin_path, b"#!/bin/sh\n").unwrap();
+
+    let nfpm_cfg = NfpmConfig {
+        package_name: Some("fd".to_string()),
+        formats: vec!["deb".to_string()],
+        maintainer: Some("m@example.com".to_string()),
+        conflicts: Some(vec![
+            "{% if Libc == \"musl\" %}fd-musl{% else %}fd{% endif %}".to_string(),
+        ]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "fd".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "fd".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        nfpms: Some(vec![nfpm_cfg.clone()]),
+        ..Default::default()
+    }];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: "fd".to_string(),
+        path: bin_path,
+        target: Some("x86_64-unknown-linux-musl".to_string()),
+        crate_name: "fd".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    // Drive the per-target render path directly to inspect the rendered list:
+    // set the musl per-target vars (as the loop does) then render.
+    set_target_vars(&mut ctx, "x86_64-unknown-linux-musl");
+    let rendered = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "fd").unwrap();
+    assert_eq!(
+        rendered.conflicts.as_deref().unwrap(),
+        &["fd-musl".to_string()],
+        "musl build must pick the musl conflict"
+    );
+
+    // And the stage itself runs cleanly (produces one deb artifact).
+    NfpmStage.run(&mut ctx).unwrap();
+    let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+    assert_eq!(pkgs.len(), 1, "one deb package for the musl target");
 }

@@ -8402,6 +8402,14 @@
             }
           ]
         },
+        "bin_alias": {
+          "description": "Rename the installed binary inside the package only.\n\nWhen set, the auto-emitted binary content entry is installed under this name (in `bindir`) instead of the built file's name; the archive/build output is untouched. Use this to resolve Debian/RPM name clashes — e.g. `fd` ships its binary as `fdfind` in the Debian package while the tarball keeps `fd`. Templated.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "bindir": {
           "description": "Installation directory for binaries (default: /usr/bin).",
           "default": null,

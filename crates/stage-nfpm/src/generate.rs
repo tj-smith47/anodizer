@@ -90,6 +90,11 @@ pub fn generate_nfpm_yaml_with_env(
     };
     let bindir = bindir.as_str();
 
+    // `bin_alias` renames the installed binary inside the package only.
+    // It applies solely to the single-binary case — renaming every entry of a
+    // multi-binary package to one name would clobber, so a config that bundles
+    // multiple binaries keeps each binary's own name regardless of the alias.
+    let single_binary = binary_paths.len() == 1;
     let mut contents = if is_meta {
         // Meta packages have no binary contents — only dependencies
         Vec::new()
@@ -104,9 +109,13 @@ pub fn generate_nfpm_yaml_with_env(
                     .and_then(|n| n.to_str())
                     .unwrap_or("binary")
                     .to_string();
+                let dst_name = match config.bin_alias.as_deref() {
+                    Some(alias) if single_binary && !alias.is_empty() => alias,
+                    _ => binary_name.as_str(),
+                };
                 NfpmYamlContent {
                     src: bp.clone(),
-                    dst: format!("{bindir}/{binary_name}"),
+                    dst: format!("{bindir}/{dst_name}"),
                     content_type: None,
                     file_info: Some(NfpmYamlFileInfo {
                         owner: None,

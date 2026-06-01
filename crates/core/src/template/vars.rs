@@ -137,8 +137,8 @@ impl Default for TemplateVars {
     }
 }
 
-/// Clear per-target template variables (`Os`, `Arch`, `Target`, `Arm`,
-/// `Arm64`, `Amd64`, `Mips`, `I386`) so they don't leak to downstream
+/// Clear per-target template variables (`Os`, `Arch`, `Target`, `Libc`,
+/// `Arm`, `Arm64`, `Amd64`, `Mips`, `I386`) so they don't leak to downstream
 /// stages after a packaging stage's per-target loop finishes.
 ///
 /// Packaging stages (flatpak, snapcraft, nfpm, makeself, etc.) iterate
@@ -163,7 +163,7 @@ pub fn clear_per_target_vars(tv: &mut TemplateVars) {
 /// templates that branch on `{{ .Ppc64 }}` / `{{ .Riscv64 }}` from raising
 /// a Tera "missing key" error in strict-mode rendering.
 pub const PER_TARGET_VARS: &[&str] = &[
-    "Os", "Arch", "Target", "Arm", "Arm64", "Amd64", "Mips", "I386", "Ppc64", "Riscv64",
+    "Os", "Arch", "Target", "Libc", "Arm", "Arm64", "Amd64", "Mips", "I386", "Ppc64", "Riscv64",
 ];
 
 /// Per-artifact template variable keys (set inside per-artifact loops in

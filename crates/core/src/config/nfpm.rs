@@ -30,6 +30,14 @@ pub struct NfpmConfig {
     pub license: Option<String>,
     /// Installation directory for binaries (default: /usr/bin).
     pub bindir: Option<String>,
+    /// Rename the installed binary inside the package only.
+    ///
+    /// When set, the auto-emitted binary content entry is installed under this
+    /// name (in `bindir`) instead of the built file's name; the archive/build
+    /// output is untouched. Use this to resolve Debian/RPM name clashes — e.g.
+    /// `fd` ships its binary as `fdfind` in the Debian package while the tarball
+    /// keeps `fd`. Templated.
+    pub bin_alias: Option<String>,
     /// Files to include in the package beyond the main binary.
     pub contents: Option<Vec<NfpmContent>>,
     /// Runtime package dependencies keyed by format (e.g., {"deb": ["libc6"], "rpm": ["glibc"]}).

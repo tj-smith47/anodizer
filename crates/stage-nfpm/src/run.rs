@@ -250,6 +250,12 @@ fn process_nfpm_format(
         return Ok(());
     }
 
+    // Set per-target vars (`Os`, `Arch`, `Target`, `Libc`) BEFORE rendering so
+    // `conflicts`/`provides`/`replaces` and other per-target fields resolve to
+    // the values for THIS target — letting the musl and glibc builds of one
+    // crate render different relationship lists.
+    set_nfpm_per_target_template_vars(ctx, &os, &arch, target.as_deref());
+
     let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, ctx, crate_name)?;
 
     process_templated_contents(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
@@ -695,7 +701,26 @@ pub(crate) fn render_nfpm_config_fields(
     render_in_place(&mut rendered_cfg.priority, ctx)?;
     render_in_place(&mut rendered_cfg.changelog, ctx)?;
     render_in_place(&mut rendered_cfg.bindir, ctx)?;
+    render_in_place(&mut rendered_cfg.bin_alias, ctx)?;
     render_in_place(&mut rendered_cfg.mtime, ctx)?;
+
+    // Render relationship lists per-target so a config can select a different
+    // `Conflicts:`/`Provides:`/`Replaces:` per libc/arch via `{{ .Libc }}`
+    // etc. These vars are set by `set_nfpm_per_target_template_vars` before
+    // this function runs, so each (config × target) iteration renders its own
+    // values.
+    for list in [
+        rendered_cfg.conflicts.as_mut(),
+        rendered_cfg.provides.as_mut(),
+        rendered_cfg.replaces.as_mut(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        for entry in list.iter_mut() {
+            *entry = ctx.render_template(entry)?;
+        }
+    }
 
     if let Some(ref mut scripts) = rendered_cfg.scripts {
         render_in_place(&mut scripts.preinstall, ctx)?;
@@ -905,7 +930,33 @@ fn resolve_pkg_name(
     }
 }
 
-/// Populate per-package template variables (`Os`, `Arch`, `Target`,
+/// Populate the per-target template variables (`Os`, `Arch`, `Target`,
+/// `Libc`) shared by every per-target field that renders for one
+/// (config × target) iteration.
+///
+/// Called before `render_nfpm_config_fields` so `conflicts`/`provides`/
+/// `replaces` resolve against THIS target, then again (transitively, via
+/// `set_nfpm_per_pkg_template_vars`) before the filename template renders.
+/// `Libc` is `musl`/`gnu` for the respective triples, empty when the target
+/// has no libc concept.
+fn set_nfpm_per_target_template_vars(
+    ctx: &mut Context,
+    os: &str,
+    arch: &str,
+    target: Option<&str>,
+) {
+    ctx.template_vars_mut().set("Os", os);
+    ctx.template_vars_mut().set("Arch", arch);
+    ctx.template_vars_mut().set("Target", target.unwrap_or(""));
+    ctx.template_vars_mut().set(
+        "Libc",
+        target
+            .map(anodizer_core::target::libc_from_target)
+            .unwrap_or(""),
+    );
+}
+
+/// Populate per-package template variables (`Os`, `Arch`, `Target`, `Libc`,
 /// `Format`, `PackageName`, `ConventionalExtension`,
 /// `ConventionalFileName`, `Release`, `Epoch`) before rendering the
 /// user's `file_name_template`.
@@ -921,9 +972,7 @@ fn set_nfpm_per_pkg_template_vars(
     ext: &str,
     version: &str,
 ) {
-    ctx.template_vars_mut().set("Os", os);
-    ctx.template_vars_mut().set("Arch", arch);
-    ctx.template_vars_mut().set("Target", target.unwrap_or(""));
+    set_nfpm_per_target_template_vars(ctx, os, arch, target);
     ctx.template_vars_mut().set("Format", format);
     ctx.template_vars_mut().set("PackageName", pkg_name);
     ctx.template_vars_mut().set("ConventionalExtension", ext);

@@ -71,6 +71,23 @@ pub fn map_target(triple: &str) -> (String, String) {
     (os.to_string(), arch.to_string())
 }
 
+/// Map a target triple to its libc family for the `{{ .Libc }}` template var.
+///
+/// Returns the triple's libc-environment component using the same spelling
+/// the codebase already uses for triples (`musl` for `*-musl`, `gnu` for
+/// `*-gnu*`). Targets with no libc concept (macOS, Windows, bare-metal)
+/// return an empty string so `conflicts`/`provides` templates that branch on
+/// `{{ .Libc }}` degrade cleanly to the non-libc value.
+pub fn libc_from_target(triple: &str) -> &'static str {
+    if triple.contains("musl") {
+        "musl"
+    } else if triple.contains("gnu") {
+        "gnu"
+    } else {
+        ""
+    }
+}
+
 /// Returns `true` if the target triple represents a macOS (Darwin) target.
 pub fn is_darwin(triple: &str) -> bool {
     triple.contains("darwin") || triple.contains("apple")
@@ -261,6 +278,18 @@ mod tests {
         let (os, arch) = map_target("x86_64-unknown-illumos");
         assert_eq!(os, "illumos");
         assert_eq!(arch, "amd64");
+    }
+
+    #[test]
+    fn test_libc_from_target() {
+        assert_eq!(libc_from_target("x86_64-unknown-linux-musl"), "musl");
+        assert_eq!(libc_from_target("aarch64-unknown-linux-musl"), "musl");
+        assert_eq!(libc_from_target("x86_64-unknown-linux-gnu"), "gnu");
+        assert_eq!(libc_from_target("armv7-unknown-linux-gnueabihf"), "gnu");
+        // No libc concept — empty so templates degrade cleanly.
+        assert_eq!(libc_from_target("x86_64-apple-darwin"), "");
+        assert_eq!(libc_from_target("x86_64-pc-windows-msvc"), "");
+        assert_eq!(libc_from_target("x86_64-pc-windows-gnu"), "gnu");
     }
 
     #[test]
