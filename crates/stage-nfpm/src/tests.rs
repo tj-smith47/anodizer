@@ -5,7 +5,7 @@ use anodizer_core::config::{NfpmConfig, NfpmDebConfig, NfpmRpmConfig, NfpmSignat
 use anodizer_core::stage::Stage;
 use tempfile::TempDir;
 
-use super::run::render_nfpm_config_fields;
+use super::run::{render_and_generate_nfpm_yaml, render_nfpm_config_fields};
 use super::{
     KNOWN_FORMATS, NfpmLibraryPaths, NfpmStage, format_extension, generate_nfpm_yaml, nfpm_command,
     validate_format,
@@ -5215,6 +5215,11 @@ fn test_nfpm_conflicts_provides_render_libc_per_target() {
             "{% if Libc == \"musl\" %}fd-musl{% else %}fd{% endif %}".to_string(),
         ]),
         provides: Some(vec!["fd-{{ Libc }}".to_string()]),
+        // All five relationship lists must render per-target — recommends and
+        // suggests share the exact shape of conflicts/provides/replaces.
+        recommends: Some(vec!["fd-extras-{{ Libc }}".to_string()]),
+        suggests: Some(vec!["fd-docs-{{ Libc }}".to_string()]),
+        replaces: Some(vec!["old-fd-{{ Libc }}".to_string()]),
         ..Default::default()
     };
 
@@ -5224,11 +5229,31 @@ fn test_nfpm_conflicts_provides_render_libc_per_target() {
     let musl = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "fd").unwrap();
     assert_eq!(musl.conflicts.as_deref().unwrap(), &["fd-musl".to_string()]);
     assert_eq!(musl.provides.as_deref().unwrap(), &["fd-musl".to_string()]);
+    assert_eq!(
+        musl.recommends.as_deref().unwrap(),
+        &["fd-extras-musl".to_string()]
+    );
+    assert_eq!(
+        musl.suggests.as_deref().unwrap(),
+        &["fd-docs-musl".to_string()]
+    );
+    assert_eq!(
+        musl.replaces.as_deref().unwrap(),
+        &["old-fd-musl".to_string()]
+    );
 
     set_target_vars(&mut ctx, "x86_64-unknown-linux-gnu");
     let gnu = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "fd").unwrap();
     assert_eq!(gnu.conflicts.as_deref().unwrap(), &["fd".to_string()]);
     assert_eq!(gnu.provides.as_deref().unwrap(), &["fd-gnu".to_string()]);
+    assert_eq!(
+        gnu.recommends.as_deref().unwrap(),
+        &["fd-extras-gnu".to_string()]
+    );
+    assert_eq!(
+        gnu.suggests.as_deref().unwrap(),
+        &["fd-docs-gnu".to_string()]
+    );
 }
 
 /// `{{ .Libc }}` renders empty for a target with no libc concept
@@ -5288,18 +5313,24 @@ fn test_nfpm_bin_alias_per_crate_config() {
     );
 }
 
-/// End-to-end through `NfpmStage.run` with a real musl artifact: the
-/// per-target loop sets `Libc` before rendering, so a config that branches on
-/// `{{ .Libc }}` selects the musl conflict for a musl build. Proves the
-/// render happens INSIDE the per-target loop.
+/// Loop-level guard: drive the SHARED production path
+/// (`render_and_generate_nfpm_yaml`) — the same function the stage loop calls
+/// for every (config × target) — and assert the EMITTED nfpm YAML carries the
+/// musl conflict. The per-target var set inside that function is load-bearing:
+/// if `set_nfpm_per_target_template_vars(ctx, …)` is removed, `Libc` is unset
+/// at render time and the YAML ships either the literal `{% if Libc … %}` text
+/// or the bare-`fd` fallback — either way THIS assertion fails. Unlike a
+/// direct `render_nfpm_config_fields` call seeded by a test-local helper, this
+/// cannot pass with the production set call deleted.
 #[test]
-fn test_nfpm_run_renders_libc_conflicts_for_musl_target() {
-    use anodizer_core::config::{Config, CrateConfig};
+fn test_nfpm_loop_emits_libc_conflict_in_yaml_for_musl() {
+    use anodizer_core::config::Config;
     use anodizer_core::context::{Context, ContextOptions};
 
     let tmp = TempDir::new().unwrap();
     let bin_path = tmp.path().join("fd");
     std::fs::write(&bin_path, b"#!/bin/sh\n").unwrap();
+    let bin_str = bin_path.to_string_lossy().into_owned();
 
     let nfpm_cfg = NfpmConfig {
         package_name: Some("fd".to_string()),
@@ -5314,44 +5345,72 @@ fn test_nfpm_run_renders_libc_conflicts_for_musl_target() {
     let mut config = Config::default();
     config.project_name = "fd".to_string();
     config.dist = tmp.path().join("dist");
-    config.crates = vec![CrateConfig {
-        name: "fd".to_string(),
-        path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
-        nfpms: Some(vec![nfpm_cfg.clone()]),
-        ..Default::default()
-    }];
-
-    let mut ctx = Context::new(
-        config,
-        ContextOptions {
-            dry_run: true,
-            ..Default::default()
-        },
-    );
+    let mut ctx = Context::new(config, ContextOptions::default());
     ctx.template_vars_mut().set("Version", "1.0.0");
-    ctx.artifacts.add(Artifact {
-        kind: ArtifactKind::Binary,
-        name: "fd".to_string(),
-        path: bin_path,
-        target: Some("x86_64-unknown-linux-musl".to_string()),
-        crate_name: "fd".to_string(),
-        metadata: HashMap::new(),
-        size: None,
-    });
 
-    // Drive the per-target render path directly to inspect the rendered list:
-    // set the musl per-target vars (as the loop does) then render.
-    set_target_vars(&mut ctx, "x86_64-unknown-linux-musl");
-    let rendered = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "fd").unwrap();
-    assert_eq!(
-        rendered.conflicts.as_deref().unwrap(),
-        &["fd-musl".to_string()],
-        "musl build must pick the musl conflict"
+    // No test-local `set_target_vars` priming here — the production function
+    // under test owns setting `Libc` from the target triple.
+    let yaml = render_and_generate_nfpm_yaml(
+        &mut ctx,
+        &nfpm_cfg,
+        "fd",
+        &[],
+        Some("x86_64-unknown-linux-musl"),
+        &[bin_str],
+        &NfpmLibraryPaths::default(),
+        "linux",
+        "amd64",
+        "deb",
+        "fd",
+        tmp.path(),
+        "1.0.0",
+        false,
+        true,
+    )
+    .unwrap();
+
+    assert!(
+        yaml.contains("conflicts:\n- fd-musl"),
+        "emitted YAML must carry the musl conflict, got:\n{yaml}"
+    );
+    assert!(
+        !yaml.contains("Libc"),
+        "no literal template text should leak into YAML, got:\n{yaml}"
+    );
+    // The plain-`fd` fallback (gnu/default branch) must NOT appear as a
+    // standalone conflict entry — that would mean Libc was unset at render.
+    // `conflicts:\n- fd-musl` contains `- fd` as a substring, so guard on the
+    // exact bare-entry form `- fd` followed by a line end, not present here.
+    assert!(
+        !yaml.contains("conflicts:\n- fd\n") && !yaml.ends_with("conflicts:\n- fd"),
+        "musl build must not fall back to the bare-fd conflict, got:\n{yaml}"
     );
 
-    // And the stage itself runs cleanly (produces one deb artifact).
-    NfpmStage.run(&mut ctx).unwrap();
-    let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
-    assert_eq!(pkgs.len(), 1, "one deb package for the musl target");
+    // Sanity: the gnu build of the SAME config emits the fallback instead.
+    let yaml_gnu = render_and_generate_nfpm_yaml(
+        &mut ctx,
+        &nfpm_cfg,
+        "fd",
+        &[],
+        Some("x86_64-unknown-linux-gnu"),
+        &[bin_path.to_string_lossy().into_owned()],
+        &NfpmLibraryPaths::default(),
+        "linux",
+        "amd64",
+        "deb",
+        "fd",
+        tmp.path(),
+        "1.0.0",
+        false,
+        true,
+    )
+    .unwrap();
+    assert!(
+        yaml_gnu.contains("conflicts:\n- fd\n"),
+        "gnu build must emit the bare-fd conflict, got:\n{yaml_gnu}"
+    );
+    assert!(
+        !yaml_gnu.contains("fd-musl"),
+        "gnu build must not carry the musl conflict, got:\n{yaml_gnu}"
+    );
 }

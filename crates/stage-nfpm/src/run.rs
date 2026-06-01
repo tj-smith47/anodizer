@@ -250,33 +250,26 @@ fn process_nfpm_format(
         return Ok(());
     }
 
-    // Set per-target vars (`Os`, `Arch`, `Target`, `Libc`) BEFORE rendering so
-    // `conflicts`/`provides`/`replaces` and other per-target fields resolve to
-    // the values for THIS target — letting the musl and glibc builds of one
-    // crate render different relationship lists.
-    set_nfpm_per_target_template_vars(ctx, &os, &arch, target.as_deref());
-
-    let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, ctx, crate_name)?;
-
-    process_templated_contents(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
-    process_templated_scripts(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
-
-    fill_deb_arch_variant(&mut rendered_cfg, linux_binaries, target.as_deref());
-
     let pkg_name_owned = resolve_pkg_name(nfpm_cfg, &ctx.config.project_name, crate_name);
     let pkg_name: &str = pkg_name_owned.as_str();
     let ext = format_extension(format);
 
-    setup_lintian_overrides(&mut rendered_cfg, format, pkg_name, &arch, dist, dry_run)?;
-
-    let yaml_content = generate_nfpm_yaml_with_env(
-        &rendered_cfg,
-        version,
+    let yaml_content = render_and_generate_nfpm_yaml(
+        ctx,
+        nfpm_cfg,
+        crate_name,
+        linux_binaries,
+        target.as_deref(),
         binary_paths,
-        Some(format),
-        skip_sign,
         lib_paths,
-        ctx.template_vars().all_env(),
+        &os,
+        &arch,
+        format,
+        pkg_name,
+        dist,
+        version,
+        skip_sign,
+        dry_run,
     )?;
 
     let output_dir = dist.join("linux");
@@ -664,6 +657,56 @@ fn resolve_format_os_arch(
     }
 }
 
+/// Set the per-target template vars, render the nfpm config for THIS target,
+/// run the templated-contents/scripts + arch-variant + lintian passes, and
+/// emit the final nfpm YAML string.
+///
+/// This is the single per-target render+generate path shared by the live and
+/// dry-run branches of `process_nfpm_format`. The `set_nfpm_per_target_template_vars`
+/// call here is load-bearing: it must run BEFORE `render_nfpm_config_fields`
+/// so `conflicts`/`provides`/`replaces`/`recommends`/`suggests` resolve
+/// `{{ .Libc }}` (and `Os`/`Arch`/`Target`) against this target. Removing it
+/// would silently ship the literal template text.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_and_generate_nfpm_yaml(
+    ctx: &mut Context,
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    crate_name: &str,
+    linux_binaries: &[Artifact],
+    target: Option<&str>,
+    binary_paths: &[String],
+    lib_paths: &NfpmLibraryPaths,
+    os: &str,
+    arch: &str,
+    format: &str,
+    pkg_name: &str,
+    dist: &std::path::Path,
+    version: &str,
+    skip_sign: bool,
+    dry_run: bool,
+) -> Result<String> {
+    set_nfpm_per_target_template_vars(ctx, os, arch, target);
+
+    let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, ctx, crate_name)?;
+
+    process_templated_contents(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
+    process_templated_scripts(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
+
+    fill_deb_arch_variant(&mut rendered_cfg, linux_binaries, target);
+
+    setup_lintian_overrides(&mut rendered_cfg, format, pkg_name, arch, dist, dry_run)?;
+
+    generate_nfpm_yaml_with_env(
+        &rendered_cfg,
+        version,
+        binary_paths,
+        Some(format),
+        skip_sign,
+        lib_paths,
+        ctx.template_vars().all_env(),
+    )
+}
+
 /// Clone the nfpm config and template-render every string field that
 /// participates in the generated YAML. Project-level `metadata.*` fall back
 /// values are applied before rendering when the per-config field is unset
@@ -705,14 +748,16 @@ pub(crate) fn render_nfpm_config_fields(
     render_in_place(&mut rendered_cfg.mtime, ctx)?;
 
     // Render relationship lists per-target so a config can select a different
-    // `Conflicts:`/`Provides:`/`Replaces:` per libc/arch via `{{ .Libc }}`
-    // etc. These vars are set by `set_nfpm_per_target_template_vars` before
-    // this function runs, so each (config × target) iteration renders its own
-    // values.
+    // `Conflicts:`/`Provides:`/`Replaces:`/`Recommends:`/`Suggests:` per
+    // libc/arch via `{{ .Libc }}` etc. These vars are set by
+    // `set_nfpm_per_target_template_vars` before this function runs, so each
+    // (config × target) iteration renders its own values.
     for list in [
         rendered_cfg.conflicts.as_mut(),
         rendered_cfg.provides.as_mut(),
         rendered_cfg.replaces.as_mut(),
+        rendered_cfg.recommends.as_mut(),
+        rendered_cfg.suggests.as_mut(),
     ]
     .into_iter()
     .flatten()
