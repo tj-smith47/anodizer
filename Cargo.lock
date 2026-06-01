@@ -33,6 +33,7 @@ dependencies = [
  "anodizer-core",
  "anodizer-stage-announce",
  "anodizer-stage-appbundle",
+ "anodizer-stage-appimage",
  "anodizer-stage-archive",
  "anodizer-stage-attest",
  "anodizer-stage-blob",
@@ -145,6 +146,17 @@ dependencies = [
  "anyhow",
  "glob",
  "serde_yaml_ng",
+ "tempfile",
+]
+
+[[package]]
+name = "anodizer-stage-appimage"
+version = "0.1.0"
+dependencies = [
+ "anodizer-core",
+ "anyhow",
+ "serde_yaml_ng",
+ "serial_test",
  "tempfile",
 ]
 

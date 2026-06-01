@@ -28,6 +28,7 @@ members = [
     "crates/stage-srpm",
     "crates/stage-sbom",
     "crates/stage-attest",
+    "crates/stage-appimage",
     "crates/cli",
     "crates/xtask",
 ]
@@ -62,6 +63,7 @@ default-members = [
     "crates/stage-srpm",
     "crates/stage-sbom",
     "crates/stage-attest",
+    "crates/stage-appimage",
     "crates/cli",
 ]
 
@@ -95,6 +97,7 @@ anodizer-stage-announce = { path = "crates/stage-announce", version = "0.1.0" }
 anodizer-stage-source = { path = "crates/stage-source", version = "0.1.0" }
 anodizer-stage-sbom = { path = "crates/stage-sbom", version = "0.1.0" }
 anodizer-stage-attest = { path = "crates/stage-attest", version = "0.1.0" }
+anodizer-stage-appimage = { path = "crates/stage-appimage", version = "0.1.0" }
 anodizer-stage-upx = { path = "crates/stage-upx", version = "0.1.0" }
 anodizer-stage-snapcraft = { path = "crates/stage-snapcraft", version = "0.1.0" }
 anodizer-stage-dmg = { path = "crates/stage-dmg", version = "0.1.0" }
