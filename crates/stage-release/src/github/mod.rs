@@ -139,6 +139,80 @@ async fn find_release_by_tag(
     }
 }
 
+/// Fetch the names of the assets currently UPLOADED to the published
+/// GitHub release for `crate_cfg`'s resolved tag.
+///
+/// This is the network half of the post-release asset-existence check: the
+/// verify-release stage diffs this live, GitHub-stored set against the
+/// produced artifact set to catch the partial uploads GitHub silently
+/// tolerates. It reuses the hardened release backend's repo-resolution
+/// ([`resolve_release_repo`]), tag-resolution
+/// ([`resolve_release_tag`](crate::release_body::resolve_release_tag)), and
+/// octocrab client/retry path so there is one source of truth for "how do we
+/// talk to the GitHub Releases API".
+///
+/// Returns:
+/// - `Ok(Some(names))` — the release exists; `names` are its asset names
+///   (empty vec when the release has no assets).
+/// - `Ok(None)` — no GitHub repo is configured for the active token type
+///   (the verify stage treats this as "not a GitHub release; skip the asset
+///   check for this crate" rather than an error).
+///
+/// Errors when the tag has no release (the publish should have created it —
+/// a genuine post-publish defect), when no token is available, or when the
+/// GitHub API call fails after retries.
+pub async fn fetch_published_asset_names(
+    ctx: &Context,
+    release_cfg: &ReleaseConfig,
+    crate_cfg: &CrateConfig,
+) -> Result<Option<Vec<String>>> {
+    let Some(repo) = resolve_release_repo(release_cfg, ctx.token_type, ctx)? else {
+        return Ok(None);
+    };
+
+    let tag = crate::release_body::resolve_release_tag(
+        ctx,
+        &crate_cfg.tag_template,
+        release_cfg.tag.as_deref(),
+        &crate_cfg.name,
+    )?;
+
+    let token = ctx.options.token.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "verify-release: no GitHub token available to fetch the published \
+             release's assets (set GITHUB_TOKEN or ANODIZER_GITHUB_TOKEN, or pass --token)"
+        )
+    })?;
+
+    let github_urls = ctx.config.github_urls.clone();
+    let policy = ctx.retry_policy();
+
+    let (octo_raw, retry_after) = build_octocrab_client(&token, &github_urls)?;
+    let octo = Arc::new(octo_raw);
+
+    let release = find_release_by_tag(
+        &octo,
+        &repo.owner,
+        &repo.name,
+        &tag,
+        &policy,
+        Some(&retry_after),
+        "verify-release fetch published assets",
+    )
+    .await?;
+
+    match release {
+        Some(rel) => Ok(Some(rel.assets.into_iter().map(|a| a.name).collect())),
+        None => anyhow::bail!(
+            "verify-release: no GitHub release found for tag '{}' on {}/{} — \
+             the publish should have created it; this is a post-publish defect",
+            tag,
+            repo.owner,
+            repo.name
+        ),
+    }
+}
+
 /// Number of `GET /releases/{id}` readiness probes attempted before the
 /// upload loop starts (see [`wait_for_release_readable`]). The 7 inter-probe
 /// sleeps double from [`READINESS_GUARD_BASE_DELAY`] (100 ms) and saturate at
