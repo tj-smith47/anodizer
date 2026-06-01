@@ -623,3 +623,147 @@ fn tag_rollback_rejects_push_flags() {
         "expected a clear rollback rejection message: {stderr}"
     );
 }
+
+/// The newest `bump`-prefixed commit subject in HEAD's history.
+fn latest_bump_subject(dir: &Path) -> String {
+    let log = git_out(dir, &["log", "--format=%s", "-10"]);
+    log.lines()
+        .find(|s| s.contains("bump"))
+        .unwrap_or("")
+        .to_string()
+}
+
+#[test]
+fn lockstep_bump_subject_omits_skip_ci_by_default() {
+    // Default (no tag.skip_ci_on_bump): the bump commit subject must NOT carry
+    // `[skip ci]`, so a tag-push-triggered release isn't silently suppressed.
+    let (work, _bare) = lockstep_with_origin();
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let subject = latest_bump_subject(work.path());
+    assert!(
+        subject.contains("bump workspace"),
+        "expected a workspace bump commit: {subject}"
+    );
+    assert!(
+        !subject.contains("[skip ci]"),
+        "default bump subject must NOT contain [skip ci]: {subject}"
+    );
+}
+
+#[test]
+fn lockstep_bump_subject_has_skip_ci_when_enabled() {
+    // tag.skip_ci_on_bump: true → the bump commit subject carries `[skip ci]`.
+    let (work, _bare) = lockstep_with_origin();
+    fs::write(
+        work.path().join(".anodizer.yaml"),
+        "project_name: myproj\ntag:\n  skip_ci_on_bump: true\n",
+    )
+    .unwrap();
+    // Stage the config into the same commit so change detection still fires on
+    // the source edit already present in the fixture.
+    git_add_commit(work.path(), "chore: enable skip_ci_on_bump");
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let subject = latest_bump_subject(work.path());
+    assert!(
+        subject.contains("bump workspace") && subject.contains("[skip ci]"),
+        "enabled bump subject must contain [skip ci]: {subject}"
+    );
+}
+
+#[test]
+fn per_crate_bump_subject_omits_skip_ci_by_default() {
+    // Per-crate dispatch path: default bump subject must NOT carry [skip ci].
+    let (work, _bare) = per_crate_with_origin();
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let subject = latest_bump_subject(work.path());
+    assert!(
+        subject.contains("chore(release): bump"),
+        "expected a per-crate bump commit: {subject}"
+    );
+    assert!(
+        !subject.contains("[skip ci]"),
+        "default per-crate bump subject must NOT contain [skip ci]: {subject}"
+    );
+}
+
+#[test]
+fn per_crate_bump_subject_has_skip_ci_when_enabled() {
+    // Per-crate dispatch path with tag.skip_ci_on_bump: true → [skip ci] present.
+    let (work, _bare) = per_crate_with_origin();
+    // Re-write the config preserving the per-crate crates: block and adding the
+    // top-level tag.skip_ci_on_bump toggle.
+    fs::write(
+        work.path().join(".anodizer.yaml"),
+        r#"project_name: myproj
+tag:
+  skip_ci_on_bump: true
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "core-v{{ .Version }}"
+    version_sync:
+      enabled: true
+  - name: cli
+    path: crates/cli
+    tag_template: "cli-v{{ .Version }}"
+    version_sync:
+      enabled: true
+"#,
+    )
+    .unwrap();
+    git_add_commit(work.path(), "chore: enable skip_ci_on_bump");
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let subject = latest_bump_subject(work.path());
+    assert!(
+        subject.contains("chore(release): bump") && subject.contains("[skip ci]"),
+        "enabled per-crate bump subject must contain [skip ci]: {subject}"
+    );
+}

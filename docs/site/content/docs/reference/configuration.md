@@ -788,6 +788,9 @@ All fields are optional in YAML; missing fields fall back to GoReleaser's defaul
 | `prerelease_suffix` | string | — | Suffix appended to pre-release versions (e.g., "beta"). |
 | `push` | bool | — | When true, `anodizer tag` also pushes the version-sync bump commit to the release branch (atomically with the tag), not just the tag. CLI `--push` / `--no-push` override this. Default false preserves the "push the tag, inspect the branch locally before pushing" workflow. |
 | `release_branches` | list of string | — | Branch name patterns (supports wildcards) that trigger releases (default: ["master", "main"]). |
+| `skip_ci_on_bump` | bool | — | Append `[skip ci]` to the version-sync bump commit subject.
+
+Off by default. Only enable with a `workflow_run`-triggered release workflow: `[skip ci]` on the bump commit (which becomes the tag target) ALSO suppresses an `on: push: tags:` release trigger, so enabling this with a tag-push-triggered release silently skips the release. Leave off for the GoReleaser-style tag-push pattern; enable for the `workflow_run` pattern to skip the (already crate-gated, harmless) redundant CI re-run. |
 | `tag_context` | string | — | Source for determining the previous tag: "repo" (default) or "branch". |
 | `tag_post_hooks` | list of HookEntry | — | Commands to run after `anodizer tag` successfully creates and pushes the tag. Env and template vars same as `tag_pre_hooks`. |
 | `tag_pre_hooks` | list of HookEntry | — | Commands to run before `anodizer tag` creates the tag. Useful for updating lockfiles or committing sibling changes that must be part of the tagged commit. Env: `ANODIZER_CURRENT_TAG`, `ANODIZER_PREVIOUS_TAG` are set; template vars `{{ .Tag }}`, `{{ .PreviousTag }}`, `{{ .Version }}`, `{{ .PrefixedTag }}` are available. |

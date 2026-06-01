@@ -95,6 +95,7 @@ tag:
 | `none_string_token` | string | `#none` | Custom skip trigger |
 | `git_api_tagging` | string | none (disabled) | Use GitHub API (`github`) or git CLI (`git`) to create tags |
 | `push` | bool | `false` | Also push the version-sync bump commit atomically with the tag (CLI `--push` / `--no-push` override) |
+| `skip_ci_on_bump` | bool | `false` | Append `[skip ci]` to the bump commit subject. Only safe with a `workflow_run`-triggered release (see below) |
 
 ## Version source of truth
 
@@ -135,13 +136,31 @@ commit local unless you pass `--push` (or set `tag.push: true`), at which point
 the bump commit and tag push atomically. Use `--push-remote <name>` to target a
 remote other than `origin`.
 
-The bump commit's marker matters: the **primary** bump commit deliberately
-**omits** `[skip ci]` so the tag-push trigger fires downstream release
-workflows. (GitHub suppresses tag-push triggers when the tag's target
-commit message contains `[skip ci]`.) Only the **side-effect** commits —
-the per-crate `version_sync` propagations of an intra-workspace dependency
-pin bump — carry the `[skip ci]` marker, since those don't have their own
-tag and shouldn't re-trigger CI on their own.
+### `[skip ci]` on the bump commit (`skip_ci_on_bump`)
+
+By default the version-sync bump commit's subject does **not** carry
+`[skip ci]`. The bump commit becomes the tag's target, and GitHub suppresses
+**both** the master-push CI re-run **and** any `on: push: tags:` release
+trigger when the tag target's message contains `[skip ci]`. Marking it would
+silently skip a tag-push-triggered release.
+
+The trade-off depends on how your release workflow is triggered:
+
+| Release trigger | `skip_ci_on_bump` | Why |
+|---|---|---|
+| `on: push: tags:` (GoReleaser-style) | **off** (default) | `[skip ci]` would suppress the tag-push trigger and the release never fires |
+| `on: workflow_run:` (decoupled) | may be **on** | The release fires off the completed CI run, not the tag push, so `[skip ci]` only skips the redundant master-push CI re-run (which is already crate-gated and harmless) |
+
+```yaml
+tag:
+  skip_ci_on_bump: true   # only with a workflow_run-triggered release
+```
+
+If left off, the bump commit's master push triggers a normal CI re-run; that
+run's auto-tag job no-ops because no new release-worthy commits exist since the
+freshly created tag (the conventional-commit gate in bump detection). See
+[Release workflow patterns](@/docs/ci/release-workflows.md) for the two
+trigger styles.
 
 ## GitHub Actions: single-crate repo
 

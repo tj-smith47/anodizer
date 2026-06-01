@@ -689,6 +689,23 @@ permissions:
 
 **`[workspace.package].version` set "just in case" when crates are per-crate-versioned.** Before the per-crate detection fix, setting a shared workspace version caused all crates to be treated as lockstep even when individual `[package].version` fields were present. The current detection order is: `.anodizer.yaml workspaces:` first, then `[workspace.package].version`, then per-crate `[package].version`. Setting `[workspace.package].version` on a per-crate workspace forces lockstep behavior regardless of what the individual `[package].version` fields say.
 
+**`tag.skip_ci_on_bump: true` with an `on: push: tags:` release.** GitHub suppresses tag-push triggers when the tag target commit's message contains `[skip ci]`. Since the version-sync bump commit *is* the tag target, enabling `skip_ci_on_bump` under a tag-push-triggered release silently skips the release entirely. Only enable it with a `workflow_run`-triggered release, where the trigger is the completed CI run rather than the tag push (see below).
+
+## `[skip ci]` on the bump commit vs. the release trigger
+
+`anodizer tag` writes a version-sync bump commit before creating the tag. By default that commit's subject does **not** carry `[skip ci]`, because the bump commit becomes the tag target and `[skip ci]` on a tag target suppresses both the master-push CI re-run **and** any `on: push: tags:` release trigger.
+
+| Release trigger | `tag.skip_ci_on_bump` | Effect |
+|---|---|---|
+| `on: push: tags:` (GoReleaser-style) | **off** (default) | The bump-commit push re-runs CI (its auto-tag job no-ops); the tag push fires the release. Marking `[skip ci]` here would kill the release. |
+| `on: workflow_run:` (decoupled CI → release) | may be **on** | The release fires off CI completion, not the tag push, so `[skip ci]` only skips the redundant master-push CI re-run. |
+
+```yaml
+# .anodizer.yaml — only with a workflow_run-triggered release.yml
+tag:
+  skip_ci_on_bump: true
+```
+
 ## Migrating from per-tag fan-out
 
 The old pattern triggered one workflow run per tag and resolved the crate inside the run. Replace it with a `workflow_run` trigger and let `anodizer tag` emit the crate list.

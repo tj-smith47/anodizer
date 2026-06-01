@@ -55,7 +55,7 @@ fn resolve_effective_push(opts: &TagOpts, config_push: Option<bool>, path_defaul
 ///
 /// Returns `Some(current_branch)` when [`resolve_effective_push`] selects a
 /// branch push for the given `path_default`; otherwise `None`.
-fn resolve_push_branch(
+fn resolve_tag_push_branch(
     opts: &TagOpts,
     config_push: Option<bool>,
     path_default: bool,
@@ -85,6 +85,7 @@ struct ResolvedConfig {
     patch_string_token: String,
     none_string_token: String,
     git_api_tagging: bool,
+    skip_ci_on_bump: bool,
 }
 
 impl ResolvedConfig {
@@ -134,8 +135,16 @@ impl ResolvedConfig {
                 .clone()
                 .unwrap_or_else(|| "#none".to_string()),
             git_api_tagging: cfg.git_api_tagging.unwrap_or(false),
+            skip_ci_on_bump: cfg.skip_ci_on_bump.unwrap_or(false),
         }
     }
+}
+
+/// `[skip ci]` suffix appended to a bump-commit subject, or empty when
+/// `skip_ci_on_bump` is off (the default). Returned with a leading space so
+/// callers can append it directly after the subject body.
+fn skip_ci_suffix(skip_ci_on_bump: bool) -> &'static str {
+    if skip_ci_on_bump { " [skip ci]" } else { "" }
 }
 
 pub fn run(opts: TagOpts) -> Result<()> {
@@ -568,21 +577,25 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // Also update intra-workspace dependency version specs so that other
     // crates referencing this one via path+version don't break.
     //
-    // The commit message intentionally OMITS `[skip ci]`. Earlier revisions
-    // added the marker to suppress the master push's follow-up CI run, but
-    // GitHub also suppresses tag-push workflow triggers when the tag target
-    // commit's message contains `[skip ci]` — which silently broke the
-    // release workflow trigger for autotag-created tags. The version-sync
-    // commit is treated like any normal commit: its master push re-runs
-    // CI, but the autotag job on that re-run no-ops because no new
-    // release-worthy commits are present since the freshly-created tag
-    // (see the conventional-commit gate in detect_bump).
+    // `[skip ci]` is opt-in via `tag.skip_ci_on_bump` (default off). It is NOT
+    // a free CI-cost saving: the bump commit becomes the tag target, and a
+    // `[skip ci]` tag target suppresses BOTH the master-push CI re-run AND any
+    // `on: push: tags:` release trigger. It is only safe with a
+    // `workflow_run`-triggered release; the GoReleaser-style tag-push pattern
+    // must leave it off or the release silently never fires.
     let mut bump_commit_created = false;
     if let Some(ws) = workspace_info {
         let root = workspace_root_path
             .as_deref()
             .unwrap_or_else(|| Path::new("."));
-        bump_commit_created = apply_workspace_bump(root, ws, &new_version, opts.dry_run, &log)?;
+        bump_commit_created = apply_workspace_bump(
+            root,
+            ws,
+            &new_version,
+            opts.dry_run,
+            cfg.skip_ci_on_bump,
+            &log,
+        )?;
     } else if let Some(ref path) = crate_path
         && version_sync_enabled
     {
@@ -648,7 +661,12 @@ pub fn run(opts: TagOpts) -> Result<()> {
             }
             let _ = git::stage_and_commit(
                 &files_to_stage,
-                &format!("chore: bump {} to {} [skip ci]", path, new_version),
+                &format!(
+                    "chore: bump {} to {}{}",
+                    path,
+                    new_version,
+                    skip_ci_suffix(cfg.skip_ci_on_bump)
+                ),
             );
             bump_commit_created = true;
         }
@@ -714,6 +732,7 @@ fn apply_workspace_bump(
     ws: &WorkspaceInfo,
     new_version: &str,
     dry_run: bool,
+    skip_ci_on_bump: bool,
     log: &StageLogger,
 ) -> Result<bool> {
     let rows: Vec<PlanRow> = ws
@@ -798,7 +817,11 @@ fn apply_workspace_bump(
 
     git::stage_and_commit(
         &staged_refs,
-        &format!("chore(release): bump workspace → {} [skip ci]", new_version),
+        &format!(
+            "chore(release): bump workspace → {}{}",
+            new_version,
+            skip_ci_suffix(skip_ci_on_bump)
+        ),
     )?;
 
     log.status(&format!("workspace version-sync: bumped → {}", new_version));
@@ -965,6 +988,7 @@ fn compute_per_crate_tags(
             release_branches: cfg.release_branches.clone(),
             custom_tag: None,
             git_api_tagging: cfg.git_api_tagging,
+            skip_ci_on_bump: cfg.skip_ci_on_bump,
         };
 
         let prev_tag = find_previous_tag(&group_cfg, git_config)?;
@@ -1172,7 +1196,11 @@ fn run_per_crate_tag(
         };
         git::stage_and_commit(
             &staged_refs,
-            &format!("chore(release): bump {} [skip ci]", bump_summary),
+            &format!(
+                "chore(release): bump {}{}",
+                bump_summary,
+                skip_ci_suffix(cfg.skip_ci_on_bump)
+            ),
         )?;
 
         // Create all tags locally; push happens atomically below.
@@ -1208,7 +1236,7 @@ fn run_per_crate_tag(
     // atomically (path_default = true). `--no-push` pushes the tags only,
     // leaving the bump commit local; `--push-dry-run` previews the push.
     let push_dry = opts.dry_run || opts.push_dry_run;
-    let push_branch = resolve_push_branch(opts, push.config_push, true)?;
+    let push_branch = resolve_tag_push_branch(opts, push.config_push, true)?;
     git::push_branch_and_tags_atomic_in(
         &cwd,
         &git::AtomicPushSpec {
@@ -1959,6 +1987,7 @@ mod tests {
             none_string_token: Some("skip".to_string()),
             git_api_tagging: Some(false),
             push: None,
+            skip_ci_on_bump: None,
             verbose: Some(false),
             tag_pre_hooks: None,
             tag_post_hooks: None,

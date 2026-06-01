@@ -47,6 +47,15 @@ pub struct TagConfig {
     /// `--no-push` override this. Default false preserves the "push the tag,
     /// inspect the branch locally before pushing" workflow.
     pub push: Option<bool>,
+    /// Append `[skip ci]` to the version-sync bump commit subject.
+    ///
+    /// Off by default. Only enable with a `workflow_run`-triggered release
+    /// workflow: `[skip ci]` on the bump commit (which becomes the tag target)
+    /// ALSO suppresses an `on: push: tags:` release trigger, so enabling this
+    /// with a tag-push-triggered release silently skips the release. Leave off
+    /// for the GoReleaser-style tag-push pattern; enable for the `workflow_run`
+    /// pattern to skip the (already crate-gated, harmless) redundant CI re-run.
+    pub skip_ci_on_bump: Option<bool>,
     /// When true, print verbose tag calculation output.
     pub verbose: Option<bool>,
     /// Commands to run before `anodizer tag` creates the tag. Useful for updating

@@ -13428,6 +13428,14 @@
             "type": "string"
           }
         },
+        "skip_ci_on_bump": {
+          "description": "Append `[skip ci]` to the version-sync bump commit subject.\n\nOff by default. Only enable with a `workflow_run`-triggered release workflow: `[skip ci]` on the bump commit (which becomes the tag target) ALSO suppresses an `on: push: tags:` release trigger, so enabling this with a tag-push-triggered release silently skips the release. Leave off for the GoReleaser-style tag-push pattern; enable for the `workflow_run` pattern to skip the (already crate-gated, harmless) redundant CI re-run.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "tag_context": {
           "description": "Source for determining the previous tag: \"repo\" (default) or \"branch\".",
           "default": null,
