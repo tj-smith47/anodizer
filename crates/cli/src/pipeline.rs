@@ -2673,31 +2673,62 @@ crates:
         );
     }
 
-    #[test]
-    fn publish_only_pipeline_runs_announce_after_publish() {
-        // AnnounceStage must follow the publisher chain so it only fires on
-        // a green release; it is the last stage by symmetry with merge /
-        // release pipelines so the `required_publishers` gate sees the
-        // final publish report.
-        let p = build_publish_only_pipeline();
-        let names = p.stage_names();
+    /// Assert the terminal-stage invariant shared by every publishing
+    /// pipeline (release / merge / publish-only): AnnounceStage follows the
+    /// publisher chain so it only fires on a green release and the
+    /// `required_publishers` gate sees the final publish report, and it is the
+    /// last stage of the *publish phase* — immediately before the terminal
+    /// `verify-release` post-publish report. `verify-release` runs AFTER
+    /// announce (it needs the live release to verify against), so it, not
+    /// announce, is the absolute final stage.
+    fn assert_announce_then_verify_release_terminal(names: &[&str], label: &str) {
         let announce_idx = names
             .iter()
             .position(|n| *n == "announce")
-            .expect("publish-only pipeline must include announce stage");
+            .unwrap_or_else(|| panic!("{label} must include announce stage"));
         let publish_idx = names
             .iter()
             .position(|n| *n == "publish")
-            .expect("publish-only pipeline must include publish stage");
+            .unwrap_or_else(|| panic!("{label} must include publish stage"));
+        let verify_release_idx = names
+            .iter()
+            .position(|n| *n == "verify-release")
+            .unwrap_or_else(|| panic!("{label} must include verify-release stage"));
         assert!(
             announce_idx > publish_idx,
-            "announce (idx {announce_idx}) must follow publish (idx {publish_idx}); got {names:?}"
+            "{label}: announce (idx {announce_idx}) must follow publish (idx {publish_idx}); got {names:?}"
+        );
+        assert_eq!(
+            verify_release_idx,
+            names.len() - 1,
+            "{label}: verify-release must be the terminal post-publish stage; got {names:?}"
         );
         assert_eq!(
             announce_idx,
-            names.len() - 1,
-            "announce must be the final stage; got {names:?}"
+            verify_release_idx - 1,
+            "{label}: announce must be the final publish-phase stage, immediately before the terminal verify-release report; got {names:?}"
         );
+    }
+
+    #[test]
+    fn publish_only_pipeline_runs_announce_after_publish() {
+        let p = build_publish_only_pipeline();
+        let names = p.stage_names();
+        assert_announce_then_verify_release_terminal(&names, "build_publish_only_pipeline");
+    }
+
+    #[test]
+    fn release_pipeline_runs_announce_after_publish() {
+        let p = build_release_pipeline();
+        let names = p.stage_names();
+        assert_announce_then_verify_release_terminal(&names, "build_release_pipeline");
+    }
+
+    #[test]
+    fn merge_pipeline_runs_announce_after_publish() {
+        let p = build_merge_pipeline();
+        let names = p.stage_names();
+        assert_announce_then_verify_release_terminal(&names, "build_merge_pipeline");
     }
 
     // -----------------------------------------------------------------------
