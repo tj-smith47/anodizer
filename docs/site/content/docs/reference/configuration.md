@@ -786,6 +786,7 @@ All fields are optional in YAML; missing fields fall back to GoReleaser's defaul
 | `patch_string_token` | string | — | Conventional commit token triggering a patch bump (default: "patch" or "fix"). |
 | `prerelease` | bool | — | When true, apply a pre-release suffix to the generated version. |
 | `prerelease_suffix` | string | — | Suffix appended to pre-release versions (e.g., "beta"). |
+| `push` | bool | — | When true, `anodizer tag` also pushes the version-sync bump commit to the release branch (atomically with the tag), not just the tag. CLI `--push` / `--no-push` override this. Default false preserves the "push the tag, inspect the branch locally before pushing" workflow. |
 | `release_branches` | list of string | — | Branch name patterns (supports wildcards) that trigger releases (default: ["master", "main"]). |
 | `tag_context` | string | — | Source for determining the previous tag: "repo" (default) or "branch". |
 | `tag_post_hooks` | list of HookEntry | — | Commands to run after `anodizer tag` successfully creates and pushes the tag. Env and template vars same as `tag_pre_hooks`. |

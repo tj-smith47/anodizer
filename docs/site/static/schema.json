@@ -13409,6 +13409,14 @@
             "null"
           ]
         },
+        "push": {
+          "description": "When true, `anodizer tag` also pushes the version-sync bump commit to the release branch (atomically with the tag), not just the tag. CLI `--push` / `--no-push` override this. Default false preserves the \"push the tag, inspect the branch locally before pushing\" workflow.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "release_branches": {
           "description": "Branch name patterns (supports wildcards) that trigger releases (default: [\"master\", \"main\"]).",
           "default": null,

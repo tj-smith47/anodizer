@@ -10,10 +10,29 @@ The `anodizer tag` command reads commit messages for bump directives, finds the 
 ## Usage
 
 ```bash
-anodizer tag                    # create and push tag
+anodizer tag                    # create and push the tag (bump commit stays local)
+anodizer tag --push             # also push the version-sync bump commit, atomically
 anodizer tag --dry-run          # show what would happen
 anodizer tag --custom-tag v2.0  # override with specific tag
 ```
+
+## Pushing the bump commit (`--push`)
+
+By default `anodizer tag` pushes only the **tag** and leaves the
+version-sync `chore(release): bump …` commit on the local branch — so you can
+inspect the bump before publishing the branch. Pass `--push` to push the bump
+commit to the release branch **atomically with the tag** (`git push --atomic`),
+so neither an orphan tag nor an orphan commit can ever exist on the remote.
+
+| Flag | Effect |
+|------|--------|
+| `--push` | Push the bump commit (branch HEAD) atomically with the tag |
+| `--no-push` | Push the tag only; leave the bump commit local (the per-crate path's opt-out, since it pushes branch+tags by default) |
+| `--push-remote <name>` | Push to `<name>` instead of `origin` |
+| `--push-dry-run` | Print the `git push` commands `--push` would run, without executing |
+
+`tag.push: true` in config is the persistent equivalent of `--push`; the CLI
+flags override it per invocation.
 
 ## Commit message directives
 
@@ -61,6 +80,7 @@ tag:
 | `patch_string_token` | string | `#patch` | Custom patch bump trigger |
 | `none_string_token` | string | `#none` | Custom skip trigger |
 | `git_api_tagging` | string | none (disabled) | Use GitHub API (`github`) or git CLI (`git`) to create tags |
+| `push` | bool | `false` | Also push the version-sync bump commit atomically with the tag (CLI `--push` / `--no-push` override) |
 
 ## Version source of truth
 
@@ -91,6 +111,15 @@ When `version_sync.enabled: true` is set per-crate, the tag command also
 updates that crate's `Cargo.toml` version (and any intra-workspace `path +
 version` dependency specs that reference it), commits the change, and tags
 that commit so `cargo publish` reads the right version.
+
+**Push behavior differs by mode.** The per-crate auto-dispatch path (a
+multi-crate config with no `--crate`) pushes the single bump commit **and**
+every per-crate tag atomically by default — `--no-push` opts out of pushing
+the branch (tags still go up). The `--crate <name>` path follows the
+single-crate/lockstep default: it pushes the tag only and leaves the bump
+commit local unless you pass `--push` (or set `tag.push: true`), at which point
+the bump commit and tag push atomically. Use `--push-remote <name>` to target a
+remote other than `origin`.
 
 The bump commit's marker matters: the **primary** bump commit deliberately
 **omits** `[skip ci]` so the tag-push trigger fires downstream release
@@ -130,16 +159,15 @@ own `release.yml` run:
   run: |
     for crate in my-core my-cli my-operator my-plugin; do
       echo "--- tagging $crate ---"
-      if anodizer tag --crate "$crate"; then
+      # --push lands each crate's version_sync bump commit atomically with its
+      # tag, so tagged commits are never orphaned from master and the manual
+      # `git push origin HEAD` below is unnecessary.
+      if anodizer tag --crate "$crate" --push; then
         echo "::notice::$crate: tagged"
       else
         echo "::warning::$crate: skipped or failed"
       fi
     done
-    # Push any version_sync commits created by the tag step so tagged commits
-    # aren't orphaned from master — without this, tags point to commits that
-    # only exist as tag targets and CI never runs on them.
-    git push origin HEAD || true
 ```
 
 See [GitHub Actions](@/docs/ci/github-actions.md) for the surrounding workflow.
