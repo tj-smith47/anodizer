@@ -738,6 +738,126 @@ fn source_name_empty_bails_with_actionable_error() {
     );
 }
 
+#[test]
+fn source_prefix_var_set_from_rendered_prefix_template() {
+    // A configured `prefix_template` becomes the `SourcePrefix` var with any
+    // trailing `/` stripped, so downstream consumers (e.g. an srpm
+    // `%autosetup -n`) get the exact top-level archive dir.
+    use anodizer_core::config::{SbomConfig, SourceConfig};
+    use anodizer_core::test_helpers::{create_test_project, init_git_repo};
+
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test-app")
+        .dry_run(true)
+        .dist(tmp.path().join("dist"))
+        .project_root(tmp.path().to_path_buf())
+        .build();
+    // Pin Version so the rendered prefix is deterministic regardless of the
+    // synthetic git tag.
+    ctx.template_vars_mut().set("Version", "0.5.0-SNAPSHOT-abc");
+    ctx.config.source = Some(SourceConfig {
+        enabled: Some(true),
+        format: Some("tar.gz".to_string()),
+        name_template: None,
+        prefix_template: Some("{{ ProjectName }}-{{ Version }}/".to_string()),
+        files: vec![],
+    });
+    ctx.config.sboms = vec![SbomConfig::default()];
+
+    SourceStage.run(&mut ctx).expect("dry-run should succeed");
+
+    assert_eq!(
+        ctx.template_vars().get("SourcePrefix").map(String::as_str),
+        Some("test-app-0.5.0-SNAPSHOT-abc"),
+        "SourcePrefix must be the rendered prefix with trailing `/` stripped"
+    );
+}
+
+#[test]
+fn source_prefix_var_empty_when_prefix_template_unset() {
+    // GoReleaser default: no prefix_template → flat archive, empty
+    // SourcePrefix. The srpm auto-gen spec turns this into `%autosetup -c`.
+    use anodizer_core::config::{SbomConfig, SourceConfig};
+    use anodizer_core::test_helpers::{create_test_project, init_git_repo};
+
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test-app")
+        .dry_run(true)
+        .dist(tmp.path().join("dist"))
+        .project_root(tmp.path().to_path_buf())
+        .build();
+    ctx.config.source = Some(SourceConfig {
+        enabled: Some(true),
+        format: Some("tar.gz".to_string()),
+        name_template: None,
+        prefix_template: None,
+        files: vec![],
+    });
+    ctx.config.sboms = vec![SbomConfig::default()];
+
+    SourceStage.run(&mut ctx).expect("dry-run should succeed");
+
+    assert_eq!(
+        ctx.template_vars().get("SourcePrefix").map(String::as_str),
+        Some(""),
+        "SourcePrefix must be empty when prefix_template is unset"
+    );
+}
+
+#[test]
+fn source_prefix_var_reflects_trailing_slash_directory_semantics() {
+    // `git archive --prefix` only creates a top-level directory when the
+    // prefix ends with `/`. A slash-less prefix is glued onto every path
+    // (`foomain.rs`) → FLAT archive, no dir → SourcePrefix must be empty so
+    // the srpm spec routes to `%autosetup -c`. A nested trailing-slash prefix
+    // keeps its inner slashes (the dir path), only the trailing one stripped.
+    use anodizer_core::config::{SbomConfig, SourceConfig};
+    use anodizer_core::test_helpers::{create_test_project, init_git_repo};
+
+    let cases = [
+        // (prefix_template, expected SourcePrefix)
+        ("app-1.0/", "app-1.0"), // dir prefix → dir name
+        ("app-1.0", ""),         // slash-less → flat → empty
+        ("foo/bar/", "foo/bar"), // nested dir → inner slashes kept
+    ];
+    for (template, expected) in cases {
+        let tmp = TempDir::new().unwrap();
+        create_test_project(tmp.path());
+        init_git_repo(tmp.path());
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test-app")
+            .dry_run(true)
+            .dist(tmp.path().join("dist"))
+            .project_root(tmp.path().to_path_buf())
+            .build();
+        ctx.config.source = Some(SourceConfig {
+            enabled: Some(true),
+            format: Some("tar.gz".to_string()),
+            name_template: None,
+            prefix_template: Some(template.to_string()),
+            files: vec![],
+        });
+        ctx.config.sboms = vec![SbomConfig::default()];
+
+        SourceStage.run(&mut ctx).expect("dry-run should succeed");
+
+        assert_eq!(
+            ctx.template_vars().get("SourcePrefix").map(String::as_str),
+            Some(expected),
+            "prefix_template {template:?} must yield SourcePrefix {expected:?}"
+        );
+    }
+}
+
 // -----------------------------------------------------------------------
 // ArtifactKind variants
 // -----------------------------------------------------------------------

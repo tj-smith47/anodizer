@@ -12,7 +12,7 @@ GoReleaser. It handles building, packaging, publishing, and announcing
 releases across multiple platforms and package managers.
 
 %prep
-%autosetup -n %{name}-%{version}
+%autosetup -n {{ SourcePrefix }}
 
 %build
 cargo build --release

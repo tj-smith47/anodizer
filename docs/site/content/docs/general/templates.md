@@ -89,6 +89,7 @@ If you hit a construct not covered here, open an issue with the failing template
 | `ArtifactPath` | Full path to artifact | `/path/to/dist/myapp-1.0.0.tar.gz` |
 | `ArtifactExt` | Artifact extension (compound-aware) | `.tar.gz`, `.exe`, `.deb` |
 | `Checksums` | Combined checksum file contents | `abc123  myapp.tar.gz\n...` |
+| `SourcePrefix` | Top-level directory inside the source archive (from a `source.prefix_template` ending in `/`); empty for a flat archive. Set by the source stage; useful for an SRPM `%autosetup -n {{ SourcePrefix }}`. | `myapp-1.2.3` |
 
 ### Release state
 

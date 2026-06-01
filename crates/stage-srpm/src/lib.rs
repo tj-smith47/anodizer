@@ -56,6 +56,16 @@ impl Stage for SrpmStage {
         // the real version; it is swapped in only for the scoped renders below.
         let rpm_safe_version = rpm_version_field(&version);
 
+        // Top-level directory inside the source tarball (set by the source
+        // stage from the RAW version). The auto-gen spec's `%autosetup -n`
+        // must target this exact dir; it is the RAW prefix, not the sanitized
+        // `Version`, so a snapshot/prerelease `.src.rpm` is rebuildable.
+        let source_prefix = ctx
+            .template_vars()
+            .get("SourcePrefix")
+            .cloned()
+            .unwrap_or_default();
+
         // Find source archives — clone to release borrow on ctx
         let source_archives: Vec<Artifact> = ctx
             .artifacts
@@ -122,6 +132,7 @@ impl Stage for SrpmStage {
                 &version,
                 &srpm_cfg,
                 &rpm_source_name,
+                &source_prefix,
                 &effective_bins,
                 ctx.env_source(),
             )
@@ -518,6 +529,7 @@ fn generate_default_spec(
     version: &str,
     cfg: &SrpmConfig,
     source_name: &str,
+    source_prefix: &str,
     bins: &BTreeMap<String, String>,
     env: &dyn anodizer_core::env_source::EnvSource,
 ) -> String {
@@ -662,6 +674,18 @@ fn generate_default_spec(
         scriptlets.push_str(&format!("\n%posttrans\n. {posttrans}\n"));
     }
 
+    // `%autosetup` must `cd` into the exact top-level dir the source tarball
+    // contains. A bare `%autosetup` defaults to `-n %{name}-%{version}`, which
+    // breaks for snapshot/prerelease builds (sanitized `%{version}` ≠ the raw
+    // prefix dir). Target the real prefix instead; for a prefix-less tarball
+    // (empty prefix), `-c` creates the build dir and extracts the flat
+    // sources into it.
+    let autosetup = if source_prefix.is_empty() {
+        "%autosetup -c".to_string()
+    } else {
+        format!("%autosetup -n {source_prefix}")
+    };
+
     format!(
         r#"{compression_macros}Name:           {package_name}
 Version:        {version_field}
@@ -675,7 +699,7 @@ Source0:        {source_name}
 {description}
 
 %prep
-%autosetup
+{autosetup}
 
 %build
 
@@ -786,6 +810,7 @@ mod tests {
             "1.0.0",
             &cfg,
             "myapp-1.0.0.tar.gz",
+            "",
             &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
         );
@@ -794,6 +819,41 @@ mod tests {
         assert!(spec.contains("Summary:        A test package"));
         assert!(spec.contains("License:        Apache-2.0"));
         assert!(spec.contains("Source0:        myapp-1.0.0.tar.gz"));
+        // Empty prefix → `%autosetup -c` (tarball has no top-level dir).
+        assert!(
+            spec.contains("%autosetup -c"),
+            "empty prefix must emit `%autosetup -c`; got:\n{spec}"
+        );
+        assert!(
+            !spec.contains("%autosetup -n"),
+            "empty prefix must NOT emit `-n`; got:\n{spec}"
+        );
+    }
+
+    /// A non-empty source prefix makes the auto-gen spec target that exact
+    /// top-level dir via `%autosetup -n <prefix>`, so a snapshot/prerelease
+    /// `.src.rpm` (whose tarball prefix is the RAW version) is rebuildable.
+    #[test]
+    fn test_generate_default_spec_autosetup_uses_source_prefix() {
+        let spec = generate_default_spec(
+            "anodizer",
+            "0.5.0~SNAPSHOT_abc",
+            &SrpmConfig::default(),
+            "anodizer-0.5.0~SNAPSHOT_abc-source.tar.gz",
+            // The tarball prefix is the RAW version, distinct from the
+            // sanitized `Version:` above — exactly the rebuild-safe case.
+            "anodizer-0.5.0-SNAPSHOT-abc",
+            &BTreeMap::new(),
+            &anodizer_core::env_source::MapEnvSource::new(),
+        );
+        assert!(
+            spec.contains("%autosetup -n anodizer-0.5.0-SNAPSHOT-abc"),
+            "non-empty prefix must emit `%autosetup -n <prefix>`; got:\n{spec}"
+        );
+        assert!(
+            !spec.contains("%autosetup -c"),
+            "non-empty prefix must NOT emit `-c`; got:\n{spec}"
+        );
     }
 
     // The optional RPM-spec fields (prerelease/version_metadata/prefixes/
@@ -815,6 +875,7 @@ mod tests {
             "1.0.0",
             &cfg,
             "myapp-1.0.0.tar.gz",
+            "",
             &BTreeMap::new(),
             &env,
         );
@@ -841,6 +902,7 @@ mod tests {
             "1.0.0",
             &cfg,
             "myapp-1.0.0.tar.gz",
+            "",
             &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
         );
@@ -880,6 +942,7 @@ mod tests {
                 input,
                 &SrpmConfig::default(),
                 "myapp.tar.gz",
+                "",
                 &BTreeMap::new(),
                 &anodizer_core::env_source::MapEnvSource::new(),
             );
@@ -913,6 +976,7 @@ mod tests {
             "0.5.0-SNAPSHOT-abc",
             &cfg,
             "myapp.tar.gz",
+            "",
             &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
         );
@@ -938,6 +1002,7 @@ mod tests {
             "1.0.0",
             &cfg,
             "myapp.tar.gz",
+            "",
             &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
         );
@@ -1138,6 +1203,7 @@ mod tests {
             "1.0.0",
             &cfg,
             "myapp-1.0.0.tar.gz",
+            "",
             &resolved,
             &anodizer_core::env_source::MapEnvSource::new(),
         );
@@ -1180,6 +1246,7 @@ mod tests {
             "1.0.0",
             &cfg,
             "myapp-1.0.0.tar.gz",
+            "",
             &resolved,
             &anodizer_core::env_source::MapEnvSource::new(),
         );
@@ -1254,6 +1321,7 @@ mod tests {
             "1.0.0",
             &SrpmConfig::default(),
             "myproject-1.0.0.tar.gz",
+            "",
             &effective_bins,
             &anodizer_core::env_source::MapEnvSource::new(),
         );
@@ -1335,6 +1403,7 @@ mod tests {
             "1.0.0",
             &cfg,
             "myapp-1.0.0.tar.gz",
+            "",
             &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
         );
@@ -1384,6 +1453,7 @@ mod tests {
             "1.0.0",
             &cfg,
             "myapp-1.0.0.tar.gz",
+            "",
             &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
         );

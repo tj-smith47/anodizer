@@ -55,8 +55,10 @@ impl SourceStage {
             .context("source stage invoked without source config (programmer bug)")?;
         let format = source_cfg.archive_format().to_string();
 
-        // Determine the archive name
-        let project_name = &ctx.config.project_name;
+        // Determine the archive name. Cloned (not borrowed) so the later
+        // `template_vars_mut()` write for `SourcePrefix` does not collide with
+        // a live immutable borrow of `ctx`.
+        let project_name = ctx.config.project_name.clone();
         let version = ctx
             .template_vars()
             .get("Version")
@@ -97,6 +99,21 @@ impl SourceStage {
         } else {
             String::new()
         };
+
+        // The source archive has a real top-level directory IFF the rendered
+        // prefix ends with `/` — that is the only form `git archive --prefix`
+        // treats as a directory. A slash-less prefix (`foo`) is glued onto
+        // every path (`foomain.rs`), yielding a FLAT archive with no top dir,
+        // exactly like an empty prefix. `SourcePrefix` therefore means "the
+        // archive's top-level directory, or empty when the archive is flat":
+        // the dir name (slash stripped) for a trailing-slash prefix, else
+        // empty. The empty case routes the srpm `%autosetup` to `-c`, which is
+        // correct for both flat shapes. Owned so the `source_cfg` borrow can
+        // end before the `template_vars_mut()` write.
+        let source_prefix = prefix
+            .strip_suffix('/')
+            .map(str::to_string)
+            .unwrap_or_default();
 
         let log = ctx.logger("source");
 
@@ -166,6 +183,14 @@ impl SourceStage {
             };
             extra_files.extend(expanded_for_entry);
         }
+
+        // Publish the archive's top-level directory so later stages and user
+        // specs can reference `{{ SourcePrefix }}` — notably an srpm
+        // `%autosetup -n`, which must `cd` into the exact dir the tarball
+        // contains. Derived from the RAW `Version`, so it is unaffected by the
+        // srpm stage's scoped sanitized-`Version` override. Set before the
+        // dry-run gate so the var is available even when no file is written.
+        ctx.template_vars_mut().set("SourcePrefix", &source_prefix);
 
         if ctx.is_dry_run() {
             log.status(&format!(

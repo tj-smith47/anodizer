@@ -105,6 +105,8 @@ Not applicable — this is a local packaging stage, not a publisher.
 
 When no `spec_file` is provided, Anodizer generates a minimal RPM spec with `%autosetup`, `%build`, `%install`, `%files`, and `%changelog` sections.
 
+The `%prep` step is prefix-aware: it emits `%autosetup -n {{ SourcePrefix }}` to enter the source archive's top-level directory, or `%autosetup -c` when the archive has no prefix directory (`source.prefix_template` unset). This keeps the produced `.src.rpm` rebuildable for snapshot and prerelease versions, whose RPM `Version:` is sanitized but whose tarball prefix is the raw version.
+
 ## Custom spec file
 
 Provide your own `.spec` template for full control:
@@ -120,11 +122,17 @@ The spec file is rendered through the template engine with additional variables:
 | Variable | Description |
 |----------|-------------|
 | `{{ .PackageName }}` | RPM package name |
-| `{{ .Source }}` | Source archive filename |
+| `{{ .Source }}` | Source archive filename (reconciled with the RPM `Version:`; always matches the file in `SOURCES/`) |
+| `{{ .SourcePrefix }}` | Source archive top-level directory (empty for a flat archive) |
 | `{{ .Summary }}` | Package summary |
 | `{{ .License }}` | License identifier |
 | `{{ .URL }}` | Homepage URL |
 | `{{ .Description }}` | Package description |
+
+Use `%autosetup -n {{ .SourcePrefix }}` only when the source archive has a
+directory prefix (a `source.prefix_template` ending in `/`). For a flat
+archive (`SourcePrefix` empty), use `%autosetup -c` instead, which creates
+the build directory and extracts the flat sources into it.
 
 ## Behavior
 
