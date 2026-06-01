@@ -50,6 +50,49 @@ pub(crate) const PUSH_BASE: &str = "https://push.fury.io";
 /// Base URL for the API (used by version probe + delete).
 pub(crate) const API_BASE: &str = "https://api.fury.io";
 
+/// Resolve the push base URL. Defaults to [`PUSH_BASE`];
+/// `ANODIZE_GEMFURY_PUSH_BASE` overrides it so tests can point the push at a
+/// local responder. The env read is the only test seam — production never
+/// sets the variable.
+pub(crate) fn push_base() -> String {
+    std::env::var("ANODIZE_GEMFURY_PUSH_BASE").unwrap_or_else(|_| PUSH_BASE.to_string())
+}
+
+/// Resolve the API base URL (version probe + delete). Defaults to
+/// [`API_BASE`]; `ANODIZE_GEMFURY_API_BASE` overrides it for tests.
+pub(crate) fn api_base() -> String {
+    std::env::var("ANODIZE_GEMFURY_API_BASE").unwrap_or_else(|_| API_BASE.to_string())
+}
+
+/// Best-effort Fury package name from an artifact filename.
+///
+/// Fury exposes a package under its control-file name (e.g. `mytool`), NOT
+/// the full artifact filename (`mytool_1.2.3_amd64.deb`). Probing with the
+/// full filename always 404s. Derive the package name by truncating the
+/// filename at the first occurrence of the version string, then trimming a
+/// trailing `_`/`-`/`.` separator (deb uses `name_version_arch`, rpm/apk use
+/// `name-version`). Falls back to the extension-stripped basename when the
+/// version doesn't appear (e.g. a snapshot-renamed archive), which is still
+/// a closer key than the raw filename.
+pub fn fury_package_name(art_name: &str, version: &str) -> String {
+    if !version.is_empty()
+        && let Some(idx) = art_name.find(version)
+    {
+        let head = &art_name[..idx];
+        let trimmed = head.trim_end_matches(['_', '-', '.']);
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    // No version match: strip a known package extension and return the rest.
+    for ext in [".deb", ".rpm", ".apk"] {
+        if let Some(stripped) = art_name.strip_suffix(ext) {
+            return stripped.to_string();
+        }
+    }
+    art_name.to_string()
+}
+
 /// Resolved push-token env var name for the given config entry.
 pub fn push_token_env_var(cfg: &GemFuryConfig) -> &str {
     cfg.secret_name.as_deref().unwrap_or(DEFAULT_PUSH_TOKEN_ENV)
@@ -199,7 +242,10 @@ pub fn version_already_published(
 ) -> Result<bool> {
     let url = format!(
         "{}/{}/packages/{}/versions/{}",
-        API_BASE, account, package, version
+        api_base(),
+        account,
+        package,
+        version
     );
     log.verbose(&format!("gemfury: probe GET {}", url));
     let scope = format!("gemfury probe for {}@{}", package, version);
@@ -345,7 +391,7 @@ pub fn publish_to_gemfury(ctx: &Context, log: &StageLogger) -> Result<Vec<GemFur
             .context("gemfury: build HTTP client")?;
 
         let version = ctx.version();
-        let push_url = format!("{}/{}", PUSH_BASE, account);
+        let push_url = format!("{}/{}", push_base(), account);
 
         for artifact in &artifacts {
             let path = &artifact.path;
@@ -363,15 +409,17 @@ pub fn publish_to_gemfury(ctx: &Context, log: &StageLogger) -> Result<Vec<GemFur
 
             // Idempotency probe: skip if `<package>@<version>` is already on
             // Fury — matches the immutable-releases policy (re-run on an
-            // already-pushed tag must not error). The package name Fury
-            // exposes in /packages/<name>/ is typically the artifact name
-            // minus the version suffix; we use the artifact basename as a
-            // best-effort identifier (Fury accepts both formats in the
-            // probe URL — a 404 just means we'll attempt the push).
+            // already-pushed tag must not error). Fury exposes a package in
+            // /packages/<name>/ under its control-file name (the artifact
+            // filename minus the version+arch+extension suffix), so the probe
+            // keys on the derived name — probing the raw filename always 404s.
+            // A 404 here just means we'll attempt the push (which has its own
+            // 409/422 conflict-as-success guard for the racing case).
+            let fury_pkg = fury_package_name(&art_name, &version);
             if version_already_published(
                 &client,
                 &account,
-                &art_name,
+                &fury_pkg,
                 &version,
                 &push_token,
                 &policy,
@@ -379,7 +427,7 @@ pub fn publish_to_gemfury(ctx: &Context, log: &StageLogger) -> Result<Vec<GemFur
             )? {
                 log.status(&format!(
                     "gemfury: '{}@{}' already on account '{}' — skipping (idempotent)",
-                    art_name, version, account
+                    fury_pkg, version, account
                 ));
                 continue;
             }
@@ -394,6 +442,11 @@ pub fn publish_to_gemfury(ctx: &Context, log: &StageLogger) -> Result<Vec<GemFur
 
             let max_attempts = policy.max_attempts.max(1);
             let mime = "application/octet-stream";
+            // Set inside the retry closure when the push returns a 409/422
+            // already-exists conflict, so the post-retry code can skip
+            // recording a rollback target. `Cell` because the closure is
+            // `FnMut` and the publish loop is single-threaded.
+            let conflict_skipped = std::cell::Cell::new(false);
             retry_sync(&policy, |attempt| {
                 if attempt > 1 {
                     log.warn(&format!(
@@ -428,6 +481,16 @@ pub fn publish_to_gemfury(ctx: &Context, log: &StageLogger) -> Result<Vec<GemFur
                 if status.is_success() {
                     return Ok(());
                 }
+                // Idempotent conflict: a 409 (Conflict) / 422 (Unprocessable)
+                // means the version already exists on Fury — a re-run on an
+                // already-published tag, or a racing concurrent uploader.
+                // The operator's intent ("land this artifact") is satisfied,
+                // so treat it as success rather than a hard failure (mirrors
+                // the cloudsmith conflict-as-success guard).
+                if matches!(status.as_u16(), 409 | 422) {
+                    conflict_skipped.set(true);
+                    return Ok(());
+                }
                 let body = resp.text().unwrap_or_default();
                 let err_msg = format!(
                     "gemfury: POST {} for '{}' returned HTTP {}: {}",
@@ -443,6 +506,17 @@ pub fn publish_to_gemfury(ctx: &Context, log: &StageLogger) -> Result<Vec<GemFur
                     Err(ControlFlow::Break(err))
                 }
             })?;
+
+            // A conflict-as-success push means the version was already present
+            // (re-run / racing uploader); record NO rollback target — this run
+            // did not place it, so rollback must not delete it.
+            if conflict_skipped.get() {
+                log.status(&format!(
+                    "gemfury: '{}@{}' already on account '{}' (push conflict) — treated as idempotent",
+                    fury_pkg, version, account
+                ));
+                continue;
+            }
 
             pushed.push(GemFuryTarget {
                 account: account.clone(),
@@ -478,7 +552,10 @@ pub fn delete_version(
 ) -> Result<()> {
     let url = format!(
         "{}/{}/packages/{}/versions/{}",
-        API_BASE, account, package, version
+        api_base(),
+        account,
+        package,
+        version
     );
     log.status(&format!("gemfury: DELETE {}", url));
     let scope = format!("gemfury delete for {}@{}", package, version);

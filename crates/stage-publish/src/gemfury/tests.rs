@@ -506,3 +506,161 @@ fn version_already_published_returns_false_on_404() {
     // inconclusive shapes.
     let _ = result;
 }
+
+// -----------------------------------------------------------------------------
+// Idempotency: package-name derivation + 409/422 conflict-as-success
+// -----------------------------------------------------------------------------
+
+#[test]
+fn fury_package_name_strips_version_suffix() {
+    use super::publish::fury_package_name;
+    // deb: name_version_arch.deb
+    assert_eq!(
+        fury_package_name("mytool_1.2.3_amd64.deb", "1.2.3"),
+        "mytool"
+    );
+    // rpm: name-version-release.arch.rpm
+    assert_eq!(
+        fury_package_name("mytool-1.2.3-1.x86_64.rpm", "1.2.3"),
+        "mytool"
+    );
+    // apk: name-version.apk
+    assert_eq!(fury_package_name("mytool-1.2.3.apk", "1.2.3"), "mytool");
+    // multi-word package name with hyphens preserved before the version.
+    assert_eq!(
+        fury_package_name("my-cool-tool_4.5.6_arm64.deb", "4.5.6"),
+        "my-cool-tool"
+    );
+    // version absent: fall back to extension-stripped basename.
+    assert_eq!(
+        fury_package_name("snapshot-build.deb", "1.2.3"),
+        "snapshot-build"
+    );
+}
+
+/// A re-run against an already-published version must succeed (idempotent):
+/// the probe 404s (Fury's probe surface), then the push returns 409 Conflict
+/// → treated as success with no rollback target recorded. A genuine failure
+/// (400) still errors.
+#[test]
+#[serial_test::serial]
+fn gemfury_push_conflict_is_idempotent_success() {
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let art_path = tmp.path().join("demo_1.2.3_amd64.deb");
+    std::fs::write(&art_path, b"fake-deb").unwrap();
+
+    // Connection order per artifact: probe (GET api_base) -> push (POST
+    // push_base). Probe 404 ⇒ push attempted; push 409 ⇒ idempotent success.
+    let probe_404 = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+    let push_409 = "HTTP/1.1 409 Conflict\r\nContent-Length: 0\r\n\r\n";
+    let (api_addr, _api_calls) = spawn_oneshot_http_responder(vec![probe_404]);
+    let (push_addr, push_calls) = spawn_oneshot_http_responder(vec![push_409]);
+
+    let config = Config {
+        project_name: "demo".to_string(),
+        gemfury: Some(vec![GemFuryConfig {
+            account: Some("acme".into()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+    ctx.config = config;
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_TOKEN", "fake-token"));
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::LinuxPackage,
+        path: art_path.clone(),
+        name: "demo_1.2.3_amd64.deb".to_string(),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "demo".to_string(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    });
+
+    unsafe {
+        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
+        std::env::set_var("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}"));
+    }
+    let log = StageLogger::new("gemfury", Verbosity::Quiet);
+    let result = publish_to_gemfury(&ctx, &log);
+    unsafe {
+        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
+        std::env::remove_var("ANODIZE_GEMFURY_PUSH_BASE");
+    }
+
+    let pushed = result.expect("409 conflict must be an idempotent success, not an error");
+    assert!(
+        pushed.is_empty(),
+        "a conflict-as-success push must record NO rollback target, got {pushed:?}"
+    );
+    assert_eq!(
+        push_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "push should be attempted exactly once (409 is terminal, not retried)"
+    );
+}
+
+/// A genuine non-conflict failure (HTTP 400) on push still errors.
+#[test]
+#[serial_test::serial]
+fn gemfury_push_genuine_failure_still_errors() {
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let art_path = tmp.path().join("demo_1.2.3_amd64.deb");
+    std::fs::write(&art_path, b"fake-deb").unwrap();
+
+    let probe_404 = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+    let push_400 = "HTTP/1.1 400 Bad Request\r\nContent-Length: 7\r\n\r\nbad req";
+    let (api_addr, _api_calls) = spawn_oneshot_http_responder(vec![probe_404]);
+    let (push_addr, _push_calls) = spawn_oneshot_http_responder(vec![push_400]);
+
+    let config = Config {
+        project_name: "demo".to_string(),
+        gemfury: Some(vec![GemFuryConfig {
+            account: Some("acme".into()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+    ctx.config = config;
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_TOKEN", "fake-token"));
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::LinuxPackage,
+        path: art_path.clone(),
+        name: "demo_1.2.3_amd64.deb".to_string(),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "demo".to_string(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    });
+
+    unsafe {
+        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
+        std::env::set_var("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}"));
+    }
+    let log = StageLogger::new("gemfury", Verbosity::Quiet);
+    let result = publish_to_gemfury(&ctx, &log);
+    unsafe {
+        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
+        std::env::remove_var("ANODIZE_GEMFURY_PUSH_BASE");
+    }
+
+    assert!(
+        result.is_err(),
+        "a genuine 400 failure must error, not be swallowed as idempotent"
+    );
+}
