@@ -74,7 +74,16 @@ impl anodizer_core::Publisher for NpmPublisher {
             entries.len()
         ));
 
-        let mut targets: Vec<NpmTarget> = Vec::new();
+        // Accumulate every package that publishes successfully BEFORE the
+        // next attempt, so a mid-sequence failure still yields evidence for
+        // the already-live (72h-irreversible) packages. `publish_to_npm`
+        // pushes each success into `pushed`; on Err the evidence is built from
+        // whatever it managed to push, the Failed outcome is recorded, and
+        // `Ok(evidence)` is returned — bubbling `Err` here would make dispatch
+        // drop the evidence (`evidence: None`) and orphan the published
+        // packages from rollback.
+        let mut pushed: Vec<super::publish::NpmTarget> = Vec::new();
+        let mut publish_err: Option<anyhow::Error> = None;
         for (idx, cfg) in entries.iter().enumerate() {
             let label = cfg.id.clone().unwrap_or_else(|| format!("npms[{}]", idx));
             log.status(&format!("npm: processing '{}'", label));
@@ -87,18 +96,23 @@ impl anodizer_core::Publisher for NpmPublisher {
                 .first()
                 .map(|c| c.name.clone())
                 .unwrap_or_else(|| ctx.config.project_name.clone());
-            let outcomes = publish_to_npm(ctx, cfg, &crate_name, &log)?;
-            for t in outcomes {
-                targets.push(NpmTarget {
-                    target: t.package.clone(),
-                    package: t.package,
-                    version: t.version,
-                    registry: t.registry,
-                    dist_tag: t.dist_tag,
-                    token_env_var: t.token_env_var,
-                });
+            if let Err(e) = publish_to_npm(ctx, cfg, &crate_name, &log, &mut pushed) {
+                publish_err = Some(e);
+                break;
             }
         }
+
+        let targets: Vec<NpmTarget> = pushed
+            .into_iter()
+            .map(|t| NpmTarget {
+                target: t.package.clone(),
+                package: t.package,
+                version: t.version,
+                registry: t.registry,
+                dist_tag: t.dist_tag,
+                token_env_var: t.token_env_var,
+            })
+            .collect();
 
         let mut evidence = anodizer_core::PublishEvidence::new("npm");
         if let Some(first) = targets.first() {
@@ -115,6 +129,14 @@ impl anodizer_core::Publisher for NpmPublisher {
                     npm_targets: targets,
                 },
             );
+        }
+
+        // Record the failure as an outcome override (keeping the evidence)
+        // rather than bubbling `Err` so dispatch retains the rollback
+        // coordinates of the packages already pushed.
+        if let Some(e) = publish_err {
+            log.error(&format!("npm: publish failed: {e:#}"));
+            ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Failed(format!("{e:#}")));
         }
         Ok(evidence)
     }
@@ -135,9 +157,9 @@ impl anodizer_core::Publisher for NpmPublisher {
         }
 
         // For each recorded target, attempt `npm unpublish`. Within the 72h
-        // window this succeeds; outside it npm exits non-zero and we surface a
-        // manual-cleanup warning. Failures here are warn-only so sibling
-        // publishers' rollback paths still run.
+        // window this succeeds; outside it npm exits non-zero and the caller
+        // surfaces a manual-cleanup warning. Failures here are warn-only so
+        // sibling publishers' rollback paths still run.
         let env = ctx.env_source();
         let mut succeeded = 0usize;
         let mut failed = 0usize;

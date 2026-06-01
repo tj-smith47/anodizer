@@ -1,8 +1,8 @@
 //! NPM `optionalDependencies` layout generation (the default `optional-deps`
 //! mode).
 //!
-//! This is the modern pattern leading Rust CLIs ship binaries through npm with
-//! (biome's `generate-packages.mjs`, git-cliff): instead of a postinstall
+//! The modern pattern that leading Rust CLIs (biome's `generate-packages.mjs`,
+//! git-cliff) use to ship binaries through npm: instead of a postinstall
 //! download shim, anodizer emits one thin per-platform package per built
 //! target plus a metapackage. The per-platform packages carry `os`/`cpu`/`libc`
 //! selectors DERIVED from the target triple ([`super::manifest::npm_triple`]),
@@ -16,9 +16,12 @@ use std::collections::BTreeMap;
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::config::NpmConfig;
 use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 use anyhow::{Result, bail};
 
-use super::manifest::{NpmTriple, finalize_package_json, insert_common_metadata, npm_triple};
+use super::manifest::{
+    NpmTriple, finalize_package_json, insert_common_metadata, npm_triple, warn_excluded_targets,
+};
 
 /// One per-platform package emitted in `optional-deps` mode.
 ///
@@ -253,6 +256,13 @@ function resolveBinary() {{
 
 const target = resolveBinary();
 const result = spawnSync(target, process.argv.slice(2), {{ stdio: 'inherit' }});
+if (result.error) {{
+  console.error(
+    `[{bin}] failed to launch ${{target}}: ${{result.error.message}}; ` +
+    `the platform package may be missing or not executable — try reinstalling`
+  );
+  process.exit(1);
+}}
 process.exit(result.status === null ? 1 : result.status);
 "#,
         platforms_table = platforms_table,
@@ -276,6 +286,7 @@ pub(crate) fn generate_layout(
     cfg: &NpmConfig,
     crate_name: &str,
     version: &str,
+    log: &StageLogger,
 ) -> Result<OptionalDepsLayout> {
     let metapackage = resolve_metapackage(cfg, crate_name).to_string();
     let bin = resolve_bin(cfg, &metapackage).to_string();
@@ -303,6 +314,7 @@ pub(crate) fn generate_layout(
     }
 
     let mut platforms: Vec<PlatformPackage> = Vec::new();
+    let mut excluded: Vec<String> = Vec::new();
     for art in binaries {
         if let Some(ids) = id_filter
             && !ids.iter().any(|id| id == &art.crate_name)
@@ -311,6 +323,11 @@ pub(crate) fn generate_layout(
         }
         let target = art.target.as_deref().unwrap_or("");
         let Some(triple) = npm_triple(target) else {
+            excluded.push(if target.is_empty() {
+                "<no target>".to_string()
+            } else {
+                target.to_string()
+            });
             continue;
         };
         let suffix = platform_suffix(&triple, libc_aware);
@@ -325,6 +342,7 @@ pub(crate) fn generate_layout(
             binary_name,
         });
     }
+    warn_excluded_targets(log, &excluded);
 
     platforms.sort_by(|a, b| a.name.cmp(&b.name));
     // When not libc-aware, two linux binaries (musl + glibc) collapse to the

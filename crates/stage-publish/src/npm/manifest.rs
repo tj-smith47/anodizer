@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::NpmConfig;
 use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 
@@ -115,6 +116,34 @@ pub(crate) fn npm_triple(target: &str) -> Option<NpmTriple> {
     })
 }
 
+/// Warn that `targets` (deduplicated, sorted) were excluded from npm coverage
+/// because [`npm_triple`] has no mapping for them. Shared by both modes so the
+/// operator is never silently left with a platform gap — notably
+/// `darwin-universal` (npm has no universal arch) and exotic arches
+/// (loong64/mips/sparc64/riscv edge combos, solaris/illumos/ios). No-op when
+/// nothing was excluded.
+pub(crate) fn warn_excluded_targets(log: &StageLogger, excluded: &[String]) {
+    if excluded.is_empty() {
+        return;
+    }
+    let mut uniq: Vec<&String> = excluded.iter().collect();
+    uniq.sort();
+    uniq.dedup();
+    let list = uniq
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    log.warn(&format!(
+        "npm: {} target(s) have no npm os/cpu/libc mapping and were excluded from \
+         npm packages: {}. Consumers on those platforms will not be able to \
+         `npm install` this package (npm has no selector for them — e.g. macOS \
+         universal binaries, or exotic arches).",
+        uniq.len(),
+        list
+    ));
+}
+
 /// Resolve the effective dist-tag (configured value or [`DEFAULT_TAG`]).
 pub(crate) fn resolve_tag(cfg: &NpmConfig) -> &str {
     cfg.tag
@@ -191,12 +220,14 @@ pub(crate) fn collect_platform_binaries(
     cfg: &NpmConfig,
     pkg_name: &str,
     version: &str,
+    log: &StageLogger,
 ) -> Result<Vec<PlatformBinary>> {
     let format = resolve_format(cfg).to_string();
     let id_filter = cfg.ids.as_ref();
     let url_template = cfg.url_template.as_deref();
 
     let mut out: Vec<PlatformBinary> = Vec::new();
+    let mut excluded: Vec<String> = Vec::new();
     for art in ctx.artifacts.all() {
         if !matches!(art.kind, ArtifactKind::Archive) {
             continue;
@@ -208,6 +239,11 @@ pub(crate) fn collect_platform_binaries(
         }
         let target = art.target.as_deref().unwrap_or("");
         let Some(triple) = npm_triple(target) else {
+            excluded.push(if target.is_empty() {
+                "<no target>".to_string()
+            } else {
+                target.to_string()
+            });
             continue;
         };
         let (os, arch) = anodizer_core::target::map_target(target);
@@ -221,6 +257,7 @@ pub(crate) fn collect_platform_binaries(
             format: format.clone(),
         });
     }
+    warn_excluded_targets(log, &excluded);
     out.sort_by(|a, b| a.os.cmp(&b.os).then_with(|| a.cpu.cmp(&b.cpu)));
     // Two archives mapping to the same (os, cpu) is a config bug; drop the
     // duplicate so the manifest doesn't carry colliding entries.
@@ -502,6 +539,13 @@ const {{ spawnSync }} = require('child_process');
 const exe = process.platform === 'win32' ? '{bin_basename}.exe' : '{bin_basename}';
 const target = path.join(__dirname, exe);
 const result = spawnSync(target, process.argv.slice(2), {{ stdio: 'inherit' }});
+if (result.error) {{
+  console.error(
+    `[{bin_basename}] failed to launch ${{target}}: ${{result.error.message}}; ` +
+    `the postinstall step may not have completed — try reinstalling the package`
+  );
+  process.exit(1);
+}}
 process.exit(result.status === null ? 1 : result.status);
 "#,
         bin_basename = bin_basename

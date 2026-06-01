@@ -417,21 +417,27 @@ pub(crate) fn write_npmrc(
 }
 
 /// Top-level publish entrypoint for one `npms[]` entry. Dispatches on
-/// [`NpmConfig::mode`]. Returns the pushed-package coordinates (one per
-/// published package), or an empty vec for every skip path.
+/// [`NpmConfig::mode`].
+///
+/// Each package whose `npm publish` succeeds is appended to `targets` BEFORE
+/// the next publish is attempted, so on a mid-sequence failure the caller
+/// still holds the coordinates of every already-live package and can record
+/// them for rollback (npm publishes are 72h-irreversible — losing the
+/// evidence would orphan a live package). Skip paths append nothing.
 pub fn publish_to_npm(
     ctx: &Context,
     cfg: &NpmConfig,
     crate_name: &str,
     log: &StageLogger,
-) -> Result<Vec<NpmTarget>> {
+    targets: &mut Vec<NpmTarget>,
+) -> Result<()> {
     if let Some(skip) = cfg.skip.as_ref() {
         let off = skip
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .context("npm: render skip template")?;
         if off {
             log.status("npm: skipping — skip evaluates true");
-            return Ok(Vec::new());
+            return Ok(());
         }
     }
     if let Some(disable) = cfg.disable.as_ref() {
@@ -440,7 +446,7 @@ pub fn publish_to_npm(
             .context("npm: render disable template")?;
         if off {
             log.status("npm: skipping — disable evaluates true");
-            return Ok(Vec::new());
+            return Ok(());
         }
     }
     let proceed = anodizer_core::config::evaluate_if_condition(
@@ -450,29 +456,34 @@ pub fn publish_to_npm(
     )?;
     if !proceed {
         log.status("npm: skipping — `if` condition evaluated falsy");
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     match cfg.mode {
-        NpmMode::OptionalDeps => publish_optional_deps(ctx, cfg, crate_name, log),
-        NpmMode::Postinstall => publish_postinstall(ctx, cfg, crate_name, log),
+        NpmMode::OptionalDeps => publish_optional_deps(ctx, cfg, crate_name, log, targets),
+        NpmMode::Postinstall => publish_postinstall(ctx, cfg, crate_name, log, targets),
     }
 }
 
 /// `optional-deps` publish: pack + publish each per-platform package, then the
 /// metapackage last (so its `optionalDependencies` already resolve).
+///
+/// Each successful publish is pushed onto `targets` immediately, so a failure
+/// partway through the sequence leaves the already-published packages recorded
+/// for rollback rather than orphaning them.
 fn publish_optional_deps(
     ctx: &Context,
     cfg: &NpmConfig,
     crate_name: &str,
     log: &StageLogger,
-) -> Result<Vec<NpmTarget>> {
+    targets: &mut Vec<NpmTarget>,
+) -> Result<()> {
     let version = ctx.version();
     let registry = resolve_registry(cfg);
     let dist_tag = resolve_tag(cfg).to_string();
     let access = resolve_access(cfg);
 
-    let layout = generate_layout(ctx, cfg, crate_name, &version)?;
+    let layout = generate_layout(ctx, cfg, crate_name, &version, log)?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -483,7 +494,7 @@ fn publish_optional_deps(
             registry,
             dist_tag
         ));
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let token = resolve_token(ctx, cfg)?;
@@ -498,7 +509,6 @@ fn publish_optional_deps(
     let cfg_dir = TempDir::new().context("npm: create .npmrc temp dir")?;
     write_npmrc(cfg_dir.path(), &registry, &token, access.as_deref())?;
 
-    let mut targets: Vec<NpmTarget> = Vec::new();
     let policy = ctx.retry_policy();
 
     // Per-platform packages first so the metapackage's optionalDependencies
@@ -558,7 +568,7 @@ fn publish_optional_deps(
         targets.push(t);
     }
 
-    Ok(targets)
+    Ok(())
 }
 
 /// `postinstall` publish: pack + publish a single download-shim package.
@@ -567,7 +577,8 @@ fn publish_postinstall(
     cfg: &NpmConfig,
     crate_name: &str,
     log: &StageLogger,
-) -> Result<Vec<NpmTarget>> {
+    targets: &mut Vec<NpmTarget>,
+) -> Result<()> {
     preflight_multi_format_unambiguous(ctx, cfg, crate_name)?;
 
     let version = ctx.version();
@@ -576,14 +587,14 @@ fn publish_postinstall(
     let dist_tag = resolve_tag(cfg).to_string();
     let access = resolve_access(cfg);
 
-    let binaries = super::manifest::collect_platform_binaries(ctx, cfg, &pkg_name, &version)?;
+    let binaries = super::manifest::collect_platform_binaries(ctx, cfg, &pkg_name, &version, log)?;
     if binaries.is_empty() {
         log.warn(&format!(
             "npm: '{}' has no archive artifacts matching any node platform/cpu pair; \
              nothing to publish",
             pkg_name
         ));
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let staged = assemble_postinstall_tarball(ctx, cfg, crate_name, &version, &binaries)?;
@@ -593,7 +604,7 @@ fn publish_postinstall(
             "(dry-run) would publish npm package '{}@{}' to {} (tag={})",
             staged.package, version, registry, dist_tag
         ));
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let token = resolve_token(ctx, cfg)?;
@@ -609,7 +620,6 @@ fn publish_postinstall(
     write_npmrc(cfg_dir.path(), &registry, &token, access.as_deref())?;
 
     let policy = ctx.retry_policy();
-    let mut targets = Vec::new();
     if let Some(t) = publish_one_tarball(
         &staged,
         &version,
@@ -623,7 +633,7 @@ fn publish_postinstall(
     )? {
         targets.push(t);
     }
-    Ok(targets)
+    Ok(())
 }
 
 /// Idempotently publish one staged tarball: short-circuit when the exact
@@ -742,7 +752,8 @@ fn run_npm_publish(
 
 /// `npm unpublish <package>@<version> --force` invocation used by rollback.
 /// Within the 72h window this returns Ok; outside it npm returns non-zero and
-/// we surface the "cannot unpublish past 72h" error (warn-only at the caller).
+/// the call surfaces the "cannot unpublish past 72h" error (warn-only at the
+/// caller).
 pub(crate) fn run_npm_unpublish(
     package: &str,
     version: &str,

@@ -5,7 +5,7 @@ use anodizer_core::config::{
     Config, CrateConfig, MetadataConfig, NpmConfig, NpmMode, StringOrBool,
 };
 use anodizer_core::test_helpers::TestContextBuilder;
-use anodizer_core::{PreflightCheck, Publisher, PublisherGroup};
+use anodizer_core::{PreflightCheck, Publisher, PublisherGroup, PublisherOutcome};
 
 use super::manifest::{
     PlatformBinary, collect_platform_binaries, npm_triple, render_package_json,
@@ -13,7 +13,9 @@ use super::manifest::{
     resolve_registry, resolve_tag,
 };
 use super::optional_deps::generate_layout;
-use super::publish::{assemble_postinstall_tarball, publish_to_npm};
+use super::publish::{
+    assemble_optional_deps_tarball, assemble_postinstall_tarball, publish_to_npm,
+};
 use super::publisher::NpmPublisher;
 
 fn demo_crate() -> CrateConfig {
@@ -249,7 +251,8 @@ fn collect_platform_binaries_maps_archive_artifacts() {
     );
 
     let cfg = npm_cfg();
-    let bins = collect_platform_binaries(&ctx, &cfg, "demo", "1.2.3").expect("collect");
+    let bins = collect_platform_binaries(&ctx, &cfg, "demo", "1.2.3", &ctx.logger("publish"))
+        .expect("collect");
     assert_eq!(bins.len(), 2);
     assert_eq!(bins[0].os, "darwin");
     assert_eq!(bins[0].cpu, "arm64");
@@ -372,7 +375,9 @@ fn ctx_with_archives() -> anodizer_core::context::Context {
 fn assemble_postinstall_tarball_is_reproducible() {
     let ctx = ctx_with_archives();
     let cfg = npm_cfg();
-    let bins = collect_platform_binaries(&ctx, &cfg, "anodize-demo", "1.2.3").expect("collect");
+    let bins =
+        collect_platform_binaries(&ctx, &cfg, "anodize-demo", "1.2.3", &ctx.logger("publish"))
+            .expect("collect");
     let t1 = assemble_postinstall_tarball(&ctx, &cfg, "demo", "1.2.3", &bins).expect("assemble 1");
     let t2 = assemble_postinstall_tarball(&ctx, &cfg, "demo", "1.2.3", &bins).expect("assemble 2");
     let b1 = std::fs::read(&t1.tarball_path).expect("read 1");
@@ -428,7 +433,8 @@ fn opt_cfg() -> NpmConfig {
 #[test]
 fn optional_deps_emits_per_platform_packages_with_derived_triples() {
     let (_tmp, ctx) = optional_deps_ctx();
-    let layout = generate_layout(&ctx, &opt_cfg(), "demo", "1.2.3").expect("layout");
+    let layout =
+        generate_layout(&ctx, &opt_cfg(), "demo", "1.2.3", &ctx.logger("publish")).expect("layout");
 
     // 4 distinct platform packages (musl + gnu are separate under libc_aware).
     let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
@@ -474,7 +480,8 @@ fn optional_deps_emits_per_platform_packages_with_derived_triples() {
 #[test]
 fn optional_deps_metapackage_lists_all_platform_deps_and_shim() {
     let (_tmp, ctx) = optional_deps_ctx();
-    let layout = generate_layout(&ctx, &opt_cfg(), "demo", "1.2.3").expect("layout");
+    let layout =
+        generate_layout(&ctx, &opt_cfg(), "demo", "1.2.3", &ctx.logger("publish")).expect("layout");
 
     let meta: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
     assert_eq!(meta["name"], "demo");
@@ -499,7 +506,8 @@ fn optional_deps_libc_aware_false_collapses_linux() {
         libc_aware: false,
         ..opt_cfg()
     };
-    let layout = generate_layout(&ctx, &cfg, "demo", "1.2.3").expect("layout");
+    let layout =
+        generate_layout(&ctx, &cfg, "demo", "1.2.3", &ctx.logger("publish")).expect("layout");
     let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
     // musl + gnu collapse to one linux-x64 package (no libc suffix).
     assert!(names.contains(&"@anodize/demo-linux-x64"), "{names:?}");
@@ -523,7 +531,8 @@ fn optional_deps_requires_scope() {
         metapackage: Some("demo".into()),
         ..Default::default()
     };
-    let err = generate_layout(&ctx, &cfg, "demo", "1.2.3").expect_err("must require scope");
+    let err = generate_layout(&ctx, &cfg, "demo", "1.2.3", &ctx.logger("publish"))
+        .expect_err("must require scope");
     assert!(err.to_string().contains("scope:"), "{err}");
 }
 
@@ -533,7 +542,8 @@ fn optional_deps_no_binaries_errors() {
         .project_name("demo")
         .crates(vec![demo_crate()])
         .build();
-    let err = generate_layout(&ctx, &opt_cfg(), "demo", "1.2.3").expect_err("no binaries");
+    let err = generate_layout(&ctx, &opt_cfg(), "demo", "1.2.3", &ctx.logger("publish"))
+        .expect_err("no binaries");
     assert!(err.to_string().contains("no binary artifacts"), "{err}");
 }
 
@@ -541,8 +551,8 @@ fn optional_deps_no_binaries_errors() {
 fn optional_deps_layout_is_deterministic() {
     let (_tmp, ctx) = optional_deps_ctx();
     let cfg = opt_cfg();
-    let l1 = generate_layout(&ctx, &cfg, "demo", "1.2.3").expect("l1");
-    let l2 = generate_layout(&ctx, &cfg, "demo", "1.2.3").expect("l2");
+    let l1 = generate_layout(&ctx, &cfg, "demo", "1.2.3", &ctx.logger("publish")).expect("l1");
+    let l2 = generate_layout(&ctx, &cfg, "demo", "1.2.3", &ctx.logger("publish")).expect("l2");
     assert_eq!(l1.metapackage_json, l2.metapackage_json);
     assert_eq!(l1.shim_js, l2.shim_js);
     let n1: Vec<&str> = l1.platforms.iter().map(|p| p.name.as_str()).collect();
@@ -590,7 +600,8 @@ fn optional_deps_filters_by_ids_for_workspace_per_crate() {
         ids: Some(vec!["demo".into()]),
         ..opt_cfg()
     };
-    let layout = generate_layout(&ctx, &cfg, "demo", "1.2.3").expect("layout");
+    let layout =
+        generate_layout(&ctx, &cfg, "demo", "1.2.3", &ctx.logger("publish")).expect("layout");
     assert_eq!(
         layout.platforms.len(),
         1,
@@ -652,8 +663,9 @@ fn publish_postinstall_dry_run_returns_empty_without_invoking_npm() {
     ctx.options.dry_run = true;
     let cfg = npm_cfg();
     let log = ctx.logger("publish");
-    let outcome = publish_to_npm(&ctx, &cfg, "demo", &log).expect("publish");
-    assert!(outcome.is_empty(), "dry-run must return no targets");
+    let mut targets = Vec::new();
+    publish_to_npm(&ctx, &cfg, "demo", &log, &mut targets).expect("publish");
+    assert!(targets.is_empty(), "dry-run must return no targets");
 }
 
 #[test]
@@ -662,8 +674,9 @@ fn publish_optional_deps_dry_run_returns_empty() {
     ctx.options.dry_run = true;
     let cfg = opt_cfg();
     let log = ctx.logger("publish");
-    let outcome = publish_to_npm(&ctx, &cfg, "demo", &log).expect("publish");
-    assert!(outcome.is_empty(), "dry-run must return no targets");
+    let mut targets = Vec::new();
+    publish_to_npm(&ctx, &cfg, "demo", &log, &mut targets).expect("publish");
+    assert!(targets.is_empty(), "dry-run must return no targets");
 }
 
 #[test]
@@ -676,8 +689,9 @@ fn publish_skip_true_returns_empty() {
         ..Default::default()
     };
     let log = ctx.logger("publish");
-    let outcome = publish_to_npm(&ctx, &cfg, "demo", &log).expect("publish");
-    assert!(outcome.is_empty());
+    let mut targets = Vec::new();
+    publish_to_npm(&ctx, &cfg, "demo", &log, &mut targets).expect("publish");
+    assert!(targets.is_empty());
 }
 
 #[test]
@@ -690,8 +704,9 @@ fn publish_disable_true_returns_empty() {
         ..Default::default()
     };
     let log = ctx.logger("publish");
-    let outcome = publish_to_npm(&ctx, &cfg, "demo", &log).expect("publish");
-    assert!(outcome.is_empty());
+    let mut targets = Vec::new();
+    publish_to_npm(&ctx, &cfg, "demo", &log, &mut targets).expect("publish");
+    assert!(targets.is_empty());
 }
 
 #[test]
@@ -704,8 +719,9 @@ fn publish_if_condition_falsy_returns_empty() {
         ..Default::default()
     };
     let log = ctx.logger("publish");
-    let outcome = publish_to_npm(&ctx, &cfg, "demo", &log).expect("publish");
-    assert!(outcome.is_empty());
+    let mut targets = Vec::new();
+    publish_to_npm(&ctx, &cfg, "demo", &log, &mut targets).expect("publish");
+    assert!(targets.is_empty());
 }
 
 #[test]
@@ -716,6 +732,244 @@ fn publish_postinstall_no_matching_binaries_warns_and_returns_empty() {
         .build();
     let cfg = npm_cfg();
     let log = ctx.logger("publish");
-    let outcome = publish_to_npm(&ctx, &cfg, "demo", &log).expect("publish");
-    assert!(outcome.is_empty());
+    let mut targets = Vec::new();
+    publish_to_npm(&ctx, &cfg, "demo", &log, &mut targets).expect("publish");
+    assert!(targets.is_empty());
+}
+
+// -----------------------------------------------------------------------------
+// Excluded-target warning (#2 — no silent platform-coverage gaps)
+// -----------------------------------------------------------------------------
+
+#[test]
+fn optional_deps_warns_on_unsupported_target_and_skips_it() {
+    // A supported binary plus a darwin-universal binary (arch "all" → npm has
+    // no universal selector). The universal one must be excluded WITH a warning
+    // rather than silently dropped.
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate()])
+        .build();
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-musl", "demo");
+    add_binary(&mut ctx, tmp.path(), "darwin-universal", "demo");
+
+    let (log, cap) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    let layout = generate_layout(&ctx, &opt_cfg(), "demo", "1.2.3", &log).expect("layout");
+    // Only the linux package is emitted; the universal target is excluded.
+    assert_eq!(layout.platforms.len(), 1);
+    assert_eq!(layout.platforms[0].name, "@anodize/demo-linux-x64-musl");
+    assert!(
+        cap.warn_count() >= 1,
+        "excluded target must produce a warning"
+    );
+}
+
+#[test]
+fn collect_platform_binaries_warns_on_unsupported_archive_target() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .crates(vec![demo_crate()])
+        .build();
+    add_archive(
+        &mut ctx,
+        "x86_64-unknown-linux-gnu",
+        "11".repeat(32),
+        "https://example.com/demo-linux-x64.tgz",
+    );
+    add_archive(
+        &mut ctx,
+        "sparc64-unknown-linux-gnu",
+        "22".repeat(32),
+        "https://example.com/demo-sparc64.tgz",
+    );
+    let cfg = npm_cfg();
+    let (log, cap) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    let bins = collect_platform_binaries(&ctx, &cfg, "demo", "1.2.3", &log).expect("collect");
+    assert_eq!(bins.len(), 1, "only the supported target is collected");
+    assert_eq!(bins[0].os, "linux");
+    assert!(cap.warn_count() >= 1, "sparc64 exclusion must warn");
+}
+
+// -----------------------------------------------------------------------------
+// optional-deps tarball reproducibility + binary mode (#3 — default-mode path)
+// -----------------------------------------------------------------------------
+
+#[test]
+fn assemble_optional_deps_tarball_is_reproducible_and_binary_is_0o755() {
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate()])
+        .build();
+    let cfg = opt_cfg();
+    let pkg_json = r#"{"name":"@anodize/demo-linux-x64-musl","version":"1.2.3","os":["linux"],"cpu":["x64"],"libc":["musl"]}"#;
+    let binary = b"ELF-fake-binary".to_vec();
+    let embedded = vec![("demo".to_string(), binary, 0o755u32)];
+
+    let t1 = assemble_optional_deps_tarball(
+        &ctx,
+        &cfg,
+        "@anodize/demo-linux-x64-musl",
+        "1.2.3",
+        pkg_json,
+        &embedded,
+    )
+    .expect("assemble 1");
+    let t2 = assemble_optional_deps_tarball(
+        &ctx,
+        &cfg,
+        "@anodize/demo-linux-x64-musl",
+        "1.2.3",
+        pkg_json,
+        &embedded,
+    )
+    .expect("assemble 2");
+
+    let b1 = std::fs::read(&t1.tarball_path).expect("read 1");
+    let b2 = std::fs::read(&t2.tarball_path).expect("read 2");
+    assert_eq!(b1, b2, "optional-deps tarball must be byte-reproducible");
+
+    // The embedded binary must land inside the tarball at mode 0o755.
+    let f = std::fs::File::open(&t1.tarball_path).expect("open tgz");
+    let gz = flate2::read::GzDecoder::new(f);
+    let mut ar = tar::Archive::new(gz);
+    let mut saw_binary_0o755 = false;
+    for entry in ar.entries().expect("entries") {
+        let entry = entry.expect("entry");
+        let path = entry.path().expect("path").into_owned();
+        if path.ends_with("package/demo") {
+            let mode = entry.header().mode().expect("mode");
+            assert_eq!(mode & 0o777, 0o755, "embedded binary must be 0o755");
+            saw_binary_0o755 = true;
+        }
+    }
+    assert!(
+        saw_binary_0o755,
+        "binary entry must be present in the tarball"
+    );
+    drop((t1, t2));
+}
+
+// -----------------------------------------------------------------------------
+// Partial-failure rollback-evidence survival (#1 — irreversible publisher)
+// -----------------------------------------------------------------------------
+
+/// End-to-end proof that a mid-sequence `npm publish` failure does NOT lose the
+/// rollback coordinates of packages already live on the registry. A fake `npm`
+/// on PATH succeeds for the first `publish` and fails for the second; the
+/// publisher must still return `Ok(evidence)` carrying the first package as an
+/// `npm_targets` entry and record a `Failed` outcome (so dispatch keeps the
+/// evidence instead of dropping it to `None`).
+#[cfg(unix)]
+#[test]
+fn partial_publish_failure_preserves_rollback_evidence() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("bin dir");
+    let counter = tmp.path().join("publish_count");
+
+    // Fake `npm`: `view` always reports E404 (never-published, so the
+    // idempotency probe proceeds to publish); `publish` succeeds on attempt 1
+    // and fails on attempt 2+.
+    let npm = bin_dir.join("npm");
+    std::fs::write(
+        &npm,
+        r#"#!/bin/sh
+case "$1" in
+  view)
+    echo "npm error code E404" 1>&2
+    exit 1
+    ;;
+  publish)
+    n=0
+    if [ -f "$NPM_PUBLISH_COUNTER" ]; then n=$(cat "$NPM_PUBLISH_COUNTER"); fi
+    n=$((n + 1))
+    echo "$n" > "$NPM_PUBLISH_COUNTER"
+    if [ "$n" -ge 2 ]; then
+      echo "npm error 403 second publish boom" 1>&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+"#,
+    )
+    .expect("write fake npm");
+    std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).expect("chmod npm");
+
+    // Two platform binaries → two per-platform publishes before the metapackage.
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .env("NPM_TOKEN", "fake-token")
+        .crates(vec![demo_crate()])
+        .build();
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-musl", "demo");
+    add_binary(&mut ctx, tmp.path(), "aarch64-apple-darwin", "demo");
+    ctx.config.npms = Some(vec![opt_cfg()]);
+
+    let _g = anodizer_core::test_helpers::env::env_mutex()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let orig_path = std::env::var("PATH").unwrap_or_default();
+    // SAFETY: serialised by env_mutex; paired set/restore below.
+    unsafe {
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path));
+        std::env::set_var("NPM_PUBLISH_COUNTER", counter.display().to_string());
+    }
+
+    let p = NpmPublisher::new();
+    let evidence = p
+        .run(&mut ctx)
+        .expect("run must NOT bubble Err — evidence must survive");
+
+    // SAFETY: serialised by env_mutex; paired with the set above.
+    unsafe {
+        std::env::set_var("PATH", orig_path);
+        std::env::remove_var("NPM_PUBLISH_COUNTER");
+    }
+
+    // The first package published successfully and MUST be recorded for
+    // rollback even though a later publish failed.
+    let targets = match &evidence.extra {
+        anodizer_core::PublishEvidenceExtra::Npm(n) => &n.npm_targets,
+        other => panic!("expected Npm evidence, got {other:?}"),
+    };
+    assert_eq!(
+        targets.len(),
+        1,
+        "exactly the one already-live package must survive in evidence"
+    );
+    assert!(
+        targets[0].package.starts_with("@anodize/demo-"),
+        "recorded target is a per-platform package: {}",
+        targets[0].package
+    );
+    assert!(
+        evidence.primary_ref.is_some(),
+        "primary_ref set from survivor"
+    );
+
+    // The publisher recorded a Failed outcome (so dispatch maps it Failed but
+    // keeps the evidence) rather than bubbling Err (which would drop it).
+    let outcome = ctx
+        .take_pending_outcome()
+        .expect("a Failed outcome override must be recorded");
+    assert!(
+        matches!(outcome, PublisherOutcome::Failed(_)),
+        "outcome must be Failed, got {outcome:?}"
+    );
 }
