@@ -52,7 +52,6 @@ gemfury:
     token: "{{ .Env.MY_FURY_PUSH }}"  # optional; cfg-level templated push token
     api_token: "{{ .Env.MY_FURY_API }}" # optional; cfg-level templated API token
     skip: false                       # optional; skip this entry (bool/template)
-    disable: false                    # optional; disable this entry (bool/template)
     required: true                    # optional; override required-default
     if: "{{ ne .Prerelease \"\" }}"   # optional; template-conditional gate
 ```
@@ -101,8 +100,7 @@ and only require the wider API token in the rollback flow.
 | `api_secret_name` | string | `FURY_API_TOKEN` | Env var name for the delete token |
 | `token` | string | none | Cfg-supplied push token (templated) |
 | `api_token` | string | none | Cfg-supplied API/delete token (templated) |
-| `skip` | string/bool | none | Skip this entry |
-| `disable` | string/bool | none | Disable this entry |
+| `skip` | string/bool | none | Skip this entry (legacy `disable:` spelling accepted as an alias) |
 | `required` | bool | `true` | Override required-default |
 | `if` | string | none | Template-conditional gate |
 

@@ -113,8 +113,7 @@ package/
 | `extra_files` | list | `[README*, LICENSE*]` | Glob set of files to include |
 | `templated_extra_files` | list | none | Template-rendered file mappings (`{src, dst}`) |
 | `extra` | map | none | Free-form root-level `package.json` fields (shallow-merged) |
-| `skip` | string/bool | none | Skip this publisher (template-conditional) |
-| `disable` | string/bool | none | Disable this publisher entry |
+| `skip` | string/bool | none | Skip this publisher (template-conditional; legacy `disable:` spelling accepted as an alias) |
 | `if` | string | none | Template condition; skip if result is falsy |
 | `required` | bool | `true` | Whether failure here aborts the release |
 

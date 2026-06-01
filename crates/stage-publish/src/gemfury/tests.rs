@@ -250,7 +250,7 @@ fn publish_errors_when_account_missing() {
 }
 
 // -----------------------------------------------------------------------------
-// Skip / disable / if-condition / dry-run paths
+// Skip / if-condition / dry-run paths
 // -----------------------------------------------------------------------------
 
 #[test]
