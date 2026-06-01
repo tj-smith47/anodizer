@@ -6970,6 +6970,62 @@ fn test_makeself_file_accepts_src_dst_aliases() {
 }
 
 #[test]
+fn test_appimages_parse_full_block_from_top_level_config() {
+    // End-to-end: the top-level `appimages:` key flows through the Config
+    // deserializer (single object → vec of one) and every field lands.
+    let yaml = r#"
+project_name: helix
+appimages:
+  - id: helix
+    ids: [helix-bin]
+    desktop: contrib/Helix.desktop
+    icon: contrib/helix.png
+    appdir_extra:
+      - src: runtime/
+        dst: usr/lib/helix/runtime
+    update_information: "gh-releases-zsync|helix-editor|helix|latest|helix-*.AppImage.zsync"
+    runtime_harvest:
+      command: "{{ .ArtifactPath }} --populate {{ .HarvestDir }}"
+      dir: usr/lib/helix/runtime
+"#;
+    let cfg: super::Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert_eq!(cfg.appimages.len(), 1);
+    let ai = &cfg.appimages[0];
+    assert_eq!(ai.id.as_deref(), Some("helix"));
+    assert_eq!(ai.ids.as_deref(), Some(&["helix-bin".to_string()][..]));
+    assert_eq!(ai.desktop.as_deref(), Some("contrib/Helix.desktop"));
+    assert_eq!(ai.icon.as_deref(), Some("contrib/helix.png"));
+    let extra = ai.appdir_extra.as_ref().unwrap();
+    assert_eq!(extra[0].src, "runtime/");
+    assert_eq!(extra[0].dst, "usr/lib/helix/runtime");
+    assert!(
+        ai.update_information
+            .as_deref()
+            .unwrap()
+            .starts_with("gh-releases-zsync")
+    );
+    let h = ai.runtime_harvest.as_ref().unwrap();
+    assert!(h.command.contains("{{ .HarvestDir }}"));
+    assert_eq!(h.dir, "usr/lib/helix/runtime");
+}
+
+#[test]
+fn test_appimage_config_rejects_unknown_field() {
+    // deny_unknown_fields guards against typo'd keys silently reverting to
+    // defaults.
+    let err = serde_yaml_ng::from_str::<super::AppImageConfig>("bogus_field: 1\n").unwrap_err();
+    assert!(err.to_string().contains("bogus_field"));
+}
+
+#[test]
+fn test_appimage_extra_accepts_source_destination_aliases() {
+    let e: super::AppImageExtra =
+        serde_yaml_ng::from_str("source: runtime/\ndestination: usr/lib/x\n").unwrap();
+    assert_eq!(e.src, "runtime/");
+    assert_eq!(e.dst, "usr/lib/x");
+}
+
+#[test]
 fn test_nfpm_config_accepts_builds_alias_into_ids() {
     // GoReleaser NFPM keeps a deprecated `builds []string` aliasing `ids`. With
     // `deny_unknown_fields` on NfpmConfig the GR spelling would hard-reject

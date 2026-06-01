@@ -202,6 +202,12 @@ pub struct Config {
     #[serde(default, deserialize_with = "deserialize_makeselfs")]
     #[schemars(schema_with = "makeselfs_schema")]
     pub makeselfs: Vec<MakeselfConfig>,
+    /// AppImage configurations. Each entry bundles a built Linux binary plus
+    /// its desktop integration into a single self-contained `.AppImage` via
+    /// linuxdeploy.
+    #[serde(default, deserialize_with = "deserialize_appimages")]
+    #[schemars(schema_with = "appimages_schema")]
+    pub appimages: Vec<AppImageConfig>,
     /// Source RPM configuration. Renamed from `srpm:` (singular) for spelling
     /// parity with `Defaults.srpms` and the rest of the plural-name packaging
     /// fields. The `srpm:` spelling is still accepted via serde alias for
@@ -329,6 +335,7 @@ impl Default for Config {
             template_files: None,
             monorepo: None,
             makeselfs: Vec::new(),
+            appimages: Vec::new(),
             srpms: None,
             milestones: None,
             uploads: None,
@@ -1989,8 +1996,12 @@ pub use string_or_bool::*;
 // `anodizer_core::config::{MakeselfConfig, MakeselfFile, SrpmConfig}`
 // import paths used by stages and tests.
 
-pub use crate::packagers::{MakeselfConfig, MakeselfFile, SrpmConfig};
-pub(crate) use crate::packagers::{deserialize_makeselfs, makeselfs_schema};
+pub use crate::packagers::{
+    AppImageConfig, AppImageExtra, MakeselfConfig, MakeselfFile, RuntimeHarvest, SrpmConfig,
+};
+pub(crate) use crate::packagers::{
+    appimages_schema, deserialize_appimages, deserialize_makeselfs, makeselfs_schema,
+};
 
 // ---------------------------------------------------------------------------
 // MilestoneConfig

@@ -141,6 +141,171 @@ pub(crate) fn makeselfs_schema(
 }
 
 // ---------------------------------------------------------------------------
+// AppImageConfig
+// ---------------------------------------------------------------------------
+
+/// AppImage packaging configuration.
+///
+/// Drives the [AppImage](https://appimage.org/) stage, which bundles a built
+/// Linux binary plus its desktop integration (a `.desktop` entry + icon) into
+/// a single self-contained, runnable `.AppImage` file via
+/// [`linuxdeploy`](https://github.com/linuxdeploy/linuxdeploy)'s `appimage`
+/// output plugin. One `.AppImage` is produced per matching Linux target so a
+/// multi-arch build yields distinct, non-colliding outputs.
+///
+/// YAML:
+/// ```yaml
+/// appimages:
+///   - id: helix
+///     ids: [helix-bin]
+///     desktop: contrib/Helix.desktop
+///     icon: contrib/helix.png
+///     appdir_extra:
+///       - src: runtime/
+///         dst: usr/lib/helix/runtime
+///     update_information: "gh-releases-zsync|helix-editor|helix|latest|helix-*.AppImage.zsync"
+///     runtime_harvest:
+///       command: "{{ .ArtifactPath }} --populate-runtime {{ .HarvestDir }}"
+///       dir: runtime/
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct AppImageConfig {
+    /// Unique identifier for this AppImage config (default: "default").
+    pub id: Option<String>,
+    /// Build IDs filter: only bundle binaries whose `id` is in this list.
+    /// When omitted, every Linux binary in the build matrix is eligible.
+    pub ids: Option<Vec<String>>,
+    /// Output filename template (default includes project, version, os, arch).
+    /// The `.AppImage` extension is appended automatically when absent.
+    pub filename: Option<String>,
+    /// Application name passed to linuxdeploy via the `APP` env var and used
+    /// as the AppDir basename. Defaults to the project name.
+    pub name: Option<String>,
+    /// Path to the `.desktop` entry file (template). Required — linuxdeploy
+    /// will not assemble an AppImage without a desktop file.
+    pub desktop: Option<String>,
+    /// Path to the application icon (template). Required.
+    pub icon: Option<String>,
+    /// Extra files / directories copied into the AppDir before linuxdeploy
+    /// runs (e.g. a harvested `runtime/` tree). Each entry's `dst` is
+    /// interpreted relative to the AppDir root.
+    pub appdir_extra: Option<Vec<AppImageExtra>>,
+    /// zsync delta-update metadata embedded in the AppImage, passed to
+    /// linuxdeploy via the `UPDATE_INFORMATION` env var. When omitted, the
+    /// AppImage carries no update information and `UPDATE_INFORMATION` is
+    /// left unset (matching linuxdeploy's default).
+    pub update_information: Option<String>,
+    /// Runtime-asset harvest hook: run the freshly-built binary ONCE on the
+    /// host to populate a directory, then bundle that directory into the
+    /// AppDir. The harvested data is architecture-independent (grammars,
+    /// themes, queries), so it is produced once on the host-native binary and
+    /// reused for every target's AppImage.
+    pub runtime_harvest: Option<RuntimeHarvest>,
+    /// Extra arguments appended to the linuxdeploy command line.
+    pub extra_args: Option<Vec<String>>,
+    /// Target OS filter (default: ["linux"]). AppImage is a Linux-only format.
+    pub os: Option<Vec<String>>,
+    /// Target architecture filter. When omitted, every architecture in the
+    /// build matrix produces its own `.AppImage`.
+    pub arch: Option<Vec<String>>,
+    /// Skip this config. Accepts bool or template string.
+    #[serde(
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt",
+        default
+    )]
+    pub skip: Option<StringOrBool>,
+}
+
+/// A file or directory copied into the AppDir before linuxdeploy assembles
+/// the AppImage. Mirrors [`MakeselfFile`]'s `src` / `dst` shape.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct AppImageExtra {
+    /// Source path (file or directory, relative to project root). A trailing
+    /// `/` is not required; directories are copied recursively.
+    #[serde(alias = "source")]
+    pub src: String,
+    /// Destination path inside the AppDir (relative to the AppDir root, e.g.
+    /// `usr/lib/helix/runtime`).
+    #[serde(alias = "destination")]
+    pub dst: String,
+}
+
+/// Runtime-asset harvest hook for an AppImage config. The `command` template
+/// runs the freshly-built host-native binary to populate `dir`; the resulting
+/// directory is then bundled into the AppDir (and staged at a stable dist
+/// path so an archive `extra_files` glob can reuse it).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct RuntimeHarvest {
+    /// Command template run once on the host to populate the harvest dir.
+    /// `{{ .ArtifactPath }}` resolves to the host-native binary's path and
+    /// `{{ .HarvestDir }}` to the absolute harvest output directory. Run via
+    /// `sh -c`.
+    pub command: String,
+    /// Directory (relative to the AppDir root) the harvested assets are
+    /// bundled into. Also the AppDir-relative destination for the staged
+    /// host-harvested tree.
+    pub dir: String,
+}
+
+/// Deserialize appimages: single object → vec of one, array → vec of many.
+pub(crate) fn deserialize_appimages<'de, D>(
+    deserializer: D,
+) -> Result<Vec<AppImageConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct AppImageVisitor;
+
+    impl<'de> Visitor<'de> for AppImageVisitor {
+        type Value = Vec<AppImageConfig>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an appimage config object or an array of appimage config objects")
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut configs = Vec::new();
+            while let Some(item) = seq.next_element::<AppImageConfig>()? {
+                configs.push(item);
+            }
+            Ok(configs)
+        }
+
+        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            let config = AppImageConfig::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            Ok(vec![config])
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+    }
+
+    deserializer.deserialize_any(AppImageVisitor)
+}
+
+pub(crate) fn appimages_schema(
+    generator: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
+    let mut schema = generator.subschema_for::<Vec<AppImageConfig>>();
+    if let schemars::schema::Schema::Object(ref mut obj) = schema {
+        obj.metadata().description =
+            Some("AppImage packaging configurations. Accepts a single object or array.".to_owned());
+    }
+    schema
+}
+
+// ---------------------------------------------------------------------------
 // SrpmConfig
 // ---------------------------------------------------------------------------
 

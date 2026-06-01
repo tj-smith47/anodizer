@@ -59,6 +59,7 @@ pub const VALID_RELEASE_SKIPS: &[&str] = &[
     "krew",
     "nfpm",
     "makeself",
+    "appimage",
     "flatpak",
     "srpm",
     "before",
