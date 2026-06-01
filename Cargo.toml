@@ -29,6 +29,7 @@ members = [
     "crates/stage-sbom",
     "crates/stage-attest",
     "crates/stage-appimage",
+    "crates/stage-verify-release",
     "crates/cli",
     "crates/xtask",
 ]
@@ -64,6 +65,7 @@ default-members = [
     "crates/stage-sbom",
     "crates/stage-attest",
     "crates/stage-appimage",
+    "crates/stage-verify-release",
     "crates/cli",
 ]
 
@@ -111,6 +113,7 @@ anodizer-stage-notarize = { path = "crates/stage-notarize", version = "0.1.0" }
 anodizer-stage-templatefiles = { path = "crates/stage-templatefiles", version = "0.1.0" }
 anodizer-stage-makeself = { path = "crates/stage-makeself", version = "0.1.0" }
 anodizer-stage-srpm = { path = "crates/stage-srpm", version = "0.1.0" }
+anodizer-stage-verify-release = { path = "crates/stage-verify-release", version = "0.1.0" }
 brontes = "0.2.0"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -147,6 +150,7 @@ hyper-util = { version = "0.1", features = ["client-legacy"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 object_store = { version = "0.13", features = ["aws", "gcp", "azure"] }
+object = { version = "0.36", default-features = false, features = ["read", "elf", "std"] }
 serial_test = "3"
 schemars = "0.8"
 tera = "1.20.1"

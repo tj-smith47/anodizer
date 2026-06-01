@@ -58,6 +58,7 @@ dependencies = [
  "anodizer-stage-srpm",
  "anodizer-stage-templatefiles",
  "anodizer-stage-upx",
+ "anodizer-stage-verify-release",
  "anyhow",
  "brontes",
  "chrono",
@@ -495,6 +496,23 @@ dependencies = [
  "anyhow",
  "glob",
  "serde_yaml_ng",
+]
+
+[[package]]
+name = "anodizer-stage-verify-release"
+version = "0.1.0"
+dependencies = [
+ "anodizer-core",
+ "anodizer-stage-release",
+ "anyhow",
+ "flate2",
+ "object",
+ "serde_yaml_ng",
+ "tar",
+ "tempfile",
+ "tokio",
+ "xz2",
+ "zstd",
 ]
 
 [[package]]
@@ -1961,6 +1979,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "object"
+version = "0.36.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
