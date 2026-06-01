@@ -10185,7 +10185,7 @@
           }
         },
         "format": {
-          "description": "Archive format the `postinstall` script downloads (`tgz`, `tar.gz`, `zip`, `binary`). Default `tgz`. Only consulted in `postinstall` mode.",
+          "description": "Archive format the `postinstall` script downloads (`tgz`, `tar.gz`, `tar`, `zip`, `binary`). Default `tgz`. Only consulted in `postinstall` mode.",
           "default": null,
           "type": [
             "string",
@@ -10220,7 +10220,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the NPM publisher entry is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `npms[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the NPM publisher entry is skipped. Render failure hard-errors.",
           "default": null,
           "type": [
             "string",
@@ -10260,7 +10260,7 @@
           ]
         },
         "mode": {
-          "description": "Binary-distribution strategy. `optional-deps` (default) emits npm's native per-platform packages; `postinstall` emits a download shim (GoReleaser Pro parity).",
+          "description": "Binary-distribution strategy. `optional-deps` (default) emits npm's native per-platform packages; `postinstall` emits a download shim.",
           "default": "optional-deps",
           "allOf": [
             {
@@ -10308,7 +10308,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser Pro `npms[].disable:` configs.",
+          "description": "Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat.",
           "default": null,
           "anyOf": [
             {
@@ -10358,7 +10358,7 @@
       "additionalProperties": false
     },
     "NpmMode": {
-      "description": "Binary-distribution strategy for an [`NpmConfig`] entry.\n\n`optional-deps` (the default for a Rust release) emits npm's native platform-resolution layout: one thin per-platform package whose `os`/`cpu`/`libc` selectors are derived from the built target triples, plus a metapackage that lists every platform package under `optionalDependencies` and ships a `bin` shim resolving the installed one via `require.resolve`. npm installs only the matching platform package; there is no download and no postinstall script. This is the pattern leading Rust CLIs ship binaries through npm with (biome, git-cliff).\n\n`postinstall` emits GoReleaser Pro's binary-via-npm shape: a single package carrying a `postinstall.js` shim that downloads + sha256-verifies the OS/arch-matching release archive at `npm install` time. Kept for GR-Pro parity.",
+      "description": "Binary-distribution strategy for an [`NpmConfig`] entry.\n\n`optional-deps` (the default for a Rust release) emits npm's native platform-resolution layout: one thin per-platform package whose `os`/`cpu`/`libc` selectors are derived from the built target triples, plus a metapackage that lists every platform package under `optionalDependencies` and ships a `bin` shim resolving the installed one via `require.resolve`. npm installs only the matching platform package; there is no download and no postinstall script. This is the pattern leading Rust CLIs ship binaries through npm with (biome, git-cliff).\n\n`postinstall` emits a single package carrying a `postinstall.js` shim that downloads + sha256-verifies the OS/arch-matching release archive at `npm install` time — for registries or policies that disallow per-platform packages.",
       "oneOf": [
         {
           "description": "Emit per-platform packages + a metapackage with `optionalDependencies` and a `require.resolve` bin shim. npm's native `os`/`cpu`/`libc` resolution selects the right prebuilt package — no download, no postinstall. Default.",
@@ -10368,7 +10368,7 @@
           ]
         },
         {
-          "description": "Emit a single package with a `postinstall.js` shim that downloads and sha256-verifies the matching archive at install time (GoReleaser Pro parity).",
+          "description": "Emit a single package with a `postinstall.js` shim that downloads and sha256-verifies the matching archive at install time.",
           "type": "string",
           "enum": [
             "postinstall"

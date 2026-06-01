@@ -600,16 +600,16 @@ In the default `optional-deps` mode anodizer emits one thin npm package per buil
 | `description` | string | — | Templated package description. Falls back to the project-level `metadata.description` when unset. |
 | `extra` | map | — | Free-form root-level `package.json` fields. Shallow-merged into the generated `package.json`. Useful for `engines`, `mcpName`, or other npm metadata fields anodizer does not surface. |
 | `extra_files` | list of string | — | Additional files to include in the published package alongside the generated metadata. Default `["README*", "LICENSE*"]` (applied at the `Default` pass). |
-| `format` | string | — | Archive format the `postinstall` script downloads (`tgz`, `tar.gz`, `zip`, `binary`). Default `tgz`. Only consulted in `postinstall` mode. |
+| `format` | string | — | Archive format the `postinstall` script downloads (`tgz`, `tar.gz`, `tar`, `zip`, `binary`). Default `tgz`. Only consulted in `postinstall` mode. |
 | `homepage` | string | — | Templated homepage URL. Falls back to `metadata.homepage` when unset. |
 | `id` | string | — | Unique identifier for selecting this entry from the CLI (`--id=...`). |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose archive `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the NPM publisher entry is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `npms[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the NPM publisher entry is skipped. Render failure hard-errors. |
 | `keywords` | list of string | — | NPM `keywords` list. |
 | `libc_aware` | bool | `true` | In `optional-deps` mode, emit separate per-platform packages for linux `musl` vs `glibc` (distinguished by the npm `libc` selector). When `false`, a single linux package per cpu is emitted with no `libc` selector. Default `true` — musl and glibc binaries are not interchangeable, so collapsing them risks installing the wrong one. |
 | `license` | string | — | Templated SPDX license identifier (e.g. `MIT`, `Apache-2.0`). Falls back to `metadata.license` when unset. |
 | `metapackage` | string | — | Metapackage name for `optional-deps` mode (e.g. `biome`). This is the package users `npm install`; it lists every per-platform package under `optionalDependencies` and ships the `bin` shim. Falls back to `name` (or the crate name) when unset. |
-| `mode` | NpmMode | `optional-deps` | Binary-distribution strategy. `optional-deps` (default) emits npm's native per-platform packages; `postinstall` emits a download shim (GoReleaser Pro parity). |
+| `mode` | NpmMode | `optional-deps` | Binary-distribution strategy. `optional-deps` (default) emits npm's native per-platform packages; `postinstall` emits a download shim. |
 | `name` | string | — | NPM package name (the metapackage / postinstall package). May be scoped (`@org/foo`) or unscoped (`foo`). Falls back to the crate name when unset. |
 | `registry` | string | — | Override the registry endpoint (default `https://registry.npmjs.org`). |
 | `repository` | string | — | Templated repository URL. Emitted as `repository.url` in `package.json` with `type: git`. |
@@ -617,7 +617,7 @@ In the default `optional-deps` mode anodizer emits one thin npm package per buil
 
 Default: `true` — NPM is a Manager-group publisher (one-way 72-hour unpublish window), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue. |
 | `scope` | string | — | npm scope for the per-platform packages emitted in `optional-deps` mode (e.g. `@biomejs`). The per-platform packages are named `<scope>/<bin>-<os>-<cpu>[-<libc>]`. Required for `optional-deps` mode; ignored in `postinstall` mode. |
-| `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser Pro `npms[].disable:` configs. |
+| `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `tag` | string | — | NPM dist-tag for the publish (default `latest`). Templated. |
 | `templated_extra_files` | list of NpmTemplatedExtraFile | — | Template-rendered file mappings (`src` may be a glob; rendered contents written to `dst`). |
 | `token` | string | — | Auth token for the registry. Falls back to the `NPM_TOKEN` env var when unset. Stored in `.npmrc` as `//<registry>/:_authToken=...` at publish time and never passed via argv. |

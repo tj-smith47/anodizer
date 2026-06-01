@@ -7,8 +7,7 @@
 //!   prebuilt — no download, no postinstall. The pattern leading Rust CLIs
 //!   ship binaries through npm with (biome, git-cliff).
 //! * `postinstall`: emits a single `package.json` + `postinstall.js` shim that
-//!   downloads + sha256-verifies the OS/arch-matching archive at install time
-//!   (GoReleaser Pro `npms:` parity).
+//!   downloads + sha256-verifies the OS/arch-matching archive at install time.
 //!
 //! The artifacts already exist (release archives + per-target binaries from
 //! the build/archive stages); this publisher wraps them in `npm i`-installable

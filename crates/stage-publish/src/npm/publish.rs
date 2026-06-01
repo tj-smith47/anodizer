@@ -7,7 +7,7 @@
 //!     resolve). The biome / git-cliff pattern — npm's native resolution
 //!     selects the matching prebuilt package, no postinstall.
 //!   * `postinstall`: packs + publishes a single package whose `postinstall.js`
-//!     downloads the matching archive at install time (GoReleaser Pro parity).
+//!     downloads the matching archive at install time.
 //!
 //! Token handling:
 //!   * The token is resolved from `cfg.token` (templated) or the `NPM_TOKEN`

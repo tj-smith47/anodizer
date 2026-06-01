@@ -343,6 +343,13 @@ fn render_postinstall_js_includes_platform_check_and_sha256() {
     assert!(body.contains("process.arch"));
     assert!(body.contains("sha256"));
     assert!(body.contains("demo.exe") || body.contains("'demo'"));
+    // Every format branch is present, including uncompressed `tar` (-xf, no -z)
+    // distinct from gzip'd `tgz`/`tar.gz` (-xzf), zip, and raw binary.
+    assert!(body.contains("'binary'"));
+    assert!(body.contains("unzip -o"));
+    assert!(body.contains("=== 'tar'"));
+    assert!(body.contains("tar -xf "));
+    assert!(body.contains("tar -xzf "));
 }
 
 // -----------------------------------------------------------------------------

@@ -2,8 +2,8 @@
 //!
 //! In `postinstall` mode the publisher emits one `package.json` per `npms[]`
 //! entry plus a `postinstall.js` that selects + downloads the OS/arch-matching
-//! release archive at install time (GoReleaser Pro `npms:` parity). The
-//! `optional-deps` mode (the default) lives in [`super::optional_deps`].
+//! release archive at install time. The `optional-deps` mode (the default)
+//! lives in [`super::optional_deps`].
 //!
 //! The target→npm-triple mapping ([`npm_triple`]) is shared by both modes:
 //! npm's `os`/`cpu`/`libc` selectors are DERIVED from each artifact's real
@@ -63,7 +63,7 @@ pub struct PlatformBinary {
     /// Hex sha256 the postinstall script verifies against.
     pub sha256: String,
     /// Archive format hint passed to the postinstall script
-    /// (`tgz`/`tar.gz`/`zip`/`binary`).
+    /// (`tgz`/`tar.gz`/`tar`/`zip`/`binary`).
     pub format: String,
 }
 
@@ -492,7 +492,7 @@ function download(url, dest) {{
         f.on('error', reject);
       }}).on('error', reject);
     }}
-    go(url, 5);
+    follow(url, 5);
   }});
 }}
 
@@ -509,6 +509,8 @@ function download(url, dest) {{
     fs.copyFileSync(archivePath, path.join(binDir, exe));
   }} else if (target.format === 'zip') {{
     execSync(`unzip -o "${{archivePath}}" -d "${{binDir}}"`, {{ stdio: 'inherit' }});
+  }} else if (target.format === 'tar') {{
+    execSync(`tar -xf "${{archivePath}}" -C "${{binDir}}"`, {{ stdio: 'inherit' }});
   }} else {{
     execSync(`tar -xzf "${{archivePath}}" -C "${{binDir}}"`, {{ stdio: 'inherit' }});
   }}

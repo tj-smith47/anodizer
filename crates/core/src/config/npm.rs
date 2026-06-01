@@ -17,10 +17,10 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 /// pattern leading Rust CLIs ship binaries through npm with (biome,
 /// git-cliff).
 ///
-/// `postinstall` emits GoReleaser Pro's binary-via-npm shape: a single
-/// package carrying a `postinstall.js` shim that downloads + sha256-verifies
-/// the OS/arch-matching release archive at `npm install` time. Kept for
-/// GR-Pro parity.
+/// `postinstall` emits a single package carrying a `postinstall.js` shim that
+/// downloads + sha256-verifies the OS/arch-matching release archive at
+/// `npm install` time — for registries or policies that disallow per-platform
+/// packages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum NpmMode {
@@ -31,8 +31,7 @@ pub enum NpmMode {
     #[default]
     OptionalDeps,
     /// Emit a single package with a `postinstall.js` shim that downloads and
-    /// sha256-verifies the matching archive at install time (GoReleaser Pro
-    /// parity).
+    /// sha256-verifies the matching archive at install time.
     Postinstall,
 }
 
@@ -55,8 +54,7 @@ pub struct NpmConfig {
     pub ids: Option<Vec<String>>,
 
     /// Binary-distribution strategy. `optional-deps` (default) emits npm's
-    /// native per-platform packages; `postinstall` emits a download shim
-    /// (GoReleaser Pro parity).
+    /// native per-platform packages; `postinstall` emits a download shim.
     #[serde(default)]
     pub mode: NpmMode,
 
@@ -122,8 +120,8 @@ pub struct NpmConfig {
     pub tag: Option<String>,
 
     /// Archive format the `postinstall` script downloads
-    /// (`tgz`, `tar.gz`, `zip`, `binary`). Default `tgz`. Only consulted in
-    /// `postinstall` mode.
+    /// (`tgz`, `tar.gz`, `tar`, `zip`, `binary`). Default `tgz`. Only consulted
+    /// in `postinstall` mode.
     pub format: Option<String>,
 
     /// Override the download URL emitted into the postinstall script
@@ -154,8 +152,7 @@ pub struct NpmConfig {
     pub token: Option<String>,
 
     /// Skip this publisher. Accepts bool or template string.
-    /// Accepts the legacy `disable:` spelling via serde alias for back-compat
-    /// with imported GoReleaser Pro `npms[].disable:` configs.
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
     #[serde(
         default,
         alias = "disable",
@@ -174,8 +171,7 @@ pub struct NpmConfig {
 
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the NPM publisher entry is
-    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
-    /// `npms[].if:`.
+    /// skipped. Render failure hard-errors.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }

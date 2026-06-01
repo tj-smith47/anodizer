@@ -12,7 +12,7 @@ Two distribution modes are supported, selected by `mode:`:
 | `mode` | What it emits | When to use |
 |--------|---------------|-------------|
 | `optional-deps` (**default**) | One thin per-platform package per built target + a metapackage whose `optionalDependencies` list them. npm's native `os`/`cpu`/`libc` resolution installs only the matching prebuilt package. No download, no postinstall. | The modern default. The biome / git-cliff pattern. |
-| `postinstall` | A single package carrying a `postinstall.js` shim that downloads + sha256-verifies the matching release archive at install time. | GoReleaser Pro `npms:` parity, or registries/policies that disallow per-platform packages. |
+| `postinstall` | A single package carrying a `postinstall.js` shim that downloads + sha256-verifies the matching release archive at install time. | Registries or policies that disallow per-platform packages. |
 
 ## Classification
 
@@ -61,7 +61,7 @@ npms:
     libc_aware: false     # one @acme/cli-linux-x64 instead of -musl / -glibc
 ```
 
-## postinstall mode (GoReleaser Pro parity)
+## postinstall mode
 
 ```yaml
 npms:
