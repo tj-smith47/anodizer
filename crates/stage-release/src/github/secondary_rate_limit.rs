@@ -235,12 +235,14 @@ mod tests {
 
     /// Synthesise an `octocrab::Error::GitHub` for the given status and body.
     ///
-    /// For 429 and 5xx responses octocrab's built-in tower retry middleware
-    /// (`RetryConfig::Simple(3)`) makes up to 3 additional attempts, so the TCP
-    /// listener must serve the response `4` times (1 initial + 3 retries) before
-    /// tower gives up and lets `map_github_error` see the status. For 4xx
-    /// responses other than 429 (e.g. 403), tower does NOT retry so `1` is
-    /// sufficient.
+    /// Retry is disabled on the builder (`RetryConfig::None`) so the request
+    /// makes exactly one attempt for every status. Without this, octocrab's
+    /// default tower retry (`RetryConfig::Simple(3)`) would re-issue 429 / 5xx
+    /// requests up to four times, requiring the responder to accept four
+    /// sequential connections whose backoff timing flaked under CPU-saturated
+    /// parallel test runs (a failed transport attempt surfaced a connect error
+    /// instead of the typed `Error::GitHub`). One served response is enough to
+    /// produce the typed GitHub error this test classifies, deterministically.
     fn make_github_error_sync(status: u16, body: &'static str) -> octocrab::Error {
         let body_len = body.len();
         let raw = Box::leak(
@@ -253,22 +255,18 @@ mod tests {
             )
             .into_boxed_str(),
         );
-        // 429 (and 5xx) are retried by octocrab's tower middleware up to 3
-        // times; serve the response 4 times so the final attempt reaches
-        // `map_github_error` and produces a typed GitHub error.
-        let serve_count: usize = if status == 429 || status >= 500 { 4 } else { 1 };
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("tokio rt for test helper");
         rt.block_on(async move {
-            // Serve `serve_count` identical responses. octocrab's tower
-            // retry middleware makes up to 4 attempts on 429 / 5xx; for
-            // 4xx other than 429 a single response is enough.
-            let (addr, _calls) = spawn_oneshot_http_responder(vec![raw; serve_count]);
+            // Retry disabled below, so a single served response suffices for
+            // every status — no connection-count dependence on the retry count.
+            let (addr, _calls) = spawn_oneshot_http_responder(vec![raw]);
             let octo = octocrab::OctocrabBuilder::new()
                 .base_uri(format!("http://{addr}/"))
                 .expect("base_uri")
+                .add_retry_config(octocrab::service::middleware::retry::RetryConfig::None)
                 .build()
                 .expect("build");
             octo.get::<serde_json::Value, _, _>("/test", None::<&()>)
@@ -301,8 +299,6 @@ mod tests {
     fn detects_secondary_rate_limit_via_doc_url_only() {
         // Body has a generic message but the doc URL contains the secondary
         // rate-limit indicator — detection must fire on either signal.
-        // Uses 403 (not 429) to avoid octocrab's internal tower retry
-        // consuming multiple TCP connections before the error surfaces.
         let body = r#"{"message":"Too many requests","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#secondary-rate-limits"}"#;
         let err = make_github_error_sync(403, body);
         assert!(
