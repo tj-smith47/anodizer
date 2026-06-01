@@ -844,6 +844,9 @@ pub fn delete_remote_tag_in(cwd: &Path, tag: &str) -> Result<()> {
 /// `dry_run` is true, logs what would happen without executing. When no
 /// origin remote exists and `strict` is true, returns an error; otherwise
 /// logs a warning and returns `Ok(())`.
+///
+/// Thin wrapper over [`push_branch_and_tags_atomic_in`] pinned to
+/// `remote = "origin"` and `branch = Some(branch)`.
 pub fn push_branch_and_tags_atomic(
     branch: &str,
     tags: &[String],
@@ -853,7 +856,8 @@ pub fn push_branch_and_tags_atomic(
 ) -> Result<()> {
     push_branch_and_tags_atomic_in(
         &std::env::current_dir()?,
-        branch,
+        "origin",
+        Some(branch),
         tags,
         dry_run,
         log,
@@ -861,10 +865,26 @@ pub fn push_branch_and_tags_atomic(
     )
 }
 
-/// Path-taking sibling of [`push_branch_and_tags_atomic`].
+/// Push an optional `branch` and all `tags` to `remote` atomically.
+///
+/// Ref combinations:
+/// - `branch = Some` + non-empty `tags` → `git push --atomic <remote> HEAD:refs/heads/<branch> <tags…>`
+/// - `branch = Some` + empty `tags` → `git push <remote> HEAD:refs/heads/<branch>`
+/// - `branch = None` + non-empty `tags` → `git push --atomic <remote> <tags…>`
+/// - `branch = None` + empty `tags` → no-op (logs a warning)
+///
+/// When `dry_run` is true, logs what would happen without executing. When the
+/// `remote` does not exist and `strict` is true, returns an error; otherwise
+/// logs a warning and returns `Ok(())`.
+///
+/// HEAD is pushed to `refs/heads/<branch>` (rather than `<branch>` alone) so
+/// detached-HEAD checkouts (notably `actions/checkout@v4` with `ref: <sha>`)
+/// work without a local branch ref.
+#[allow(clippy::too_many_arguments)]
 pub fn push_branch_and_tags_atomic_in(
     cwd: &Path,
-    branch: &str,
+    remote: &str,
+    branch: Option<&str>,
     tags: &[String],
     dry_run: bool,
     log: &crate::log::StageLogger,
@@ -872,44 +892,27 @@ pub fn push_branch_and_tags_atomic_in(
 ) -> Result<()> {
     if dry_run {
         let tag_list = tags.join(", ");
-        log.status(&format!(
-            "(dry-run) would push branch '{}' + tags [{}] atomically",
-            branch, tag_list
-        ));
+        match branch {
+            Some(b) => log.status(&format!(
+                "(dry-run) would push branch '{}' + tags [{}] to '{}' atomically",
+                b, tag_list, remote
+            )),
+            None => log.status(&format!(
+                "(dry-run) would push tags [{}] to '{}' atomically",
+                tag_list, remote
+            )),
+        }
         return Ok(());
     }
 
-    // Nothing to push atomically when tags list is empty — fall back to a
-    // plain branch push. --atomic with no tags is valid git syntax but
-    // misleading in log output and unnecessary for atomicity guarantees.
-    if tags.is_empty() {
-        log.verbose(&format!(
-            "no tags to push; pushing branch '{}' without --atomic",
-            branch
-        ));
-        let has_remote = Command::new("git")
-            .current_dir(cwd)
-            .args(["remote", "get-url", "origin"])
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("LC_ALL", "C")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !has_remote {
-            if strict {
-                anyhow::bail!("no 'origin' remote found, cannot push (strict mode)");
-            }
-            log.warn("no 'origin' remote found, skipping push");
-            return Ok(());
-        }
-        let head_refspec = format!("HEAD:refs/heads/{}", branch);
-        git_output_in(cwd, &["push", "origin", &head_refspec])?;
+    if branch.is_none() && tags.is_empty() {
+        log.warn("nothing to push (no branch, no tags)");
         return Ok(());
     }
 
     let has_remote = Command::new("git")
         .current_dir(cwd)
-        .args(["remote", "get-url", "origin"])
+        .args(["remote", "get-url", remote])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
         .output()
@@ -918,19 +921,31 @@ pub fn push_branch_and_tags_atomic_in(
 
     if !has_remote {
         if strict {
-            anyhow::bail!("no 'origin' remote found, cannot push (strict mode)");
+            anyhow::bail!("no '{remote}' remote found, cannot push (strict mode)");
         }
-        log.warn("no 'origin' remote found, skipping push");
+        log.warn(&format!("no '{remote}' remote found, skipping push"));
         return Ok(());
     }
 
-    // Push HEAD to refs/heads/<branch> rather than `<branch>` alone so
-    // detached-HEAD checkouts (notably `actions/checkout@v4` with `ref:
-    // <sha>`) work without a local branch ref. `git push origin <branch>`
-    // requires `refs/heads/<branch>` to resolve locally, which doesn't
-    // exist when the workflow checks out a SHA directly.
-    let head_refspec = format!("HEAD:refs/heads/{}", branch);
-    let mut args: Vec<&str> = vec!["push", "--atomic", "origin", head_refspec.as_str()];
+    // Nothing to push atomically when the tags list is empty — fall back to a
+    // plain branch push. --atomic with a single ref is valid git syntax but
+    // misleading in log output and unnecessary for atomicity guarantees.
+    if tags.is_empty() {
+        let b = branch.expect("branch is Some when tags is empty (checked above)");
+        log.verbose(&format!(
+            "no tags to push; pushing branch '{}' to '{}' without --atomic",
+            b, remote
+        ));
+        let head_refspec = format!("HEAD:refs/heads/{}", b);
+        git_output_in(cwd, &["push", remote, &head_refspec])?;
+        return Ok(());
+    }
+
+    let head_refspec = branch.map(|b| format!("HEAD:refs/heads/{}", b));
+    let mut args: Vec<&str> = vec!["push", "--atomic", remote];
+    if let Some(ref rs) = head_refspec {
+        args.push(rs.as_str());
+    }
     for tag in tags {
         args.push(tag.as_str());
     }
