@@ -509,7 +509,6 @@ dependencies = [
  "object",
  "serde_yaml_ng",
  "tar",
- "tempfile",
  "tokio",
  "xz2",
  "zstd",

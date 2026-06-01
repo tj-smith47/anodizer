@@ -252,8 +252,11 @@ fn verify_one_crate(
             .glibc_ceiling
             .as_deref()
             .expect("glibc_check_enabled implies a ceiling");
-        for deb in linux_packages(ctx, &crate_cfg.name, ".deb") {
-            check_one_deb_libc(log, &crate_cfg.name, deb, ceiling, issues);
+        for (path, name) in linux_packages(ctx, &crate_cfg.name) {
+            if !name.to_ascii_lowercase().ends_with(".deb") {
+                continue;
+            }
+            check_one_deb_libc(log, &crate_cfg.name, path, ceiling, issues);
         }
     }
 
@@ -264,7 +267,7 @@ fn verify_one_crate(
             .as_ref()
             .expect("smoke_enabled implies install_smoke is Some");
         let binary = crate_binary_name(crate_cfg);
-        for (path, name) in linux_package_paths(ctx, &crate_cfg.name) {
+        for (path, name) in linux_packages(ctx, &crate_cfg.name) {
             let Some(pt) = PackageType::from_filename(&name) else {
                 continue;
             };
@@ -276,7 +279,7 @@ fn verify_one_crate(
             let job = SmokeJob {
                 image: image.to_string(),
                 package_type: pt,
-                host_pkg_path: path,
+                host_pkg_path: path.to_string_lossy().to_string(),
                 pkg_name: name.clone(),
                 binary: binary.clone(),
             };
@@ -362,26 +365,18 @@ fn check_one_deb_libc(
     }
 }
 
-/// Linux-package artifacts for a crate whose filename ends with `ext`.
-fn linux_packages(ctx: &Context, crate_name: &str, ext: &str) -> Vec<std::path::PathBuf> {
-    ctx.artifacts
-        .by_kind_and_crate(ArtifactKind::LinuxPackage, crate_name)
-        .into_iter()
-        .filter(|a| a.name.to_ascii_lowercase().ends_with(ext))
-        .map(|a| a.path.clone())
-        .collect()
-}
-
 /// All Linux-package artifacts for a crate as `(absolute_path, basename)`.
-fn linux_package_paths(ctx: &Context, crate_name: &str) -> Vec<(String, String)> {
+///
+/// The path is canonicalized (falling back to the registered path) so both
+/// consumers work: the libc check reads the file, and the smoke-test
+/// bind-mounts it into a container (which requires an absolute host path).
+/// Callers filter by extension at the call site.
+fn linux_packages(ctx: &Context, crate_name: &str) -> Vec<(std::path::PathBuf, String)> {
     ctx.artifacts
         .by_kind_and_crate(ArtifactKind::LinuxPackage, crate_name)
         .into_iter()
         .map(|a| {
-            let abs = std::fs::canonicalize(&a.path)
-                .unwrap_or_else(|_| a.path.clone())
-                .to_string_lossy()
-                .to_string();
+            let abs = std::fs::canonicalize(&a.path).unwrap_or_else(|_| a.path.clone());
             (abs, a.name.clone())
         })
         .collect()

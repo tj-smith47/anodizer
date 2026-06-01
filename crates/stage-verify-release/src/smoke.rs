@@ -44,7 +44,10 @@ impl PackageType {
     /// The in-container install command for this package type, given the
     /// package's basename as mounted at `/pkg/<name>`.
     fn install_cmd(self, pkg_name: &str) -> String {
-        let path = format!("/pkg/{pkg_name}");
+        // The package name is config-derived and spliced into a `sh -c`
+        // string; single-quote it so a name with shell metacharacters cannot
+        // break out of the `/pkg/...` token and inject commands.
+        let path = sh_single_quote(&format!("/pkg/{pkg_name}"));
         match self {
             // `dpkg -i` then `apt-get -f` to pull any missing deps that the
             // bare `.deb` install left unsatisfied.
@@ -53,6 +56,18 @@ impl PackageType {
             Self::Apk => format!("apk add --allow-untrusted {path}"),
         }
     }
+}
+
+/// Single-quote a token for safe interpolation into a `sh -c` string.
+///
+/// Wraps the value in single quotes and escapes any embedded single quote via
+/// the standard `'\''` close-reopen trick, so the value is always treated as
+/// one inert literal argument by the shell — never as syntax. The `docker run`
+/// argv elements (`-v` mount, image) are already passed as discrete argv and
+/// don't need this; only the `sh -c <script>` body, which is a single shell
+/// string, does.
+fn sh_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// A fully-specified smoke-test invocation.
@@ -87,7 +102,7 @@ pub struct SmokeJob {
 pub fn build_smoke_argv(job: &SmokeJob) -> Vec<String> {
     let mount = format!("{}:/pkg/{}:ro", job.host_pkg_path, job.pkg_name);
     let install = job.package_type.install_cmd(&job.pkg_name);
-    let script = format!("{install} && {} --version", job.binary);
+    let script = format!("{install} && {} --version", sh_single_quote(&job.binary));
     vec![
         "run".to_string(),
         "--rm".to_string(),
@@ -192,10 +207,10 @@ mod tests {
         );
         let script = argv.last().unwrap();
         assert!(
-            script.contains("dpkg -i /pkg/myapp_1.0_amd64.deb"),
+            script.contains("dpkg -i '/pkg/myapp_1.0_amd64.deb'"),
             "{script}"
         );
-        assert!(script.contains("myapp --version"), "{script}");
+        assert!(script.contains("'myapp' --version"), "{script}");
     }
 
     #[test]
@@ -209,10 +224,10 @@ mod tests {
         });
         let script = argv.last().unwrap();
         assert!(
-            script.starts_with("rpm -i --nodeps /pkg/myapp.rpm"),
+            script.starts_with("rpm -i --nodeps '/pkg/myapp.rpm'"),
             "{script}"
         );
-        assert!(script.contains("myapp --version"));
+        assert!(script.contains("'myapp' --version"));
     }
 
     #[test]
@@ -226,9 +241,48 @@ mod tests {
         });
         let script = argv.last().unwrap();
         assert!(
-            script.starts_with("apk add --allow-untrusted /pkg/myapp.apk"),
+            script.starts_with("apk add --allow-untrusted '/pkg/myapp.apk'"),
             "{script}"
         );
-        assert!(script.contains("myapp --version"));
+        assert!(script.contains("'myapp' --version"));
+    }
+
+    #[test]
+    fn shell_metacharacters_are_quoted_not_injected() {
+        // A binary / package name carrying shell metacharacters must be
+        // splice-safe: it lands inside single quotes as one inert literal,
+        // never as executable syntax in the `sh -c` body.
+        let job = SmokeJob {
+            image: "debian:12".to_string(),
+            package_type: PackageType::Deb,
+            host_pkg_path: "/dist/evil.deb".to_string(),
+            pkg_name: "evil; rm -rf /.deb".to_string(),
+            binary: "app$(touch pwned)".to_string(),
+        };
+        let argv = build_smoke_argv(&job);
+        let script = argv.last().unwrap();
+        // The package name's `;` must be quoted, not a command separator.
+        assert!(
+            script.contains("dpkg -i '/pkg/evil; rm -rf /.deb'"),
+            "pkg name not single-quoted: {script}"
+        );
+        // The binary's `$(...)` must be quoted, not a command substitution.
+        assert!(
+            script.contains("'app$(touch pwned)' --version"),
+            "binary not single-quoted: {script}"
+        );
+        // No bare injection token escapes the quoting.
+        assert!(
+            !script.contains("; rm -rf /.deb'/pkg"),
+            "metachar broke out of quoting: {script}"
+        );
+    }
+
+    #[test]
+    fn embedded_single_quote_is_escaped() {
+        // The `'\''` close-reopen trick must neutralise an embedded quote.
+        assert_eq!(sh_single_quote("a'b"), r"'a'\''b'");
+        // A value with no quote is simply wrapped.
+        assert_eq!(sh_single_quote("plain"), "'plain'");
     }
 }

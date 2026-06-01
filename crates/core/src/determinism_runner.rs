@@ -43,6 +43,9 @@ pub const SIDE_EFFECT_STAGES: &[&str] = &[
     "blob",
     "snapcraft-publish",
     "announce",
+    // Post-publish verification — issues live GitHub API calls and (when
+    // configured) docker spawns; never run inside a hermetic regression rebuild.
+    "verify-release",
 ];
 
 /// Comma-join [`SIDE_EFFECT_STAGES`] plus an `extra` list for use as
@@ -398,6 +401,7 @@ mod tests {
             "blob",
             "snapcraft-publish",
             "announce",
+            "verify-release",
         ];
         for name in expected {
             assert!(
