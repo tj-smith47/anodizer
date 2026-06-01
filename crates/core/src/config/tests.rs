@@ -4546,6 +4546,62 @@ homebrew_casks:
 }
 
 #[test]
+fn test_validate_homebrew_cask_url_template_defaults_axis_both_set_rejected() {
+    // The validator must cover the defaults.publish.homebrew_cask axis, not
+    // just crates[] and the top-level list — config-mode parity.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+defaults:
+  publish:
+    homebrew_cask:
+      url_template: "https://example.com/{{ .Tag }}/myapp.dmg"
+      url:
+        template: "https://example.com/{{ .Tag }}/myapp.dmg"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_homebrew_cask_url_template(&config).unwrap_err();
+    assert!(
+        err.contains("defaults.publish.homebrew_cask"),
+        "error should identify the defaults axis location: {err}"
+    );
+    assert!(
+        err.contains("mutually exclusive"),
+        "error should say they are mutually exclusive: {err}"
+    );
+}
+
+#[test]
+fn test_validate_homebrew_cask_url_template_workspace_axis_both_set_rejected() {
+    // The validator must cover the workspaces[].crates[].publish.homebrew_cask
+    // axis — workspace per-crate mode parity.
+    let yaml = r#"
+project_name: test
+crates: []
+workspaces:
+  - name: ws1
+    crates:
+      - name: myapp
+        path: "."
+        tag_template: "v{{ .Version }}"
+        publish:
+          homebrew_cask:
+            url_template: "https://example.com/{{ .Tag }}/myapp.dmg"
+            url:
+              template: "https://example.com/{{ .Tag }}/myapp.dmg"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_homebrew_cask_url_template(&config).unwrap_err();
+    assert!(
+        err.contains("workspaces[ws1].crates[myapp].publish.homebrew_cask"),
+        "error should identify the workspace axis location: {err}"
+    );
+}
+
+#[test]
 fn test_git_config_ignore_tag_prefixes_accepts_array() {
     let yaml = r#"
 project_name: test

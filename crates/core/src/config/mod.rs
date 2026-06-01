@@ -888,53 +888,20 @@ pub fn validate_homebrew_cask_url_template(config: &Config) -> Result<(), String
         Ok(())
     };
 
-    // Top-level homebrew_casks array
+    // Top-level homebrew_casks list (not nested under publish:) — not a
+    // publish axis, so it is scanned separately from the visitor.
     if let Some(ref casks) = config.homebrew_casks {
         for (i, cask) in casks.iter().enumerate() {
             check(&format!("homebrew_casks[{i}]"), cask)?;
         }
     }
 
-    // Per-crate publish.homebrew_cask
-    for krate in &config.crates {
-        if let Some(ref publish) = krate.publish
-            && let Some(ref cask) = publish.homebrew_cask
-        {
-            check(
-                &format!("crates[{}].publish.homebrew_cask", krate.name),
-                cask,
-            )?;
+    try_for_each_crate_publish(config, |axis, publish| {
+        if let Some(cask) = publish.homebrew_cask() {
+            check(&axis.homebrew_cask_location(), cask)?;
         }
-    }
-
-    // Workspace crates
-    if let Some(ref workspaces) = config.workspaces {
-        for ws in workspaces {
-            for krate in &ws.crates {
-                if let Some(ref publish) = krate.publish
-                    && let Some(ref cask) = publish.homebrew_cask
-                {
-                    check(
-                        &format!(
-                            "workspaces[{}].crates[{}].publish.homebrew_cask",
-                            ws.name, krate.name
-                        ),
-                        cask,
-                    )?;
-                }
-            }
-        }
-    }
-
-    // defaults.publish.homebrew_cask
-    if let Some(ref defaults) = config.defaults
-        && let Some(ref publish) = defaults.publish
-        && let Some(ref cask) = publish.homebrew_cask
-    {
-        check("defaults.publish.homebrew_cask", cask)?;
-    }
-
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Validate that `archives[].id` and `universal_binaries[].id` are unique
@@ -1379,6 +1346,13 @@ impl PublishRef<'_> {
             PublishRef::Defaults(p) => p.aur_source.as_ref(),
         }
     }
+
+    pub(crate) fn homebrew_cask(&self) -> Option<&HomebrewCaskConfig> {
+        match self {
+            PublishRef::Crate(p) => p.homebrew_cask.as_ref(),
+            PublishRef::Defaults(p) => p.homebrew_cask.as_ref(),
+        }
+    }
 }
 
 /// Shared, mutable view over the publisher sub-configs that appear on both
@@ -1438,6 +1412,48 @@ where
     {
         visit(PublishAxis::Defaults, PublishRef::Defaults(publish));
     }
+}
+
+/// Fallible companion to [`for_each_crate_publish`]: visits the same three axes
+/// in the same fixed order, but short-circuits on the first `Err` the callback
+/// returns, propagating it to the caller. For validators that early-exit on the
+/// first offending block.
+pub(crate) fn try_for_each_crate_publish<F, E>(config: &Config, mut visit: F) -> Result<(), E>
+where
+    F: FnMut(PublishAxis<'_>, PublishRef<'_>) -> Result<(), E>,
+{
+    for krate in &config.crates {
+        if let Some(ref publish) = krate.publish {
+            visit(
+                PublishAxis::Crate { name: &krate.name },
+                PublishRef::Crate(publish),
+            )?;
+        }
+    }
+
+    if let Some(ref workspaces) = config.workspaces {
+        for ws in workspaces {
+            for krate in &ws.crates {
+                if let Some(ref publish) = krate.publish {
+                    visit(
+                        PublishAxis::Workspace {
+                            workspace: &ws.name,
+                            crate_name: &krate.name,
+                        },
+                        PublishRef::Crate(publish),
+                    )?;
+                }
+            }
+        }
+    }
+
+    if let Some(ref defaults) = config.defaults
+        && let Some(ref publish) = defaults.publish
+    {
+        visit(PublishAxis::Defaults, PublishRef::Defaults(publish))?;
+    }
+
+    Ok(())
 }
 
 /// Mutable companion to [`for_each_crate_publish`]: visits the same three axes
