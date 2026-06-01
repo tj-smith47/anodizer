@@ -5893,18 +5893,6 @@
             "null"
           ]
         },
-        "disable": {
-          "description": "Disable this publisher entry. Mirrors GoReleaser Pro `gemfury[].disable:`. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "formats": {
           "description": "Package format filter: only push artifacts matching these formats. Defaults to `[\"apk\", \"deb\", \"rpm\"]` (GR v2.7+ adds `apk`).",
           "default": null,
@@ -5959,7 +5947,7 @@
           ]
         },
         "skip": {
-          "description": "Template-conditional skip: if rendered result is `\"true\"`, skip this publisher entry. Accepts bool or template string.",
+          "description": "Template-conditional skip: if rendered result is `\"true\"`, skip this publisher entry. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser Pro `gemfury[].disable:` configs.",
           "default": null,
           "anyOf": [
             {
@@ -10176,18 +10164,6 @@
             "null"
           ]
         },
-        "disable": {
-          "description": "Disable this publisher entry. Mirrors GoReleaser Pro `npms[].disable:`. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "extra": {
           "description": "Free-form root-level `package.json` fields. Shallow-merged into the generated `package.json`. Useful for `engines`, `mcpName`, or other npm metadata fields anodizer does not surface.",
           "default": null,
@@ -10332,7 +10308,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this publisher. Accepts bool or template string.",
+          "description": "Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser Pro `npms[].disable:` configs.",
           "default": null,
           "anyOf": [
             {

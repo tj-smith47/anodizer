@@ -23,7 +23,7 @@ use anyhow::{Context as _, Result, bail};
 /// Outcome of [`publish_to_gemfury`]: one [`GemFuryTarget`] per artifact
 /// actually pushed. The caller drives rollback evidence off this list so
 /// `--rollback-only` can issue a real per-version DELETE against the Fury
-/// API. Skips (skip / disable / dry-run / `if` falsy / idempotent-already-
+/// API. Skips (skip / dry-run / `if` falsy / idempotent-already-
 /// pushed) produce no target entry — rollback only undoes what THIS run did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GemFuryTarget {
@@ -260,22 +260,13 @@ pub fn publish_to_gemfury(ctx: &Context, log: &StageLogger) -> Result<Vec<GemFur
             .unwrap_or_else(|| format!("gemfury[{}]", idx));
         log.status(&format!("gemfury: processing '{}'", label));
 
-        // ---- Skip gates ----
+        // ---- Skip gate ----
         if let Some(skip) = cfg.skip.as_ref() {
             let off = skip
                 .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                 .context("gemfury: render skip template")?;
             if off {
                 log.status("gemfury: entry skipped — skip evaluates true");
-                continue;
-            }
-        }
-        if let Some(disable) = cfg.disable.as_ref() {
-            let off = disable
-                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                .context("gemfury: render disable template")?;
-            if off {
-                log.status("gemfury: entry skipped — disable evaluates true");
                 continue;
             }
         }

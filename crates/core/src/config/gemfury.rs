@@ -61,13 +61,14 @@ pub struct GemFuryConfig {
 
     /// Template-conditional skip: if rendered result is `"true"`, skip this
     /// publisher entry. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat
+    /// with imported GoReleaser Pro `gemfury[].disable:` configs.
+    #[serde(
+        deserialize_with = "deserialize_string_or_bool_opt",
+        alias = "disable",
+        default
+    )]
     pub skip: Option<StringOrBool>,
-
-    /// Disable this publisher entry. Mirrors GoReleaser Pro
-    /// `gemfury[].disable:`. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
 
     /// Override whether this publisher failing should fail the overall release.
     ///

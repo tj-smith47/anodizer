@@ -142,7 +142,6 @@ npms:
     registry: "https://npm.pkg.github.com"
     ids: [demo]
     skip: false
-    disable: false
     required: true
     if: "{{ ne .Prerelease \"\" }}"
     extra:
@@ -695,14 +694,13 @@ fn publish_skip_true_returns_empty() {
 }
 
 #[test]
-fn publish_disable_true_returns_empty() {
+fn publish_disable_alias_true_returns_empty() {
+    // The legacy `disable: true` spelling folds into `skip` on parse, so the
+    // entry is skipped at publish time via the skip gate.
     let ctx = ctx_with_archives();
-    let cfg = NpmConfig {
-        mode: NpmMode::Postinstall,
-        name: Some("demo".into()),
-        disable: Some(StringOrBool::Bool(true)),
-        ..Default::default()
-    };
+    let cfg: NpmConfig = serde_yaml_ng::from_str("disable: true\nname: demo\n")
+        .expect("disable: alias must parse into skip");
+    assert!(matches!(cfg.skip, Some(StringOrBool::Bool(true))));
     let log = ctx.logger("publish");
     let mut targets = Vec::new();
     publish_to_npm(&ctx, &cfg, "demo", &log, &mut targets).expect("publish");

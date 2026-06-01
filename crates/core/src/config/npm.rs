@@ -154,13 +154,14 @@ pub struct NpmConfig {
     pub token: Option<String>,
 
     /// Skip this publisher. Accepts bool or template string.
-    #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat
+    /// with imported GoReleaser Pro `npms[].disable:` configs.
+    #[serde(
+        default,
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt"
+    )]
     pub skip: Option<StringOrBool>,
-
-    /// Disable this publisher entry. Mirrors GoReleaser Pro
-    /// `npms[].disable:`. Accepts bool or template string.
-    #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
-    pub disable: Option<StringOrBool>,
 
     /// Override whether this publisher failing should fail the overall release.
     ///
@@ -213,7 +214,6 @@ impl Default for NpmConfig {
             registry: None,
             token: None,
             skip: None,
-            disable: None,
             required: None,
             if_condition: None,
         }

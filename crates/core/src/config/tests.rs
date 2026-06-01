@@ -8393,29 +8393,24 @@ workspaces:
 // ---- NEGATIVE guards: the correctness constraint ----
 
 #[test]
-fn legacy_disable_alias_skips_live_npm_disable_field() {
-    // `npm.disable` is a genuine live field (mirrors GR Pro), NOT a `skip`
-    // alias — must not warn. Covered at both top-level and publish axes.
+fn legacy_disable_alias_warns_on_npm_disable() {
+    // `npms[].disable` folds into `skip` via serde alias, so the legacy
+    // spelling must warn like every other aliased block.
     let warnings = disable_alias_warnings(
         r#"
 project_name: test
-crates:
-  - name: app
-    npm:
-      disable: true
-npm:
-  disable: true
+crates: []
+npms:
+  - disable: true
 "#,
     );
-    assert!(
-        warnings.is_empty(),
-        "npm.disable is a live field, not an alias: {warnings:?}"
-    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("npms[0].disable"), "{}", warnings[0]);
 }
 
 #[test]
-fn legacy_disable_alias_skips_live_gemfury_disable_field() {
-    // `gemfury[].disable` is a genuine live field — must not warn.
+fn legacy_disable_alias_warns_on_gemfury_disable() {
+    // `gemfury[].disable` folds into `skip` via serde alias — must warn.
     let warnings = disable_alias_warnings(
         r#"
 project_name: test
@@ -8425,10 +8420,29 @@ gemfury:
     disable: true
 "#,
     );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(
-        warnings.is_empty(),
-        "gemfury.disable is a live field, not an alias: {warnings:?}"
+        warnings[0].contains("gemfury[0].disable"),
+        "{}",
+        warnings[0]
     );
+}
+
+#[test]
+fn legacy_disable_alias_warns_on_furies_legacy_alias_key() {
+    // The pre-GR-v2.14 `furies:` block key maps to the same GemFuryConfig, so
+    // `furies[].disable:` must warn under its legacy key too.
+    let warnings = disable_alias_warnings(
+        r#"
+project_name: test
+crates: []
+furies:
+  - id: x
+    disable: true
+"#,
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("furies[0].disable"), "{}", warnings[0]);
 }
 
 #[test]

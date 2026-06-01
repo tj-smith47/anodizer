@@ -1734,11 +1734,8 @@ pub fn warn_on_legacy_nfpm_builds(raw_yaml: &serde_yaml_ng::Value) {
 /// prompt pointing at the canonical `skip:`.
 ///
 /// Detection is allow-listed by enclosing block key, NOT a blind tree walk,
-/// for two correctness reasons:
-///   * `npm` and `gemfury` carry a *genuine, live* `disable:` field that is
-///     NOT an alias of `skip` (read at publish time), so writing `disable:`
-///     there is legitimate and must not be flagged. Their block keys are
-///     deliberately absent from the allow-list.
+/// because free-form string-keyed maps would otherwise produce false
+/// positives:
 ///   * Free-form string-keyed maps (`variables`, `derived_metadata`,
 ///     `build_args`, `labels`, `annotations`, `env`, header maps, …) let a
 ///     user legitimately name a key `disable`. Matching only when the key's
@@ -1763,9 +1760,8 @@ pub(crate) fn legacy_disable_alias_warnings(raw_yaml: &serde_yaml_ng::Value) -> 
     // Block key names whose struct exposes `skip` with `#[serde(alias =
     // "disable")]`. Resolved from the field's serde key on its parent (see the
     // `alias = "disable"` sites in core). `makeselfs` (top-level) and
-    // `makeselves` (defaults.) both map to MakeselfConfig, so both are listed.
-    // `npm`/`gemfury` are intentionally excluded — their `disable:` is a live,
-    // non-aliased field.
+    // `makeselves` (defaults.) both map to MakeselfConfig, so both are listed;
+    // `gemfury` and its legacy `furies` alias both map to GemFuryConfig.
     const ALLOWLIST: &[&str] = &[
         "mcp",
         "makeselfs",
@@ -1779,6 +1775,9 @@ pub(crate) fn legacy_disable_alias_warnings(raw_yaml: &serde_yaml_ng::Value) -> 
         "docker_v2",
         "changelog",
         "snapcrafts",
+        "npms",
+        "gemfury",
+        "furies",
     ];
 
     fn disable_warning(path: &str) -> String {

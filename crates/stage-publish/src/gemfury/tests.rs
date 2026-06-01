@@ -84,7 +84,6 @@ gemfury:
     formats: [deb, rpm, apk]
     ids: [demo]
     skip: false
-    disable: false
     required: true
     if: "{{ ne .Prerelease \"\" }}"
 "#;
@@ -279,16 +278,19 @@ fn publish_skip_true_returns_no_targets() {
 }
 
 #[test]
-fn publish_disable_true_returns_no_targets() {
+fn publish_disable_alias_true_returns_no_targets() {
+    // The legacy `disable: true` spelling folds into `skip` on parse, so the
+    // entry is skipped at publish time via the skip gate.
     let mut ctx = ctx_with_packages();
-    let cfg = GemFuryConfig {
-        account: Some("acme".into()),
-        disable: Some(anodizer_core::config::StringOrBool::Bool(true)),
-        ..Default::default()
-    };
+    let cfg: GemFuryConfig = serde_yaml_ng::from_str("account: acme\ndisable: true\n")
+        .expect("disable: alias must parse into skip");
+    assert!(matches!(
+        cfg.skip,
+        Some(anodizer_core::config::StringOrBool::Bool(true))
+    ));
     ctx.config.gemfury = Some(vec![cfg]);
     let log = ctx.logger("publish");
-    let out = publish_to_gemfury(&ctx, &log).expect("disable");
+    let out = publish_to_gemfury(&ctx, &log).expect("disable alias");
     assert!(out.is_empty());
 }
 

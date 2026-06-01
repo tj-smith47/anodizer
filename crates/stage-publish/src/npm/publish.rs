@@ -36,7 +36,7 @@ use super::optional_deps::generate_layout;
 
 /// Outcome of [`publish_to_npm`] for one published package: the coordinates
 /// recorded in evidence so a later `--rollback-only --from-run` can attempt
-/// `npm unpublish`. `None` is returned for every skip path (skip / disable /
+/// `npm unpublish`. `None` is returned for every skip path (skip /
 /// dry-run / no-binaries / `if:` falsy) so rollback never targets a package
 /// the run did not push.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -437,15 +437,6 @@ pub fn publish_to_npm(
             .context("npm: render skip template")?;
         if off {
             log.status("npm: skipping — skip evaluates true");
-            return Ok(());
-        }
-    }
-    if let Some(disable) = cfg.disable.as_ref() {
-        let off = disable
-            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-            .context("npm: render disable template")?;
-        if off {
-            log.status("npm: skipping — disable evaluates true");
             return Ok(());
         }
     }

@@ -387,7 +387,6 @@ Pushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`. Authentica
 | `account` | string | — | GemFury account name. Required; rendered through the template engine so `account: "{{ .Env.MY_FURY_ACCOUNT }}"` works. |
 | `api_secret_name` | string | — | Environment variable name carrying the API (delete) token. Default `FURY_API_TOKEN`. |
 | `api_token` | string | — | Optional API token used by rollback to issue `DELETE /<account>/packages/<name>/versions/<version>`. When unset, the env var named by `api_secret_name` (default `FURY_API_TOKEN`) is consulted at rollback time. If both are absent at rollback time, the publisher falls back to a manual-cleanup warn. |
-| `disable` | StringOrBool | — | Disable this publisher entry. Mirrors GoReleaser Pro `gemfury[].disable:`. Accepts bool or template string. |
 | `formats` | list of string | — | Package format filter: only push artifacts matching these formats. Defaults to `["apk", "deb", "rpm"]` (GR v2.7+ adds `apk`). |
 | `id` | string | — | Unique identifier for selecting this entry from the CLI (`--id=...`). |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose archive `id` is in this list. |
@@ -396,7 +395,7 @@ Pushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`. Authentica
 
 Default: `true` — GemFury is a Manager-group publisher (mutable but reversible via the delete API), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue. |
 | `secret_name` | string | — | Environment variable name carrying the push token. Default `FURY_TOKEN`. The actual token VALUE is read from this env var at publish/rollback time. |
-| `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher entry. Accepts bool or template string. |
+| `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher entry. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser Pro `gemfury[].disable:` configs. |
 | `token` | string | — | Push token used as the HTTP Basic auth username (empty password). When unset, the env var named by `secret_name` (default `FURY_TOKEN`) is consulted at publish time. NEVER logged. |
 
 ## `git`
@@ -599,7 +598,6 @@ In the default `optional-deps` mode anodizer emits one thin npm package per buil
 | `bin` | string | — | Command name installed by the metapackage's `bin` map (`optional-deps` mode). Falls back to the metapackage basename when unset. |
 | `bugs` | string | — | Templated bug tracker URL. Emitted as `bugs.url` in `package.json`. |
 | `description` | string | — | Templated package description. Falls back to the project-level `metadata.description` when unset. |
-| `disable` | StringOrBool | — | Disable this publisher entry. Mirrors GoReleaser Pro `npms[].disable:`. Accepts bool or template string. |
 | `extra` | map | — | Free-form root-level `package.json` fields. Shallow-merged into the generated `package.json`. Useful for `engines`, `mcpName`, or other npm metadata fields anodizer does not surface. |
 | `extra_files` | list of string | — | Additional files to include in the published package alongside the generated metadata. Default `["README*", "LICENSE*"]` (applied at the `Default` pass). |
 | `format` | string | — | Archive format the `postinstall` script downloads (`tgz`, `tar.gz`, `zip`, `binary`). Default `tgz`. Only consulted in `postinstall` mode. |
@@ -619,7 +617,7 @@ In the default `optional-deps` mode anodizer emits one thin npm package per buil
 
 Default: `true` — NPM is a Manager-group publisher (one-way 72-hour unpublish window), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue. |
 | `scope` | string | — | npm scope for the per-platform packages emitted in `optional-deps` mode (e.g. `@biomejs`). The per-platform packages are named `<scope>/<bin>-<os>-<cpu>[-<libc>]`. Required for `optional-deps` mode; ignored in `postinstall` mode. |
-| `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. |
+| `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser Pro `npms[].disable:` configs. |
 | `tag` | string | — | NPM dist-tag for the publish (default `latest`). Templated. |
 | `templated_extra_files` | list of NpmTemplatedExtraFile | — | Template-rendered file mappings (`src` may be a glob; rendered contents written to `dst`). |
 | `token` | string | — | Auth token for the registry. Falls back to the `NPM_TOKEN` env var when unset. Stored in `.npmrc` as `//<registry>/:_authToken=...` at publish time and never passed via argv. |
