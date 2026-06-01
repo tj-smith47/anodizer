@@ -1816,6 +1816,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_populate_runtime_vars() {
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -2703,6 +2704,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn populate_runtime_vars_sets_rustc_version() {
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
