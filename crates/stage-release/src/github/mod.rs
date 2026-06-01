@@ -283,8 +283,8 @@ pub(crate) struct GithubReleaseSpec<'a> {
     pub discussion_category: &'a Option<String>,
 }
 
-/// Boolean cluster controlling upload semantics for [`run_github_backend`].
-#[derive(Clone, Copy)]
+/// Cluster controlling upload + retention semantics for [`run_github_backend`].
+#[derive(Clone)]
 pub(crate) struct UploadOpts {
     pub skip_upload: bool,
     pub replace_existing_draft: bool,
@@ -303,7 +303,23 @@ pub(crate) struct UploadOpts {
     /// Best-effort delete: a concurrent process that already removed the
     /// release between our lookup and delete is treated as success, since
     /// the post-condition (no prior release at this tag) is satisfied.
+    ///
+    /// This is the `keep_last: 1` special case of [`Self::retention_keep_last`]:
+    /// the single-delete path runs when `keep_single_release` is set, while
+    /// `retention_keep_last >= 2` drives the multi-release sweep. Resolution
+    /// of the legacy alias vs the `retention:` block happens upstream in
+    /// [`anodizer_core::config::NightlyConfig::resolved_keep_last`].
     pub keep_single_release: bool,
+    /// Nightly `retention.keep_last`: keep the N newest nightly releases
+    /// (matched by the nightly tag/name) and delete the rest, including the
+    /// git tags anodizer created for them. `None` (or `Some(1)`, which the
+    /// single-delete path covers) disables the multi-release sweep. Operates
+    /// on [`Self::publish_repo_override`] when set.
+    pub retention_keep_last: Option<usize>,
+    /// Nightly `publish_repo`: redirect the release create, asset upload, AND
+    /// retention delete calls to a DIFFERENT `(owner, repo)` than the source
+    /// repo resolved from `release.github`. `None` = source repo, unchanged.
+    pub publish_repo_override: Option<(String, String)>,
 }
 
 /// Outcome for the upload-asset 422 `already_exists` decision branch.
@@ -381,6 +397,80 @@ pub(crate) fn classify_already_exists(
     AlreadyExistsAction::DeleteAndRetry
 }
 
+/// Decide which nightly releases to prune so that — after the about-to-be-created
+/// release is added — exactly `keep_last` nightly releases survive.
+///
+/// `releases` is the set of existing releases whose `name` matches the nightly
+/// release name, sorted NEWEST-FIRST by the caller. Because the new release will
+/// become the newest of the kept set, the prune target is "every release beyond
+/// the newest `keep_last - 1`": that leaves `keep_last - 1` old releases plus the
+/// new one = `keep_last`.
+///
+/// For `keep_last = 1` this returns ALL existing nightly releases — the rolling
+/// `keep_single_release` semantics (only the just-created release survives). This
+/// is the single function both `keep_single_release` and `retention.keep_last: N`
+/// route through; there is no parallel single-delete path.
+///
+/// Pure (no I/O) so the keep/delete arithmetic is unit-testable without octocrab.
+pub(crate) fn nightly_releases_to_prune(
+    releases: &[(u64, String)],
+    keep_last: usize,
+) -> Vec<(u64, String)> {
+    let keep_last = keep_last.max(1);
+    // The new release occupies one of the kept slots, so retain `keep_last - 1`
+    // of the existing (newest-first) set and prune the remainder.
+    releases.iter().skip(keep_last - 1).cloned().collect()
+}
+
+/// List all releases on `{owner}/{repo}` whose `name` field equals `name`,
+/// returning `(id, tag_name)` pairs in the order GitHub returns them
+/// (newest-first — the Releases API lists by `created_at` descending).
+///
+/// Used by the nightly retention sweep to enumerate prior nightly releases
+/// sharing the rendered nightly release name (the per-build differentiator
+/// lives in the TAG, not the name, so the name is the stable matcher).
+async fn list_releases_by_name(
+    octo: &Arc<octocrab::Octocrab>,
+    owner: &str,
+    repo: &str,
+    name: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+    retry_after: Option<&RetryAfterCapture>,
+) -> Result<Vec<(u64, String)>> {
+    let mut out = Vec::new();
+    let mut page: u32 = 1;
+    loop {
+        let route = format!(
+            "/repos/{}/{}/releases?per_page={}&page={}",
+            owner, repo, LIST_RELEASES_PAGE_SIZE, page
+        );
+        let releases: Vec<octocrab::models::repos::Release> =
+            retry_octocrab_call(policy, "list releases (retention)", retry_after, || {
+                let route = route.clone();
+                let octo = octo.clone();
+                async move { octo.get(route, None::<&()>).await }
+            })
+            .await
+            .with_context(|| {
+                format!(
+                    "release: list releases on {}/{} for retention (page {})",
+                    owner, repo, page
+                )
+            })?;
+        let page_len = releases.len();
+        for r in releases {
+            if r.name.as_deref() == Some(name) {
+                out.push((r.id.into_inner(), r.tag_name));
+            }
+        }
+        if page_len < LIST_RELEASES_PAGE_SIZE {
+            break;
+        }
+        page += 1;
+    }
+    Ok(out)
+}
+
 /// Run the GitHub release backend for one crate.
 ///
 /// Returns:
@@ -419,7 +509,16 @@ pub(crate) fn run_github_backend(
         use_existing_draft,
         resume_release,
         keep_single_release,
-    } = *upload_opts;
+        retention_keep_last,
+        publish_repo_override,
+    } = upload_opts;
+    let skip_upload = *skip_upload;
+    let replace_existing_draft = *replace_existing_draft;
+    let replace_existing_artifacts = *replace_existing_artifacts;
+    let use_existing_draft = *use_existing_draft;
+    let resume_release = *resume_release;
+    let keep_single_release = *keep_single_release;
+    let retention_keep_last = *retention_keep_last;
     let github = match resolve_release_repo(release_cfg, ctx.token_type, ctx)? {
         Some(r) => r,
         None => {
@@ -429,6 +528,19 @@ pub(crate) fn run_github_backend(
             ));
             return Ok(None);
         }
+    };
+    // Nightly `publish_repo`: redirect EVERY octocrab call (draft search,
+    // release create/update, asset upload, retention delete, html_url) to the
+    // override repo by rebinding `github` here. Downstream code reads only
+    // `github.owner` / `github.name`, so this single rebind threads the
+    // override through the entire backend without forking any path. The
+    // active token is assumed to have write access to the override repo.
+    let github = match publish_repo_override {
+        Some((owner, name)) => anodizer_core::config::ScmRepoConfig {
+            owner: owner.clone(),
+            name: name.clone(),
+        },
+        None => github,
     };
 
     // Require a token for real API calls.
@@ -532,44 +644,52 @@ pub(crate) fn run_github_backend(
             None
         };
 
-        // Nightly `keep_single_release: true`: delete the prior release at
-        // the same tag so the rolling nightly tag always resolves to a
-        // single live release. Skipped when an existing-draft reuse is in
-        // play (the draft IS the release we'll PATCH). The underlying git
-        // ref is left intact — the new release POST below targets the
-        // same tag, so GitHub reuses the ref instead of leaving a
-        // dangling tag.
-        if keep_single_release && existing_draft.is_none() {
-            let prior = find_release_by_tag(
+        // Nightly retention sweep: keep the N newest nightly releases (matched
+        // by the rendered nightly release name) and delete the rest before
+        // creating the new one, so after this run exactly `keep_last` nightly
+        // releases survive. `keep_single_release` is the `keep_last: 1` special
+        // case (rolling single release); `retention.keep_last: N` keeps N (e.g.
+        // nushell keeps 10). Both route through the same prune arithmetic
+        // ([`nightly_releases_to_prune`]) — no parallel single-delete path.
+        //
+        // Skipped when an existing-draft reuse is in play (the draft IS the
+        // release we'll PATCH).
+        //
+        // Tag handling: each pruned release's git ref is deleted too, EXCEPT
+        // the tag we are about to (re)create — leaving that ref intact lets the
+        // create POST below reuse it instead of dangling. For distinct-tag
+        // schemes (nushell `…-nightly.<build>+<sha>`) every pruned tag differs
+        // from the current one, so all stale refs are cleaned up.
+        let resolved_keep_last = retention_keep_last.or(if keep_single_release {
+            Some(1)
+        } else {
+            None
+        });
+        if let Some(keep_last) = resolved_keep_last
+            && existing_draft.is_none()
+        {
+            let existing = list_releases_by_name(
                 &octo,
                 &github.owner,
                 &github.name,
-                tag,
+                release_name,
                 &policy,
                 Some(&retry_after_capture),
-                "get release by tag (keep_single_release)",
             )
-            .await
-            .with_context(|| {
-                format!(
-                    "release: look up existing nightly release by tag '{}' on {}/{}",
-                    tag, github.owner, github.name
-                )
-            })?;
-            if let Some(existing) = prior {
-                let existing_id = existing.id.into_inner();
+            .await?;
+            let to_prune = nightly_releases_to_prune(&existing, keep_last);
+            for (rel_id, rel_tag) in to_prune {
                 log.status(&format!(
-                    "nightly: keep_single_release — deleting prior release for tag '{}' (id={})",
-                    tag, existing_id
+                    "nightly retention (keep_last={keep_last}): deleting prior release '{release_name}' (id={rel_id}, tag='{rel_tag}')"
                 ));
-                let delete_result = retry_octocrab_call(&policy, "delete release (keep_single_release)", Some(&retry_after_capture), || {
+                let delete_result = retry_octocrab_call(&policy, "delete release (retention)", Some(&retry_after_capture), || {
                     let octo = octo.clone();
                     let owner = github.owner.clone();
                     let repo = github.name.clone();
                     async move {
                         octo.repos(&owner, &repo)
                             .releases()
-                            .delete(existing_id)
+                            .delete(rel_id)
                             .await
                     }
                 })
@@ -577,20 +697,50 @@ pub(crate) fn run_github_backend(
                 match delete_result {
                     Ok(()) => {}
                     Err(ref err) if is_octocrab_404(err) => {
-                        // A concurrent process already removed the release;
-                        // post-condition (no prior release at this tag) is satisfied.
+                        // A concurrent process already removed the release; the
+                        // post-condition (release gone) is satisfied.
                         log.status(&format!(
-                            "nightly: keep_single_release — prior release for tag '{}' (id={}) already deleted by concurrent process",
-                            tag, existing_id
+                            "nightly retention: release '{release_name}' (id={rel_id}) already deleted by concurrent process"
                         ));
                     }
                     Err(err) => {
                         return Err(anyhow::Error::new(err)).with_context(|| {
                             format!(
-                                "release: delete prior nightly release for tag '{}' on {}/{}",
-                                tag, github.owner, github.name
+                                "release: delete prior nightly release (id={rel_id}) on {}/{}",
+                                github.owner, github.name
                             )
                         });
+                    }
+                }
+                // Delete the pruned release's git tag too, unless it is the tag
+                // we're about to (re)create (which the create POST reuses).
+                if rel_tag != tag && !rel_tag.is_empty() {
+                    let tag_route = format!(
+                        "/repos/{}/{}/git/refs/tags/{}",
+                        github.owner, github.name, rel_tag
+                    );
+                    let tag_delete: std::result::Result<(), octocrab::Error> =
+                        retry_octocrab_call(&policy, "delete tag (retention)", Some(&retry_after_capture), || {
+                            let octo = octo.clone();
+                            let route = tag_route.clone();
+                            async move {
+                                octo._delete(route, None::<&()>).await.map(|_| ())
+                            }
+                        })
+                        .await;
+                    match tag_delete {
+                        Ok(()) => {}
+                        // Already-absent tag is success (the prune post-condition).
+                        Err(ref err) if is_octocrab_404(err) => {}
+                        Err(err) => {
+                            // A failed tag delete is non-fatal: the release (the
+                            // user-visible artifact) is already gone. Warn and
+                            // continue rather than abort the whole publish.
+                            log.warn(&format!(
+                                "nightly retention: failed to delete stale tag '{rel_tag}' on {}/{}: {err}",
+                                github.owner, github.name
+                            ));
+                        }
                     }
                 }
             }
@@ -2013,14 +2163,21 @@ mod spec_struct_surface_tests {
             use_existing_draft: false,
             resume_release: true,
             keep_single_release: true,
+            retention_keep_last: Some(10),
+            publish_repo_override: Some(("nushell".to_string(), "nightly".to_string())),
         };
-        let copy = opts; // exercises Copy
+        let copy = opts.clone();
         assert!(copy.skip_upload);
         assert!(!copy.replace_existing_draft);
         assert!(copy.replace_existing_artifacts);
         assert!(!copy.use_existing_draft);
         assert!(copy.resume_release);
         assert!(copy.keep_single_release);
+        assert_eq!(copy.retention_keep_last, Some(10));
+        assert_eq!(
+            copy.publish_repo_override,
+            Some(("nushell".to_string(), "nightly".to_string()))
+        );
     }
 
     #[test]
@@ -2036,6 +2193,8 @@ mod spec_struct_surface_tests {
             use_existing_draft: false,
             resume_release: false,
             keep_single_release: false,
+            retention_keep_last: None,
+            publish_repo_override: None,
         };
         assert!(!opts.skip_upload);
         assert!(!opts.replace_existing_draft);
@@ -2043,6 +2202,51 @@ mod spec_struct_surface_tests {
         assert!(!opts.use_existing_draft);
         assert!(!opts.resume_release);
         assert!(!opts.keep_single_release);
+        assert_eq!(opts.retention_keep_last, None);
+        assert_eq!(opts.publish_repo_override, None);
+    }
+
+    #[test]
+    fn nightly_releases_to_prune_keep_last_one_prunes_all() {
+        // keep_last=1 (the keep_single_release alias): every existing nightly
+        // release is pruned — only the about-to-be-created one survives.
+        let existing = vec![
+            (3u64, "0.1.0-nightly.2".to_string()),
+            (2u64, "0.1.0-nightly.1".to_string()),
+            (1u64, "0.1.0-nightly.0".to_string()),
+        ];
+        let pruned = nightly_releases_to_prune(&existing, 1);
+        assert_eq!(pruned, existing);
+    }
+
+    #[test]
+    fn nightly_releases_to_prune_keep_last_n_keeps_newest() {
+        // keep_last=2: with the new release counting as the newest, retain
+        // only the single newest existing release; prune the older two.
+        let existing = vec![
+            (3u64, "t3".to_string()),
+            (2u64, "t2".to_string()),
+            (1u64, "t1".to_string()),
+        ];
+        let pruned = nightly_releases_to_prune(&existing, 2);
+        assert_eq!(
+            pruned,
+            vec![(2u64, "t2".to_string()), (1u64, "t1".to_string())]
+        );
+    }
+
+    #[test]
+    fn nightly_releases_to_prune_keeps_all_when_under_budget() {
+        // Fewer existing releases than (keep_last - 1): nothing to prune.
+        let existing = vec![(1u64, "t1".to_string())];
+        assert!(nightly_releases_to_prune(&existing, 10).is_empty());
+    }
+
+    #[test]
+    fn nightly_releases_to_prune_floors_zero_to_one() {
+        let existing = vec![(1u64, "t1".to_string())];
+        // keep_last=0 floored to 1 -> prune everything.
+        assert_eq!(nightly_releases_to_prune(&existing, 0), existing);
     }
 }
 
@@ -2143,6 +2347,34 @@ mod orchestrator_tests {
             // octocrab strips before appending `?name=<file>`. Without the
             // template, octocrab leaves the URL malformed and the upload
             // POSTs to the wrong path.
+            "upload_url": format!("http://{addr}/upload/{id}{{?name,label}}"),
+        })
+        .to_string()
+    }
+
+    /// Like [`release_json`] but with an explicit `tag_name` (distinct nightly
+    /// tags such as `…-nightly.<build>` need their own tag for the retention
+    /// sweep's tag-delete assertions). Targets owner=o/repo=r for the API URLs,
+    /// matching the override-repo responder used by the retention tests.
+    fn release_json_named(addr: SocketAddr, id: u64, name: &str, tag: &str) -> String {
+        serde_json::json!({
+            "id": id,
+            "node_id": format!("RL_{id}"),
+            "tag_name": tag,
+            "target_commitish": "main",
+            "name": name,
+            "draft": false,
+            "prerelease": false,
+            "created_at": "2026-01-01T00:00:00Z",
+            "published_at": null,
+            "author": null,
+            "assets": [],
+            "tarball_url": null,
+            "zipball_url": null,
+            "body": null,
+            "url": format!("http://{addr}/repos/o/r/releases/{id}"),
+            "html_url": format!("http://{addr}/o/r/releases/{id}"),
+            "assets_url": format!("http://{addr}/repos/o/r/releases/{id}/assets"),
             "upload_url": format!("http://{addr}/upload/{id}{{?name,label}}"),
         })
         .to_string()
@@ -2276,6 +2508,8 @@ mod orchestrator_tests {
             use_existing_draft: false,
             resume_release: false,
             keep_single_release: false,
+            retention_keep_last: None,
+            publish_repo_override: None,
         }
     }
 
@@ -2509,6 +2743,204 @@ mod orchestrator_tests {
                 .iter()
                 .any(|e| e.method == "POST" && e.path == "/repos/o/r/releases"),
             "must POST a fresh release after the delete; calls: {entries:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // nightly publish_repo: the release create, asset upload, AND the
+    // composed html_url all target the OVERRIDE repo (nushell/nightly),
+    // not the source repo (o/r) resolved from release.github.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn publish_repo_override_redirects_create_and_upload() {
+        let tmp = TempDir::new().expect("tempdir");
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"hello world");
+        let artifact_len = std::fs::metadata(&artifact_path).expect("meta").len();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        // Override repo's API URLs use /repos/nushell/nightly/...
+        let release = serde_json::json!({
+            "id": 42, "node_id": "RL_42", "tag_name": "v1.2.3",
+            "target_commitish": "main", "name": "v1.2.3", "draft": true,
+            "prerelease": false, "created_at": "2026-01-01T00:00:00Z",
+            "published_at": null, "author": null, "assets": [],
+            "tarball_url": null, "zipball_url": null, "body": null,
+            "url": format!("http://{addr}/repos/nushell/nightly/releases/42"),
+            "html_url": format!("http://{addr}/nushell/nightly/releases/42"),
+            "assets_url": format!("http://{addr}/repos/nushell/nightly/releases/42/assets"),
+            "upload_url": format!("http://{addr}/upload/42{{?name,label}}"),
+        })
+        .to_string();
+
+        let routes = vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/nushell/nightly/releases",
+                response: http_201(release.clone()),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/nushell/nightly/releases/42",
+                response: http_ok(release),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/42?name=demo.tar.gz",
+                response: http_201(asset_json(7, "demo.tar.gz", artifact_len)),
+                times: Some(1),
+            },
+        ];
+        let (_a, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+        let anc = spec_ancillary_default();
+
+        let mut opts = base_opts();
+        opts.publish_repo_override = Some(("nushell".to_string(), "nightly".to_string()));
+
+        let result = run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &opts,
+            &artifacts,
+        )
+        .expect("backend succeeds");
+        let (html_url, _dl, owner, repo) = result.expect("returns Some");
+        // Returned owner/repo + html_url reflect the OVERRIDE repo.
+        assert_eq!(owner, "nushell");
+        assert_eq!(repo, "nightly");
+        assert!(
+            html_url.contains("/nushell/nightly/releases/tag/v1.2.3"),
+            "got: {html_url}"
+        );
+
+        let entries = log.lock().expect("log mutex");
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path == "/repos/nushell/nightly/releases"),
+            "create must target the override repo; calls: {entries:?}",
+        );
+        // No call may touch the source repo (o/r).
+        assert!(
+            !entries.iter().any(|e| e.path.starts_with("/repos/o/r/")),
+            "no call may target the source repo o/r; calls: {entries:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // nightly retention keep_last=2: list nightly releases by name, keep the
+    // newest 1 existing (the new one becomes the 2nd), DELETE the older
+    // release AND its distinct git tag.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn retention_keep_last_prunes_old_release_and_tag() {
+        let tmp = TempDir::new().expect("tempdir");
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"x");
+        let artifact_len = std::fs::metadata(&artifact_path).expect("meta").len();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        // Two existing nightly releases sharing the name "demo-nightly" but
+        // with distinct tags (newest-first, as GitHub lists them). The new
+        // release (tag v1.2.3) will become the newest, so with keep_last=2 we
+        // keep id=11 and prune id=10 + its tag "nightly.0".
+        let list_body = format!(
+            "[{},{}]",
+            release_json_named(addr, 11, "demo-nightly", "nightly.1"),
+            release_json_named(addr, 10, "demo-nightly", "nightly.0"),
+        );
+        let new_release = release_json_named(addr, 42, "demo-nightly", "v1.2.3");
+
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases?per_page=100&page=1",
+                response: http_ok(list_body),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/repos/o/r/releases/10",
+                response: HTTP_204,
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/repos/o/r/git/refs/tags/nightly.0",
+                response: HTTP_204,
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/o/r/releases",
+                response: http_201(new_release.clone()),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42",
+                response: http_ok(new_release),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/42?name=demo.tar.gz",
+                response: http_201(asset_json(7, "demo.tar.gz", artifact_len)),
+                times: Some(1),
+            },
+        ];
+        let (_a, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+        let anc = spec_ancillary_default();
+        // The nightly release name the sweep matches on.
+        let spec = GithubReleaseSpec {
+            name: "demo-nightly",
+            ..make_spec(&anc)
+        };
+
+        let mut opts = base_opts();
+        opts.retention_keep_last = Some(2);
+
+        run_backend(&rt, &ctx, &token, &crate_cfg, &spec, &opts, &artifacts)
+            .expect("backend succeeds")
+            .expect("returns Some");
+
+        let entries = log.lock().expect("log mutex");
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "DELETE" && e.path == "/repos/o/r/releases/10"),
+            "must delete the pruned release id=10; calls: {entries:?}",
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "DELETE" && e.path == "/repos/o/r/git/refs/tags/nightly.0"),
+            "must delete the pruned release's distinct git tag; calls: {entries:?}",
+        );
+        // The kept release (id=11) must NOT be deleted.
+        assert!(
+            !entries
+                .iter()
+                .any(|e| e.method == "DELETE" && e.path == "/repos/o/r/releases/11"),
+            "must KEEP the newest existing release id=11; calls: {entries:?}",
         );
     }
 

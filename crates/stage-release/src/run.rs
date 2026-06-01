@@ -73,10 +73,13 @@ fn validate_nightly_config(ctx: &Context, log: &anodizer_core::log::StageLogger)
     let Some(nightly_cfg) = ctx.config.nightly.as_ref() else {
         return;
     };
-    if nightly_cfg.draft == Some(true) && nightly_cfg.keep_single_release == Some(true) {
+    // keep_single_release (or retention.keep_last:1) + draft leaves no
+    // promoted nightly: each run replaces the prior draft before it publishes.
+    if nightly_cfg.draft == Some(true) && nightly_cfg.resolved_keep_last() == Some(1) {
         log.warn(
-            "release: nightly with both draft=true and keep_single_release=true \
-             — no published nightly release will exist (each run replaces a prior draft)",
+            "release: nightly with both draft=true and a keep_last:1 retention \
+             (keep_single_release) — no published nightly release will exist \
+             (each run replaces a prior draft)",
         );
     }
 }
@@ -204,6 +207,8 @@ fn release_one_crate(
                 release_mode: &release_mode,
                 skip_upload: flags.skip_upload,
                 keep_single_release: flags.keep_single_release,
+                retention_keep_last: flags.retention_keep_last,
+                publish_repo_override: flags.publish_repo_override.clone(),
                 artifact_entries: &artifact_entries,
             },
         )?;
@@ -507,6 +512,14 @@ struct ResolvedReleaseFlags {
     /// before creating the new one (GoReleaser `nightly.keep_single_release`).
     /// Only honored on `--nightly` runs; ignored otherwise.
     keep_single_release: bool,
+    /// Nightly `retention.keep_last`: keep the N newest nightly releases and
+    /// delete the rest (+ their tags). `Some(1)` is the `keep_single_release`
+    /// equivalent. Resolved from `NightlyConfig::resolved_keep_last`. Only
+    /// honored on `--nightly` runs.
+    retention_keep_last: Option<usize>,
+    /// Nightly `publish_repo`: `(owner, repo)` to redirect the release to a
+    /// repo other than the source. Only honored on `--nightly` runs.
+    publish_repo_override: Option<(String, String)>,
 }
 
 /// Resolve all release flags from config + CLI overrides for one crate.
@@ -542,6 +555,22 @@ fn resolve_release_flags(
         && nightly_cfg
             .and_then(|n| n.keep_single_release)
             .unwrap_or(false);
+    // Retention (keep_last:N) and publish_repo are nightly-only. The
+    // resolved_keep_last() helper applies the back-compat precedence
+    // (retention block wins over the keep_single_release alias).
+    let retention_keep_last = if ctx.is_nightly() {
+        nightly_cfg.and_then(|n| n.resolved_keep_last())
+    } else {
+        None
+    };
+    let publish_repo_override = if ctx.is_nightly() {
+        nightly_cfg
+            .and_then(|n| n.publish_repo.as_deref())
+            .and_then(|s| s.split_once('/'))
+            .map(|(o, r)| (o.to_string(), r.to_string()))
+    } else {
+        None
+    };
     Ok(ResolvedReleaseFlags {
         draft,
         prerelease: should_mark_prerelease(&release_cfg.prerelease, tag),
@@ -555,6 +584,8 @@ fn resolve_release_flags(
         include_meta: release_cfg.resolved_include_meta(),
         use_existing_draft: release_cfg.resolved_use_existing_draft(),
         keep_single_release,
+        retention_keep_last,
+        publish_repo_override,
     })
 }
 
@@ -659,6 +690,8 @@ fn dispatch_to_scm_backend(
                 use_existing_draft: flags.use_existing_draft,
                 resume_release: ctx.options.resume_release,
                 keep_single_release: flags.keep_single_release,
+                retention_keep_last: flags.retention_keep_last,
+                publish_repo_override: flags.publish_repo_override.clone(),
             };
             Ok(github::run_github_backend(
                 &env,
@@ -686,6 +719,8 @@ struct DryRunSummary<'a> {
     release_mode: &'a str,
     skip_upload: bool,
     keep_single_release: bool,
+    retention_keep_last: Option<usize>,
+    publish_repo_override: Option<(String, String)>,
     artifact_entries: &'a [(std::path::PathBuf, Option<String>)],
 }
 
@@ -812,7 +847,23 @@ fn handle_dry_run(
         s.release_mode,
         s.crate_name,
     ));
-    if s.keep_single_release {
+    if let Some((owner, repo)) = &s.publish_repo_override {
+        log.status(&format!(
+            "(dry-run)   would publish to override repo '{owner}/{repo}' (nightly.publish_repo)",
+        ));
+    }
+    // retention_keep_last already folds in keep_single_release (=> Some(1)).
+    if let Some(keep_last) = s.retention_keep_last {
+        if keep_last == 1 {
+            log.status(
+                "(dry-run)   would delete prior nightly release(s) before recreating (nightly retention keep_last=1 / keep_single_release)",
+            );
+        } else {
+            log.status(&format!(
+                "(dry-run)   would keep the {keep_last} newest nightly release(s) and delete the rest, incl. their tags (nightly retention)",
+            ));
+        }
+    } else if s.keep_single_release {
         log.status(&format!(
             "(dry-run)   would delete existing release at tag '{}' before recreating (nightly.keep_single_release)",
             s.tag,
