@@ -9604,7 +9604,7 @@
           ]
         },
         "keep_single_release": {
-          "description": "Delete the prior release that points at the same tag before creating the new one. Default: `false`. Set `true` to maintain a single rolling nightly release on GitHub. Destructive: deletes a published release via the GitHub Releases API. GitHub-only (GoReleaser parity).",
+          "description": "Delete the prior release that points at the same tag before creating the new one. Default: `false`. Set `true` to maintain a single rolling nightly release on GitHub.\n\nBack-compat alias for `retention: { keep_last: 1 }`. When both `keep_single_release` and `retention` are set, `retention` wins. Destructive: deletes a published release via the GitHub Releases API. GitHub-only (GoReleaser parity).",
           "default": null,
           "type": [
             "boolean",
@@ -9627,6 +9627,26 @@
             "null"
           ]
         },
+        "publish_repo": {
+          "description": "Publish the nightly release to a DIFFERENT repository than the source repo, in `\"owner/repo\"` form (e.g. `\"nushell/nightly\"`). Default (`None`) publishes to the configured `release.github` repo, unchanged.\n\nWhen set, the nightly release create, asset upload, AND retention (`keep_single_release` / `retention.keep_last`) delete calls all target this repo. The active SCM token is assumed to have write access to `publish_repo`. GitHub-only (the nushell adoption target).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retention": {
+          "description": "Retention policy for nightly releases on GitHub. Generalizes `keep_single_release` (which is `keep_last: 1`): keeps the N newest nightly releases matching the nightly tag/name and deletes the rest (releases + the tags anodizer created for them). Operates on `publish_repo` when set. Default (`None`): no retention sweep.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RetentionConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "tag_name": {
           "description": "Tag name used for the nightly release. Default: `\"nightly\"`. Templates allowed (GoReleaser v2.16+).",
           "default": null,
@@ -9636,7 +9656,7 @@
           ]
         },
         "version_template": {
-          "description": "Template for the rendered version string the nightly run sets on `Version` / `RawVersion`. GoReleaser default: `\"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly\"` — produces commit-immutable nightly versions (two same-day commits yield two distinct nightly versions).",
+          "description": "Template for the rendered version string the nightly run sets on `Version` / `RawVersion`. GoReleaser default: `\"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly\"` — produces commit-immutable nightly versions (two same-day commits yield two distinct nightly versions).\n\nThe `{{ .NightlyBuild }}` template var (a stateless per-base-version build counter derived from `git rev-list --count <last-tag>..HEAD`) enables nushell-style schemes such as `\"{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}\"`.",
           "default": null,
           "type": [
             "string",
@@ -11362,6 +11382,19 @@
             "string",
             "null"
           ]
+        }
+      }
+    },
+    "RetentionConfig": {
+      "description": "Retention policy for nightly releases on the publish repo.\n\n`keep_last: N` keeps the N newest nightly releases (matched by the nightly tag/name) and deletes the older ones, including the git tags anodizer created for them.",
+      "type": "object",
+      "properties": {
+        "keep_last": {
+          "description": "Number of newest nightly releases to keep. `0` is treated as `1` (never delete every nightly), matching the `keep_single_release` floor. nushell keeps 10.",
+          "default": 0,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
         }
       }
     },

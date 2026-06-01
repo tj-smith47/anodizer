@@ -542,11 +542,19 @@ Tags matching this prefix are selected during tag discovery, and the prefix is s
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `draft` | bool | — | Override `release.draft` for nightly runs only (GoReleaser v2.12+). `None` falls through to `release.draft`; `Some(v)` overrides it. |
-| `keep_single_release` | bool | — | Delete the prior release that points at the same tag before creating the new one. Default: `false`. Set `true` to maintain a single rolling nightly release on GitHub. Destructive: deletes a published release via the GitHub Releases API. GitHub-only (GoReleaser parity). |
+| `keep_single_release` | bool | — | Delete the prior release that points at the same tag before creating the new one. Default: `false`. Set `true` to maintain a single rolling nightly release on GitHub.
+
+Back-compat alias for `retention: { keep_last: 1 }`. When both `keep_single_release` and `retention` are set, `retention` wins. Destructive: deletes a published release via the GitHub Releases API. GitHub-only (GoReleaser parity). |
 | `name_template` | string | — | Template for the release name. Default: `"{{ ProjectName }}-nightly"`. |
 | `publish_release` | bool | — | Whether to publish a GitHub Release at all. Default: `true`. Set `false` for nightly-only docker pushes / blob uploads. |
+| `publish_repo` | string | — | Publish the nightly release to a DIFFERENT repository than the source repo, in `"owner/repo"` form (e.g. `"nushell/nightly"`). Default (`None`) publishes to the configured `release.github` repo, unchanged.
+
+When set, the nightly release create, asset upload, AND retention (`keep_single_release` / `retention.keep_last`) delete calls all target this repo. The active SCM token is assumed to have write access to `publish_repo`. GitHub-only (the nushell adoption target). |
+| `retention` | RetentionConfig | — | Retention policy for nightly releases on GitHub. Generalizes `keep_single_release` (which is `keep_last: 1`): keeps the N newest nightly releases matching the nightly tag/name and deletes the rest (releases + the tags anodizer created for them). Operates on `publish_repo` when set. Default (`None`): no retention sweep. |
 | `tag_name` | string | — | Tag name used for the nightly release. Default: `"nightly"`. Templates allowed (GoReleaser v2.16+). |
-| `version_template` | string | — | Template for the rendered version string the nightly run sets on `Version` / `RawVersion`. GoReleaser default: `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"` — produces commit-immutable nightly versions (two same-day commits yield two distinct nightly versions). |
+| `version_template` | string | — | Template for the rendered version string the nightly run sets on `Version` / `RawVersion`. GoReleaser default: `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"` — produces commit-immutable nightly versions (two same-day commits yield two distinct nightly versions).
+
+The `{{ .NightlyBuild }}` template var (a stateless per-base-version build counter derived from `git rev-list --count <last-tag>..HEAD`) enables nushell-style schemes such as `"{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}"`. |
 
 ## `notarize`
 Top-level notarization configuration supporting both cross-platform (`rcodesign`) and native macOS (`codesign` + `xcrun notarytool`) modes.
