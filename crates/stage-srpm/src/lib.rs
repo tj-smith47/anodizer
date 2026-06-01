@@ -50,6 +50,11 @@ impl Stage for SrpmStage {
             .get("Version")
             .cloned()
             .unwrap_or_else(|| "0.0.0".to_string());
+        // RPM-safe form of the version for the user-spec template and the
+        // output filename. The global `Version` var must keep the raw value
+        // so downstream stages (announce/publish run after srpm) still see
+        // the real version; it is swapped in only for the scoped renders below.
+        let rpm_safe_version = rpm_version_field(&version);
 
         // Find source archives — clone to release borrow on ctx
         let source_archives: Vec<Artifact> = ctx
@@ -86,6 +91,12 @@ impl Stage for SrpmStage {
         );
 
         let source_archive = &source_archives[0];
+        // rpmbuild expands `%{version}` in a spec's `Source0:` to the
+        // sanitized `Version:` field, so the file copied into `SOURCES/` must
+        // match that, not the raw-version artifact name. No-op for real
+        // releases (clean version → name unchanged). Per-crate safe: both
+        // `source_archive` and `version` are this published crate's.
+        let rpm_source_name = rpm_source_name(&source_archive.name, &version, &rpm_safe_version);
         // Template-render `package_name` so users can reference template
         // vars (e.g. `{{ ProjectName }}` or `{{ .Env.PKG_OVERRIDE }}`).
         // Without rendering, a literal template string reaches the
@@ -99,7 +110,8 @@ impl Stage for SrpmStage {
 
         // Read and render the spec file template
         let spec_file = srpm_cfg.spec_file.as_deref().unwrap_or({
-            // No spec file configured — we'll generate a minimal one
+            // No spec file configured — an empty path signals the
+            // minimal-spec generator below.
             ""
         });
 
@@ -109,7 +121,7 @@ impl Stage for SrpmStage {
                 package_name,
                 &version,
                 &srpm_cfg,
-                &source_archive.name,
+                &rpm_source_name,
                 &effective_bins,
                 ctx.env_source(),
             )
@@ -120,7 +132,9 @@ impl Stage for SrpmStage {
 
             // Set SRPM-specific template vars
             ctx.template_vars_mut().set("PackageName", package_name);
-            ctx.template_vars_mut().set("Source", &source_archive.name);
+            // Use the rpm-safe source name so a user spec's `Source0:
+            // {{ Source }}` references the file actually present in SOURCES/.
+            ctx.template_vars_mut().set("Source", &rpm_source_name);
             if let Some(ref summary) = srpm_cfg.summary {
                 ctx.template_vars_mut().set("Summary", summary);
             }
@@ -189,8 +203,16 @@ impl Stage for SrpmStage {
                     .set_structured("Bins", serde_json::Value::Object(map));
             }
 
-            ctx.render_template(&template)
-                .with_context(|| format!("srpm: render spec template '{}'", spec_file))?
+            // Render with the RPM-safe `Version` scoped in, then restore the
+            // raw value so downstream stages are unaffected. The user spec
+            // references `{{ Version }}` for its `Version:` field, which must
+            // satisfy the RPM grammar.
+            ctx.template_vars_mut().set("Version", &rpm_safe_version);
+            let rendered = ctx
+                .render_template(&template)
+                .with_context(|| format!("srpm: render spec template '{}'", spec_file));
+            ctx.template_vars_mut().set("Version", &version);
+            rendered?
         };
 
         // Determine output filename
@@ -201,9 +223,16 @@ impl Stage for SrpmStage {
 
         ctx.template_vars_mut().set("PackageName", package_name);
 
+        // The default filename template embeds `{{ Version }}`; the SRPM the
+        // tool just built carries the RPM-safe version in its `Version:` tag,
+        // so the artifact filename must match (and avoid an illegal `-`).
+        // Scope the override and restore the raw value for downstream stages.
+        ctx.template_vars_mut().set("Version", &rpm_safe_version);
         let package_filename = ctx
             .render_template(file_name_template)
-            .with_context(|| "srpm: render file_name_template")?;
+            .with_context(|| "srpm: render file_name_template");
+        ctx.template_vars_mut().set("Version", &version);
+        let package_filename = package_filename?;
         let package_filename = if package_filename.ends_with(".src.rpm") {
             package_filename
         } else {
@@ -239,8 +268,10 @@ impl Stage for SrpmStage {
             fs::create_dir_all(dir)?;
         }
 
-        // Copy source archive to SOURCES
-        fs::copy(&source_archive.path, sources_dir.join(&source_archive.name))
+        // Copy source archive to SOURCES under the rpm-safe name so it
+        // matches the spec's `%{version}`-expanded `Source0:` (see
+        // `rpm_source_name`).
+        fs::copy(&source_archive.path, sources_dir.join(&rpm_source_name))
             .with_context(|| "srpm: copy source archive to rpmbuild SOURCES")?;
 
         // Copy spec file to SPECS
@@ -336,6 +367,107 @@ impl Stage for SrpmStage {
     }
 }
 
+/// Sanitize an arbitrary version string into the RPM `Version:` grammar.
+///
+/// TOTAL guarantee: the output contains ONLY `[A-Za-z0-9._+~^]`, the full set
+/// RPM permits in a `Version:` tag. `rpmbuild` hard-errors `Illegal char '-'`
+/// (and on any other out-of-grammar byte) otherwise. Incoming versions carry
+/// `-` and arbitrary characters from several sources: snapshot mode renders
+/// `<base>-SNAPSHOT-<shortcommit>` (e.g. `0.5.0-SNAPSHOT-68dfcfb`), a real
+/// prerelease tag arrives as e.g. `0.5.0-rc.1`, and a branch-derived
+/// prerelease can carry a slash (`0.5.0-feature/x`).
+///
+/// Algorithm (semver-aware so the tilde lands on the prerelease separator,
+/// never on a metadata dash):
+/// - Split at the FIRST `+` into `head` (core + prerelease) and `tail`
+///   (build metadata, possibly absent).
+/// - In `head`: the prerelease separator becomes `~` (sorts BEFORE the
+///   release, so a prerelease orders ahead of its final version). The
+///   separator is the FIRST `-`, UNLESS a literal `~` already opened the
+///   prerelease (the cfg-suffix path composes `<base>~<prerelease>`, so a
+///   `-` inside that prerelease is internal, not a second separator). Once
+///   the prerelease has started, any further `-` becomes `_`. Any other char
+///   outside `[A-Za-z0-9._+~^]` becomes `_`.
+/// - In `tail`: RPM forbids `-` in metadata too, so EVERY `-` becomes `_`
+///   (no `~` — metadata must not sort before the release); any other illegal
+///   char becomes `_`.
+/// - Rejoin as `head + "+" + tail` when metadata was present.
+///
+/// This is stricter than nfpm's rpm handling, which only `replace('-','_')`s
+/// the separately-configured prerelease field and leaves a metadata `-`
+/// intact: anodizer neutralizes metadata dashes too, which is the RPM-correct
+/// behavior.
+fn rpm_version_field(version: &str) -> String {
+    let legal = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '~' | '^');
+
+    let (head, tail) = match version.split_once('+') {
+        Some((h, t)) => (h, Some(t)),
+        None => (version, None),
+    };
+
+    let mut out = String::with_capacity(version.len() + 1);
+    // A `~` (literal in the input, e.g. the cfg-suffix path) or the first `-`
+    // opens the prerelease; once open, later `-` are internal → `_`.
+    let mut prerelease_started = false;
+    for ch in head.chars() {
+        match ch {
+            '-' => {
+                out.push(if prerelease_started { '_' } else { '~' });
+                prerelease_started = true;
+            }
+            '~' => {
+                out.push('~');
+                prerelease_started = true;
+            }
+            c if legal(c) => out.push(c),
+            _ => out.push('_'),
+        }
+    }
+    if let Some(tail) = tail {
+        out.push('+');
+        for ch in tail.chars() {
+            // `-` is illegal in RPM metadata too; collapse it (and any other
+            // out-of-grammar char) to `_`. No `~`: metadata must not sort
+            // ahead of the release.
+            out.push(if legal(ch) { ch } else { '_' });
+        }
+    }
+    out
+}
+
+/// Compute the source-archive filename rpmbuild will look for in `SOURCES/`.
+///
+/// A spec's `Source0:` commonly uses the canonical `%{name}-%{version}-…`
+/// idiom; rpmbuild expands `%{version}` to the SANITIZED `Version:` field
+/// (e.g. `0.5.0~SNAPSHOT_<sha>`), so the file copied into `SOURCES/` must
+/// carry the sanitized version, not the raw artifact name (`0.5.0-SNAPSHOT-…`)
+/// the source stage produced. Rewriting the version token to the sanitized
+/// form keeps the copied file, the auto-gen spec's `Source0:`, and a user
+/// spec's `{{ Source }}` all in agreement.
+///
+/// Contract / assumptions:
+/// - Only the FIRST occurrence of `raw_version` is rewritten (`replacen`),
+///   matching rpmbuild's `%{version}`, which expands the single version token
+///   — not every coincidental recurrence of that string in the name.
+/// - The source archive name is assumed to EMBED the version, which holds for
+///   the default `name_template: "{{ ProjectName }}-{{ Version }}-source"`.
+///   When it does not, the rewrite is a no-op and a `%{version}`-templated
+///   `Source0:` would not resolve; such a spec must instead reference
+///   `{{ Source }}` in its `Source0:`, which is always set to this same
+///   reconciled name and therefore always matches the copied file. The
+///   auto-gen spec path is independently self-consistent (its literal
+///   `Source0:` equals this exact name regardless of embedding).
+///
+/// No-op for every real release: a clean version has no illegal char, so
+/// `rpm_version == raw_version` and the artifact name passes through verbatim.
+fn rpm_source_name(artifact_name: &str, raw_version: &str, rpm_version: &str) -> String {
+    if rpm_version == raw_version {
+        artifact_name.to_string()
+    } else {
+        artifact_name.replacen(raw_version, rpm_version, 1)
+    }
+}
+
 /// Resolve the effective `bins` map (binary name → `%files` install path).
 ///
 /// A user-supplied `bins:` map (`override_bins`) is authoritative and is
@@ -394,8 +526,13 @@ fn generate_default_spec(
     let url = cfg.url.as_deref().unwrap_or("");
     let description = cfg.description.as_deref().unwrap_or(package_name);
 
-    // Compose the version string with prerelease (~suffix) and version
-    // metadata (+suffix) per the GR-aligned SrpmConfig contract.
+    // Compose the RAW version string with prerelease (~suffix) and version
+    // metadata (+suffix) per the GR-aligned SrpmConfig contract, THEN run a
+    // single total `rpm_version_field` pass over the whole thing. Sanitizing
+    // once at the end (rather than per-fragment) means a `-` anywhere — in the
+    // base version (`0.5.0-rc.1`), in a configured `prerelease: rc-1`, or in
+    // `version_metadata: build-7` — is neutralized to valid RPM grammar; no
+    // unsanitized fragment can re-open `Illegal char '-'`.
     let version_field = {
         let mut out = version.to_string();
         if let Some(pre) = cfg.prerelease.as_deref() {
@@ -406,7 +543,7 @@ fn generate_default_spec(
             out.push('+');
             out.push_str(meta);
         }
-        out
+        rpm_version_field(&out)
     };
 
     let maintainer = cfg.maintainer.as_deref().unwrap_or(package_name);
@@ -720,6 +857,261 @@ mod tests {
         // Pretrans + posttrans scriptlets sourcing the configured files.
         assert!(spec.contains("%pretrans\n. scripts/pretrans.sh"));
         assert!(spec.contains("%posttrans\n. scripts/posttrans.sh"));
+    }
+
+    /// The base version's `-` (snapshot/prerelease) must never reach the
+    /// emitted `Version:` line: the first `-` becomes `~`, subsequent ones
+    /// `_`, `+` metadata is untouched, and a clean version is left alone.
+    /// rpmbuild rejects `-` in `Version:` outright, so this guards the
+    /// auto-gen spec path against snapshot and real-RC failures alike.
+    #[test]
+    fn test_generate_default_spec_sanitizes_version_for_rpm_grammar() {
+        let cases = [
+            // (input version, expected substring on the `Version:` line)
+            ("0.5.0-SNAPSHOT-68dfcfb", "0.5.0~SNAPSHOT_68dfcfb"),
+            ("0.5.0-rc.1", "0.5.0~rc.1"),
+            ("1.2.3+build.42", "1.2.3+build.42"),
+            ("1.0.0", "1.0.0"),
+            ("0.5.0-feature/x", "0.5.0~feature_x"),
+        ];
+        for (input, expected) in cases {
+            let spec = generate_default_spec(
+                "myapp",
+                input,
+                &SrpmConfig::default(),
+                "myapp.tar.gz",
+                &BTreeMap::new(),
+                &anodizer_core::env_source::MapEnvSource::new(),
+            );
+            let version_line = spec
+                .lines()
+                .find(|l| l.starts_with("Version:"))
+                .unwrap_or_else(|| panic!("spec has no Version: line for {input}; got:\n{spec}"));
+            assert!(
+                version_line.contains(expected),
+                "Version: line for `{input}` must contain `{expected}`; got `{version_line}`"
+            );
+            assert!(
+                !version_line.contains('-'),
+                "Version: line for `{input}` must contain no `-` (RPM grammar); got `{version_line}`"
+            );
+        }
+    }
+
+    /// The sanitizer composes with the cfg `~prerelease` / `+metadata`
+    /// suffixes: a base version `-` is transformed before they append, so a
+    /// snapshot base + configured suffixes still yields valid RPM grammar.
+    #[test]
+    fn test_generate_default_spec_sanitizes_base_then_appends_suffixes() {
+        let cfg = SrpmConfig {
+            prerelease: Some("rc1".to_string()),
+            version_metadata: Some("g1234abc".to_string()),
+            ..Default::default()
+        };
+        let spec = generate_default_spec(
+            "myapp",
+            "0.5.0-SNAPSHOT-abc",
+            &cfg,
+            "myapp.tar.gz",
+            &BTreeMap::new(),
+            &anodizer_core::env_source::MapEnvSource::new(),
+        );
+        assert!(
+            spec.contains("Version:        0.5.0~SNAPSHOT_abc~rc1+g1234abc"),
+            "sanitized base must precede cfg ~prerelease/+metadata; got:\n{spec}"
+        );
+    }
+
+    /// A `-` inside the CONFIGURED `prerelease` / `version_metadata` must not
+    /// re-open `Illegal char '-'`: the suffixes are composed onto the raw
+    /// version and the whole string is sanitized once. `rc-1` → `rc_1`,
+    /// `build-7` (metadata) → `build_7`.
+    #[test]
+    fn test_generate_default_spec_sanitizes_dashed_cfg_suffixes() {
+        let cfg = SrpmConfig {
+            prerelease: Some("rc-1".to_string()),
+            version_metadata: Some("build-7".to_string()),
+            ..Default::default()
+        };
+        let spec = generate_default_spec(
+            "myapp",
+            "1.0.0",
+            &cfg,
+            "myapp.tar.gz",
+            &BTreeMap::new(),
+            &anodizer_core::env_source::MapEnvSource::new(),
+        );
+        let version_line = spec
+            .lines()
+            .find(|l| l.starts_with("Version:"))
+            .expect("spec has Version: line");
+        assert!(
+            version_line.contains("1.0.0~rc_1+build_7"),
+            "dashed cfg suffixes must be sanitized; got `{version_line}`"
+        );
+        assert!(
+            !version_line.contains('-'),
+            "Version: line must be `-`-free; got `{version_line}`"
+        );
+    }
+
+    /// Direct unit coverage of the version sanitizer's transform rules,
+    /// independent of the spec emission path. Asserts the TOTAL guarantee:
+    /// only `[A-Za-z0-9._+~^]` survives, the tilde lands on the prerelease
+    /// separator (never a metadata dash), and degenerate inputs are handled.
+    #[test]
+    fn test_rpm_version_field_transform() {
+        let cases = [
+            ("0.5.0-SNAPSHOT-68dfcfb", "0.5.0~SNAPSHOT_68dfcfb"),
+            ("0.5.0-rc.1", "0.5.0~rc.1"),
+            ("1.2.3+build.42", "1.2.3+build.42"),
+            ("1.0.0", "1.0.0"),
+            // Only the first `-` in head becomes `~`; the rest are `_`.
+            ("1.0.0-a-b-c", "1.0.0~a_b_c"),
+            // Degenerate / hostile inputs.
+            ("", ""),
+            ("---", "~__"),
+            ("1.0.0~rc1", "1.0.0~rc1"),
+            // Metadata dash must collapse to `_`, NOT `~` (no metadata sort
+            // ahead of the release).
+            ("1.2.3+build-7", "1.2.3+build_7"),
+            // Branch-derived prerelease: slash is illegal → `_`, head dash → `~`.
+            ("0.5.0-feature/x", "0.5.0~feature_x"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                rpm_version_field(input),
+                expected,
+                "rpm_version_field({input:?})"
+            );
+            // TOTAL: output is RPM-Version-grammar-legal end to end.
+            assert!(
+                rpm_version_field(input)
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '~' | '^')),
+                "output for {input:?} must contain only RPM-legal chars"
+            );
+        }
+    }
+
+    /// The file copied into `SOURCES/` must carry the SANITIZED version so it
+    /// matches a spec's `%{version}`-expanded `Source0:`. A snapshot-style
+    /// version has its raw substring rewritten in the artifact name.
+    #[test]
+    fn test_rpm_source_name_rewrites_snapshot_version() {
+        let raw = "0.5.0-SNAPSHOT-abc";
+        let safe = rpm_version_field(raw); // 0.5.0~SNAPSHOT_abc
+        assert_eq!(
+            rpm_source_name("foo-0.5.0-SNAPSHOT-abc-source.tar.gz", raw, &safe),
+            "foo-0.5.0~SNAPSHOT_abc-source.tar.gz"
+        );
+    }
+
+    /// For a clean release version the sanitizer is a no-op, so the source
+    /// name passes through verbatim — no rewrite, byte-identical artifact.
+    #[test]
+    fn test_rpm_source_name_noop_for_clean_release() {
+        let raw = "1.0.0";
+        let safe = rpm_version_field(raw); // 1.0.0
+        assert_eq!(safe, raw, "clean version must not change");
+        assert_eq!(
+            rpm_source_name("foo-1.0.0-source.tar.gz", raw, &safe),
+            "foo-1.0.0-source.tar.gz"
+        );
+    }
+
+    /// Contract no-op: when the version was sanitized but the source name does
+    /// NOT embed the raw version, the rewrite leaves the name unchanged. Such
+    /// a name is fine for a spec referencing `{{ Source }}` (set to this same
+    /// name); a `%{version}`-templated `Source0:` is the user's responsibility
+    /// to align via `{{ Source }}` instead.
+    #[test]
+    fn test_rpm_source_name_unchanged_when_version_not_embedded() {
+        assert_eq!(
+            rpm_source_name("foo-bar-source.tar.gz", "0.5.0-rc.1", "0.5.0~rc.1"),
+            "foo-bar-source.tar.gz"
+        );
+    }
+
+    /// Only the FIRST version-token occurrence is rewritten (`replacen`),
+    /// mirroring rpmbuild's single `%{version}` expansion. A coincidental
+    /// later recurrence of the raw version string is left intact.
+    #[test]
+    fn test_rpm_source_name_rewrites_only_first_occurrence() {
+        // Version token appears twice; only the leading one is the real
+        // `%{version}` slot, so the trailing recurrence must survive.
+        assert_eq!(
+            rpm_source_name(
+                "0.5.0-rc.1-tool-0.5.0-rc.1-source.tar.gz",
+                "0.5.0-rc.1",
+                "0.5.0~rc.1"
+            ),
+            "0.5.0~rc.1-tool-0.5.0-rc.1-source.tar.gz"
+        );
+    }
+
+    /// Reproduce the stage's scoped `Version`-override sequence for a
+    /// user-supplied spec template (`spec_file:` path) and assert both halves
+    /// of the invariant: (1) the rendered `Version:` field is RPM-safe
+    /// (`-`-free) for a prerelease version, and (2) the global `Version`
+    /// template var is RESTORED to the raw value afterward, so downstream
+    /// stages (announce/publish run after srpm) see the real version.
+    #[test]
+    fn test_user_spec_render_is_rpm_safe_and_restores_version_var() {
+        let mut ctx = Context::new(
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions::default(),
+        );
+        let version = "0.5.0-rc.1".to_string();
+        ctx.template_vars_mut().set("Version", &version);
+        let rpm_safe_version = rpm_version_field(&version);
+
+        // Exact sequence the stage runs around the user-spec render.
+        let template = "Version: {{ Version }}";
+        ctx.template_vars_mut().set("Version", &rpm_safe_version);
+        let rendered = ctx.render_template(template).expect("render user spec");
+        ctx.template_vars_mut().set("Version", &version);
+
+        assert_eq!(rendered, "Version: 0.5.0~rc.1");
+        assert!(!rendered.contains('-'), "rendered spec must be `-`-free");
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("0.5.0-rc.1"),
+            "global Version var must be restored to the raw value after render"
+        );
+    }
+
+    /// Same non-leak invariant for the output-filename render path: the
+    /// filename embeds the RPM-safe version, and the global `Version` var is
+    /// restored to the raw value afterward.
+    #[test]
+    fn test_filename_render_is_rpm_safe_and_restores_version_var() {
+        let mut ctx = Context::new(
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions::default(),
+        );
+        let version = "0.5.0-rc.1".to_string();
+        ctx.template_vars_mut().set("Version", &version);
+        ctx.template_vars_mut().set("PackageName", "myapp");
+        let rpm_safe_version = rpm_version_field(&version);
+
+        let file_name_template = "{{ PackageName }}-{{ Version }}.src.rpm";
+        ctx.template_vars_mut().set("Version", &rpm_safe_version);
+        let rendered = ctx
+            .render_template(file_name_template)
+            .expect("render filename");
+        ctx.template_vars_mut().set("Version", &version);
+
+        assert_eq!(rendered, "myapp-0.5.0~rc.1.src.rpm");
+        assert!(
+            !rendered.contains("0.5.0-"),
+            "filename must be `-`-free in version"
+        );
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("0.5.0-rc.1"),
+            "global Version var must be restored to the raw value after render"
+        );
     }
 
     /// An explicit `bins:` override is emitted verbatim into the `%files`
