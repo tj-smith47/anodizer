@@ -40,9 +40,15 @@ use crate::{release_log, resolve_release_repo};
 /// A 404 from `upload_asset` immediately after the release was created is
 /// GitHub's post-create read-after-write replication lag, not a missing
 /// release — the asset definitively was not created, so re-issuing the
-/// upload is idempotent-safe. Fatal / auth / 422-bail outcomes are
-/// unaffected and still fail on the first attempt. Genuinely-missing
-/// releases still fail once this floor is exhausted.
+/// upload is idempotent-safe. Genuinely-missing releases still fail once
+/// this floor is exhausted.
+///
+/// The floor is applied as `max(configured_attempts, this)` on the SHARED
+/// upload retry loop's iteration cap, so it raises the bound for the whole
+/// loop, not just the transient/404 classes. It is the per-class fast-fail
+/// arms inside the loop (Fatal / auth / 422-bail) that still terminate on
+/// the first attempt — those outcomes never consume the extra iterations
+/// this floor makes available.
 const MIN_UPLOAD_TRANSIENT_ATTEMPTS: u32 = 3;
 
 /// Run the GitHub release backend for one crate.

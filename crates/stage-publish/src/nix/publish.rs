@@ -276,9 +276,6 @@ struct NixMetadata {
     main_program: String,
 }
 
-/// Inspects `skip` / `skip_upload` and returns `Some(reason)` when the
-/// publish must short-circuit. Emits the same log lines the inline
-/// version emitted, preserving observable behavior.
 /// Returns `true` when any skip guard (config `skip`, falsy `if`, or
 /// `skip_upload`) fires. Each guard emits its own operator-facing
 /// `log.status` line before returning, so the caller needs only the

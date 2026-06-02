@@ -4,8 +4,11 @@
 # registry.modelcontextprotocol.io (see `.anodizer.yaml::mcp`).
 #
 # docker_v2 builds this once per platform (linux/amd64, linux/arm64) using
-# the pre-built release binary from the dist tree. BIN is supplied by the
-# anodize build pipeline and points at the per-arch binary in dist/.
+# the pre-built release binary from the dist tree. The build context is a
+# staging tree laid out as <os>/<arch>/<name> (matching $TARGETPLATFORM),
+# so each per-arch build resolves the correct binary from its platform
+# subdir — docker_v2 passes no BIN build arg. The ARG below only supplies
+# the default name for a manual `docker build` from a flat context.
 FROM --platform=$TARGETPLATFORM gcr.io/distroless/cc-debian12:nonroot
 
 ARG BIN=anodizer

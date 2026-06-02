@@ -16,10 +16,10 @@ use std::time::Duration;
 
 use super::monorepo::apply_monorepo_defaults;
 
-/// Cap on recursion depth for `includes:` chains. There isn't
-/// document a limit; we pick 32 — well above any plausible org-shared
-/// fan-out, well below the worker-thread stack budget that
-/// `deserialize_on_worker` reserves.
+/// Cap on recursion depth for `includes:` chains. The format imposes no
+/// inherent limit; 32 sits well above any plausible org-shared fan-out
+/// while staying clear of the main thread's default stack budget, on
+/// which this include walker recurses synchronously.
 const MAX_INCLUDE_DEPTH: usize = 32;
 
 /// Find config file. If `config_override` is provided, use that path directly;
