@@ -475,6 +475,44 @@ pub(crate) async fn gitea_delete_asset_by_name(
     Ok(false)
 }
 
+/// What to do with a release asset whose name already exists on the remote,
+/// decided from the size probe + the `replace_existing_artifacts` flag.
+/// Pure so the same-size-skip-regardless-of-flag contract is unit-testable
+/// without I/O — mirrors the GitHub backend's `classify_already_exists`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GiteaUploadAction {
+    /// Remote bytes match the local file: skip the upload (idempotent no-op).
+    SkipIdempotent,
+    /// Remote asset differs and the user opted into replacement: delete it,
+    /// then re-upload.
+    DeleteThenUpload,
+    /// No matching same-size remote asset to skip and no opt-in delete to do:
+    /// proceed straight to the upload.
+    Upload,
+}
+
+/// Decide the upload action for a release asset.
+///
+/// The same-size idempotent skip fires REGARDLESS of
+/// `replace_existing_artifacts` (matching the GitHub backend): a
+/// byte-identical asset is a no-op, not an overwrite, so the user's
+/// `replace_existing_artifacts: false` does not block it. The
+/// delete-then-reupload only fires when the user opted in AND a
+/// different-size remote asset actually exists.
+pub(crate) fn gitea_upload_action(
+    replace_existing_artifacts: bool,
+    remote_size: Option<u64>,
+    local_size: u64,
+) -> GiteaUploadAction {
+    if remote_size == Some(local_size) {
+        return GiteaUploadAction::SkipIdempotent;
+    }
+    if replace_existing_artifacts && remote_size.is_some() {
+        return GiteaUploadAction::DeleteThenUpload;
+    }
+    GiteaUploadAction::Upload
+}
+
 /// Look up an existing release attachment by name and return its byte size.
 ///
 /// Mirrors the GitHub backend's `find_release_asset_size`. Used by the
@@ -734,42 +772,43 @@ pub(crate) fn run_gitea_backend(
                         policy: &policy_inner,
                     };
 
-                    // Handle replace_existing_artifacts (immutable-releases
-                    // policy): probe the existing asset's byte size first;
-                    // when it matches the local file, skip BOTH the delete
-                    // AND the upload — same-size bytes are treated as an
-                    // idempotent no-op so --resume-release does NOT mutate
-                    // already-published assets. Different-size bytes plus
-                    // the user's opt-in (`replace_existing_artifacts: true`)
-                    // fall through to the delete-then-reupload path below.
-                    if replace_existing_artifacts {
-                        let local_size = tokio::fs::metadata(&path)
-                            .await
-                            .with_context(|| {
-                                format!(
-                                    "gitea: stat local artifact '{}' for size comparison",
-                                    file_name
-                                )
-                            })?
-                            .len();
-                        if let Some(remote_size) =
-                            gitea_find_asset_size(&ctx, release_id, &file_name).await?
-                            && remote_size == local_size
-                        {
+                    // Idempotency probe runs REGARDLESS of
+                    // replace_existing_artifacts (matches the GitHub
+                    // backend): probe the existing asset's byte size; when
+                    // it matches the local file, skip the upload entirely so
+                    // a re-run / --resume-release does NOT mutate
+                    // already-published bytes and does NOT 409 on a duplicate
+                    // filename. The probe is independent of the flag because
+                    // a byte-identical asset is not an "overwrite" — the
+                    // user's `replace_existing_artifacts: false` guards
+                    // against replacing DIFFERENT bytes, not against a no-op.
+                    let local_size = tokio::fs::metadata(&path)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "gitea: stat local artifact '{}' for size comparison",
+                                file_name
+                            )
+                        })?
+                        .len();
+                    let remote_size = gitea_find_asset_size(&ctx, release_id, &file_name).await?;
+                    match gitea_upload_action(replace_existing_artifacts, remote_size, local_size) {
+                        GiteaUploadAction::SkipIdempotent => {
                             // Idempotent no-op: a prior attempt uploaded
-                            // byte-identical content. Skip the upload
-                            // entirely so the published asset is not
-                            // mutated.
+                            // byte-identical content. Skip the upload.
                             return Ok::<String, anyhow::Error>(file_name);
                         }
-                        gitea_delete_asset_by_name(&ctx, release_id, &file_name)
-                            .await
-                            .with_context(|| {
-                                format!(
-                                    "gitea: delete existing asset '{}' from release {}",
-                                    file_name, release_id
-                                )
-                            })?;
+                        GiteaUploadAction::DeleteThenUpload => {
+                            gitea_delete_asset_by_name(&ctx, release_id, &file_name)
+                                .await
+                                .with_context(|| {
+                                    format!(
+                                        "gitea: delete existing asset '{}' from release {}",
+                                        file_name, release_id
+                                    )
+                                })?;
+                        }
+                        GiteaUploadAction::Upload => {}
                     }
 
                     let op_name = format!("gitea: upload '{}'", file_name);
@@ -881,6 +920,58 @@ mod tests {
     #[test]
     fn encode_segment_preserves_dots_dashes_underscores() {
         assert_eq!(encode_segment("my-project_v2.0"), "my-project_v2.0");
+    }
+
+    // -- gitea_upload_action ------------------------------------------------
+
+    /// The same-size idempotent skip fires regardless of
+    /// `replace_existing_artifacts` — a byte-identical asset is a no-op, not
+    /// an overwrite. Without this, a re-run WITHOUT the flag would re-upload
+    /// and 409 on the duplicate filename (the bug this fix closes).
+    #[test]
+    fn upload_action_same_size_skips_regardless_of_flag() {
+        assert_eq!(
+            gitea_upload_action(false, Some(100), 100),
+            GiteaUploadAction::SkipIdempotent,
+        );
+        assert_eq!(
+            gitea_upload_action(true, Some(100), 100),
+            GiteaUploadAction::SkipIdempotent,
+        );
+    }
+
+    /// Different-size remote asset + opt-in => delete then re-upload.
+    #[test]
+    fn upload_action_diff_size_with_flag_deletes() {
+        assert_eq!(
+            gitea_upload_action(true, Some(50), 100),
+            GiteaUploadAction::DeleteThenUpload,
+        );
+    }
+
+    /// Different-size remote asset WITHOUT opt-in => plain upload (no delete);
+    /// Gitea surfaces its own duplicate-name behaviour. Preserves the prior
+    /// no-flag fall-through.
+    #[test]
+    fn upload_action_diff_size_without_flag_uploads() {
+        assert_eq!(
+            gitea_upload_action(false, Some(50), 100),
+            GiteaUploadAction::Upload,
+        );
+    }
+
+    /// No remote asset at all => plain upload, and the opt-in delete is NOT
+    /// attempted (nothing to delete) even with the flag set.
+    #[test]
+    fn upload_action_absent_remote_uploads_without_delete() {
+        assert_eq!(
+            gitea_upload_action(false, None, 100),
+            GiteaUploadAction::Upload,
+        );
+        assert_eq!(
+            gitea_upload_action(true, None, 100),
+            GiteaUploadAction::Upload,
+        );
     }
 
     // -- build_gitea_client -------------------------------------------------
