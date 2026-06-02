@@ -2,7 +2,7 @@
 //!
 //! Providers implement [`AiProvider`]. The orchestration entry point is
 //! [`enhance_with_ai`], which resolves the prompt source, renders it through
-//! Tera (injecting `.ReleaseNotes` scoped to this call), dispatches to the
+//! Tera (injecting `ReleaseNotes` scoped to this call), dispatches to the
 //! configured provider, and returns the enhanced body.
 
 mod anthropic;

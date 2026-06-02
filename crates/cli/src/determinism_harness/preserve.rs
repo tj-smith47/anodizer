@@ -106,14 +106,6 @@ pub struct PreservedDistContext {
     pub commit: String,
 }
 
-/// Copy `<worktree>/dist/**` to `dest`, preserving directory structure.
-///
-/// Best-effort safety: clear `dest` before populating so a leftover
-/// from a prior aborted run can't shadow run-0's actual output. If
-/// `dest` doesn't exist yet, the clear is a no-op.
-///
-/// Run before the per-iteration worktree is destroyed so the preserved
-/// bytes survive the harness loop's teardown.
 /// Bail before wiping a `dest` that looks like real user data rather
 /// than a preserve target.
 ///
@@ -161,6 +153,14 @@ fn guard_preserve_dest(dest: &Path) -> Result<()> {
     )
 }
 
+/// Copy `<worktree>/dist/**` to `dest`, preserving directory structure.
+///
+/// Best-effort safety: clear `dest` before populating so a leftover
+/// from a prior aborted run can't shadow run-0's actual output. If
+/// `dest` doesn't exist yet, the clear is a no-op.
+///
+/// Run before the per-iteration worktree is destroyed so the preserved
+/// bytes survive the harness loop's teardown.
 pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()> {
     let src = worktree_path.join("dist");
     // Refuse to wipe a non-empty `dest` that isn't recognizably a prior

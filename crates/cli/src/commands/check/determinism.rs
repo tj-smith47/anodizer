@@ -344,11 +344,6 @@ fn resolve_child_snapshot(snapshot: bool, no_snapshot: bool, head_at_tag: bool) 
     }
 }
 
-/// Returns `true` when every configured build entry on every crate uses
-/// `builder: prebuilt`. The harness short-circuits in that case because
-/// there is nothing to rebuild — re-stat()-ing the same staged file twice
-/// would just produce two identical hashes.
-///
 /// Extract the literal filename suffix a `signature:` template appends
 /// after the artifact reference — the text following the final `}}`
 /// template expansion (e.g. `{{ .Artifact }}.cosign.bundle` →
@@ -439,6 +434,11 @@ fn signature_allowlist_entries_from_config(
         .collect()
 }
 
+/// Returns `true` when every configured build entry on every crate uses
+/// `builder: prebuilt`. The harness short-circuits in that case because
+/// there is nothing to rebuild — re-stat()-ing the same staged file twice
+/// would just produce two identical hashes.
+///
 /// Soft on errors: a missing or unparseable config falls through to
 /// `false` so the existing harness flow surfaces the real error.
 fn all_builds_prebuilt_in_repo(repo_root: &std::path::Path) -> bool {

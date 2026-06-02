@@ -19,10 +19,10 @@ use super::detect::docker_supports_provenance;
 /// When `use_backend` is `None`, the default is `"buildx"` if there are
 /// multiple platforms, otherwise `"docker"`.
 ///
-/// The `"podman"` backend is **Linux-only**, matching GoReleaser Pro's
-/// `podman` pipe restriction. Configs that set `use: podman` on macOS or
-/// Windows are rejected here with a clear error so users do not get a
-/// confusing `podman: command not found` later in the pipeline.
+/// The `"podman"` backend is **Linux-only**. Configs that set
+/// `use: podman` on macOS or Windows are rejected here with a clear error
+/// so users do not get a confusing `podman: command not found` later in
+/// the pipeline.
 pub fn resolve_backend(
     use_backend: Option<&str>,
     multi_platform: bool,
@@ -47,9 +47,8 @@ pub fn resolve_backend(
                 other
             );
         }
-        // Default to plain docker (matching GoReleaser).
-        // Users must explicitly set `use: buildx` for buildx features
-        // including multi-platform builds.
+        // Default to plain docker. Users must explicitly set `use: buildx`
+        // for buildx features including multi-platform builds.
         None => Ok(("docker", vec!["build"])),
     }
 }
@@ -57,8 +56,7 @@ pub fn resolve_backend(
 /// Return an error when the current host OS is not Linux. Used to gate the
 /// podman backend (both build and manifest paths) to Linux hosts only.
 ///
-/// GoReleaser Pro's docs are explicit: "The Podman backend is exclusively a
-/// GoReleaser Pro feature restricted to Linux environments." A macOS or
+/// The podman backend is restricted to Linux environments. A macOS or
 /// Windows user who sets `use: podman` would otherwise get a confusing
 /// `podman: command not found` at build time; failing at config validation
 /// produces an actionable error pointing back at the relevant field.
@@ -129,15 +127,14 @@ pub fn validate_podman_flag_compat(flags: &[String]) -> Result<()> {
 
 /// Resolve the binary used for `docker manifest …` (or its podman cousin).
 ///
-/// F7: GoReleaser's `validateManifester`
-/// (`internal/pipe/docker/manifest.go:169-174`) errors at default-time when
-/// the configured `manifest.use:` is not in the registered manifester set.
-/// Previously anodizer silently fell back to `"docker"` for any unknown
-/// value (including typos like `use: dockr`), masking bugs. We now enumerate
-/// the supported set explicitly and surface a clear error for anything else.
+/// Errors at default-time when the configured `manifest.use:` is not in the
+/// supported manifester set. An unknown value (including typos like
+/// `use: dockr`) is rejected rather than silently falling back to `"docker"`,
+/// which previously masked bugs. The supported set is enumerated explicitly
+/// and anything else surfaces a clear error.
 ///
-/// Anodizer accepts `"podman"` in addition to GR's `"docker"`-only set
-/// because podman ships a `podman manifest create/push` CLI that mirrors
+/// `"podman"` is accepted in addition to `"docker"` because podman ships a
+/// `podman manifest create/push` CLI that mirrors
 /// `docker manifest`; that surface is already wired through the rest of
 /// this module. `"buildx"` is NOT a valid manifester (buildx pushes manifest
 /// lists as a side-effect of `--push`, it does not have a `buildx manifest`
@@ -276,8 +273,8 @@ pub fn build_docker_command(spec: &DockerV1Spec<'_>) -> Result<Vec<String>> {
     }
 
     // Determine the effective backend for --load/--push logic.
-    // Default is "docker" (matching GoReleaser); users must explicitly set
-    // `use: buildx` for buildx features including multi-platform builds.
+    // Default is "docker"; users must explicitly set `use: buildx` for
+    // buildx features including multi-platform builds.
     let effective_backend = use_backend.unwrap_or("docker");
 
     // --push in live mode (unless skip_push).  The --push flag is only valid
@@ -302,7 +299,7 @@ pub fn build_docker_command(spec: &DockerV1Spec<'_>) -> Result<Vec<String>> {
     // Auto-add --provenance=false and --sbom=false for buildx builds, but
     // only when Docker actually supports these flags (probed once and cached).
     // Buildx defaults can inject unwanted attestation manifests and slow down
-    // CI — GoReleaser probes `docker build --help` before adding them.
+    // CI — `docker build --help` is probed before adding them.
     if effective_backend == "buildx" && docker_supports_provenance() {
         let flags_str = extra_flags.join(" ");
         if !flags_str.contains("--provenance") {
@@ -421,8 +418,8 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
     }
 
     // --annotation KEY=VALUE
-    // For multi-platform builds, GoReleaser v2 prefixes annotation values with
-    // "index:" so they target the manifest index rather than individual platform images.
+    // For multi-platform builds, annotation keys are prefixed with "index:"
+    // so they target the manifest index rather than individual platform images.
     for (key, value) in annotations {
         cmd.push("--annotation".to_string());
         if multi_platform {
@@ -445,9 +442,9 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
         cmd.push(flag.clone());
     }
 
-    // Use --attest=type=sbom for proper OCI attestation (matching GoReleaser v2)
-    // rather than the older --sbom=true flag. Buildx-only — already gated by
-    // the `is_podman` check above (sbom forbidden under podman).
+    // Use --attest=type=sbom for proper OCI attestation rather than the
+    // older --sbom=true flag. Buildx-only — already gated by the
+    // `is_podman` check above (sbom forbidden under podman).
     if sbom && !is_podman {
         cmd.push("--attest=type=sbom".to_string());
     }
@@ -471,11 +468,10 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
         // When neither push nor load: buildx builds to cache only (no daemon needed)
     }
 
-    // NOTE: GoReleaser V2 does NOT auto-add --provenance=false or --sbom=false.
-    // Only the legacy docker pipe does that. V2 relies on explicit user flags
-    // or the --attest=type=sbom flag set above.
+    // This path does NOT auto-add --provenance=false or --sbom=false; it
+    // relies on explicit user flags or the --attest=type=sbom flag set above.
 
-    // Write image digest to file for capture (GoReleaser V2 behavior).
+    // Write image digest to file for capture.
     // This works even without --push (no daemon needed for digest capture).
     // buildx and single-platform podman support `--iidfile` (same flag name).
     // Multi-platform `podman build` rejects `--iidfile` (it errors when
@@ -581,9 +577,8 @@ pub(crate) fn resolve_digest_config(
     Ok((skip_digest, name_template))
 }
 
-/// Apply GoReleaser-compatible defaults to a single Docker V2 config.
+/// Apply defaults to a single Docker V2 config.
 ///
-/// Mirrors `internal/pipe/docker/v2/docker.go::Default()`:
 ///   - `id`         defaults to the project name
 ///   - `dockerfile` defaults to `"Dockerfile"`
 ///   - `tags`       defaults to `["{{ .Tag }}"]`
@@ -638,9 +633,8 @@ pub fn apply_docker_v2_defaults(
 /// `--attest=type=sbom` flag is added to the buildx command. Surfaces template
 /// render errors instead of silently treating them as "not enabled".
 ///
-/// Default-on: matches GoReleaser `internal/pipe/docker/v2/docker.go:85-87`,
-/// which sets `SBOM = "true"` at `Default()` time. Users opt out with
-/// `sbom: false` (or a templated string evaluating to `"false"`).
+/// Default-on: the `Default()`-apply block sets `SBOM = "true"`. Users opt
+/// out with `sbom: false` (or a templated string evaluating to `"false"`).
 ///
 /// The default-on policy is enforced in two complementary places:
 /// 1. The `Default()`-apply block populates `cfg.sbom = Some(Bool(true))` so
@@ -690,9 +684,8 @@ pub fn resolve_skip_push(skip_push: &Option<SkipPushConfig>, ctx: &Context) -> b
                 .unwrap_or(false)
         }
         Some(SkipPushConfig::Template(tmpl)) => {
-            // GoReleaser docker.go:343,346: exact `"true"` / `"auto"`
-            // string match on the trimmed render, case-sensitive. `"TRUE"` or
-            // `"True"` must NOT skip push.
+            // Exact `"true"` / `"auto"` string match on the trimmed render,
+            // case-sensitive. `"TRUE"` or `"True"` must NOT skip push.
             ctx.render_template(tmpl)
                 .map(|rendered| {
                     let trimmed = rendered.trim();
