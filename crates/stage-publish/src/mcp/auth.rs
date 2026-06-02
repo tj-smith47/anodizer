@@ -48,7 +48,7 @@ pub trait McpAuthProvider {
 // Common request/response shapes
 // ---------------------------------------------------------------------------
 
-/// `auth.RegistryTokenResponse` mirror — the body returned by the registry's
+/// The token-response body returned by the registry's
 /// token-exchange endpoints (`/v0/auth/none`, `/v0/auth/github-at`,
 /// `/v0/auth/github-oidc`). `expires_at` is currently unused on our side.
 #[derive(Debug, Deserialize)]
@@ -266,7 +266,7 @@ impl McpAuthProvider for GithubAtAuthProvider {
 // GithubOidcAuthProvider — Actions id-token exchange
 // ---------------------------------------------------------------------------
 
-/// `auth.GitHubOIDCProvider` mirror. Two-step:
+/// GitHub Actions OIDC auth provider. Two-step:
 ///
 /// 1. GET `${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=<registry-audience>` with
 ///    `Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}` -> `{"value":"..."}`.
@@ -274,7 +274,7 @@ impl McpAuthProvider for GithubAtAuthProvider {
 ///    `{"registry_token":"..."}`.
 ///
 /// The audience is `scheme://lowercase-host` of the registry URL — mirrors
-/// upstream `github-oidc.go::audienceFromRegistryURL`.
+/// the registry URL used as the OIDC audience.
 pub struct GithubOidcAuthProvider {
     pub registry_url: String,
     pub policy: RetryPolicy,

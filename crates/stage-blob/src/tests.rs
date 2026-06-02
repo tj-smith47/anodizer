@@ -138,11 +138,11 @@ fn test_put_options_cache_control_single() {
 
 #[test]
 fn test_put_options_content_disposition_default_is_attachment() {
-    // F6 regression: GoReleaser's blob/blob.go:30-35 force-defaults
+    // Regression: the blob default force-defaults
     //     ContentDisposition = "attachment;filename={{.Filename}}"
     // when the user did not configure one. Anodizer must mirror that (with
     // `{{ Filename }}` rendered to the artifact filename) so a copy-pasted
-    // GR config produces downloadable artifacts instead of in-browser
+    // config produces downloadable artifacts instead of in-browser
     // previews. `"-"` remains the disable-sentinel for users who deliberately
     // want the bucket-default behaviour.
     let config = BlobConfig::default();
@@ -156,7 +156,7 @@ fn test_put_options_content_disposition_default_is_attachment() {
 
 #[test]
 fn test_put_options_content_disposition_default_empty_string_treated_as_unset() {
-    // An explicit empty string gets the same GR force-default treatment as
+    // An explicit empty string gets the same force-default treatment as
     // None — the only way to opt out is the `"-"` sentinel.
     let config = BlobConfig {
         content_disposition: Some(String::new()),
@@ -1110,8 +1110,7 @@ fn test_blob_stage_dry_run_logs_commands() {
 
 // -----------------------------------------------------------------------
 // Q9.1 — provider must be Tera-template-rendered before any provider-keyed
-// dispatch (S3-ACL gate, GCS-ACL gate, …). Mirrors GoReleaser commit
-// 4d1924d (`internal/pipe/blob/upload.go`): `provider == "s3"` was a raw
+// dispatch (S3-ACL gate, GCS-ACL gate, …). `provider == "s3"` was a raw
 // string compare, so `provider: "{{ .ProviderName }}"` skipped the ACL
 // branch. Anodizer renders `provider` once via `ctx.render_template` then
 // dispatches against `Provider::S3` (an enum) so the bug has no surface,

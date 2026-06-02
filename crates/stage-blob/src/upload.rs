@@ -65,7 +65,7 @@ pub(crate) fn build_put_options(
 
     let mut attrs = object_store::Attributes::new();
 
-    // Cache-Control: join array with ", " (GoReleaser uses []string).
+    // Cache-Control: join array with ", ".
     // Each directive is validated against the RFC-7234 §5.2 response-directive
     // set so a typo (e.g. `max_age` instead of `max-age`) surfaces here rather
     // than as a silent CDN miss in production.
@@ -78,14 +78,14 @@ pub(crate) fn build_put_options(
         attrs.insert(Attribute::CacheControl, cc.join(", ").into());
     }
 
-    // Content-Disposition: F6 — match GoReleaser's force-default.
+    // Content-Disposition: force-default when unset.
     //
-    // `internal/pipe/blob/blob.go:30-35` Default() sets
+    // The default sets
     //     ContentDisposition = "attachment;filename={{.Filename}}"
     // unconditionally when the user did not configure one, and treats `"-"`
-    // as the disable-sentinel. We mirror that exactly so a copy-pasted GR
+    // as the disable-sentinel, so a copy-pasted
     // config with no `content_disposition:` key produces a downloadable blob
-    // (RFC 6266 attachment) instead of an in-browser preview that the GR
+    // (RFC 6266 attachment) instead of an in-browser preview that the default
     // user would have seen pinning a checksum file or ZIP archive.
     //
     // Migration note: anodizer historically left this header unset by
@@ -97,7 +97,7 @@ pub(crate) fn build_put_options(
         Some("-") => None,
         // User-supplied non-empty template — use as-is.
         Some(s) if !s.is_empty() => Some(s),
-        // Unset or empty — force GR's default.
+        // Unset or empty — force the default.
         _ => Some(GR_DEFAULT_CONTENT_DISPOSITION),
     };
     if let Some(disp_template) = resolved_disposition {

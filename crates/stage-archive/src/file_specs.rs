@@ -32,8 +32,8 @@ pub(crate) fn longest_common_prefix(strs: &[String]) -> String {
 
 /// Render template expressions in `ArchiveFileInfo` fields.
 ///
-/// GoReleaser processes `owner`, `group`, and `mtime` through its template
-/// engine (archivefiles.go `tmplInfo()`). `mode` is an octal literal and is
+/// `owner`, `group`, and `mtime` are processed through the template
+/// engine. `mode` is an octal literal and is
 /// passed through unchanged.
 pub(crate) fn render_file_info(
     info: &anodizer_core::config::ArchiveFileInfo,
@@ -73,7 +73,7 @@ pub struct ResolvedExtraFile {
     pub strip_parent: bool,
     /// True when this entry came from the auto-resolved default file list
     /// (LICENSE/README/CHANGELOG glob), not user-configured `files:`.
-    /// Mirrors GoReleaser's `Default: true` flag on archive file entries —
+    /// Defaults to `true` on archive file entries —
     /// useful for diagnostics that need to distinguish user intent from
     /// automatic defaults.
     pub default: bool,
@@ -110,8 +110,8 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
                 // destinations that preserve the directory structure relative
                 // to the longest common prefix of all matched paths.
                 //
-                // GoReleaser divergence: when src is a non-glob literal,
-                // GoReleaser uses it as the prefix directly, so
+                // When src is a non-glob literal, it is used as the prefix
+                // directly, so
                 // Rel(file, file) = "." and the file is effectively renamed
                 // to dst. We always compute LCP, which for a single file
                 // produces dst/filename — more intuitive behavior (e.g.
@@ -125,7 +125,7 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
 
                     // Compute prefix directory: use the LCP of matched paths,
                     // then take its parent directory if it's not an existing
-                    // directory (inspired by GoReleaser's filepath.Dir fallback).
+                    // directory (a dirname fallback).
                     let lcp = longest_common_prefix(&file_strs);
                     let prefix_dir = {
                         let lcp_path = std::path::Path::new(&lcp);
@@ -158,7 +158,7 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
                         });
                     }
                 } else if dst.is_some() && do_strip {
-                    // GoReleaser archivefiles.go:117-118 — when both dst and
+                    // When both dst and
                     // strip_parent are set, each file's destination is
                     // dst/basename(path) so files don't collide at a single dst.
                     let dst_prefix = dst.as_deref().unwrap_or("");
@@ -198,7 +198,7 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
 }
 
 /// When no extra files are explicitly configured, glob for common project files
-/// (LICENSE, README, CHANGELOG) in `base_dir`, matching GoReleaser's
+/// (LICENSE, README, CHANGELOG) in `base_dir`, following the
 /// Default() behavior. Non-matching patterns are silently skipped.
 ///
 /// `base_dir` must be the crate's root directory (resolved absolute against the
@@ -206,11 +206,11 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
 /// process working directory may be the workspace root and pull in unrelated
 /// files (e.g. the workspace's top-level README).
 pub(crate) fn resolve_default_extra_files(base_dir: &Path) -> Vec<ResolvedExtraFile> {
-    // GR-aligned default order (archive.go:84-91): lowercase glob first, then
+    // Default order: lowercase glob first, then
     // uppercase, for each of license / readme / changelog. On case-insensitive
     // filesystems (macOS HFS+, Windows NTFS default), this controls which file
-    // is picked first when both `LICENSE` and `license` exist; matching GR's
-    // ordering makes anodizer-produced archives byte-equivalent to GR's.
+    // is picked first when both `LICENSE` and `license` exist; this
+    // ordering keeps produced archives byte-stable.
     let patterns = [
         "license*",
         "LICENSE*",

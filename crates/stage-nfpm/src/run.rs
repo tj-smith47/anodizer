@@ -356,7 +356,7 @@ pub(crate) fn format_extension(format: &str) -> &str {
 /// entry into the rendered nfpm config, then clear the now-orphaned
 /// `lintian_overrides:` field so the YAML output stays clean.
 ///
-/// GoReleaser's `setupLintian` (`internal/pipe/nfpm/nfpm.go:601-623`)
+/// Lintian-override setup.
 /// writes a file to `<dist>/<format>/<package>_<arch>/lintian` whose body
 /// is one `<package>: <override>` line per entry in `deb.lintian_overrides`,
 /// then appends a `Content` mapping that path into the package at
@@ -366,7 +366,7 @@ pub(crate) fn format_extension(format: &str) -> &str {
 /// was silently dropped from the resulting `.deb` / `termux.deb`.
 ///
 /// This helper performs the file emission and content injection in
-/// lockstep with GR. When `dry_run` is true the on-disk write is skipped
+/// emitted in lockstep. When `dry_run` is true the on-disk write is skipped
 /// (the content entry is still injected so the generated YAML reflects
 /// what would ship). The helper is a no-op for non-deb formats and for
 /// configs where `lintian_overrides` is unset / empty.
@@ -499,7 +499,7 @@ fn should_skip_nfpm_config(
 
 /// Build the per-platform artifact groups for one nfpm config.
 ///
-/// GoReleaser groups all artifacts by platform and emits ONE package per
+/// All artifacts are grouped by platform and ONE package is emitted per
 /// platform containing ALL artifacts for that platform. Returns `None` when
 /// the caller should skip the current nfpm config (ids filter matched
 /// nothing but there were binaries to begin with).
@@ -614,7 +614,7 @@ fn build_platform_groups(
 }
 
 /// Resolve the effective `(os, arch)` for a packaging format, honoring the
-/// iOS- and AIX-specific GoReleaser overrides. Returns `None` when the
+/// iOS- and AIX-specific overrides. Returns `None` when the
 /// current `(base_os, base_arch, format)` combination is unsupported (the
 /// caller should `continue`).
 fn resolve_format_os_arch(
@@ -710,7 +710,7 @@ pub(crate) fn render_and_generate_nfpm_yaml(
 /// Clone the nfpm config and template-render every string field that
 /// participates in the generated YAML. Project-level `metadata.*` fall back
 /// values are applied before rendering when the per-config field is unset
-/// (GoReleaser Pro parity for `metadata.homepage/license/description/maintainers`).
+/// (fallback to `metadata.homepage/license/description/maintainers`).
 pub(crate) fn render_nfpm_config_fields(
     nfpm_cfg: &anodizer_core::config::NfpmConfig,
     ctx: &mut Context,
@@ -817,7 +817,7 @@ pub(crate) fn render_nfpm_config_fields(
     Ok(rendered_cfg)
 }
 
-/// GoReleaser Pro `templated_contents`: render each entry's body through
+/// `templated_contents`: render each entry's body through
 /// Tera, write to a temp path under `dist/nfpm-tmp/<crate>/<nfpm_id>/`, and
 /// append the rewritten entry to `contents`. User-supplied `dst` +
 /// `file_info` are preserved; only `src` is rewritten.
@@ -874,7 +874,7 @@ fn process_templated_contents(
     Ok(())
 }
 
-/// GoReleaser Pro `templated_scripts`: render each named lifecycle script
+/// `templated_scripts`: render each named lifecycle script
 /// body and substitute the result into `rendered_cfg.scripts`. A templated
 /// entry wins over a same-named plain `scripts` field.
 fn process_templated_scripts(
@@ -958,7 +958,7 @@ fn fill_deb_arch_variant(
     }
 }
 
-/// Resolve the package name following GoReleaser nfpm.go:68-70 precedence:
+/// Resolve the package name following this precedence:
 /// explicit `package_name`, then project-level `project_name`, then the
 /// crate name as last-resort fallback.
 fn resolve_pkg_name(

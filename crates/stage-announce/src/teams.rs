@@ -27,7 +27,7 @@ pub struct TeamsOptions<'a> {
 /// Workflow URLs (`logic.azure.com` / `azure-api.net`). Anodizer accepts
 /// **both** shapes — legacy URLs still POST successfully, but the send
 /// helper emits a `tracing::warn!` referencing Microsoft's deprecation
-/// note so a user importing a GoReleaser config knows the path is on a
+/// note so a user importing an older config knows the path is on a
 /// migration deadline.
 ///
 /// See the Microsoft connectors-overview page for the deprecation
@@ -337,7 +337,7 @@ mod tests {
     // Microsoft is deprecating MessageCard webhooks served by
     // *.webhook.office.com (and the older outlook.office.com/webhook/...
     // form). Power Automate Workflow URLs (logic.azure.com / azure-api.net)
-    // are the new shape. GoReleaser-imported configs may still carry the
+    // are the new shape. Older imported configs may still carry the
     // legacy form; anodizer accepts both, but emits a warn on legacy URLs
     // so users know to migrate before Microsoft cuts the path.
 

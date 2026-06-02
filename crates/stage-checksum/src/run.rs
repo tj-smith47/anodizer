@@ -8,7 +8,7 @@
 //!
 //! `refresh_combined_checksums` is invoked by `stage-release` after signing
 //! to rewrite combined files so signature artifacts that happen to be
-//! uploadable land in the final sums (matches GoReleaser's `ExtraRefresh`).
+//! uploadable land in the final sums (the refresh hook).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -281,8 +281,7 @@ fn resolve_per_crate_config(
 /// artifact (minus checksums), filtered by `ids`, plus synthetic entries
 /// derived from `extra_files` and `templated_extra_files`. Source-of-truth
 /// for "what gets hashed" is `release_uploadable_kinds()` — mirroring
-/// GoReleaser's `Not(ByType(Checksum))` filter in
-/// `internal/pipe/checksums/checksums.go::buildArtifactList`. Cross-linking
+/// the `Not(ByType(Checksum))` filter when building the artifact list. Cross-linking
 /// here means stage-checksum, stage-release upload, and the stage-sign "all"
 /// filter all reason about the same artifact set.
 fn collect_source_artifacts(
@@ -451,7 +450,7 @@ fn resolve_checksum_display_name(
 /// Compute the on-disk sidecar path for split mode.
 /// `<artifact>.<algorithm>` when no name_template is set; otherwise renders
 /// the template with `ArtifactName`/`ArtifactExt`/`Algorithm` vars.
-/// GoReleaser places sidecars in dist (checksums.go:79).
+/// Sidecars are placed in dist.
 fn resolve_sidecar_path(
     ctx: &Context,
     artifact: &Artifact,
@@ -496,7 +495,7 @@ fn hash_and_emit_sidecars(
     let mut new_sidecars: Vec<Artifact> = Vec::new();
     // (artifact_path, algorithm, hex-hash). algorithm + bare hash kept
     // separate so callers can write both `Checksum = algo:hash` (legacy) and
-    // `<algo> = hash` (publisher-friendly, matches GoReleaser's per-artifact
+    // `<algo> = hash` (publisher-friendly, the per-artifact
     // metadata convention).
     let mut artifact_checksums: Vec<(PathBuf, String, String)> = Vec::new();
 
@@ -549,7 +548,7 @@ fn hash_and_emit_sidecars(
                 dist,
             )?;
 
-            // GoReleaser writes ONLY the raw hex hash in sidecar files (no
+            // ONLY the raw hex hash is written in sidecar files (no
             // filename, no trailing newline).
             if !dry_run {
                 let mut sidecar_file = File::create(&sidecar_path).with_context(|| {
@@ -580,7 +579,7 @@ fn hash_and_emit_sidecars(
                 crate_name: artifact.crate_name.clone(),
                 metadata: HashMap::from([
                     ("algorithm".to_string(), resolved.algorithm.clone()),
-                    // GoReleaser artifact.ExtraChecksumOf — the path of the
+                    // The checksum-of extra — the path of the
                     // artifact this checksum is for.
                     (
                         "ChecksumOf".to_string(),
@@ -595,10 +594,10 @@ fn hash_and_emit_sidecars(
     // Sort combined lines by filename for deterministic output / reproducible
     // builds.
     //
-    // Edge case (matches GoReleaser checksums.go:171-174 using
+    // Edge case (using
     // `strings.Split(a, "  ")[1]`): filenames containing a two-space sequence
     // will be sorted by the prefix before the *first* double-space, producing
-    // a wrong sort key. Intentionally matched to GoReleaser behavior —
+    // a wrong sort key. Intentional —
     // `test_combined_sort_doublespace_divergence` will flag a change. In
     // practice artifact filenames never contain double-spaces.
     combined_lines.sort_by(|a, b| {
@@ -624,7 +623,7 @@ fn write_combined_file(
     dry_run: bool,
 ) -> Result<Artifact> {
     // Default routed through `ChecksumConfig::DEFAULT_NAME_TEMPLATE` so the
-    // GR-canonical fallback lives next to its sibling resolved_*() accessors
+    // Canonical fallback lives next to its sibling resolved_*() accessors
     // instead of in a stage-local literal.
     let tmpl_str: &str = resolved
         .name_template
@@ -636,7 +635,7 @@ fn write_combined_file(
 
     let combined_path = dist.join(&combined_filename);
 
-    // Match GoReleaser: each line gets "\n" appended, then all are joined
+    // Each line gets "\n" appended, then all are joined
     // with no separator (strings.Join(lines, "")).
     let content: String = combined_lines.iter().map(|l| format!("{}\n", l)).collect();
 
@@ -714,8 +713,7 @@ fn propagate_checksum_metadata(
 
 /// Refresh any combined `checksums.txt` files in-place by recomputing hashes
 /// of all non-checksum, non-signature, non-certificate artifacts currently in
-/// the registry. This matches GoReleaser's `ExtraRefresh` closure pattern
-/// (release.go:121): after signing (which produces new signature artifacts),
+/// the registry. After signing (which produces new signature artifacts),
 /// the checksum file is regenerated so signed artifacts that happen to be
 /// uploadable appear in the final sums.
 ///

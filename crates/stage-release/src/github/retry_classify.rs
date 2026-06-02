@@ -26,7 +26,7 @@
 //! the un-draft retry inherits the same classification without copy-paste
 //! drift.
 //!
-//! GoReleaser parity: `internal/client/github.go` treats every non-success
+//! Every non-success
 //! upload as `RetriableError`; we narrow that to "5xx / 429 / transport"
 //! so genuine 4xx (auth, validation) still fast-fail.
 

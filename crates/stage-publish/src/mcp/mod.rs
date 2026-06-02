@@ -1,6 +1,6 @@
 //! MCP (Model Context Protocol) server registry publisher.
 //!
-//! Posts an `apiv0.ServerJSON` document to `{registry}/v0/publish` after
+//! Posts a server JSON document to `{registry}/v0/publish` after
 //! exchanging the configured credentials for a registry JWT. Two design
 //! choices worth calling out:
 //!
@@ -629,7 +629,7 @@ fn truncate_response_snippet(scrubbed: &str) -> (std::borrow::Cow<'_, str>, &'st
 /// Map a registry `/v0/publish` rejection body to an anodizer-aware
 /// remediation hint, or `""` when no specific guidance applies.
 ///
-/// The registry's OCI validator (`internal/validators/registries/oci.go`)
+/// The registry's OCI validator
 /// fails closed when it cannot prove image ownership: the published image
 /// must carry an `io.modelcontextprotocol.server.name` **image config label**
 /// equal to the server name. Its own error text says "Add this to your

@@ -26,11 +26,11 @@ use process::{ArtifactFilter, process_sign_configs};
 /// Sign stage: signs artifacts using GPG, cosign, or other signing tools.
 ///
 /// Calls `ctx.refresh_artifacts_var()` after all signing completes, matching
-/// GoReleaser's `ctx.Artifacts.Refresh()`. This ensures newly-added signature
+/// the artifact registry is refreshed. This ensures newly-added signature
 /// and certificate artifacts are visible to downstream stages.
 pub struct SignStage;
 
-/// Binary-only signing stage used by `anodizer build`. Mirrors GoReleaser's
+/// Binary-only signing stage used by `anodizer build`. Selects the
 /// `sign.BinaryPipe` — runs the `binary_signs` loop but skips the generic
 /// `signs` loop, which at build-time would see only binaries anyway but
 /// with the wrong semantics (a user with `signs: [{artifacts: all}]`
@@ -73,7 +73,7 @@ impl Stage for SignStage {
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("sign");
 
-        // Validate sign config IDs are unique (GoReleaser ids.Validate()).
+        // Validate sign config IDs are unique.
         {
             let mut seen = std::collections::HashSet::new();
             for cfg in &ctx.config.signs {
@@ -112,7 +112,7 @@ impl Stage for SignStage {
 
         // Refresh the artifacts template variable so newly-added signatures
         // and certificates are visible to downstream stages (matching
-        // GoReleaser's ctx.Artifacts.Refresh()).
+        // refresh the artifact registry).
         ctx.refresh_artifacts_var();
         Ok(())
     }
@@ -134,7 +134,7 @@ impl Stage for DockerSignStage {
         // Docker image signing via `docker_signs` config
         // ----------------------------------------------------------------
         if let Some(docker_signs) = ctx.config.docker_signs.clone() {
-            // Validate docker_signs IDs are unique (GoReleaser ids.Validate()).
+            // Validate docker_signs IDs are unique.
             {
                 let mut seen_docker = std::collections::HashSet::new();
                 for cfg in &docker_signs {
@@ -182,7 +182,7 @@ impl Stage for DockerSignStage {
                 }
 
                 // Collect docker artifacts based on the filter mode.
-                // GoReleaser includes DockerImageV2 in all filter modes:
+                // DockerImageV2 is included in all filter modes:
                 // "images" → DockerImage + DockerImageV2
                 // "manifests" → DockerManifest + DockerImageV2
                 // "all" → DockerImage + DockerManifest + DockerImageV2
@@ -405,7 +405,7 @@ impl Stage for DockerSignStage {
 
         // Refresh the artifacts template variable so newly-added signatures
         // and certificates are visible to downstream stages (matching
-        // GoReleaser's ctx.Artifacts.Refresh()).
+        // refresh the artifact registry).
         ctx.refresh_artifacts_var();
 
         Ok(())

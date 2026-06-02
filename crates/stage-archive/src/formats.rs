@@ -159,10 +159,9 @@ pub fn create_tar_gz(
 /// Compression preset is fixed at level 9 (xz2's `XzEncoder::new(_, 9)`),
 /// matching liblzma's `LZMA_PRESET_EXTREME`-adjacent profile. The
 /// resulting dictionary size is 64 MiB — strictly larger than
-/// GoReleaser's hand-picked `xz.WriterConfig{DictCap: 16 MiB}` in
-/// `pkg/archive/tarxz/tarxz.go` — so anodizer's tar.xz is at least as
-/// compressible as GR's and decoders that handle GR's output decode
-/// anodizer's too. GR does not expose a per-archive `compression_level`
+/// a `DictCap` of 16 MiB — so anodizer's tar.xz is at least as
+/// compressible, and decoders that handle the conventional output decode
+/// anodizer's too. There is no per-archive `compression_level`
 /// for xz, so neither does anodizer.
 pub fn create_tar_xz(
     files: &[&Path],
@@ -194,7 +193,7 @@ pub fn create_tar_zst(
     let out_file =
         File::create(output).with_context(|| format!("create tar.zst: {}", output.display()))?;
     // Level 3 is zstd's default, matching the Go zstd library used by
-    // GoReleaser's archiver dependency. Previously level 19 (near-max) which
+    // the archiver dependency. Previously level 19 (near-max) which
     // was much slower with marginal size improvement for release artifacts.
     let enc = zstd::Encoder::new(out_file, 3).context("tar.zst: create zstd encoder")?;
     let mut tar = tar::Builder::new(enc);
@@ -240,12 +239,11 @@ pub fn create_gz(file: &Path, output: &Path) -> Result<()> {
 
 /// Create a standalone .xz file from a single input file.
 /// Unlike tar.xz, this compresses one file directly with xz (xz cannot hold
-/// multiple files without tar). Mirrors GoReleaser commit bb532b6 / #6520
-/// (`pkg/archive/xz/xz.go`): the xz container is single-file, so callers
+/// multiple files without tar). The xz container is single-file, so callers
 /// must dispatch with exactly one source. Error mirrors upstream's
 /// `xz: failed to add %s, only one file can be archived in xz format`.
 ///
-/// Preset 9 dictionary size (~64 MiB) is strictly larger than GR's
+/// Preset 9 dictionary size (~64 MiB) is strictly larger than the conventional
 /// hand-picked `DictCap: 16 MiB`, so the resulting `.xz` is no less
 /// compressible than upstream and decodes interchangeably.
 pub fn create_xz(file: &Path, output: &Path) -> Result<()> {
@@ -334,7 +332,7 @@ pub fn copy_binary(files: &[&Path], output: &Path) -> Result<()> {
 }
 
 /// Normalize path separators: backslashes to forward slashes for archive entries.
-/// Matches GoReleaser `archive.go:377`: `strings.ReplaceAll(..., "\\", "/")`.
+/// Replaces `\\` with `/` in archive paths.
 pub(crate) fn normalize_archive_path(p: PathBuf) -> PathBuf {
     PathBuf::from(p.to_string_lossy().replace('\\', "/"))
 }

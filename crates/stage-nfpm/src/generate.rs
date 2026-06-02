@@ -36,7 +36,7 @@ pub struct NfpmLibraryPaths {
 /// to include deps for *all* formats.
 ///
 /// `skip_sign` — when `true`, all signing/signature configuration is zeroed
-/// out in the YAML output (GoReleaser parity: nfpm.go skips.Sign).
+/// out in the YAML output.
 ///
 /// `library_paths` — paths to C library artifacts (Header, CArchive, CShared)
 /// that should be routed to the appropriate libdirs directories.
@@ -66,7 +66,7 @@ pub fn generate_nfpm_yaml(
 
 /// Generate nfpm YAML using the anodizer ctx env map (project `env:` +
 /// `env_files:` + process env) for passphrase resolution. Matches
-/// GoReleaser internal/pipe/nfpm/nfpm.go:640 which reads from `ctx.Env`
+/// reads the passphrase from the env
 /// rather than `os.Getenv`, so `NFPM_PASSPHRASE` defined in project YAML
 /// is visible to the signer.
 pub fn generate_nfpm_yaml_with_env(
@@ -99,7 +99,7 @@ pub fn generate_nfpm_yaml_with_env(
         // Meta packages have no binary contents — only dependencies
         Vec::new()
     } else {
-        // GoReleaser groups all binaries for the same platform into one package.
+        // All binaries for the same platform are grouped into one package.
         // Each binary gets its own content entry pointing to bindir.
         binary_paths
             .iter()
@@ -150,13 +150,12 @@ pub fn generate_nfpm_yaml_with_env(
     }
 
     // Libdirs: install CGo library outputs to the specified directories.
-    // GoReleaser defaults (nfpm.go:59-67):
+    // Defaults:
     //   Header    = "/usr/include"
     //   CArchive  = "/usr/lib"
     //   CShared   = "/usr/lib"
     //
-    // Apply GoReleaser-aligned libdirs defaults unconditionally (matching
-    // `internal/pipe/nfpm/nfpm.go:59-67`, which sets these in `Default()`
+    // Apply libdirs defaults unconditionally (set at default time
     // regardless of whether any library artifacts exist). The inner emit-loop
     // still iterates the actual library artifact paths, so when none are
     // present this block is a no-op for the resulting package — the change

@@ -10,7 +10,7 @@ use anyhow::{Context as _, Result};
 
 /// Default HTTP status codes accepted as a successful webhook response.
 ///
-/// Matches GoReleaser's `ExpectedStatusCodes` default: `[200, 201, 202, 204]`.
+/// Default expected status codes: `[200, 201, 202, 204]`.
 pub(crate) fn default_expected_status_codes() -> Vec<u16> {
     vec![200, 201, 202, 204]
 }
@@ -21,7 +21,7 @@ pub(crate) fn is_expected_status(status: u16, expected: &[u16]) -> bool {
 }
 
 /// Build the user-facing error message for a webhook response that failed
-/// the status-code gate. Mirrors GoReleaser commit bba909e: the response
+/// the status-code gate: the response
 /// body is included verbatim so debugging does not require re-running with
 /// verbose logs.
 pub(crate) fn format_unexpected_status_message(
@@ -39,7 +39,7 @@ pub(crate) fn format_unexpected_status_message(
 /// POST to an arbitrary HTTP endpoint with custom headers and content type.
 ///
 /// When `skip_tls_verify` is true the client will accept invalid / self-signed
-/// TLS certificates (mirrors GoReleaser's `skip_tls_verify` webhook option).
+/// TLS certificates (the `skip_tls_verify` webhook option).
 ///
 /// The response status is validated against `expected_status_codes`.
 ///
@@ -51,7 +51,7 @@ pub(crate) fn format_unexpected_status_message(
 /// `headers` is a [`BTreeMap`] (not a `HashMap`) so the iteration
 /// order in the request builder loop is deterministic (alphabetical by header
 /// name). This makes wire traces reproducible across runs and matches
-/// GoReleaser's first-set-wins ordering for the env-supplied `Authorization`
+/// First-set-wins ordering for the env-supplied `Authorization`
 /// header. Sort order is irrelevant on the wire because RFC 7230 §3.2.2
 /// forbids semantically meaningful ordering for headers with distinct names;
 /// the user-supplied `headers.Authorization` precedence is enforced at the

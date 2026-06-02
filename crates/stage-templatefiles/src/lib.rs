@@ -42,7 +42,7 @@ impl Stage for TemplateFilesStage {
                 None => {
                     // Skipped (skip=true or empty dst). Log only the
                     // skip-true path here — empty-dst is a quiet
-                    // "ignored if empty" per GoReleaser docs.
+                    // "ignored if empty".
                     if entry.skip.is_some() {
                         let log = ctx.logger("templatefiles");
                         log.status(&format!("templatefiles: skipped id '{}'", id));

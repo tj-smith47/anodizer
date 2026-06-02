@@ -3,7 +3,7 @@
 //!
 //! MCP is structurally different from krew: krew opens a PR against a
 //! GitHub repo (`krew-index`) and the natural rollback is `gh pr close`.
-//! MCP POSTs an `apiv0.ServerJSON` to a **registry API** (POST
+//! MCP POSTs a server JSON document to a **registry API** (POST
 //! `{registry}/v0/publish`); rollback PATCHes the published server-version
 //! status to `"deleted"` via `PATCH {registry}/v0/servers/{name}/versions/{version}/status`.
 //!

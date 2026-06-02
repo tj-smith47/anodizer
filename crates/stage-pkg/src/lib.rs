@@ -201,7 +201,7 @@ impl Stage for PkgStage {
             for pkg_cfg in pkg_configs {
                 let pkg_id_for_log = pkg_cfg.id.as_deref().unwrap_or("default").to_string();
 
-                // GoReleaser Pro `pkg.if`: template-conditional skip (opt-in).
+                // `pkg.if`: template-conditional skip (opt-in).
                 // Render error => hard bail (W1 avoidance).
                 let proceed = anodizer_core::config::evaluate_if_condition(
                     pkg_cfg.if_condition.as_deref(),
@@ -1754,7 +1754,7 @@ crates:
         assert!(matches!(pkgs[0].skip, Some(StringOrBool::String(_))));
     }
 
-    // --- `pkg.if` template-conditional (GoReleaser Pro) ---
+    // --- `pkg.if` template-conditional ---
 
     fn pkg_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
         use anodizer_core::artifact::{Artifact, ArtifactKind};

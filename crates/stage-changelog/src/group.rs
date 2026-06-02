@@ -90,7 +90,7 @@ pub(crate) fn parse_commit_message(msg: &str) -> CommitInfo {
 
 /// Regex for parsing `Co-Authored-By:` trailers.
 /// Matches: `Co-Authored-By: Name <email>` (case-insensitive).
-/// GoReleaser reference: `changelog/changelog.go` `coauthorRe`.
+/// Matches `Co-authored-by:` trailer lines.
 ///
 /// `unwrap_or_else(panic!)` instead of `.unwrap()` so the post-edit
 /// anti-pattern hook does not flag this line — the regex literal is
@@ -190,7 +190,7 @@ fn compile_filter_patterns(
 // ---------------------------------------------------------------------------
 
 /// Sort commits in-place by `raw_message` (the full commit subject line),
-/// matching GoReleaser's behavior. `order` must be `"asc"`, `"desc"`, or
+/// `order` must be `"asc"`, `"desc"`, or
 /// empty (preserves original git log order).
 ///
 /// Returns an error if `order` is a non-empty, unrecognized value.
@@ -215,7 +215,7 @@ pub(crate) fn sort_commits(commits: &mut [CommitInfo], order: &str) -> Result<()
 /// Group commits by matching `raw_message` against each group's `regexp`.
 /// Commits are matched against groups in config order, then groups are sorted
 /// by `order` (ascending) for display. Commits that do not match any group
-/// are silently dropped (matching GoReleaser behavior).
+/// are silently dropped.
 /// Groups with zero matching commits are omitted from the output.
 ///
 /// When a group has nested `groups`, the commits that matched the parent group
@@ -250,7 +250,7 @@ fn group_commits_inner(
         });
     }
     // Compile regexes once in CONFIG order for matching. Invalid patterns are
-    // hard errors. GoReleaser matches commits against groups in config order,
+    // hard errors. Commits are matched against groups in config order,
     // then sorts by `order` for display only.
     let mut compiled: Vec<(Option<Regex>, &ChangelogGroup)> = Vec::with_capacity(groups.len());
     for g in groups {
@@ -270,7 +270,7 @@ fn group_commits_inner(
     let mut others: Vec<CommitInfo> = Vec::new();
 
     // Track which group index (if any) is a catch-all (regexp is None/empty).
-    // GoReleaser treats a group with empty Regexp as a catch-all that captures
+    // A group with an empty regexp is a catch-all that captures
     // all remaining unmatched entries; groups after the catch-all are ignored.
     let catch_all_idx: Option<usize> = compiled.iter().position(|(re_opt, _)| re_opt.is_none());
 
@@ -334,7 +334,7 @@ fn group_commits_inner(
     result.sort_by_key(|(order, _)| *order);
     let result: Vec<GroupedCommits> = result.into_iter().map(|(_, gc)| gc).collect();
 
-    // GoReleaser silently drops commits that don't match any group regex.
+    // Commits that don't match any group regex are silently dropped.
     // No implicit "Others" group is added.
 
     Ok(result)
@@ -348,20 +348,19 @@ fn group_commits_inner(
 /// section, and each commit is a bullet formatted according to `format_template`.
 ///
 /// `abbrev` controls the hash abbreviation length (default 7). A value of `0`
-/// means "use the full SHA" (no truncation). Negative values (like GoReleaser's
+/// means "use the full SHA" (no truncation). Negative values (e.g.
 /// `-1`) omit the hash entirely.
 ///
 /// If `format_template` is `None`, the default format depends on the SCM backend:
-/// - `git` backend (default): `{{ SHA }} {{ Message }}` (GoReleaser uses full SHA)
+/// - `git` backend (default): `{{ SHA }} {{ Message }}` (full SHA)
 /// - `github`/`gitlab`/`gitea` backend: `{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)`
-///   Uses the full SHA to match GoReleaser
-///   (`internal/pipe/changelog/changelog.go:54-61`). Falls back to
-///   `AuthorName <AuthorEmail>` when `Login` is empty (matching GoReleaser).
+///   Uses the full SHA. Falls back to
+///   `AuthorName <AuthorEmail>` when `Login` is empty.
 ///
 /// When `abbrev < 0`, the default format becomes `{{ Message }}` (no hash prefix)
 /// regardless of the backend. Available template variables:
 /// `SHA`, `ShortSHA`, `Message`, `AuthorName`, `AuthorEmail`, `Login`,
-/// `AuthorUsername` (GR-aligned alias for `Login`), `Logins`.
+/// `AuthorUsername` (alias for `Login`), `Logins`.
 #[cfg(test)]
 pub(crate) fn render_changelog(
     grouped: &[GroupedCommits],

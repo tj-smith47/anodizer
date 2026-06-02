@@ -49,7 +49,7 @@ pub fn snapcraft_upload_command(snap_path: &str, channels: Option<&[String]>) ->
 /// - `"devel"` -> `["edge", "beta"]`
 /// - `"stable"` (default) -> `["edge", "beta", "candidate", "stable"]`
 ///
-/// This matches GoReleaser's behavior.
+/// transient push failures are retried.
 pub fn resolve_effective_channels(
     channel_templates: Option<&[String]>,
     grade: Option<&str>,
@@ -78,8 +78,7 @@ pub fn resolve_effective_channels(
 /// invocation looks like a transient Snap Store 5xx response that should be
 /// retried.
 ///
-/// Mirrors GoReleaser upstream commit eb944f9 (`isRetriableSnapPush` in
-/// `internal/pipe/snapcraft/snapcraft.go`), which scans the `snapcraft`
+/// Detects a retriable snap-push failure by scanning the `snapcraft`
 /// CLI's combined output for `[500]`, `[502]`, `[503]`, `[504]` bracketed
 /// status markers (the format snapcraft itself prints when the Store
 /// returns a server error).

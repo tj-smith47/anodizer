@@ -1,31 +1,25 @@
-//! Serde-shaped mirror of `apiv0.ServerJSON` / `model.Package` /
-//! `model.Repository` / `model.Transport` from
-//! `github.com/modelcontextprotocol/registry/pkg/{api/v0,model}`.
+//! Serde-shaped mirror of the MCP registry's `ServerJSON` / `Package` /
+//! `Repository` / `Transport` wire schema.
 //!
-//! The wire format is JSON; field renames preserve the upstream JSON keys
+//! The wire format is JSON; field renames preserve the registry's JSON keys
 //! (camelCase + `$schema`). `skip_serializing_if = "Option::is_none"` and
-//! `Vec::is_empty` mirror the `omitempty` annotations on the Go side so a
-//! minimal config round-trips to the same payload Go's `encoding/json`
-//! would emit. The corresponding upstream constant is
-//! `model.CurrentSchemaURL` (currently
-//! `https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json`).
+//! `Vec::is_empty` mirror the schema's `omitempty` fields so a minimal
+//! config round-trips to the same payload the registry expects. The current
+//! schema URL is
+//! `https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json`.
 
 use serde::{Deserialize, Serialize};
 
-/// Current MCP server.json schema URL — sourced from
-/// `github.com/modelcontextprotocol/registry/pkg/model/constants.go`
-/// (`CurrentSchemaURL`). The schema version string MUST be kept in sync
-/// with the upstream registry when it bumps; bumping here is a payload
-/// behaviour change so it gets a separate commit.
+/// Current MCP server.json schema URL. The schema version string MUST be
+/// kept in sync with the upstream registry when it bumps; bumping here is a
+/// payload behaviour change so it gets a separate commit.
 pub const CURRENT_SCHEMA_URL: &str =
     "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json";
 
-/// Default MCP registry base URL — sourced from
-/// `github.com/modelcontextprotocol/registry/cmd/publisher/commands/login.go`
-/// (`DefaultRegistryURL`).
+/// Default MCP registry base URL.
 pub const DEFAULT_REGISTRY_URL: &str = "https://registry.modelcontextprotocol.io";
 
-/// `apiv0.ServerJSON` mirror — the payload POSTed to `/v0/publish`.
+/// The server JSON document POSTed to `/v0/publish`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServerJson {
     /// JSON Schema URI for this server.json format (required).
@@ -59,7 +53,7 @@ pub struct ServerJson {
     pub packages: Vec<Package>,
 }
 
-/// `model.Repository` mirror.
+/// Source-repository metadata sub-document.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Repository {
     /// Repository URL.
@@ -76,9 +70,9 @@ pub struct Repository {
     pub subfolder: String,
 }
 
-/// `model.Package` mirror. Anodizer only fills the small subset of fields
+/// Distribution-package sub-document. Anodizer only fills the small subset of fields
 /// the registry populates — `RegistryType`, `Identifier`, `Version`,
-/// `Transport` — matching `mcp.go::Publish`'s loop body. Other Package
+/// `Transport` — set in the publish loop body. Other Package
 /// fields (`registryBaseUrl`, `fileSha256`, runtime args, env vars) are
 /// not surfaced because the registry does not consume them.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -113,7 +107,7 @@ pub struct Transport {
     pub kind: String,
 }
 
-/// `apiv0.ServerResponse` mirror — only the `_meta.io.modelcontextprotocol.registry/official.status`
+/// Server response — only the `_meta.io.modelcontextprotocol.registry/official.status`
 /// field is consumed; the rest of the response is permissive.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServerResponse {

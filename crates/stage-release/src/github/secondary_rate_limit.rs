@@ -18,7 +18,7 @@
 //! [`secondary_rl_delay`] and honour it (clamped to [60, 600] seconds) instead
 //! of always falling back to a fixed constant.
 //!
-//! GoReleaser parity: `internal/client/github.go` reads the exact
+//! Reads the exact
 //! `Retry-After` from go-github's `*AbuseRateLimitError`, clamped with a
 //! 1-minute floor and 10-minute cap.
 

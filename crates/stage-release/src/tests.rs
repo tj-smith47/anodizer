@@ -2300,7 +2300,7 @@ fn test_resolve_content_source_from_file_not_found() {
 
 #[test]
 fn test_resolve_content_source_from_file_path_is_template_rendered() {
-    // GoReleaser docs say `from_file: "./release-{{ .Tag }}.md"` should work —
+    // `from_file: "./release-{{ .Tag }}.md"` should work —
     // previously the path was read raw. Regression-guard: template-render path first.
     let mut ctx = content_source_test_ctx();
     ctx.template_vars_mut().set("Tag", "v9.8.7");
@@ -2319,7 +2319,7 @@ fn test_resolve_content_source_from_file_path_is_template_rendered() {
 
 #[test]
 fn test_content_source_from_url_with_headers_parses() {
-    // Schema: new `headers` map on FromUrl variant (GoReleaser Pro parity).
+    // Schema: new `headers` map on FromUrl variant.
     use anodizer_core::config::ContentSource;
     let yaml = r#"
 from_url: https://example.com/h.md
@@ -2700,8 +2700,8 @@ fn test_build_release_json_body_exceeds_limit_is_truncated() {
 
 #[test]
 fn test_build_release_json_truncate_suffix_matches_goreleaser() {
-    // GR-parity regression: the truncate suffix is exactly `"..."` (3 chars),
-    // matching `goreleaser/internal/client/client.go:21::ellipsis`. Any drift
+    // Regression: the truncate suffix is exactly `"..."` (3 chars),
+    // a literal three-dot ellipsis. Any drift
     // back to `"\n\n...(truncated)"` (16 chars) — anodizer's old shape — must
     // fail this test.
     let body = "a".repeat(GITHUB_RELEASE_BODY_MAX_CHARS + 100);
@@ -2771,14 +2771,14 @@ fn test_build_release_json_draft_false() {
 
 #[test]
 fn test_build_release_json_never_sets_generate_release_notes() {
-    // GR-aligned regression guard for second-opinion finding C3
+    // Regression guard:
     // (`changelog.use: github-native` → wrong API endpoint). The
     // create-release POST must never carry `generate_release_notes:
     // true`: the github-native flow now calls
     // `POST /releases/generate-notes` upfront (see
     // `stage-changelog/src/github_native.rs`) and embeds the returned
-    // body in `spec.body`, matching GR
-    // `internal/client/github.go::GenerateReleaseNotes`. Toggling
+    // body in `spec.body`.
+    // the generate-release-notes endpoint. Toggling
     // `generate_release_notes: true` here would silently use GitHub's
     // "most recent published release" as the previous tag — wrong for
     // monorepos and tag-prefixed re-releases.
@@ -3254,7 +3254,7 @@ fn test_gitea_missing_token_errors() {
 
 // ---- build_publish_patch_body regression tests ----
 //
-// Tracks GoReleaser commits 6ecba31 (preserve prerelease on publish) +
+// Behaviours: preserve prerelease on publish +
 // 2e17678 (preserve prerelease publish fields). The PATCH body sent when
 // un-drafting a release must:
 //   - always carry `draft = false`,
@@ -3284,7 +3284,7 @@ fn test_build_publish_patch_body_includes_make_latest_when_not_prerelease() {
 
 #[test]
 fn test_build_publish_patch_body_prerelease_forces_make_latest_false() {
-    // GR commit 6ecba31: when prerelease=true, make_latest is forced to
+    // When prerelease=true, make_latest is forced to
     // "false" regardless of the user's `make_latest` template (a prerelease
     // can never be the latest).
     use octocrab::repos::releases::MakeLatest;
@@ -3313,7 +3313,7 @@ fn test_build_publish_patch_body_prerelease_legacy_ml_still_forced_false() {
 
 #[test]
 fn test_build_publish_patch_body_includes_name_re_render() {
-    // GR commit 2e17678: the `name` is re-rendered from name_template and
+    // The `name` is re-rendered from name_template and
     // included in the PATCH so a stale draft picks up template changes.
     let body = build_publish_patch_body("Renamed Release v1.2.3", false, &None, &None);
     assert_eq!(body["name"].as_str(), Some("Renamed Release v1.2.3"));
@@ -3321,7 +3321,7 @@ fn test_build_publish_patch_body_includes_name_re_render() {
 
 #[test]
 fn test_build_publish_patch_body_empty_name_omitted() {
-    // If the rendered name is empty, mirror GR (`if title != ""`) and skip
+    // If the rendered name is empty (`if title != ""`), skip
     // the field rather than blanking the release name on GitHub.
     let body = build_publish_patch_body("", false, &None, &None);
     assert!(body.get("name").is_none());
@@ -3360,7 +3360,7 @@ fn test_build_publish_patch_body_prerelease_with_discussion() {
 
 // ---- Q11.1: header-access panic-freedom regression ----
 //
-// Upstream `internal/client/github.go::updateRelease` panicked when `resp`
+// An update-release call could panic when `resp`
 // was nil before accessing `resp.Header.Get(...)`. Anodizer is panic-free
 // by construction: octocrab/reqwest header access goes through
 // `headers().get(name)` which returns `Option<&HeaderValue>`. This test
@@ -3396,7 +3396,7 @@ fn test_response_header_access_returns_option_no_panic() {
 // `serde_json::Map` keyed by the artifact's path (which leaks the build
 // host's filesystem layout into release notes). The aggregation must be
 // sorted by filename so the rendered block is deterministic and matches
-// the GoReleaser SHA256SUMS convention.
+// the SHA256SUMS convention.
 
 #[test]
 fn test_populate_checksums_var_aggregates_workspace_combined_files() {
@@ -3591,7 +3591,7 @@ fn resolve_policy_like_github_backend(
 #[test]
 fn test_retry_config_default_yields_goreleaser_defaults_for_github_backend() {
     // Pin the "no retry: block in YAML" branch: `unwrap_or_default()` must
-    // yield GR's defaults so the github backend's upload-loop constants
+    // yield the defaults so the github backend's upload-loop constants
     // translate cleanly to the policy fields. A change to either the
     // defaults or the github backend's `unwrap_or_default()` call site
     // breaks this pin and requires a deliberate update.

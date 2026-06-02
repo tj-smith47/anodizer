@@ -232,7 +232,7 @@ pub(super) fn run_status_with_retry(
 // ---------------------------------------------------------------------------
 
 /// Check notarization subprocess output, differentiating between rejected,
-/// invalid, timeout, and accepted statuses (GoReleaser parity: macos.go
+/// invalid, timeout, and accepted statuses (the
 /// differentiates AcceptedStatus, InvalidStatus, RejectedStatus, TimeoutStatus).
 pub(super) fn check_notarize_output(
     output: &std::process::Output,
@@ -250,7 +250,7 @@ pub(super) fn check_notarize_output(
         {
             log.status(&format!("notarize: {} succeeded (accepted)", label));
         } else if combined_lower.contains("timeout") {
-            // GoReleaser treats timeout as non-fatal (logs info, no error)
+            // timeout is non-fatal (logs info, no error)
             log.warn(&format!(
                 "notarize: {} timed out (submission may still be processing)",
                 label
@@ -274,7 +274,7 @@ pub(super) fn check_notarize_output(
         );
     }
     if combined_lower.contains("timeout") || combined_lower.contains("timed out") {
-        // GoReleaser treats timeout as non-fatal (info log, not error)
+        // timeout is non-fatal (info log, not error)
         log.warn(&format!(
             "notarize: {} timed out waiting for Apple response (submission may still be processing)",
             label

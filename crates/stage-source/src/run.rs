@@ -92,7 +92,7 @@ impl SourceStage {
         }
 
         // Determine the archive prefix (directory name inside the archive).
-        // GoReleaser defaults to empty (no prefix) when prefix_template is not configured.
+        // Defaults to empty (no prefix) when prefix_template is not configured.
         let prefix = if let Some(ref tpl) = source_cfg.prefix_template {
             ctx.render_template(tpl)
                 .with_context(|| format!("source: failed to render prefix_template '{}'", tpl))?
@@ -201,7 +201,7 @@ impl SourceStage {
         }
 
         log.status(&format!("creating {}.{} archive...", name, format));
-        // GoReleaser sourcearchive/source.go:44-58 always passes
+        // The source archive always passes
         // `ctx.Git.FullCommit` (the resolved SHA) to `git archive`, never the
         // literal `HEAD` ref. When `git_info` was not pre-populated by the
         // git pipe (e.g. local `anodizer release --snapshot`), resolve HEAD
@@ -232,7 +232,7 @@ impl SourceStage {
             sde_mtime,
         })?;
 
-        // GoReleaser sets artifact name to the filename (e.g. "foo-1.0.0.tar.gz").
+        // The artifact name is the filename (e.g. "foo-1.0.0.tar.gz").
         let artifact_name = output_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())

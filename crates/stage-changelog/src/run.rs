@@ -49,7 +49,7 @@ impl Stage for super::ChangelogStage {
 
         let changelog_cfg = ctx.config.changelog.clone();
 
-        // Snapshot-mode opt-in (matches GoReleaser's `if ctx.Snapshot { skip }`
+        // Snapshot-mode opt-in (`if snapshot { skip }`
         // default; user opts back in via `changelog.snapshot: true` for local
         // preview / draft generation).
         if ctx.is_snapshot() {
@@ -236,7 +236,7 @@ fn handle_release_notes_override(ctx: &mut Context, log: &StageLogger) -> Result
 
 /// Handle `use: github-native`: call GitHub's generate-notes endpoint per
 /// crate, wrap with header/footer, and write `dist/CHANGELOG.md`. Mirrors
-/// GoReleaser's `githubNativeChangeloger.Log`.
+/// the github-native changelog backend.
 fn handle_github_native_changelog(
     ctx: &mut Context,
     log: &StageLogger,
@@ -430,7 +430,7 @@ fn resolve_changelog_opts(
     let include_filters: Vec<String> = filters.and_then(|f| f.include.clone()).unwrap_or_default();
     let raw_groups: Vec<ChangelogGroup> = cfg.and_then(|c| c.groups.clone()).unwrap_or_default();
     // Pre-render each group's title through the project's template context
-    // so configs like `title: "{{ .ProjectName }} features"` resolve. GR
+    // so configs like `title: "{{ .ProjectName }} features"` resolve. The
     // Pro template-renders these too. Walks subgroups recursively.
     let groups = render_group_titles(ctx, log, raw_groups)?;
 
@@ -483,7 +483,7 @@ fn resolve_changelog_opts(
 }
 
 /// Recursively render each `ChangelogGroup.title` through the project's
-/// template context. GR Pro accepts templated group headings (e.g.
+/// template context. Templated group headings are accepted (e.g.
 /// `title: "{{ .ProjectName }} features"`); rendering at the stage edge
 /// keeps `render_groups` free of template-engine ceremony.
 fn render_group_titles(
@@ -592,7 +592,7 @@ fn fetch_crate_commits(
     let use_gitea = use_source == "gitea";
 
     // Pre-empt the SCM API call when there is no previous tag (first
-    // release on a branch). GoReleaser's `getChangeloger` does the
+    // release on a branch). The changelog backend does the
     // same: it warns and returns the git changeloger directly.
     let scm_no_prev_tag = should_preempt_scm_to_git(use_github, use_gitlab, use_gitea, prev_tag);
     if scm_no_prev_tag {
@@ -723,7 +723,7 @@ fn render_crate_changelog(
     let (all_commit_infos, logins_str) =
         fetch_crate_commits(ctx, log, use_source, &prev_tag, &paths, &crate_name)?;
 
-    // GoReleaser treats include and exclude as mutually exclusive:
+    // include and exclude are mutually exclusive:
     // if include patterns are configured, exclude is completely ignored.
     let filtered = if !opts.include_filters.is_empty() {
         apply_include_filters(&all_commit_infos, &opts.include_filters, log)?
@@ -736,7 +736,7 @@ fn render_crate_changelog(
 
     let grouped = if opts.groups.is_empty() {
         // No groups configured — render commits as a flat list without
-        // any group heading. GoReleaser only emits a "## Changes"
+        // any group heading. Only a "## Changes" heading is emitted
         // heading when groups ARE configured (for the "others" bucket);
         // with no groups the changelog is a plain bullet list.
         if sorted.is_empty() {
@@ -771,7 +771,7 @@ fn render_crate_changelog(
 /// combined per-crate body. Stashes the rendered header/footer on
 /// `ctx.stage_outputs` so the release stage can re-use them when no
 /// `release.header` / `release.footer` override is configured (mirrors
-/// GoReleaser's `loadContent(ReleaseHeader…)` flow).
+/// the release-header content-loading flow).
 fn wrap_with_header_footer(
     ctx: &mut Context,
     log: &StageLogger,
@@ -810,7 +810,7 @@ fn wrap_with_header_footer(
 }
 
 /// Write the final Markdown to `<dist>/CHANGELOG.md`, creating the
-/// directory first. GoReleaser writes this file even in dry-run mode.
+/// directory first. This file is written even in dry-run mode.
 fn write_changelog_dist(log: &StageLogger, dist: &PathBuf, markdown: &str) -> Result<()> {
     std::fs::create_dir_all(dist)
         .with_context(|| format!("changelog: create dist dir {}", dist.display()))?;

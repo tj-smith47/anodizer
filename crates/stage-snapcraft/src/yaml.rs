@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-// GoReleaser's defaultNameTemplate (internal/pipe/snapcraft/snapcraft.go:103)
+// The default snap name template
 // — preserves Os, Arm/Mips/Amd64 variant suffixes so multi-arch builds don't
 // collapse to the same filename.
 pub(super) const DEFAULT_SNAP_NAME_TEMPLATE: &str = "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ with .Mips }}_{{ . }}{{ end }}{{ if not (eq .Amd64 \"v1\") }}{{ .Amd64 }}{{ end }}";

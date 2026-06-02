@@ -87,7 +87,7 @@ fn test_platform_to_arch_no_slash() {
 
 #[test]
 fn parse_platform_no_arch_does_not_panic() {
-    // Q2.1 (GR commit 9e9f87c): the Go version panicked on `"linux"` because
+    // Q2.1: the Go version panicked on `"linux"` because
     // `strings.Split("linux", "/")` returns a single-element slice and the
     // code indexed `parts[1]`. The Rust API consumes the iterator with a
     // tuple match `(parts.next(), parts.next(), parts.next(), parts.next())`
@@ -739,7 +739,7 @@ fn test_resolve_backend_default_single_platform() {
 
 #[test]
 fn test_resolve_backend_default_multi_platform() {
-    // Default is "docker" even with multi-platform (matching GoReleaser).
+    // Default is "docker" even with multi-platform.
     // Users must explicitly set `use: buildx` for buildx features.
     let (bin, subs) = resolve_backend(None, true).unwrap();
     assert_eq!(bin, "docker");
@@ -1056,7 +1056,7 @@ fn test_resolve_manifester_unknown_errors_with_value() {
 
 #[test]
 fn test_resolve_manifester_buildx_rejected() {
-    // GR has no `buildx manifest` subcommand; reject explicitly so that
+    // There is no `buildx manifest` subcommand; reject explicitly so that
     // pasting `use: buildx` from a build stanza into a manifest stanza
     // surfaces a clear error instead of running `buildx manifest …` as if
     // it were a real command.
@@ -1838,7 +1838,7 @@ fn test_docker_v2_baseimage_template_var_visible_in_dry_run() {
     assert_eq!(tag, "ghcr.io/owner/myapp:based-on-alpine_3.20");
 }
 
-/// Q3.1 (GR commit e7a4afa, issue #6515): the v2 build log line emits
+/// Q3.1: the v2 build log line emits
 /// `images` and `digest` as separate fields, not as a single
 /// `image@digest` blob.
 ///
@@ -1874,11 +1874,11 @@ fn v2_digest_log_split_emits_images_and_digest_as_separate_fields() {
     );
 }
 
-/// P5.1 (GR commit d788340): when the `dockerfile:` template renders to the
+/// P5.1: when the `dockerfile:` template renders to the
 /// empty string, the v2 build must skip cleanly instead of attempting to
 /// copy a non-existent file.
 ///
-/// This is the equivalent of GR's `dockerfile: "{{ if .IsSnapshot }}Dockerfile{{ end }}"`
+/// Equivalent of `dockerfile: "{{ if .IsSnapshot }}Dockerfile{{ end }}"`
 /// during a release (IsSnapshot=false) — the rendered string is empty, so
 /// the pipe should bail with "skipping … rendered empty" and produce no
 /// artifacts.
@@ -1896,7 +1896,7 @@ fn dockerfile_template_renders_to_empty_skips_pipe() {
         id: Some("myapp-v2".to_string()),
         images: vec!["ghcr.io/owner/myapp".to_string()],
         tags: vec!["{{ Tag }}".to_string()],
-        // Tera analog of GR's `{{ if .IsSnapshot }}Dockerfile{{ end }}`.
+        // Tera analog of `{{ if .IsSnapshot }}Dockerfile{{ end }}`.
         // With IsSnapshot=false (default Context), this renders to "".
         dockerfile: "{% if IsSnapshot %}Dockerfile{% endif %}".to_string(),
         platforms: Some(vec!["linux/amd64".to_string()]),
@@ -2189,8 +2189,8 @@ fn test_is_docker_v2_skipped_bool_false() {
 
 #[test]
 fn test_is_docker_v2_sbom_enabled_none_defaults_on() {
-    // GR-aligned default: when `sbom` is unset, SBOM attestation is
-    // enabled. Mirrors `internal/pipe/docker/v2/docker.go:85-87` which
+    // Default: when `sbom` is unset, SBOM attestation is
+    // enabled, which
     // assigns `SBOM = "true"` at Default() time. Pins C-new-7 at the
     // helper level — defensive path for callers that bypass the
     // Default()-apply pass.
@@ -2206,7 +2206,7 @@ fn test_apply_docker_v2_defaults_sbom_none_resolves_to_true() {
     // Pins C-new-7 at the wired Default()-apply level: a config with
     // `sbom: None` post-defaults must carry `Some(Bool(true))` so the
     // resolved YAML written to dist/config.yaml round-trips faithfully
-    // (matching GoReleaser's persistence behavior). Complements the
+    // (the persistence behavior). Complements the
     // helper-level test above.
     use anodizer_core::config::DockerV2Config;
 
@@ -3392,8 +3392,8 @@ fn test_build_docker_command_buildx_gets_push_flag() {
 
 #[test]
 fn test_build_docker_command_multi_platform_no_implicit_buildx() {
-    // Multi-platform with no explicit backend defaults to plain docker
-    // (matching GoReleaser). --push is NOT added for plain docker.
+    // Multi-platform with no explicit backend defaults to plain docker.
+    // --push is NOT added for plain docker.
     // Users must set `use: buildx` explicitly for buildx features.
     let cmd = build_docker_command(&DockerV1Spec {
         staging_dir: "/tmp/staging",
@@ -3497,7 +3497,7 @@ fn test_list_staging_dir_recursive_lists_files() {
 // `docker buildx version` availability probe
 //
 // Adds a version-availability check alongside the existing `docker buildx
-// inspect` driver check. Mirrors GoReleaser commit e09e23a / #6526: any
+// inspect` driver check: any
 // docker config that needs buildx triggers a version probe so the user gets a
 // clear actionable message when buildx is missing, rather than a cryptic
 // failure deep inside `buildx build`.
@@ -3661,14 +3661,14 @@ fn test_dockerstage_run_invokes_injected_buildx_probe_for_v2_crate() {
 }
 
 // -----------------------------------------------------------------------
-// GR master-diff parity fixes — Batch A
+// Additional parity fixes
 // (run.rs hook variables: BaseImage carry-through, Images-as-list,
 // unset semantics, post-hook digest hard-bail)
 // -----------------------------------------------------------------------
 
 /// A6 — `BaseImage` / `BaseImageDigest` must be REMOVED (not set-to-empty)
 /// from the shared template-vars map once a docker_v2 config iteration
-/// finishes, mirroring GR's `tpl.WithExtraFields` overlay-drop semantic.
+/// finishes (the overlay-drop semantic).
 /// Without this, strict-mode rendering downstream cannot distinguish
 /// "defined-empty" from "undefined" and may emit annotations with an
 /// explicit empty `base.name` value.
@@ -3728,9 +3728,9 @@ fn docker_v2_baseimage_unset_after_iteration() {
     );
 }
 
-/// A5 — `{{ .Images }}` must be iterable as a Tera list, matching GR's
+/// `{{ .Images }}` must be iterable as a Tera list. The
 /// `tmpl.Fields{ keyImages: da.images }` where `da.images` is `[]string`.
-/// Templates lifted from GR docs use `{% for img in Images %}…{% endfor %}`
+/// Templates use `{% for img in Images %}…{% endfor %}`
 /// and must work unmodified.
 #[test]
 fn docker_v2_images_template_var_is_iterable_list() {
@@ -3811,8 +3811,7 @@ fn template_vars_images_list_iterates_via_set_structured() {
 /// A7 — when post-hooks are configured AND no image digest was captured
 /// (iidfile missing / empty after a successful build), Step 3 must fail
 /// with a clear error rather than silently invoking the user hook with
-/// `Digest=""`. Mirrors GR's `doBuild` digest-or-error semantic at
-/// `internal/pipe/docker/v2/docker.go:287-294`.
+/// `Digest=""`. The build returns a digest or an error.
 ///
 /// This test isolates the digest-or-error decision from the surrounding
 /// build pipeline: it reproduces the exact `tag_digests.values().next()`
@@ -3853,7 +3852,7 @@ fn docker_v2_post_hook_with_empty_digest_errors_loudly() {
 #[test]
 fn test_docker_v2_duplicate_id_bails() {
     // Two docker_v2 configs sharing the same `id` must fail the early
-    // uniqueness validation in run.rs (mirrors GoReleaser v2/docker.go:93).
+    // uniqueness validation in run.rs.
     use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -4244,7 +4243,7 @@ fn test_docker_v2_skip_template_evaluating_to_true_skips_pipe() {
 
 #[test]
 fn test_docker_v2_snapshot_multi_platform_splits_per_platform_tag_suffix() {
-    // GR parity: snapshot mode with multi-platform splits into per-
+    // Snapshot mode with multi-platform splits into per-
     // platform builds and appends an arch suffix to each tag.
     use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
     use anodizer_core::context::{Context, ContextOptions};
@@ -4853,7 +4852,7 @@ fn test_docker_v2_filter_empty_rendered_platforms() {
     DockerStage::new().run(&mut ctx).unwrap();
     let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
     assert_eq!(images.len(), 1);
-    // Single resolved platform should appear in the GR-aligned `Platforms`
+    // Single resolved platform should appear in the `Platforms`
     // metadata key as a JSON-array string.
     assert_eq!(
         images[0].metadata.get("Platforms").map(String::as_str),
@@ -4968,7 +4967,7 @@ fn test_docker_v2_invalid_label_template_errors() {
 // -----------------------------------------------------------------------
 // `Platforms` artifact metadata + pre/post hook contract
 //
-// `ExtraPlatforms = "Platforms"` (internal/pipe/docker/v2/docker.go) is a
+// `ExtraPlatforms = "Platforms"` is a
 // slice value on every DockerImageV2 artifact's Extra map. anodizer stores
 // it as a JSON-encoded array string in `HashMap<String, String>` metadata,
 // then expands it to a real `Value::Array` on the template side via the
