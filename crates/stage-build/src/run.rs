@@ -28,6 +28,62 @@ use crate::run_helpers::{
 };
 
 // ---------------------------------------------------------------------------
+// Per-target template variables
+// ---------------------------------------------------------------------------
+
+/// Per-target template variables set before rendering a target's binary name
+/// / paths and cleared afterwards so they don't leak into later targets.
+/// `ArtifactExt`, `ArtifactID`, and the arch-family vars (`Arm64`/`Arm`/
+/// `Amd64`/`I386`) are part of the set, so they all belong in the clear.
+const PER_TARGET_VARS: &[&str] = &[
+    "Target",
+    "Os",
+    "Arch",
+    "Arm64",
+    "Arm",
+    "Amd64",
+    "I386",
+    "ArtifactExt",
+    "ArtifactID",
+];
+
+/// Set the per-target template vars (`Target`/`Os`/`Arch`, the arch-family
+/// var for the target's first component, `ArtifactExt`, `ArtifactID`) before
+/// rendering a target's binary name and paths.
+///
+/// `os` is the already-mapped OS (`map_target(target).0`) so callers that
+/// need it for other decisions don't re-map. The arch-family var mirrors
+/// GoReleaser's `Arm64`/`Arm`/`Amd64`/`I386` build-context variables.
+fn set_per_target_vars(
+    vars: &mut anodizer_core::template::TemplateVars,
+    target: &str,
+    os: &str,
+    build_id: &str,
+) {
+    vars.set("Target", target);
+    vars.set("Os", os);
+    vars.set("Arch", &map_target(target).1);
+    match target.split('-').next().unwrap_or("") {
+        "aarch64" => vars.set("Arm64", "v8"),
+        "armv7" | "armv7l" => vars.set("Arm", "7"),
+        "armv6" | "armv6l" | "arm" => vars.set("Arm", "6"),
+        "x86_64" => vars.set("Amd64", "v1"),
+        "i686" | "i386" | "i586" => vars.set("I386", "sse2"),
+        _ => {}
+    }
+    vars.set("ArtifactExt", if os == "windows" { ".exe" } else { "" });
+    vars.set("ArtifactID", build_id);
+}
+
+/// Clear the per-target template vars set by [`set_per_target_vars`] so they
+/// don't leak into the next target's rendering.
+fn clear_per_target_vars(vars: &mut anodizer_core::template::TemplateVars) {
+    for k in PER_TARGET_VARS {
+        vars.set(k, "");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BuildStage
 // ---------------------------------------------------------------------------
 
@@ -544,25 +600,15 @@ fn plan_build_jobs(
                 let profile = detect_cargo_profile(&effective_flags);
 
                 let is_wasm_target = target.contains("wasm32");
-                let (os, arch) = map_target(target);
+                let (os, _arch) = map_target(target);
 
                 // Set per-target template vars BEFORE rendering binary name
-                ctx.template_vars_mut().set("Target", target);
-                ctx.template_vars_mut().set("Os", &os);
-                ctx.template_vars_mut().set("Arch", &arch);
-                let first_component = target.split('-').next().unwrap_or("");
-                match first_component {
-                    "aarch64" => ctx.template_vars_mut().set("Arm64", "v8"),
-                    "armv7" | "armv7l" => ctx.template_vars_mut().set("Arm", "7"),
-                    "armv6" | "armv6l" | "arm" => ctx.template_vars_mut().set("Arm", "6"),
-                    "x86_64" => ctx.template_vars_mut().set("Amd64", "v1"),
-                    "i686" | "i386" | "i586" => ctx.template_vars_mut().set("I386", "sse2"),
-                    _ => {}
-                }
-                let artifact_ext = if os == "windows" { ".exe" } else { "" };
-                ctx.template_vars_mut().set("ArtifactExt", artifact_ext);
-                ctx.template_vars_mut()
-                    .set("ArtifactID", build.id.as_deref().unwrap_or(""));
+                set_per_target_vars(
+                    ctx.template_vars_mut(),
+                    target,
+                    &os,
+                    build.id.as_deref().unwrap_or(""),
+                );
 
                 // Render binary name with per-target template vars available
                 let binary_name = ctx.render_template(binary_name_raw).unwrap_or_else(|e| {
@@ -628,15 +674,7 @@ fn plan_build_jobs(
                             .join(&src_name);
 
                     // Clear per-target template vars before continuing
-                    ctx.template_vars_mut().set("Target", "");
-                    ctx.template_vars_mut().set("Os", "");
-                    ctx.template_vars_mut().set("Arch", "");
-                    ctx.template_vars_mut().set("Arm64", "");
-                    ctx.template_vars_mut().set("Arm", "");
-                    ctx.template_vars_mut().set("Amd64", "");
-                    ctx.template_vars_mut().set("I386", "");
-                    ctx.template_vars_mut().set("ArtifactExt", "");
-                    ctx.template_vars_mut().set("ArtifactID", "");
+                    clear_per_target_vars(ctx.template_vars_mut());
 
                     let copy_variant = raw_target_env
                         .as_ref()
@@ -727,15 +765,10 @@ fn plan_build_jobs(
                     .set("Ext", if os == "windows" { ".exe" } else { "" });
 
                 // Remove per-target template variables to avoid leaking
-                ctx.template_vars_mut().set("Target", "");
-                ctx.template_vars_mut().set("Os", "");
-                ctx.template_vars_mut().set("Arch", "");
-                ctx.template_vars_mut().set("Arm64", "");
-                ctx.template_vars_mut().set("Arm", "");
-                ctx.template_vars_mut().set("Amd64", "");
-                ctx.template_vars_mut().set("I386", "");
-                ctx.template_vars_mut().set("ArtifactExt", "");
-                ctx.template_vars_mut().set("ArtifactID", "");
+                clear_per_target_vars(ctx.template_vars_mut());
+                // Name/Path/Ext are set just above for the hook context only
+                // on the compile path, so they're cleared here (not part of
+                // the shared per-target set).
                 ctx.template_vars_mut().set("Name", "");
                 ctx.template_vars_mut().set("Path", "");
                 ctx.template_vars_mut().set("Ext", "");
@@ -924,24 +957,15 @@ fn plan_prebuilt_build(
             continue;
         }
 
-        let (os, arch) = map_target(target);
+        let (os, _arch) = map_target(target);
 
-        ctx.template_vars_mut().set("Target", target);
-        ctx.template_vars_mut().set("Os", &os);
-        ctx.template_vars_mut().set("Arch", &arch);
+        set_per_target_vars(
+            ctx.template_vars_mut(),
+            target,
+            &os,
+            build.id.as_deref().unwrap_or(""),
+        );
         let first_component = target.split('-').next().unwrap_or("");
-        match first_component {
-            "aarch64" => ctx.template_vars_mut().set("Arm64", "v8"),
-            "armv7" | "armv7l" => ctx.template_vars_mut().set("Arm", "7"),
-            "armv6" | "armv6l" | "arm" => ctx.template_vars_mut().set("Arm", "6"),
-            "x86_64" => ctx.template_vars_mut().set("Amd64", "v1"),
-            "i686" | "i386" | "i586" => ctx.template_vars_mut().set("I386", "sse2"),
-            _ => {}
-        }
-        let artifact_ext = if os == "windows" { ".exe" } else { "" };
-        ctx.template_vars_mut().set("ArtifactExt", artifact_ext);
-        ctx.template_vars_mut()
-            .set("ArtifactID", build.id.as_deref().unwrap_or(""));
 
         let binary_name = ctx.render_template(&binary_field).unwrap_or_else(|e| {
             log.warn(&format!(
@@ -958,15 +982,7 @@ fn plan_prebuilt_build(
             )
         })?;
 
-        ctx.template_vars_mut().set("Target", "");
-        ctx.template_vars_mut().set("Os", "");
-        ctx.template_vars_mut().set("Arch", "");
-        ctx.template_vars_mut().set("Arm64", "");
-        ctx.template_vars_mut().set("Arm", "");
-        ctx.template_vars_mut().set("Amd64", "");
-        ctx.template_vars_mut().set("I386", "");
-        ctx.template_vars_mut().set("ArtifactExt", "");
-        ctx.template_vars_mut().set("ArtifactID", "");
+        clear_per_target_vars(ctx.template_vars_mut());
 
         let staged_path = std::path::PathBuf::from(&rendered_path);
         let dry_run = ctx.options.dry_run;
@@ -1077,5 +1093,67 @@ mod reproducible_rustflags_tests {
             1,
             "exactly one remap rule for the cwd prefix: {merged}"
         );
+    }
+}
+
+#[cfg(test)]
+mod per_target_var_tests {
+    use super::{PER_TARGET_VARS, clear_per_target_vars, set_per_target_vars};
+    use anodizer_core::template::TemplateVars;
+
+    fn vars_for(target: &str, os: &str, id: &str) -> TemplateVars {
+        let mut v = TemplateVars::new();
+        set_per_target_vars(&mut v, target, os, id);
+        v
+    }
+
+    #[test]
+    fn sets_arm64_for_aarch64() {
+        let v = vars_for("aarch64-unknown-linux-gnu", "linux", "");
+        assert_eq!(
+            v.get("Target").map(String::as_str),
+            Some("aarch64-unknown-linux-gnu")
+        );
+        assert_eq!(v.get("Os").map(String::as_str), Some("linux"));
+        assert_eq!(v.get("Arch").map(String::as_str), Some("arm64"));
+        assert_eq!(v.get("Arm64").map(String::as_str), Some("v8"));
+        assert_eq!(v.get("ArtifactExt").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn sets_amd64_and_windows_ext() {
+        let v = vars_for("x86_64-pc-windows-msvc", "windows", "cli");
+        assert_eq!(v.get("Amd64").map(String::as_str), Some("v1"));
+        assert_eq!(v.get("ArtifactExt").map(String::as_str), Some(".exe"));
+        assert_eq!(v.get("ArtifactID").map(String::as_str), Some("cli"));
+    }
+
+    #[test]
+    fn arm_and_i386_variants() {
+        assert_eq!(
+            vars_for("armv7-unknown-linux-gnueabihf", "linux", "")
+                .get("Arm")
+                .map(String::as_str),
+            Some("7")
+        );
+        assert_eq!(
+            vars_for("i686-unknown-linux-gnu", "linux", "")
+                .get("I386")
+                .map(String::as_str),
+            Some("sse2")
+        );
+    }
+
+    #[test]
+    fn clear_empties_every_set_var() {
+        let mut v = vars_for("x86_64-pc-windows-msvc", "windows", "cli");
+        clear_per_target_vars(&mut v);
+        for k in PER_TARGET_VARS {
+            assert_eq!(
+                v.get(k).map(String::as_str),
+                Some(""),
+                "{k} must be cleared"
+            );
+        }
     }
 }
