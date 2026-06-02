@@ -433,7 +433,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             return publish_only::run_per_crate(&mut ctx, &config, &log, run_opts, dist, order);
         }
         // Detect layout and dispatch.
-        match publish_only::detect_dist_layout(&dist)? {
+        match publish_only::detect_dist_layout(&dist, &log)? {
             publish_only::DistLayout::Flat => {
                 return publish_only::run(&mut ctx, &config, &log, run_opts);
             }

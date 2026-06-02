@@ -168,17 +168,30 @@ fn copy_extra_files(
 
                 // Pre-flight: a rename dst paired with multiple glob matches would
                 // silently overwrite every earlier copy with the last one.
-                if dst.is_some()
-                    && let Ok(entries) = glob::glob(src)
-                {
-                    let matches: Vec<_> = entries.flatten().filter(|e| e.is_file()).collect();
-                    if matches.len() > 1 {
-                        anyhow::bail!(
-                            "app_bundles extra_files: dst rename only valid for glob \
-                             matching exactly 1 file; got {} matches for '{}'",
-                            matches.len(),
-                            src
-                        );
+                if dst.is_some() {
+                    match glob::glob(src) {
+                        Ok(entries) => {
+                            let matches: Vec<_> =
+                                entries.flatten().filter(|e| e.is_file()).collect();
+                            if matches.len() > 1 {
+                                anyhow::bail!(
+                                    "app_bundles extra_files: dst rename only valid for glob \
+                                     matching exactly 1 file; got {} matches for '{}'",
+                                    matches.len(),
+                                    src
+                                );
+                            }
+                        }
+                        // Surface an invalid pattern here too — silently
+                        // swallowing the `Err` would skip the multi-match
+                        // guard and defer the diagnostic to the copy path's
+                        // warn, hiding the real cause from a dst-rename user.
+                        Err(e) => {
+                            log.warn(&format!(
+                                "invalid extra_files glob pattern '{}': {}",
+                                src, e
+                            ));
+                        }
                     }
                 }
 

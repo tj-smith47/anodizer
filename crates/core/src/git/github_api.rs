@@ -123,15 +123,18 @@ pub fn gh_api_get_paginated_with_binary(
             all_items.push(val);
         } else {
             // Log unparseable chunks so corrupt data doesn't go unnoticed.
-            // Route through `tracing::warn!` so subscriber-level redaction
-            // applies (the chunk may carry templated request data). Cap
-            // the logged chunk at 200 bytes — an HTTP body in an error
-            // context should convey "what server said" without dumping a
+            // The chunk may carry secret-shaped request/response data, and the
+            // tracing subscriber performs NO redaction of its own — so redact
+            // here (process-env secret values + inline URL credentials) before
+            // emitting. Cap the logged chunk at 200 bytes — an HTTP body in an
+            // error context should convey "what server said" without dumping a
             // multi-MB stack trace to the user's terminal.
+            let snippet = &trimmed[..trimmed.len().min(200)];
+            let redacted = crate::redact::redact_process_env(snippet);
             tracing::warn!(
                 "gh_api_get_paginated: failed to parse JSON chunk ({} bytes): {:?}",
                 trimmed.len(),
-                &trimmed[..trimmed.len().min(200)],
+                redacted,
             );
         }
     }

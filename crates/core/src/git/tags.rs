@@ -790,6 +790,16 @@ pub fn get_tags_at_sha_in(cwd: &Path, sha: &str) -> Result<Vec<String>> {
         .output()
         .map_err(|e| anyhow::anyhow!("failed to invoke git tag --points-at {sha}: {e}"))?;
     if !out.status.success() {
+        // A real git failure (corrupt repo, bad sha that isn't merely
+        // "unknown") must not masquerade as "no tags here". Warn with the
+        // stderr so the empty result isn't silently misread as a clean
+        // no-tags case.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        tracing::warn!(
+            sha = sha,
+            stderr = %stderr.trim(),
+            "git tag --points-at exited non-zero; returning no tags"
+        );
         return Ok(Vec::new());
     }
     let text = String::from_utf8_lossy(&out.stdout);

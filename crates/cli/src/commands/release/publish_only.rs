@@ -66,7 +66,7 @@ pub(super) enum DistLayout {
 /// contains a `context.json` or `context-<shard>.json` file.
 /// The flat layout is detected by `dist/context.json` or
 /// `dist/context-*.json` at the root itself.
-pub(super) fn detect_dist_layout(dist: &Path) -> Result<DistLayout> {
+pub(super) fn detect_dist_layout(dist: &Path, log: &StageLogger) -> Result<DistLayout> {
     let has_flat = !discover_sharded_manifests(dist, "context")?.is_empty();
 
     let mut crate_subdirs: Vec<String> = Vec::new();
@@ -78,7 +78,21 @@ pub(super) fn detect_dist_layout(dist: &Path) -> Result<DistLayout> {
     })?;
     for entry in entries {
         let entry = entry?;
-        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        let is_dir = match entry.file_type() {
+            Ok(t) => t.is_dir(),
+            Err(e) => {
+                // A `file_type()` failure (transient IO, dangling symlink)
+                // routes the entry to "not a per-crate subdir", but surface
+                // the reason so an operator debugging an unexpected Flat-vs-
+                // PerCrate choice isn't left guessing why an entry was skipped.
+                log.verbose(&format!(
+                    "publish-only: stat of dist entry {} failed: {e}; treating as non-directory",
+                    entry.path().display()
+                ));
+                false
+            }
+        };
+        if !is_dir {
             continue;
         }
         let subdir = entry.path();
@@ -2141,11 +2155,15 @@ mod tests {
         std::fs::write(dir.join(name), content).unwrap();
     }
 
+    fn layout_test_log() -> StageLogger {
+        StageLogger::new("layout-test", anodizer_core::log::Verbosity::Quiet)
+    }
+
     #[test]
     fn detect_layout_flat_single_context() {
         let tmp = tempfile::tempdir().unwrap();
         write_context_file(tmp.path(), "context.json");
-        let layout = super::detect_dist_layout(tmp.path()).unwrap();
+        let layout = super::detect_dist_layout(tmp.path(), &layout_test_log()).unwrap();
         assert!(
             matches!(layout, super::DistLayout::Flat),
             "expected Flat, got {layout:?}"
@@ -2157,7 +2175,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         write_context_file(tmp.path(), "context-linux.json");
         write_context_file(tmp.path(), "context-macos.json");
-        let layout = super::detect_dist_layout(tmp.path()).unwrap();
+        let layout = super::detect_dist_layout(tmp.path(), &layout_test_log()).unwrap();
         assert!(
             matches!(layout, super::DistLayout::Flat),
             "expected Flat, got {layout:?}"
@@ -2173,7 +2191,7 @@ mod tests {
         std::fs::create_dir_all(&b).unwrap();
         write_context_file(&a, "context.json");
         write_context_file(&b, "context.json");
-        let layout = super::detect_dist_layout(tmp.path()).unwrap();
+        let layout = super::detect_dist_layout(tmp.path(), &layout_test_log()).unwrap();
         match layout {
             super::DistLayout::PerCrate(names) => {
                 let mut sorted = names.clone();
@@ -2191,7 +2209,7 @@ mod tests {
         let sub = tmp.path().join("core");
         std::fs::create_dir_all(&sub).unwrap();
         write_context_file(&sub, "context.json");
-        let layout = super::detect_dist_layout(tmp.path()).unwrap();
+        let layout = super::detect_dist_layout(tmp.path(), &layout_test_log()).unwrap();
         assert!(
             matches!(layout, super::DistLayout::Ambiguous { .. }),
             "expected Ambiguous, got {layout:?}"
@@ -2201,7 +2219,7 @@ mod tests {
     #[test]
     fn detect_layout_empty_dist_returns_flat() {
         let tmp = tempfile::tempdir().unwrap();
-        let layout = super::detect_dist_layout(tmp.path()).unwrap();
+        let layout = super::detect_dist_layout(tmp.path(), &layout_test_log()).unwrap();
         assert!(
             matches!(layout, super::DistLayout::Flat),
             "empty dist must return Flat, got {layout:?}"
@@ -2215,7 +2233,7 @@ mod tests {
         let sub = tmp.path().join("random-dir");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("artifact.tar.gz"), b"bytes").unwrap();
-        let layout = super::detect_dist_layout(tmp.path()).unwrap();
+        let layout = super::detect_dist_layout(tmp.path(), &layout_test_log()).unwrap();
         assert!(
             matches!(layout, super::DistLayout::Flat),
             "subdir without context.json must not count as per-crate, got {layout:?}"
