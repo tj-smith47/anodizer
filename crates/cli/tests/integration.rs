@@ -4914,13 +4914,15 @@ crates:
 
 /// Companion to `release_required_publisher_failure_gates_exit_code`:
 /// proves `gate_required_failures` does NOT false-positive when the
-/// failing publisher is non-required. Uses scoop (group=Manager,
-/// required=false; see `crates/stage-publish/src/scoop.rs`) with
-/// `--simulate-failure scoop` so we exercise the gate's filter on
-/// `required` without ever invoking the real publisher (which would
-/// need git push to a bucket repo).
+/// failing publisher is non-required. Uses `aur_source` — a non-binary,
+/// source-distributing publisher (`required` defaults to false) — so the
+/// binary-presence guard does not pre-empt the non-gating path under
+/// `--skip=build`: a binary-requiring publisher (scoop, homebrew, ...)
+/// would hard-bail in the guard before this gate is ever reached, since
+/// no binary artifact exists. The publisher's runtime name is
+/// `upstream-aur`, which is what `--simulate-failure` must target.
 ///
-/// Together, these two tests pin both directions of the I14 wiring:
+/// Together, these two tests pin both directions of the gate wiring:
 /// - required + failed → non-zero exit (the regression class)
 /// - non-required + failed → zero exit (no false-positive gate)
 #[test]
@@ -4936,10 +4938,7 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
     publish:
-      scoop:
-        repository:
-          owner: test
-          name: scoop-bucket
+      aur_source: {}
 "#,
     );
     init_git_repo(tmp.path());
@@ -4949,7 +4948,7 @@ crates:
             "release",
             "--no-preflight",
             "--simulate-failure",
-            "scoop",
+            "upstream-aur",
             "--skip=build,upx,appbundle,dmg,msi,pkg,nsis,notarize,changelog,archive,source,nfpm,srpm,makeself,snapcraft,flatpak,sbom,templatefiles,checksum,sign,release,docker,docker-sign,blob,snapcraft-publish,announce",
         ])
         .env("ANODIZE_TEST_HARNESS", "1")
