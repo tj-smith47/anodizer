@@ -26,6 +26,10 @@ pub use cask::{
     CaskArchEntry, CaskParams, CaskPlatformBlock, generate_cask, render_generate_completions,
 };
 pub(crate) use commit_msg::{render_commit_msg, render_commit_msg_with_prev};
+pub use formula::{FormulaOptions, generate_formula, generate_formula_with_opts};
+pub use publish_cask::publish_cask;
+pub use publish_formula::publish_to_homebrew;
+pub use publish_top::publish_top_level_homebrew_casks;
 
 use anodizer_core::context::Context;
 use anyhow::{Context as _, Result};
@@ -46,7 +50,3 @@ pub(crate) fn resolve_cask_directory(directory: Option<&str>, ctx: &Context) -> 
         )
     })
 }
-pub use formula::{FormulaOptions, generate_formula, generate_formula_with_opts};
-pub use publish_cask::publish_cask;
-pub use publish_formula::publish_to_homebrew;
-pub use publish_top::publish_top_level_homebrew_casks;
