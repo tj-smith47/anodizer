@@ -1178,6 +1178,64 @@ crates: []
         assert!(!should_skip_with(Some(StringOrBool::String("false".into())), false).unwrap());
     }
 
+    /// Build a `MacOSSignNotarizeConfig` with the given direct `skip:` value
+    /// and a context where `{{ .Marker }}` renders to `marker`.
+    fn should_skip_marker(skip: &str, marker: &str) -> anyhow::Result<bool> {
+        let mut cfg = MacOSSignNotarizeConfig::default();
+        cfg.skip = Some(StringOrBool::String(skip.into()));
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut().set("Marker", marker);
+        cfg.should_skip(|s| ctx.render_template(s))
+    }
+
+    #[test]
+    fn test_should_skip_direct_template_uses_sibling_truthy() {
+        // A DIRECT `skip:` template must use the sibling truthy convention
+        // (`try_evaluates_to_true`: only "true"/"1" are truthy), NOT the wider
+        // inverted-`enabled:` falsy blacklist. `1` skips; `yes`/`on` do not —
+        // matching `should_skip_upload` and every other publisher gate.
+        assert!(
+            should_skip_marker("{{ .Marker }}", "1").unwrap(),
+            "direct skip rendering '1' must skip (sibling truthy)"
+        );
+        assert!(
+            !should_skip_marker("{{ .Marker }}", "yes").unwrap(),
+            "direct skip rendering 'yes' must RUN (not a sibling-truthy value)"
+        );
+        assert!(
+            !should_skip_marker("{{ .Marker }}", "on").unwrap(),
+            "direct skip rendering 'on' must RUN (not a sibling-truthy value)"
+        );
+    }
+
+    #[test]
+    fn test_inverted_enabled_uses_wider_falsy_set() {
+        // The inverted `enabled:` path keeps the wider falsy blacklist: a
+        // non-falsy render (e.g. `yes`/`on`/`1`) means enabled → RUN; only
+        // ""/false/0/no disable. Contrast with the direct `skip:` path above.
+        assert!(
+            !enabled_should_skip_marker("{{ .Marker }}", "yes").unwrap(),
+            "enabled rendering 'yes' is truthy → run (must not skip)"
+        );
+        assert!(
+            enabled_should_skip_marker("{{ .Marker }}", "no").unwrap(),
+            "enabled rendering 'no' is falsy → skip"
+        );
+    }
+
+    /// `enabled:`-alias variant of [`should_skip_marker`] — renders
+    /// `{{ .Marker }}` to `marker` through the inverted-enabled path.
+    fn enabled_should_skip_marker(enabled: &str, marker: &str) -> anyhow::Result<bool> {
+        let yaml = format!(
+            "notarize:\n  macos:\n    - enabled: \"{enabled}\"\n      sign:\n        certificate: /tmp/c.p12\n        password: pw\ncrates: []\n"
+        );
+        let cfg: Config = serde_yaml_ng::from_str(&yaml).expect("enabled alias should parse");
+        let entry = cfg.notarize.unwrap().macos.unwrap().remove(0);
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut().set("Marker", marker);
+        entry.should_skip(|s| ctx.render_template(s))
+    }
+
     #[test]
     fn test_should_skip_template_skip_truthy() {
         // A direct `skip:` template that renders truthy skips.

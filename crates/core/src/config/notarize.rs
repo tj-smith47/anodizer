@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{HumanDuration, StringOrBool, deserialize_string_or_bool_opt};
+use super::{HumanDuration, StringOrBool, deserialize_string_or_bool_opt, evaluate_if_condition};
 
 // ---------------------------------------------------------------------------
 // NotarizeConfig (macOS code signing and notarization)
@@ -351,10 +351,18 @@ fn invert_enabled(v: StringOrBool) -> ResolvedSkip {
 
 /// Resolve a per-config notarize `skip` to a "should skip" bool.
 ///
-/// Renders the value (a `Bool` short-circuits without rendering) and applies
-/// the shared truthiness convention (`false`/`0`/`no`/empty = falsy). When
-/// `inverts_enabled` is set the value is a templated `enabled:` kept verbatim,
-/// so its rendered truthiness is NEGATED (a falsy `enabled` → skip).
+/// A `Bool` short-circuits without rendering. A template renders first, then:
+///
+/// - **direct `skip:`** (`inverts_enabled == false`) → skip when the rendered
+///   value is truthy under the sibling convention ([`StringOrBool::try_evaluates_to_true`]:
+///   `"true"`/`"1"` are truthy). This keeps notarize's `skip:` evaluation
+///   identical to `should_skip_upload` and every other publisher gate.
+/// - **inverted `enabled:`** (`inverts_enabled == true`) → the value is a
+///   templated `enabled:` kept verbatim; skip when its rendered value is
+///   FALSY under the shared `if:`-style convention (`""`/`false`/`0`/`no` =
+///   falsy, so any other rendered value means "enabled → run"). The wider
+///   falsy set is required here so an `enabled: "{{ … }}"` rendering to
+///   `yes`/`on`/`1`/etc. correctly enables.
 ///
 /// A render failure propagates as `Err` — callers FAIL CLOSED (treat the
 /// entry as skipped) rather than silently signing/notarizing a stage the
@@ -367,18 +375,16 @@ fn resolve_notarize_skip(
     let Some(value) = skip else {
         return Ok(false);
     };
-    match value {
-        StringOrBool::Bool(b) => Ok(*b),
-        StringOrBool::String(s) => {
-            let rendered = render(s)?;
-            let truthy = !matches!(
-                rendered.trim().to_ascii_lowercase().as_str(),
-                "" | "false" | "0" | "no"
-            );
-            // `skip:` template → skip when truthy. Inverted `enabled:`
-            // template → skip when the enabled value is FALSY.
-            Ok(if inverts_enabled { !truthy } else { truthy })
-        }
+    if inverts_enabled {
+        // Inverted `enabled:`: skip when the enabled expression is falsy.
+        // `evaluate_if_condition` returns `true` (proceed/enabled) for any
+        // non-falsy render and `Err` on render failure — negate to get
+        // "should skip".
+        let enabled = evaluate_if_condition(Some(value.as_str()), "notarize: enabled", render)?;
+        Ok(!enabled)
+    } else {
+        // Direct `skip:`: sibling truthy semantics (`"true"`/`"1"` skip).
+        value.try_evaluates_to_true(render)
     }
 }
 
