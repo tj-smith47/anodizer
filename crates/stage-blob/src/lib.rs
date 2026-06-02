@@ -1,7 +1,7 @@
 //! Blob stage — uploads release artifacts to S3 / GCS / Azure Blob.
 //!
 //! - [`Provider`] — `s3` / `gs` / `azblob` selection.
-//! - [`BlobStage`] — the [`Stage`] driver: per-config Step 1 (template
+//! - [`BlobStage`] — the [`anodizer_core::stage::Stage`] driver: per-config Step 1 (template
 //!   render, store build, KMS preflight) → Step 2 parallel upload.
 
 mod kms;

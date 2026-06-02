@@ -1,4 +1,4 @@
-//! [`anodizer_core::Publisher`] wrapper around [`BlobStage::run`].
+//! [`anodizer_core::Publisher`] wrapper around [`BlobStage`]'s `run`.
 //!
 //! Lives in `stage-blob` (not `stage-publish`) so the cloud-storage upload
 //! path can implement the trait without dragging `stage-publish` into the
@@ -9,12 +9,12 @@
 //! server-side deletable). `required = false`.
 //!
 //! Rollback shape: each provider's [`object_store::ObjectStore`] exposes a
-//! [`object_store::ObjectStore::delete`] API. The publisher captures
-//! structured [`BlobTarget`] tuples (provider, bucket, key, region,
+//! `delete` API. The publisher captures
+//! structured `BlobTarget` tuples (provider, bucket, key, region,
 //! endpoint) at upload time and persists them to
 //! [`anodizer_core::PublishEvidence`]`.extra.blob_targets`; the rollback
 //! path decodes those, reconstructs the store via
-//! [`crate::store::build_store`], and issues `store.delete(&path).await`
+//! `crate::store::build_store`, and issues `store.delete(&path).await`
 //! per object. `object_store::Error::NotFound` is treated as success
 //! (the object was already gone — common when an operator pre-deletes
 //! via the cloud console or a prior partial rollback already ran).
@@ -22,8 +22,8 @@
 //! Legacy evidence (written before the structured-target capture
 //! landed) carries only `artifact_paths` with no `blob_targets` payload;
 //! the rollback path falls back to a per-object warn-only manual-cleanup
-//! checklist for those runs (see [`blob_manual_cleanup_msg`]). The
-//! warn-only fallback is also reached when [`decode_blob_targets`]
+//! checklist for those runs (see `blob_manual_cleanup_msg`). The
+//! warn-only fallback is also reached when `decode_blob_targets`
 //! returns an empty list, which keeps the surface forward-compatible
 //! with any future evidence-shape change.
 
@@ -88,10 +88,10 @@ pub(crate) fn decode_blob_targets(extra: &anodizer_core::PublishEvidenceExtra) -
     }
 }
 
-/// [`anodizer_core::Publisher`] adapter over [`BlobStage::run`].
+/// [`anodizer_core::Publisher`] adapter over [`BlobStage`]'s `run`.
 ///
 /// Evidence records ONLY files that actually landed in the store (via
-/// [`BlobStage::run_with_evidence`]). The prior pre-upload capture would
+/// `BlobStage::run_with_evidence`). The prior pre-upload capture would
 /// have given an operator running `--rollback-only` a checklist of paths
 /// that never existed when a mid-stream upload failed; the post-upload
 /// snapshot is the safer end state — fewer rollback items, no phantom
@@ -139,7 +139,7 @@ impl anodizer_core::Publisher for BlobPublisher {
     /// Forward-compat trait surface only. The load-bearing
     /// `required` flag for the blob stage's outcome is derived
     /// per-run from `BlobConfig.required` in
-    /// [`crate::run::record_blob_result`] (called by
+    /// `crate::run::record_blob_result` (called by
     /// [`crate::run::BlobStage`]), not by this trait method. The
     /// trait impl has no access to the active `Context`, so it
     /// returns `false` and the actual policy is enforced inside the
