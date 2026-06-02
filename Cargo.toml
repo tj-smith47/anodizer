@@ -122,6 +122,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 jsonschema = "0.40"
 serde_yaml_ng = "0.10"
+roxmltree = "0.20"
 toml = "0.8"
 toml_edit = "0.22"
 regex = "1"

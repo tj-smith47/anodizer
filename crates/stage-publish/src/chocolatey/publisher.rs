@@ -60,7 +60,7 @@ fn decode_chocolatey_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec
 /// True when the crate has a `publish.chocolatey` block — mirrors the
 /// `per_crate!` predicate in `lib.rs` so the publisher iterates
 /// exactly the same crate universe.
-fn is_chocolatey_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
+pub(crate) fn is_chocolatey_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
     crate::util::all_crates(ctx)
         .into_iter()
         .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.chocolatey.is_some()))

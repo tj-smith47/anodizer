@@ -118,7 +118,11 @@ pub fn publish_to_chocolatey(
 
     let version = ctx.version();
     let pkg_name = choco_cfg.name.as_deref().unwrap_or(crate_name);
-    let metadata = resolve_metadata(ctx, choco_cfg, crate_name, repo_owner, repo_name)?;
+
+    // The skip gate above already ran (`check_skip_publish`), so render the
+    // nuspec via the skip-unaware inner helper — re-evaluating the skip/`if`
+    // gate here would double every resolved-with-warning value's log line.
+    let nuspec = render_nuspec_inner(ctx, choco_cfg, crate_name, repo_owner, repo_name)?;
 
     let (artifact_32, artifact_64) = select_windows_artifacts(ctx, choco_cfg, crate_name, log);
     let install_mode = build_install_mode(
@@ -131,8 +135,6 @@ pub fn publish_to_chocolatey(
         crate_name,
     )?;
 
-    let text_fields = render_text_fields(ctx, choco_cfg, crate_name);
-    let nuspec = build_nuspec(choco_cfg, crate_name, &version, &metadata, &text_fields)?;
     let install_script = build_install_script(pkg_name, &install_mode)?;
 
     let staged = stage_package(pkg_name, &version, &nuspec, &install_script, log)?;
@@ -202,6 +204,70 @@ fn check_skip_publish(
         &label,
         log,
     )
+}
+
+/// Render the `.nuspec` XML a real Chocolatey publish would stage for
+/// `crate_name`, in-memory and with no disk/network side effects.
+///
+/// Returns `Ok(None)` when the publisher would skip this crate (`skip:` true
+/// or a falsy `if` condition). Errors when the crate carries no `chocolatey`
+/// block, or when `license` is unresolvable (an empty `<licenseUrl>` is what
+/// Chocolatey gallery moderators reject). The live publish path and the
+/// offline schema validator both produce the nuspec through the same inner
+/// render so the validated document is byte-for-byte what a release pushes.
+///
+/// Unlike the install script, the nuspec does not depend on any Windows
+/// archive artifact — it always renders regardless of which platforms built.
+pub(crate) fn render_nuspec_for_crate(
+    ctx: &Context,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Option<String>> {
+    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "chocolatey")?;
+    let choco_cfg = publish
+        .chocolatey
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("chocolatey: no chocolatey config for '{}'", crate_name))?;
+
+    let label = format!("chocolatey publisher for crate '{}'", crate_name);
+    if crate::util::should_skip_publisher_with_if(
+        ctx,
+        choco_cfg.skip.as_ref(),
+        None,
+        choco_cfg.if_condition.as_deref(),
+        &label,
+        log,
+    )? {
+        return Ok(None);
+    }
+
+    let (repo_owner, repo_name) = match choco_cfg.repository.as_ref() {
+        Some(r) => (
+            r.owner.as_deref().unwrap_or(""),
+            r.name.as_deref().unwrap_or(""),
+        ),
+        None => ("", ""),
+    };
+    let nuspec = render_nuspec_inner(ctx, choco_cfg, crate_name, repo_owner, repo_name)?;
+    Ok(Some(nuspec))
+}
+
+/// Skip-unaware nuspec render: resolve metadata + text fields and build the
+/// `.nuspec` XML body. Every resolved-with-warning value is resolved exactly
+/// once here, so both the live publish path (which has already evaluated the
+/// skip gate) and [`render_nuspec_for_crate`] (which evaluates it itself)
+/// share one resolution without double-logging.
+fn render_nuspec_inner(
+    ctx: &Context,
+    choco_cfg: &anodizer_core::config::ChocolateyConfig,
+    crate_name: &str,
+    repo_owner: &str,
+    repo_name: &str,
+) -> Result<String> {
+    let version = ctx.version();
+    let metadata = resolve_metadata(ctx, choco_cfg, crate_name, repo_owner, repo_name)?;
+    let text_fields = render_text_fields(ctx, choco_cfg, crate_name);
+    build_nuspec(choco_cfg, crate_name, &version, &metadata, &text_fields)
 }
 
 /// Resolves the required nuspec metadata (description, license, authors,
