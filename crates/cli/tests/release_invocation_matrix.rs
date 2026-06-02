@@ -31,10 +31,9 @@ fn host_target() -> String {
     anodizer_cli::detect_host_target().expect("rustc -vV must succeed in test env")
 }
 
-/// Minimal single-crate snapshot config. Mirrors the helper in
-/// `tests/integration.rs` (kept local so this file stays standalone —
-/// integration-test binaries can't share helpers across files outside
-/// of `tests/common/`).
+/// Minimal single-crate snapshot config. Local to this file because the
+/// stage-skip matrix needs a config shape specific to these assertions
+/// (the shared `tests/common` bootstrap synthesizes a different fixture).
 fn minimal_config(host: &str) -> String {
     format!(
         r#"project_name: matrix-fixture
@@ -82,8 +81,8 @@ fn strip_ansi(s: &str) -> String {
 ///   `[upx] (no binaries, skipped)`   (binary-dependent stage, no binaries)
 /// where the bracketed tag IS the skipped stage and the message is the
 /// reason. Both verdicts are emitted by `Pipeline::run` via
-/// `status_as(name, ...)` (see `crates/cli/src/pipeline.rs`), so they are
-/// the authoritative "this stage did not run" signal.
+/// `status_as(name, ...)` (see `crates/cli/src/pipeline/mod.rs`), so they
+/// are the authoritative "this stage did not run" signal.
 ///
 /// We intentionally do NOT treat per-crate / per-config body notes such as
 /// `[build] skipping build for crate 'X'` or `[release] no gitlab config
