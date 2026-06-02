@@ -271,6 +271,33 @@ pub fn apply_workspace_overlay(config: &mut Config, ws: &WorkspaceConfig) {
     }
 }
 
+/// Resolve the current-tag override from the env-var precedence chain.
+///
+/// Precedence (first non-empty wins):
+///   1. `ANODIZER_CURRENT_TAG`
+///   2. `GORELEASER_CURRENT_TAG` (compat alias)
+///   3. `GITHUB_REF_NAME`, but only when `GITHUB_REF_TYPE == "tag"` — GitHub
+///      Actions exposes the triggering tag here on a tag push, while a branch
+///      push puts the branch name in the same var (which is not a tag).
+fn resolve_tag_override(
+    anodizer_current_tag: Option<String>,
+    goreleaser_current_tag: Option<String>,
+    github_ref_type: Option<String>,
+    github_ref_name: Option<String>,
+) -> Option<String> {
+    anodizer_current_tag
+        .filter(|s| !s.is_empty())
+        .or_else(|| goreleaser_current_tag.filter(|s| !s.is_empty()))
+        .or_else(|| {
+            let is_tag = github_ref_type.as_deref().filter(|s| *s == "tag").is_some();
+            if is_tag {
+                github_ref_name.filter(|s| !s.is_empty())
+            } else {
+                None
+            }
+        })
+}
+
 /// Resolve tag and populate git variables on the context.
 ///
 /// Finds the first selected crate (or the first crate in config), looks up
@@ -309,17 +336,12 @@ pub fn resolve_git_context(
         github_ref_name = ?github_ref_name,
         "tag_override resolution: env var snapshot"
     );
-    let tag_override = anodizer_current_tag
-        .filter(|s| !s.is_empty())
-        .or_else(|| goreleaser_current_tag.filter(|s| !s.is_empty()))
-        .or_else(|| {
-            let is_tag = github_ref_type.as_deref().filter(|s| *s == "tag").is_some();
-            if is_tag {
-                github_ref_name.filter(|s| !s.is_empty())
-            } else {
-                None
-            }
-        });
+    let tag_override = resolve_tag_override(
+        anodizer_current_tag,
+        goreleaser_current_tag,
+        github_ref_type,
+        github_ref_name,
+    );
 
     // Resolve a crate to derive the tag from. Selection order:
     //   1. The first explicitly selected crate (--crate or --all selection)
@@ -525,6 +547,32 @@ fn merge_env_with_defaults(
     }
 }
 
+/// Extract the variable keys a `variables:` template value references via the
+/// `.Var.<key>` / `Var.<key>` namespace.
+///
+/// Used only to surface forward-reference warnings — it is a deliberately
+/// shallow scan (it does not parse Tera), matching `<name>` against the
+/// `[A-Za-z0-9_]` key charset. Over-matching is harmless: the caller only
+/// warns when the name is also a declared sibling key, so non-variable
+/// matches (`.Var` followed by something that isn't a configured key) are
+/// silently ignored.
+fn referenced_var_keys(template: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let bytes = template.as_bytes();
+    // Walk each `Var.` occurrence and lift the following identifier.
+    for (idx, _) in template.match_indices("Var.") {
+        let start = idx + "Var.".len();
+        let key_len = bytes[start..]
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_')
+            .count();
+        if key_len > 0 {
+            out.push(&template[start..start + key_len]);
+        }
+    }
+    out
+}
+
 /// Load process environment variables, `.env` files, and user-defined env vars
 /// into the context's template variables.
 ///
@@ -619,11 +667,29 @@ pub fn setup_env(
     // passing the literal `{{ }}` through to a publisher (homebrew,
     // scoop, nix, …) where it would surface only after publication.
     if let Some(ref vars_map) = config.variables {
+        // Keys already rendered + visible to later values. BTreeMap iteration is
+        // alphabetical, so a value referencing a sibling key that sorts LATER
+        // (a forward reference) renders against an unset `.Var.<name>` — which,
+        // when guarded with `| default(value="")`, silently yields empty. Warn
+        // so the operator isn't surprised by a blank substitution; the fix is
+        // to rename the key so it sorts after its dependency.
+        let mut defined: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for (key, value) in vars_map {
+            for referenced in referenced_var_keys(value) {
+                if vars_map.contains_key(referenced) && !defined.contains(referenced) {
+                    log.warn(&format!(
+                        "variables.{key}: references variable '{referenced}' that is \
+                         defined later (variables resolve in alphabetical key order, so \
+                         '{referenced}' is still unset here and renders empty). Rename so \
+                         '{key}' sorts after '{referenced}'."
+                    ));
+                }
+            }
             let rendered = ctx
                 .render_template(value)
                 .with_context(|| format!("variables.{key}: failed to render template '{value}'"))?;
             ctx.template_vars_mut().set_custom_var(key, &rendered);
+            defined.insert(key.as_str());
         }
     }
 
@@ -2173,22 +2239,12 @@ list:
             &config,
             &[("GITHUB_REF_TYPE", "tag"), ("GITHUB_REF_NAME", "v1.2.3")],
         );
-        // Extract the tag_override the same way resolve_git_context does.
-        let anodizer_current_tag = ctx.env_var("ANODIZER_CURRENT_TAG");
-        let goreleaser_current_tag = ctx.env_var("GORELEASER_CURRENT_TAG");
-        let github_ref_type = ctx.env_var("GITHUB_REF_TYPE");
-        let github_ref_name = ctx.env_var("GITHUB_REF_NAME");
-        let tag_override = anodizer_current_tag
-            .filter(|s| !s.is_empty())
-            .or_else(|| goreleaser_current_tag.filter(|s| !s.is_empty()))
-            .or_else(|| {
-                let is_tag = github_ref_type.as_deref().filter(|s| *s == "tag").is_some();
-                if is_tag {
-                    github_ref_name.filter(|s| !s.is_empty())
-                } else {
-                    None
-                }
-            });
+        let tag_override = resolve_tag_override(
+            ctx.env_var("ANODIZER_CURRENT_TAG"),
+            ctx.env_var("GORELEASER_CURRENT_TAG"),
+            ctx.env_var("GITHUB_REF_TYPE"),
+            ctx.env_var("GITHUB_REF_NAME"),
+        );
         assert_eq!(
             tag_override.as_deref(),
             Some("v1.2.3"),
@@ -2208,21 +2264,12 @@ list:
             &config,
             &[("GITHUB_REF_TYPE", "branch"), ("GITHUB_REF_NAME", "master")],
         );
-        let anodizer_current_tag = ctx.env_var("ANODIZER_CURRENT_TAG");
-        let goreleaser_current_tag = ctx.env_var("GORELEASER_CURRENT_TAG");
-        let github_ref_type = ctx.env_var("GITHUB_REF_TYPE");
-        let github_ref_name = ctx.env_var("GITHUB_REF_NAME");
-        let tag_override = anodizer_current_tag
-            .filter(|s| !s.is_empty())
-            .or_else(|| goreleaser_current_tag.filter(|s| !s.is_empty()))
-            .or_else(|| {
-                let is_tag = github_ref_type.as_deref().filter(|s| *s == "tag").is_some();
-                if is_tag {
-                    github_ref_name.filter(|s| !s.is_empty())
-                } else {
-                    None
-                }
-            });
+        let tag_override = resolve_tag_override(
+            ctx.env_var("ANODIZER_CURRENT_TAG"),
+            ctx.env_var("GORELEASER_CURRENT_TAG"),
+            ctx.env_var("GITHUB_REF_TYPE"),
+            ctx.env_var("GITHUB_REF_NAME"),
+        );
         assert!(
             tag_override.is_none(),
             "GITHUB_REF_NAME must not be used as tag override when GITHUB_REF_TYPE=branch"
@@ -2253,5 +2300,67 @@ list:
         // for `b` is `hello_v2`.
         let rendered = ctx.render_template("{{ Var.b }}").expect("render Var.b");
         assert_eq!(rendered, "hello_v2");
+    }
+
+    /// A forward reference (a value referencing a sibling key that sorts LATER)
+    /// renders against an unset `.Var.<name>`. When the operator guards it with
+    /// `| default(value="")` it silently yields empty — `setup_env` must warn so
+    /// the blank substitution isn't a surprise.
+    #[test]
+    fn test_setup_env_variables_forward_reference_warns() {
+        use std::collections::BTreeMap;
+        let mut vars = BTreeMap::new();
+        // `a` references `z`, which sorts AFTER `a`, so `z` is still unset when
+        // `a` renders. The `default` filter swallows the missing-key error.
+        vars.insert(
+            "a".to_string(),
+            "{{ Var.z | default(value=\"\") }}".to_string(),
+        );
+        vars.insert("z".to_string(), "later".to_string());
+        let config = Config {
+            project_name: "p".to_string(),
+            variables: Some(vars),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config.clone(), ContextOptions::default());
+        let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+            "test",
+            anodizer_core::log::Verbosity::Quiet,
+        );
+        setup_env(&mut ctx, &config, &log).expect("setup_env should succeed");
+        let warnings = capture.warn_messages();
+        assert!(
+            warnings.iter().any(|m| m.contains("variables.a")
+                && m.contains('z')
+                && m.contains("defined later")),
+            "forward reference must emit a warning naming the key and its later \
+             dependency; got: {warnings:?}"
+        );
+    }
+
+    /// The forward-ref scan must not warn on a backward reference (the common,
+    /// correct case): `b` references `a`, `a` sorts first, so it is already set.
+    #[test]
+    fn test_setup_env_variables_backward_reference_no_warn() {
+        use std::collections::BTreeMap;
+        let mut vars = BTreeMap::new();
+        vars.insert("b".to_string(), "{{ Var.a }}".to_string());
+        vars.insert("a".to_string(), "hello".to_string());
+        let config = Config {
+            project_name: "p".to_string(),
+            variables: Some(vars),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config.clone(), ContextOptions::default());
+        let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+            "test",
+            anodizer_core::log::Verbosity::Quiet,
+        );
+        setup_env(&mut ctx, &config, &log).expect("setup_env should succeed");
+        assert_eq!(
+            capture.warn_count(),
+            0,
+            "a backward reference (dependency sorts first) must not warn"
+        );
     }
 }

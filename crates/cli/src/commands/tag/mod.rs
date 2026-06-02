@@ -68,6 +68,7 @@ fn resolve_tag_push_branch(
 }
 
 /// Resolved tag configuration with defaults applied.
+#[derive(Clone)]
 struct ResolvedConfig {
     default_bump: String,
     tag_prefix: String,
@@ -469,41 +470,34 @@ pub fn run(opts: TagOpts) -> Result<()> {
     let bump = detect_bump(&messages, &cfg);
     log.verbose(&format!("detected bump: {:?}", bump));
 
+    // The current manifest version for this tagging unit: the workspace
+    // `[workspace.package].version` in lockstep mode, else the version-synced
+    // crate's own `Cargo.toml`. Read+parsed once here and reused by both the
+    // `cargo_ahead` release-signal check and the downgrade guard below so the
+    // two never drift on which manifest they consult.
+    let cargo_current_ver: Option<String> = if let Some(ws) = workspace_info {
+        ws.workspace_package_version.clone()
+    } else if version_sync_enabled && let Some(ref path) = crate_path {
+        anodizer_stage_build::version_sync::read_cargo_version(path).ok()
+    } else {
+        None
+    };
+
     // A manually-bumped Cargo.toml that is strictly ahead of the previous
     // tag is itself a release signal — the operator has explicitly set the
     // next version. Honor it even when no per-commit bump signal fired and
     // even when the crate path had no changes. This prevents autotag from
     // stalling at the old tag after a manual `cargo set-version` bump.
-    let cargo_ahead = if let Some(ws) = workspace_info {
-        match (
-            ws.workspace_package_version
-                .as_deref()
-                .and_then(|v| git::parse_semver(v).ok()),
-            prev_tag
-                .as_deref()
-                .and_then(|t| git::parse_semver_tag(t).ok()),
-        ) {
-            (Some(c), Some(p)) => (c.major, c.minor, c.patch) > (p.major, p.minor, p.patch),
-            _ => false,
-        }
-    } else {
-        version_sync_enabled
-            && match (crate_path.as_deref(), prev_tag.as_deref()) {
-                (Some(path), Some(prev)) => {
-                    match (
-                        anodizer_stage_build::version_sync::read_cargo_version(path)
-                            .ok()
-                            .and_then(|v| git::parse_semver(&v).ok()),
-                        git::parse_semver_tag(prev).ok(),
-                    ) {
-                        (Some(c), Some(p)) => {
-                            (c.major, c.minor, c.patch) > (p.major, p.minor, p.patch)
-                        }
-                        _ => false,
-                    }
-                }
-                _ => false,
-            }
+    let cargo_ahead = match (
+        cargo_current_ver
+            .as_deref()
+            .and_then(|v| git::parse_semver(v).ok()),
+        prev_tag
+            .as_deref()
+            .and_then(|t| git::parse_semver_tag(t).ok()),
+    ) {
+        (Some(c), Some(p)) => (c.major, c.minor, c.patch) > (p.major, p.minor, p.patch),
+        _ => false,
     };
 
     // If #none token detected (and Cargo.toml isn't explicitly ahead), skip.
@@ -545,13 +539,6 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // Bug fix: when version_sync is enabled, check if the current Cargo.toml
     // version is already higher than the tag-derived version. If so, use the
     // Cargo.toml version to avoid downgrading manually bumped versions.
-    let cargo_current_ver: Option<String> = if let Some(ws) = workspace_info {
-        ws.workspace_package_version.clone()
-    } else if version_sync_enabled && let Some(ref path) = crate_path {
-        anodizer_stage_build::version_sync::read_cargo_version(path).ok()
-    } else {
-        None
-    };
     if let Some(cargo_ver) = cargo_current_ver
         && let Ok(cargo_sv) = git::parse_semver(&cargo_ver)
     {
@@ -975,24 +962,12 @@ fn compute_per_crate_tags(
             git::extract_tag_prefix(&first.tag_template).unwrap_or_else(|| cfg.tag_prefix.clone());
 
         // Determine the previous tag for this group (use first crate's template).
+        // Per-group only the tag_prefix (from this group's template) and
+        // custom_tag (never applies in per-crate dispatch) differ from `cfg`.
         let group_cfg = ResolvedConfig {
             tag_prefix: tag_prefix.clone(),
-            default_bump: cfg.default_bump.clone(),
-            tag_context: cfg.tag_context.clone(),
-            branch_history: cfg.branch_history.clone(),
-            initial_version: cfg.initial_version.clone(),
-            prerelease: cfg.prerelease,
-            prerelease_suffix: cfg.prerelease_suffix.clone(),
-            force_without_changes: cfg.force_without_changes,
-            force_without_changes_pre: cfg.force_without_changes_pre,
-            major_string_token: cfg.major_string_token.clone(),
-            minor_string_token: cfg.minor_string_token.clone(),
-            patch_string_token: cfg.patch_string_token.clone(),
-            none_string_token: cfg.none_string_token.clone(),
-            release_branches: cfg.release_branches.clone(),
             custom_tag: None,
-            git_api_tagging: cfg.git_api_tagging,
-            skip_ci_on_bump: cfg.skip_ci_on_bump,
+            ..cfg.clone()
         };
 
         let prev_tag = find_previous_tag(&group_cfg, git_config)?;
