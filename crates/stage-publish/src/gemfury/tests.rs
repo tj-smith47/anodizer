@@ -18,6 +18,17 @@ fn basic_cfg() -> GemFuryConfig {
     }
 }
 
+/// Drive `publish_to_gemfury` with a fresh out-param vec and fold the
+/// `(Result<()>, partial-vec)` pair back into the `Result<Vec<_>>` shape the
+/// assertions read — on success the landed targets, on error the partial set.
+fn run_publish(
+    ctx: &anodizer_core::context::Context,
+    log: &anodizer_core::log::StageLogger,
+) -> anyhow::Result<Vec<GemFuryTarget>> {
+    let mut pushed = Vec::new();
+    publish_to_gemfury(ctx, log, &mut pushed).map(|()| pushed)
+}
+
 fn add_linux_package(ctx: &mut anodizer_core::context::Context, name: &str) {
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::LinuxPackage,
@@ -239,7 +250,7 @@ fn publish_errors_when_token_missing_and_not_dry_run() {
     ctx.set_env_source(anodizer_core::MapEnvSource::new());
     ctx.config.gemfury = Some(vec![basic_cfg()]);
     let log = ctx.logger("publish");
-    let err = publish_to_gemfury(&ctx, &log).expect_err("missing token must err");
+    let err = run_publish(&ctx, &log).expect_err("missing token must err");
     let msg = format!("{err:#}");
     assert!(
         msg.contains("push token is required") && msg.contains("FURY_TOKEN"),
@@ -252,7 +263,7 @@ fn publish_errors_when_account_missing() {
     let mut ctx = ctx_with_packages();
     ctx.config.gemfury = Some(vec![GemFuryConfig::default()]);
     let log = ctx.logger("publish");
-    let err = publish_to_gemfury(&ctx, &log).expect_err("missing account must err");
+    let err = run_publish(&ctx, &log).expect_err("missing account must err");
     let msg = format!("{err:#}");
     assert!(
         msg.contains("'account' is required"),
@@ -270,7 +281,7 @@ fn publish_dry_run_returns_no_targets() {
     ctx.options.dry_run = true;
     ctx.config.gemfury = Some(vec![basic_cfg()]);
     let log = ctx.logger("publish");
-    let out = publish_to_gemfury(&ctx, &log).expect("dry-run");
+    let out = run_publish(&ctx, &log).expect("dry-run");
     assert!(out.is_empty(), "dry-run pushes nothing");
 }
 
@@ -284,7 +295,7 @@ fn publish_skip_true_returns_no_targets() {
     };
     ctx.config.gemfury = Some(vec![cfg]);
     let log = ctx.logger("publish");
-    let out = publish_to_gemfury(&ctx, &log).expect("skip");
+    let out = run_publish(&ctx, &log).expect("skip");
     assert!(out.is_empty());
 }
 
@@ -301,7 +312,7 @@ fn publish_disable_alias_true_returns_no_targets() {
     ));
     ctx.config.gemfury = Some(vec![cfg]);
     let log = ctx.logger("publish");
-    let out = publish_to_gemfury(&ctx, &log).expect("disable alias");
+    let out = run_publish(&ctx, &log).expect("disable alias");
     assert!(out.is_empty());
 }
 
@@ -315,7 +326,7 @@ fn publish_if_condition_falsy_returns_no_targets() {
     };
     ctx.config.gemfury = Some(vec![cfg]);
     let log = ctx.logger("publish");
-    let out = publish_to_gemfury(&ctx, &log).expect("if falsy");
+    let out = run_publish(&ctx, &log).expect("if falsy");
     assert!(out.is_empty());
 }
 
@@ -336,7 +347,7 @@ fn multi_format_archive_overlap_errors() {
     ctx.config.crates[0].archives = ArchivesConfig::Configs(vec![archive_cfg]);
     ctx.config.gemfury = Some(vec![basic_cfg()]);
     let log = ctx.logger("publish");
-    let err = publish_to_gemfury(&ctx, &log).expect_err("multi-format overlap must err");
+    let err = run_publish(&ctx, &log).expect_err("multi-format overlap must err");
     let msg = format!("{err:#}");
     assert!(
         msg.contains("multiple package formats"),
@@ -358,7 +369,7 @@ fn multi_format_archive_with_single_overlap_passes() {
     ctx.config.crates[0].archives = ArchivesConfig::Configs(vec![archive_cfg]);
     ctx.config.gemfury = Some(vec![basic_cfg()]);
     let log = ctx.logger("publish");
-    publish_to_gemfury(&ctx, &log).expect("single-overlap dry-run ok");
+    run_publish(&ctx, &log).expect("single-overlap dry-run ok");
 }
 
 // -----------------------------------------------------------------------------
@@ -615,7 +626,7 @@ fn gemfury_push_conflict_is_idempotent_success() {
         std::env::set_var("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}"));
     }
     let log = StageLogger::new("gemfury", Verbosity::Quiet);
-    let result = publish_to_gemfury(&ctx, &log);
+    let result = run_publish(&ctx, &log);
     unsafe {
         std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
         std::env::remove_var("ANODIZE_GEMFURY_PUSH_BASE");
@@ -679,7 +690,7 @@ fn gemfury_push_genuine_failure_still_errors() {
         std::env::set_var("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}"));
     }
     let log = StageLogger::new("gemfury", Verbosity::Quiet);
-    let result = publish_to_gemfury(&ctx, &log);
+    let result = run_publish(&ctx, &log);
     unsafe {
         std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
         std::env::remove_var("ANODIZE_GEMFURY_PUSH_BASE");
@@ -740,7 +751,7 @@ fn gemfury_recorded_rollback_target_uses_derived_package_name() {
         std::env::set_var("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}"));
     }
     let log = StageLogger::new("gemfury", Verbosity::Quiet);
-    let result = publish_to_gemfury(&ctx, &log);
+    let result = run_publish(&ctx, &log);
     unsafe {
         std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
         std::env::remove_var("ANODIZE_GEMFURY_PUSH_BASE");
@@ -758,4 +769,86 @@ fn gemfury_recorded_rollback_target_uses_derived_package_name() {
     );
     assert_eq!(pushed[0].version, "1.2.3");
     assert_eq!(pushed[0].account, "acme");
+}
+
+/// When a mid-loop push fails after an earlier artifact already landed, the
+/// out-param must still hold the partial set so the caller can roll back what
+/// landed. The `?`-on-`Result<Vec<_>>` signature discarded that evidence,
+/// orphaning the first artifact on a second-artifact failure.
+#[test]
+#[serial_test::serial]
+fn gemfury_partial_push_records_landed_target_on_later_failure() {
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let art1 = tmp.path().join("alpha_1.2.3_amd64.deb");
+    let art2 = tmp.path().join("beta_1.2.3_amd64.deb");
+    std::fs::write(&art1, b"fake-deb-1").unwrap();
+    std::fs::write(&art2, b"fake-deb-2").unwrap();
+
+    // Two artifacts, two probe+push round-trips. Probes both 404 (not yet
+    // published); first push lands (200), second push hard-fails (400).
+    let probe_404 = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+    let push_200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+    let push_400 = "HTTP/1.1 400 Bad Request\r\nContent-Length: 7\r\n\r\nbad req";
+    let (api_addr, _api_calls) = spawn_oneshot_http_responder(vec![probe_404, probe_404]);
+    let (push_addr, _push_calls) = spawn_oneshot_http_responder(vec![push_200, push_400]);
+
+    let config = Config {
+        project_name: "demo".to_string(),
+        gemfury: Some(vec![GemFuryConfig {
+            account: Some("acme".into()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+    ctx.config = config;
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_TOKEN", "fake-token"));
+    for (path, name, krate) in [
+        (&art1, "alpha_1.2.3_amd64.deb", "alpha"),
+        (&art2, "beta_1.2.3_amd64.deb", "beta"),
+    ] {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::LinuxPackage,
+            path: path.clone(),
+            name: name.to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: krate.to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+    }
+
+    unsafe {
+        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
+        std::env::set_var("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}"));
+    }
+    let log = StageLogger::new("gemfury", Verbosity::Quiet);
+    // Drive the out-param directly so the partial survives the Err return.
+    let mut pushed: Vec<GemFuryTarget> = Vec::new();
+    let result = publish_to_gemfury(&ctx, &log, &mut pushed);
+    unsafe {
+        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
+        std::env::remove_var("ANODIZE_GEMFURY_PUSH_BASE");
+    }
+
+    assert!(
+        result.is_err(),
+        "second-artifact 400 must surface as an error"
+    );
+    assert_eq!(
+        pushed.len(),
+        1,
+        "the first artifact that landed must be recorded for rollback, got {pushed:?}"
+    );
+    assert_eq!(
+        pushed[0].package, "alpha",
+        "the recorded partial must be the artifact that actually pushed"
+    );
 }

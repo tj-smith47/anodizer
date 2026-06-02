@@ -38,8 +38,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
     let nix_cfg = &nix_cfg;
     let crate_cfg = &crate_cfg;
 
-    if let Some(reason) = check_skip_guards(ctx, nix_cfg, crate_name, log)? {
-        let _ = reason;
+    if check_skip_guards(ctx, nix_cfg, crate_name, log)? {
         return Ok(false);
     }
 
@@ -202,7 +201,7 @@ pub(crate) fn render_nix_for_validation(
     let nix_cfg = &nix_cfg;
     let crate_cfg = &crate_cfg;
 
-    if check_skip_guards(ctx, nix_cfg, crate_name, log)?.is_some() {
+    if check_skip_guards(ctx, nix_cfg, crate_name, log)? {
         return Ok(None);
     }
 
@@ -280,19 +279,23 @@ struct NixMetadata {
 /// Inspects `skip` / `skip_upload` and returns `Some(reason)` when the
 /// publish must short-circuit. Emits the same log lines the inline
 /// version emitted, preserving observable behavior.
+/// Returns `true` when any skip guard (config `skip`, falsy `if`, or
+/// `skip_upload`) fires. Each guard emits its own operator-facing
+/// `log.status` line before returning, so the caller needs only the
+/// boolean — the specific reason is already in the log.
 fn check_skip_guards(
     ctx: &mut Context,
     nix_cfg: &NixConfig,
     crate_name: &str,
     log: &StageLogger,
-) -> Result<Option<&'static str>> {
+) -> Result<bool> {
     if let Some(d) = nix_cfg.skip.as_ref() {
         let off = d
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("nix: render skip template for '{}'", crate_name))?;
         if off {
             log.status(&format!("nix: config skipped for '{}'", crate_name));
-            return Ok(Some("skip"));
+            return Ok(true);
         }
     }
     let proceed = anodizer_core::config::evaluate_if_condition(
@@ -305,7 +308,7 @@ fn check_skip_guards(
             "nix: skipping '{}' — `if` condition evaluated falsy",
             crate_name
         ));
-        return Ok(Some("if"));
+        return Ok(true);
     }
     if util::should_skip_upload(nix_cfg.skip_upload.as_ref(), ctx, log) {
         log.status(&format!(
@@ -317,9 +320,9 @@ fn check_skip_guards(
                 .map(|v| v.as_str())
                 .unwrap_or("")
         ));
-        return Ok(Some("skip_upload"));
+        return Ok(true);
     }
-    Ok(None)
+    Ok(false)
 }
 
 /// Resolves `(owner, name)` from the repository config and renders both

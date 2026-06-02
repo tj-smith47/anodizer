@@ -1220,41 +1220,17 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
 // CargoPublisher - Publisher trait adapter
 // ---------------------------------------------------------------------------
 
-/// Publisher trait adapter around [`publish_to_cargo`].
-///
-/// Classified as `Submitter` + `required=true`: crates.io publish is
-/// effectively one-way (versions cannot be re-uploaded), so a failure
-/// here should fail the release and other Submitter publishers must
-/// already be gated.
-///
-/// (Marker for follow-up: when the `PublishStage::run` dispatch swap
-/// lands in the return-type-swap task, update this doc to reflect that
-/// the new dispatch path is the only consumer.)
-pub struct CargoPublisher {
-    required_override: Option<bool>,
-}
-
-impl CargoPublisher {
-    pub fn new() -> Self {
-        Self {
-            required_override: None,
-        }
-    }
-
-    /// Construct with a config-supplied `required` override.
-    ///
-    /// Pass the `Option<bool>` read from `publish.cargo.required`. `None`
-    /// keeps the built-in default (`true`); `Some(v)` overrides it for this run.
-    pub fn with_required(required_override: Option<bool>) -> Self {
-        Self { required_override }
-    }
-}
-
-impl Default for CargoPublisher {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// Publisher trait adapter around `publish_to_cargo`. Classified as
+// `Submitter` + `required=true`: crates.io publish is effectively one-way
+// (versions cannot be re-uploaded), so a failure here must fail the release
+// and other Submitter publishers must already be gated.
+simple_publisher!(
+    CargoPublisher,
+    "cargo",
+    anodizer_core::PublisherGroup::Submitter,
+    true,
+    Some("CARGO_REGISTRY_TOKEN yank"),
+);
 
 /// Operator-visible start line for the cargo publisher. Mirrors the
 /// `run_start_message` helper every per-crate publisher exposes so the
@@ -1311,15 +1287,15 @@ fn count_cargo_configured_crates(ctx: &Context) -> usize {
 
 impl anodizer_core::Publisher for CargoPublisher {
     fn name(&self) -> &str {
-        "cargo"
+        Self::PUBLISHER_NAME
     }
 
     fn group(&self) -> anodizer_core::PublisherGroup {
-        anodizer_core::PublisherGroup::Submitter
+        Self::PUBLISHER_GROUP
     }
 
     fn required(&self) -> bool {
-        self.required_override.unwrap_or(true)
+        Self::resolved_required(self)
     }
 
     fn skips_on_nightly(&self) -> bool {
@@ -1469,7 +1445,7 @@ impl anodizer_core::Publisher for CargoPublisher {
     }
 
     fn rollback_scope_needed(&self) -> Option<&'static str> {
-        Some("CARGO_REGISTRY_TOKEN yank")
+        Self::ROLLBACK_SCOPE
     }
 }
 

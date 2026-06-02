@@ -299,11 +299,21 @@ pub(crate) fn version_already_published(
 /// Top-level publish entrypoint. Iterates each `gemfury[]` entry and
 /// pushes every matching artifact via `POST push.fury.io/<account>` with
 /// HTTP Basic auth.
-pub fn publish_to_gemfury(ctx: &Context, log: &StageLogger) -> Result<Vec<GemFuryTarget>> {
-    let mut pushed: Vec<GemFuryTarget> = Vec::new();
+/// Push every configured artifact to GemFury, appending one
+/// [`GemFuryTarget`] to `pushed` per artifact that actually landed.
+///
+/// `pushed` is an out-param (rather than the return value) so that on a
+/// mid-loop error the caller still holds the partial set of artifacts that
+/// DID land before the failure — those must be rolled back, not orphaned.
+/// A `?` on the previous `Result<Vec<_>>` signature discarded that evidence.
+pub fn publish_to_gemfury(
+    ctx: &Context,
+    log: &StageLogger,
+    pushed: &mut Vec<GemFuryTarget>,
+) -> Result<()> {
     let entries = match ctx.config.gemfury {
         Some(ref v) if !v.is_empty() => v,
-        _ => return Ok(pushed),
+        _ => return Ok(()),
     };
 
     let policy = ctx.retry_policy();
@@ -562,7 +572,7 @@ pub fn publish_to_gemfury(ctx: &Context, log: &StageLogger) -> Result<Vec<GemFur
         ));
     }
 
-    Ok(pushed)
+    Ok(())
 }
 
 /// Issue `DELETE https://api.fury.io/<account>/packages/<name>/versions/<version>`
