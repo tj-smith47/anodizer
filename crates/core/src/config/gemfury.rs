@@ -7,11 +7,10 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 // GemFury publisher config
 // ---------------------------------------------------------------------------
 //
-// Mirrors GoReleaser Pro's `gemfury:` block (closed-source — config surface
-// inferred from `https://goreleaser.com/customization/publish/gemfury/`).
+// The `gemfury:` publisher block.
 // Each entry pushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`.
 //
-// The legacy `furies:` spelling (pre-GR-v2.14) is accepted via a top-level
+// The legacy `furies:` spelling is accepted via a top-level
 // `#[serde(alias = "furies")]` on [`crate::config::Config::gemfury`]; a
 // one-time deprecation warning is emitted by
 // [`crate::config::warn_on_legacy_furies_alias`].
@@ -56,13 +55,13 @@ pub struct GemFuryConfig {
     pub api_secret_name: Option<String>,
 
     /// Package format filter: only push artifacts matching these formats.
-    /// Defaults to `["apk", "deb", "rpm"]` (GR v2.7+ adds `apk`).
+    /// Defaults to `["apk", "deb", "rpm"]`.
     pub formats: Option<Vec<String>>,
 
     /// Template-conditional skip: if rendered result is `"true"`, skip this
     /// publisher entry. Accepts bool or template string.
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat
-    /// with imported GoReleaser Pro `gemfury[].disable:` configs.
+    /// with imported `gemfury[].disable:` configs.
     #[serde(
         deserialize_with = "deserialize_string_or_bool_opt",
         alias = "disable",
@@ -81,7 +80,7 @@ pub struct GemFuryConfig {
 
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the GemFury publisher entry is
-    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
+    /// skipped. Render failure hard-errors. The
     /// `gemfury[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,

@@ -167,7 +167,7 @@ pub(super) fn close_milestones(
                 log.status(&format!("milestone '{}' closed", milestone_name));
             }
             Ok(MilestoneCloseOutcome::NotFound) => {
-                // GoReleaser closes by ID; we close by name lookup, so a
+                // Milestones are closed by name lookup, so a
                 // re-run after a successful close finds nothing. Log it
                 // verbosely so the user understands the no-op instead of
                 // wondering whether a previous close actually happened.

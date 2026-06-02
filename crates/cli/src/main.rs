@@ -36,18 +36,18 @@ fn parse_targets_csv(raw: Option<&str>) -> Result<Option<Vec<String>>, String> {
 
 /// Resolve --single-target flag to the actual host target triple.
 ///
-/// Honours GoReleaser's priority chain
+/// Honours the priority chain
 /// (see `anodizer_core::partial::resolve_host_target_with_env`):
 /// `TARGET=<triple>` > `GGOOS`/`GGOARCH` host-rewrite > `rustc -vV`.
 /// CI jobs targeting a non-host triple can therefore drive
 /// `--single-target` with `TARGET=x86_64-unknown-linux-musl` without
-/// changing the runner's actual architecture, matching the GR escape
-/// hatch documented under `goreleaser build --single-target`.
+/// changing the runner's actual architecture — the same escape
+/// hatch as a single-target build.
 ///
 /// The resolved triple is also exported as `TARGET=<triple>` to the
 /// process environment so any downstream hook subprocess (`hooks.before`,
 /// per-build `pre`/`post`) inherits the active target — parity with
-/// GR's `partial.Pipe.Run` populating `ctx.PartialTarget` for the rest
+/// the partial-target resolution for the rest
 /// of the pipeline.
 fn resolve_single_target(single_target: bool) -> Option<String> {
     if !single_target {
@@ -64,7 +64,7 @@ fn resolve_single_target(single_target: bool) -> Option<String> {
             // SAFETY: single-threaded CLI startup, well before any
             // worker threads or pipeline workers spawn. Setting `TARGET`
             // here is required so user hooks see the resolved triple,
-            // matching GoReleaser's `cmd/build.go` behaviour.
+            // single-target build behaviour.
             unsafe {
                 std::env::set_var("TARGET", &triple);
             }
@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_release_with_prepare_flag() {
-        // GoReleaser Pro `--prepare`: local prep stages, no upstream publish.
+        // `--prepare`: local prep stages, no upstream publish.
         let cli = Cli::try_parse_from(["anodizer", "release", "--prepare"]);
         assert!(
             cli.is_ok(),

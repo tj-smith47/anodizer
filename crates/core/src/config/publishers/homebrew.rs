@@ -18,7 +18,7 @@ pub struct HomebrewConfig {
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
     pub commit_author: Option<CommitAuthorConfig>,
-    /// Formula directory in the tap (e.g. "Formula"). Matches GoReleaser `directory`.
+    /// Formula directory in the tap (e.g. "Formula").
     pub directory: Option<String>,
     /// Override the formula name (default: crate name).
     pub name: Option<String>,
@@ -85,7 +85,7 @@ pub struct HomebrewConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the Homebrew publisher is
-    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
+    /// skipped. Render failure hard-errors. The
     /// `brews[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
@@ -193,9 +193,9 @@ pub struct HomebrewCaskConfig {
     /// `binary "my-cli", target: "mycli"`). The `target:` form mirrors
     /// the Homebrew Ruby cask DSL for binary renames — without it, a
     /// wrapped binary installs at the wrong path.
-    /// Mirrors GoReleaser `internal/pipe/brew/templates/cask.rb.tmpl`.
+    /// Cask binary entry.
     pub binaries: Option<Vec<HomebrewCaskBinary>>,
-    /// Deprecated singular spelling of [`Self::binaries`]. GoReleaser v2.12.6
+    /// Deprecated singular spelling of [`Self::binaries`]. The upstream
     /// replaced `binary: foo` with `binaries: [foo]`; this field captures the
     /// legacy spelling so imported configs keep parsing.
     /// [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars)
@@ -225,7 +225,7 @@ pub struct HomebrewCaskConfig {
     // ----- Completions / manpages -----
     /// Manual page references to install.
     pub manpages: Option<Vec<String>>,
-    /// Deprecated singular spelling of [`Self::manpages`]. GoReleaser replaced
+    /// Deprecated singular spelling of [`Self::manpages`]. The upstream replaced
     /// `manpage: foo.1` with `manpages: [foo.1]`; this field captures the
     /// legacy spelling so imported configs keep parsing.
     /// [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars)
@@ -276,7 +276,7 @@ pub struct HomebrewCaskConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is
-    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
+    /// skipped. Render failure hard-errors. The
     /// `homebrew_casks[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
@@ -486,7 +486,7 @@ pub struct ScoopConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the Scoop publisher is
-    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
+    /// skipped. Render failure hard-errors. The
     /// `scoop[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,

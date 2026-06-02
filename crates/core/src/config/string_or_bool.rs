@@ -74,14 +74,14 @@ impl Default for StringOrBool {
     }
 }
 
-/// Evaluate an `if:` conditional template (GoReleaser Pro `if:` semantics).
+/// Evaluate an `if:` conditional template.
 ///
 /// Returns `Ok(true)` when the caller should proceed with the resource and
 /// `Ok(false)` when the resource must be skipped. Mirrors the contract every
 /// existing `if_condition` consumer in anodizer applies:
 ///
 /// - `None` → proceed (no gate set).
-/// - `Some("")` → proceed (empty literal is a no-op gate; matches GR's
+/// - `Some("")` → proceed (empty literal is a no-op gate; the
 ///   "no `if:` = always run" behavior — keeps round-tripping clean for
 ///   configs that emit empty strings).
 /// - Template render failure → hard `Err` (matches every existing
@@ -301,7 +301,7 @@ pub(super) fn parse_humantime_duration(input: &str) -> Result<std::time::Duratio
 
 /// A value that can be either a `u32` or a string parsed as octal/decimal.
 ///
-/// Used by `NfpmConfig.umask` (and any future field that GoReleaser specifies
+/// Used by `NfpmConfig.umask` (and any future field specified
 /// as `int OR string` in YAML — the parser canonicalizes both forms to a
 /// `u32`). Accepts: `0o022`, `"0o022"`, `"022"`, `"18"`, `18`. Bare numeric
 /// YAML values are interpreted as decimal; YAML-string forms accept the

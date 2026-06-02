@@ -1,6 +1,6 @@
 //! Shell-style `$VAR` / `${VAR}` expansion with a pluggable lookup.
 //!
-//! Matches GoReleaser's `os.ExpandEnv()` shell rules:
+//! Shell `os.ExpandEnv()`-style rules:
 //!   - Variable names start with `_` or ASCII letter.
 //!   - `$5` and similar digit-prefixed sequences are NOT expanded (kept literal).
 //!   - `${...}` without a closing `}` is kept literal (`${` + consumed text).
@@ -14,7 +14,7 @@
 /// Expand `$VAR` and `${VAR}` references in `s`, looking up values via `lookup`.
 ///
 /// - `lookup` returns `Some(value)` for a known variable, `None` to expand to `""`
-///   (GoReleaser behavior for unset vars).
+///   (unset vars expand to empty).
 /// - Expansion is single-pass: a looked-up value is NOT re-scanned for further `$`.
 pub fn expand_with<F>(s: &str, mut lookup: F) -> String
 where
@@ -56,7 +56,7 @@ where
         }
 
         // `$VAR` form: names start with `_` or ASCII letter (shell rules).
-        // Digits (`$5`) are kept literal to match GoReleaser.
+        // Digits (`$5`) are kept literal.
         let starts_valid = chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_';
         if !starts_valid {
             result.push('$');
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn digit_sequences_not_expanded() {
-        // `$5` must NOT be expanded — matches GoReleaser + shell rules.
+        // `$5` must NOT be expanded — shell rules.
         // `$<digit>` is a positional parameter reference in shell, never
         // a variable name; leaving it intact preserves credentials of
         // the form `Bearer $5XYZ...` and matches existing user expectations.

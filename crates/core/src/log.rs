@@ -604,7 +604,7 @@ impl StageLogger {
     /// subprocess output are replaced with `$KEY_NAME` (and inline
     /// `https://<user>:<pass>@host` URL credentials are scrubbed) without
     /// callers having to remember to redact at each call site. Mirrors
-    /// GoReleaser's `gio.Safe(stderr)` pattern at every subprocess
+    /// a safe-stderr pattern at every subprocess
     /// boundary.
     pub fn check_output(
         &self,

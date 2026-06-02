@@ -26,7 +26,7 @@ pub struct DockerHubConfig {
     pub full_description: Option<DockerHubFullDescription>,
     /// Skip this publisher. Accepts bool or template string.
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat
-    /// with imported GoReleaser configs (GR's dockerhub field is `disable:`).
+    /// with imported configs (the legacy `disable:` spelling).
     #[serde(
         deserialize_with = "deserialize_string_or_bool_opt",
         default,
@@ -41,7 +41,7 @@ pub struct DockerHubConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the DockerHub publisher is
-    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
+    /// skipped. Render failure hard-errors. The
     /// `dockerhub[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,

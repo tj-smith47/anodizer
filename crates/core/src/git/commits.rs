@@ -388,7 +388,7 @@ pub fn short_commit_str(commit: &str) -> String {
 
 /// Get the full commit hash of HEAD.
 ///
-/// Mirrors `ctx.Git.FullCommit` in GoReleaser (resolved at git-pipe time and
+/// The full commit SHA (resolved at git-pipe time and
 /// reused everywhere downstream). Used by the source-archive stage to
 /// produce deterministic archives across consecutive commits when
 /// `git_info` was not pre-populated by an earlier pipe.

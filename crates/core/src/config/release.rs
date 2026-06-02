@@ -35,20 +35,20 @@ pub struct ReleaseConfig {
     /// Extra files to upload to the release beyond build artifacts.
     ///
     /// Paths / globs are resolved relative to the project root. `..`
-    /// segments are accepted (matches GoReleaser behaviour), so an entry
+    /// segments are accepted, so an entry
     /// like `../sibling/dist/*` will reach outside the project tree —
     /// security-conscious users should keep the entries inside the repo or
     /// canonicalise them before invoking the release pipeline.
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before upload.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
-    /// GoReleaser Pro feature.
+    /// Conditional-skip gate.
     ///
     /// Same path-traversal caveat as `extra_files`: `..` segments reach
     /// outside the project tree.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Skip uploading artifacts: true, false, or "auto" (skip for snapshots).
-    /// Accepts bool or template string (GoReleaser uses string type).
+    /// Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip_upload: Option<StringOrBool>,
     /// When true, replace an existing draft release instead of failing.
@@ -57,10 +57,9 @@ pub struct ReleaseConfig {
     pub replace_existing_artifacts: Option<bool>,
     /// Skip the release stage. Accepts bool or template string
     /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip).
-    /// GoReleaser supports template strings here since v1.15.0.
+    /// Template strings are supported here.
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat
-    /// with imported GoReleaser configs (GR's release config field is
-    /// `pkg/config/config.go:909` `Disable string`).
+    /// with imported configs (the legacy `disable:` spelling).
     #[serde(
         default,
         alias = "disable",
@@ -83,7 +82,7 @@ pub struct ReleaseConfig {
     /// as the `tag_name` in the GitHub release API instead of the crate's
     /// `tag_template`. Useful in monorepo setups to strip a tag prefix
     /// (e.g. `"{{ .Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`).
-    /// This is a GoReleaser Pro feature provided for free by anodizer.
+    /// A cross-platform publishing feature provided for free by anodizer.
     pub tag: Option<String>,
     /// Maximum number of asset-upload requests in flight simultaneously.
     ///
@@ -103,7 +102,7 @@ pub struct ReleaseConfig {
     /// token-type fallback chain in
     /// [`crate::scm::resolve_token_type`].
     ///
-    /// Use this for the GoReleaser Pro **cross-platform publishing**
+    /// Use this for **cross-platform publishing**
     /// pattern: source repo on one provider (e.g. GitLab) but releases
     /// land on another (e.g. GitHub). Without it, the publish target
     /// is inferred from which `*_TOKEN` env-var is set — fine for
@@ -122,14 +121,12 @@ pub struct ReleaseConfig {
 }
 
 impl ReleaseConfig {
-    /// Default release-name template. Mirrors GoReleaser
-    /// `internal/pipe/release/release.go` (`cfg.NameTemplate = "{{.Tag}}"`).
+    /// Default release-name template (`"{{.Tag}}"`).
     /// Anodize uses Tera-style `{{ Tag }}` (no dot prefix); the rendered
     /// value is identical for any tag the project produces.
     pub const DEFAULT_NAME_TEMPLATE: &'static str = "{{ Tag }}";
 
-    /// Default release `mode`. Mirrors GoReleaser default
-    /// (`internal/pipe/release/release.go`: empty string is treated as
+    /// Default release `mode` (empty string is treated as
     /// "keep-existing" — keep current release notes, don't overwrite).
     pub const DEFAULT_MODE: &'static str = "keep-existing";
 
@@ -290,7 +287,7 @@ pub enum ForceTokenKind {
 // ---------------------------------------------------------------------------
 
 /// Custom GitHub API/upload/download URLs for GitHub Enterprise installations.
-/// Matches GoReleaser's `GitHubURLs` struct.
+/// GitHub API/download URL overrides.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct GitHubUrlsConfig {
@@ -305,7 +302,7 @@ pub struct GitHubUrlsConfig {
 }
 
 /// Custom GitLab API/download URLs for self-hosted GitLab installations.
-/// Matches GoReleaser's `GitLabURLs` struct.
+/// GitLab API/download URL overrides.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct GitLabUrlsConfig {
@@ -322,7 +319,7 @@ pub struct GitLabUrlsConfig {
 }
 
 /// Custom Gitea API/download URLs for self-hosted Gitea installations.
-/// Matches GoReleaser's `GiteaURLs` struct.
+/// Gitea API/download URL overrides.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct GiteaUrlsConfig {
@@ -401,7 +398,7 @@ impl_auto_or_bool_serde!(
 );
 
 /// `make_latest` can be the string `"auto"`, a boolean, or a template string.
-/// GoReleaser renders this field through its template engine at publish time,
+/// This field is rendered through the template engine at publish time,
 /// so we accept arbitrary strings (e.g. `"{{ if .IsSnapshot }}false{{ else }}true{{ end }}"`)
 /// and defer resolution to the release stage.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -458,7 +455,7 @@ impl<'de> Deserialize<'de> for MakeLatestConfig {
 }
 
 /// `skip_push` can be `"auto"` (skip for prereleases), a boolean, or a template string.
-/// GoReleaser accepts template expressions like `"{{ if .IsSnapshot }}true{{ end }}"`.
+/// Template expressions like `"{{ if .IsSnapshot }}true{{ end }}"` are accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkipPushConfig {
     Auto,

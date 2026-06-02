@@ -268,8 +268,7 @@ impl Artifact {
     }
 
     /// Resolve the artifact's canonical file extension (including the leading
-    /// dot), mirroring GoReleaser's `Artifact.Ext()` at
-    /// `internal/artifact/artifact.go:442`: prefer the `ext` metadata extra
+    /// dot): prefer the `ext` metadata extra
     /// when present and non-empty, fall back to parsing the filename.
     ///
     /// Stages that know their canonical extension better than filename
@@ -314,8 +313,7 @@ impl ArtifactRegistry {
 
         // Relativize absolute paths to the current working directory so the
         // determinism harness produces byte-identical `artifacts.json` across
-        // runs that operate in different worktrees. Mirrors GoReleaser's
-        // `shouldRelPath` / `relPath` in `internal/artifact/artifact.go:529-547`.
+        // runs that operate in different worktrees.
         //
         // Without this, raw cargo binaries register paths like
         // `/tmp/anodize-determinism-12345-0/.det-tmp/target/<triple>/release/<bin>`
@@ -420,8 +418,7 @@ impl ArtifactRegistry {
     /// register the same path. UniversalBinary paths differ from their
     /// component binaries so they pass through untouched.
     ///
-    /// Mirrors GoReleaser's `artifact.ByBinaryLikeArtifacts`
-    /// (`internal/artifact/artifact.go:733-761`). Used by stage-sbom to
+    /// Selects binary-like artifacts. Used by stage-sbom to
     /// avoid generating duplicate SBOMs at the same path; would be silently
     /// hand-rolled in any future stage that walks binary kinds.
     pub fn binary_like_dedup(&self) -> Vec<&Artifact> {
@@ -468,7 +465,7 @@ impl ArtifactRegistry {
 
     /// Serialize all artifacts to a JSON value suitable for writing to artifacts.json.
     /// Normalizes all artifact paths to use forward slashes for cross-platform
-    /// consistency (GoReleaser always writes forward slashes).
+    /// consistency (always forward slashes).
     ///
     /// **Determinism**: artifacts are emitted in a stable sort order keyed on
     /// `(kind, target, crate_name, name, path)` regardless of registration
@@ -576,8 +573,8 @@ pub fn uploadable_kinds() -> &'static [ArtifactKind] {
 /// GitHub release publisher, blob storage, stage-checksum, and the stage-sign
 /// "all" filter.
 ///
-/// Mirrors GoReleaser's `artifact.ReleaseUploadableTypes()` plus the four
-/// installer kinds that are GR Pro features (MSI/NSIS as `Installer`, DMG as
+/// The release-uploadable artifact kinds plus the four
+/// installer kinds (MSI/NSIS as `Installer`, DMG as
 /// `DiskImage`, PKG as `MacOsPackage`) — anodizer ships these as OSS so they
 /// are first-class release artifacts here.
 ///
@@ -612,8 +609,7 @@ fn is_uploadable(kind: ArtifactKind) -> bool {
 }
 
 /// Should the `add()` path normaliser convert an absolute path into a path
-/// relative to the current working directory? Mirrors GoReleaser's
-/// `shouldRelPath` in `internal/artifact/artifact.go:540-547`: Docker image
+/// relative to the current working directory? Docker image
 /// "paths" are actually image refs (e.g. `repo/name:tag`) and must pass
 /// through untouched. Every other kind is a real on-disk file whose absolute
 /// path would otherwise leak the (per-run) worktree prefix into
@@ -642,7 +638,7 @@ pub fn is_binary_sign_output(artifact: &Artifact) -> bool {
 
 /// Filter an artifact by the `id` metadata field.
 ///
-/// Matches GoReleaser's `artifact.ByID` semantic:
+/// Artifact `id`-filter semantic:
 /// - When `ids` is `None` or empty, every artifact passes.
 /// - Artifact kinds `Checksum`, `SourceArchive`, `UploadableFile`, `Metadata`
 ///   always pass regardless of filter (these are emitted for every release).
@@ -650,7 +646,7 @@ pub fn is_binary_sign_output(artifact: &Artifact) -> bool {
 ///   the supplied ids. An artifact missing an `id` metadata value does not
 ///   match a non-empty filter.
 ///
-/// Upstream reference: `goreleaser/internal/artifact/artifact.go::ByID`.
+/// Filters artifacts by their `id` metadata extra.
 pub fn matches_id_filter(artifact: &Artifact, ids: Option<&[String]>) -> bool {
     let Some(id_list) = ids else { return true };
     if id_list.is_empty() {
@@ -693,7 +689,7 @@ pub fn format_size(bytes: u64) -> String {
 
 /// Populate artifact sizes and print a formatted size table.
 ///
-/// Filters artifacts to [`size_reportable_kinds`] (matching GoReleaser's
+/// Filters artifacts to [`size_reportable_kinds`] (the
 /// `reportsizes` pipe), stores the file size in each artifact's `size` field,
 /// and prints a human-readable table.
 pub fn print_size_report(registry: &mut ArtifactRegistry, log: &crate::log::StageLogger) {
@@ -959,8 +955,7 @@ mod tests {
     /// is therefore absolute. Without the `add()`-time relativization, the
     /// worktree prefix would land in `artifacts.json` and the two runs would
     /// disagree on that byte sequence even when every other artifact matches.
-    /// Mirrors GoReleaser's `shouldRelPath` / `relPath`
-    /// (`internal/artifact/artifact.go:529-560`).
+    /// Normalizes the artifact path relative to the working directory.
     #[test]
     #[serial_test::serial]
     fn to_artifacts_json_strips_absolute_worktree_prefix() {
@@ -1549,11 +1544,11 @@ mod tests {
     fn release_uploadable_kinds_matches_canonical_set() {
         // Pins the cross-linked artifact set used by stage-checksum,
         // stage-release upload, blob storage, and stage-sign "all" filter.
-        // Mirrors GoReleaser's `artifact.ReleaseUploadableTypes()` plus the
+        // The release-uploadable artifact kinds plus the
         // four installer kinds anodizer ships as OSS:
-        //   - Installer       <- GR Pro: MSI / NSIS
-        //   - DiskImage       <- GR Pro: DMG
-        //   - MacOsPackage    <- GR Pro: PKG
+        //   - Installer       <- MSI / NSIS
+        //   - DiskImage       <- DMG
+        //   - MacOsPackage    <- PKG
         // A regression that drops any of these silently breaks downstream
         // upload/checksum/sign behavior.
         let kinds = release_uploadable_kinds();
@@ -1580,8 +1575,8 @@ mod tests {
 
     #[test]
     fn artifact_ext_prefers_metadata_when_present() {
-        // GoReleaser parity: `Artifact.Ext()` reads `ExtraExt` from extras
-        // (`internal/artifact/artifact.go:442`), not the filename. An SRPM
+        // `Artifact.Ext()` reads the `ext` extra,
+        // not the filename. An SRPM
         // artifact registers `metadata["ext"] = ".src.rpm"` so downstream
         // `{{ .ArtifactExt }}` resolves to `.src.rpm`, not the
         // last-dot-suffix `.rpm` the filename would produce.

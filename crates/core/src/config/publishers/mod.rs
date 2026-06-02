@@ -30,7 +30,7 @@ pub use nix::*;
 // ---------------------------------------------------------------------------
 
 /// Shared repository configuration used by all git-based publishers
-/// (Homebrew, Scoop, Winget, Krew, Nix). Equivalent to GoReleaser's `RepoRef`.
+/// (Homebrew, Scoop, Winget, Krew, Nix). A repository reference.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct RepositoryConfig {
@@ -89,7 +89,7 @@ pub struct PullRequestBaseConfig {
 }
 
 /// Shared commit author configuration with optional GPG/SSH signing.
-/// Equivalent to GoReleaser's `CommitAuthor`.
+/// Commit-author identity for publisher commits.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct CommitAuthorConfig {
@@ -105,8 +105,8 @@ pub struct CommitAuthorConfig {
     /// account that the GitHub Actions checkout step has already configured
     /// in the repo's local git config).
     ///
-    /// Mirrors GoReleaser's `CommitAuthor.UseGithubAppToken`
-    /// (`internal/git/config/github.go:381`); the canonical use-case is
+    /// The use-github-app-token toggle
+    /// uses the local git identity; the canonical use-case is
     /// PRs against `homebrew/homebrew-core` / `kubernetes-sigs/krew-index`
     /// / `microsoft/winget-pkgs` opened from a GitHub App workflow, where
     /// EasyCLA / DCO / signed-commit policies require the App's identity
@@ -117,7 +117,7 @@ pub struct CommitAuthorConfig {
 
 impl CommitAuthorConfig {
     /// Fill in the anodizer default name/email when either field is empty.
-    /// Matches GoReleaser's `commitauthor.Default(brew.CommitAuthor)` which
+    /// The commit-author defaulting, which
     /// runs during the Default pass — so validation messages that reference
     /// commit-author identity see non-empty strings rather than blanks.
     pub fn normalize_defaults(&mut self) {
@@ -258,7 +258,7 @@ pub struct CargoPublishConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the cargo publisher is
-    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
+    /// skipped. Render failure hard-errors. The
     /// publisher `if:` semantics.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,

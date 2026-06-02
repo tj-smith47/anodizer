@@ -80,7 +80,7 @@ pub fn run_publishers(
             }
         }
 
-        // Check template-conditional gate (GoReleaser Pro `if:` parity).
+        // Check template-conditional gate (`if:`).
         let proceed = anodizer_core::config::evaluate_if_condition(
             publisher.if_condition.as_deref(),
             &format!("publisher '{}'", label),
@@ -329,7 +329,7 @@ pub fn matches_publisher_filter(artifact: &Artifact, publisher: &PublisherConfig
         return types.iter().any(|t| t == artifact.kind.as_str());
     }
 
-    // Default curated list — matches GoReleaser's `filterArtifacts` exactly.
+    // Default curated artifact list.
     // Kinds not on this list (raw Binary, UniversalBinary, Snap, Installer,
     // DiskImage, MacOsPackage, Makeself, Flatpak, Header, CArchive, CShared,
     // SourceRpm, etc.) must be opted in via an explicit `artifact_types`.
@@ -404,7 +404,7 @@ pub fn build_publisher_command(
     );
 
     // Expose per-artifact Os, Arch, and Target template variables
-    // (GoReleaser parity: custom publishers can reference {{ .Os }}, {{ .Arch }}, {{ .Target }})
+    // (custom publishers can reference {{ .Os }}, {{ .Arch }}, {{ .Target }})
     if let Some(ref target) = artifact.target {
         let (os, arch) = anodizer_core::target::map_target(target);
         vars.set("Os", &os);
@@ -618,7 +618,7 @@ mod tests {
         );
     }
 
-    /// Pins S3: end-to-end check that the GR-aligned always-set `id` default
+    /// Pins S3: end-to-end check that the always-set `id` default
     /// (populated by stage-build's `artifact_meta` when `build.id` is unset)
     /// flows through the publisher ids filter. A user with `build.id` unset
     /// and `publishers[].ids: [<binary_name>]` must see their artifacts pass.
@@ -1098,7 +1098,7 @@ crates:
         );
     }
 
-    // ---- GoReleaser Pro `if:` conditional gate ----
+    // ---- `if:` conditional gate ----
 
     #[test]
     fn test_publisher_if_falsy_skips() {

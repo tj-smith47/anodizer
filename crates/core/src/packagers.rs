@@ -58,7 +58,7 @@ pub struct MakeselfConfig {
     pub arch: Option<Vec<String>>,
     /// Skip this config. Accepts bool or template string.
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat
-    /// with imported GoReleaser configs (GR makeself uses `disable: string`).
+    /// with imported configs.
     #[serde(
         alias = "disable",
         deserialize_with = "deserialize_string_or_bool_opt",
@@ -71,13 +71,13 @@ pub struct MakeselfConfig {
 #[serde(default)]
 pub struct MakeselfFile {
     /// Source file path (relative to project root).
-    /// Accepts the GoReleaser `src:` spelling via serde alias for back-compat
-    /// with imported configs (GR `MakeselfFile.Source` is keyed `src`).
+    /// Accepts the `src:` spelling via serde alias for back-compat
+    /// with imported configs.
     #[serde(alias = "src")]
     pub source: String,
     /// Destination path inside the archive.
-    /// Accepts the GoReleaser `dst:` spelling via serde alias for back-compat
-    /// with imported configs (GR `MakeselfFile.Destination` is keyed `dst`).
+    /// Accepts the `dst:` spelling via serde alias for back-compat
+    /// with imported configs.
     #[serde(alias = "dst")]
     pub destination: Option<String>,
     /// Strip the parent directory from the source path.
@@ -354,7 +354,7 @@ pub struct SrpmConfig {
     /// [`NfpmSignatureConfig`] type with nFPM.
     pub signature: Option<NfpmSignatureConfig>,
     /// Map of binary name → install path declared in the spec's `%files`
-    /// section, mirroring GR `SRPM.Bins`. Each entry tells the generated
+    /// section. Each entry tells the generated
     /// `.spec` which installed file the package owns. When omitted, each
     /// binary produced by the build for this crate defaults to
     /// `%{_bindir}/<name>` (i.e. `/usr/bin/<name>`, the RPM-idiomatic
@@ -377,10 +377,10 @@ pub struct SrpmConfig {
     /// transaction have been installed. Path to a script file.
     pub posttrans: Option<String>,
     /// Prerelease suffix appended to the version (e.g. `rc1`, `beta2`).
-    /// Mirrors GR `NFPM.Prerelease`.
+    /// Prerelease component of the package version.
     pub prerelease: Option<String>,
     /// Build metadata appended to the version (e.g. git commit hash).
-    /// Mirrors GR `NFPM.VersionMetadata`.
+    /// Version-metadata component of the package version.
     pub version_metadata: Option<String>,
     /// Skip this config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]

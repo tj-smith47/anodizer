@@ -104,7 +104,7 @@ pub trait Publisher: Send + Sync {
         None
     }
 
-    /// Whether this publisher opts out of nightly runs (matches the GoReleaser
+    /// Whether this publisher opts out of nightly runs (the
     /// `customization/publish/nightlies.md` skip-list).
     ///
     /// Each `Publisher` must declare its nightly behavior explicitly — there

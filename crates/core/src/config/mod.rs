@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 /// includes:
 ///   - ./defaults.yaml                           # plain string (backward compat)
 ///   - from_file:
-///       path: ./config/goreleaser.yaml           # structured file path
+///       path: ./config/release.yaml              # structured file path
 ///   - from_url:
 ///       url: https://example.com/config.yaml     # URL fetch
 ///       headers:
@@ -54,7 +54,7 @@ pub struct IncludeUrlConfig {
 // ---------------------------------------------------------------------------
 
 /// `deny_unknown_fields` rejects typos and unknown config
-/// fields at parse time, matching GoReleaser's `yaml.UnmarshalStrict`.
+/// fields at parse time (strict YAML unmarshalling).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -125,7 +125,7 @@ pub struct Config {
     pub report_sizes: Option<bool>,
     /// Environment variables available to all template expressions.
     ///
-    /// List of `KEY=VALUE` strings (matches GoReleaser):
+    /// List of `KEY=VALUE` strings:
     /// `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Order is preserved so
     /// chained env applications (sign + sbom + notarize) see entries in
     /// declared order. Values are rendered through the template engine before
@@ -194,7 +194,7 @@ pub struct Config {
     /// Template files to render and include as release artifacts.
     /// File contents are processed through the template engine.
     pub template_files: Option<Vec<TemplateFileConfig>>,
-    /// GoReleaser Pro monorepo configuration.
+    /// Monorepo configuration.
     /// When configured, tag discovery filters by tag_prefix and the working
     /// directory is scoped to dir.
     pub monorepo: Option<MonorepoConfig>,
@@ -231,21 +231,21 @@ pub struct Config {
     /// Top-level retry configuration applied to network-bound operations
     /// (announcers, git providers, HTTP uploads, docker pipes). When omitted,
     /// `RetryConfig::default()` is used (10 attempts, 10s base, 5m cap —
-    /// matching GoReleaser `Project.Retry`).
+    /// the project-level retry policy).
     pub retry: Option<RetryConfig>,
     /// MCP (Model Context Protocol) server registry publishing
     /// configuration. When `name` is empty (the default), the publisher is
-    /// skipped. Mirrors GoReleaser's `mcp:` block.
+    /// skipped. The `mcp:` publisher block.
     #[serde(default)]
     pub mcp: McpConfig,
     /// NPM package registry publishing configurations. One entry per
     /// published package. In the default `optional-deps` mode anodizer emits
     /// npm's native per-platform packages (biome / git-cliff pattern); in
-    /// `postinstall` mode it emits a download shim (GoReleaser Pro `npms:`
+    /// `postinstall` mode it emits a download shim (the `npms:`
     /// parity).
     pub npms: Option<Vec<NpmConfig>>,
     /// GemFury (fury.io) deb/rpm/apk publishing configurations. Mirrors
-    /// GoReleaser Pro's `gemfury:` block. The pre-GR-v2.14 spelling
+    /// The `gemfury:` block. The legacy spelling
     /// `furies:` is accepted via serde alias; a one-time deprecation
     /// warning is emitted by [`warn_on_legacy_furies_alias`].
     #[serde(alias = "furies")]
@@ -373,7 +373,7 @@ impl Config {
         self.monorepo.as_ref().and_then(|m| m.dir.as_deref())
     }
 
-    // --- Project metadata defaulting helpers (GoReleaser Pro parity) ---
+    // --- Project metadata defaulting helpers ---
     //
     // Publishers that expose homepage/license/description/maintainer fields
     // fall back to these when their own field is unset, so a project only
@@ -667,7 +667,7 @@ pub fn validate_partial(config: &Config) -> Result<(), String> {
 }
 
 /// Known OS values accepted by `archives[].format_overrides[].os`.
-/// Mirrors the Go runtime's `runtime.GOOS` values GoReleaser's archive pipe
+/// The Go runtime's `runtime.GOOS` values the archive pipe
 /// recognises; anything outside this set is almost always a typo
 /// (e.g. a Rust target triple slice like `pc-windows-msvc`).
 const KNOWN_OS: &[&str] = &[
@@ -689,7 +689,7 @@ const KNOWN_OS: &[&str] = &[
 ];
 
 /// Validate that each crate's `release:` block configures at most one SCM
-/// backend. Matches GoReleaser release.go:41-53 `ErrMultipleReleases`, which
+/// backend. A multiple-releases error, which
 /// errors at `Default()` time. Anodizer dispatches on `ctx.token_type` at
 /// runtime so a silently-ignored extra backend is easy to miss.
 pub fn validate_release_backends(config: &Config) -> Result<(), String> {
@@ -811,7 +811,7 @@ pub fn validate_defaults_axis(config: &Config) -> Result<(), String> {
 }
 
 /// Validate `archives[].format_overrides[].os` values reject unknown OSes.
-/// GoReleaser silently no-ops unknown overrides, which has burned users typing
+/// Silently no-op-ing unknown overrides has burned users typing
 /// Rust triples like `apple` or `pc-windows-msvc`.
 ///
 /// Walks every `archives[]` location in the config:
@@ -907,9 +907,8 @@ pub fn validate_homebrew_cask_url_template(config: &Config) -> Result<(), String
 /// Validate that `archives[].id` and `universal_binaries[].id` are unique
 /// within their respective lists.
 ///
-/// Mirrors GoReleaser's `ids.New("archives").Inc(...).Validate()` pattern in
-/// `internal/pipe/archive/archive.go:56-102` and the equivalent
-/// `internal/pipe/universalbinary/universalbinary.go:36-50`. Two archive
+/// The id-uniqueness validation for archives and universal binaries.
+/// Two archive
 /// configs with the same `id` silently both set the same `id` metadata key
 /// on artifacts, breaking publishers that filter `ids: [<id>]`. Anodizer's
 /// build/sign stages already enforce id uniqueness; archive and
@@ -934,7 +933,7 @@ pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
         let _ = empty_ok;
         let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for (idx, maybe_id) in ids {
-            // GoReleaser stores empty as "default" for archives via Default-time
+            // Empty is stored as "default" for archives via Default-time
             // assignment. Anodizer applies `default_archive_id` at deserialize
             // time, so the option is normally `Some("default")`. A truly empty
             // / None id here means the user explicitly cleared it; we still
@@ -1003,7 +1002,7 @@ pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
 /// Validate `builds[]` entries that opt into `builder: prebuilt`.
 ///
 /// `builder: prebuilt` skips `cargo build` and imports a binary the
-/// operator staged elsewhere. The validation rules below mirror GoReleaser's
+/// operator staged elsewhere. The validation rules below follow the
 /// `prebuilt` builder contract (`/customization/builds/builders/prebuilt.md`):
 ///
 /// 1. `prebuilt:` block MUST be set and `prebuilt.path` MUST be non-empty.
@@ -1156,12 +1155,12 @@ pub fn all_builds_prebuilt(config: &Config) -> bool {
 
 /// Validate the depth of `changelog.groups[].groups`.
 ///
-/// GoReleaser Pro caps subgroups at ONE level
+/// Subgroups are capped at ONE level
 /// (`/customization/publish/changelog.md`: "There can only be one level of
 /// subgroups"). Anodizer's renderer can technically handle deeper nesting
 /// (capped at 6 to match Markdown's heading limit), but accepting deeper
 /// configs silently is a footgun: a config that works in anodizer but is
-/// rejected by GR breaks parity for users migrating between the two.
+/// rejected here breaks parity for users migrating in.
 ///
 /// Rejects any `changelog.groups[i].groups[j].groups[..]` configuration
 /// with a clear error pointing at the offending parent group title.
@@ -1563,7 +1562,7 @@ pub fn apply_archive_legacy_aliases(_config: &mut Config) {
     // Intentionally empty — see Deserialize impls.
 }
 
-/// Reject the GoReleaser V1 `dockers:` block at config-load time with a
+/// Reject the legacy V1 `dockers:` block at config-load time with a
 /// clear migration error.
 ///
 /// anodizer is V2-only by design: it implements `docker_v2:` and the
@@ -1587,9 +1586,9 @@ pub fn validate_no_docker_v1(raw_yaml: &serde_yaml_ng::Value) -> Result<(), Stri
 }
 
 /// Emit a `tracing::warn!` for each `publish.homebrew:` (Homebrew Formula)
-/// occurrence in the loaded config. GoReleaser v2.16 deprecated the
+/// occurrence in the loaded config. The upstream deprecated the
 /// Formula publisher in favour of `homebrew_casks:`; anodizer mirrors the
-/// upstream deprecation so users following the GR change-log see the
+/// upstream deprecation so users following the change-log see the
 /// same migration prompt.
 ///
 /// Covers three placement axes (matching how `publish.homebrew` may appear):
@@ -1655,7 +1654,7 @@ pub fn warn_on_legacy_snapshot_name_template(raw_yaml: &serde_yaml_ng::Value) {
 /// `gemfury:` via `#[serde(alias)]`, so this function consults the raw YAML
 /// pre-parse value to detect the legacy spelling.
 ///
-/// Matches GoReleaser Pro v2.14's `furies → gemfury` rename messaging.
+/// The `furies → gemfury` rename messaging.
 pub fn warn_on_legacy_furies_alias(raw_yaml: &serde_yaml_ng::Value) {
     if raw_yaml.get("furies").is_some() {
         tracing::warn!(
@@ -1672,7 +1671,7 @@ pub fn warn_on_legacy_furies_alias(raw_yaml: &serde_yaml_ng::Value) {
 /// consults the raw YAML pre-parse value to detect the legacy spelling that the
 /// typed parse would otherwise erase.
 ///
-/// Mirrors GoReleaser's `NFPM.Builds` field, marked `// Deprecated: use [IDs]`.
+/// The deprecated `NFPM.Builds` field (use `ids` instead).
 ///
 /// nfpm config objects appear under the key `nfpm` or `nfpms` (a single map or
 /// a sequence of maps) at multiple nesting depths — top-level, under
@@ -1728,7 +1727,7 @@ pub fn warn_on_legacy_nfpm_builds(raw_yaml: &serde_yaml_ng::Value) {
 /// `disable:` spelling of the canonical `skip:` field. Many config blocks
 /// (`release`, `changelog`, `snapcraft`, the docker / installer / packager
 /// blocks, …) accept `disable:` via `#[serde(alias = "disable")]` for
-/// back-compat with imported GoReleaser configs; serde folds the alias into
+/// back-compat with imported configs; serde folds the alias into
 /// `skip` on parse, erasing which spelling the user wrote. This helper
 /// consults the raw YAML pre-parse value so porting users get a migration
 /// prompt pointing at the canonical `skip:`.
@@ -1830,10 +1829,10 @@ pub(crate) fn legacy_disable_alias_warnings(raw_yaml: &serde_yaml_ng::Value) -> 
     warnings
 }
 
-/// Reject the GoReleaser pre-v2.13.1 nested `mcp.github:` block with a
+/// Reject the legacy nested `mcp.github:` block with a
 /// clear migration error.
 ///
-/// GR v2.13.1 flattened the registry metadata that used to live under
+/// The registry metadata that used to live under
 /// `mcp.github:` (repository owner/name/url) to the top-level `mcp:` block
 /// (canonical surface: `mcp.repository:`, `mcp.name:`, etc.). Anodizer
 /// never carried the nested shim — its `McpConfig` has `deny_unknown_fields`
@@ -1855,11 +1854,11 @@ pub fn validate_no_mcp_github(raw_yaml: &serde_yaml_ng::Value) -> Result<(), Str
 
 /// Emit a one-time deprecation warning for each `dockers_v2[].retry:` or
 /// `docker_manifests[].retry:` block at config-load time. The per-pipe
-/// `retry:` field is the legacy shape (GR v2.15.3 moved retry handling to
+/// `retry:` field is the legacy shape (retry handling moved to
 /// the top-level `retry:` block); the per-pipe value is still honored at
 /// resolve-time (see `stage-docker::resolve_retry_params`) but a top-level
 /// `retry:` is the canonical surface for retry policy. Warning fires once
-/// per occurrence so users porting from older GR configs see a clear
+/// per occurrence so users porting from older configs see a clear
 /// pointer at load time without waiting for the docker pipe to execute.
 pub fn warn_on_legacy_docker_retry(config: &Config) {
     for msg in legacy_docker_retry_warnings(config) {
@@ -1933,19 +1932,19 @@ pub(crate) fn legacy_docker_retry_warnings(config: &Config) -> Vec<String> {
 /// Fold the deprecated singular Homebrew Cask fields into their canonical
 /// plural lists and emit a one-time deprecation warning per folded field:
 ///
-/// - `binary: <name>` → [`HomebrewCaskConfig::binaries`] (GoReleaser v2.12.6
+/// - `binary: <name>` → [`HomebrewCaskConfig::binaries`] (the upstream
 ///   renamed `binary:` to `binaries:`).
 /// - `manpage: <page>` → [`HomebrewCaskConfig::manpages`].
 ///
-/// anodizer accepts both spellings so imported GoReleaser configs keep parsing.
+/// anodizer accepts both spellings so imported configs keep parsing.
 /// The captured values are moved out of [`HomebrewCaskConfig::legacy_binary`]
 /// and [`HomebrewCaskConfig::legacy_manpage`] so downstream code only ever
 /// reads the canonical plural fields.
 ///
-/// The two folds use different insertion order, matching GoReleaser: a legacy
+/// The two folds use different insertion order: a legacy
 /// `binary` is **prepended** to `binaries` so any explicit `binaries:` ordering
 /// is preserved at the tail, whereas a legacy `manpage` is **appended** to
-/// `manpages` (GoReleaser `internal/pipe/cask/cask.go` does
+/// `manpages` (the cask renderer does
 /// `brew.Manpages = append(brew.Manpages, brew.Manpage)`).
 ///
 /// The fold runs across every config mode — top-level `homebrew_casks`,
@@ -1956,8 +1955,7 @@ pub fn apply_homebrew_cask_legacy_singulars(config: &mut Config) {
     /// `manpage:` → `manpages`) on one cask, returning a warning per folded
     /// field. The singular `binary` is prepended to `binaries` so an explicit
     /// `binaries[0]` ordering is preserved at the tail; the singular `manpage`
-    /// is appended to `manpages`, matching GoReleaser
-    /// `internal/pipe/cask/cask.go` (`brew.Manpages = append(...)`).
+    /// is appended to `manpages`.
     fn fold_one(location: &str, cask: &mut HomebrewCaskConfig) -> Vec<String> {
         let mut warnings = Vec::new();
         if let Some(legacy) = cask.legacy_binary.take() {

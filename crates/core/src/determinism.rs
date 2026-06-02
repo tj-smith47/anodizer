@@ -119,7 +119,7 @@ impl DeterminismState {
         // for the document timestamp and (per the CycloneDX/SPDX specs) the
         // serial/namespace must be unique per document, so two runs over
         // byte-identical inputs still produce differing SBOM bytes. This
-        // matches GoReleaser, which excludes SBOMs from its reproducibility
+        // SBOMs are excluded from the reproducibility
         // guarantee. Surfaced in the report, excluded from `drift_count`.
         // Extensions mirror `infer_stage_from_path`'s `sbom` classifier.
         let sbom_allow: &[(&str, &str)] = &[

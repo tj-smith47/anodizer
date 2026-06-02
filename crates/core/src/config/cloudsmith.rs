@@ -12,7 +12,7 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 /// Per-format distribution value. Accepts either a single distribution string
 /// (`deb: "ubuntu/focal"`) or an array of distribution slugs
 /// (`deb: ["ubuntu/focal", "ubuntu/jammy"]`) — the array form mirrors
-/// GoReleaser Pro v2.8+ and causes the publisher to issue one upload per
+/// causes the publisher to issue one upload per
 /// distribution slug.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
@@ -51,7 +51,7 @@ pub struct CloudSmithConfig {
     /// Distribution mapping per format. Each entry accepts either a single
     /// slug (`deb: "ubuntu/focal"`) or an array of slugs
     /// (`deb: ["ubuntu/focal", "ubuntu/jammy"]`); the array form issues one
-    /// upload per entry. Mirrors GoReleaser Pro v2.8+.
+    /// upload per entry.
     pub distributions: Option<HashMap<String, CloudSmithDistributions>>,
     /// Debian component name (e.g. "main").
     pub component: Option<String>,
@@ -71,7 +71,7 @@ pub struct CloudSmithConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the CloudSmith publisher is
-    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
+    /// skipped. Render failure hard-errors. The
     /// `cloudsmiths[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,

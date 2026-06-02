@@ -61,7 +61,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     let mut ctx = Context::new(config.clone(), ctx_opts);
     helpers::setup_context(&mut ctx, &config, &log)?;
 
-    // Run before-hooks (GoReleaser's BuildCmdPipeline includes before.Pipe).
+    // Run before-hooks.
     // Respect --skip=before like the release pipeline.
     if !ctx.should_skip("before")
         && let Some(before) = &config.before
@@ -87,7 +87,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     log.verbose("running upx stage");
     upx_stage.run(&mut ctx)?;
 
-    // Binary-only signing (GoReleaser BuildCmdPipeline: sign.BinaryPipe).
+    // Binary-only signing.
     // Mirrors the full release pipeline but skips the generic `signs`
     // loop — at build time only binaries exist, and running `signs` would
     // break user expectations (`signs: [{artifacts: all}]` means "sign
@@ -98,7 +98,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         binary_sign_stage.run(&mut ctx)?;
     }
 
-    // macOS notarization (GoReleaser BuildCmdPipeline: notary.MacOS).
+    // macOS notarization.
     if !ctx.should_skip("notarize") {
         let notarize_stage = anodizer_stage_notarize::NotarizeStage;
         log.verbose("running notarize stage");
@@ -108,7 +108,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     // Print artifact size table if configured
     helpers::run_report_sizes(&mut ctx, &config, &log);
 
-    // Write metadata.json + artifacts.json (GoReleaser's BuildCmdPipeline
+    // Write metadata.json + artifacts.json (the build-command pipeline
     // includes metadata.Pipe).
     helpers::write_metadata_and_artifacts(&mut ctx, &config, &log)?;
 

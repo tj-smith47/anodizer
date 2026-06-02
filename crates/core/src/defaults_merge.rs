@@ -478,7 +478,7 @@ fn identity_matches(a: &Option<String>, b: &Option<String>) -> bool {
 // ---------------------------------------------------------------------------
 
 fn nfpm_identity(c: &NfpmConfig) -> Option<String> {
-    // GoReleaser identity: id → package_name → none (unkeyed).
+    // Merge identity: id → package_name → none (unkeyed).
     if let Some(ref id) = c.id {
         return Some(id.clone());
     }
