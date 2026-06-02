@@ -55,7 +55,7 @@ impl PublisherSchemaValidator for McpSchemaValidator {
 #[cfg(test)]
 mod tests {
     use anodizer_core::config::{
-        McpAuth, McpAuthMethod, McpConfig, McpPackage, McpRegistryType, McpRepository,
+        McpAuth, McpAuthMethod, McpConfig, McpHeader, McpPackage, McpRegistryType, McpRepository,
         McpTransport, McpTransportType, ReleaseConfig, ScmRepoConfig,
     };
     use anodizer_core::context::Context;
@@ -68,10 +68,9 @@ mod tests {
     /// values the MCP schema accepts: a reverse-DNS `name` matching the
     /// `^…/…$` pattern, a non-empty description/title under the 100-char cap, a
     /// populated repository, and one package per non-stdio-incompatible
-    /// registry type. All transports are `stdio` — the emitter writes only
-    /// `{"type": <kind>}`, and the schema's `streamable-http` / `sse` transport
-    /// subschemas additionally require a `url`, so a remote transport would not
-    /// round-trip through the registry's `Package.transport` anyOf.
+    /// registry type. These transports are `stdio` (no `url`); remote
+    /// transports carrying a `url` + `headers` are exercised separately by
+    /// [`remote_transport_validates_and_emits_url_and_headers`].
     fn every_option_mcp_cfg() -> McpConfig {
         McpConfig {
             name: Some("io.github.acme/widget".to_string()),
@@ -84,6 +83,7 @@ mod tests {
                     identifier: "@acme/widget".to_string(),
                     transport: McpTransport {
                         kind: McpTransportType::Stdio,
+                        ..McpTransport::default()
                     },
                 },
                 McpPackage {
@@ -91,6 +91,7 @@ mod tests {
                     identifier: "ghcr.io/acme/widget:v{{ .Version }}".to_string(),
                     transport: McpTransport {
                         kind: McpTransportType::Stdio,
+                        ..McpTransport::default()
                     },
                 },
                 McpPackage {
@@ -98,6 +99,7 @@ mod tests {
                     identifier: "acme-widget".to_string(),
                     transport: McpTransport {
                         kind: McpTransportType::Stdio,
+                        ..McpTransport::default()
                     },
                 },
             ],
@@ -348,6 +350,92 @@ mod tests {
         assert!(
             MCP_SCHEMA.contains(date),
             "the embedded MCP_SCHEMA must be the {date} vendored file"
+        );
+    }
+
+    /// A `streamable-http` package transport with a templated `url` + header
+    /// must (a) render the templates against `.Env`, (b) validate with zero
+    /// findings, and (c) emit `type` + `url` + the `{name, value}` headers in
+    /// the schema-expected shape. Locks the remote-transport contract end to
+    /// end.
+    #[test]
+    fn remote_transport_validates_and_emits_url_and_headers() {
+        let mut cfg = every_option_mcp_cfg();
+        cfg.packages = vec![McpPackage {
+            registry_type: McpRegistryType::Npm,
+            identifier: "@acme/widget".to_string(),
+            transport: McpTransport {
+                kind: McpTransportType::StreamableHttp,
+                url: "https://{{ .Env.MCP_HOST }}/mcp".to_string(),
+                headers: vec![McpHeader {
+                    name: "Authorization".to_string(),
+                    value: "Bearer {{ .Env.MCP_TOKEN }}".to_string(),
+                }],
+            },
+        }];
+
+        let mut ctx = ctx_with_mcp(cfg, "1.0.0");
+        ctx.template_vars_mut()
+            .set_env("MCP_HOST", "mcp.acme.example");
+        ctx.template_vars_mut().set_env("MCP_TOKEN", "s3cr3t");
+
+        let findings = McpSchemaValidator.validate(&ctx).expect("validation runs");
+        assert!(
+            findings.is_empty(),
+            "a remote-transport server.json must conform, got: {findings:?}"
+        );
+
+        let server = crate::mcp::render_server_json(&ctx)
+            .expect("render ok")
+            .expect("not skipped");
+        let v: Value = serde_json::to_value(&server).expect("serialize");
+        let transport = &v["packages"][0]["transport"];
+        assert_eq!(transport["type"], "streamable-http");
+        assert_eq!(
+            transport["url"], "https://mcp.acme.example/mcp",
+            "the url template must resolve against .Env"
+        );
+        assert_eq!(transport["headers"][0]["name"], "Authorization");
+        assert_eq!(
+            transport["headers"][0]["value"], "Bearer s3cr3t",
+            "the header value template must resolve against .Env"
+        );
+    }
+
+    /// A remote (`streamable-http` / `sse`) transport with an EMPTY `url` is a
+    /// schema violation: the registry's remote subschemas require `url`. The
+    /// emitter drops the empty `url` key (the stdio shape), so the document
+    /// fails the `streamable-http`/`sse` `required: [type, url]` branch — the
+    /// finding must land under the package transport. Locks the contract that
+    /// a misconfigured remote transport is caught before a publish.
+    #[test]
+    fn remote_transport_without_url_is_reported() {
+        let mut cfg = every_option_mcp_cfg();
+        cfg.packages = vec![McpPackage {
+            registry_type: McpRegistryType::Npm,
+            identifier: "@acme/widget".to_string(),
+            transport: McpTransport {
+                kind: McpTransportType::StreamableHttp,
+                url: String::new(),
+                headers: vec![],
+            },
+        }];
+
+        let server = crate::mcp::render_server_json(&ctx_with_mcp(cfg, "1.0.0"))
+            .expect("render ok")
+            .expect("not skipped");
+        let v: Value = serde_json::to_value(&server).expect("serialize");
+        assert!(
+            v["packages"][0]["transport"].get("url").is_none(),
+            "an empty url is dropped from the wire, leaving the remote transport invalid"
+        );
+
+        let findings = validate_json("mcp", &v, MCP_SCHEMA).expect("validation runs");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field.starts_with("/packages/0/transport")),
+            "a remote transport missing its required url must be flagged under the package transport, got: {findings:?}"
         );
     }
 }

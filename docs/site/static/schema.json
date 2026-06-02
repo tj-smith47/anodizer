@@ -8333,6 +8333,24 @@
       },
       "additionalProperties": false
     },
+    "McpHeader": {
+      "description": "A single HTTP header attached to a remote MCP transport — mirrors the registry schema's `KeyValueInput` (`{ name, value }`).",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "description": "Header name (e.g. `Authorization`).",
+          "type": "string"
+        },
+        "value": {
+          "description": "Header value. Templated, so it can reference an environment variable — `value: \"Bearer {{ .Env.MCP_TOKEN }}\"`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "McpPackage": {
       "description": "A single package distribution descriptor.",
       "type": "object",
@@ -8436,6 +8454,13 @@
       "description": "Transport descriptor for upstream `model.Transport`.",
       "type": "object",
       "properties": {
+        "headers": {
+          "description": "HTTP headers attached to a remote transport's requests. Each entry is a `{ name, value }` pair; the `value` is templated, so a header can carry a secret such as `value: \"Bearer {{ .Env.MCP_TOKEN }}\"`. Omitted entirely for `stdio` and for remote transports with no headers.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/McpHeader"
+          }
+        },
         "type": {
           "description": "Transport type: `stdio`, `streamable-http`, or `sse`.",
           "default": "stdio",
@@ -8444,6 +8469,10 @@
               "$ref": "#/definitions/McpTransportType"
             }
           ]
+        },
+        "url": {
+          "description": "Endpoint URL for the remote transports (`streamable-http`, `sse`). Required by the registry for those types and forbidden for `stdio`, so it stays an optional plain string: leave it empty for `stdio`, and set it for a remote transport. Templated, so `url: \"https://{{ .Env.MCP_HOST }}/v1\"` resolves at publish time.",
+          "type": "string"
         }
       },
       "additionalProperties": false

@@ -245,6 +245,35 @@ pub struct McpTransport {
     /// Transport type: `stdio`, `streamable-http`, or `sse`.
     #[serde(rename = "type", default)]
     pub kind: McpTransportType,
+
+    /// Endpoint URL for the remote transports (`streamable-http`, `sse`).
+    /// Required by the registry for those types and forbidden for `stdio`,
+    /// so it stays an optional plain string: leave it empty for `stdio`,
+    /// and set it for a remote transport. Templated, so
+    /// `url: "https://{{ .Env.MCP_HOST }}/v1"` resolves at publish time.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
+
+    /// HTTP headers attached to a remote transport's requests. Each entry is
+    /// a `{ name, value }` pair; the `value` is templated, so a header can
+    /// carry a secret such as `value: "Bearer {{ .Env.MCP_TOKEN }}"`. Omitted
+    /// entirely for `stdio` and for remote transports with no headers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<McpHeader>,
+}
+
+/// A single HTTP header attached to a remote MCP transport — mirrors the
+/// registry schema's `KeyValueInput` (`{ name, value }`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct McpHeader {
+    /// Header name (e.g. `Authorization`).
+    pub name: String,
+
+    /// Header value. Templated, so it can reference an environment variable —
+    /// `value: "Bearer {{ .Env.MCP_TOKEN }}"`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub value: String,
 }
 
 /// Transport protocol — mirrors upstream `model.TransportType*` constants.
@@ -353,6 +382,33 @@ disable: "{{ if .IsSnapshot }}true{{ endif }}"
 "#;
         let cfg: McpConfig = serde_yaml_ng::from_str(yaml).expect("parse mcp yaml");
         assert!(cfg.skip.is_some(), "disable: alias must populate skip");
+    }
+
+    #[test]
+    fn transport_defaults_to_stdio_with_no_url_or_headers() {
+        // A bare `type: stdio` transport must parse without url/headers and
+        // leave both empty (the registry forbids url on stdio).
+        let t: McpTransport = serde_yaml_ng::from_str("type: stdio").expect("parse transport");
+        assert_eq!(t.kind, McpTransportType::Stdio);
+        assert!(t.url.is_empty());
+        assert!(t.headers.is_empty());
+    }
+
+    #[test]
+    fn remote_transport_parses_url_and_headers() {
+        let yaml = r#"
+type: streamable-http
+url: "https://{{ .Env.MCP_HOST }}/v1"
+headers:
+  - name: Authorization
+    value: "Bearer {{ .Env.MCP_TOKEN }}"
+"#;
+        let t: McpTransport = serde_yaml_ng::from_str(yaml).expect("parse transport");
+        assert_eq!(t.kind, McpTransportType::StreamableHttp);
+        assert_eq!(t.url, "https://{{ .Env.MCP_HOST }}/v1");
+        assert_eq!(t.headers.len(), 1);
+        assert_eq!(t.headers[0].name, "Authorization");
+        assert_eq!(t.headers[0].value, "Bearer {{ .Env.MCP_TOKEN }}");
     }
 
     #[test]

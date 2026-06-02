@@ -58,6 +58,7 @@ fn mcp_ctx(mcp_overrides: impl FnOnce(&mut McpConfig)) -> Context {
             identifier: "ghcr.io/test/server:v1".to_string(),
             transport: McpTransport {
                 kind: McpTransportType::Stdio,
+                ..McpTransport::default()
             },
         }],
         auth: anodizer_core::config::McpAuth {
@@ -393,6 +394,7 @@ fn dry_run_short_circuits_before_network() {
             identifier: "ghcr.io/test/server:v1".to_string(),
             transport: McpTransport {
                 kind: McpTransportType::Stdio,
+                ..McpTransport::default()
             },
         }],
         auth: anodizer_core::config::McpAuth {
@@ -887,6 +889,7 @@ fn owning_ctx(selected: Vec<&str>, mcp_identifier: &str) -> Context {
             identifier: mcp_identifier.to_string(),
             transport: McpTransport {
                 kind: McpTransportType::Stdio,
+                ..McpTransport::default()
             },
         }],
         ..Default::default()
@@ -949,6 +952,7 @@ fn mcp_runs_when_manifest_has_no_oci_package() {
         identifier: "some-npm-pkg".to_string(),
         transport: McpTransport {
             kind: McpTransportType::Stdio,
+            ..McpTransport::default()
         },
     }];
     assert!(mcp_image_owned_by_selected(&ctx));

@@ -98,13 +98,33 @@ pub struct Package {
     pub transport: Transport,
 }
 
-/// Package transport. Only the `type` field is surfaced (e.g. `stdio`,
-/// `streamable-http`, `sse`).
+/// Package transport. Carries `type` for every transport plus the remote-only
+/// `url` + `headers` the registry requires for `streamable-http` / `sse`. A
+/// `stdio` transport leaves `url` empty and `headers` empty, so both keys are
+/// dropped from the wire — the registry's `stdio` subschema forbids a `url`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Transport {
     /// Transport protocol (`stdio`, `streamable-http`, `sse`).
     #[serde(rename = "type")]
     pub kind: String,
+    /// Endpoint URL for remote transports. Omitted when empty so `stdio`
+    /// transports never emit a `url` key (the schema forbids it there).
+    #[serde(rename = "url", default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
+    /// HTTP headers for remote transports. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<Header>,
+}
+
+/// A single transport HTTP header — the registry's `KeyValueInput`
+/// (`{ name, value }`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Header {
+    /// Header name.
+    pub name: String,
+    /// Header value. Omitted when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub value: String,
 }
 
 /// Server response — only the `_meta.io.modelcontextprotocol.registry/official.status`
@@ -165,6 +185,7 @@ mod tests {
                 version: "1.0.0".to_string(),
                 transport: Transport {
                     kind: "stdio".to_string(),
+                    ..Transport::default()
                 },
             }],
         };
@@ -217,6 +238,7 @@ mod tests {
             version: String::new(),
             transport: Transport {
                 kind: "stdio".to_string(),
+                ..Transport::default()
             },
         };
         let v = serde_json::to_value(&pkg).expect("serialize");
@@ -237,11 +259,46 @@ mod tests {
             version: "1.2.3".to_string(),
             transport: Transport {
                 kind: "stdio".to_string(),
+                ..Transport::default()
             },
         };
         let v = serde_json::to_value(&pkg).expect("serialize");
         assert_eq!(v["registryType"], "npm");
         assert_eq!(v["version"], "1.2.3");
+    }
+
+    #[test]
+    fn stdio_transport_omits_url_and_headers() {
+        // The registry's stdio subschema forbids a `url` and has no headers,
+        // so an empty url/headers must drop both keys from the wire.
+        let t = Transport {
+            kind: "stdio".to_string(),
+            url: String::new(),
+            headers: vec![],
+        };
+        let v = serde_json::to_value(&t).expect("serialize");
+        assert_eq!(v["type"], "stdio");
+        assert!(v.get("url").is_none(), "stdio must not emit a url key");
+        assert!(v.get("headers").is_none(), "stdio must not emit headers");
+    }
+
+    #[test]
+    fn remote_transport_emits_url_and_headers() {
+        // A streamable-http transport carries the required url plus an array
+        // of `{name, value}` headers matching the schema's KeyValueInput.
+        let t = Transport {
+            kind: "streamable-http".to_string(),
+            url: "https://api.example.com/mcp".to_string(),
+            headers: vec![Header {
+                name: "Authorization".to_string(),
+                value: "Bearer abc123".to_string(),
+            }],
+        };
+        let v = serde_json::to_value(&t).expect("serialize");
+        assert_eq!(v["type"], "streamable-http");
+        assert_eq!(v["url"], "https://api.example.com/mcp");
+        assert_eq!(v["headers"][0]["name"], "Authorization");
+        assert_eq!(v["headers"][0]["value"], "Bearer abc123");
     }
 
     #[test]

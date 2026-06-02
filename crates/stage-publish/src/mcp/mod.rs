@@ -35,8 +35,8 @@ use anodizer_core::config::{McpAuthMethod, McpConfig};
 
 use auth::{build_client, provider_for};
 use manifest::{
-    CURRENT_SCHEMA_URL, DEFAULT_REGISTRY_URL, Package, Repository, ServerJson, ServerResponse,
-    Transport,
+    CURRENT_SCHEMA_URL, DEFAULT_REGISTRY_URL, Header, Package, Repository, ServerJson,
+    ServerResponse, Transport,
 };
 
 /// Serialized shape of a recorded MCP publish. Single-entry per run —
@@ -563,6 +563,18 @@ fn render_strings(ctx: &Context, mcp: &mut McpConfig) -> Result<()> {
             &mut pkg.identifier,
             &format!("packages[{}].identifier", i),
         )?;
+        render_in_place(
+            ctx,
+            &mut pkg.transport.url,
+            &format!("packages[{}].transport.url", i),
+        )?;
+        for (j, header) in pkg.transport.headers.iter_mut().enumerate() {
+            render_in_place(
+                ctx,
+                &mut header.value,
+                &format!("packages[{}].transport.headers[{}]", i, j),
+            )?;
+        }
     }
     Ok(())
 }
@@ -630,6 +642,16 @@ pub(crate) fn build_server_json(mcp: &McpConfig, version: &str) -> ServerJson {
                 version: v,
                 transport: Transport {
                     kind: pkg.transport.kind.as_str().to_string(),
+                    url: pkg.transport.url.clone(),
+                    headers: pkg
+                        .transport
+                        .headers
+                        .iter()
+                        .map(|h| Header {
+                            name: h.name.clone(),
+                            value: h.value.clone(),
+                        })
+                        .collect(),
                 },
             }
         })

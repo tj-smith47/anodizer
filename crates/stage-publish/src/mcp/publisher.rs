@@ -316,6 +316,7 @@ mod publisher_tests {
                     identifier: "ghcr.io/test/server:v1".to_string(),
                     transport: McpTransport {
                         kind: McpTransportType::Stdio,
+                        ..McpTransport::default()
                     },
                 }],
                 auth: McpAuth {
