@@ -69,6 +69,52 @@ pub(crate) trait AiProvider {
 }
 
 // ---------------------------------------------------------------------------
+// Shared HTTP transport
+// ---------------------------------------------------------------------------
+
+/// POST `body` as JSON to `url` and return the parsed response JSON.
+///
+/// Centralises the client-build → POST → status-check → decode → parse
+/// skeleton shared by every provider. `label` prefixes each error so the
+/// failing provider is identifiable (`"anthropic"`, `"openai"`, `"ollama"`).
+/// `headers` carries provider-specific auth / content-type pairs; the JSON
+/// `content-type` is the provider's responsibility to include if required.
+///
+/// A non-2xx status is surfaced as an error including the status and the
+/// (decoded) response body so an API error message reaches the operator.
+/// A body that fails to decode is surfaced as an error (rather than being
+/// swallowed behind a placeholder string), since a body the transport could
+/// not read is itself a transport failure worth reporting.
+fn post_for_json(
+    timeout: std::time::Duration,
+    url: &str,
+    headers: &[(&str, String)],
+    body: &serde_json::Value,
+    label: &str,
+) -> Result<serde_json::Value> {
+    let client = blocking_client(timeout).with_context(|| format!("{label}: build HTTP client"))?;
+    let mut req = client.post(url);
+    for (key, value) in headers {
+        req = req.header(*key, value);
+    }
+    let resp = req
+        .json(body)
+        .send()
+        .with_context(|| format!("{label}: POST {url}"))?;
+
+    let status = resp.status();
+    let text = resp
+        .text()
+        .with_context(|| format!("{label}: read response body ({status})"))?;
+
+    if !status.is_success() {
+        bail!("{label}: request failed ({status}): {text}");
+    }
+
+    serde_json::from_str(&text).with_context(|| format!("{label}: parse response JSON: {text}"))
+}
+
+// ---------------------------------------------------------------------------
 // Provider dispatch
 // ---------------------------------------------------------------------------
 
@@ -229,7 +275,12 @@ pub(crate) fn enhance_with_ai(
                 ));
                 Ok(body.to_owned())
             } else {
-                Err(err.context(
+                // Redact before propagating so the fail-closed path can't
+                // leak the API key / endpoint credentials that the provider
+                // error text may carry — symmetric with the --allow-ai-failure
+                // warn path above, which already routes through log.redact.
+                let redacted = log.redact(&format!("{err:#}"));
+                Err(anyhow::anyhow!("{redacted}").context(
                     "changelog.ai: provider failed (use --allow-ai-failure to degrade gracefully)",
                 ))
             }

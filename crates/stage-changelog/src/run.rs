@@ -124,7 +124,9 @@ impl Stage for super::ChangelogStage {
         // Enabling AI disables changelog grouping: the model receives the
         // flat commit list and produces its own structure. Operators who
         // want both can instruct the prompt to emit group headings.
-        if ai_provider_active(ai_cfg.as_ref()) && !opts.groups.is_empty() {
+        if should_clear_groups_for_ai(ctx.is_snapshot(), ai_provider_active(ai_cfg.as_ref()))
+            && !opts.groups.is_empty()
+        {
             log.status(
                 "changelog.ai: enabled — `changelog.groups` is ignored; the AI prompt drives the structure",
             );
@@ -167,6 +169,17 @@ impl Stage for super::ChangelogStage {
 /// whitespace-only values keep the native rendering pipeline intact —
 /// suppressing groups and then failing inside `make_provider` would be
 /// wasteful and surprising.
+/// Whether the configured `changelog.groups` should be cleared because AI
+/// enhancement will replace the structure.
+///
+/// Gated on `!is_snapshot` to match [`crate::ai::enhance_with_ai`], which
+/// skips the provider call in snapshot mode. Clearing groups without the
+/// enhancement that replaces them would leave a flat, un-grouped,
+/// un-enhanced preview, so in snapshot the grouped structure is kept.
+fn should_clear_groups_for_ai(is_snapshot: bool, ai_active: bool) -> bool {
+    !is_snapshot && ai_active
+}
+
 fn ai_provider_active(ai_cfg: Option<&anodizer_core::config::ChangelogAiConfig>) -> bool {
     ai_cfg
         .and_then(|a| a.provider.as_deref())
@@ -810,8 +823,32 @@ fn write_changelog_dist(log: &StageLogger, dist: &PathBuf, markdown: &str) -> Re
 
 #[cfg(test)]
 mod ai_suppression_tests {
-    use super::ai_provider_active;
+    use super::{ai_provider_active, should_clear_groups_for_ai};
     use anodizer_core::config::ChangelogAiConfig;
+
+    #[test]
+    fn groups_kept_in_snapshot_even_with_ai_active() {
+        // Snapshot mode skips enhancement, so the grouped structure must
+        // survive — clearing it would yield a flat, un-enhanced preview.
+        assert!(
+            !should_clear_groups_for_ai(true, true),
+            "snapshot + AI active must keep groups"
+        );
+    }
+
+    #[test]
+    fn groups_cleared_in_release_with_ai_active() {
+        assert!(
+            should_clear_groups_for_ai(false, true),
+            "release + AI active clears groups for AI to drive structure"
+        );
+    }
+
+    #[test]
+    fn groups_kept_without_ai() {
+        assert!(!should_clear_groups_for_ai(false, false));
+        assert!(!should_clear_groups_for_ai(true, false));
+    }
 
     #[test]
     fn no_ai_cfg_is_inactive() {

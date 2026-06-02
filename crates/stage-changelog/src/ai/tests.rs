@@ -247,6 +247,41 @@ fn anthropic_401_aborts_and_redacts() {
     );
 }
 
+#[test]
+fn anthropic_abort_path_redacts_secrets() {
+    // The fail-closed abort path must redact symmetrically with the
+    // --allow-ai-failure warn path. An unreachable endpoint with embedded
+    // URL credentials surfaces the credentials in reqwest's connection
+    // error; the propagated error must not carry them verbatim. The known
+    // API-key env value must also be scrubbed.
+    let secret = "sk-ant-very-secret-do-not-leak-9999";
+    let endpoint = "http://leakuser:leakpass@127.0.0.1:1";
+
+    let ctx = ctx_with_env(
+        false,
+        &[
+            ("ANODIZER_ANTHROPIC_ENDPOINT", endpoint),
+            ("ANTHROPIC_API_KEY", secret),
+        ],
+    );
+    let log = ctx.logger("changelog");
+    let cfg = ChangelogAiConfig {
+        provider: Some("anthropic".to_string()),
+        model: None,
+        prompt: Some(ChangelogAiPrompt::Inline("p".to_string())),
+    };
+    let err = enhance_with_ai(&ctx, &cfg, "raw", &log).expect_err("unreachable endpoint fails");
+    let formatted = format!("{err:#}");
+    assert!(
+        !formatted.contains(secret),
+        "abort path must redact the API key value: {formatted}"
+    );
+    assert!(
+        !formatted.contains("leakpass"),
+        "abort path must redact URL credentials: {formatted}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 503 — fail-closed by default, degrades to original body with --allow-ai-failure
 // ---------------------------------------------------------------------------
