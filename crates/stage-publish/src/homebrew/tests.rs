@@ -2147,6 +2147,79 @@ fn publish_top_level_homebrew_casks_skip_upload_returns_false() {
     assert_eq!(got.total, 1);
 }
 
+/// publish_top_level_homebrew_casks: an `ids:` filter that matches no macOS
+/// artifact WHILE other macOS artifacts exist is a typo signal — the publisher
+/// errors instead of silently skipping (which would let `brew install` 404).
+#[test]
+fn publish_top_level_homebrew_casks_ids_typo_errors() {
+    let config = Config {
+        homebrew_casks: Some(vec![HomebrewCaskConfig {
+            name: Some("mycask".to_string()),
+            ids: Some(vec!["nighty".to_string()]), // typo for "nightly"
+            repository: Some(RepositoryConfig {
+                owner: Some("myorg".to_string()),
+                name: Some("homebrew-cask-tap".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    // A darwin artifact exists, but under a DIFFERENT id ("stable").
+    let mut a = art_with_url_sha(
+        ArtifactKind::DiskImage,
+        "mytool.dmg",
+        "aarch64-apple-darwin",
+        "https://e.com/mytool.dmg",
+        "dmgsha",
+    );
+    a.metadata.insert("id".to_string(), "stable".to_string());
+    ctx.artifacts.add(a);
+
+    let err = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("mycask"), "{msg}");
+    assert!(
+        msg.contains("ids"),
+        "error must call out the ids filter: {msg}"
+    );
+}
+
+/// Converse of the typo case: when there is genuinely NO macOS artifact at
+/// all, an `ids:` filter that matches nothing is NOT a typo signal — the
+/// publisher skips (NotApplicable), it does not error.
+#[test]
+fn publish_top_level_homebrew_casks_no_macos_with_ids_skips_not_errors() {
+    let config = Config {
+        homebrew_casks: Some(vec![HomebrewCaskConfig {
+            name: Some("mycask".to_string()),
+            ids: Some(vec!["stable".to_string()]),
+            repository: Some(RepositoryConfig {
+                owner: Some("myorg".to_string()),
+                name: Some("homebrew-cask-tap".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    // Only a Linux artifact — no darwin build exists at all.
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-linux.tar.gz",
+        "x86_64-unknown-linux-gnu",
+        "https://e.com/mytool.tar.gz",
+        "linuxsha",
+    ));
+
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log())
+        .expect("no darwin build at all must skip, not error");
+    assert!(!got.pushed_any);
+    assert_eq!(got.applicable, 0, "no applicable cask when no darwin build");
+}
+
 // ===========================================================================
 // generate_cask_from_context — exercise the multi-platform / fallback paths
 // in cask.rs that aren't reachable through the bare `generate_cask` API.

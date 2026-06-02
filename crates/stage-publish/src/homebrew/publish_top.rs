@@ -158,6 +158,25 @@ pub fn publish_top_level_homebrew_casks(
         // failure.
         let Some(macos_artifact) = find_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref())
         else {
+            // Distinguish "no darwin build exists at all" (a genuine
+            // NotApplicable skip — e.g. a Linux-only pipeline or a
+            // per-crate publish-only pass over a library workspace) from
+            // "an `ids:` filter is set but matched no darwin artifact"
+            // (a typo'd id, or an id that produces no macOS build). The
+            // latter is a misconfiguration: the cask would silently never
+            // publish. Surface it as an error so the typo is caught at
+            // release time rather than discovered when `brew install` 404s.
+            let ids_set = cask_cfg.ids.as_deref().is_some_and(|ids| !ids.is_empty());
+            if ids_set && find_top_level_cask_artifact(ctx, None).is_some() {
+                anyhow::bail!(
+                    "homebrew_casks: cask '{}' has `ids: {:?}` but no macOS artifact \
+                     matches those ids, even though other macOS artifacts exist. This is \
+                     almost always a typo in `ids:` — check the id names against your \
+                     build matrix. Remove the `ids:` filter to accept any macOS artifact.",
+                    cask_name,
+                    cask_cfg.ids.as_deref().unwrap_or(&[])
+                );
+            }
             log.status(&format!(
                 "homebrew_casks: no macOS artifact in scope for cask '{}' — skipping (not applicable)",
                 cask_name
