@@ -11,7 +11,7 @@ use anodizer_core::template::{self, TemplateVars};
 ///
 /// Prefer [`render_url_template_with_ctx`] for new call sites — that variant
 /// also exposes the full project template surface (`ProjectName`, `Tag`,
-/// `Version`, `Env.*`, `ArtifactName`, etc.) so a migrated GoReleaser config
+/// `Version`, `Env.*`, `ArtifactName`, etc.) so a dotted-variable config
 /// like `url_template: "{{ .Tag }}/{{ .ArtifactName }}"` resolves correctly.
 /// This thin wrapper is retained for the rare site that has no `&Context`
 /// available (and only for backward compatibility).
@@ -35,7 +35,7 @@ pub(crate) fn render_url_template(
 /// PreviousTag, ArtifactName, …) plus the per-artifact overlays
 /// (`name`, `version`, `arch`, `os`, `Os`, `Arch`, `Binary`, `ArtifactName`).
 ///
-/// GoReleaser's `tmpl.New(ctx).WithArtifact(art).Apply(url_template)` exposes
+/// The url-template render exposes
 /// 30+ variables to publisher URL templates; without overlay-style merging,
 /// migrated configs that reference `{{ .Tag }}` or `{{ .Env.GITHUB_TOKEN }}`
 /// silently produce empty fields.
@@ -56,7 +56,7 @@ pub(crate) fn render_url_template_with_ctx(
     let mut vars = ctx.template_vars().clone();
     // Per-artifact overlays — both the lower-case shorthand (legacy
     // `name`/`version`/`arch`/`os`) and the canonical `Os`/`Arch`
-    // GR keys, so a config of either flavor renders.
+    // dotted keys, so a config of either flavor renders.
     vars.set("name", name);
     vars.set("version", version);
     vars.set("arch", arch);

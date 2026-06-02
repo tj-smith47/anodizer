@@ -236,9 +236,9 @@ pub fn generate_formula_with_opts(
         license,
     } = *core;
     let FormulaCode { install, test } = *code;
-    // Ruby class name: GoReleaser-compatible conversion.
+    // Ruby class name conversion.
     //
-    // Rules (from GoReleaser's formulaNameFor):
+    // Rules:
     // - Lowercase the entire name first
     // - `+` is replaced with `x`
     // - `@` is replaced with `AT` only when followed by a digit
@@ -261,14 +261,14 @@ pub fn generate_formula_with_opts(
                 at_replaced.push_str("AT");
                 // The digit after '@' is consumed as part of the "AT<digit>"
                 // replacement — push it now and skip it in the next iteration
-                // (GoReleaser brew.go advances `i` past the digit).
+                // (advance `i` past the digit).
                 at_replaced.push(chars[i + 1]);
                 skip_next = true;
             } else {
                 at_replaced.push(*ch);
             }
         }
-        // Split on `-`, `_`, `.`, and ` ` as word boundaries (matching GoReleaser).
+        // Split on `-`, `_`, `.`, and ` ` as word boundaries.
         at_replaced
             .split(['-', '_', '.', ' '])
             .map(|seg| {
@@ -468,7 +468,7 @@ pub fn generate_formula_with_opts(
                 _ => global.push(entry),
             }
         }
-        // GoReleaser sorts dependencies alphabetically in the formula output.
+        // Dependencies are sorted alphabetically in the formula output.
         global.sort_by(|a, b| a.name.cmp(&b.name));
         mac.sort_by(|a, b| a.name.cmp(&b.name));
         linux.sort_by(|a, b| a.name.cmp(&b.name));

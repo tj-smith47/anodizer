@@ -84,15 +84,12 @@ pub fn publish_to_chocolatey(
     };
     let choco_cfg = &choco_cfg;
 
-    // F4: GR's Chocolatey config has no Repository field
-    // (`pkg/config/config.go:1501-1526`); choco is a feed-push publisher,
-    // only `api_key` + `source_repo` are required to push. Anodizer's
-    // optional `repository.owner/name` is *only* used as a fallback source
-    // for `<projectUrl>` (the gallery link) when `project_url:` is unset.
-    // Previously this code hard-failed if either was missing, blocking
-    // valid GR-shape configs (especially internal feeds without a public
-    // GitHub release). Make the lookup optional and fall back to an empty
-    // string when both project_url and repository are unset.
+    // Chocolatey is a feed-push publisher: only `api_key` + `source_repo`
+    // are required to push. The optional `repository.owner/name` is *only*
+    // used as a fallback source for `<projectUrl>` (the gallery link) when
+    // `project_url:` is unset. The lookup is optional and falls back to an
+    // empty string when both project_url and repository are unset, so
+    // internal feeds without a public GitHub release are not blocked.
     //
     let (repo_owner, repo_name) = match choco_cfg.repository.as_ref() {
         Some(r) => (
@@ -218,7 +215,7 @@ fn resolve_metadata(
     repo_owner: &str,
     repo_name: &str,
 ) -> Result<ChocoMetadata> {
-    // GoReleaser Pro parity: fall back to project `metadata.*` when choco config unset.
+    // Fall back to project `metadata.*` when choco config unset.
     let description_raw = choco_cfg
         .description
         .as_deref()
@@ -292,7 +289,7 @@ fn select_windows_artifacts<'a>(
     Option<&'a anodizer_core::artifact::Artifact>,
     Option<&'a anodizer_core::artifact::Artifact>,
 ) {
-    // Find both 32-bit and 64-bit Windows artifacts (GoReleaser parity).
+    // Find both 32-bit and 64-bit Windows artifacts.
     // Apply IDs + amd64_variant filter.
     let ids_filter = choco_cfg.ids.as_deref();
     let amd64_variant = choco_cfg.amd64_variant.as_deref().or(Some("v1"));
@@ -364,8 +361,7 @@ fn select_windows_artifacts<'a>(
                 // (rather than silently failing on the consumer's machine).
                 log.status(&format!(
                     "chocolatey: skipping artifact '{}' for '{}' — arch '{}' is not \
-                     supported by chocolatey (only amd64/386); see \
-                     internal/pipe/chocolatey/chocolatey.go:99-108 for upstream parity",
+                     supported by chocolatey (only amd64/386)",
                     a.name(),
                     crate_name,
                     other
@@ -457,8 +453,7 @@ fn build_install_mode(
             // No Windows artifact = no install script that can possibly
             // verify or download the binary. Pushing a nupkg with an empty
             // checksum and a fabricated GitHub URL is what trips moderator
-            // rejection (broken install script). GoReleaser fails this case
-            // loudly (errNoWindowsArchive at chocolatey.go:21,120).
+            // rejection (broken install script), so this case fails loudly.
             anyhow::bail!(
                 "chocolatey: no windows artifact found for '{}'. Chocolatey \
                  requires a Windows archive (or msi/nsis when configured via \
@@ -486,10 +481,9 @@ fn render_text_fields(
         .as_deref()
         .map(|t| ctx.render_template(t).unwrap_or_else(|_| t.to_string()));
 
-    // Template-render Copyright, Summary, Description, ReleaseNotes
-    // (GoReleaser parity: chocolatey.go:218-227). `Changelog` is injected
-    // as a per-render extra (matching GoReleaser WithExtraFields) so users
-    // migrating GoReleaser configs that use `{{ .Changelog }}` work.
+    // Template-render Copyright, Summary, Description, ReleaseNotes.
+    // `Changelog` is injected as a per-render extra so configs that use
+    // `{{ Changelog }}` work.
     // Template-render extra: `Changelog` is a tera variable. When the changelog
     // stage has not populated `ReleaseNotes` (e.g. first release with no prior
     // tag), an empty string is the correct default — Tera renders `{{ Changelog }}`
@@ -507,7 +501,7 @@ fn render_text_fields(
         })
     };
     let copyright = render(choco_cfg.copyright.as_deref());
-    // GoReleaser Pro parity: summary falls back to project-level
+    // Summary falls back to project-level
     // `metadata.description` (the 1-line summary), same source the
     // `description` field already falls back to. The Chocolatey gallery
     // requires `<summary>`; without this fallback an unset `summary:` in
@@ -519,7 +513,7 @@ fn render_text_fields(
                 .unwrap_or_else(|_| s.to_string())
         })
     });
-    // GoReleaser Pro parity: release_notes falls back to the resolved
+    // release_notes falls back to the resolved
     // `metadata.full_description` (the long-form body, typically
     // README.md via `from_file:`). Without this fallback an unset
     // `release_notes:` in the choco block left the nuspec
@@ -650,7 +644,7 @@ fn stage_package(
 /// with `CHOCOLATEY_API_KEY` env-var fallback. An empty result signals
 /// "skip push" at the call site.
 fn resolve_api_key(ctx: &Context, choco_cfg: &anodizer_core::config::ChocolateyConfig) -> String {
-    // Template-render APIKey (GoReleaser parity: chocolatey.go:184)
+    // Template-render APIKey.
     // Empty default is checked by the caller — the empty branch logs a
     // warn and returns Ok(false) (skip push) rather than letting an empty
     // key reach the NuGet push API where it would surface as opaque 403.

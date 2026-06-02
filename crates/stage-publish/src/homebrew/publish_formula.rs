@@ -49,7 +49,7 @@ pub(crate) fn disambiguate_homebrew_archives(
 /// Resolved metadata strings for the formula: description, license,
 /// homepage, and the rendered formula name. All fields are post-Tera
 /// (rendered through `ctx.render_template`) and fall back to project
-/// `metadata.*` per GoReleaser Pro parity.
+/// `metadata.*`.
 struct ResolvedMetadata {
     description: String,
     license: Option<String>,
@@ -105,7 +105,7 @@ struct RenderedFormulaCode {
 /// Build the `install`, `test`, `extra_install`, and `post_install` blocks
 /// from config + artifact metadata. Auto-generates multi-binary install
 /// lines from ExtraBinaries metadata when no explicit install is set
-/// (GoReleaser parity).
+/// the manifest.
 fn render_install_and_test_blocks(
     ctx: &Context,
     hb_cfg: &HomebrewConfig,
@@ -186,7 +186,7 @@ fn collect_archive_entries(
 ) -> Result<Vec<(String, String, String)>> {
     let ids_filter = hb_cfg.ids.as_deref();
     let amd64_variant = hb_cfg.amd64_variant.as_deref().or(Some("v1"));
-    // GoReleaser defaults Goarm to "6" for Homebrew (brew.go:85)
+    // Goarm defaults to "6" for Homebrew.
     let arm_variant = hb_cfg.arm_variant.as_deref().or(Some("6"));
     let mut all_artifacts = ctx
         .artifacts
@@ -200,7 +200,7 @@ fn collect_archive_entries(
     let raw_archive_data: Vec<(String, String, String, String)> = all_artifacts
         .iter()
         // OnlyReplacingUnibins: exclude universal binaries that didn't replace
-        // single-arch variants (GoReleaser parity).
+        // single-arch variants.
         .filter(|a| a.only_replacing_unibins())
         // Exclude raw `gz` archives (not `tar.gz`): Homebrew cannot
         // install a single-file compressed blob as an archive.
@@ -336,11 +336,11 @@ fn clone_tap_and_write_formula(
         log,
     )?;
 
-    // Determine formula directory (GoReleaser parity: `directory` field).
+    // Determine formula directory (the `directory` field).
     // Empty string means "tap repo root" — the `is_empty()` branch below
     // uses `repo_path` directly without joining, so the empty default is the
     // documented no-subdirectory mode (most Homebrew taps put formulae at
-    // the root); GoReleaser brew.go behaves the same way.
+    // the root).
     let directory = hb_cfg.directory.clone().unwrap_or_default();
     let formula_dir = if directory.is_empty() {
         tap.repo_path.to_path_buf()
@@ -368,7 +368,7 @@ struct CaskInTapOutcome {
     cask_name: Option<String>,
     /// On-disk path of the written cask (for `git add`) when one was written.
     cask_path: Option<PathBuf>,
-    /// Additional versioned alt-name `.rb` files (GR Pro
+    /// Additional versioned alt-name `.rb` files (the
     /// `alternative_names:` versioned-file emission). Each entry is
     /// included in the commit set so the tap commit covers every file
     /// touched by this publish.
@@ -402,7 +402,7 @@ fn maybe_write_cask_into_tap(
     }
     let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg)?;
 
-    // Honor `cask.directory:` (GR cask.go:65-67) so a tap can place
+    // Honor `cask.directory:` so a tap can place
     // casks in a sub-tree. Defaults to "Casks". The cask config field
     // takes precedence; without it we land at the conventional
     // homebrew-cask path.

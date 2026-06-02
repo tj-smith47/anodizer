@@ -98,7 +98,7 @@ pub fn publish_top_level_homebrew_casks(
             continue;
         }
 
-        // GoReleaser Pro `homebrew_casks[].if:` parity.
+        // Cask-level `if:` conditional gate.
         let proceed = anodizer_core::config::evaluate_if_condition(
             cask_cfg.if_condition.as_deref(),
             &format!("homebrew_casks entry '{}'", cask_name),
@@ -122,7 +122,7 @@ pub fn publish_top_level_homebrew_casks(
                 )
             })?;
 
-        // Directory defaults to "Casks" (mirrors GR cask.go:65-67). GR warns
+        // Directory defaults to "Casks". A warning is emitted
         // when the resolved value is not "Casks" since a non-default cask
         // directory typically breaks `brew install` on end-user machines
         // (homebrew-cask only auto-discovers files under "Casks/"). Pin
@@ -237,13 +237,13 @@ pub fn publish_top_level_homebrew_casks(
                 )
             })?;
 
-        // Pre-render multi-key uninstall + zap blocks (GR parity, see
+        // Pre-render multi-key uninstall + zap blocks (see
         // `cask::render_zap_block` doc-comment).
         let uninstall_block = render_uninstall_block(cask_cfg.uninstall.as_ref());
         let zap_block = render_zap_block(cask_cfg.zap.as_ref());
 
         // Pre-render Ruby kwargs continuation for the `url` line —
-        // mirrors GR `internal/pipe/cask/templates/additional_url_params.rb`.
+        // for the `url` line kwargs.
         let url_extras_top = cask_cfg
             .url
             .as_ref()
@@ -322,7 +322,7 @@ pub fn publish_top_level_homebrew_casks(
         let manpages = cask_cfg.manpages.as_deref().unwrap_or(&empty_vec);
 
         // Pre-render `alternative_names` entries through the template engine
-        // (GR Pro `myproject@{{ .Version }}` style) and split into aliases
+        // (`myproject@{{ .Version }}` style) and split into aliases
         // vs versioned-file emission. Aliases stay inside the primary
         // file; versioned alt-names get their own `.rb` so users can
         // `brew install myapp@1.2.3`.

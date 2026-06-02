@@ -91,7 +91,7 @@ pub fn dispatch(
         for p in publishers.iter().filter(|p| p.group() == group) {
             // Nightly skip-list: publishers that opt out of `--nightly`
             // record `Skipped(Nightly)` and never invoke `run`. Matches
-            // GoReleaser's `nightlies.md` documented skip set
+            // The documented nightlies skip set
             // (homebrew, scoop, aur, krew, nix, all announcers, gomod
             // proxy). Honoured before `simulate_failure` so the test
             // harness still observes the real nightly gate.

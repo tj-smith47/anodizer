@@ -146,7 +146,7 @@ pub(crate) fn find_artifacts_by_os_with_variant(
     amd64_variant: Option<&str>,
     arm_variant: Option<&str>,
 ) -> Result<Vec<OsArtifact>> {
-    // Include both Archive and UploadableBinary artifacts — GoReleaser
+    // Include both Archive and UploadableBinary artifacts — both
     // supports both UploadableArchive and UploadableBinary types for publisher
     // packages. Use UploadableBinary (not Binary) so raw build outputs
     // packaged into archives don't double-register as portable binaries.
@@ -158,7 +158,7 @@ pub(crate) fn find_artifacts_by_os_with_variant(
             .by_kind_and_crate(ArtifactKind::UploadableBinary, crate_name),
     );
     // OnlyReplacingUnibins: exclude universal binaries that didn't replace
-    // single-arch variants (GoReleaser parity).
+    // single-arch variants.
     let all: Vec<_> = all
         .into_iter()
         .filter(|a| a.only_replacing_unibins())
@@ -202,7 +202,7 @@ pub(crate) fn find_all_platform_artifacts_with_variant(
             .by_kind_and_crate(ArtifactKind::UploadableBinary, crate_name),
     );
     // OnlyReplacingUnibins: exclude universal binaries that didn't replace
-    // single-arch variants (GoReleaser parity).
+    // single-arch variants.
     let all: Vec<_> = all
         .into_iter()
         .filter(|a| a.only_replacing_unibins())

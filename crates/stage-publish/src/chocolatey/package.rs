@@ -98,7 +98,7 @@ pub(super) fn create_nupkg(
         );
     }
 
-    // Log the package details (GoReleaser parity: chocolatey.go:167)
+    // Log the package details.
     let _nupkg_name = format!("{}.{}.nupkg", name, version);
 
     Ok(())

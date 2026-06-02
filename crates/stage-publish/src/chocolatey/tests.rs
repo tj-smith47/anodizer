@@ -241,8 +241,7 @@ fn test_generate_install_script_dual_arch() {
     assert!(script.contains("-Checksum64 $checksum64 -ChecksumType64 'sha256'"));
 }
 
-/// C5 — chocolatey only ships amd64/386 (GoReleaser
-/// `internal/pipe/chocolatey/chocolatey.go:99-108`). When the only Windows
+/// Chocolatey only ships amd64/386. When the only Windows
 /// artifact is arm64, anodizer must NOT silently package it as a 64-bit
 /// archive (the prior `is_32bit_target` heuristic let arm64 fall through
 /// to the amd64 slot, producing a broken install script).
@@ -275,7 +274,7 @@ fn test_publish_to_chocolatey_rejects_arm64_only() {
     }];
     let mut ctx = Context::new(config, ContextOptions::default());
     // Only an arm64 Windows artifact — chocolatey must reject (matches
-    // GR's `errNoWindowsArchive` since the goarch filter excludes arm64).
+    // a no-windows-archive error since the goarch filter excludes arm64).
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Archive,
         path: std::path::PathBuf::from("/tmp/mytool-windows-arm64.zip"),
@@ -364,10 +363,10 @@ fn test_publish_to_chocolatey_missing_config() {
 
 #[test]
 fn test_publish_to_chocolatey_missing_repository_is_now_optional() {
-    // F4: GR's Chocolatey config has no Repository field — choco is a
+    // Chocolatey has no Repository field — choco is a
     // feed-push publisher, only api_key + source_repo are required.
     // anodizer's `repository.owner/name` is only a fallback source for
-    // <projectUrl>; it must not block valid GR-shape configs.
+    // <projectUrl>; it must not block configs that omit it.
     use anodizer_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};
     use anodizer_core::context::{Context, ContextOptions};
     use anodizer_core::log::{StageLogger, Verbosity};

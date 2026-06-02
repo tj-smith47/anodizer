@@ -387,7 +387,7 @@ fn test_render_url_template_invalid_fallback() {
 /// F1 — `render_url_template_with_ctx` exposes the full project template
 /// surface (`Tag`, `ProjectName`, `Version`, `Major/Minor/Patch`,
 /// `Commit`, `Branch`, `PreviousTag`, `Env.*`, `ArtifactName`, …) — not
-/// just the lower-case 4-var subset. Migrated GoReleaser configs that
+/// just the lower-case 4-var subset. Dotted-variable configs that
 /// reference `{{ .Tag }}` or `{{ .Env.X }}` in `url_template:` would
 /// silently produce empty fields under the legacy renderer.
 #[test]
@@ -418,7 +418,7 @@ fn test_render_url_template_with_ctx_full_surface() {
     );
 
     // Per-artifact `Os` / `Arch` overlays exposed alongside the lower-case
-    // shorthand (matches GR's `WithArtifact(art).Apply(...)` shape).
+    // shorthand (the artifact-scoped render shape).
     let url2 = render_url_template_with_ctx(
         &ctx,
         "https://example.com/{{ ProjectName }}-{{ Os }}-{{ Arch }}.zip",
@@ -945,7 +945,7 @@ mod commit_opts_tests {
         ctx
     }
 
-    /// Q-author1 regression: GR's `commitauthor.Get()` runs Tera/Go templates
+    /// Regression: commit-author resolution runs Tera templates
     /// over `name` and `email`. Anodizer must do the same so a config like
     ///
     ///     commit_author:
