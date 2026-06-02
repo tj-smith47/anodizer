@@ -4842,6 +4842,7 @@ fn test_archive_templated_files_per_format() {
 
     let tmp = TempDir::new().unwrap();
     let dist = tmp.path().join("dist");
+    let staging_root = dist.join(".archive-templated");
 
     // Stand up the source template file referenced by templated_files.src.
     // It renders to a body that embeds .Format so we can also assert
@@ -4951,6 +4952,14 @@ fn test_archive_templated_files_per_format() {
         zip_body,
         b"format=zip\n".to_vec(),
         ".Format must resolve to 'zip' inside the rendered file body"
+    );
+
+    // The templated_files staging tree must not persist in dist/ after the
+    // stage completes — its contents are already packed into the archives.
+    assert!(
+        !staging_root.exists(),
+        "templated_files staging dir must be removed after archiving, found {}",
+        staging_root.display()
     );
 }
 

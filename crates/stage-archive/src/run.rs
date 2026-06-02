@@ -102,6 +102,20 @@ impl Stage for ArchiveStage {
 
         clear_archive_template_vars(ctx);
 
+        // Remove the templated_files staging tree so the rendered scratch
+        // files don't persist in dist/ after their contents have already
+        // been packed into the archives. Best-effort: the archives are
+        // written by now, so a cleanup failure must not fail the stage.
+        let staging_root = dist.join(ARCHIVE_TEMPLATED_STAGING_DIR);
+        if staging_root.exists()
+            && let Err(e) = fs::remove_dir_all(&staging_root)
+        {
+            log.verbose(&format!(
+                "archive: could not remove templated_files staging dir '{}': {e}",
+                staging_root.display()
+            ));
+        }
+
         for artifact in new_artifacts {
             ctx.artifacts.add(artifact);
         }
@@ -109,6 +123,11 @@ impl Stage for ArchiveStage {
         Ok(())
     }
 }
+
+/// Dist-relative directory under which `archives[].templated_files[]`
+/// entries are rendered before being packed. Removed at the end of the
+/// stage so the scratch files don't persist in dist/.
+const ARCHIVE_TEMPLATED_STAGING_DIR: &str = ".archive-templated";
 
 /// Render every `archives[].templated_files[]` entry into a staging
 /// directory and return one [`ArchiveEntry`] per rendered file so the
@@ -133,7 +152,7 @@ fn render_archive_templated_files(
     // One staging dir per (archive_id, target, format) so multiple
     // formats for the same archive write to distinct paths.
     let staging = dist
-        .join(".archive-templated")
+        .join(ARCHIVE_TEMPLATED_STAGING_DIR)
         .join(archive_id)
         .join(target)
         .join(format);
