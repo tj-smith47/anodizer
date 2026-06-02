@@ -350,10 +350,12 @@ pub fn publish_to_gemfury(ctx: &Context, log: &StageLogger) -> Result<Vec<GemFur
             .iter()
             .filter(|a| matches!(a.kind, ArtifactKind::LinuxPackage | ArtifactKind::Archive))
             .filter(|a| crate::util::matches_id_filter(a, cfg.ids.as_deref()))
-            .filter(|a| {
-                detect_gemfury_format(a.name())
-                    .is_some_and(|fmt| formats.iter().any(|f| f.eq_ignore_ascii_case(fmt)))
-            })
+            // Keep only artifacts whose extension is in the configured
+            // formats filter. The shared case-folding matcher subsumes the
+            // per-extension hand-roll (gemfury slugs deb/rpm/apk equal the
+            // file extensions); `detect_gemfury_format` is still used below
+            // to record the slug on the published target.
+            .filter(|a| crate::util::format_matches(a.name(), &formats))
             .collect();
 
         // ---- Dry-run logging ----

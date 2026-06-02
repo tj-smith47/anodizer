@@ -30,8 +30,10 @@ pub fn cloudsmith_format_matches(filename: &str, formats: &[impl AsRef<str>]) ->
         let suffix = match raw {
             "alpine" => ".apk",
             "srpm" | "src.rpm" => ".src.rpm",
+            // Non-aliased slug: defer to the shared case-folding matcher so
+            // a mixed-case slug (e.g. `DEB`) still matches a `.deb` file.
             other => {
-                if lower.ends_with(&format!(".{}", other)) {
+                if crate::util::format_matches(&lower, &[other]) {
                     return true;
                 }
                 continue;

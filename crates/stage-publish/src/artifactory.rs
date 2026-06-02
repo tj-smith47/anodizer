@@ -102,17 +102,12 @@ pub(crate) fn collect_upload_artifacts<'a>(
             if !crate::util::matches_id_filter(a, ids) {
                 return false;
             }
-            // Extension filter
+            // Extension filter (case-folding via the shared matcher).
             if let Some(ext_list) = exts
                 && !ext_list.is_empty()
+                && !crate::util::format_matches(a.name(), ext_list)
             {
-                let name = a.name();
-                if !ext_list
-                    .iter()
-                    .any(|ext| name.ends_with(&format!(".{}", ext)))
-                {
-                    return false;
-                }
+                return false;
             }
             true
         })
