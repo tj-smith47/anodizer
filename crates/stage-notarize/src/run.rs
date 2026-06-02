@@ -11,7 +11,7 @@ use anodizer_core::config::{MacOSNativeSignNotarizeConfig, MacOSSignNotarizeConf
 use anodizer_core::context::Context;
 
 use super::retry::{check_notarize_output, real_sleep, run_status_with_retry, run_with_retry};
-use super::secret::{MaterializedSecret, matches_ids, materialize_secret, redact_args};
+use super::secret::{matches_ids, materialize_secret, redact_args};
 
 // ---------------------------------------------------------------------------
 // Cross-platform (rcodesign)
@@ -47,9 +47,12 @@ pub(super) fn run_cross_platform(
     // P12 blob (the latter is the common shape for storing the cert in a
     // CI secret store). Materialize the base64 form to a tempfile so
     // rcodesign can read it via its `--p12-file` flag.
-    let _cert_secret = materialize_secret(&certificate_raw, "sign.certificate")
+    // Held for its Drop: the binding owns the materialized base64-decoded
+    // cert tempfile, which must outlive the rcodesign subprocess that reads
+    // it. Dropping early would delete the file before the spawn below.
+    let cert_secret = materialize_secret(&certificate_raw, "sign.certificate")
         .with_context(|| format!("notarize: macos[{idx}] materialize sign.certificate"))?;
-    let certificate = _cert_secret.path.clone();
+    let certificate = cert_secret.path.clone();
 
     // Stat-check the resolved path before launching rcodesign so a typo or
     // missing file produces a clean "certificate not found" error instead
@@ -70,12 +73,16 @@ pub(super) fn run_cross_platform(
         .render_template_opt(sign.entitlements.as_deref())
         .with_context(|| format!("notarize: macos[{idx}] render sign.entitlements"))?;
 
-    // Render and validate notarize config fields (if present). The
-    // `_key_secret` binding is lifted to the function scope so a
-    // materialized base64-decoded tempfile survives until the subprocess
-    // launches below.
-    let mut _key_secret: Option<MaterializedSecret> = None;
-    let notarize_api = if let Some(ref ncfg) = cfg.notarize {
+    // Render and validate notarize config fields (if present). The block
+    // yields both the API parameters and the materialized .p8 key guard;
+    // `key_secret` below is held (never read) purely so its Drop — which
+    // deletes the base64-decoded key tempfile — is deferred until the
+    // notary-submit subprocess has launched. The name is kept (not
+    // underscore-prefixed) so it reads as load-bearing rather than
+    // discardable; the lint allow is the only honest way to say "held only
+    // for its Drop" without the misleading `_` prefix.
+    #[allow(unused_variables)]
+    let (notarize_api, key_secret) = if let Some(ref ncfg) = cfg.notarize {
         let issuer_id = ctx.render_template_opt(ncfg.issuer_id.as_deref())
             .with_context(|| format!("notarize: macos[{idx}] render notarize.issuer_id"))?
             .ok_or_else(|| {
@@ -96,7 +103,6 @@ pub(super) fn run_cross_platform(
         let secret = materialize_secret(&key_raw, "notarize.key")
             .with_context(|| format!("notarize: macos[{idx}] materialize notarize.key"))?;
         let key = secret.path.clone();
-        _key_secret = Some(secret);
         // Stat-check the resolved path before launching rcodesign so a
         // typo or unmounted secret produces a clean "key not found"
         // error instead of an opaque rcodesign exit code partway through
@@ -111,9 +117,12 @@ pub(super) fn run_cross_platform(
                 anyhow::anyhow!("notarize: macos[{idx}] notarize.key_id is required when notarize block is present")
             })?;
         let timeout = Some(ncfg.resolved_timeout());
-        Some((issuer_id, key, key_id, ncfg.resolved_wait(), timeout))
+        (
+            Some((issuer_id, key, key_id, ncfg.resolved_wait(), timeout)),
+            Some(secret),
+        )
     } else {
-        None
+        (None, None)
     };
 
     // Default IDs to project name when not specified

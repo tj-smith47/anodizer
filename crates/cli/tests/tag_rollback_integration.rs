@@ -13,10 +13,14 @@ use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
-fn anodizer() -> Command {
+/// Build an `anodizer` command wired through [`sandbox_env`]. Returns the
+/// command paired with the scratch [`TempDir`] guard the env points at; the
+/// caller must hold the guard until after the command runs so the redirected
+/// HOME / XDG dir is not reclaimed mid-spawn.
+fn anodizer() -> (Command, TempDir) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_anodizer"));
-    sandbox_env(&mut cmd);
-    cmd
+    let scratch = sandbox_env(&mut cmd);
+    (cmd, scratch)
 }
 
 /// Redirect HOME / GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM at every git
@@ -27,23 +31,23 @@ fn anodizer() -> Command {
 /// that — without the redirection, a host with `commit.gpgsign`
 /// globally enabled would try to sign with an unconfigured key and
 /// the test would fail with a confusing "no secret key" error.
-fn sandbox_env(cmd: &mut Command) {
-    // Use a tempdir per invocation. Leaks the path string but the tempdir
-    // is dropped at process exit; tests run short.
+#[must_use = "hold the returned TempDir until after the command runs"]
+fn sandbox_env(cmd: &mut Command) -> TempDir {
+    // One scratch dir per spawn. Returned to the caller (rather than leaked)
+    // so it is reclaimed at the end of the caller's scope, not the process —
+    // it only needs to outlive the single command that reads HOME/XDG from it.
     let scratch = TempDir::new().expect("scratch tempdir for HOME redirect");
     cmd.env("HOME", scratch.path())
         .env("XDG_CONFIG_HOME", scratch.path())
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null");
-    // Hold the tempdir until the command completes by leaking it; the OS
-    // will reclaim on process exit. Tests are sub-second.
-    std::mem::forget(scratch);
+    scratch
 }
 
 fn run_git(dir: &Path, args: &[&str]) {
     let mut cmd = Command::new("git");
     cmd.current_dir(dir).args(args);
-    sandbox_env(&mut cmd);
+    let _scratch = sandbox_env(&mut cmd);
     cmd.env("GIT_AUTHOR_NAME", "test")
         .env("GIT_AUTHOR_EMAIL", "test@test.com")
         .env("GIT_COMMITTER_NAME", "test")
@@ -82,21 +86,28 @@ fn git_init_no_identity(dir: &Path) {
 }
 
 fn git_tag_exists(dir: &Path, tag: &str) -> bool {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(["tag", "-l", tag])
-        .output()
-        .unwrap();
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir).args(["tag", "-l", tag]);
+    let _scratch = sandbox_env(&mut cmd);
+    let out = cmd.output().unwrap();
     !String::from_utf8_lossy(&out.stdout).trim().is_empty()
 }
 
 fn git_head_subject(dir: &Path) -> String {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(["log", "-1", "--format=%s", "HEAD"])
-        .output()
-        .unwrap();
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir)
+        .args(["log", "-1", "--format=%s", "HEAD"]);
+    let _scratch = sandbox_env(&mut cmd);
+    let out = cmd.output().unwrap();
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn git_head_sha(dir: &Path) -> String {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir).args(["rev-parse", "HEAD"]);
+    let _scratch = sandbox_env(&mut cmd);
+    let out = cmd.output().unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
 #[test]
@@ -124,7 +135,8 @@ fn tag_rollback_local_deletes_tag_and_creates_revert_commit() {
         "fixture setup: tag v1.0.0 should exist before rollback"
     );
 
-    let out = anodizer()
+    let (mut cmd, _scratch) = anodizer();
+    let out = cmd
         .current_dir(dir)
         .args(["tag", "rollback", "--no-push"])
         .output()
@@ -171,19 +183,10 @@ fn tag_rollback_dry_run_makes_no_mutations() {
     run_git(dir, &["add", "-A"]);
     run_git(dir, &["commit", "-q", "-m", "chore(release): v1.0.0"]);
     run_git(dir, &["tag", "v1.0.0"]);
-    let head_before = String::from_utf8(
-        Command::new("git")
-            .current_dir(dir)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap()
-    .trim()
-    .to_string();
+    let head_before = git_head_sha(dir);
 
-    let out = anodizer()
+    let (mut cmd, _scratch) = anodizer();
+    let out = cmd
         .current_dir(dir)
         .args(["tag", "rollback", "--dry-run", "--no-push"])
         .output()
@@ -194,17 +197,7 @@ fn tag_rollback_dry_run_makes_no_mutations() {
         git_tag_exists(dir, "v1.0.0"),
         "dry-run must not delete tags"
     );
-    let head_after = String::from_utf8(
-        Command::new("git")
-            .current_dir(dir)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap()
-    .trim()
-    .to_string();
+    let head_after = git_head_sha(dir);
     assert_eq!(head_before, head_after, "dry-run must not move HEAD");
 }
 
@@ -244,7 +237,7 @@ fn tag_rollback_works_on_identity_less_host() {
         .env_remove("GIT_AUTHOR_EMAIL")
         .env_remove("GIT_COMMITTER_NAME")
         .env_remove("GIT_COMMITTER_EMAIL");
-    sandbox_env(&mut cmd);
+    let _scratch = sandbox_env(&mut cmd);
     let out = cmd
         .output()
         .expect("anodizer tag rollback should spawn on identity-less host");
@@ -273,7 +266,7 @@ fn tag_rollback_works_on_identity_less_host() {
     cfg_cmd
         .current_dir(dir)
         .args(["config", "--local", "--get", "user.email"]);
-    sandbox_env(&mut cfg_cmd);
+    let _scratch = sandbox_env(&mut cfg_cmd);
     let cfg = cfg_cmd.output().unwrap();
     assert!(
         !cfg.status.success() || cfg.stdout.is_empty(),

@@ -97,6 +97,13 @@ pub struct RollbackOpts {
 /// Compiled once at first use (the pattern is a compile-time literal) so
 /// the classifier doesn't recompile it per tag — same caching idea as
 /// `is_branchlike` in `core/git/commits.rs`.
+///
+/// Drift-risk pair with `core::git::is_branchlike`: that predicate matches
+/// the same two anodize tag shapes but with deliberately looser, prefix-only
+/// regexes (it answers "is this NOT a tag?" for branch fallback, so it must
+/// not over-strict). These rollback patterns are fully anchored and strict
+/// on purpose. Keep the two shape definitions in sync when the tag grammar
+/// changes — they are intentionally separate, not accidentally duplicated.
 static PER_CRATE_TAG_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[A-Za-z_][A-Za-z0-9_-]*-v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$")
         .expect("static regex compiles")
@@ -644,8 +651,7 @@ mod tests {
         let dir = tmp.path();
         let bump_sha = init_bump_repo(dir, 2);
 
-        let orig = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir).unwrap();
+        let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
 
         let opts = opts_for(dir, Some(bump_sha));
         let err = run(opts).expect_err("safety check should fire");
@@ -655,8 +661,6 @@ mod tests {
             msg.contains("non-bump commit"),
             "missing safety-check phrasing: {msg}"
         );
-
-        std::env::set_current_dir(orig).unwrap();
     }
 
     #[test]
@@ -666,8 +670,7 @@ mod tests {
         let dir = tmp.path();
         let _bump_sha = init_bump_repo(dir, 0);
 
-        let orig = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir).unwrap();
+        let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
 
         // HEAD == bump_sha; safety check trivially passes (no commits
         // between HEAD and target).
@@ -678,8 +681,6 @@ mod tests {
         // Tag still present (dry-run guarantee).
         let tags = git::get_tags_at_head_in(dir).unwrap();
         assert_eq!(tags, vec!["v1.0.0".to_string()]);
-
-        std::env::set_current_dir(orig).unwrap();
     }
 
     #[test]
@@ -700,8 +701,7 @@ mod tests {
         .trim()
         .to_string();
 
-        let orig = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir).unwrap();
+        let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
 
         let mut opts = opts_for(dir, None);
         opts.dry_run = true;
@@ -723,8 +723,6 @@ mod tests {
         .trim()
         .to_string();
         assert_eq!(head_before, head_after);
-
-        std::env::set_current_dir(orig).unwrap();
     }
 
     #[test]
@@ -735,8 +733,7 @@ mod tests {
         let bump_sha = init_bump_repo(dir, 0);
         // No 'origin' configured — push_branch_in would error otherwise.
 
-        let orig = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir).unwrap();
+        let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
 
         let opts = RollbackOpts {
             sha: None,
@@ -764,8 +761,6 @@ mod tests {
             subj.starts_with("chore(release): rollback v1.0.0"),
             "unexpected HEAD subject: {subj}"
         );
-
-        std::env::set_current_dir(orig).unwrap();
     }
 
     #[test]
@@ -777,8 +772,7 @@ mod tests {
         // Add a non-anodize tag at the same SHA.
         run_git(dir, &["tag", "internal-release"]);
 
-        let orig = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir).unwrap();
+        let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
 
         let opts = RollbackOpts {
             sha: None,
@@ -796,8 +790,6 @@ mod tests {
         // Non-anodize tag survived; anodize tag is gone.
         let surviving = git::get_tags_at_sha_in(dir, &bump_sha).unwrap();
         assert_eq!(surviving, vec!["internal-release".to_string()]);
-
-        std::env::set_current_dir(orig).unwrap();
     }
 
     // -----------------------------------------------------------------

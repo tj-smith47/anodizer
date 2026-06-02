@@ -208,6 +208,13 @@ pub fn get_current_branch() -> Result<String> {
 /// a `push: tags:` workflow trigger, `GITHUB_REF_NAME` is the TAG name
 /// (e.g. `v0.4.5`), and accepting it would make `git push origin v0.4.5`
 /// from detached HEAD silently create a branch named after the tag.
+///
+/// Drift-risk pair with `cli::commands::tag::rollback`'s `LOCKSTEP_TAG_RE` /
+/// `PER_CRATE_TAG_RE`: those classify the same two anodize tag shapes but
+/// are fully anchored and strict (a rollback must touch only real tags).
+/// The patterns here are deliberately looser and prefix-only (branch-vs-tag
+/// disambiguation, not classification). Keep both in sync when the tag
+/// grammar changes — they are intentionally separate, not duplicated.
 pub fn is_branchlike(name: &str) -> bool {
     use regex::Regex;
     use std::sync::OnceLock;
