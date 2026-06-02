@@ -55,11 +55,14 @@ pub fn pkgbuild_command(
 // PkgStage
 // ---------------------------------------------------------------------------
 
-/// Default output filename template.
+/// Default output filename template (no version component).
 ///
-/// Matches GoReleaser Pro's default (`{{.ProjectName}}_{{.Arch}}`): no version
-/// component and no forced extension. The user controls the extension entirely
-/// by including it in the `name:` field (e.g. `{{ ProjectName }}_{{ Arch }}.pkg`).
+/// The `.pkg` extension is auto-appended (case-insensitively) after rendering
+/// when the resolved name does not already end in `.pkg`, so the default emits
+/// `<ProjectName>_<Arch>.pkg`. An extensionless installer is not recognized by
+/// macOS Installer.app and breaks the homebrew-cask pkg stanza + checksum
+/// naming. A user-supplied `name:` ending in `.pkg` is used verbatim (not
+/// doubled).
 const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}";
 
 /// Rendered per-binary field values resolved from a [`PkgConfig`].
@@ -361,7 +364,17 @@ impl Stage for PkgStage {
                         )
                     })?;
 
-                    // Output path (user controls the extension via the name template)
+                    // Ensure the filename ends with .pkg (case-insensitive). An
+                    // extensionless installer is not recognized by macOS
+                    // Installer.app and breaks the homebrew-cask pkg stanza +
+                    // checksum naming; a user-supplied `name` already ending in
+                    // `.pkg` is not doubled. Mirrors stage-dmg's `.dmg` append.
+                    let pkg_filename = if pkg_filename.to_lowercase().ends_with(".pkg") {
+                        pkg_filename
+                    } else {
+                        format!("{pkg_filename}.pkg")
+                    };
+
                     let output_dir = dist.join("macos");
                     let pkg_path = output_dir.join(&pkg_filename);
 
@@ -2012,8 +2025,9 @@ crates:
     }
 
     #[test]
-    fn test_default_name_template_no_version_no_extension() {
-        // Default template is `{{ ProjectName }}_{{ Arch }}` — no version, no .pkg.
+    fn test_default_name_template_no_version_appends_pkg_extension() {
+        // Default template has no version segment; the `.pkg` extension is
+        // auto-appended so the default emits ProjectName_Arch.pkg.
         let tmp = TempDir::new().unwrap();
 
         let pkg_cfg = PkgConfig {
@@ -2057,8 +2071,61 @@ crates:
         assert_eq!(pkgs.len(), 1);
         let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
         assert_eq!(
-            filename, "myapp_arm64",
-            "default name template should be ProjectName_Arch with no version or extension"
+            filename, "myapp_arm64.pkg",
+            "default name template should be ProjectName_Arch with the .pkg extension appended"
+        );
+    }
+
+    /// A user-supplied `name:` that already ends in `.pkg` is used verbatim —
+    /// the auto-append must not double the extension (case-insensitive match).
+    #[test]
+    fn test_user_name_ending_in_pkg_is_not_doubled() {
+        let tmp = TempDir::new().unwrap();
+
+        let pkg_cfg = PkgConfig {
+            identifier: Some("com.example.myapp".to_string()),
+            name: Some("custom_{{ Arch }}.PKG".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![pkg_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("/build/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        PkgStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::MacOsPackage);
+        assert_eq!(pkgs.len(), 1);
+        let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            filename, "custom_arm64.PKG",
+            "a user name already ending in .pkg (any case) must not get a second .pkg"
         );
     }
 }
