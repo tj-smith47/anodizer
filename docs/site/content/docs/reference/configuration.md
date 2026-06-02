@@ -948,6 +948,294 @@ Uses the unified `HomebrewCaskConfig` which carries all fields from both the per
 | `scoop` | ScoopConfig | — | Scoop manifest publishing configuration. |
 | `winget` | WingetConfig | — | WinGet manifest publishing configuration. |
 
+## `crates[].publish.cargo`
+`cargo publish` flag surface.
+
+Presence under `publish:` opts the crate in; use `skip: true` (or a truthy template) to opt out. There is no `enabled` field — presence is the on-switch.
+
+Fields intentionally omitted because anodizer owns them: - `--package` / `--workspace` / `--exclude`: the top-level `crates[]` axis owns crate selection. - `--dry-run`: pipeline-level CLI ergonomics (`anodizer release --dry-run`). - `-v` / `-q` / `--color`: CLI ergonomics, not config. - `--config` / `-Z`: cargo CLI escape hatches; out of scope.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `all_features` | bool | — | Activate every feature, including `default` (`--all-features`). |
+| `allow_dirty` | bool | — | Allow publishing with an uncommitted working tree (`--allow-dirty`). |
+| `features` | list of string | — | Crate features to activate (`--features`). |
+| `frozen` | bool | — | Both `--locked` and `--offline` (`--frozen`). |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the cargo publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro publisher `if:` semantics. |
+| `index` | string | — | Registry index URL (`--index`). |
+| `index_timeout` | integer | — | Seconds to wait for the crates.io sparse index to publish a crate before its dependents are pushed (anodizer-original — no `cargo publish` equivalent). |
+| `jobs` | integer | — | Number of parallel compile jobs for verification (`--jobs`). |
+| `keep_going` | bool | — | Continue on errors when verifying multiple crates (`--keep-going`). |
+| `locked` | bool | — | Require an up-to-date `Cargo.lock` matching the resolver (`--locked`). |
+| `manifest_path` | string | — | Path to the crate's `Cargo.toml` (`--manifest-path`). |
+| `no_default_features` | bool | — | Disable the `default` feature set (`--no-default-features`). |
+| `no_verify` | bool | — | Skip the local `cargo build --release` verification step (`--no-verify`). |
+| `offline` | bool | — | Require offline resolution; never hit the network (`--offline`). |
+| `registry` | string | — | Alternate registry name from `~/.cargo/config.toml` (`--registry`). |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.
+
+Default: `true` — a failure here aborts the release. Set to `false` to log failures but continue. |
+| `skip` | StringOrBool | — | Skip this publisher; supports template strings or bool. Truthy renders disable the publisher without removing the block. |
+| `target` | string | — | Build target triple for the verification step (`--target`). |
+| `target_dir` | string | — | Override the cargo target directory (`--target-dir`). |
+| `wait_for_workspace_deps` | WaitForWorkspaceDepsConfig | — | Pre-publish gate that polls crates.io for every workspace-internal dep of the crate being published, blocking until each is queryable at its expected version. Required for multi-tag-multi-crate workspaces (e.g. cfgd) where per-crate tags fire independent `Release.yml` runs that would otherwise race the sparse-index propagation.
+
+Single-crate workspaces and lockstep-bumped monorepos (anodizer itself) leave this off — there is no inter-tag race to gate on. |
+
+## `crates[].publish.homebrew`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `arm_variant` | string | — | ARM version filter (e.g. "6", "7"). Only artifacts matching this variant are included. |
+| `cask` | HomebrewCaskConfig | — | Homebrew Cask configuration (macOS .app bundles). |
+| `caveats` | string | — | Post-install user-facing notes shown by `brew info`. |
+| `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
+| `commit_msg_template` | string | — | Custom commit message template. Rendered via Tera with the standard release template variables (`ProjectName`, `Tag`, `Version`, etc.). Default: `"Brew formula update for {{ ProjectName }} version {{ Tag }}"` (set in `crates/stage-publish/src/homebrew.rs::default_commit_msg_template`). |
+| `conflicts` | list of HomebrewConflict | — | Conflicting formula names with optional reason. |
+| `custom_block` | string | — | Custom Ruby code block inserted into the formula class body. |
+| `custom_require` | string | — | Ruby `require` statement for custom download strategies. |
+| `dependencies` | list of HomebrewDependency | — | Package dependencies (e.g. `openssl`, `libgit2`). |
+| `description` | string | — | Short description of the formula (shown in `brew info`). |
+| `directory` | string | — | Formula directory in the tap (e.g. "Formula"). Matches GoReleaser `directory`. |
+| `download_strategy` | string | — | Custom download strategy class name (e.g. `:using => GitHubPrivateRepositoryReleaseDownloadStrategy`). |
+| `extra_install` | string | — | Additional install commands appended after the main install block. |
+| `homepage` | string | — | Project homepage URL. Falls back to the GitHub release URL when unset. |
+| `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `brews[].if:`. |
+| `install` | string | — | Ruby `install` block content for the formula. |
+| `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
+| `name` | string | — | Override the formula name (default: crate name). |
+| `plist` | string | — | Launchd plist content for `brew services`. |
+| `post_install` | string | — | Post-install commands (separate `def post_install` block in formula). |
+| `repository` | RepositoryConfig | — | Unified repository config with branch, token, PR, git SSH support. (Replaces the legacy `tap: TapConfig` owner/name-only form.) |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.
+
+Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `service` | string | — | Homebrew service block content (alternative to plist). |
+| `skip_upload` | StringOrBool | — | Skip publishing the formula.  `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
+| `test` | string | — | Ruby `test` block content for the formula (run by `brew test`). |
+| `url_headers` | list of string | — | HTTP headers to include in download requests (e.g. for private repos). |
+| `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
+
+## `crates[].publish.homebrew_cask`
+Unified Homebrew Cask configuration.
+
+Used at both call-sites: - `homebrew_casks:` — top-level array; carries `repository`, `commit_author`, `directory`, `ids`, `url`, structured `uninstall`/`zap`, etc. - `crates[].publish.homebrew_cask:` — per-crate override; same shape, with `url_template` as the simpler URL alternative.
+
+Fields from both original types are present; any field may be `None` at either call-site. The union avoids a two-type bifurcation while keeping both axes.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `alternative_names` | list of string | — | Alternative cask names (aliases). |
+| `app` | string | — | macOS .app bundle name (e.g. "MyApp.app"). |
+| `binaries` | list of HomebrewCaskBinary | — | Binary stubs to create in /usr/local/bin.
+
+Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a structured `{ name, target }` object (`{ name: "my-cli", target: "mycli" }` → emits `binary "my-cli", target: "mycli"`). The `target:` form mirrors the Homebrew Ruby cask DSL for binary renames — without it, a wrapped binary installs at the wrong path. Mirrors GoReleaser `internal/pipe/brew/templates/cask.rb.tmpl`. |
+| `binary` | string | — | Deprecated singular spelling of [`Self::binaries`]. GoReleaser v2.12.6 replaced `binary: foo` with `binaries: [foo]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::binaries`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
+| `caveats` | string | — | Custom caveats shown after install. |
+| `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
+| `commit_msg_template` | string | — | Custom commit message template. Default: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}" |
+| `completions` | HomebrewCaskCompletions | — | Shell completion definitions. |
+| `conflicts` | list of HomebrewCaskConflictEntry | — | Conflicting casks or formulae. |
+| `custom_block` | string | — | Arbitrary Ruby code inserted into the cask block. |
+| `dependencies` | list of HomebrewCaskDependencyEntry | — | Cask dependencies (other casks or formulae). |
+| `description` | string | — | Cask description. |
+| `directory` | string | — | Subdirectory in the tap repo for cask placement (default: "Casks"). |
+| `generate_completions_from_executable` | HomebrewCaskGeneratedCompletions | — | Auto-generate shell completions from an executable. |
+| `homepage` | string | — | Project homepage URL. |
+| `hooks` | HomebrewCaskHooks | — | Pre/post install/uninstall hooks. |
+| `ids` | list of string | — | Build IDs filter: only include artifacts from builds whose `id` is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `homebrew_casks[].if:`. |
+| `license` | string | — | License identifier (SPDX). |
+| `manpage` | string | — | Deprecated singular spelling of [`Self::manpages`]. GoReleaser replaced `manpage: foo.1` with `manpages: [foo.1]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::manpages`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
+| `manpages` | list of string | — | Manual page references to install. |
+| `name` | string | — | Cask name (default: crate / project name). |
+| `repository` | RepositoryConfig | — | Unified repository config for the Homebrew tap. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.
+
+Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `service` | string | — | Homebrew service definition. |
+| `skip_upload` | StringOrBool | — | Skip publishing the cask. `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
+| `uninstall` | HomebrewCaskUninstall | — | Structured uninstall stanza configuration. |
+| `update_existing_pr` | StringOrBool | — | When true, force-push the updated cask file to the existing PR branch when a PR for the same head branch already exists. The PR content is updated in place rather than creating a duplicate. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not update the PR. |
+| `url` | HomebrewCaskURL | — | Structured download URL configuration (top-level axis). |
+| `url_template` | string | — | Simple URL template for the .dmg/.zip download (per-crate shorthand).
+
+Cannot be combined with `url.template:` — set one or the other. If both are present, config validation rejects the config at parse time. Use `url:` for the structured form (verified domain, custom headers, etc.) or `url_template:` for a bare string shorthand — never both simultaneously. |
+| `zap` | HomebrewCaskUninstall | — | Deep uninstall (zap) stanza configuration. |
+
+## `crates[].publish.scoop`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
+| `commit_msg_template` | string | — | Custom commit message template. |
+| `depends` | list of string | — | Application dependencies (other Scoop packages). |
+| `description` | string | — | Short description of the package (shown in `scoop info`). |
+| `directory` | string | — | Subdirectory in the bucket repo for manifest placement. |
+| `homepage` | string | — | Project homepage URL. Falls back to the GitHub-derived URL when unset. |
+| `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Scoop publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `scoop[].if:`. |
+| `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
+| `name` | string | — | Override the manifest name (default: crate name). |
+| `persist` | list of string | — | Data paths persisted between Scoop updates. |
+| `post_install` | list of string | — | Commands to run after installation. |
+| `pre_install` | list of string | — | Commands to run before installation. |
+| `repository` | RepositoryConfig | — | Unified repository config with branch, token, PR, git SSH support. (Replaces the legacy `bucket: BucketConfig` owner/name-only form.) |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.
+
+Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `shortcuts` | list of list of string | — | Start menu shortcuts as `[executable, label]` pairs. |
+| `skip_upload` | StringOrBool | — | Skip publishing the manifest.  `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
+| `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
+| `use` | string | — | Artifact selection: "archive" (default), "msi", or "nsis". |
+
+## `crates[].publish.chocolatey`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `api_key` | string | — | Chocolatey API key for `choco push`. Falls back to `CHOCOLATEY_API_KEY` env var. |
+| `authors` | string | — | Package author(s) displayed in the Chocolatey gallery. |
+| `bug_tracker_url` | string | — | Bug tracker URL. |
+| `copyright` | string | — | Copyright notice. |
+| `dependencies` | list of ChocolateyDependency | — | Package dependencies with optional version constraints. |
+| `description` | string | — | Package description (supports markdown). |
+| `docs_url` | string | — | Documentation URL. |
+| `icon_url` | string | — | URL to the package icon image shown in the Chocolatey gallery. |
+| `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Chocolatey publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `chocolateys[].if:`. |
+| `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
+| `license_url` | string | — | Optional explicit license URL. Falls back to `https://opensource.org/licenses/<license>` when not set. |
+| `name` | string | — | Override the package name (default: crate name). |
+| `owners` | string | — | Package owners (Chocolatey gallery user). |
+| `package_source_url` | string | — | URL shown as the package source in the Chocolatey gallery. |
+| `post_publish_poll` | PostPublishPollConfig | — | Post-publish moderation-queue polling settings. Polling is disabled by default — Chocolatey's community moderation queue routinely takes hours to days, and blocking a CI workflow on that wait is wrong. Opt in per-publisher with `post_publish_poll: { enabled: true }` when running locally and willing to wait, or disable globally via `--no-post-publish-poll`. |
+| `project_source_url` | string | — | Source code project URL. |
+| `project_url` | string | — | Project homepage URL. |
+| `release_notes` | string | — | Release notes for this version. |
+| `repository` | RepositoryConfig | — | Unified project repo config (owner/name). Used to derive `<projectUrl>` (the Chocolatey gallery link) and download URLs. `<projectUrl>` resolves through `project_url:` (if set) → derived `https://github.com/{repository.owner}/{repository.name}`. |
+| `republish_in_moderation` | StringOrBool | — | When true, re-push the nupkg even when a version is already in the community moderation queue (PackageStatus=Submitted). Chocolatey's API accepts re-pushes of in-moderation versions; the new nupkg replaces the queued one. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not push. |
+| `require_license_acceptance` | bool | — | Require license acceptance before install. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.
+
+Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `skip` | StringOrBool | — | Skip pushing to the Chocolatey community repository. Bool, string, or template expression (e.g. `"{{ .IsSnapshot }}"`). Accepts the legacy `skip_publish:` spelling for back-compat with configs; canonical name is `skip:` to align with every other publisher. |
+| `source_repo` | string | — | Push source URL (default: "https://push.chocolatey.org/"). |
+| `summary` | string | — | Short summary of the package. |
+| `tags` | list of string | — | Tags for the Chocolatey gallery (joined with single spaces in the emitted nuspec). Always a typed list — the legacy space-separated-string form was dropped now for IDE-completion friendliness and to remove whitespace ambiguity. |
+| `title` | string | — | Package title (default: project name). |
+| `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
+| `use` | string | — | Artifact selection: "archive" (default), "msi", or "nsis". |
+
+## `crates[].publish.winget`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `author` | string | — | Author name. |
+| `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
+| `commit_msg_template` | string | — | Custom commit message template. |
+| `copyright` | string | — | Copyright notice. |
+| `copyright_url` | string | — | Copyright URL. |
+| `dependencies` | list of WingetDependency | — | Package dependencies. |
+| `description` | string | — | Full package description displayed in the WinGet gallery. |
+| `homepage` | string | — | Project homepage URL. |
+| `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the WinGet publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `winget[].if:`. |
+| `installation_notes` | string | — | Post-install notes shown to the user. |
+| `license` | string | — | License identifier (required, e.g. "MIT"). |
+| `license_url` | string | — | License URL. |
+| `name` | string | — | Override the package name (default: crate name). |
+| `package_identifier` | string | — | WinGet package identifier (e.g. "Publisher.AppName"). Auto-generated if empty. |
+| `package_name` | string | — | Package name as displayed (default: same as name). |
+| `path` | string | — | Manifest file path (auto-generated if empty from publisher/name/version). |
+| `post_publish_poll` | PostPublishPollConfig | — | Post-publish PR-validation polling settings. Polling is disabled by default — winget-pkgs PR validation routinely takes hours to days, and blocking a CI workflow on that wait is wrong. Opt in per-publisher with `post_publish_poll: { enabled: true }` when running locally and willing to wait, or disable globally via `--no-post-publish-poll`. |
+| `privacy_url` | string | — | Privacy policy URL. |
+| `product_code` | string | — | Product code for the installer (used in Add/Remove Programs). |
+| `publisher` | string | — | Publisher name (required). |
+| `publisher_support_url` | string | — | Publisher support URL. |
+| `publisher_url` | string | — | Publisher homepage URL shown in the WinGet manifest. |
+| `release_notes` | string | — | Release notes for this version. |
+| `release_notes_url` | string | — | URL to full release notes. |
+| `repository` | RepositoryConfig | — | Unified repository config with branch, token, PR, git SSH support. (Replaces the legacy `manifests_repo: WingetManifestsRepoConfig`.) |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.
+
+Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `short_description` | string | — | Short description (required, max 256 chars). |
+| `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. Accepts bool or template string. |
+| `tags` | list of string | — | Tags for package discovery (lowercased, spaces→hyphens). |
+| `update_existing_pr` | StringOrBool | — | When true, force-push the updated manifest to the existing PR branch when a PR for the same head branch already exists. The PR content is updated in place rather than creating a duplicate. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not update the PR. |
+| `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
+| `use` | string | — | Artifact selection: "archive" (default), "msi", or "nsis". |
+
+## `crates[].publish.aur`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `backup` | list of string | — | List of config files to preserve on upgrade (relative to `/`). |
+| `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
+| `commit_msg_template` | string | — | Custom commit message template. Default: "Update to {{ version }}". |
+| `conflicts` | list of string | — | Packages this PKGBUILD conflicts with. |
+| `contributors` | list of string | — | Contributors listed in PKGBUILD comments. |
+| `depends` | list of string | — | Runtime dependencies required by this package. |
+| `description` | string | — | Short description of the package for PKGBUILD. |
+| `directory` | string | — | Subdirectory in the git repo for committed files. |
+| `git_ssh_command` | string | — | Custom SSH command for git operations. |
+| `git_url` | string | — | AUR SSH git URL (e.g., `ssh://aur@aur.archlinux.org/<package>.git`). |
+| `homepage` | string | — | Project homepage URL. |
+| `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `aurs[].if:`. |
+| `install` | string | — | Content for a .install file (post-install/pre-remove scripts). |
+| `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
+| `maintainers` | list of string | — | PKGBUILD maintainer entries (e.g., "Name <email@example.com>"). |
+| `name` | string | — | Override the package name (default: crate name + "-bin"). |
+| `optdepends` | list of string | — | Optional dependencies with descriptions (e.g., "fzf: fuzzy finder support"). |
+| `package` | string | — | Custom PKGBUILD `package()` function body. |
+| `private_key` | string | — | Path to SSH private key file. |
+| `provides` | list of string | — | Packages this PKGBUILD provides (virtual package names). |
+| `rel` | string | — | Package release number (default: "1"). |
+| `replaces` | list of string | — | Packages this PKGBUILD replaces (for upgrade paths from old package names). |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.
+
+Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `skip` | StringOrBool | — | Skip this AUR config. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip). |
+| `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. Accepts bool or template string. |
+| `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
+
+## `crates[].publish.aur_source`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `amd64_variant` | Amd64Variant | — | `x86_64` micro-architecture variant — `v1` (baseline), `v2`, `v3` (AVX2), or `v4`. Equivalent to GR `AurSource.Goamd64`. Constrained to a typed enum because AUR source pkgs build from the upstream tarball (no binary artifacts to filter), so the value's only role is as the `Amd64` template var consumed by `prepare:` / `build:` / `package:` script bodies — typos must fail at parse time, not silently render an invalid string into the PKGBUILD. When unset, defaults to `v1` at template-render time. |
+| `arches` | list of string | — | Explicit architecture list (default: auto-detect from artifacts). |
+| `backup` | list of string | — | Backup files to preserve on upgrade. |
+| `build` | string | — | Custom `build()` function body for PKGBUILD. |
+| `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
+| `commit_msg_template` | string | — | Custom commit message template. |
+| `conflicts` | list of string | — | Packages this PKGBUILD conflicts with. |
+| `contributors` | list of string | — | Contributors listed in PKGBUILD comments. |
+| `depends` | list of string | — | Runtime dependencies. |
+| `description` | string | — | Short description of the package. |
+| `directory` | string | — | Subdirectory in the git repo for committed files. |
+| `git_ssh_command` | string | — | Custom SSH command for git operations. |
+| `git_url` | string | — | AUR SSH git URL. |
+| `homepage` | string | — | Project homepage URL. |
+| `ids` | list of string | — | Build IDs filter. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR source config is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `aur_sources[].if:`. |
+| `install` | string | — | Content for a .install file (post-install/pre-remove scripts). |
+| `license` | string | — | SPDX license identifier. |
+| `maintainers` | list of string | — | PKGBUILD maintainer entries. |
+| `makedepends` | list of string | — | Build-time dependencies (source packages need these). |
+| `name` | string | — | Override the package name (default: crate name, no -bin suffix). |
+| `optdepends` | list of string | — | Optional dependencies. |
+| `package` | string | — | Custom `package()` function body for PKGBUILD. |
+| `prepare` | string | — | Custom `prepare()` function body for PKGBUILD. |
+| `private_key` | string | — | Path to SSH private key file. |
+| `provides` | list of string | — | Packages this PKGBUILD provides. |
+| `rel` | string | — | Package release number (default: "1"). |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.
+
+Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `skip` | StringOrBool | — | Skip this config. |
+| `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. |
+| `url_template` | string | — | Custom URL template for download URLs. |
+
 ## `crates[].publish.krew`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -972,5 +1260,32 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `skip` | StringOrBool | — | Skip this Krew config. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip). Distinct from `skip_upload` so users can opt out of generating the manifest entirely (common when a project is not a kubectl plugin and has no krew channel). |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. Accepts bool or template string. |
 | `update_existing_pr` | StringOrBool | — | When true, force-push the updated plugin manifest to the existing PR branch when a PR for the same head branch already exists. The PR content is updated in place rather than creating a duplicate. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not update the PR. |
+| `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
+
+## `crates[].publish.nix`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
+| `commit_msg_template` | string | — | Custom commit message template. |
+| `dependencies` | list of NixDependency | — | Nix package dependencies with optional OS filtering. |
+| `description` | string | — | Short description of the Nix derivation. |
+| `extra_install` | string | — | Additional install commands appended after the main install. |
+| `formatter` | string | — | Nix formatter to run on the generated file: "alejandra" or "nixfmt". |
+| `homepage` | string | — | Project homepage URL. |
+| `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Nix publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `nix[].if:`. |
+| `install` | string | — | Custom install commands (replaces auto-generated binary install). |
+| `license` | string | — | Nix license identifier (e.g. "mit", "asl20"). Validated against known licenses. |
+| `main_program` | string | — | Value for `meta.mainProgram` in the generated Nix derivation. When set, the rendered derivation includes `mainProgram = "<value>";` inside the `meta` block, telling Nix which binary `nix run` should execute when the derivation contains multiple executables. Templated: supports `{{ .Version }}` etc. Omitted when unset. |
+| `name` | string | — | Override the derivation name (default: crate name). |
+| `path` | string | — | Path for the .nix file in the repository (default: `pkgs/<name>/default.nix`). |
+| `post_install` | string | — | Post-install commands (postInstall phase). |
+| `repository` | RepositoryConfig | — | Unified repository config with branch, token, PR, git SSH support. |
+| `required` | bool | — | Override whether this publisher failing should fail the overall release.
+
+Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `skip` | StringOrBool | — | Skip this Nix config. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip). Distinct from `skip_upload` so users can model both intents — disable means "don't generate at all", skip_upload means "generate but don't push". Without this field, `nix: { skip: true }` was silently dropped by the serde unknown-field default. |
+| `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. Accepts bool or template string. |
 | `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
 

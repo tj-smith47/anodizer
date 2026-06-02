@@ -551,9 +551,9 @@ fn extract_fields(props: &Map<String, Schema>) -> Vec<ConfigField> {
 ///
 /// Without this list, a consumer reading the configuration reference cannot
 /// see the field shape for the canonical Docker API (`crates[].docker_v2`),
-/// the Krew publisher (`crates[].publish.krew`), and similar per-crate
-/// publisher / packager sub-structs — they show up only as a type name in
-/// the parent table.
+/// the per-crate publishers (`crates[].publish.<name>`), and similar
+/// per-crate publisher / packager sub-structs — they show up only as a type
+/// name in the parent table.
 const SECOND_LEVEL_SECTIONS: &[(&str, &str, &str)] = &[
     ("crates[].docker_v2", "CrateConfig", "docker_v2"),
     (
@@ -563,8 +563,50 @@ const SECOND_LEVEL_SECTIONS: &[(&str, &str, &str)] = &[
     ),
     ("crates[].docker_digest", "CrateConfig", "docker_digest"),
     ("crates[].publish", "CrateConfig", "publish"),
+    ("crates[].publish.cargo", "PublishConfig", "cargo"),
+    ("crates[].publish.homebrew", "PublishConfig", "homebrew"),
+    (
+        "crates[].publish.homebrew_cask",
+        "PublishConfig",
+        "homebrew_cask",
+    ),
+    ("crates[].publish.scoop", "PublishConfig", "scoop"),
+    ("crates[].publish.chocolatey", "PublishConfig", "chocolatey"),
+    ("crates[].publish.winget", "PublishConfig", "winget"),
+    ("crates[].publish.aur", "PublishConfig", "aur"),
+    ("crates[].publish.aur_source", "PublishConfig", "aur_source"),
     ("crates[].publish.krew", "PublishConfig", "krew"),
+    ("crates[].publish.nix", "PublishConfig", "nix"),
 ];
+
+/// Build a [`NestedSection`] for the schema definition `def_name`, titled
+/// `section_name`. Returns `None` when the definition is missing or has no
+/// documentable properties. Shared by the top-level and second-level
+/// section passes so both resolve description + fields identically.
+fn build_nested_section(
+    defs: &Map<String, Schema>,
+    def_name: &str,
+    section_name: &str,
+) -> Option<NestedSection> {
+    let def_schema = match defs.get(def_name) {
+        Some(Schema::Object(s)) => s,
+        _ => return None,
+    };
+    let def_props = match def_schema.object.as_ref() {
+        Some(o) if !o.properties.is_empty() => &o.properties,
+        _ => return None,
+    };
+    let description = def_schema
+        .metadata
+        .as_ref()
+        .and_then(|m| m.description.clone())
+        .unwrap_or_default();
+    Some(NestedSection {
+        name: section_name.to_string(),
+        description,
+        fields: extract_fields(def_props),
+    })
+}
 
 fn generate_config_reference(tera: &Tera) -> Result<String, String> {
     let root_schema = schemars::schema_for!(anodizer_core::config::Config);
@@ -589,35 +631,12 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
             Schema::Object(o) => o,
             Schema::Bool(_) => continue,
         };
-
-        let def_name = match resolve_ref_type_name(obj) {
-            Some(n) => n,
-            None => continue,
+        let Some(def_name) = resolve_ref_type_name(obj) else {
+            continue;
         };
-
-        let def_schema = match defs.get(&def_name) {
-            Some(Schema::Object(s)) => s,
-            _ => continue,
-        };
-
-        let def_props = match def_schema.object.as_ref() {
-            Some(o) if !o.properties.is_empty() => &o.properties,
-            _ => continue,
-        };
-
-        let description = def_schema
-            .metadata
-            .as_ref()
-            .and_then(|m| m.description.clone())
-            .unwrap_or_default();
-
-        let fields = extract_fields(def_props);
-
-        nested_sections.push(NestedSection {
-            name: field_name.clone(),
-            description,
-            fields,
-        });
+        if let Some(section) = build_nested_section(defs, &def_name, field_name) {
+            nested_sections.push(section);
+        }
     }
 
     // Append second-level sections (per-crate / per-publisher sub-structs).
@@ -634,29 +653,12 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
             Some(Schema::Object(o)) => o,
             _ => continue,
         };
-        let def_name = match resolve_ref_type_name(field_obj) {
-            Some(n) => n,
-            None => continue,
+        let Some(def_name) = resolve_ref_type_name(field_obj) else {
+            continue;
         };
-        let def_schema = match defs.get(&def_name) {
-            Some(Schema::Object(s)) => s,
-            _ => continue,
-        };
-        let def_props = match def_schema.object.as_ref() {
-            Some(o) if !o.properties.is_empty() => &o.properties,
-            _ => continue,
-        };
-        let description = def_schema
-            .metadata
-            .as_ref()
-            .and_then(|m| m.description.clone())
-            .unwrap_or_default();
-        let fields = extract_fields(def_props);
-        nested_sections.push(NestedSection {
-            name: (*section_name).to_string(),
-            description,
-            fields,
-        });
+        if let Some(section) = build_nested_section(defs, &def_name, section_name) {
+            nested_sections.push(section);
+        }
     }
 
     let mut ctx = Context::new();
