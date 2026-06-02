@@ -408,16 +408,7 @@ pub fn create_and_push_tag_in(
     }
     git_output_in(cwd, &["tag", "-a", tag, "-m", message])?;
 
-    let has_remote = std::process::Command::new("git")
-        .current_dir(cwd)
-        .args(["remote", "get-url", "origin"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if has_remote {
+    if super::has_remote_in(cwd, "origin") {
         git_output_in(cwd, &["push", "origin", tag])?;
     } else if strict {
         anyhow::bail!("no 'origin' remote found, cannot push tag (strict mode)");
@@ -911,16 +902,7 @@ pub fn push_branch_and_tags_atomic_in(
         return Ok(());
     }
 
-    let has_remote = Command::new("git")
-        .current_dir(cwd)
-        .args(["remote", "get-url", remote])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if !has_remote {
+    if !super::has_remote_in(cwd, remote) {
         if strict {
             anyhow::bail!("no '{remote}' remote found, cannot push (strict mode)");
         }

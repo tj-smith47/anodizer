@@ -920,15 +920,7 @@ pub fn reset_hard_in(cwd: &Path, sha: &str) -> Result<()> {
 /// Errors when no `origin` remote is configured — callers driving local-only
 /// flows should pass `--no-push` to skip the call entirely.
 pub fn push_branch_in(cwd: &Path, branch: &str) -> Result<()> {
-    let has_remote = Command::new("git")
-        .current_dir(cwd)
-        .args(["remote", "get-url", "origin"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !has_remote {
+    if !super::has_remote_in(cwd, "origin") {
         bail!("no 'origin' remote configured, cannot push branch '{branch}'");
     }
     let refspec = format!("HEAD:refs/heads/{}", branch);

@@ -1,8 +1,26 @@
 use anyhow::Result;
 use std::path::Path;
+use std::process::Command;
 
 use super::git_output_in;
 use crate::redact::redact_url_credentials;
+
+/// Whether `remote` (e.g. `"origin"`) is configured in the git repo at `cwd`.
+///
+/// Probes `git remote get-url <remote>` and reports success. `GIT_TERMINAL_PROMPT=0`
+/// prevents the call from blocking on a credential prompt; `LC_ALL=C` pins
+/// machine-readable output. Any spawn or non-zero exit (no such remote) maps to
+/// `false` so callers can branch on presence without surfacing an error.
+pub fn has_remote_in(cwd: &Path, remote: &str) -> bool {
+    Command::new("git")
+        .current_dir(cwd)
+        .args(["remote", "get-url", remote])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
 
 /// Parse owner and repo name from a GitHub remote URL.
 /// Supports HTTPS (`https://github.com/owner/repo.git`) and SSH (`git@github.com:owner/repo.git`).
