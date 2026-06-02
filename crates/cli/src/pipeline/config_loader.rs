@@ -1664,4 +1664,68 @@ crates:
             result
         );
     }
+
+    #[test]
+    fn find_config_in_finds_anodizer_yaml_under_base() {
+        // The primary path: a base dir carrying `.anodizer.yaml` resolves to
+        // exactly that joined path (not a cwd-relative one), so the cwd-free
+        // probe matches `find_config`'s candidate ordering without mutating
+        // the process cwd.
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join(".anodizer.yaml");
+        fs::write(&cfg, "project_name: based\ncrates: []\n").unwrap();
+
+        let found = find_config_in(tmp.path()).expect("must find the config under base");
+        assert_eq!(found, cfg);
+    }
+
+    #[test]
+    fn find_config_in_falls_back_to_cargo_toml() {
+        // No anodizer config but a Cargo.toml present: return the joined
+        // Cargo.toml path so `load_config` recognizes the fallback by
+        // filename and yields a default Config.
+        let tmp = TempDir::new().unwrap();
+        let cargo = tmp.path().join("Cargo.toml");
+        fs::write(&cargo, "[package]\nname = \"x\"\nversion = \"0.1.0\"\n").unwrap();
+
+        let found = find_config_in(tmp.path()).expect("must fall back to Cargo.toml");
+        assert_eq!(found, cargo);
+        // Round-trip through load_repo_config: the Cargo.toml fallback yields
+        // a default Config (empty project_name), matching load_config's
+        // special-case.
+        let cfg = load_repo_config(tmp.path()).expect("load_repo_config must succeed");
+        assert!(cfg.project_name.is_empty());
+    }
+
+    #[test]
+    fn find_config_in_bails_when_neither_present() {
+        // Empty base dir: no anodizer config, no Cargo.toml → hard error
+        // naming the searched directory.
+        let tmp = TempDir::new().unwrap();
+        let err = find_config_in(tmp.path())
+            .expect_err("empty dir must bail")
+            .to_string();
+        assert!(
+            err.contains("no anodizer config file found"),
+            "error must explain the miss: {err}"
+        );
+        // load_repo_config propagates the same miss.
+        assert!(load_repo_config(tmp.path()).is_err());
+    }
+
+    #[test]
+    fn load_repo_config_loads_yaml_under_base() {
+        // Full find + load round-trip from a base dir: the parsed config's
+        // project_name proves the right file was located and deserialized
+        // without any cwd change.
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join(".anodizer.yaml"),
+            "project_name: loaded-from-base\ncrates: []\n",
+        )
+        .unwrap();
+
+        let cfg = load_repo_config(tmp.path()).expect("must load the config under base");
+        assert_eq!(cfg.project_name, "loaded-from-base");
+    }
 }
