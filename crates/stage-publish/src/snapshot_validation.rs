@@ -108,6 +108,14 @@ fn validate_snapshot_emissions_with_resolver(
             asset_check
         })?;
     }
+
+    // Whole-artifact schema conformance: render each configured publisher's
+    // manifest and validate it against the registry's vendored schema. Catches
+    // structural defects the per-field asset cross-checks above cannot — a
+    // manifest that omits a registry-required key or carries a wrong-typed value
+    // would be rejected at submission, only after a real release uploaded it.
+    crate::schema_validation::validate_publisher_schemas(ctx, log)?;
+
     Ok(())
 }
 
