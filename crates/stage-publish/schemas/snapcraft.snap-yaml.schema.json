@@ -9,12 +9,11 @@
   "additionalProperties": true,
   "properties": {
     "name": {
-      "description": "snapd ValidateName: lowercase letters, digits and single hyphens; must start and end with an alphanumeric; length 1-40; must not be all-numeric. The all-numeric rule is enforced by snapd in Go and is not expressible in pure JSON Schema, so it is documented here but not encoded (leaving it out keeps the schema from false-rejecting valid names).",
-      "$comment": "snapd validateName additionally rejects all-numeric names; that rule is not encodable in JSON Schema and is intentionally left permissive rather than over-constrain.",
+      "description": "snapd ValidateName: lowercase letters, digits and single hyphens; must start and end with an alphanumeric; length 1-40; must not be all-numeric (e.g. '123' is rejected, but 'v1' / 'app2' / '1-2' / '0ad' are accepted). All four constraints are enforced by the pattern: the leading negative lookahead `(?!\\d+$)` rejects an entirely-numeric name, and the body admits only lowercase alphanumerics separated by single hyphens with alphanumeric ends.",
       "type": "string",
       "minLength": 1,
       "maxLength": 40,
-      "pattern": "^[a-z0-9](?:-?[a-z0-9])*$"
+      "pattern": "^(?!\\d+$)[a-z0-9](?:-?[a-z0-9])*$"
     },
     "version": {
       "description": "snapd ValidateVersion: 1-32 chars; ASCII alphanumerics plus '.', '+', '~', '-'; must start with an alphanumeric and end with an alphanumeric, '+' or '~'.",

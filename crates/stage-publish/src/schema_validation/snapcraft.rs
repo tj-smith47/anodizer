@@ -585,4 +585,40 @@ mod tests {
             "a valid name must conform, got: {ok:?}"
         );
     }
+
+    /// snapd's `ValidateName` rejects an *entirely* numeric name ("123") while
+    /// accepting names that merely contain digits ("v1", "app2") or a digit
+    /// run broken by a hyphen ("1-2"). The schema `pattern` encodes that with a
+    /// negative lookahead (`fancy-regex`, the engine the validator uses for
+    /// `pattern`), so the all-numeric rejection bites through the real
+    /// `validate_json` path while valid names pass.
+    #[test]
+    fn all_numeric_name_is_reported_but_digit_names_pass() {
+        let base = yaml_to_json(&base_widget_snap_yaml()).expect("snap.yaml is YAML");
+
+        let with_name = |name: &str| {
+            let mut v = base.clone();
+            v.as_object_mut()
+                .expect("snap.yaml is a map")
+                .insert("name".to_string(), Value::String(name.to_string()));
+            validate_json("snapcraft", &v, SNAPCRAFT_SNAP_YAML_SCHEMA).expect("validation runs")
+        };
+
+        // "123" is all-numeric → snapd rejects it → a /name finding must fire.
+        let findings = with_name("123");
+        let finding = findings
+            .iter()
+            .find(|f| f.field == "/name")
+            .unwrap_or_else(|| panic!("a finding for the all-numeric name; got: {findings:?}"));
+        assert_eq!(finding.publisher, "snapcraft");
+
+        // Names that contain digits but are not entirely numeric must conform.
+        for name in ["v1", "my-app", "app2", "1-2"] {
+            let ok = with_name(name);
+            assert!(
+                ok.iter().all(|f| f.field != "/name"),
+                "name {name:?} must conform, got: {ok:?}"
+            );
+        }
+    }
 }
