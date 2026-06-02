@@ -99,7 +99,7 @@ gemfury:
 
 #[test]
 fn furies_alias_still_parses_as_gemfury() {
-    // Legacy spelling pre-GR-v2.14 collapses to the same struct via
+    // The legacy spelling collapses to the same struct via
     // `#[serde(alias = "furies")]`.
     let yaml = r#"
 project_name: demo

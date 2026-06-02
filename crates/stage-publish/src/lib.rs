@@ -1512,7 +1512,7 @@ mod tests {
     /// publishing for prerelease versions. It proceeds regardless of whether
     /// the version contains a prerelease suffix like -rc.1 or -beta.
     ///
-    /// This is a known limitation: GoReleaser skips homebrew/scoop for prereleases
+    /// This is a known limitation: homebrew/scoop are skipped for prereleases
     /// by default. If this behavior is added in the future, this test should be
     /// updated to verify that skipping occurs.
     // -----------------------------------------------------------------------

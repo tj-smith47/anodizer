@@ -122,7 +122,7 @@ pub(crate) fn collect_upload_artifacts<'a>(
         }
     }
     // Optionally include signature and certificate artifacts
-    // GoReleaser includes Certificate alongside Signature (http.go:218)
+    // Certificate is included alongside Signature.
     if include_signature {
         for a in ctx.artifacts.all() {
             if (a.kind == ArtifactKind::Signature || a.kind == ArtifactKind::Certificate)
@@ -278,7 +278,7 @@ pub(crate) struct UploadAuth<'a> {
 /// Drives the per-attempt request through [`retry_http_blocking`], which
 /// applies the shared `retry_sync` machinery: transport errors, 5xx
 /// responses, and 429s retry per the user's `retry:` config (mirrors
-/// GoReleaser `internal/pipe/upload/upload.go::doUpload`); 4xx responses
+/// per-artifact upload); 4xx responses
 /// fast-fail.
 pub(crate) fn upload_single_artifact(
     client: &reqwest::blocking::Client,
@@ -466,7 +466,7 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
     };
 
     // Single retry policy resolved from the top-level `retry:` block; reused
-    // for every entry's per-artifact upload (mirrors GoReleaser, where the
+    // for every entry's per-artifact upload (the
     // `retryx` policy is captured once per pipe invocation).
     let policy = ctx.retry_policy();
 
@@ -526,7 +526,7 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
         let name_upper = name.to_uppercase().replace('-', "_");
         let named_env_var = format!("ARTIFACTORY_{}_SECRET", name_upper);
 
-        // Determine checksum header name (GoReleaser default: X-Checksum-SHA256).
+        // Determine checksum header name (default: X-Checksum-SHA256).
         let checksum_header = entry
             .checksum_header
             .as_deref()

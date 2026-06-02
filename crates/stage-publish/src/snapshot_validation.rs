@@ -669,7 +669,7 @@ mod tests {
 
     /// The 404 class: the produced archive uses the Rust target triple in its
     /// name (`cfgd-1.0.0-x86_64-unknown-linux-gnu.tar.gz`) but the binstall
-    /// `pkg_url` bakes a GoReleaser-style `linux-amd64` stem the release never
+    /// `pkg_url` bakes a `linux-amd64` stem the release never
     /// produces. Snapshot validation MUST fail.
     #[test]
     fn binstall_pkg_url_pointing_at_missing_asset_fails() {
@@ -853,7 +853,7 @@ mod tests {
     #[test]
     fn binstall_override_for_configured_unbuilt_triple_skips() {
         let mut overrides = BTreeMap::new();
-        // Correct GoReleaser-style name for a darwin asset.
+        // Correct name for a darwin asset.
         overrides.insert(
             "aarch64-apple-darwin".to_string(),
             BinstallOverride {

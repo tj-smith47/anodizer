@@ -321,7 +321,7 @@ fn test_integration_formula_no_archives() {
     assert!(formula.contains("  test do\n"));
 }
 
-/// Regression for parity with GoReleaser's `ErrNoArchivesFound`: empty
+/// Regression: empty
 /// archive set must hard-fail with an actionable error instead of
 /// silently writing a broken formula with empty url/sha256.
 #[test]
@@ -1054,7 +1054,7 @@ fn test_render_generate_completions_empty_executable_returns_none() {
 }
 
 /// Q1.2 — the `generate_completions_from_executable` directive must render
-/// AFTER the `postflight` stanza. Upstream commit bb9062f / GR issue #5958.
+/// AFTER the `postflight` stanza.
 #[test]
 fn test_cask_generate_completions_renders_after_postflight() {
     let mut params = empty_cask_params("test", "0.1.0");
@@ -1148,7 +1148,7 @@ fn test_cask_uninstall_block_uses_array_per_key() {
         ..Default::default()
     };
     let block = super::cask::render_uninstall_block(Some(&u_cfg));
-    // GR canonical shape: `uninstall launchctl: [...], quit: [...]` with
+    // Canonical shape: `uninstall launchctl: [...], quit: [...]` with
     // arrays — not `uninstall launchctl: "name", quit: "name"`.
     assert!(block.starts_with("uninstall launchctl: ["));
     assert!(block.contains("quit: ["));
@@ -2249,7 +2249,7 @@ fn art_with_url_sha(
 }
 
 /// `find_top_level_cask_artifact` prefers DiskImage over Archive when both
-/// are available for darwin. Pins the GR-parity selection order.
+/// are available for darwin. Pins the selection order.
 #[test]
 fn find_top_level_cask_artifact_prefers_disk_image_over_archive() {
     let config = Config::default();
@@ -2305,7 +2305,7 @@ fn find_top_level_cask_artifact_returns_none_for_no_macos() {
 }
 
 /// `find_top_level_cask_artifact` with an IDs filter excludes non-matching
-/// artifacts. Pins the GR-parity ids filter behaviour.
+/// artifacts. Pins the ids filter behaviour.
 #[test]
 fn find_top_level_cask_artifact_filters_by_id() {
     let config = Config::default();

@@ -24,7 +24,7 @@ use super::cmd::run_cmd_in;
 ///
 /// When PR mode targets a different (upstream) repository, the fork may be
 /// behind.  This fetches the upstream base branch and rebases local work on
-/// top, mirroring GoReleaser's `ForkSyncer.SyncFork()` behaviour.
+/// top, syncing the fork with upstream.
 ///
 /// This is a best-effort operation: if the sync fails the push will still
 /// proceed (the PR may simply have merge conflicts).
@@ -387,7 +387,7 @@ pub(crate) struct PrOrigin<'a> {
 /// `pull_request.draft`.
 ///
 /// When the base repository differs from the fork (i.e. a PR across repos),
-/// the fork is synced with upstream before submitting (GoReleaser parity).
+/// the fork is synced with upstream before submitting.
 ///
 /// Tries `gh` CLI first; if unavailable, falls back to the GitHub REST API
 /// using the token from the RepositoryConfig (or `GITHUB_TOKEN` env var).

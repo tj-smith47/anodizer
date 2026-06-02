@@ -131,7 +131,7 @@ fn publish_aur_source_entry(
         conflicts: &conflicts,
         provides: &provides,
     };
-    // `.install` file: GoReleaser registers `<pkgname>.install` when
+    // `.install` file: `<pkgname>.install` is registered when
     // `install:` is set, emitting an `install=<pkgname>.install` line in the
     // PKGBUILD. Mirror the `-bin` AUR publisher: the config value is the file
     // *content*, written alongside PKGBUILD/.SRCINFO.
@@ -325,7 +325,7 @@ pub fn publish_to_aur_source(
 
 /// Publish top-level `aur_sources` entries (not tied to a specific crate).
 ///
-/// GoReleaser's `internal/pipe/aursources/aursources.go` reads `ctx.Config.AURSources`
+/// The AUR-sources publisher reads the `aur_sources` config
 /// as a project-wide array. Each entry generates a source PKGBUILD and .SRCINFO,
 /// then pushes them to the configured AUR git repo.
 pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Result<bool> {
@@ -421,7 +421,7 @@ struct AurExtras<'a> {
     binary_name: &'a str,
     /// When set, the PKGBUILD emits `install=<name>.install` and the
     /// `.install` file (post-install/pre-remove scripts) is written
-    /// alongside it. Mirrors GoReleaser `aursources` `install:`.
+    /// alongside it (the `install:` field).
     install_file: Option<&'a str>,
 }
 
@@ -1383,7 +1383,7 @@ crates:
         );
     }
 
-    /// Regression for GoReleaser parity P9.1 (commit cba5b9f):
+    /// Regression:
     /// `aur_sources[*].skip_upload: "{{ .IsSnapshot }}"` must
     /// template-expand before its bool/auto/empty interpretation. On
     /// a snapshot run the rendered value is `"true"` and the publish

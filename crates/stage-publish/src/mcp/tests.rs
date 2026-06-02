@@ -37,7 +37,7 @@ use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 /// Build a minimal context with a sufficiently-configured `mcp:` block to
 /// reach the publish loop. `name`, `auth.token`, `packages[0]` all populated.
 /// The version is set to "1.0.0" so the published payload has a non-empty
-/// `version` field (matching GR's behaviour — `mcp.go::Publish` reads
+/// `version` field (the publish path reads
 /// `ctx.Version` unconditionally).
 fn mcp_ctx(mcp_overrides: impl FnOnce(&mut McpConfig)) -> Context {
     let mut config = Config::default();
@@ -79,7 +79,7 @@ fn mcp_ctx(mcp_overrides: impl FnOnce(&mut McpConfig)) -> Context {
 
 #[test]
 fn skip_when_no_name() {
-    // GR mcp.go::Skip parity: an empty `name` skips the entire publisher
+    // An empty `name` skips the entire publisher
     // BEFORE any token exchange or network call. The responder is bound but
     // intentionally never accepts a connection — the test would hang on
     // `accept()` if the publisher tried to POST. The counter must read 0.
@@ -224,7 +224,7 @@ fn metadata_fallback_is_rendered_in_published_body() {
 #[test]
 fn publish_retries_on_500_then_succeeds() {
     // wiremock-equivalent: 500 then 201. With a 3-attempt 1ms-base policy
-    // this completes in low single-digit ms. Mirrors the GR
+    // this completes in low single-digit ms. The
     // `TestPublishRetryable` behaviour — `retry_http_blocking` classifies
     // 5xx as Continue and 2xx as success.
     let _g = warn_once_lock();

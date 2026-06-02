@@ -5,7 +5,7 @@
 //! NOT an SPDX identifier. Two value shapes reach this resolver:
 //!
 //! - A value a user wrote directly in `nix.license` — by convention the
-//!   nix attribute name (GoReleaser only ever accepts this form), e.g.
+//!   nix attribute name, e.g.
 //!   `mit`.
 //! - A value derived from `Cargo.toml` `[package].license`, which the
 //!   Cargo book defines as an **SPDX 2.1 license expression** (e.g.
@@ -313,7 +313,7 @@ fn is_compound_spdx(value: &str) -> bool {
 ///
 /// Precedence:
 /// 1. A value already valid as a nix `lib.licenses` attribute (e.g.
-///    `mit`, `asl20`) is returned verbatim — GoReleaser-style direct
+///    `mit`, `asl20`) is returned verbatim — a direct
 ///    nix-attr config keeps working unchanged.
 /// 2. A known single SPDX id (e.g. `MIT`, `Apache-2.0`, case-insensitive)
 ///    is mapped to its nix attribute.
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn passthrough_valid_nix_attr_unchanged() {
-        // GoReleaser-style direct nix attrs (cfgd writes `mit`) must not break.
+        // Direct nix attrs (cfgd writes `mit`) must not break.
         assert_eq!(resolve_nix_license("mit").unwrap(), "mit");
         assert_eq!(resolve_nix_license("asl20").unwrap(), "asl20");
         assert_eq!(resolve_nix_license("gpl3Plus").unwrap(), "gpl3Plus");

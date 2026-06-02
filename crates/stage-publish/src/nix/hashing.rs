@@ -1,6 +1,6 @@
 //! Hex → Nix-native base32 / SRI hash conversions.
 //!
-//! GoReleaser converts hashes using `nix-hash --type sha256 --flat --base32`.
+//! Hashes are converted using `nix-hash --type sha256 --flat --base32`.
 //! Nix uses a non-standard base32 encoding with the alphabet
 //! `0123456789abcdfghijklmnpqrsvwxyz` (32 chars, omitting e/o/t/u).
 
@@ -8,7 +8,7 @@ use anyhow::Result;
 
 /// Convert a hex-encoded SHA256 hash to nix-native base32 format.
 ///
-/// GoReleaser converts hashes using `nix-hash --type sha256 --flat --base32`.
+/// Hashes are converted using `nix-hash --type sha256 --flat --base32`.
 /// Nix uses a non-standard base32 encoding with the alphabet
 /// `0123456789abcdfghijklmnpqrsvwxyz` (32 chars, omitting e/o/t/u).
 /// Bytes are processed in reverse order.
