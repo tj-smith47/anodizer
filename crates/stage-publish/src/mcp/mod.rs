@@ -199,37 +199,48 @@ pub(crate) fn publish_with_registry(
         ));
         return Ok(None);
     }
-    let mcp = &ctx.config.mcp;
-    if let Some(skip) = mcp.skip.as_ref() {
+    // Clone the block up front so the skip/if gate can record a `Skipped`
+    // outcome (a `&mut ctx` call) without holding a live `&ctx.config.mcp`
+    // borrow across it.
+    let mut mcp_rendered: McpConfig = ctx.config.mcp.clone();
+    if let Some(skip) = mcp_rendered.skip.as_ref() {
         let off = skip
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .context("mcp: render skip template")?;
         if off {
             log.status("mcp: skipping — skip evaluates true");
+            ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
+                anodizer_core::SkipReason::NotApplicable,
+            ));
             return Ok(None);
         }
     }
     let proceed = anodizer_core::config::evaluate_if_condition(
-        mcp.if_condition.as_deref(),
+        mcp_rendered.if_condition.as_deref(),
         "mcp publisher",
         |t| ctx.render_template(t),
     )?;
     if !proceed {
         log.status("mcp: skipping — `if` condition evaluated falsy");
+        ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
+            anodizer_core::SkipReason::NotApplicable,
+        ));
         return Ok(None);
     }
 
     // ---- One-shot experimental warning ----
     warn_experimental_once(log);
 
-    // ---- Template-render every string field (GR mcp.go:72-85 parity) ----
-    let mut mcp_rendered: McpConfig = mcp.clone();
-    render_strings(ctx, &mut mcp_rendered)?;
-    infer_repository_from_release(ctx, &mut mcp_rendered);
     // Fall back to project-level metadata for the description / homepage
     // when the MCP block leaves them unset, so a single `metadata:` block
-    // can drive every publisher in a monorepo.
+    // can drive every publisher in a monorepo. Runs BEFORE `render_strings`
+    // so a templated metadata fallback (e.g. `metadata.homepage` carrying a
+    // `{{ .GitURL }}` token) is rendered with the rest of the fields rather
+    // than shipped raw — mirrors scoop's metadata-then-render ordering.
     fill_from_project_metadata(ctx, &mut mcp_rendered);
+    // ---- Template-render every string field (GR mcp.go:72-85 parity) ----
+    render_strings(ctx, &mut mcp_rendered)?;
+    infer_repository_from_release(ctx, &mut mcp_rendered);
 
     let rendered_name = mcp_rendered.name.clone().unwrap_or_default();
 

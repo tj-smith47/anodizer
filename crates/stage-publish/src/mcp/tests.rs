@@ -126,6 +126,97 @@ fn skip_when_skip_evaluates_true() {
     );
 }
 
+#[test]
+fn skip_true_records_skipped_outcome() {
+    // A `skip: true` mcp publisher must record a `Skipped` outcome before
+    // returning `Ok(None)`. Without it the dispatch layer defaults the
+    // outcome to `Succeeded` and the summary reports a skipped server as
+    // published.
+    let _g = warn_once_lock();
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+    ]);
+    let registry = format!("http://{addr}");
+
+    let mut ctx = mcp_ctx(|mcp| {
+        mcp.skip = Some(StringOrBool::String("{{ true }}".to_string()));
+    });
+    let log = ctx.logger("mcp-test");
+    let result = publish_with_registry(&mut ctx, &log, &registry);
+    assert!(result.is_ok(), "skip=true must skip cleanly: {:?}", result);
+    assert!(
+        matches!(
+            ctx.take_pending_outcome(),
+            Some(anodizer_core::PublisherOutcome::Skipped(_))
+        ),
+        "skip=true must record a Skipped outcome, not default to Succeeded"
+    );
+}
+
+#[test]
+fn if_falsy_records_skipped_outcome() {
+    // An `if:` condition that evaluates falsy must record a `Skipped`
+    // outcome before returning `Ok(None)` — same reasoning as the
+    // `skip: true` path.
+    let _g = warn_once_lock();
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+    ]);
+    let registry = format!("http://{addr}");
+
+    let mut ctx = mcp_ctx(|mcp| {
+        mcp.if_condition = Some("{{ false }}".to_string());
+    });
+    let log = ctx.logger("mcp-test");
+    let result = publish_with_registry(&mut ctx, &log, &registry);
+    assert!(result.is_ok(), "if-falsy must skip cleanly: {:?}", result);
+    assert!(
+        matches!(
+            ctx.take_pending_outcome(),
+            Some(anodizer_core::PublisherOutcome::Skipped(_))
+        ),
+        "if-falsy must record a Skipped outcome, not default to Succeeded"
+    );
+}
+
+#[test]
+fn metadata_fallback_is_rendered_in_published_body() {
+    // A templated project-metadata fallback (e.g. `metadata.homepage`
+    // carrying a `{{ .Version }}` token) must be rendered before the POST,
+    // not shipped raw. The metadata fill therefore runs BEFORE
+    // `render_strings`, mirroring scoop's ordering.
+    let _g = warn_once_lock();
+    let (addr, captured) =
+        anodizer_core::test_helpers::responder::spawn_request_capturing_responder(
+            "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+        );
+    let registry = format!("http://{addr}");
+
+    let mut ctx = mcp_ctx(|mcp| {
+        // Leave homepage unset so the project-metadata fallback fires.
+        mcp.homepage = None;
+    });
+    ctx.config.metadata = Some(anodizer_core::config::MetadataConfig {
+        homepage: Some("https://example.com/{{ .Version }}".to_string()),
+        ..Default::default()
+    });
+    let log = ctx.logger("mcp-test");
+    let result = publish_with_registry(&mut ctx, &log, &registry);
+    assert!(result.is_ok(), "publish must succeed: {:?}", result);
+
+    let body = captured.lock().unwrap().clone();
+    assert!(
+        body.contains("https://example.com/1.0.0"),
+        "metadata homepage fallback must be rendered (1.0.0), got body:\n{}",
+        body
+    );
+    assert!(
+        !body.contains("{{ .Version }}"),
+        "raw template token must not ship in the published body:\n{}",
+        body
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Publish loop — retries
 // ---------------------------------------------------------------------------
