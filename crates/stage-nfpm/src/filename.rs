@@ -180,6 +180,12 @@ fn rpm_filename(info: &FileNameInfo<'_>) -> String {
 
 /// Alpine arch translation, keyed on Go-style arch (matching nfpm
 /// v2.46.3's `archToAlpine`).
+///
+/// The identity rows (`aarch64`, `x86_64`) and the `i386`/`i686 => x86`
+/// rows are part of nfpm's map, so they're kept verbatim for
+/// byte-for-byte parity even though `other => other` would already
+/// cover the identity cases — they are an intentional replica, not
+/// deletable cruft.
 fn apk_arch(arch: &str) -> &str {
     match arch {
         "all" => "noarch",
@@ -248,6 +254,11 @@ fn apk_pkgver(info: &FileNameInfo<'_>) -> String {
 
 /// Arch Linux arch translation, keyed on Go-style arch (matching nfpm
 /// v2.46.3's `archToArchLinux`).
+///
+/// The identity rows (`x86_64`, `aarch64`) are part of nfpm's map, so
+/// they're kept verbatim for byte-for-byte parity even though
+/// `other => other` would already cover them — an intentional replica,
+/// not deletable cruft.
 fn archlinux_arch(arch: &str) -> &str {
     match arch {
         "all" => "any",
@@ -316,6 +327,11 @@ pub fn control_arch(format: &str, arch: &str) -> String {
 
 /// IPK arch translation, keyed on Go-style arch (matching nfpm
 /// v2.46.3's `archToIPK`).
+///
+/// The identity rows (`x86_64`, `i386`) are part of nfpm's map, so
+/// they're kept verbatim for byte-for-byte parity even though
+/// `other => other` would already cover them — an intentional replica,
+/// not deletable cruft.
 fn ipk_arch(arch: &str) -> &str {
     match arch {
         "386" => "i386",
