@@ -4,7 +4,7 @@
 
 use super::helpers;
 use crate::pipeline;
-use anodizer_core::context::{Context, ContextOptions};
+use anodizer_core::context::ContextOptions;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::Result;
 use std::path::PathBuf;
@@ -42,17 +42,10 @@ pub fn run(opts: AnnounceOpts) -> Result<()> {
     };
 
     if opts.merge {
-        // Merge-mode prelude mirrors `continue --merge`: build the context
-        // manually so the per-shard loader can populate it from
-        // `dist/<subdir>/context.json` files.
-        let config_path =
-            pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(&log))?;
-        let mut config = pipeline::load_config(&config_path)?;
-        helpers::infer_project_name(&mut config, &log);
-        helpers::auto_detect_github(&mut config, &log);
-        let mut ctx = Context::new(config.clone(), ctx_opts);
-        helpers::setup_context(&mut ctx, &config, &log)?;
-        ctx.populate_metadata_var()?;
+        // Merge-mode prelude builds the context manually so the per-shard
+        // loader can populate it from `dist/<subdir>/context.json` files.
+        let (config, mut ctx) =
+            helpers::init_merge_stage_ctx(opts.config_override.as_deref(), ctx_opts, &log)?;
 
         let dist = opts.dist.as_deref().unwrap_or(&config.dist).to_path_buf();
         super::release::load_split_contexts_into(&mut ctx, &dist, &log)?;

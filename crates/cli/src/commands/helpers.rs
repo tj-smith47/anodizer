@@ -1098,6 +1098,32 @@ pub fn init_publish_stage_ctx(
     Ok((config, ctx, dist))
 }
 
+/// Build the context for a `--merge`-mode command (`publish --merge`,
+/// `announce --merge`, `continue --merge`).
+///
+/// Merge mode has no `dist/artifacts.json` yet — the per-shard loader
+/// (`load_split_contexts_into` / `run_merge`) populates the artifact set
+/// from `dist/<subdir>/context.json` files afterward. So the prelude can't
+/// reuse [`init_publish_stage_ctx`] (which loads `dist/artifacts.json`);
+/// it builds the context manually: find + load config, infer project name,
+/// auto-detect GitHub, construct the context, resolve git, and populate the
+/// metadata var. Returns `(config, ctx)` for the caller to drive into its
+/// merge-specific loader.
+pub fn init_merge_stage_ctx(
+    config_override: Option<&Path>,
+    ctx_opts: anodizer_core::context::ContextOptions,
+    log: &StageLogger,
+) -> Result<(Config, Context)> {
+    let config_path = crate::pipeline::find_config_with_logger(config_override, Some(log))?;
+    let mut config = crate::pipeline::load_config(&config_path)?;
+    infer_project_name(&mut config, log);
+    auto_detect_github(&mut config, log);
+    let mut ctx = Context::new(config.clone(), ctx_opts);
+    setup_context(&mut ctx, &config, log)?;
+    ctx.populate_metadata_var()?;
+    Ok((config, ctx))
+}
+
 /// Load artifacts from dist/artifacts.json into the context's artifact registry.
 /// Used by `publish` and `announce` commands that run from a completed dist/.
 pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {

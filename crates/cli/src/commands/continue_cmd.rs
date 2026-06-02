@@ -17,7 +17,7 @@
 
 use super::helpers;
 use crate::pipeline;
-use anodizer_core::context::{Context, ContextOptions};
+use anodizer_core::context::ContextOptions;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::Result;
 use std::path::PathBuf;
@@ -58,16 +58,11 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
 
     if opts.merge {
         // Merge-mode does its own per-shard context.json load via run_merge,
-        // so init_publish_stage_ctx is the wrong prelude here. Build the
-        // context manually with the same setup steps.
-        let config_path =
-            pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(&log))?;
-        let mut config = pipeline::load_config(&config_path)?;
-        helpers::infer_project_name(&mut config, &log);
-        helpers::auto_detect_github(&mut config, &log);
-        let mut ctx = Context::new(config.clone(), ctx_opts);
-        helpers::setup_context(&mut ctx, &config, &log)?;
-        ctx.populate_metadata_var()?;
+        // so init_publish_stage_ctx (which loads dist/artifacts.json) is the
+        // wrong prelude here — build the context manually with the shared
+        // merge-stage prelude.
+        let (config, mut ctx) =
+            helpers::init_merge_stage_ctx(opts.config_override.as_deref(), ctx_opts, &log)?;
         return super::release::run_merge(
             &mut ctx,
             &config,
