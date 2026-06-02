@@ -134,6 +134,14 @@ pub fn spawn_oneshot_https_responder(responses: Vec<&'static str>) -> (SocketAdd
 pub fn https_test_client() -> reqwest::Client {
     reqwest::ClientBuilder::new()
         .danger_accept_invalid_certs(true)
+        // The one-shot responder closes each connection after a single
+        // response, so a pooled idle connection is always dead by the next
+        // request. Disabling idle pooling makes the client open a fresh
+        // connection per request — matching the responder's
+        // one-response-per-connection contract — instead of grabbing a
+        // dead pooled socket and depending on reqwest's retry timing, which
+        // races under parallel-test CPU load.
+        .pool_max_idle_per_host(0)
         .build()
         .expect("build reqwest::Client with invalid-certs override")
 }

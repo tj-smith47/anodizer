@@ -572,7 +572,7 @@ fn render_strings(ctx: &Context, mcp: &mut McpConfig) -> Result<()> {
             render_in_place(
                 ctx,
                 &mut header.value,
-                &format!("packages[{}].transport.headers[{}]", i, j),
+                &format!("packages[{}].transport.headers[{}].value", i, j),
             )?;
         }
     }
