@@ -158,18 +158,27 @@ impl tracing::field::Visit for MessageVisitor {
     }
 }
 
-/// Strip a single layer of `Debug` quoting from `s` if present, so a
-/// message that arrived as `"text"` (with literal surrounding quotes)
-/// renders as `text`. A no-op for the common case where `tracing`'s
-/// `format_args!` `Debug` already produced an unquoted message.
+/// Strip a single layer of `Debug` quoting from `s` if it is genuinely a
+/// `Debug`-encoded string wrapper, so a message that arrived as `"text"`
+/// (the `{value:?}` rendering of `text`) renders as `text`. A no-op for the
+/// common case where `tracing`'s `format_args!` `Debug` already produced an
+/// unquoted message.
+///
+/// Only strips when the result round-trips: the unescaped inner content,
+/// re-rendered through `Debug`, must reproduce `s` exactly. This preserves a
+/// legitimately-quoted value (e.g. a message whose actual text is `"quoted"`,
+/// where the quotes are content rather than `Debug` framing) untouched —
+/// blindly trimming surrounding quotes would mangle it.
 fn strip_debug_quotes(s: String) -> String {
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
-        s[1..s.len() - 1]
+        let inner = s[1..s.len() - 1]
             .replace("\\\"", "\"")
-            .replace("\\\\", "\\")
-    } else {
-        s
+            .replace("\\\\", "\\");
+        if format!("{inner:?}") == s {
+            return inner;
+        }
     }
+    s
 }
 
 impl<S, N> tracing_subscriber::fmt::FormatEvent<S, N> for StageStyleFormat
@@ -673,6 +682,33 @@ mod tests {
     use super::*;
     use anodizer_cli::num_cpus;
     use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn strip_debug_quotes_unwraps_debug_encoded_string() {
+        // `format!("{:?}", "hello")` yields `"hello"`; strip restores `hello`.
+        assert_eq!(strip_debug_quotes(format!("{:?}", "hello")), "hello");
+        // Embedded quotes/backslashes survive the round-trip unescape.
+        let raw = "a\"b\\c";
+        assert_eq!(strip_debug_quotes(format!("{raw:?}")), raw);
+    }
+
+    #[test]
+    fn strip_debug_quotes_preserves_legitimately_quoted_value() {
+        // A value whose surrounding quotes are content (not Debug framing):
+        // `"a"b"` has an unescaped interior quote, so it cannot be a Debug
+        // string literal and must survive untouched. The old blind-trim
+        // would have mangled it to `a"b`.
+        let legit = "\"a\"b\"".to_string();
+        assert_eq!(strip_debug_quotes(legit.clone()), legit);
+    }
+
+    #[test]
+    fn strip_debug_quotes_leaves_unquoted_input_alone() {
+        assert_eq!(
+            strip_debug_quotes("plain message".to_string()),
+            "plain message"
+        );
+    }
 
     #[test]
     fn test_cli_parses_release_with_new_flags() {

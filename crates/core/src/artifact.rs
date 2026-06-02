@@ -348,12 +348,14 @@ impl ArtifactRegistry {
         // is a benign idempotent add (e.g. cross-target `install.sh.sha256`
         // produced once per shard) and must stay silent; warning on it floods
         // the default-verbosity log with duplicate, non-actionable lines.
+        // Scan for ANY prior same-name entry whose path differs (not just the
+        // first match): a third registration at a new path must still warn
+        // even when an earlier same-name entry happens to share the new path.
         if is_uploadable(artifact.kind)
             && let Some(existing) = self
                 .artifacts
                 .iter()
-                .find(|a| is_uploadable(a.kind) && a.name == name)
-            && existing.path != artifact.path
+                .find(|a| is_uploadable(a.kind) && a.name == name && a.path != artifact.path)
         {
             // Route through `tracing::warn!` so the subscriber-level redaction
             // layer applies and the warning is intercept-friendly for tests.
@@ -1740,6 +1742,39 @@ mod tests {
         assert!(
             captured.contains("already registered"),
             "conflicting re-registration must still warn, got: {captured:?}"
+        );
+    }
+
+    #[test]
+    fn third_registration_warns_even_when_it_matches_the_first_path() {
+        let captured = capture_warnings(|| {
+            let mut registry = ArtifactRegistry::new();
+            // Path A, then a conflicting path B, then path A again. The
+            // third add re-uses A — a first-match-only check would compare
+            // against A, see equal paths, and miss the live conflict with B.
+            registry.add(upload_artifact(
+                ArtifactKind::Archive,
+                "app.tar.gz",
+                "dist/app.tar.gz",
+            ));
+            registry.add(upload_artifact(
+                ArtifactKind::Archive,
+                "app.tar.gz",
+                "dist/other/app.tar.gz",
+            ));
+            registry.add(upload_artifact(
+                ArtifactKind::Archive,
+                "app.tar.gz",
+                "dist/app.tar.gz",
+            ));
+        });
+        // Two conflict warnings expected: the B-vs-A add, and the final
+        // A-add that still conflicts with the registered B entry.
+        let hits = captured.matches("already registered").count();
+        assert!(
+            hits >= 2,
+            "third add must still warn against the differing-path entry; \
+             got {hits} warning(s): {captured:?}"
         );
     }
 }

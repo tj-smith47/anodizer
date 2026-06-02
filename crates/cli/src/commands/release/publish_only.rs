@@ -107,8 +107,7 @@ pub(super) fn detect_dist_layout(dist: &Path, log: &StageLogger) -> Result<DistL
     crate_subdirs.sort();
 
     match (has_flat, crate_subdirs.is_empty()) {
-        (false, true) => Ok(DistLayout::Flat),
-        (true, true) => Ok(DistLayout::Flat),
+        (_, true) => Ok(DistLayout::Flat),
         (false, false) => Ok(DistLayout::PerCrate(crate_subdirs)),
         (true, false) => Ok(DistLayout::Ambiguous { crate_subdirs }),
     }
