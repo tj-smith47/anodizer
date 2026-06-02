@@ -138,12 +138,22 @@ fn increment_version(v: &str, part: VersionPart) -> Result<String, tera::Error> 
     })
 }
 
+/// Escape a string for safe inclusion inside a **double-quoted Ruby string
+/// literal**: replace `\` with `\\` first, then `"` with `\"`.
+///
+/// Backslash must be escaped before the quote so the quote's inserted escape
+/// backslash is not itself doubled. Use this anywhere a user-supplied value is
+/// spliced into a `"…"` Ruby literal — both the Tera [`ruby_escape`](register_ruby_escape)
+/// filter and the Rust `format!`/`push_str` sites in the Homebrew
+/// formula/cask generators route through it so there is a single escape
+/// implementation.
+pub fn ruby_escape_str(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 /// Register the `ruby_escape` filter on a Tera instance.
 ///
-/// `ruby_escape` escapes a string for safe inclusion inside a **double-quoted
-/// Ruby string literal**: it replaces `\` with `\\` first, then `"` with `\"`.
-/// Backslash must be escaped before the quote so the quote's inserted escape
-/// backslash is not itself doubled. This makes user-supplied values
+/// The filter delegates to [`ruby_escape_str`], making user-supplied values
 /// (descriptions, homepages, display names, URLs, …) safe to interpolate into
 /// `desc "…"`, `homepage "…"`, `url "…"`, and similar Homebrew formula/cask
 /// stanzas without producing invalid Ruby.
@@ -156,8 +166,7 @@ pub(super) fn register_ruby_escape(tera: &mut tera::Tera) {
         "ruby_escape",
         |value: &Value, _: &HashMap<String, Value>| {
             let s = tera::try_get_value!("ruby_escape", "value", String, value);
-            let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-            Ok(Value::String(escaped))
+            Ok(Value::String(ruby_escape_str(&s)))
         },
     );
 }

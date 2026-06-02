@@ -1,5 +1,6 @@
 //! Homebrew formula generation: template, options, and dependency directive
 //! helpers.
+use anodizer_core::template::ruby_escape_str;
 use anyhow::{Context as _, Result};
 
 // ---------------------------------------------------------------------------
@@ -567,10 +568,10 @@ pub(super) fn build_depends_directives(
     let mut directives = Vec::new();
     for dep in d {
         if let Some(ref cask) = dep.cask {
-            directives.push(format!("cask: \"{}\"", cask));
+            directives.push(format!("cask: \"{}\"", ruby_escape_str(cask)));
         }
         if let Some(ref formula) = dep.formula {
-            directives.push(format!("formula: \"{}\"", formula));
+            directives.push(format!("formula: \"{}\"", ruby_escape_str(formula)));
         }
     }
     directives
@@ -587,9 +588,9 @@ pub(super) fn build_conflicts_directives(
     let mut directives = Vec::new();
     for conflict in c {
         if let Some(ref cask) = conflict.cask {
-            directives.push(format!("cask: \"{}\"", cask));
+            directives.push(format!("cask: \"{}\"", ruby_escape_str(cask)));
         } else if let Some(ref formula) = conflict.formula {
-            directives.push(format!("formula: \"{}\"", formula));
+            directives.push(format!("formula: \"{}\"", ruby_escape_str(formula)));
         }
     }
     directives

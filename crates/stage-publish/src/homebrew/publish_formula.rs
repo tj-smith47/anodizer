@@ -134,14 +134,22 @@ fn render_install_and_test_blocks(
         ) {
             if let Some(bin) = art.extra_binary() {
                 if art.name() != bin {
-                    bin_names.insert(format!("{}\" => \"{}", art.name(), bin));
+                    // The fragment closes and reopens the Ruby string literal
+                    // to emit `bin.install "<name>" => "<bin>"`; escape each
+                    // side's contents individually so the structural quotes
+                    // stay intact.
+                    bin_names.insert(format!(
+                        "{}\" => \"{}",
+                        template::ruby_escape_str(art.name()),
+                        template::ruby_escape_str(&bin)
+                    ));
                 } else {
                     bin_names.insert(bin);
                 }
             }
         }
         if bin_names.is_empty() {
-            format!("bin.install \"{}\"", crate_name)
+            format!("bin.install \"{}\"", template::ruby_escape_str(crate_name))
         } else {
             bin_names
                 .into_iter()
@@ -152,10 +160,12 @@ fn render_install_and_test_blocks(
     };
     let install =
         template::render(&install_raw, &tmpl_vars).unwrap_or_else(|_| install_raw.clone());
-    let test_raw = hb_cfg
-        .test
-        .clone()
-        .unwrap_or_else(|| format!("system \"#{{bin}}/{}\", \"--version\"", crate_name));
+    let test_raw = hb_cfg.test.clone().unwrap_or_else(|| {
+        format!(
+            "system \"#{{bin}}/{}\", \"--version\"",
+            template::ruby_escape_str(crate_name)
+        )
+    });
     let test = template::render(&test_raw, &tmpl_vars).unwrap_or_else(|_| test_raw.clone());
 
     let extra_install = hb_cfg

@@ -3293,3 +3293,239 @@ fn cask_ruby_escapes_user_values_and_passes_ruby_c() {
     );
     assert_ruby_syntax_ok("cask", &cask);
 }
+
+/// `render_additional_url_params` escapes user values spliced into `verified`,
+/// `referer`, `user_agent`, header, cookies, and data string literals; the
+/// whole `url "…"` continuation renders to valid Ruby. The `using:` symbol is
+/// raw Ruby and stays unescaped.
+#[test]
+fn url_params_ruby_escape_passes_ruby_c() {
+    use anodizer_core::config::HomebrewCaskURL;
+    use std::collections::HashMap;
+
+    let mut cookies = HashMap::new();
+    cookies.insert(r#"ck"y"#.to_string(), r#"v\al"#.to_string());
+    let mut data = HashMap::new();
+    data.insert(r#"d"k"#.to_string(), r#"d\v"#.to_string());
+    let u = HomebrewCaskURL {
+        template: None,
+        verified: Some(r#"example.com/a"b\c"#.to_string()),
+        using: Some(":homebrew_curl".to_string()),
+        cookies: Some(cookies),
+        referer: Some(r#"https://r"ef\er"#.to_string()),
+        headers: Some(vec![r#"X-Tok: a"b\c"#.to_string()]),
+        user_agent: Some(r#"Agent "1.0"\x"#.to_string()),
+        data: Some(data),
+    };
+    let extras = super::cask::render_additional_url_params(&u, "      ");
+
+    // Embedded quote/backslash are escaped inside each string literal.
+    assert!(
+        extras.contains(r#"verified: "example.com/a\"b\\c""#),
+        "verified should be ruby-escaped; got:\n{extras}"
+    );
+    assert!(
+        extras.contains(r#"referer: "https://r\"ef\\er""#),
+        "referer should be ruby-escaped; got:\n{extras}"
+    );
+    assert!(
+        extras.contains(r#"user_agent: "Agent \"1.0\"\\x""#),
+        "user_agent should be ruby-escaped; got:\n{extras}"
+    );
+    assert!(
+        extras.contains(r#""X-Tok: a\"b\\c""#),
+        "header should be ruby-escaped; got:\n{extras}"
+    );
+    assert!(
+        extras.contains(r#""ck\"y" => "v\\al""#),
+        "cookie key/value should be ruby-escaped; got:\n{extras}"
+    );
+    assert!(
+        extras.contains(r#""d\"k" => "d\\v""#),
+        "data key/value should be ruby-escaped; got:\n{extras}"
+    );
+    // The `using:` symbol is raw Ruby — passes through verbatim.
+    assert!(
+        extras.contains("using: :homebrew_curl"),
+        "using symbol must stay raw; got:\n{extras}"
+    );
+
+    // Splice the continuation into a real `url "…"` line and validate the
+    // whole cask with `ruby -c`.
+    let source = format!(
+        "cask \"x\" do\n  version \"1.0\"\n  sha256 \"deadbeef\"\n  url \"https://e.com/x.dmg\"{extras}\n  name \"X\"\nend\n"
+    );
+    assert_ruby_syntax_ok("url_params", &source);
+}
+
+/// `render_generate_completions` escapes the executable, args, and `base_name`
+/// string literals; the directive renders to valid Ruby. Shell symbols stay
+/// raw.
+#[test]
+fn generate_completions_ruby_escape_passes_ruby_c() {
+    use anodizer_core::config::HomebrewCaskGeneratedCompletions;
+
+    let g = HomebrewCaskGeneratedCompletions {
+        executable: Some(r#"bin/my"app\x"#.to_string()),
+        args: Some(vec![r#"comp"le\tions"#.to_string()]),
+        base_name: Some(r#"my"app\x"#.to_string()),
+        shell_parameter_format: Some("cobra".to_string()),
+        shells: Some(vec!["bash".to_string(), "zsh".to_string()]),
+    };
+    let directive = super::cask::render_generate_completions(&g).expect("directive");
+
+    assert!(
+        directive.contains(r#""bin/my\"app\\x""#),
+        "executable should be ruby-escaped; got:\n{directive}"
+    );
+    assert!(
+        directive.contains(r#""comp\"le\\tions""#),
+        "arg should be ruby-escaped; got:\n{directive}"
+    );
+    assert!(
+        directive.contains(r#"base_name: "my\"app\\x""#),
+        "base_name should be ruby-escaped; got:\n{directive}"
+    );
+    // Known shell_parameter_format renders as a symbol — raw, not escaped.
+    assert!(
+        directive.contains("shell_parameter_format: :cobra"),
+        "known format must render as a raw symbol; got:\n{directive}"
+    );
+
+    let source = format!("cask \"x\" do\n  version \"1.0\"\n  {directive}\nend\n");
+    assert_ruby_syntax_ok("generate_completions", &source);
+}
+
+/// `build_depends_directives` / `build_conflicts_directives` escape the
+/// package-name string literals inside `cask: "…"` / `formula: "…"`; the
+/// resulting `depends_on` / `conflicts_with` lines render to valid Ruby.
+#[test]
+fn depends_conflicts_ruby_escape_passes_ruby_c() {
+    use anodizer_core::config::{HomebrewCaskConflictEntry, HomebrewCaskDependencyEntry};
+
+    let deps = vec![HomebrewCaskDependencyEntry {
+        cask: Some(r#"oth"er\app"#.to_string()),
+        formula: None,
+    }];
+    let conflicts = vec![HomebrewCaskConflictEntry {
+        cask: None,
+        formula: Some(r#"old"f\m"#.to_string()),
+    }];
+    let dep_dirs = super::formula::build_depends_directives(Some(&deps));
+    let conf_dirs = super::formula::build_conflicts_directives(Some(&conflicts));
+
+    assert_eq!(dep_dirs, vec![r#"cask: "oth\"er\\app""#.to_string()]);
+    assert_eq!(conf_dirs, vec![r#"formula: "old\"f\\m""#.to_string()]);
+
+    let source = format!(
+        "cask \"x\" do\n  version \"1.0\"\n  depends_on {}\n  conflicts_with {}\n  name \"X\"\nend\n",
+        dep_dirs[0], conf_dirs[0]
+    );
+    assert_ruby_syntax_ok("depends_conflicts", &source);
+}
+
+/// The `uninstall`/`zap` array renderer formats each entry with Rust's `{:?}`
+/// debug, which already escapes `"`/`\` for a double-quoted literal — values
+/// containing them stay valid Ruby and are NOT double-escaped.
+#[test]
+fn uninstall_zap_debug_format_stays_valid_ruby() {
+    use anodizer_core::config::HomebrewCaskUninstall;
+
+    let u = HomebrewCaskUninstall {
+        launchctl: Some(vec![r#"com.ex"am\ple"#.to_string()]),
+        quit: None,
+        login_item: None,
+        delete: None,
+        trash: None,
+    };
+    let block = super::cask::render_uninstall_block(Some(&u));
+    // Debug-format escapes the embedded quote and backslash exactly once.
+    assert!(
+        block.contains(r#""com.ex\"am\\ple""#),
+        "debug-format should escape once (not double); got:\n{block}"
+    );
+
+    let source = format!("cask \"x\" do\n  version \"1.0\"\n  {block}\n  name \"X\"\nend\n");
+    assert_ruby_syntax_ok("uninstall", &source);
+}
+
+/// Run `ruby -c` on Ruby source expected to be INVALID, asserting a non-zero
+/// exit. Gated on `ruby` being on `PATH` (visible SKIP when absent). Used to
+/// prove the escaping is load-bearing: the un-escaped equivalent must be
+/// rejected by the same validator that accepts the escaped form.
+fn assert_ruby_syntax_err(label: &str, source: &str) {
+    if !anodizer_core::tool_detect::tool_available("ruby").unwrap_or(false) {
+        eprintln!("SKIP {label}: ruby not on PATH; cannot run `ruby -c`");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("create temp dir for ruby -c");
+    let path = dir.path().join("artifact.rb");
+    std::fs::write(&path, source).expect("write rendered ruby");
+    let output = std::process::Command::new("ruby")
+        .arg("-c")
+        .arg(&path)
+        .output()
+        .expect("run ruby -c");
+    assert!(
+        !output.status.success(),
+        "{label}: expected `ruby -c` to REJECT the un-escaped form, but it \
+         passed — the escaping under test would be a no-op:\n--- source ---\n{source}",
+    );
+}
+
+/// Discrimination test: `ruby_escape_str` is non-vacuous. For a value carrying
+/// `"` and `\`, the escaped output differs from the naive un-escaped splice,
+/// the naive form is REJECTED by `ruby -c`, and the escaped form is ACCEPTED.
+/// This proves the escaping is load-bearing rather than a no-op the suite
+/// would pass even if the filter were deleted.
+#[test]
+fn ruby_escape_is_load_bearing_not_a_noop() {
+    use anodizer_core::template::ruby_escape_str;
+
+    let raw = r#"the "best" \tool"#;
+    let escaped = ruby_escape_str(raw);
+
+    // The transform actually changes the string (would be identity if vacuous).
+    assert_ne!(
+        escaped, raw,
+        "ruby_escape_str must transform a value with `\"`/`\\`"
+    );
+    assert_eq!(escaped, r#"the \"best\" \\tool"#);
+
+    // The naive splice (no escaping) produces invalid Ruby.
+    let naive = format!("cask \"x\" do\n  desc \"{raw}\"\nend\n");
+    assert_ruby_syntax_err("naive-unescaped", &naive);
+
+    // The escaped splice produces valid Ruby.
+    let safe = format!("cask \"x\" do\n  desc \"{escaped}\"\nend\n");
+    assert_ruby_syntax_ok("escaped", &safe);
+}
+
+/// The `bin.install` install-phase fragments built in `publish_formula.rs`
+/// route binary/crate names through `ruby_escape_str` before splicing into
+/// `"…"` literals, so a name carrying `"`/`\` would stay valid Ruby. Proves
+/// the rename fragment's two sides are escaped INDIVIDUALLY (the structural
+/// `" => "` quotes survive, yielding a valid Ruby hash argument), and that the
+/// un-escaped name produces invalid Ruby — so the escaping is load-bearing.
+#[test]
+fn install_fragment_escapes_each_side_keeps_structure() {
+    use anodizer_core::template::ruby_escape_str;
+
+    let name = r#"my"app\x"#;
+    let bin = r#"re"name\d"#;
+
+    // Per-side escaping (the production approach): structural quotes survive,
+    // each side's contents are escaped, and the result is a valid `name => bin`
+    // hash argument.
+    let fragment = format!("{}\" => \"{}", ruby_escape_str(name), ruby_escape_str(bin));
+    let line = format!("bin.install \"{fragment}\"");
+    assert_eq!(line, r#"bin.install "my\"app\\x" => "re\"name\\d""#);
+    let source = format!("class T < Formula\n  def install\n    {line}\n  end\nend\n");
+    assert_ruby_syntax_ok("install-fragment", &source);
+
+    // No escaping at all (a name with a raw `"` ending the literal early) is
+    // rejected by `ruby -c`, proving the escaping above is load-bearing.
+    let naive_line = format!("bin.install \"{name}\" => \"{bin}\"");
+    let broken = format!("class T < Formula\n  def install\n    {naive_line}\n  end\nend\n");
+    assert_ruby_syntax_err("install-fragment-unescaped", &broken);
+}
