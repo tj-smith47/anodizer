@@ -20,14 +20,17 @@ use crate::generate::{NfpmLibraryPaths, generate_nfpm_yaml_with_env};
 
 pub struct NfpmStage;
 
-/// Render an `Option<String>` field in place through the template engine.
+/// Render an `Option<String>` field in place against `vars`.
 ///
 /// `None` is a no-op. Saves ~3 lines per field at the ~15 call sites where
-/// nfpm field-by-field templating used to expand the same `if let Some(ref
-/// s) = X { X = Some(ctx.render_template(s)?); }` shape inline.
-fn render_in_place(field: &mut Option<String>, ctx: &mut Context) -> Result<()> {
+/// nfpm field-by-field templating used to expand the same
+/// `if let Some(ref s) = X { X = Some(render(s)?); }` shape inline.
+fn render_in_place(
+    field: &mut Option<String>,
+    vars: &anodizer_core::template::TemplateVars,
+) -> Result<()> {
     if let Some(s) = field.as_deref() {
-        *field = Some(ctx.render_template(s)?);
+        *field = Some(anodizer_core::template::render(s, vars)?);
     }
     Ok(())
 }
@@ -141,24 +144,7 @@ fn collect_nfpm_jobs_for_crate(
         return Ok(());
     };
 
-    let nfpm_artifact_kinds = &[
-        ArtifactKind::Binary,
-        ArtifactKind::Header,
-        ArtifactKind::CArchive,
-        ArtifactKind::CShared,
-    ];
-    let linux_binaries: Vec<_> = ctx
-        .artifacts
-        .by_kinds_and_crate(nfpm_artifact_kinds, &krate.name)
-        .into_iter()
-        .filter(|b| {
-            b.target
-                .as_deref()
-                .map(anodizer_core::target::is_nfpm_target)
-                .unwrap_or(false)
-        })
-        .cloned()
-        .collect();
+    let linux_binaries = nfpm_eligible_artifacts(ctx, &krate.name);
 
     for nfpm_cfg in nfpm_configs {
         let nfpm_id_for_log = nfpm_cfg.id.as_deref().unwrap_or("default").to_string();
@@ -460,12 +446,7 @@ fn should_skip_nfpm_config(
     nfpm_id_for_log: &str,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<bool> {
-    let proceed = anodizer_core::config::evaluate_if_condition(
-        nfpm_cfg.if_condition.as_deref(),
-        &format!("nfpm config '{nfpm_id_for_log}'"),
-        |t| ctx.render_template(t),
-    )?;
-    if !proceed {
+    if !nfpm_config_if_proceeds(ctx, nfpm_cfg, nfpm_id_for_log)? {
         let reason = "`if` condition evaluated falsy".to_string();
         log.verbose(&format!(
             "skipping nfpm config '{}': {}",
@@ -495,6 +476,49 @@ fn should_skip_nfpm_config(
     }
 
     Ok(false)
+}
+
+/// Evaluate one nfpm config's `if:` gate against the current template vars.
+///
+/// `Ok(true)` means the config proceeds; `Ok(false)` means a falsy `if:`
+/// suppresses it (the build skips it, and the offline renderer emits no
+/// YAML for it). Shared by the build's `should_skip_nfpm_config` and the
+/// offline `nfpm_yaml_configs_for_crate` so a single render decides both.
+fn nfpm_config_if_proceeds(
+    ctx: &Context,
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    nfpm_id_for_log: &str,
+) -> Result<bool> {
+    anodizer_core::config::evaluate_if_condition(
+        nfpm_cfg.if_condition.as_deref(),
+        &format!("nfpm config '{nfpm_id_for_log}'"),
+        |t| ctx.render_template(t),
+    )
+}
+
+/// Collect the packaging-eligible artifacts for one crate: every Binary /
+/// Header / CArchive / CShared artifact whose target triple nfpm can package
+/// (`is_nfpm_target`). Both the build's `run` loop and the offline
+/// `nfpm_yaml_configs_for_crate` renderer start from this exact set so the
+/// validated (config × target × format) universe equals the built one.
+fn nfpm_eligible_artifacts(ctx: &Context, crate_name: &str) -> Vec<Artifact> {
+    let nfpm_artifact_kinds = &[
+        ArtifactKind::Binary,
+        ArtifactKind::Header,
+        ArtifactKind::CArchive,
+        ArtifactKind::CShared,
+    ];
+    ctx.artifacts
+        .by_kinds_and_crate(nfpm_artifact_kinds, crate_name)
+        .into_iter()
+        .filter(|b| {
+            b.target
+                .as_deref()
+                .map(anodizer_core::target::is_nfpm_target)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect()
 }
 
 /// Build the per-platform artifact groups for one nfpm config.
@@ -687,7 +711,8 @@ pub(crate) fn render_and_generate_nfpm_yaml(
 ) -> Result<String> {
     set_nfpm_per_target_template_vars(ctx, os, arch, target);
 
-    let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, ctx, crate_name)?;
+    let mut rendered_cfg =
+        render_nfpm_config_fields(nfpm_cfg, &ctx.config, ctx.template_vars(), crate_name)?;
 
     process_templated_contents(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
     process_templated_scripts(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
@@ -696,12 +721,18 @@ pub(crate) fn render_and_generate_nfpm_yaml(
 
     setup_lintian_overrides(&mut rendered_cfg, format, pkg_name, arch, dist, dry_run)?;
 
+    let render_target = crate::generate::NfpmRenderTarget {
+        os,
+        arch,
+        target,
+        format: Some(format),
+        version,
+        skip_sign,
+    };
     generate_nfpm_yaml_with_env(
         &rendered_cfg,
-        version,
+        &render_target,
         binary_paths,
-        Some(format),
-        skip_sign,
         lib_paths,
         ctx.template_vars().all_env(),
     )
@@ -713,39 +744,36 @@ pub(crate) fn render_and_generate_nfpm_yaml(
 /// (fallback to `metadata.homepage/license/description/maintainers`).
 pub(crate) fn render_nfpm_config_fields(
     nfpm_cfg: &anodizer_core::config::NfpmConfig,
-    ctx: &mut Context,
+    config: &anodizer_core::config::Config,
+    vars: &anodizer_core::template::TemplateVars,
     crate_name: &str,
 ) -> Result<anodizer_core::config::NfpmConfig> {
     let mut rendered_cfg = nfpm_cfg.clone();
     if rendered_cfg.description.is_none() {
-        rendered_cfg.description = ctx
-            .config
-            .meta_description_for(crate_name)
-            .map(str::to_string);
+        rendered_cfg.description = config.meta_description_for(crate_name).map(str::to_string);
     }
     if rendered_cfg.maintainer.is_none() {
-        rendered_cfg.maintainer = ctx
-            .config
+        rendered_cfg.maintainer = config
             .meta_first_maintainer_for(crate_name)
             .map(str::to_string);
     }
     if rendered_cfg.homepage.is_none() {
-        rendered_cfg.homepage = ctx.config.meta_homepage_for(crate_name).map(str::to_string);
+        rendered_cfg.homepage = config.meta_homepage_for(crate_name).map(str::to_string);
     }
     if rendered_cfg.license.is_none() {
-        rendered_cfg.license = ctx.config.meta_license_for(crate_name).map(str::to_string);
+        rendered_cfg.license = config.meta_license_for(crate_name).map(str::to_string);
     }
-    render_in_place(&mut rendered_cfg.description, ctx)?;
-    render_in_place(&mut rendered_cfg.maintainer, ctx)?;
-    render_in_place(&mut rendered_cfg.homepage, ctx)?;
-    render_in_place(&mut rendered_cfg.license, ctx)?;
-    render_in_place(&mut rendered_cfg.vendor, ctx)?;
-    render_in_place(&mut rendered_cfg.section, ctx)?;
-    render_in_place(&mut rendered_cfg.priority, ctx)?;
-    render_in_place(&mut rendered_cfg.changelog, ctx)?;
-    render_in_place(&mut rendered_cfg.bindir, ctx)?;
-    render_in_place(&mut rendered_cfg.bin_alias, ctx)?;
-    render_in_place(&mut rendered_cfg.mtime, ctx)?;
+    render_in_place(&mut rendered_cfg.description, vars)?;
+    render_in_place(&mut rendered_cfg.maintainer, vars)?;
+    render_in_place(&mut rendered_cfg.homepage, vars)?;
+    render_in_place(&mut rendered_cfg.license, vars)?;
+    render_in_place(&mut rendered_cfg.vendor, vars)?;
+    render_in_place(&mut rendered_cfg.section, vars)?;
+    render_in_place(&mut rendered_cfg.priority, vars)?;
+    render_in_place(&mut rendered_cfg.changelog, vars)?;
+    render_in_place(&mut rendered_cfg.bindir, vars)?;
+    render_in_place(&mut rendered_cfg.bin_alias, vars)?;
+    render_in_place(&mut rendered_cfg.mtime, vars)?;
 
     // Render relationship lists per-target so a config can select a different
     // `Conflicts:`/`Provides:`/`Replaces:`/`Recommends:`/`Suggests:` per
@@ -763,15 +791,15 @@ pub(crate) fn render_nfpm_config_fields(
     .flatten()
     {
         for entry in list.iter_mut() {
-            *entry = ctx.render_template(entry)?;
+            *entry = anodizer_core::template::render(entry, vars)?;
         }
     }
 
     if let Some(ref mut scripts) = rendered_cfg.scripts {
-        render_in_place(&mut scripts.preinstall, ctx)?;
-        render_in_place(&mut scripts.postinstall, ctx)?;
-        render_in_place(&mut scripts.preremove, ctx)?;
-        render_in_place(&mut scripts.postremove, ctx)?;
+        render_in_place(&mut scripts.preinstall, vars)?;
+        render_in_place(&mut scripts.postinstall, vars)?;
+        render_in_place(&mut scripts.preremove, vars)?;
+        render_in_place(&mut scripts.postremove, vars)?;
     }
 
     // Render signature key_file, key_name, AND key_passphrase for all
@@ -780,36 +808,36 @@ pub(crate) fn render_nfpm_config_fields(
     if let Some(ref mut deb) = rendered_cfg.deb
         && let Some(ref mut sig) = deb.signature
     {
-        render_in_place(&mut sig.key_file, ctx)?;
-        render_in_place(&mut sig.key_passphrase, ctx)?;
+        render_in_place(&mut sig.key_file, vars)?;
+        render_in_place(&mut sig.key_passphrase, vars)?;
     }
     if let Some(ref mut rpm) = rendered_cfg.rpm
         && let Some(ref mut sig) = rpm.signature
     {
-        render_in_place(&mut sig.key_file, ctx)?;
-        render_in_place(&mut sig.key_passphrase, ctx)?;
+        render_in_place(&mut sig.key_file, vars)?;
+        render_in_place(&mut sig.key_passphrase, vars)?;
     }
     if let Some(ref mut apk) = rendered_cfg.apk
         && let Some(ref mut sig) = apk.signature
     {
-        render_in_place(&mut sig.key_file, ctx)?;
-        render_in_place(&mut sig.key_name, ctx)?;
-        render_in_place(&mut sig.key_passphrase, ctx)?;
+        render_in_place(&mut sig.key_file, vars)?;
+        render_in_place(&mut sig.key_name, vars)?;
+        render_in_place(&mut sig.key_passphrase, vars)?;
     }
     if let Some(ref mut libdirs) = rendered_cfg.libdirs {
-        render_in_place(&mut libdirs.header, ctx)?;
-        render_in_place(&mut libdirs.cshared, ctx)?;
-        render_in_place(&mut libdirs.carchive, ctx)?;
+        render_in_place(&mut libdirs.header, vars)?;
+        render_in_place(&mut libdirs.cshared, vars)?;
+        render_in_place(&mut libdirs.carchive, vars)?;
     }
 
     if let Some(ref mut entries) = rendered_cfg.contents {
         for entry in entries.iter_mut() {
-            entry.src = ctx.render_template(&entry.src)?;
-            entry.dst = ctx.render_template(&entry.dst)?;
+            entry.src = anodizer_core::template::render(&entry.src, vars)?;
+            entry.dst = anodizer_core::template::render(&entry.dst, vars)?;
             if let Some(ref mut fi) = entry.file_info {
-                render_in_place(&mut fi.owner, ctx)?;
-                render_in_place(&mut fi.group, ctx)?;
-                render_in_place(&mut fi.mtime, ctx)?;
+                render_in_place(&mut fi.owner, vars)?;
+                render_in_place(&mut fi.group, vars)?;
+                render_in_place(&mut fi.mtime, vars)?;
             }
         }
     }
@@ -939,8 +967,9 @@ fn process_templated_scripts(
     Ok(())
 }
 
-/// Fill `deb.arch_variant` from the per-target artifact `amd64_variant`
-/// metadata when the user has not set it explicitly.
+/// Fill `deb.arch_variant` from the per-target artifact's `amd64_variant`
+/// (GOAMD64 microarch) metadata when the user has not set it explicitly, so an
+/// amd64 deb is tagged with the microarchitecture it was built for.
 fn fill_deb_arch_variant(
     rendered_cfg: &mut anodizer_core::config::NfpmConfig,
     linux_binaries: &[Artifact],
@@ -1189,4 +1218,180 @@ fn execute_nfpm_jobs(
     };
 
     anodizer_core::parallel::run_parallel_chunks(jobs, parallelism, "nfpm", run_job)
+}
+
+/// One nfpm YAML config a build would feed to `nfpm pkg` for a single
+/// (config × target × format) combination, rendered offline for schema
+/// validation.
+pub struct NfpmRenderedConfig {
+    /// nfpm packager format this config targets (`deb`, `rpm`, `apk`, …).
+    pub format: String,
+    /// Target triple the config was rendered for, or empty when the crate
+    /// built a host binary with no triple.
+    pub target: String,
+    /// Resolved package architecture stamped into the config (`amd64`,
+    /// `arm64`, …) — the value nfpm would otherwise default to `amd64`.
+    pub arch: String,
+    /// The generated nfpm YAML, ready to parse and validate against nfpm's
+    /// own config schema.
+    pub yaml: String,
+}
+
+/// Render every nfpm config a build would feed to `nfpm pkg` for one crate,
+/// mirroring the build's per-(config × target × format) `run` walk — without
+/// writing files or spawning `nfpm`.
+///
+/// Returns `Ok(vec![])` (nothing to validate) when the crate carries no nfpm
+/// config, when a config's `if:` gate evaluates falsy, when a config sets no
+/// output formats, when the `ids` filter admits no eligible binary, or when no
+/// packaging-eligible artifact was built for the crate in this snapshot shard
+/// (the same shard-tolerance cases the build's skip guards hit). Otherwise it
+/// walks the SAME shared helpers the build loop uses
+/// (`nfpm_eligible_artifacts`, `nfpm_config_if_proceeds`,
+/// `build_platform_groups`, `resolve_format_os_arch`,
+/// `is_arch_supported_for_format`, `render_nfpm_config_fields`) and returns one
+/// rendered config per combination, each stamped with the run's resolved
+/// version and target architecture.
+///
+/// The on-disk `templated_contents` / `templated_scripts` / lintian-override
+/// passes the build runs are intentionally not replayed here: they only append
+/// `contents:` entries sourced from external files and never change the
+/// schema-relevant shape of the config anodizer controls. A genuine render
+/// error (a malformed template in a config field) propagates as `Err` — it is
+/// never swallowed as a shard skip.
+pub fn nfpm_yaml_configs_for_crate(
+    ctx: &Context,
+    crate_name: &str,
+) -> Result<Vec<NfpmRenderedConfig>> {
+    let log = ctx.logger("nfpm");
+    let Some(krate) = ctx.config.crates.iter().find(|c| c.name == crate_name) else {
+        return Ok(Vec::new());
+    };
+    let Some(nfpm_configs) = krate.nfpms.as_ref() else {
+        return Ok(Vec::new());
+    };
+
+    let version = ctx
+        .template_vars()
+        .get("Version")
+        .cloned()
+        .unwrap_or_else(|| "0.0.0".to_string());
+    let skip_sign = ctx.should_skip("sign");
+
+    let linux_binaries = nfpm_eligible_artifacts(ctx, crate_name);
+
+    let mut rendered = Vec::new();
+    for nfpm_cfg in nfpm_configs {
+        let nfpm_id_for_log = nfpm_cfg.id.as_deref().unwrap_or("default").to_string();
+
+        // A falsy `if:` or an empty `formats:` suppresses the config in the
+        // build, so it renders no YAML here either.
+        if !nfpm_config_if_proceeds(ctx, nfpm_cfg, &nfpm_id_for_log)? {
+            continue;
+        }
+        if nfpm_cfg.formats.is_empty() {
+            continue;
+        }
+
+        let is_meta = nfpm_cfg.meta == Some(true);
+        let Some(platform_groups) =
+            build_platform_groups(nfpm_cfg, krate, &linux_binaries, is_meta, &log)
+        else {
+            // `ids:` filter matched no binary — the build skips this config.
+            continue;
+        };
+
+        for (target, binary_paths, lib_paths) in &platform_groups {
+            let (base_os, base_arch) = target
+                .as_deref()
+                .map(anodizer_core::target::map_target)
+                .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()));
+
+            for format in &nfpm_cfg.formats {
+                validate_format(format)
+                    .with_context(|| format!("nfpm config for crate {crate_name}"))?;
+
+                let Some((os, arch)) = resolve_format_os_arch(&base_os, &base_arch, format, &log)
+                else {
+                    continue;
+                };
+
+                if let Some(triple) = target.as_deref()
+                    && !is_arch_supported_for_format(triple, format)
+                {
+                    continue;
+                }
+
+                let render_target = crate::generate::NfpmRenderTarget {
+                    os: &os,
+                    arch: &arch,
+                    target: target.as_deref(),
+                    format: Some(format),
+                    version: &version,
+                    skip_sign,
+                };
+                let yaml = render_offline_nfpm_yaml(
+                    ctx,
+                    nfpm_cfg,
+                    crate_name,
+                    &render_target,
+                    &linux_binaries,
+                    binary_paths,
+                    lib_paths,
+                )?;
+
+                rendered.push(NfpmRenderedConfig {
+                    format: format.clone(),
+                    target: target.clone().unwrap_or_default(),
+                    arch,
+                    yaml,
+                });
+            }
+        }
+    }
+
+    Ok(rendered)
+}
+
+/// Render one (config × target × format) nfpm YAML against a per-target
+/// clone of the template vars, without mutating `ctx`. The clone carries the
+/// same `Os`/`Arch`/`Target`/`Libc` the build sets per target, so relationship
+/// lists (`conflicts`/`provides`/…) resolve their `{{ .Libc }}` etc. exactly
+/// as the live build does — the offline render emits what the build feeds nfpm.
+///
+/// `linux_binaries` is threaded so the deb `arch_variant` the live build
+/// auto-derives from a target's `amd64_variant` metadata
+/// (`fill_deb_arch_variant`) is present in the validated YAML too, keeping the
+/// validated config byte-identical to the shipped one.
+fn render_offline_nfpm_yaml(
+    ctx: &Context,
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    crate_name: &str,
+    render_target: &crate::generate::NfpmRenderTarget<'_>,
+    linux_binaries: &[Artifact],
+    binary_paths: &[String],
+    lib_paths: &NfpmLibraryPaths,
+) -> Result<String> {
+    let mut vars = ctx.template_vars().clone();
+    vars.set("Os", render_target.os);
+    vars.set("Arch", render_target.arch);
+    vars.set("Target", render_target.target.unwrap_or(""));
+    vars.set(
+        "Libc",
+        render_target
+            .target
+            .map(anodizer_core::target::libc_from_target)
+            .unwrap_or(""),
+    );
+
+    let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, &ctx.config, &vars, crate_name)?;
+    fill_deb_arch_variant(&mut rendered_cfg, linux_binaries, render_target.target);
+
+    generate_nfpm_yaml_with_env(
+        &rendered_cfg,
+        render_target,
+        binary_paths,
+        lib_paths,
+        ctx.template_vars().all_env(),
+    )
 }

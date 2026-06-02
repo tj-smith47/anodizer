@@ -1595,7 +1595,13 @@ fn test_generate_nfpm_yaml_package_metadata_fields() {
         yaml.contains("priority: optional"),
         "priority missing:\n{yaml}"
     );
-    assert!(yaml.contains("meta: true"), "meta missing:\n{yaml}");
+    // `meta` is consumed anodizer-side (it suppresses auto-emitted binary
+    // contents) and is not a key nfpm's config defines, so it must not leak
+    // into the generated YAML where nfpm's strict schema rejects it.
+    assert!(
+        !yaml.contains("meta:"),
+        "meta must not be emitted into the nfpm YAML:\n{yaml}"
+    );
     // Emitted as decimal int (not quoted "0o002") — nfpm parses to
     // `fs.FileMode`/uint32 and rejects YAML strings.
     assert!(yaml.contains("umask: 2"), "umask missing:\n{yaml}");
@@ -1847,13 +1853,12 @@ fn test_generate_nfpm_yaml_deb_config() {
         yaml.contains("- oldpackage (<< 2.0)"),
         "deb breaks value missing:\n{yaml}"
     );
+    // `lintian_overrides` is not an nfpm deb field; the stage converts it to a
+    // `contents:` entry (via `setup_lintian_overrides`) and it must never be
+    // emitted as a `deb.lintian_overrides` key, which nfpm's schema rejects.
     assert!(
-        yaml.contains("lintian_overrides:"),
-        "deb lintian_overrides missing:\n{yaml}"
-    );
-    assert!(
-        yaml.contains("- statically-linked-binary"),
-        "deb lintian_overrides value missing:\n{yaml}"
+        !yaml.contains("lintian_overrides:"),
+        "lintian_overrides must not be emitted as a deb key:\n{yaml}"
     );
     assert!(
         yaml.contains("signature:"),
@@ -2530,7 +2535,12 @@ fn test_generate_nfpm_yaml_all_format_sections_together() {
         yaml.contains("priority: required"),
         "priority missing:\n{yaml}"
     );
-    assert!(yaml.contains("meta: false"), "meta missing:\n{yaml}");
+    // `meta` is an anodizer-side toggle nfpm's config does not define, so it
+    // never reaches the generated YAML.
+    assert!(
+        !yaml.contains("meta:"),
+        "meta must not be emitted into the nfpm YAML:\n{yaml}"
+    );
     assert!(yaml.contains("umask:"), "umask missing:\n{yaml}");
     assert!(yaml.contains("mtime:"), "mtime missing:\n{yaml}");
     assert!(yaml.contains("rpm:"), "rpm section missing:\n{yaml}");
@@ -2569,26 +2579,32 @@ crates:
 }
 
 #[test]
-fn test_meta_false_emits_in_yaml() {
-    let nfpm_cfg = NfpmConfig {
-        package_name: Some("myapp".to_string()),
-        formats: vec!["deb".to_string()],
-        meta: Some(false),
-        ..Default::default()
-    };
-    let yaml = generate_nfpm_yaml(
-        &nfpm_cfg,
-        "1.0.0",
-        &["/dist/myapp".to_string()],
-        None,
-        false,
-        &NfpmLibraryPaths::default(),
-    )
-    .unwrap();
-    assert!(
-        yaml.contains("meta: false"),
-        "meta: false should appear in YAML:\n{yaml}"
-    );
+fn test_meta_is_never_emitted_to_yaml() {
+    // nfpm's config has no `meta` field; it is an anodizer-side toggle that
+    // suppresses auto-emitted binary contents. Emitting it would violate
+    // nfpm's `additionalProperties: false` schema, so neither `Some(true)`
+    // nor `Some(false)` may surface in the generated YAML.
+    for meta in [Some(true), Some(false)] {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            meta,
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(
+            &nfpm_cfg,
+            "1.0.0",
+            &["/dist/myapp".to_string()],
+            None,
+            false,
+            &NfpmLibraryPaths::default(),
+        )
+        .unwrap();
+        assert!(
+            !yaml.contains("meta:"),
+            "meta={meta:?} must not appear in YAML:\n{yaml}"
+        );
+    }
 }
 
 #[test]
@@ -5134,12 +5150,12 @@ fn test_nfpm_maintainer_derived_from_cargo_toml_authors() {
     assert!(config.metadata.is_none(), "no metadata: block present");
     config.populate_derived_metadata(tmp.path());
 
-    let mut ctx = Context::new(config, ContextOptions::default());
+    let ctx = Context::new(config, ContextOptions::default());
     // Bare nfpm config: no maintainer set by the user.
     let nfpm_cfg = NfpmConfig::default();
     assert!(nfpm_cfg.maintainer.is_none());
 
-    let rendered = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "mytool")
+    let rendered = render_nfpm_config_fields(&nfpm_cfg, &ctx.config, ctx.template_vars(), "mytool")
         .expect("render nfpm config fields");
     assert_eq!(
         rendered.maintainer.as_deref(),
@@ -5180,11 +5196,13 @@ fn test_nfpm_per_crate_description_is_each_crates_own() {
     };
     config.populate_derived_metadata(tmp.path());
 
-    let mut ctx = Context::new(config, ContextOptions::default());
+    let ctx = Context::new(config, ContextOptions::default());
     let nfpm_cfg = NfpmConfig::default();
 
-    let alpha = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "alpha").unwrap();
-    let beta = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "beta").unwrap();
+    let alpha =
+        render_nfpm_config_fields(&nfpm_cfg, &ctx.config, ctx.template_vars(), "alpha").unwrap();
+    let beta =
+        render_nfpm_config_fields(&nfpm_cfg, &ctx.config, ctx.template_vars(), "beta").unwrap();
     assert_eq!(alpha.description.as_deref(), Some("Alpha package"));
     assert_eq!(beta.description.as_deref(), Some("Beta package"));
 }
@@ -5226,7 +5244,8 @@ fn test_nfpm_conflicts_provides_render_libc_per_target() {
     let mut ctx = Context::new(Config::default(), ContextOptions::default());
 
     set_target_vars(&mut ctx, "x86_64-unknown-linux-musl");
-    let musl = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "fd").unwrap();
+    let musl =
+        render_nfpm_config_fields(&nfpm_cfg, &ctx.config, ctx.template_vars(), "fd").unwrap();
     assert_eq!(musl.conflicts.as_deref().unwrap(), &["fd-musl".to_string()]);
     assert_eq!(musl.provides.as_deref().unwrap(), &["fd-musl".to_string()]);
     assert_eq!(
@@ -5243,7 +5262,7 @@ fn test_nfpm_conflicts_provides_render_libc_per_target() {
     );
 
     set_target_vars(&mut ctx, "x86_64-unknown-linux-gnu");
-    let gnu = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "fd").unwrap();
+    let gnu = render_nfpm_config_fields(&nfpm_cfg, &ctx.config, ctx.template_vars(), "fd").unwrap();
     assert_eq!(gnu.conflicts.as_deref().unwrap(), &["fd".to_string()]);
     assert_eq!(gnu.provides.as_deref().unwrap(), &["fd-gnu".to_string()]);
     assert_eq!(
@@ -5272,7 +5291,9 @@ fn test_nfpm_libc_empty_for_non_libc_target() {
     let mut ctx = Context::new(Config::default(), ContextOptions::default());
     for triple in ["x86_64-apple-darwin", "x86_64-pc-windows-msvc"] {
         set_target_vars(&mut ctx, triple);
-        let rendered = render_nfpm_config_fields(&nfpm_cfg, &mut ctx, "myapp").unwrap();
+        let rendered =
+            render_nfpm_config_fields(&nfpm_cfg, &ctx.config, ctx.template_vars(), "myapp")
+                .unwrap();
         assert_eq!(
             rendered.provides.as_deref().unwrap(),
             &["myapp".to_string()],
@@ -5289,7 +5310,7 @@ fn test_nfpm_bin_alias_per_crate_config() {
     use anodizer_core::config::Config;
     use anodizer_core::context::{Context, ContextOptions};
 
-    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    let ctx = Context::new(Config::default(), ContextOptions::default());
 
     let fd_cfg = NfpmConfig {
         formats: vec!["deb".to_string()],
@@ -5302,8 +5323,9 @@ fn test_nfpm_bin_alias_per_crate_config() {
         ..Default::default()
     };
 
-    let fd = render_nfpm_config_fields(&fd_cfg, &mut ctx, "fd").unwrap();
-    let other = render_nfpm_config_fields(&other_cfg, &mut ctx, "bat").unwrap();
+    let fd = render_nfpm_config_fields(&fd_cfg, &ctx.config, ctx.template_vars(), "fd").unwrap();
+    let other =
+        render_nfpm_config_fields(&other_cfg, &ctx.config, ctx.template_vars(), "bat").unwrap();
     assert_eq!(fd.bin_alias.as_deref(), Some("fdfind"));
     // Each crate's bin_alias is templated independently.
     assert!(

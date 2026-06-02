@@ -381,6 +381,7 @@ name = "anodizer-stage-publish"
 version = "0.1.0"
 dependencies = [
  "anodizer-core",
+ "anodizer-stage-nfpm",
  "anodizer-stage-publish",
  "anodizer-stage-release",
  "anodizer-stage-snapcraft",

@@ -16,6 +16,11 @@ pub(super) fn is_empty_vec<T>(v: &[T]) -> bool {
 pub(super) struct NfpmYamlConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) name: Option<String>,
+    /// Target architecture in nfpm nomenclature (`amd64`, `arm64`, …). nfpm
+    /// marks this field required and otherwise defaults a missing value to
+    /// `amd64`, silently mislabeling a non-amd64 package, so it is always
+    /// emitted from the resolved target.
+    pub(super) arch: String,
     pub(super) version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) epoch: Option<String>,
@@ -39,8 +44,6 @@ pub(super) struct NfpmYamlConfig {
     pub(super) section: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) priority: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) meta: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) umask: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -202,8 +205,6 @@ pub(super) struct NfpmYamlDeb {
     pub(super) triggers: Option<NfpmYamlDebTriggers>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) breaks: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) lintian_overrides: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) signature: Option<NfpmYamlSignature>,
     #[serde(skip_serializing_if = "Option::is_none")]

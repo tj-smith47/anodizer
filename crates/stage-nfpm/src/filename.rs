@@ -1,5 +1,5 @@
 //! Per-packager `ConventionalFileName` implementations, matching
-//! nfpm v2.44.0 output.
+//! nfpm v2.46.3 output.
 //!
 //! Before this module, the `ConventionalFileName` template variable was
 //! hand-rolled as `{name}_{version}_{os}_{arch}{ext}` — wrong for every
@@ -85,7 +85,7 @@ pub fn conventional_filename(format: &str, info: &FileNameInfo<'_>) -> Option<St
 // ---------------------------------------------------------------------------
 
 /// Debian arch translation. Keyed on Go-style arch.
-/// Debian arch translation (matching nfpm v2.44.0).
+/// Debian arch translation (matching nfpm v2.46.3).
 fn debian_arch(arch: &str) -> &str {
     match arch {
         "386" => "i386",
@@ -127,7 +127,7 @@ fn deb_filename(info: &FileNameInfo<'_>) -> String {
 // rpm
 // ---------------------------------------------------------------------------
 
-/// RPM arch translation (matching nfpm v2.44.0).
+/// RPM arch translation (matching nfpm v2.46.3).
 fn rpm_arch(arch: &str) -> &str {
     match arch {
         "all" => "noarch",
@@ -172,7 +172,7 @@ fn rpm_filename(info: &FileNameInfo<'_>) -> String {
 // apk
 // ---------------------------------------------------------------------------
 
-/// Alpine arch translation (matching nfpm v2.44.0).
+/// Alpine arch translation (matching nfpm v2.46.3).
 fn apk_arch(arch: &str) -> &str {
     match arch {
         "386" => "x86",
@@ -233,7 +233,7 @@ fn apk_pkgver(info: &FileNameInfo<'_>) -> String {
 // archlinux
 // ---------------------------------------------------------------------------
 
-/// Arch Linux arch translation (matching nfpm v2.44.0).
+/// Arch Linux arch translation (matching nfpm v2.46.3).
 fn archlinux_arch(arch: &str) -> &str {
     match arch {
         "all" => "any",
@@ -277,7 +277,27 @@ fn valid_pkg_name(s: &str) -> String {
 // ipk
 // ---------------------------------------------------------------------------
 
-/// IPK arch translation (matching nfpm v2.44.0).
+/// Translate a generic nfpm architecture (`amd64`, `arm64`, …) into the
+/// control-field nomenclature a given packager stamps into the built package
+/// (deb keeps `arm64`, rpm uses `aarch64`, apk uses `aarch64`, …).
+///
+/// This is the same per-format mapping the conventional filename uses, exposed
+/// so a built package's `Architecture` control field can be cross-checked
+/// against the architecture anodizer resolved. An unknown format passes the
+/// generic arch through unchanged.
+pub fn control_arch(format: &str, arch: &str) -> String {
+    let mapped = match format {
+        "deb" | "termux.deb" => debian_arch(arch),
+        "rpm" => rpm_arch(arch),
+        "apk" => apk_arch(arch),
+        "archlinux" => archlinux_arch(arch),
+        "ipk" => ipk_arch(arch),
+        _ => arch,
+    };
+    mapped.to_string()
+}
+
+/// IPK arch translation (matching nfpm v2.46.3).
 fn ipk_arch(arch: &str) -> &str {
     match arch {
         "386" => "i386",

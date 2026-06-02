@@ -122,7 +122,6 @@ pub(super) fn build_yaml_deb(
             activate_noawait: t.activate_noawait.clone(),
         }),
         breaks: deb.breaks.clone(),
-        lintian_overrides: deb.lintian_overrides.clone(),
         signature: if skip_sign {
             None
         } else {

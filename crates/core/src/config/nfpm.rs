@@ -255,9 +255,11 @@ pub struct NfpmDebConfig {
     pub fields: Option<HashMap<String, String>>,
     /// Deb-specific maintainer scripts (rules, templates, config).
     pub scripts: Option<NfpmDebScripts>,
-    /// amd64 microarchitecture variant propagated to nfpm's `deb.arch_variant`
-    /// (`v1`, `v2`, `v3`, `v4`). Auto-derived from artifact metadata's
-    /// `amd64_variant` when unset.
+    /// Target architecture variant in deb nomenclature (e.g. `amd64v3`).
+    ///
+    /// Auto-derived from the built binary's `amd64_variant` (`v1`..`v4`) GOAMD64
+    /// microarchitecture metadata when unset, so an amd64 deb is tagged with the
+    /// microarch it was compiled for. Maps to nfpm's `deb.arch_variant`.
     pub arch_variant: Option<String>,
 }
 
@@ -285,11 +287,9 @@ impl NfpmDebConfig {
             && self.signature.is_none()
             && self.fields.is_none()
             && self.scripts.is_none()
-            // `arch_variant` belongs in the emptiness check: when a user
-            // sets only `arch_variant: v3` on the deb block, the omission
-            // path below would treat the whole `deb:` map as empty and
-            // silently drop the variant — losing the microarch the nfpm
-            // packager needs to tag the .deb (`amd64_v3` vs plain
+            // `arch_variant` keeps the deb block alive when set alone: a config
+            // carrying only `arch_variant: v3` must not be dropped as "empty",
+            // which would silently lose the microarch tag (`amd64v3` → plain
             // `amd64`).
             && self.arch_variant.is_none()
     }
@@ -417,10 +417,10 @@ pub struct NfpmIpkAlternative {
 mod is_empty_tests {
     use super::*;
 
-    /// `arch_variant` is the load-bearing single field that, when set
-    /// in isolation, must keep the deb block alive — otherwise the
-    /// "drop empty blocks" path silently dropped microarch tagging
-    /// (`amd64_v3` collapsing to plain `amd64`).
+    /// `arch_variant` is the load-bearing single field that, when set in
+    /// isolation, must keep the deb block alive — otherwise the "drop empty
+    /// blocks" path silently dropped microarch tagging (`amd64v3` collapsing to
+    /// plain `amd64`).
     #[test]
     fn deb_arch_variant_alone_is_not_empty() {
         let cfg = NfpmDebConfig {

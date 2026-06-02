@@ -19,8 +19,11 @@ mod run;
 mod yaml;
 
 pub use command::nfpm_command;
-pub use generate::{NfpmLibraryPaths, generate_nfpm_yaml, generate_nfpm_yaml_with_env};
-pub use run::NfpmStage;
+pub use filename::control_arch;
+pub use generate::{
+    NfpmLibraryPaths, NfpmRenderTarget, generate_nfpm_yaml, generate_nfpm_yaml_with_env,
+};
+pub use run::{NfpmRenderedConfig, NfpmStage, nfpm_yaml_configs_for_crate};
 
 // Re-exports needed only by the externalized `tests.rs` (consumed via `super::`).
 // Scoped under `cfg(test)` so prod builds don't see them as unused.

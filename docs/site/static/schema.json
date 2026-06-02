@@ -9327,7 +9327,7 @@
       "type": "object",
       "properties": {
         "arch_variant": {
-          "description": "amd64 microarchitecture variant propagated to nfpm's `deb.arch_variant` (`v1`, `v2`, `v3`, `v4`). Auto-derived from artifact metadata's `amd64_variant` when unset.",
+          "description": "Target architecture variant in deb nomenclature (e.g. `amd64v3`).\n\nAuto-derived from the built binary's `amd64_variant` (`v1`..`v4`) GOAMD64 microarchitecture metadata when unset, so an amd64 deb is tagged with the microarch it was compiled for. Maps to nfpm's `deb.arch_variant`.",
           "default": null,
           "type": [
             "string",

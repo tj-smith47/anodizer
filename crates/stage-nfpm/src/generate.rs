@@ -29,6 +29,33 @@ pub struct NfpmLibraryPaths {
     pub c_shared: Vec<String>,
 }
 
+/// The resolved per-target render inputs for one nfpm YAML config: the values
+/// that vary per (target × format) and together select the package
+/// architecture, version, packager, and signing behavior.
+///
+/// Bundling them keeps the render entry points to a small, stable argument
+/// list as the per-target dimension grows.
+pub struct NfpmRenderTarget<'a> {
+    /// Resolved OS in nfpm nomenclature (`linux`, `iphoneos-arm64`, …). Read
+    /// by the per-target template vars on the build path; unused by the YAML
+    /// generator itself.
+    pub os: &'a str,
+    /// Resolved package architecture in nfpm nomenclature (`amd64`, `arm64`,
+    /// …) — always stamped so nfpm never silently defaults a package to
+    /// `amd64`.
+    pub arch: &'a str,
+    /// Target triple this config renders for, or `None` for a host build with
+    /// no triple.
+    pub target: Option<&'a str>,
+    /// The packager format selecting format-specific dependencies, or `None`
+    /// to merge deps from every format.
+    pub format: Option<&'a str>,
+    /// The resolved package version.
+    pub version: &'a str,
+    /// When `true`, all signing/signature configuration is zeroed out.
+    pub skip_sign: bool,
+}
+
 /// Generate an nfpm YAML configuration string from the anodizer nfpm config.
 ///
 /// `format` is the target packager format (e.g. "deb", "rpm") used to select
@@ -52,16 +79,20 @@ pub fn generate_nfpm_yaml(
     // env for unknown keys, so behavior is preserved for callers that don't
     // pass a ctx env map. `generate_nfpm_yaml_with_env` is the production
     // entrypoint that passes the real anodizer ctx env map.
+    //
+    // `amd64` matches the architecture nfpm itself defaults an unset `arch`
+    // to, so non-stage callers (tests, introspection) keep their prior
+    // output; the production path threads the target-resolved arch instead.
     let empty_env = HashMap::new();
-    generate_nfpm_yaml_with_env(
-        config,
-        version,
-        binary_paths,
+    let target = NfpmRenderTarget {
+        os: "linux",
+        arch: "amd64",
+        target: None,
         format,
+        version,
         skip_sign,
-        library_paths,
-        &empty_env,
-    )
+    };
+    generate_nfpm_yaml_with_env(config, &target, binary_paths, library_paths, &empty_env)
 }
 
 /// Generate nfpm YAML using the anodizer ctx env map (project `env:` +
@@ -71,13 +102,15 @@ pub fn generate_nfpm_yaml(
 /// is visible to the signer.
 pub fn generate_nfpm_yaml_with_env(
     config: &NfpmConfig,
-    version: &str,
+    target: &NfpmRenderTarget<'_>,
     binary_paths: &[String],
-    format: Option<&str>,
-    skip_sign: bool,
     library_paths: &NfpmLibraryPaths,
     env_map: &HashMap<String, String>,
 ) -> Result<String> {
+    let version = target.version;
+    let arch = target.arch;
+    let format = target.format;
+    let skip_sign = target.skip_sign;
     let is_meta = config.meta == Some(true);
 
     // Build binary content entries for ALL binaries on this platform (skip for meta packages)
@@ -320,6 +353,7 @@ pub fn generate_nfpm_yaml_with_env(
 
     let yaml_config = NfpmYamlConfig {
         name: config.package_name.clone(),
+        arch: arch.to_string(),
         version: version.to_string(),
         epoch: config.epoch.clone(),
         release: config.release.clone(),
@@ -332,7 +366,6 @@ pub fn generate_nfpm_yaml_with_env(
         license: config.license.clone(),
         section: config.section.clone(),
         priority: config.priority.clone(),
-        meta: config.meta,
         // Emit umask as a plain decimal int — nfpm parses into `fs.FileMode`
         // (uint32) and rejects YAML strings (`'0o002'`) with
         // `cannot unmarshal !!str into fs.FileMode`. Octal-input form on the

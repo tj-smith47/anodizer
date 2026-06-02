@@ -29,6 +29,7 @@ mod chocolatey;
 mod homebrew;
 mod krew;
 mod mcp;
+mod nfpm;
 mod scoop;
 mod snapcraft;
 mod winget;
@@ -134,6 +135,7 @@ fn validators() -> Vec<Box<dyn PublisherSchemaValidator>> {
         Box::new(chocolatey::ChocolateySchemaValidator),
         Box::new(snapcraft::SnapcraftSchemaValidator),
         Box::new(homebrew::HomebrewSchemaValidator),
+        Box::new(nfpm::NfpmSchemaValidator),
     ]
 }
 
