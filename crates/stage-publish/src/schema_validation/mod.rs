@@ -25,6 +25,8 @@ use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
+mod winget;
+
 /// A single schema-conformance violation in a rendered publisher artifact.
 ///
 /// Carries enough to point an operator straight at the defect: which publisher
@@ -61,7 +63,6 @@ impl fmt::Display for SchemaFinding {
 /// vendored schema JSON text (embedded via `include_str!`). A malformed schema
 /// or schema text is an error, not a finding — the vendored schema is the tool's
 /// own asset, so a parse failure is a bug to surface, never a manifest defect.
-#[allow(dead_code)]
 pub(crate) fn validate_json(
     publisher: &str,
     instance: &Value,
@@ -95,7 +96,6 @@ pub(crate) fn validate_json(
 /// (winget, snapcraft, krew, …) can reuse [`validate_json`] against a JSON
 /// Schema. The JSON data model is a superset of what these manifests use, so
 /// the round-trip is lossless for validation purposes.
-#[allow(dead_code)]
 pub(crate) fn yaml_to_json(yaml: &str) -> Result<Value> {
     serde_yaml_ng::from_str(yaml).context("parse publisher manifest as YAML")
 }
@@ -118,10 +118,9 @@ pub(crate) trait PublisherSchemaValidator: Send + Sync {
 /// The registered set of per-publisher schema validators.
 ///
 /// Each per-publisher implementation appends its validator here so
-/// [`validate_publisher_schemas`] picks it up automatically. The set is empty
-/// until publisher validators are wired in.
+/// [`validate_publisher_schemas`] picks it up automatically.
 fn validators() -> Vec<Box<dyn PublisherSchemaValidator>> {
-    Vec::new()
+    vec![Box::new(winget::WingetSchemaValidator)]
 }
 
 /// Render and schema-validate every registered publisher's artifacts for the

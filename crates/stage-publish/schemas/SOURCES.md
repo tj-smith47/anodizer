@@ -18,5 +18,8 @@ vendoring so validation stays hermetic.
 
 | Publisher | File | Source URL | Version/commit | How to refresh |
 |-----------|------|------------|----------------|----------------|
+| winget | `winget.version.1.12.0.schema.json` | <https://raw.githubusercontent.com/microsoft/winget-cli/master/schemas/JSON/manifests/v1.12.0/manifest.version.1.12.0.json> | ManifestVersion 1.12.0 (winget-cli `efcb928`) | Re-download from the source URL into this file. Bump only alongside the `ManifestVersion` the `crate::winget` renderer emits. |
+| winget | `winget.installer.1.12.0.schema.json` | <https://raw.githubusercontent.com/microsoft/winget-cli/master/schemas/JSON/manifests/v1.12.0/manifest.installer.1.12.0.json> | ManifestVersion 1.12.0 (winget-cli `efcb928`) | Re-download from the source URL into this file. Bump only alongside the `ManifestVersion` the `crate::winget` renderer emits. |
+| winget | `winget.defaultLocale.1.12.0.schema.json` | <https://raw.githubusercontent.com/microsoft/winget-cli/master/schemas/JSON/manifests/v1.12.0/manifest.defaultLocale.1.12.0.json> | ManifestVersion 1.12.0 (winget-cli `efcb928`) | Re-download from the source URL into this file. Bump only alongside the `ManifestVersion` the `crate::winget` renderer emits. |
 
 Per-publisher validators add their row above as each is implemented.

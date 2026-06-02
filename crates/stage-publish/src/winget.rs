@@ -676,6 +676,30 @@ impl<'a> WingetArtifactFilters<'a> {
         }
         true
     }
+
+    /// Derive the windows artifact filters from a crate's winget config,
+    /// applying the `amd64_variant` default (`v1`) once so the live collector
+    /// and the schema validator's shard-guard cannot disagree on which
+    /// artifacts are eligible.
+    fn from_config(winget_cfg: &'a anodizer_core::config::WingetConfig) -> Self {
+        WingetArtifactFilters {
+            ids: winget_cfg.ids.as_deref(),
+            amd64_variant: winget_cfg.amd64_variant.as_deref().or(Some("v1")),
+        }
+    }
+}
+
+/// True when an archive artifact is the zip form winget consumes as an
+/// installer: either tagged `format: zip` in its metadata or named `*.zip`.
+///
+/// The single home for this predicate so [`collect_winget_installers`] (the
+/// live publish path) and [`crate_has_winget_installer_artifacts`] (the schema
+/// validator's snapshot-shard guard) classify archives identically — if winget
+/// later accepts another archive kind, both update together rather than the
+/// guard silently suppressing validation of an artifact that would publish.
+fn is_winget_zip_archive(a: &anodizer_core::artifact::Artifact) -> bool {
+    a.metadata.get("format").map(|f| f.as_str()) == Some("zip")
+        || a.path.to_string_lossy().ends_with(".zip")
 }
 
 /// Build a single zip-archive [`WingetInstallerItem`] from a matching
@@ -770,9 +794,7 @@ fn collect_winget_installers(
     name: &str,
     version: &str,
 ) -> Result<Vec<WingetInstallerItem>> {
-    let ids_filter = winget_cfg.ids.as_deref();
     let url_template = winget_cfg.url_template.as_deref();
-    let amd64_variant = winget_cfg.amd64_variant.as_deref().or(Some("v1"));
     let artifact_kind = util::resolve_artifact_kind(winget_cfg.use_artifact.as_deref());
 
     let binary_names_by_target = collect_windows_binary_names_by_target(ctx, crate_name);
@@ -783,10 +805,7 @@ fn collect_winget_installers(
         crate_name,
     );
 
-    let filters = WingetArtifactFilters {
-        ids: ids_filter,
-        amd64_variant,
-    };
+    let filters = WingetArtifactFilters::from_config(winget_cfg);
 
     let mut installers: Vec<WingetInstallerItem> = Vec::new();
     let mut zip_count = 0u32;
@@ -796,8 +815,7 @@ fn collect_winget_installers(
         if !filters.matches(a) {
             continue;
         }
-        let format = a.metadata.get("format").map(|f| f.as_str()).unwrap_or("");
-        if format != "zip" && !a.path.to_string_lossy().ends_with(".zip") {
+        if !is_winget_zip_archive(a) {
             continue;
         }
         zip_count += 1;
@@ -854,6 +872,41 @@ fn collect_winget_installers(
     }
 
     Ok(installers)
+}
+
+/// True when `crate_name` has at least one Windows installer artifact this run
+/// would feed into a winget manifest (a zip archive of the configured `use`
+/// kind, or a portable `UploadableBinary`), after the same id / amd64-variant
+/// filters [`collect_winget_installers`] applies.
+///
+/// A real release always produces these (the publish path errors otherwise),
+/// but a single-target / sharded snapshot legitimately builds only one platform
+/// — so the offline schema validator consults this to skip a crate whose
+/// Windows installer was not built in the current shard rather than fail on the
+/// publisher's own "no Windows artifact" guard.
+pub(crate) fn crate_has_winget_installer_artifacts(
+    ctx: &Context,
+    crate_name: &str,
+    winget_cfg: &anodizer_core::config::WingetConfig,
+) -> bool {
+    let filters = WingetArtifactFilters::from_config(winget_cfg);
+    let artifact_kind = util::resolve_artifact_kind(winget_cfg.use_artifact.as_deref());
+
+    let has_zip = ctx
+        .artifacts
+        .by_kind_and_crate(artifact_kind, crate_name)
+        .iter()
+        .any(|a| filters.matches(a) && is_winget_zip_archive(a));
+    let has_portable = ctx
+        .artifacts
+        .by_kind_and_crate(
+            anodizer_core::artifact::ArtifactKind::UploadableBinary,
+            crate_name,
+        )
+        .iter()
+        .any(|a| filters.matches(a));
+
+    has_zip || has_portable
 }
 
 /// Extract a YYYY-MM-DD release date from the template context's `Date`
@@ -1049,18 +1102,50 @@ fn submit_winget_pr(
 // publish_to_winget
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
-    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "winget")?;
+/// The side-effect-free product of rendering a crate's WinGet manifests: the
+/// three YAML documents plus the resolved identity fields the downstream
+/// commit/PR steps need. Produced by [`render_winget_manifests_for_crate`] so
+/// the live publish path and the offline schema validator render from one
+/// source of truth.
+pub(crate) struct RenderedWingetManifests {
+    /// Version manifest YAML (the `<PackageIdentifier>.yaml` file).
+    pub(crate) version_yaml: String,
+    /// Installer manifest YAML (the `<PackageIdentifier>.installer.yaml` file).
+    pub(crate) installer_yaml: String,
+    /// Locale manifest YAML (the `<PackageIdentifier>.locale.en-US.yaml` file).
+    pub(crate) locale_yaml: String,
+    /// Resolved fork repository owner the manifests are pushed under.
+    pub(crate) repo_owner: String,
+    /// Resolved fork repository name the manifests are pushed under.
+    pub(crate) repo_name: String,
+    /// Resolved WinGet `PackageIdentifier`.
+    pub(crate) package_id: String,
+    /// Crate path-rendering override (`winget.path`), already template-rendered.
+    pub(crate) path: Option<String>,
+}
 
-    // Clone the winget config upfront so subsequent helpers do not borrow
-    // from `ctx.config`; that frees the later `&mut ctx` call site at the
-    // end of the function (`ctx.record_publisher_outcome`).
-    let winget_cfg = publish
-        .winget
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("winget: no winget config for '{}'", crate_name))?
-        .clone();
+/// The publisher's resolved identity for a crate: the package coordinates and
+/// fork-repo target, derived before any manifest content is rendered. Shared by
+/// the dry-run short-circuit (which only needs the coordinates to log) and the
+/// full manifest render.
+struct WingetIdentity {
+    repo_owner: String,
+    repo_name: String,
+    name: String,
+    publisher_name: String,
+    package_id: String,
+}
 
+/// Resolve a crate's WinGet identity (repo, name, publisher, validated
+/// `PackageIdentifier`), or `Ok(None)` when the publisher would skip the crate
+/// (`skip_upload` / a falsy `if`). Errors when the crate carries no `winget`
+/// block — callers must guarantee the block is present.
+fn resolve_winget_identity(
+    ctx: &Context,
+    crate_name: &str,
+    winget_cfg: &anodizer_core::config::WingetConfig,
+    log: &StageLogger,
+) -> Result<Option<WingetIdentity>> {
     let label = format!("winget publisher for crate '{}'", crate_name);
     if crate::util::should_skip_publisher_with_if(
         ctx,
@@ -1070,7 +1155,7 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
         &label,
         log,
     )? {
-        return Ok(());
+        return Ok(None);
     }
 
     let (repo_owner, repo_name) =
@@ -1078,55 +1163,73 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
             .ok_or_else(|| anyhow::anyhow!("winget: no repository config for '{}'", crate_name))?;
 
     let name_raw = winget_cfg.name.as_deref().unwrap_or(crate_name);
-    let name_rendered = ctx
+    let name = ctx
         .render_template(name_raw)
         .unwrap_or_else(|_| name_raw.to_string());
-    let name = name_rendered.as_str();
-    let publisher_name = resolve_winget_publisher_name(&winget_cfg, &repo_owner, crate_name, log)?;
+    let publisher_name =
+        resolve_winget_publisher_name(winget_cfg, &repo_owner, crate_name, log)?.to_string();
 
     let auto_pkg_id = format!("{}.{}", publisher_name.replace(' ', ""), name);
     let package_id = winget_cfg
         .package_identifier
         .as_deref()
-        .unwrap_or(&auto_pkg_id);
+        .unwrap_or(&auto_pkg_id)
+        .to_string();
 
-    validate_package_identifier(package_id)?;
+    validate_package_identifier(&package_id)?;
 
-    if ctx.is_dry_run() {
-        log.status(&format!(
-            "(dry-run) would submit WinGet manifest for '{}' (pkg={}) to {}/{}",
-            crate_name, package_id, repo_owner, repo_name
-        ));
-        return Ok(());
-    }
-
-    generate_and_submit_winget_manifest(
-        ctx,
-        log,
-        crate_name,
-        &winget_cfg,
+    Ok(Some(WingetIdentity {
+        repo_owner,
+        repo_name,
         name,
         publisher_name,
         package_id,
-        &repo_owner,
-        &repo_name,
-    )
+    }))
 }
 
-/// Generate WinGet YAML manifests, clone the package repo, commit, push,
-/// and open a PR.
-#[allow(clippy::too_many_arguments)]
-fn generate_and_submit_winget_manifest(
-    ctx: &mut Context,
+/// Resolve a crate's WinGet config and render its three manifests in-memory,
+/// with no disk, clone, or network side effects.
+///
+/// Returns `Ok(None)` when the publisher would skip this crate (`skip_upload`
+/// or a falsy `if` condition). Errors when the crate carries no `winget` block.
+/// The live publish path and the offline schema validator both call this so the
+/// validated documents are byte-for-byte what a real publish would push.
+pub(crate) fn render_winget_manifests_for_crate(
+    ctx: &Context,
+    crate_name: &str,
     log: &StageLogger,
+) -> Result<Option<RenderedWingetManifests>> {
+    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "winget")?;
+    let winget_cfg = publish
+        .winget
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("winget: no winget config for '{}'", crate_name))?;
+
+    let Some(identity) = resolve_winget_identity(ctx, crate_name, winget_cfg, log)? else {
+        return Ok(None);
+    };
+    Ok(Some(render_winget_manifests_with_identity(
+        ctx, crate_name, winget_cfg, &identity,
+    )?))
+}
+
+/// Render a crate's three WinGet manifests from a pre-resolved
+/// [`WingetIdentity`].
+///
+/// Split out so the live publish path can reuse the identity it already
+/// resolved (for the dry-run short-circuit) rather than re-resolving it —
+/// re-resolution would re-emit `resolve_winget_publisher_name`'s
+/// fallback-to-repo-owner warning a second time per publish.
+fn render_winget_manifests_with_identity(
+    ctx: &Context,
     crate_name: &str,
     winget_cfg: &anodizer_core::config::WingetConfig,
-    name: &str,
-    publisher_name: &str,
-    package_id: &str,
-    repo_owner: &str,
-    repo_name: &str,
-) -> Result<()> {
+    identity: &WingetIdentity,
+) -> Result<RenderedWingetManifests> {
+    let name = identity.name.as_str();
+    let publisher_name = identity.publisher_name.as_str();
+    let package_id = identity.package_id.as_str();
+
     let version = ctx.version();
     let description = resolve_winget_description(ctx, winget_cfg, crate_name);
     let short_desc = resolve_winget_short_description(ctx, winget_cfg, crate_name)?;
@@ -1148,7 +1251,7 @@ fn generate_and_submit_winget_manifest(
         &short_desc,
     );
 
-    let (ver_yaml, inst_yaml, locale_yaml) = generate_manifests(&WingetManifestParams {
+    let (version_yaml, installer_yaml, locale_yaml) = generate_manifests(&WingetManifestParams {
         package_id,
         name,
         package_name: rendered.package_name.as_deref(),
@@ -1175,6 +1278,69 @@ fn generate_and_submit_winget_manifest(
         release_date: release_date_ref,
     })?;
 
+    Ok(RenderedWingetManifests {
+        version_yaml,
+        installer_yaml,
+        locale_yaml,
+        repo_owner: identity.repo_owner.clone(),
+        repo_name: identity.repo_name.clone(),
+        package_id: package_id.to_string(),
+        path: rendered.path,
+    })
+}
+
+pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+    // Clone the winget config upfront so subsequent helpers do not borrow from
+    // `ctx.config`; that frees the `&mut ctx` call site at the end of the
+    // function (`ctx.record_publisher_outcome`).
+    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "winget")?;
+    let winget_cfg = publish
+        .winget
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("winget: no winget config for '{}'", crate_name))?
+        .clone();
+
+    // Resolve identity first so dry-run short-circuits BEFORE the full manifest
+    // render (which requires short_description/license/installers): a dry-run
+    // only reports the coordinates it would push, exactly as before.
+    let Some(identity) = resolve_winget_identity(ctx, crate_name, &winget_cfg, log)? else {
+        return Ok(());
+    };
+
+    if ctx.is_dry_run() {
+        log.status(&format!(
+            "(dry-run) would submit WinGet manifest for '{}' (pkg={}) to {}/{}",
+            crate_name, identity.package_id, identity.repo_owner, identity.repo_name
+        ));
+        return Ok(());
+    }
+
+    // Reuse the identity already resolved above so the manifest render does not
+    // re-run `resolve_winget_publisher_name` (which would re-emit its
+    // fallback-to-repo-owner warning a second time per publish).
+    let rendered = render_winget_manifests_with_identity(ctx, crate_name, &winget_cfg, &identity)?;
+
+    submit_winget_manifests(ctx, log, &winget_cfg, &rendered)
+}
+
+/// Clone the package repo, write the pre-rendered manifests, commit, push, and
+/// open a PR. The manifests are produced upstream by
+/// [`render_winget_manifests_for_crate`] so this function performs only the
+/// side-effecting steps.
+fn submit_winget_manifests(
+    ctx: &mut Context,
+    log: &StageLogger,
+    winget_cfg: &anodizer_core::config::WingetConfig,
+    rendered: &RenderedWingetManifests,
+) -> Result<()> {
+    let version = ctx.version();
+    let repo_owner = rendered.repo_owner.as_str();
+    let repo_name = rendered.repo_name.as_str();
+    let package_id = rendered.package_id.as_str();
+    let ver_yaml = rendered.version_yaml.as_str();
+    let inst_yaml = rendered.installer_yaml.as_str();
+    let locale_yaml = rendered.locale_yaml.as_str();
+
     let token = util::resolve_repo_token(
         ctx,
         winget_cfg.repository.as_ref(),
@@ -1198,9 +1364,9 @@ fn generate_and_submit_winget_manifest(
         package_id,
         &version,
         rendered.path.as_deref(),
-        &ver_yaml,
-        &inst_yaml,
-        &locale_yaml,
+        ver_yaml,
+        inst_yaml,
+        locale_yaml,
     )?;
 
     log.status(&format!(
@@ -1336,7 +1502,7 @@ fn resolve_winget_upstream(winget_cfg: &anodizer_core::config::WingetConfig) -> 
 
 /// True when the crate has a `publish.winget` block — mirrors the
 /// `per_crate!` predicate in `lib.rs`.
-fn is_winget_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
+pub(crate) fn is_winget_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
     crate::util::all_crates(ctx)
         .into_iter()
         .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.winget.is_some()))

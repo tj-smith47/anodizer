@@ -1,0 +1,538 @@
+//! WinGet manifest schema validation.
+//!
+//! WinGet's `microsoft/winget-pkgs` submission pipeline validates every
+//! manifest against Microsoft's published JSON Schemas before a maintainer ever
+//! sees the PR. anodizer emits the three-file `version` / `installer` /
+//! `defaultLocale` manifest set (ManifestVersion 1.12.0); this validator renders
+//! that exact set for every in-scope crate — via the same param-assembly path
+//! the live publish uses — and checks each document against the matching
+//! vendored schema, so a structural defect (a wrong-typed value, an
+//! out-of-enum `Architecture`, a missing required key) is caught in the
+//! snapshot/dry-run pass rather than after a real release has opened a PR.
+
+use anodizer_core::context::Context;
+use anyhow::Result;
+
+use super::{PublisherSchemaValidator, SchemaFinding, validate_json, yaml_to_json};
+use crate::winget::{
+    crate_has_winget_installer_artifacts, is_winget_per_crate_configured,
+    render_winget_manifests_for_crate,
+};
+
+/// Microsoft's vendored manifest schemas (ManifestVersion 1.12.0). Pinned and
+/// embedded so validation is fully offline; refresh via `schemas/SOURCES.md`.
+/// The emitted `ManifestVersion` (`crate::winget`) and these schema versions
+/// must agree — a renderer bump requires a matching schema re-vendor.
+const VERSION_SCHEMA: &str = include_str!("../../schemas/winget.version.1.12.0.schema.json");
+const INSTALLER_SCHEMA: &str = include_str!("../../schemas/winget.installer.1.12.0.schema.json");
+const DEFAULT_LOCALE_SCHEMA: &str =
+    include_str!("../../schemas/winget.defaultLocale.1.12.0.schema.json");
+
+/// Validates anodizer's rendered WinGet manifests against Microsoft's
+/// published JSON Schemas.
+pub(crate) struct WingetSchemaValidator;
+
+impl PublisherSchemaValidator for WingetSchemaValidator {
+    fn publisher(&self) -> &'static str {
+        "winget"
+    }
+
+    fn validate(&self, ctx: &Context) -> Result<Vec<SchemaFinding>> {
+        let log = ctx.logger("publish");
+        let mut findings = Vec::new();
+
+        // Walk exactly the crate set the live winget publisher's `run` iterates
+        // (honoring `--crate` selection, else every winget-configured crate) so
+        // the validated set equals the published set in all config modes.
+        let selected =
+            crate::publisher_helpers::effective_publish_crates(ctx, is_winget_per_crate_configured);
+        for crate_name in &selected {
+            if !is_winget_per_crate_configured(ctx, crate_name) {
+                continue;
+            }
+            // A real release always produces a Windows installer artifact (the
+            // publish path errors otherwise), but a single-target / sharded
+            // snapshot may build only one platform. Skip a crate whose Windows
+            // installer was not built in this run rather than fail on the
+            // publisher's own "no Windows artifact" guard — there is nothing to
+            // render or validate.
+            let Some(winget_cfg) = crate::util::all_crates(ctx)
+                .into_iter()
+                .find(|c| &c.name == crate_name)
+                .and_then(|c| c.publish)
+                .and_then(|p| p.winget)
+            else {
+                continue;
+            };
+            if !crate_has_winget_installer_artifacts(ctx, crate_name, &winget_cfg) {
+                log.verbose(&format!(
+                    "winget: crate '{}' produced no Windows installer artifact in this \
+                     snapshot shard; skipping schema validation",
+                    crate_name
+                ));
+                continue;
+            }
+
+            // `None` means the publisher would skip this crate
+            // (skip_upload / falsy `if`) — nothing to validate.
+            let Some(rendered) = render_winget_manifests_for_crate(ctx, crate_name, &log)? else {
+                continue;
+            };
+
+            findings.extend(validate_manifest(&rendered.version_yaml, VERSION_SCHEMA)?);
+            findings.extend(validate_manifest(
+                &rendered.installer_yaml,
+                INSTALLER_SCHEMA,
+            )?);
+            findings.extend(validate_manifest(
+                &rendered.locale_yaml,
+                DEFAULT_LOCALE_SCHEMA,
+            )?);
+        }
+
+        Ok(findings)
+    }
+}
+
+/// Convert one rendered YAML manifest to JSON and validate it against `schema`,
+/// returning a [`SchemaFinding`] per violation.
+fn validate_manifest(yaml: &str, schema: &str) -> Result<Vec<SchemaFinding>> {
+    let value = yaml_to_json(yaml)?;
+    validate_json("winget", &value, schema)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{
+        CrateConfig, PublishConfig, RepositoryConfig, WingetConfig, WingetDependency,
+    };
+    use anodizer_core::context::Context;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    use super::*;
+    use crate::winget::render_winget_manifests_for_crate;
+
+    /// A `WingetConfig` exercising every operator-exposed option, with values
+    /// that satisfy the registry schemas' length / pattern / URL constraints.
+    fn every_option_winget_cfg() -> WingetConfig {
+        WingetConfig {
+            name: Some("Widget".to_string()),
+            package_name: Some("Widget Tool".to_string()),
+            package_identifier: Some("AcmeCo.Widget".to_string()),
+            publisher: Some("Acme Co".to_string()),
+            publisher_url: Some("https://acme.example".to_string()),
+            publisher_support_url: Some("https://acme.example/support".to_string()),
+            privacy_url: Some("https://acme.example/privacy".to_string()),
+            author: Some("Acme Engineering".to_string()),
+            copyright: Some("Copyright (c) 2026 Acme Co".to_string()),
+            copyright_url: Some("https://acme.example/copyright".to_string()),
+            license: Some("MIT".to_string()),
+            license_url: Some("https://acme.example/license".to_string()),
+            short_description: Some("A widget management tool".to_string()),
+            description: Some("A full-featured tool for managing widgets.".to_string()),
+            homepage: Some("https://acme.example/widget".to_string()),
+            url_template: Some(
+                "https://github.com/acme/widget/releases/download/v{{ .Version }}/widget-{{ .Arch }}.zip"
+                    .to_string(),
+            ),
+            ids: None,
+            skip_upload: None,
+            commit_msg_template: Some("New version: {{ PackageIdentifier }} {{ Version }}".to_string()),
+            path: None,
+            release_notes: Some("Initial widget release.".to_string()),
+            release_notes_url: Some("https://acme.example/widget/notes".to_string()),
+            installation_notes: Some("Add widget.exe to PATH after install.".to_string()),
+            tags: Some(vec!["widget".to_string(), "cli".to_string()]),
+            dependencies: Some(vec![WingetDependency {
+                package_identifier: "Acme.Runtime".to_string(),
+                minimum_version: Some("1.0.0".to_string()),
+            }]),
+            repository: Some(RepositoryConfig {
+                owner: Some("acme".to_string()),
+                name: Some("winget-pkgs-fork".to_string()),
+                ..Default::default()
+            }),
+            commit_author: None,
+            product_code: Some("{ACME-WIDGET-0001}".to_string()),
+            use_artifact: None,
+            amd64_variant: Some("v1".to_string()),
+            post_publish_poll: None,
+            update_existing_pr: None,
+            required: Some(true),
+            if_condition: None,
+        }
+    }
+
+    fn winget_crate(crate_name: &str, tag_template: &str, cfg: WingetConfig) -> CrateConfig {
+        CrateConfig {
+            name: crate_name.to_string(),
+            path: ".".to_string(),
+            tag_template: tag_template.to_string(),
+            publish: Some(PublishConfig {
+                winget: Some(cfg),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Add a windows zip archive artifact (with the sha256 + url metadata the
+    /// installer manifest needs) plus the windows Binary artifact that drives
+    /// the nested-installer-file entries.
+    fn add_windows_zip(ctx: &mut Context, crate_name: &str, binary: &str) {
+        let target = "x86_64-pc-windows-msvc";
+        let mut archive_meta = HashMap::new();
+        archive_meta.insert(
+            "url".to_string(),
+            format!(
+                "https://github.com/acme/widget/releases/download/v1.0.0/{crate_name}-{target}.zip"
+            ),
+        );
+        archive_meta.insert("sha256".to_string(), "a".repeat(64));
+        archive_meta.insert("format".to_string(), "zip".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/dist/{crate_name}-{target}.zip")),
+            name: format!("{crate_name}-{target}.zip"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: archive_meta,
+            size: None,
+        });
+
+        let mut bin_meta = HashMap::new();
+        bin_meta.insert("binary".to_string(), binary.to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from(format!("/dist/{binary}.exe")),
+            name: format!("{binary}.exe"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: bin_meta,
+            size: None,
+        });
+    }
+
+    /// Re-scope the global template vars to the version a release would stamp
+    /// for `version` — the same shape `with_crate_scope` applies before the
+    /// publish stage invokes a per-crate publisher.
+    fn scope_version(ctx: &mut Context, version: &str) {
+        ctx.template_vars_mut().set("Version", version);
+        ctx.template_vars_mut().set("RawVersion", version);
+        ctx.template_vars_mut().set("Tag", &format!("v{version}"));
+    }
+
+    /// (a) Single-crate mode: one crate, one tag. Every exposed option set, and
+    /// the rendered manifests must conform to all three schemas with zero
+    /// findings — and land their values in the schema-expected fields.
+    #[test]
+    fn single_crate_every_option_validates_and_lands_in_fields() {
+        let cfg = every_option_winget_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![winget_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_windows_zip(&mut ctx, "widget", "widget");
+
+        let findings = WingetSchemaValidator
+            .validate(&ctx)
+            .expect("validation runs");
+        assert!(
+            findings.is_empty(),
+            "every-option single-crate manifests must conform, got: {findings:?}"
+        );
+
+        let rendered = render_winget_manifests_for_crate(&ctx, "widget", &ctx.logger("publish"))
+            .expect("render ok")
+            .expect("not skipped");
+        // Installer manifest: the windows zip lands as an Installers entry with
+        // the schema-expected Architecture / InstallerUrl.
+        assert!(rendered.installer_yaml.contains("Installers:"));
+        assert!(rendered.installer_yaml.contains("Architecture: x64"));
+        assert!(rendered.installer_yaml.contains("InstallerUrl:"));
+        assert!(rendered.installer_yaml.contains("InstallerSha256:"));
+        // Locale manifest: the descriptive options land in their schema fields.
+        assert!(rendered.locale_yaml.contains("PackageName: Widget Tool"));
+        assert!(rendered.locale_yaml.contains("Publisher: Acme Co"));
+        assert!(rendered.locale_yaml.contains("License: MIT"));
+        assert!(
+            rendered
+                .locale_yaml
+                .contains("ShortDescription: A widget management tool")
+        );
+        // Version manifest: the identifier + version land on the version doc.
+        assert!(
+            rendered
+                .version_yaml
+                .contains("PackageIdentifier: AcmeCo.Widget")
+        );
+        assert!(rendered.version_yaml.contains("PackageVersion: 1.0.0"));
+    }
+
+    /// (b) Workspace-lockstep mode: multiple crates share one version/tag. Each
+    /// crate's manifest set must validate independently.
+    #[test]
+    fn workspace_lockstep_every_option_validates() {
+        let alpha = winget_crate(
+            "alpha",
+            "v{{ .Version }}",
+            WingetConfig {
+                package_identifier: Some("AcmeCo.Alpha".to_string()),
+                ..every_option_winget_cfg()
+            },
+        );
+        let beta = winget_crate(
+            "beta",
+            "v{{ .Version }}",
+            WingetConfig {
+                package_identifier: Some("AcmeCo.Beta".to_string()),
+                ..every_option_winget_cfg()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![alpha, beta])
+            .build();
+        // Lockstep: a single global version names every crate's archives.
+        scope_version(&mut ctx, "1.0.0");
+        add_windows_zip(&mut ctx, "alpha", "alpha");
+        add_windows_zip(&mut ctx, "beta", "beta");
+
+        let findings = WingetSchemaValidator
+            .validate(&ctx)
+            .expect("validation runs");
+        assert!(
+            findings.is_empty(),
+            "lockstep workspace manifests must conform, got: {findings:?}"
+        );
+    }
+
+    /// (c) Workspace per-crate mode: each crate carries its own
+    /// tag_template/version. The publish stage scopes the global `Version` to
+    /// the per-crate value before invoking the publisher, so the validator (run
+    /// per-crate via `--crate`) must conform under each crate's own version.
+    #[test]
+    fn workspace_per_crate_every_option_validates_under_own_version() {
+        let alpha = winget_crate(
+            "alpha",
+            "alpha-v{{ .Version }}",
+            WingetConfig {
+                package_identifier: Some("AcmeCo.Alpha".to_string()),
+                ..every_option_winget_cfg()
+            },
+        );
+        let beta = winget_crate(
+            "beta",
+            "beta-v{{ .Version }}",
+            WingetConfig {
+                package_identifier: Some("AcmeCo.Beta".to_string()),
+                ..every_option_winget_cfg()
+            },
+        );
+
+        // alpha @ 2.0.0
+        let mut ctx_a = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![alpha.clone(), beta.clone()])
+            .selected_crates(vec!["alpha".to_string()])
+            .build();
+        scope_version(&mut ctx_a, "2.0.0");
+        add_windows_zip(&mut ctx_a, "alpha", "alpha");
+        let findings_a = WingetSchemaValidator
+            .validate(&ctx_a)
+            .expect("validation runs");
+        assert!(
+            findings_a.is_empty(),
+            "per-crate alpha@2.0.0 must conform, got: {findings_a:?}"
+        );
+        let rendered_a =
+            render_winget_manifests_for_crate(&ctx_a, "alpha", &ctx_a.logger("publish"))
+                .expect("render ok")
+                .expect("not skipped");
+        assert!(rendered_a.version_yaml.contains("PackageVersion: 2.0.0"));
+        assert!(
+            rendered_a
+                .version_yaml
+                .contains("PackageIdentifier: AcmeCo.Alpha")
+        );
+
+        // beta @ 3.1.0 — its own version stamps its own manifests.
+        let mut ctx_b = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![alpha, beta])
+            .selected_crates(vec!["beta".to_string()])
+            .build();
+        scope_version(&mut ctx_b, "3.1.0");
+        add_windows_zip(&mut ctx_b, "beta", "beta");
+        let findings_b = WingetSchemaValidator
+            .validate(&ctx_b)
+            .expect("validation runs");
+        assert!(
+            findings_b.is_empty(),
+            "per-crate beta@3.1.0 must conform, got: {findings_b:?}"
+        );
+        let rendered_b =
+            render_winget_manifests_for_crate(&ctx_b, "beta", &ctx_b.logger("publish"))
+                .expect("render ok")
+                .expect("not skipped");
+        assert!(rendered_b.version_yaml.contains("PackageVersion: 3.1.0"));
+        assert!(
+            rendered_b
+                .version_yaml
+                .contains("PackageIdentifier: AcmeCo.Beta")
+        );
+    }
+
+    /// A single-target / sharded snapshot that built no Windows installer for a
+    /// winget-configured crate must SKIP it (zero findings, no error) rather
+    /// than trip the publisher's "no Windows artifact" guard — there is nothing
+    /// to render or validate. This is the exact case anodizer's own
+    /// linux-only `task snapshot` hits.
+    #[test]
+    fn crate_without_windows_artifact_is_skipped_not_failed() {
+        let cfg = every_option_winget_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![winget_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        // Only a linux archive — no Windows installer in this shard.
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            "https://github.com/acme/widget/releases/download/v1.0.0/widget-linux.tar.gz"
+                .to_string(),
+        );
+        meta.insert("sha256".to_string(), "a".repeat(64));
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/dist/widget-x86_64-unknown-linux-gnu.tar.gz"),
+            name: "widget-x86_64-unknown-linux-gnu.tar.gz".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "widget".to_string(),
+            metadata: meta,
+            size: None,
+        });
+
+        let findings = WingetSchemaValidator
+            .validate(&ctx)
+            .expect("validation runs without erroring on the absent Windows artifact");
+        assert!(
+            findings.is_empty(),
+            "a crate with no Windows installer in this shard must be skipped, got: {findings:?}"
+        );
+    }
+
+    /// The check must BITE: an installer manifest whose `Architecture` is set to
+    /// an out-of-enum value is rejected by the installer schema, with a finding
+    /// naming the offending field and the schema's expectation.
+    #[test]
+    fn invalid_architecture_enum_is_reported() {
+        let cfg = every_option_winget_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![winget_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_windows_zip(&mut ctx, "widget", "widget");
+
+        let rendered = render_winget_manifests_for_crate(&ctx, "widget", &ctx.logger("publish"))
+            .expect("render ok")
+            .expect("not skipped");
+        // Mutate the valid `x64` to a value outside the schema's Architecture
+        // enum, leaving the document otherwise well-formed.
+        let broken = rendered
+            .installer_yaml
+            .replace("Architecture: x64", "Architecture: sparc");
+        assert_ne!(broken, rendered.installer_yaml, "mutation must apply");
+
+        let value = yaml_to_json(&broken).expect("yaml parses");
+        let findings = validate_json("winget", &value, INSTALLER_SCHEMA).expect("validation runs");
+
+        let arch = findings
+            .iter()
+            .find(|f| f.field.ends_with("/Architecture"))
+            .unwrap_or_else(|| {
+                panic!("a finding for the out-of-enum Architecture field; got: {findings:?}")
+            });
+        assert_eq!(arch.publisher, "winget");
+        assert!(
+            arch.expected.contains("sparc") || arch.expected.contains("enum"),
+            "expected message explains the enum violation, got: {}",
+            arch.expected
+        );
+    }
+
+    /// A required-key omission also bites: dropping `PackageIdentifier` from the
+    /// version manifest is rejected at the document root.
+    #[test]
+    fn missing_required_key_is_reported() {
+        let cfg = every_option_winget_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![winget_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_windows_zip(&mut ctx, "widget", "widget");
+
+        let rendered = render_winget_manifests_for_crate(&ctx, "widget", &ctx.logger("publish"))
+            .expect("render ok")
+            .expect("not skipped");
+        let mut value = yaml_to_json(&rendered.version_yaml).expect("yaml parses");
+        value
+            .as_object_mut()
+            .expect("version manifest is a map")
+            .remove("PackageIdentifier");
+
+        let findings = validate_json("winget", &value, VERSION_SCHEMA).expect("validation runs");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.expected.contains("PackageIdentifier")),
+            "dropping a required key must be reported, got: {findings:?}"
+        );
+    }
+
+    /// `resolve_winget_identity` is resolved exactly once per render, so the
+    /// "publisher not explicitly set; falling back to repo owner" warning it
+    /// emits when `publish.winget.publisher` is unset fires once — not twice.
+    /// Pins the seam where a re-resolving renderer would double-warn.
+    #[test]
+    fn publisher_fallback_warning_fires_once_per_render() {
+        // No explicit `publisher` — resolution falls back to the repo owner and
+        // warns. Keep every other required field present so the render reaches
+        // manifest generation.
+        let cfg = WingetConfig {
+            publisher: None,
+            ..every_option_winget_cfg()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![winget_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_windows_zip(&mut ctx, "widget", "widget");
+
+        let capture = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+
+        render_winget_manifests_for_crate(&ctx, "widget", &ctx.logger("publish"))
+            .expect("render ok")
+            .expect("not skipped");
+
+        let fallbacks: Vec<String> = capture
+            .warn_messages()
+            .into_iter()
+            .filter(|m| m.contains("falling back to repo owner"))
+            .collect();
+        assert_eq!(
+            fallbacks.len(),
+            1,
+            "the publisher fallback warning must fire exactly once per render, got: {fallbacks:?}"
+        );
+    }
+}
