@@ -847,6 +847,27 @@ fn test_mdv2escape() {
     assert_eq!(result, "hello\\_world");
 }
 
+// ---- ruby_escape tests ----
+
+#[test]
+fn test_ruby_escape_quote_and_backslash() {
+    let mut vars = test_vars();
+    // Backslash must be escaped before the quote so the quote's escape
+    // backslash is not itself doubled. Input: the "best" \tool
+    vars.set("Input", "the \"best\" \\tool");
+    let result = render("{{ Input | ruby_escape }}", &vars).unwrap();
+    // Expected: the \"best\" \\tool
+    assert_eq!(result, "the \\\"best\\\" \\\\tool");
+}
+
+#[test]
+fn test_ruby_escape_plain_string_unchanged() {
+    let mut vars = test_vars();
+    vars.set("Input", "no special chars here");
+    let result = render("{{ Input | ruby_escape }}", &vars).unwrap();
+    assert_eq!(result, "no special chars here");
+}
+
 // ---- contains tests ----
 
 #[test]

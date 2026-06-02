@@ -3170,3 +3170,126 @@ fn publish_cask_name_override_does_not_mask_crate_in_errors() {
         "crate name (not the renamed cask) is the operator-visible handle in errors; got: {msg}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ruby_escape: user-config string values that contain `"` or `\` must be
+// escaped so the rendered formula/cask stays syntactically valid Ruby.
+// ---------------------------------------------------------------------------
+
+/// Run `ruby -c` on rendered Ruby source, asserting exit 0. Gated on `ruby`
+/// being on `PATH`; prints a visible skip marker and returns when absent so a
+/// machine without ruby reports SKIP rather than a false PASS.
+fn assert_ruby_syntax_ok(label: &str, source: &str) {
+    if !anodizer_core::tool_detect::tool_available("ruby").unwrap_or(false) {
+        eprintln!("SKIP {label}: ruby not on PATH; cannot run `ruby -c`");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("create temp dir for ruby -c");
+    let path = dir.path().join("artifact.rb");
+    std::fs::write(&path, source).expect("write rendered ruby");
+    let output = std::process::Command::new("ruby")
+        .arg("-c")
+        .arg(&path)
+        .output()
+        .expect("run ruby -c");
+    assert!(
+        output.status.success(),
+        "{label}: rendered Ruby failed `ruby -c`:\nstderr: {}\n--- source ---\n{source}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// A formula whose description/homepage carry embedded `"` and `\` renders
+/// escaped string literals and stays valid Ruby; the install line keeps its
+/// own quotes raw (not double-escaped).
+#[test]
+fn formula_ruby_escapes_user_values_and_passes_ruby_c() {
+    let formula = generate_formula(
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: r#"the "best" \tool"#,
+            license: "MIT",
+        },
+        &[(
+            "darwin-amd64",
+            "https://example.com/mytool-1.0.0-darwin-amd64.tar.gz",
+            "sha256abc",
+        )],
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\", \"--version\"",
+        },
+    )
+    .unwrap();
+
+    // The embedded quote and backslash are escaped inside the desc literal.
+    assert!(
+        formula.contains(r#"desc "the \"best\" \\tool""#),
+        "description should be ruby-escaped; got:\n{formula}"
+    );
+    // The install line's own quotes are raw Ruby — escaping them would break
+    // valid output, so they must NOT be doubled.
+    assert!(
+        formula.contains(r#"bin.install "mytool""#),
+        "install line must stay raw (not double-escaped); got:\n{formula}"
+    );
+    assert_ruby_syntax_ok("formula", &formula);
+}
+
+/// A cask whose name/display_name/homepage/description carry embedded `"` and
+/// `\` renders escaped string literals and stays valid Ruby; a `depends_on`
+/// Ruby fragment containing a `"` stays raw (not double-escaped).
+#[test]
+fn cask_ruby_escapes_user_values_and_passes_ruby_c() {
+    use super::cask::CaskParams;
+    let deps = vec![r#"cask: "other-app""#.to_string()];
+    let params = CaskParams {
+        name: "mytool",
+        display_name: r#"My "Great" \Tool"#,
+        alternative_names: &[],
+        version: "1.0.0",
+        sha256: "deadbeef",
+        url: "https://example.com/mytool-1.0.0.dmg",
+        url_extras: "",
+        url_extras_indented: "",
+        homepage: Some(r#"https://example.com/a"b\c"#),
+        description: Some(r#"the "best" \tool"#),
+        app: None,
+        binaries: &[],
+        caveats: None,
+        zap_block: "",
+        uninstall_block: "",
+        custom_block: None,
+        service: None,
+        manpages: &[],
+        completions_bash: None,
+        completions_zsh: None,
+        completions_fish: None,
+        depends_on: &deps,
+        conflicts_with: &[],
+        preflight: None,
+        postflight: None,
+        uninstall_preflight: None,
+        uninstall_postflight: None,
+        platforms: Vec::new(),
+        generate_completions: None,
+    };
+    let cask = super::cask::generate_cask(&params).unwrap();
+
+    assert!(
+        cask.contains(r#"name "My \"Great\" \\Tool""#),
+        "display_name should be ruby-escaped; got:\n{cask}"
+    );
+    assert!(
+        cask.contains(r#"desc "the \"best\" \\tool""#),
+        "description should be ruby-escaped; got:\n{cask}"
+    );
+    // The depends_on directive is a raw Ruby fragment — its inner quotes must
+    // pass through unescaped.
+    assert!(
+        cask.contains(r#"depends_on cask: "other-app""#),
+        "depends_on fragment must stay raw (not double-escaped); got:\n{cask}"
+    );
+    assert_ruby_syntax_ok("cask", &cask);
+}

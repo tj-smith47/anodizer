@@ -138,10 +138,35 @@ fn increment_version(v: &str, part: VersionPart) -> Result<String, tera::Error> 
     })
 }
 
+/// Register the `ruby_escape` filter on a Tera instance.
+///
+/// `ruby_escape` escapes a string for safe inclusion inside a **double-quoted
+/// Ruby string literal**: it replaces `\` with `\\` first, then `"` with `\"`.
+/// Backslash must be escaped before the quote so the quote's inserted escape
+/// backslash is not itself doubled. This makes user-supplied values
+/// (descriptions, homepages, display names, URLs, …) safe to interpolate into
+/// `desc "…"`, `homepage "…"`, `url "…"`, and similar Homebrew formula/cask
+/// stanzas without producing invalid Ruby.
+///
+/// Shared by both [`BASE_TERA`] and `parse_static` so that the trusted
+/// formula/cask templates have the filter available even though they build a
+/// fresh `tera::Tera` rather than cloning `BASE_TERA`.
+pub(super) fn register_ruby_escape(tera: &mut tera::Tera) {
+    tera.register_filter(
+        "ruby_escape",
+        |value: &Value, _: &HashMap<String, Value>| {
+            let s = tera::try_get_value!("ruby_escape", "value", String, value);
+            let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+            Ok(Value::String(escaped))
+        },
+    );
+}
+
 /// Base Tera instance with custom filters pre-registered.
 /// Cloned per render() call (cheap — no templates to clone).
 pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     let mut tera = tera::Tera::default();
+    register_ruby_escape(&mut tera);
 
     // Compatibility aliases
     tera.register_filter("tolower", |value: &Value, _: &HashMap<String, Value>| {

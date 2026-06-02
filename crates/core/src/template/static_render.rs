@@ -11,6 +11,7 @@ use anyhow::{Context as _, Result};
 pub fn parse_static(name: &str, raw: &str) -> Result<tera::Tera> {
     let mut tera = tera::Tera::default();
     tera.autoescape_on(vec![]);
+    super::base_tera::register_ruby_escape(&mut tera);
     tera.add_raw_template(name, raw)
         .with_context(|| format!("parse static template '{}'", name))?;
     Ok(tera)
