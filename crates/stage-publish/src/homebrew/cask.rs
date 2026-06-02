@@ -450,10 +450,10 @@ pub(super) fn render_additional_url_params(
 /// - **Aliases**: pure-string alternative names that Homebrew treats as
 ///   aliases — they render as additional `name "..."` directives INSIDE
 ///   the primary cask file.
-/// - **Versioned files**: alternative names that contain an `@` (or any
-///   character invalid in a Homebrew cask token) — these emit a SECOND
-///   `.rb` file named after the alt entry (e.g. `myapp@1.2.3.rb`) so
-///   users can `brew install myapp@1.2.3` for a downgrade path.
+/// - **Versioned files**: alternative names that contain an `@` — these
+///   emit a SECOND `.rb` file named after the alt entry (e.g.
+///   `myapp@1.2.3.rb`) so users can `brew install myapp@1.2.3` for a
+///   downgrade path.
 ///
 /// The split follows `alternative_names:` semantics: the example
 /// `myproject@{{ .Version }}` only makes sense as a separate file, since

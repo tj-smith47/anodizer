@@ -222,8 +222,12 @@ impl anodizer_core::Publisher for BlobPublisher {
     }
 
     fn skips_on_nightly(&self) -> bool {
-        // Object-store blobs support versioned paths; nightly re-uploads are
-        // handled via keep_single_release semantics at the release layer.
+        // Object-store blobs upload to the configured `directory:` path
+        // (which can template in the version), so a nightly re-upload writes
+        // to its own path rather than clobbering a long-lived registry entry.
+        // There is therefore no reason to opt out of nightly runs.
+        // (`keep_single_release` is a GitHub-release retention knob and does
+        // NOT govern the blob layer.)
         false
     }
 }

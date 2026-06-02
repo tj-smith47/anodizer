@@ -862,9 +862,13 @@ pub fn publish_to_krew(
                 plugin_name
             )
         })?;
-        // Actor must be a valid GitHub login. Prefer the CI-provided
+        // Actor should be a GitHub login. Prefer the CI-provided
         // GITHUB_ACTOR, then ANODIZER_GITHUB_ACTOR, falling back to the
-        // plugin repo owner (always a real login).
+        // plugin repo owner. The owner is a best-effort fallback, not
+        // guaranteed to be a personal login — an org-owned repo's owner is
+        // the org slug, which is not a user account. The webhook only echoes
+        // the actor into the PR's provenance text, so an org slug here is
+        // cosmetic rather than a hard failure.
         let env = ctx.env_source();
         let actor = env
             .var("GITHUB_ACTOR")
