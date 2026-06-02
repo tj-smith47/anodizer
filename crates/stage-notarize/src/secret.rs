@@ -134,23 +134,27 @@ pub(super) fn matches_ids(artifact: &Artifact, ids: &Option<Vec<String>>) -> boo
 ///    guard almost never decodes to a whole number of base64 quanta, whereas
 ///    a real encoded blob always does.
 pub(super) fn looks_like_base64(value: &str) -> bool {
-    if value.is_empty() {
+    // Trim once: surrounding whitespace (a trailing newline from an env-var
+    // export, say) must not skew the length / alphabet checks relative to the
+    // decode, which also trims.
+    let v = value.trim();
+    if v.is_empty() {
         return false;
     }
     // An existing file is unambiguously a path. Checked before any base64
     // heuristic so a real on-disk P12/P8 is never decoded as inline bytes.
-    if std::path::Path::new(value.trim()).is_file() {
+    if std::path::Path::new(v).is_file() {
         return false;
     }
     // A backslash is a Windows path separator and is not in the base64
     // alphabet; `/` IS in the standard alphabet and must be allowed.
-    if value.contains('\\') {
+    if v.contains('\\') {
         return false;
     }
-    if value.len() < 64 {
+    if v.len() < 64 {
         return false;
     }
-    let alphabet_ok = value.bytes().all(|b| {
+    let alphabet_ok = v.bytes().all(|b| {
         b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=' || b == b'\n' || b == b'\r'
     });
     if !alphabet_ok {
@@ -158,7 +162,7 @@ pub(super) fn looks_like_base64(value: &str) -> bool {
     }
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD
-        .decode(value.trim().replace(['\r', '\n'], "").as_bytes())
+        .decode(v.replace(['\r', '\n'], "").as_bytes())
         .is_ok()
 }
 
