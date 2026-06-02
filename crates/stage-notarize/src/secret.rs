@@ -4,7 +4,6 @@
 use anyhow::{Context as _, Result};
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
-use anodizer_core::config::StringOrBool;
 use anodizer_core::context::Context;
 
 // ---------------------------------------------------------------------------
@@ -61,34 +60,6 @@ pub(super) fn refresh_artifact_checksums(ctx: &mut Context, log: &anodizer_core:
             }
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Helper: check if a StringOrBool-typed `enabled` field is active
-// ---------------------------------------------------------------------------
-
-/// Returns `true` when the notarize entry should run, i.e. `skip:` is absent
-/// or evaluates to false. Per-config notarize gating uses the canonical
-/// `skip:` field, shared with every other publisher / pipe.
-///
-/// - `None` → run (default opt-in once a notarize block is present)
-/// - `Some(Bool(false))` → run
-/// - `Some(Bool(true))` → skip
-/// - `Some(String(tmpl))` → render template, skip if result is "true"
-pub(super) fn is_active(skip: &Option<StringOrBool>, ctx: &Context) -> bool {
-    let skipped = match skip {
-        None => false,
-        Some(sob) => {
-            if sob.is_template() {
-                ctx.render_template(sob.as_str())
-                    .map(|r| r.trim() == "true")
-                    .unwrap_or(false)
-            } else {
-                sob.as_bool()
-            }
-        }
-    };
-    !skipped
 }
 
 // ---------------------------------------------------------------------------

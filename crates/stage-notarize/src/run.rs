@@ -11,7 +11,7 @@ use anodizer_core::config::{MacOSNativeSignNotarizeConfig, MacOSSignNotarizeConf
 use anodizer_core::context::Context;
 
 use super::retry::{check_notarize_output, real_sleep, run_status_with_retry, run_with_retry};
-use super::secret::{MaterializedSecret, is_active, matches_ids, materialize_secret, redact_args};
+use super::secret::{MaterializedSecret, matches_ids, materialize_secret, redact_args};
 
 // ---------------------------------------------------------------------------
 // Cross-platform (rcodesign)
@@ -24,7 +24,10 @@ pub(super) fn run_cross_platform(
     dry_run: bool,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
-    if !is_active(&cfg.skip, ctx) {
+    if cfg
+        .should_skip(|s| ctx.render_template(s))
+        .with_context(|| format!("notarize: macos[{idx}] evaluate skip expression"))?
+    {
         log.status(&format!("notarize: macos[{idx}] skipped (skip: true)"));
         return Ok(());
     }
@@ -273,7 +276,10 @@ pub(super) fn run_native(
     dry_run: bool,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
-    if !is_active(&cfg.skip, ctx) {
+    if cfg
+        .should_skip(|s| ctx.render_template(s))
+        .with_context(|| format!("notarize: macos_native[{idx}] evaluate skip expression"))?
+    {
         log.status(&format!(
             "notarize: macos_native[{idx}] skipped (skip: true)"
         ));

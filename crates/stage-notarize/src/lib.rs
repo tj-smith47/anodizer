@@ -29,7 +29,7 @@ use secret::refresh_artifact_checksums;
 #[cfg(test)]
 use retry::{is_retriable_notarize_output, run_with_retry};
 #[cfg(test)]
-use secret::{is_active, matches_ids};
+use secret::matches_ids;
 
 pub struct NotarizeStage;
 
@@ -1138,49 +1138,124 @@ crates: []
     }
 
     // -----------------------------------------------------------------------
-    // is_active helper tests (historical: was is_enabled, inverted)
+    // should_skip gating tests (per-config `skip:` / inverted `enabled:`)
     // -----------------------------------------------------------------------
 
+    /// Build a `MacOSSignNotarizeConfig` with the given `skip` and a render
+    /// context exposing `IsSnapshot`, returning the `should_skip` result.
+    fn should_skip_with(skip: Option<StringOrBool>, is_snapshot: bool) -> anyhow::Result<bool> {
+        let mut cfg = MacOSSignNotarizeConfig::default();
+        cfg.skip = skip;
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut()
+            .set("IsSnapshot", if is_snapshot { "true" } else { "false" });
+        cfg.should_skip(|s| ctx.render_template(s))
+    }
+
     #[test]
-    fn test_is_active_none_runs() {
+    fn test_should_skip_none_runs() {
         // None -> run (default opt-in once notarize block is present).
-        let config = Config::default();
-        let ctx = Context::new(config, ContextOptions::default());
-        assert!(is_active(&None, &ctx));
+        assert!(!should_skip_with(None, false).unwrap());
     }
 
     #[test]
-    fn test_is_active_skip_true_skipped() {
-        let config = Config::default();
-        let ctx = Context::new(config, ContextOptions::default());
-        assert!(!is_active(&Some(StringOrBool::Bool(true)), &ctx));
+    fn test_should_skip_bool_true_skips() {
+        assert!(should_skip_with(Some(StringOrBool::Bool(true)), false).unwrap());
     }
 
     #[test]
-    fn test_is_active_skip_false_runs() {
-        let config = Config::default();
-        let ctx = Context::new(config, ContextOptions::default());
-        assert!(is_active(&Some(StringOrBool::Bool(false)), &ctx));
+    fn test_should_skip_bool_false_runs() {
+        assert!(!should_skip_with(Some(StringOrBool::Bool(false)), false).unwrap());
     }
 
     #[test]
-    fn test_is_active_skip_string_true_skipped() {
-        let config = Config::default();
-        let ctx = Context::new(config, ContextOptions::default());
-        assert!(!is_active(
-            &Some(StringOrBool::String("true".to_string())),
-            &ctx
-        ));
+    fn test_should_skip_string_true_skips() {
+        assert!(should_skip_with(Some(StringOrBool::String("true".into())), false).unwrap());
     }
 
     #[test]
-    fn test_is_active_skip_string_false_runs() {
-        let config = Config::default();
-        let ctx = Context::new(config, ContextOptions::default());
-        assert!(is_active(
-            &Some(StringOrBool::String("false".to_string())),
-            &ctx
-        ));
+    fn test_should_skip_string_false_runs() {
+        assert!(!should_skip_with(Some(StringOrBool::String("false".into())), false).unwrap());
+    }
+
+    #[test]
+    fn test_should_skip_template_skip_truthy() {
+        // A direct `skip:` template that renders truthy skips.
+        let r = should_skip_with(
+            Some(StringOrBool::String(
+                "{{ if .IsSnapshot }}true{{ end }}".into(),
+            )),
+            true,
+        )
+        .unwrap();
+        assert!(r, "skip template rendering truthy must skip");
+    }
+
+    #[test]
+    fn test_should_skip_malformed_skip_template_fails_closed() {
+        // A malformed `skip:` template must surface as Err (fail closed),
+        // not silently evaluate false and run.
+        let r = should_skip_with(Some(StringOrBool::String("{{ broken".into())), false);
+        assert!(r.is_err(), "malformed skip template must error, not run");
+    }
+
+    // -----------------------------------------------------------------------
+    // Inverted `enabled:` (GR alias) — must NOT fail open
+    // -----------------------------------------------------------------------
+
+    /// Parse a one-entry `notarize.macos` block carrying the given `enabled:`
+    /// value and return its `should_skip` against a context with `IsSnapshot`.
+    fn enabled_should_skip(enabled_yaml: &str, is_snapshot: bool) -> anyhow::Result<bool> {
+        let yaml = format!(
+            "notarize:\n  macos:\n    - enabled: {enabled_yaml}\n      sign:\n        certificate: /tmp/c.p12\n        password: pw\ncrates: []\n"
+        );
+        let cfg: Config = serde_yaml_ng::from_str(&yaml).expect("enabled alias should parse");
+        let entry = cfg.notarize.unwrap().macos.unwrap().remove(0);
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut()
+            .set("IsSnapshot", if is_snapshot { "true" } else { "false" });
+        entry.should_skip(|s| ctx.render_template(s))
+    }
+
+    #[test]
+    fn test_enabled_literal_false_disables() {
+        // `enabled: "false"` must DISABLE (skip), not run.
+        assert!(
+            enabled_should_skip("\"false\"", false).unwrap(),
+            "enabled: false must skip"
+        );
+    }
+
+    #[test]
+    fn test_enabled_template_falsy_disables() {
+        // `enabled: "{{ <falsy> }}"` must DISABLE. IsSnapshot=false renders
+        // the expression to "false" → enabled falsy → skip.
+        assert!(
+            enabled_should_skip("\"{{ .IsSnapshot }}\"", false).unwrap(),
+            "templated enabled rendering falsy must skip (not silently run)"
+        );
+    }
+
+    #[test]
+    fn test_enabled_template_truthy_runs() {
+        // Same template, IsSnapshot=true → enabled truthy → run.
+        assert!(
+            !enabled_should_skip("\"{{ .IsSnapshot }}\"", true).unwrap(),
+            "templated enabled rendering truthy must run"
+        );
+    }
+
+    #[test]
+    fn test_enabled_malformed_template_fails_closed() {
+        // A malformed `enabled:` template must NOT silently enable. It must
+        // surface as Err (the caller treats the entry as skipped / aborts) —
+        // the prior `{% if {{ … }} %}` construction produced malformed Tera
+        // that errored and was swallowed as "run" (fail-open safety hole).
+        let r = enabled_should_skip("\"{{ broken\"", false);
+        assert!(
+            r.is_err(),
+            "malformed enabled template must error, not silently enable notarization"
+        );
     }
 
     // -----------------------------------------------------------------------

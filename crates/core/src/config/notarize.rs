@@ -39,6 +39,13 @@ pub struct MacOSSignNotarizeConfig {
     /// canonical field at runtime is `skip:`.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
+    /// `true` when [`Self::skip`] holds a templated `enabled:` value that
+    /// must be rendered verbatim and have its truthiness NEGATED at
+    /// evaluation (a falsy `enabled` → skip). Bool / literal `enabled:`
+    /// values are inverted at parse time and leave this `false`. Not part of
+    /// the YAML surface — set only by the `enabled:`-alias deserializer.
+    #[serde(skip)]
+    pub skip_inverts_enabled: bool,
     /// Signing configuration (P12 certificate).
     pub sign: Option<MacOSSignConfig>,
     /// Notarization configuration (App Store Connect API key). Omit for sign-only.
@@ -64,14 +71,35 @@ struct MacOSSignNotarizeConfigWire {
 impl<'de> Deserialize<'de> for MacOSSignNotarizeConfig {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = MacOSSignNotarizeConfigWire::deserialize(deserializer)?;
-        let skip = resolve_skip_with_enabled_alias(wire.skip, wire.enabled)
+        let ResolvedSkip {
+            skip,
+            inverts_enabled,
+        } = resolve_skip_with_enabled_alias(wire.skip, wire.enabled)
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
             ids: wire.ids,
             skip,
+            skip_inverts_enabled: inverts_enabled,
             sign: wire.sign,
             notarize: wire.notarize,
         })
+    }
+}
+
+impl MacOSSignNotarizeConfig {
+    /// Whether this entry should be SKIPPED (not signed / notarized).
+    ///
+    /// Renders the [`Self::skip`] template via `render` and applies the
+    /// inversion convention recorded in [`Self::skip_inverts_enabled`]:
+    /// when the value came from a templated `enabled:`, the rendered
+    /// truthiness is negated (a falsy `enabled` → skip). A render failure is
+    /// propagated as `Err` so callers FAIL CLOSED rather than silently
+    /// enabling a stage the operator meant to disable.
+    pub fn should_skip(
+        &self,
+        render: impl Fn(&str) -> anyhow::Result<String>,
+    ) -> anyhow::Result<bool> {
+        resolve_notarize_skip(&self.skip, self.skip_inverts_enabled, render)
     }
 }
 
@@ -170,6 +198,11 @@ pub struct MacOSNativeSignNotarizeConfig {
     /// inverts it into `skip:` so both spellings work.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
+    /// `true` when [`Self::skip`] holds a templated `enabled:` value to be
+    /// rendered verbatim and NEGATED at evaluation. See
+    /// [`MacOSSignNotarizeConfig::skip_inverts_enabled`].
+    #[serde(skip)]
+    pub skip_inverts_enabled: bool,
     /// Artifact type to sign and notarize: `dmg` (default) or `pkg`.
     ///
     /// Anodizer-original. GR's notarize.macos has no equivalent (signs
@@ -201,11 +234,15 @@ struct MacOSNativeSignNotarizeConfigWire {
 impl<'de> Deserialize<'de> for MacOSNativeSignNotarizeConfig {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = MacOSNativeSignNotarizeConfigWire::deserialize(deserializer)?;
-        let skip = resolve_skip_with_enabled_alias(wire.skip, wire.enabled)
+        let ResolvedSkip {
+            skip,
+            inverts_enabled,
+        } = resolve_skip_with_enabled_alias(wire.skip, wire.enabled)
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
             ids: wire.ids,
             skip,
+            skip_inverts_enabled: inverts_enabled,
             use_: wire.use_,
             sign: wire.sign,
             notarize: wire.notarize,
@@ -213,60 +250,142 @@ impl<'de> Deserialize<'de> for MacOSNativeSignNotarizeConfig {
     }
 }
 
+impl MacOSNativeSignNotarizeConfig {
+    /// Whether this native entry should be SKIPPED. Mirrors
+    /// [`MacOSSignNotarizeConfig::should_skip`]: renders the [`Self::skip`]
+    /// template, negates when it came from a templated `enabled:`, and
+    /// FAILS CLOSED (propagates `Err`) on a render failure.
+    pub fn should_skip(
+        &self,
+        render: impl Fn(&str) -> anyhow::Result<String>,
+    ) -> anyhow::Result<bool> {
+        resolve_notarize_skip(&self.skip, self.skip_inverts_enabled, render)
+    }
+}
+
+/// Resolved per-config skip plus whether its evaluation must invert (the
+/// value originated from a templated `enabled:`).
+struct ResolvedSkip {
+    skip: Option<StringOrBool>,
+    /// `true` only when `skip` carries a templated `enabled:` value that
+    /// must be rendered verbatim and have its truthiness negated.
+    inverts_enabled: bool,
+}
+
 /// Invert GR's `enabled:` (opt-in, default false) into anodizer's
 /// canonical `skip:` (opt-out, default false). Both keys may be present;
 /// if they conflict (e.g. `skip: true` AND `enabled: true`), surface a
 /// clear error.
+///
+/// Bool and literal `"true"`/`"false"` `enabled:` values are inverted right
+/// here. A *templated* `enabled:` (e.g. `{{ .IsSnapshot }}`) cannot be
+/// inverted by rewriting the template string — splicing it into a `{% if %}`
+/// head yields malformed Tera. Instead the raw template is kept and the
+/// returned [`ResolvedSkip::inverts_enabled`] flag tells the evaluator to
+/// render it verbatim and negate the result's truthiness.
 fn resolve_skip_with_enabled_alias(
     skip: Option<StringOrBool>,
     enabled: Option<StringOrBool>,
-) -> Result<Option<StringOrBool>, String> {
+) -> Result<ResolvedSkip, String> {
     match (skip, enabled) {
-        (Some(s), None) => Ok(Some(s)),
-        (None, Some(e)) => Ok(Some(invert_string_or_bool(e))),
-        (None, None) => Ok(None),
+        (Some(s), None) => Ok(ResolvedSkip {
+            skip: Some(s),
+            inverts_enabled: false,
+        }),
+        (None, Some(e)) => Ok(invert_enabled(e)),
+        (None, None) => Ok(ResolvedSkip {
+            skip: None,
+            inverts_enabled: false,
+        }),
         (Some(s), Some(e)) => {
             // Both spellings present. Allow the case where they agree on
             // intent ("don't run") to be lenient with imported configs;
-            // disagreement is a config error.
-            let inverted = invert_string_or_bool(e);
-            if string_or_bool_eq(&s, &inverted) {
-                Ok(Some(s))
+            // disagreement is a config error. Only comparable when the
+            // `enabled:` value resolves to a plain bool — a templated
+            // `enabled:` cannot be statically compared to a `skip:` value.
+            let resolved = invert_enabled(e);
+            if !resolved.inverts_enabled && string_or_bool_eq(&s, resolved.skip.as_ref()) {
+                Ok(ResolvedSkip {
+                    skip: Some(s),
+                    inverts_enabled: false,
+                })
             } else {
                 Err(format!(
-                    "notarize: both `skip:` and `enabled:` are set and disagree (`skip={:?}` / `enabled={:?}`); use one or the other",
-                    s, inverted
+                    "notarize: both `skip:` and `enabled:` are set and disagree (`skip={:?}` / inverted `enabled={:?}`); use one or the other",
+                    s, resolved.skip
                 ))
             }
         }
     }
 }
 
-/// Invert a [`StringOrBool`]. `Bool(b)` flips; `String(tmpl)` wraps in a
-/// Tera negation so the original template still drives the decision.
-fn invert_string_or_bool(v: StringOrBool) -> StringOrBool {
+/// Invert a single `enabled:` value into a [`ResolvedSkip`].
+///
+/// `Bool(b)` flips to `Bool(!b)`; literal `"true"`/`"false"` strings map to
+/// the inverse bool; any other string is treated as a template, kept verbatim
+/// with `inverts_enabled = true` so the evaluator renders it on its own and
+/// negates the rendered truthiness (no `{{ }}` is ever spliced into a
+/// condition head).
+fn invert_enabled(v: StringOrBool) -> ResolvedSkip {
     match v {
-        StringOrBool::Bool(b) => StringOrBool::Bool(!b),
+        StringOrBool::Bool(b) => ResolvedSkip {
+            skip: Some(StringOrBool::Bool(!b)),
+            inverts_enabled: false,
+        },
+        StringOrBool::String(s) => match s.trim() {
+            "true" => ResolvedSkip {
+                skip: Some(StringOrBool::Bool(false)),
+                inverts_enabled: false,
+            },
+            "false" => ResolvedSkip {
+                skip: Some(StringOrBool::Bool(true)),
+                inverts_enabled: false,
+            },
+            _ => ResolvedSkip {
+                skip: Some(StringOrBool::String(s)),
+                inverts_enabled: true,
+            },
+        },
+    }
+}
+
+/// Resolve a per-config notarize `skip` to a "should skip" bool.
+///
+/// Renders the value (a `Bool` short-circuits without rendering) and applies
+/// the shared truthiness convention (`false`/`0`/`no`/empty = falsy). When
+/// `inverts_enabled` is set the value is a templated `enabled:` kept verbatim,
+/// so its rendered truthiness is NEGATED (a falsy `enabled` → skip).
+///
+/// A render failure propagates as `Err` — callers FAIL CLOSED (treat the
+/// entry as skipped) rather than silently signing/notarizing a stage the
+/// operator meant to disable.
+fn resolve_notarize_skip(
+    skip: &Option<StringOrBool>,
+    inverts_enabled: bool,
+    render: impl Fn(&str) -> anyhow::Result<String>,
+) -> anyhow::Result<bool> {
+    let Some(value) = skip else {
+        return Ok(false);
+    };
+    match value {
+        StringOrBool::Bool(b) => Ok(*b),
         StringOrBool::String(s) => {
-            let trimmed = s.trim();
-            // Map a literal `"true"` / `"false"` to its inverse without
-            // wrapping in a template — keeps round-tripping simple.
-            match trimmed {
-                "true" => StringOrBool::Bool(false),
-                "false" => StringOrBool::Bool(true),
-                _ => StringOrBool::String(format!(
-                    "{{% if {} %}}false{{% else %}}true{{% endif %}}",
-                    trimmed
-                )),
-            }
+            let rendered = render(s)?;
+            let truthy = !matches!(
+                rendered.trim().to_ascii_lowercase().as_str(),
+                "" | "false" | "0" | "no"
+            );
+            // `skip:` template → skip when truthy. Inverted `enabled:`
+            // template → skip when the enabled value is FALSY.
+            Ok(if inverts_enabled { !truthy } else { truthy })
         }
     }
 }
 
-fn string_or_bool_eq(a: &StringOrBool, b: &StringOrBool) -> bool {
+fn string_or_bool_eq(a: &StringOrBool, b: Option<&StringOrBool>) -> bool {
     match (a, b) {
-        (StringOrBool::Bool(a), StringOrBool::Bool(b)) => a == b,
-        (StringOrBool::String(a), StringOrBool::String(b)) => a == b,
+        (StringOrBool::Bool(a), Some(StringOrBool::Bool(b))) => a == b,
+        (StringOrBool::String(a), Some(StringOrBool::String(b))) => a == b,
         _ => false,
     }
 }
