@@ -3,16 +3,19 @@
 # so the image doubles as the Model Context Protocol server registered at
 # registry.modelcontextprotocol.io (see `.anodizer.yaml::mcp`).
 #
-# docker_v2 builds this once per platform (linux/amd64, linux/arm64) using
-# the pre-built release binary from the dist tree. The build context is a
-# staging tree laid out as <os>/<arch>/<name> (matching $TARGETPLATFORM),
-# so each per-arch build resolves the correct binary from its platform
-# subdir — docker_v2 passes no BIN build arg. The ARG below only supplies
-# the default name for a manual `docker build` from a flat context.
+# docker_v2 runs ONE multi-platform buildx build
+# (--platform=linux/amd64,linux/arm64) over a single context staged as
+# <os>/<arch>/<name>. buildx executes this Dockerfile once per target
+# platform with $TARGETOS/$TARGETARCH populated, so the COPY selects each
+# platform's binary from its own subdir. A manual `docker build` from a
+# flat context must therefore stage the binary under $TARGETOS/$TARGETARCH/
+# (or override the COPY source path); BIN only supplies the binary name.
 FROM --platform=$TARGETPLATFORM gcr.io/distroless/cc-debian12:nonroot
 
+ARG TARGETOS
+ARG TARGETARCH
 ARG BIN=anodizer
-COPY ${BIN} /usr/local/bin/anodizer
+COPY ${TARGETOS}/${TARGETARCH}/${BIN} /usr/local/bin/anodizer
 
 USER nonroot
 ENTRYPOINT ["/usr/local/bin/anodizer"]
