@@ -48,7 +48,8 @@ pub(crate) use anodizer_core::artifact::matches_id_filter;
 // a re-export trips `unused_imports` warnings under `-D warnings` so
 // only living surface is exported.
 pub(crate) use artifacts::{
-    OsArtifact, find_all_platform_artifacts_with_variant, find_artifacts_by_os_with_variant,
+    OsArtifact, filter_by_ids, find_all_platform_artifacts_with_variant,
+    find_artifacts_by_os_with_variant,
 };
 pub(crate) use branch::resolve_branch;
 pub(crate) use clone::{clone_repo, clone_repo_ssh, clone_repo_with_auth};

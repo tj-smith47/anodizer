@@ -25,6 +25,7 @@ use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
+mod krew;
 mod scoop;
 mod winget;
 
@@ -124,6 +125,7 @@ fn validators() -> Vec<Box<dyn PublisherSchemaValidator>> {
     vec![
         Box::new(winget::WingetSchemaValidator),
         Box::new(scoop::ScoopSchemaValidator),
+        Box::new(krew::KrewSchemaValidator),
     ]
 }
 

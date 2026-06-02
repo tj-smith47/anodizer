@@ -587,6 +587,262 @@ impl KrewPublishOutcome {
     }
 }
 
+/// Whether `crate_name` has at least one krew-eligible archive artifact under
+/// `krew_cfg` in this run.
+///
+/// Routes through the same `find_all_platform_artifacts_with_variant` collector
+/// the live publish uses (honoring the `ids` allow-list and the
+/// amd64/arm microarchitecture-variant filters), so the eligibility predicate is
+/// one source of truth: the live path errors when this would be `false` (no
+/// archive to construct the manifest from), and the offline schema validator
+/// skips the crate on the same signal. A single-target / sharded snapshot that
+/// built no archive for this crate therefore yields `false` here rather than
+/// tripping the publisher's "no archive artifacts" guard.
+pub(crate) fn crate_has_krew_artifacts(
+    ctx: &Context,
+    crate_name: &str,
+    krew_cfg: &anodizer_core::config::KrewConfig,
+) -> Result<bool> {
+    let ids_filter = krew_cfg.ids.as_deref();
+    let amd64_variant = krew_cfg.amd64_variant.as_deref().or(Some("v1"));
+    let arm_variant = krew_cfg.arm_variant.as_deref();
+    let artifacts = util::find_all_platform_artifacts_with_variant(
+        ctx,
+        crate_name,
+        ids_filter,
+        amd64_variant,
+        arm_variant,
+    )?;
+    Ok(!artifacts.is_empty())
+}
+
+/// Resolve a crate's krew config and render its plugin manifest in-memory, with
+/// no clone, disk, or network side effects.
+///
+/// Returns `Ok(None)` when the publisher would skip this crate (`skip`,
+/// `skip_upload`, or a falsy `if` condition). Errors when the crate carries no
+/// `krew` block, when a required narrative field (description / short
+/// description) is unset, when an archive carries more than one binary (krew
+/// allows exactly one per platform), when no eligible archive artifact exists,
+/// or when a matched archive is missing its `sha256` metadata. The live publish
+/// path and the offline schema validator both call this so the validated
+/// document is byte-for-byte what a real publish would push.
+pub(crate) fn render_krew_manifest_for_crate(
+    ctx: &Context,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Option<String>> {
+    let (crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "krew")?;
+    let krew_cfg = publish
+        .krew
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("krew: no krew config for '{}'", crate_name))?;
+
+    // Honor `skip` first (template-aware), then the falsy-`if` gate, then
+    // `skip_upload` — the same order and short-circuit the live publish applies,
+    // so a skipped crate yields `None` (nothing to render or validate).
+    if let Some(d) = krew_cfg.skip.as_ref() {
+        let off = d
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| format!("krew: render skip template for '{}'", crate_name))?;
+        if off {
+            return Ok(None);
+        }
+    }
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        krew_cfg.if_condition.as_deref(),
+        &format!("krew publisher for crate '{}'", crate_name),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        return Ok(None);
+    }
+    if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx, log) {
+        return Ok(None);
+    }
+
+    let version = ctx.version();
+
+    // Validate required narrative fields before proceeding, falling back to
+    // `metadata.description` when the krew config leaves them unset.
+    let effective_description: Option<&str> = krew_cfg
+        .description
+        .as_deref()
+        .or_else(|| ctx.config.meta_description_for(crate_name));
+    if effective_description.is_none_or(str::is_empty) {
+        anyhow::bail!("krew: manifest description is not set for '{}'", crate_name);
+    }
+    // `short_description` is a krew-required tagline with no Cargo.toml
+    // counterpart; fall back to the (possibly Cargo.toml-derived) description
+    // so a plain Rust project does not hard-error on it.
+    if krew_cfg
+        .short_description
+        .as_ref()
+        .is_none_or(|s| s.is_empty())
+        && effective_description.is_none_or(str::is_empty)
+    {
+        anyhow::bail!(
+            "krew: manifest short_description is not set for '{}'",
+            crate_name
+        );
+    }
+
+    let description_raw = krew_cfg
+        .description
+        .as_deref()
+        .or_else(|| ctx.config.meta_description_for(crate_name))
+        .unwrap_or(crate_name);
+    let description = ctx
+        .render_template(description_raw)
+        .unwrap_or_else(|_| description_raw.to_string());
+    let short_description_raw = krew_cfg
+        .short_description
+        .as_deref()
+        .or(effective_description)
+        .unwrap_or(crate_name);
+    let short_description = ctx
+        .render_template(short_description_raw)
+        .unwrap_or_else(|_| short_description_raw.to_string());
+    // Derive GitHub slug (owner/repo) for the homepage fallback, consistent with
+    // the homebrew publisher.
+    let plugin_github = crate_cfg
+        .release
+        .as_ref()
+        .and_then(|r| r.github.as_ref())
+        .map(|gh| (gh.owner.clone(), gh.name.clone()));
+    let github_slug = plugin_github
+        .as_ref()
+        .map(|(owner, name)| format!("{}/{}", owner, name));
+    // The homepage fallback's final arm needs the krew-index repo owner; resolve
+    // it the same way the live path does, but only for the fallback (no error
+    // when the repository block is absent and another fallback already applies).
+    // The live path requires the repository block before rendering, so on that
+    // path the owner is always present and this matches its output. An empty /
+    // absent owner (only reachable via the offline validator, which does not
+    // require the block) drops the final arm rather than emit a degenerate
+    // `https://github.com//crate` URL — never widen leniency past the live
+    // path's guarantees.
+    let repo_owner_fallback = crate::util::resolve_repo_owner_name(krew_cfg.repository.as_ref())
+        .map(|(owner_raw, _)| ctx.render_template(&owner_raw).unwrap_or(owner_raw))
+        .filter(|owner| !owner.is_empty());
+    let homepage_raw = krew_cfg
+        .homepage
+        .clone()
+        .or_else(|| ctx.config.meta_homepage_for(crate_name).map(str::to_string))
+        .or_else(|| {
+            github_slug
+                .as_deref()
+                .map(|slug| format!("https://github.com/{}", slug))
+        })
+        .or_else(|| {
+            repo_owner_fallback
+                .as_deref()
+                .map(|owner| format!("https://github.com/{}/{}", owner, crate_name))
+        })
+        .unwrap_or_default();
+    let homepage = ctx
+        .render_template(&homepage_raw)
+        .with_context(|| format!("krew: render homepage template for '{}'", crate_name))?;
+    let caveats_raw = krew_cfg.caveats.clone().unwrap_or_default();
+    let caveats = ctx
+        .render_template(&caveats_raw)
+        .with_context(|| format!("krew: render caveats template for '{}'", crate_name))?;
+
+    // Find artifacts across all platforms, applying the IDs +
+    // amd64_variant/arm_variant filters.
+    let ids_filter = krew_cfg.ids.as_deref();
+    let amd64_variant = krew_cfg.amd64_variant.as_deref().or(Some("v1"));
+    let arm_variant = krew_cfg.arm_variant.as_deref();
+
+    // Krew plugins support a single binary per archive. Walk the eligible
+    // archives — through the SAME `ids` allow-list `find_all_platform_artifacts_with_variant`
+    // applies (via the shared `filter_by_ids`), never a hand-rolled inline copy —
+    // so an `ids`-excluded archive's binary count is not mistakenly enforced.
+    let archives = ctx
+        .artifacts
+        .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Archive, crate_name);
+    for archive in util::filter_by_ids(archives, ids_filter) {
+        let binary_count = archive.extra_binaries().len();
+        if binary_count != 1 {
+            anyhow::bail!(
+                "krew: only one binary per archive allowed, got {} on {:?}",
+                binary_count,
+                archive.name
+            );
+        }
+    }
+
+    let all_artifacts = util::find_all_platform_artifacts_with_variant(
+        ctx,
+        crate_name,
+        ids_filter,
+        amd64_variant,
+        arm_variant,
+    )?;
+
+    let url_template = krew_cfg.url_template.as_deref();
+
+    if all_artifacts.is_empty() {
+        // An empty archive set is a hard error — a krew manifest with no real
+        // artifacts is unusable (a placeholder URL produces 404s on install).
+        anyhow::bail!(
+            "krew: no archive artifacts found for '{}'. The krew publisher \
+             needs at least one platform archive to construct the manifest. \
+             Either add Windows/Linux/macOS targets for this crate or remove \
+             the krew publisher config.",
+            crate_name
+        );
+    }
+    // krew's `addURIAndSha` validator rejects manifests whose
+    // `spec.platforms[].sha256` is empty ("Hash validation failed"). Empty
+    // sha256 metadata would silently produce an unusable plugin manifest.
+    if let Some(empty) = all_artifacts.iter().find(|a| a.sha256.is_empty()) {
+        anyhow::bail!(
+            "krew: artifact for crate '{}' at url '{}' (os={}, arch={}) is \
+             missing required sha256 metadata. The generated krew plugin \
+             manifest would embed an empty `sha256:` field, which krew \
+             rejects at install time. Check dist/artifacts.json for the \
+             archive entry's metadata.sha256, and re-run `task release` from \
+             a clean dist/ if the field is absent or empty.",
+            crate_name,
+            empty.url,
+            empty.os,
+            empty.arch,
+        );
+    }
+    let platforms = {
+        let mut plats = artifacts_to_platforms(&all_artifacts, crate_name);
+        if let Some(tmpl) = url_template {
+            for p in &mut plats {
+                p.url = util::render_url_template_with_ctx(
+                    ctx, tmpl, crate_name, &version, &p.arch, &p.os,
+                );
+            }
+        }
+        plats
+    };
+
+    // Resolve the plugin name (honoring the `krew.name` override) so the
+    // manifest `metadata.name` carries the same value the live path stamps onto
+    // the published file basename and the webhook `pluginName`.
+    let plugin_name_rendered = resolve_plugin_name(krew_cfg.name.as_deref(), crate_name, |t| {
+        ctx.render_template(t)
+    })?;
+    let plugin_name = plugin_name_rendered.as_str();
+
+    let manifest = generate_manifest(&KrewManifestParams {
+        name: plugin_name,
+        version: &version,
+        homepage: &homepage,
+        short_description: &short_description,
+        description: &description,
+        caveats: &caveats,
+        platforms: &platforms,
+    })?;
+
+    Ok(Some(manifest))
+}
+
 pub fn publish_to_krew(
     ctx: &mut Context,
     crate_name: &str,
@@ -660,179 +916,30 @@ pub fn publish_to_krew(
 
     let version = ctx.version();
 
-    // validate required fields before proceeding.
-    // Fall back to `metadata.description` when krew config unset.
-    let effective_description: Option<&str> = krew_cfg
-        .description
-        .as_deref()
-        .or_else(|| ctx.config.meta_description_for(crate_name));
-    if effective_description.is_none_or(str::is_empty) {
-        anyhow::bail!("krew: manifest description is not set for '{}'", crate_name);
-    }
-    // `short_description` is a krew-required tagline with no Cargo.toml
-    // counterpart; fall back to the (possibly Cargo.toml-derived) description
-    // so a plain Rust project does not hard-error on it.
-    if krew_cfg
-        .short_description
-        .as_ref()
-        .is_none_or(|s| s.is_empty())
-        && effective_description.is_none_or(str::is_empty)
-    {
-        anyhow::bail!(
-            "krew: manifest short_description is not set for '{}'",
-            crate_name
-        );
-    }
+    // Render the plugin manifest via the same path the schema validator uses.
+    // The skip / `if:` / skip_upload gates were already evaluated above; the
+    // renderer re-checks them (returning None) but on this path always yields
+    // Some. All field resolution, the one-binary-per-archive check, the
+    // artifact collection, and the manifest serialization live in the shared
+    // renderer so the validated document is byte-for-byte what is published.
+    let Some(manifest) = render_krew_manifest_for_crate(ctx, crate_name, log)? else {
+        return Ok(KrewPublishOutcome::skipped());
+    };
 
-    let description_raw = krew_cfg
-        .description
-        .as_deref()
-        .or_else(|| ctx.config.meta_description_for(crate_name))
-        .unwrap_or(crate_name);
-    let description = ctx
-        .render_template(description_raw)
-        .unwrap_or_else(|_| description_raw.to_string());
-    let short_description_raw = krew_cfg
-        .short_description
-        .as_deref()
-        .or(effective_description)
-        .unwrap_or(crate_name);
-    let short_description = ctx
-        .render_template(short_description_raw)
-        .unwrap_or_else(|_| short_description_raw.to_string());
-    // Derive GitHub slug (owner/repo) for homepage fallback, consistent with homebrew.
+    // The plugin's GitHub coordinates and the resolved plugin name are reused
+    // below (webhook provenance, branch name, PR title). Recomputed here
+    // (cheap, side-effect-free) because the renderer consumed them internally;
+    // `resolve_plugin_name` is idempotent, so the value matches the manifest's
+    // `metadata.name` exactly.
     let plugin_github = _crate_cfg
         .release
         .as_ref()
         .and_then(|r| r.github.as_ref())
         .map(|gh| (gh.owner.clone(), gh.name.clone()));
-    let github_slug = plugin_github
-        .as_ref()
-        .map(|(owner, name)| format!("{}/{}", owner, name));
-    let homepage_raw = krew_cfg
-        .homepage
-        .clone()
-        .or_else(|| ctx.config.meta_homepage_for(crate_name).map(str::to_string))
-        .unwrap_or_else(|| {
-            github_slug
-                .as_deref()
-                .map(|slug| format!("https://github.com/{}", slug))
-                .unwrap_or_else(|| format!("https://github.com/{}/{}", repo_owner, crate_name))
-        });
-    let homepage = ctx
-        .render_template(&homepage_raw)
-        .with_context(|| format!("krew: render homepage template for '{}'", crate_name))?;
-    // Caveats is templated alongside the other
-    // narrative fields; anodizer was passing it through verbatim.
-    let caveats_raw = krew_cfg.caveats.clone().unwrap_or_default();
-    let caveats = ctx
-        .render_template(&caveats_raw)
-        .with_context(|| format!("krew: render caveats template for '{}'", crate_name))?;
-
-    // Find artifacts across all platforms, applying IDs + amd64_variant/arm_variant filter.
-    let ids_filter = krew_cfg.ids.as_deref();
-    let amd64_variant = krew_cfg.amd64_variant.as_deref().or(Some("v1"));
-    let arm_variant = krew_cfg.arm_variant.as_deref();
-
-    // Krew plugins only support a single
-    // binary per archive. Check archive artifacts before building the manifest
-    // so we fail fast with a clear error instead of shipping a broken plugin.
-    for archive in ctx
-        .artifacts
-        .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Archive, crate_name)
-    {
-        if let Some(ids) = ids_filter
-            && !ids.is_empty()
-            && !archive
-                .metadata
-                .get("id")
-                .map(|id| ids.iter().any(|i| i == id))
-                .unwrap_or(false)
-        {
-            continue;
-        }
-        let binary_count = archive.extra_binaries().len();
-        if binary_count != 1 {
-            anyhow::bail!(
-                "krew: only one binary per archive allowed, got {} on {:?}",
-                binary_count,
-                archive.name
-            );
-        }
-    }
-
-    let all_artifacts = util::find_all_platform_artifacts_with_variant(
-        ctx,
-        crate_name,
-        ids_filter,
-        amd64_variant,
-        arm_variant,
-    )?;
-
-    let url_template = krew_cfg.url_template.as_deref();
-
-    if all_artifacts.is_empty() {
-        // An empty archive set is a hard error — a krew manifest
-        // with no real artifacts is unusable (the placeholder URL was a
-        // fabricated guess that produced 404s on install). Fail loudly.
-        anyhow::bail!(
-            "krew: no archive artifacts found for '{}'. The krew publisher \
-             needs at least one platform archive to construct the manifest. \
-             Either add Windows/Linux/macOS targets for this crate or remove \
-             the krew publisher config.",
-            crate_name
-        );
-    }
-    // The Krew schema requires `spec.platforms[].sha256` to be a non-empty
-    // hex digest — krew's `addURIAndSha` validator rejects manifests with
-    // empty hashes ("Hash validation failed"). Empty sha256 metadata
-    // would silently produce an unusable plugin manifest.
-    if let Some(empty) = all_artifacts.iter().find(|a| a.sha256.is_empty()) {
-        anyhow::bail!(
-            "krew: artifact for crate '{}' at url '{}' (os={}, arch={}) is \
-             missing required sha256 metadata. The generated krew plugin \
-             manifest would embed an empty `sha256:` field, which krew \
-             rejects at install time. Check dist/artifacts.json for the \
-             archive entry's metadata.sha256, and re-run `task release` from \
-             a clean dist/ if the field is absent or empty.",
-            crate_name,
-            empty.url,
-            empty.os,
-            empty.arch,
-        );
-    }
-    let platforms = {
-        let mut plats = artifacts_to_platforms(&all_artifacts, crate_name);
-        if let Some(tmpl) = url_template {
-            for p in &mut plats {
-                p.url = util::render_url_template_with_ctx(
-                    ctx, tmpl, crate_name, &version, &p.arch, &p.os,
-                );
-            }
-        }
-        plats
-    };
-
-    // Resolve the plugin name (honoring the `krew.name` override) BEFORE
-    // generating the manifest: krew-index CI rejects a plugin whose
-    // `metadata.name` disagrees with the manifest filename / declared plugin
-    // name. The manifest `metadata.name`, the published file basename, and the
-    // webhook `pluginName` are all fed this single resolved value so they
-    // cannot drift apart.
     let plugin_name_rendered = resolve_plugin_name(krew_cfg.name.as_deref(), crate_name, |t| {
         ctx.render_template(t)
     })?;
     let plugin_name = plugin_name_rendered.as_str();
-
-    let manifest = generate_manifest(&KrewManifestParams {
-        name: plugin_name,
-        version: &version,
-        homepage: &homepage,
-        short_description: &short_description,
-        description: &description,
-        caveats: &caveats,
-        platforms: &platforms,
-    })?;
 
     // Clone the krew-index fork, write the plugin manifest, commit, push.
     let token =
@@ -1837,7 +1944,7 @@ fn collect_krew_run_targets(ctx: &Context) -> Vec<KrewPrTarget> {
 /// True when the crate has a `publish.krew` block — mirrors the
 /// `per_crate!` predicate in `lib.rs` so the publisher iterates
 /// exactly the same crate universe.
-fn is_krew_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
+pub(crate) fn is_krew_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
     crate::util::all_crates(ctx)
         .into_iter()
         .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.krew.is_some()))

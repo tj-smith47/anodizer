@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anodizer.dev/schemas/krew.v1alpha2.schema.json",
+  "title": "Krew plugin manifest (v1alpha2)",
+  "description": "Transcribed from kubernetes-sigs/krew internal/index/validation/validate.go and pkg/index/types.go at commit 299f8e0. Encodes the structural rules krew's ValidatePlugin / validatePlatform / validateSelector enforce when krew-index CI accepts a Plugin manifest. Permissive on unknown keys (krew unmarshals into Go structs that ignore unknown fields); strict only where validate.go genuinely rejects.",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": {
+      "description": "isSupportedAPIVersion: must equal constants.CurrentAPIVersion.",
+      "const": "krew.googlecontainertools.github.com/v1alpha2"
+    },
+    "kind": {
+      "description": "Must equal constants.PluginKind.",
+      "const": "Plugin"
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "description": "IsSafePluginName: must match ^[\\w-]+$ and must not be a Windows-forbidden device name (case-insensitive).",
+          "type": "string",
+          "pattern": "^[\\w-]+$",
+          "not": {
+            "pattern": "^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$"
+          }
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": ["version", "shortDescription", "platforms"],
+      "properties": {
+        "version": {
+          "description": "Parseable by krew's semver.Parse, which hard-rejects any version not prefixed with 'v'. Pattern requires the leading 'v' then MAJOR.MINOR.PATCH with optional pre-release / build metadata.",
+          "type": "string",
+          "pattern": "^v(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"
+        },
+        "shortDescription": {
+          "description": "Required, non-empty, and free of CR/LF line breaks.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\r\\n]*$"
+        },
+        "description": {
+          "type": "string"
+        },
+        "caveats": {
+          "type": "string"
+        },
+        "homepage": {
+          "type": "string"
+        },
+        "platforms": {
+          "description": "At least one platform must be specified (len(p.Spec.Platforms) == 0 is rejected).",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/platform"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "platform": {
+      "type": "object",
+      "required": ["uri", "sha256", "bin", "selector"],
+      "properties": {
+        "uri": {
+          "description": "validatePlatform: `uri` has to be set.",
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "description": "validatePlatform: `sha256` must be set and match ^[a-f0-9]{64}$.",
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "bin": {
+          "description": "validatePlatform: `bin` has to be set.",
+          "type": "string",
+          "minLength": 1
+        },
+        "files": {
+          "description": "validateFiles: if present, non-empty; each entry needs non-empty `from` and `to`.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["from", "to"],
+            "properties": {
+              "from": { "type": "string", "minLength": 1 },
+              "to": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "selector": {
+          "$ref": "#/$defs/selector"
+        }
+      }
+    },
+    "selector": {
+      "description": "validateSelector: non-nil; must carry matchLabels or matchExpressions; only the keys `os` and `arch` are supported.",
+      "type": "object",
+      "anyOf": [
+        { "required": ["matchLabels"] },
+        { "required": ["matchExpressions"] }
+      ],
+      "properties": {
+        "matchLabels": {
+          "type": "object",
+          "propertyNames": {
+            "enum": ["os", "arch"]
+          }
+        },
+        "matchExpressions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["key"],
+            "properties": {
+              "key": {
+                "enum": ["os", "arch"]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
