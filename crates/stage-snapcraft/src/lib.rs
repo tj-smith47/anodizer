@@ -19,7 +19,7 @@ mod yaml;
 #[cfg(test)]
 mod tests;
 
-pub use build_stage::SnapcraftStage;
+pub use build_stage::{SnapcraftStage, snapcraft_snap_yamls_for_crate};
 pub use command::{
     is_retriable_snap_push, resolve_effective_channels, snapcraft_command, snapcraft_upload_command,
 };

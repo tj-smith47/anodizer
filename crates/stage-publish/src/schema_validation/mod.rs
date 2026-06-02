@@ -29,6 +29,7 @@ mod chocolatey;
 mod krew;
 mod mcp;
 mod scoop;
+mod snapcraft;
 mod winget;
 
 /// A single schema-conformance violation in a rendered publisher artifact.
@@ -130,6 +131,7 @@ fn validators() -> Vec<Box<dyn PublisherSchemaValidator>> {
         Box::new(krew::KrewSchemaValidator),
         Box::new(mcp::McpSchemaValidator),
         Box::new(chocolatey::ChocolateySchemaValidator),
+        Box::new(snapcraft::SnapcraftSchemaValidator),
     ]
 }
 

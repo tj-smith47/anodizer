@@ -176,17 +176,11 @@ impl Stage for SnapcraftStage {
                 continue;
             };
 
-            // Collect all Linux binary artifacts for this crate
-            let linux_binaries: Vec<_> = ctx
-                .artifacts
-                .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
+            // Collect all Linux binary artifacts for this crate, cloned so the
+            // mutable `process_snap_target` borrow below does not conflict with
+            // the artifact-registry borrow.
+            let linux_binaries: Vec<Artifact> = linux_binaries_for_crate(ctx, &krate.name)
                 .into_iter()
-                .filter(|b| {
-                    b.target
-                        .as_deref()
-                        .map(anodizer_core::target::is_linux)
-                        .unwrap_or(false)
-                })
                 .cloned()
                 .collect();
 
@@ -195,22 +189,8 @@ impl Stage for SnapcraftStage {
                     continue;
                 }
 
-                // Filter binaries by ids if configured (C2)
-                let mut filtered_binaries = linux_binaries.clone();
-                if let Some(ref filter_ids) = snap_cfg.ids
-                    && !filter_ids.is_empty()
-                {
-                    filtered_binaries.retain(|b| {
-                        b.metadata
-                            .get("id")
-                            .map(|id| filter_ids.contains(id))
-                            .unwrap_or(false)
-                            || b.metadata
-                                .get("name")
-                                .map(|n| filter_ids.contains(n))
-                                .unwrap_or(false)
-                    });
-                }
+                let linux_refs: Vec<&Artifact> = linux_binaries.iter().collect();
+                let filtered_binaries = filter_binaries_by_ids(&linux_refs, snap_cfg.ids.as_ref());
 
                 // Warn and skip if no linux binaries found
                 if filtered_binaries.is_empty() && linux_binaries.is_empty() {
@@ -228,19 +208,7 @@ impl Stage for SnapcraftStage {
                     continue;
                 }
 
-                // Group binaries by target triple (platform) — one snap per
-                // platform. `BTreeMap` (not `HashMap`) so iteration order is
-                // deterministic across runs; this map is iterated below to
-                // register one snap Artifact per target, and `HashMap`'s
-                // randomised iteration would bake per-run order into
-                // `dist/artifacts.json`. See the matching note in
-                // `stage-archive/src/run.rs::run` for the harness regression
-                // that prompted this.
-                let mut by_target: BTreeMap<String, Vec<&Artifact>> = BTreeMap::new();
-                for b in &filtered_binaries {
-                    let target = b.target.clone().unwrap_or_else(|| "unknown".to_string());
-                    by_target.entry(target).or_default().push(b);
-                }
+                let by_target = group_binaries_by_target(&filtered_binaries);
 
                 for (target_key, target_binaries) in &by_target {
                     process_snap_target(
@@ -286,6 +254,180 @@ impl Stage for SnapcraftStage {
 
         Ok(())
     }
+}
+
+/// Group a crate's Linux binary artifacts by target triple — one snap per
+/// platform. `BTreeMap` (not `HashMap`) so iteration order is deterministic
+/// across runs; the map is iterated to register one snap Artifact per target,
+/// and `HashMap`'s randomised iteration would bake per-run order into
+/// `dist/artifacts.json`. A binary with no target lands under the `unknown`
+/// key (a host-target build with no triple). Both the build's `run` loop and
+/// the offline `snapcraft_snap_yamls_for_crate` renderer call this so the two
+/// can never diverge on grouping.
+fn group_binaries_by_target<'a>(binaries: &[&'a Artifact]) -> BTreeMap<String, Vec<&'a Artifact>> {
+    let mut by_target: BTreeMap<String, Vec<&Artifact>> = BTreeMap::new();
+    for b in binaries {
+        let target = b.target.clone().unwrap_or_else(|| "unknown".to_string());
+        by_target.entry(target).or_default().push(b);
+    }
+    by_target
+}
+
+/// Collect a crate's Linux binary artifacts in artifact-registry order.
+///
+/// Both the build loop and the offline renderer start from this exact set
+/// before applying the per-config `ids` filter, so the validated universe
+/// equals the published universe.
+fn linux_binaries_for_crate<'a>(ctx: &'a Context, crate_name: &str) -> Vec<&'a Artifact> {
+    ctx.artifacts
+        .by_kind_and_crate(ArtifactKind::Binary, crate_name)
+        .into_iter()
+        .filter(|b| {
+            b.target
+                .as_deref()
+                .map(anodizer_core::target::is_linux)
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// Apply a snap config's `ids` allow-list to a crate's Linux binaries.
+///
+/// An empty / absent `ids` admits every binary. A non-empty `ids` keeps only
+/// binaries whose `id` or `name` metadata matches. Shared by the build loop
+/// and the offline renderer so both honour identical eligibility.
+fn filter_binaries_by_ids<'a>(
+    binaries: &[&'a Artifact],
+    ids: Option<&Vec<String>>,
+) -> Vec<&'a Artifact> {
+    let mut filtered: Vec<&Artifact> = binaries.to_vec();
+    if let Some(filter_ids) = ids
+        && !filter_ids.is_empty()
+    {
+        filtered.retain(|b| {
+            b.metadata
+                .get("id")
+                .map(|id| filter_ids.contains(id))
+                .unwrap_or(false)
+                || b.metadata
+                    .get("name")
+                    .map(|n| filter_ids.contains(n))
+                    .unwrap_or(false)
+        });
+    }
+    filtered
+}
+
+/// Render the snap.yaml metadata a build would write to
+/// `prime/meta/snap.yaml` for one snap config on one target.
+///
+/// Renders the config's templated fields (summary / description / grade,
+/// with the project-description fallback and the 78-char summary cap) and
+/// hands them to [`generate_snap_yaml`]. This is the single source of truth
+/// the build's prime-dir staging and the offline schema validator both call,
+/// so a validated document is byte-for-byte the metadata a release ships.
+///
+/// `binary_names` are the binary filenames staged into the prime root (the
+/// first names the default app when no `apps:` are configured); `target` is
+/// the optional triple driving the `architectures:` field.
+pub(crate) fn render_snap_yaml(
+    ctx: &Context,
+    snap_cfg: &SnapcraftConfig,
+    crate_name: &str,
+    version: &str,
+    binary_names: &[&str],
+    target: Option<&str>,
+    project_name: Option<&str>,
+) -> Result<String> {
+    let rendered_cfg = render_snap_cfg(ctx, snap_cfg, crate_name)?;
+    generate_snap_yaml(&rendered_cfg, version, binary_names, target, project_name)
+}
+
+/// Render every snap.yaml a build would emit for one crate, mirroring the
+/// build's per-target run walk — without staging files or spawning snapcraft.
+///
+/// Returns `Ok(vec![])` (nothing to validate) when the crate carries no
+/// snapcraft config, when a config's `skip:` / `if:` gate suppresses it, or
+/// when no Linux binaries were built for the crate in this snapshot shard
+/// (the same shard-tolerance case the build's "no Linux binaries → skip"
+/// guard hits). Otherwise groups the crate's Linux binaries by target via the
+/// same helpers the build loop uses and returns one rendered snap.yaml per
+/// (config, target) pair, each stamped with the run's resolved version.
+pub fn snapcraft_snap_yamls_for_crate(ctx: &Context, crate_name: &str) -> Result<Vec<String>> {
+    let log = ctx.logger("snapcraft");
+    let Some(krate) = ctx.config.crates.iter().find(|c| c.name == crate_name) else {
+        return Ok(Vec::new());
+    };
+    let Some(snap_configs) = krate.snapcrafts.as_ref() else {
+        return Ok(Vec::new());
+    };
+
+    let version = ctx
+        .template_vars()
+        .get("Version")
+        .cloned()
+        .unwrap_or_else(|| "0.0.0".to_string());
+    let project_name = ctx.config.project_name.clone();
+
+    let linux_binaries = linux_binaries_for_crate(ctx, crate_name);
+
+    let mut yamls = Vec::new();
+    for snap_cfg in snap_configs {
+        if snap_cfg_skipped(ctx, &log, snap_cfg, crate_name)? {
+            continue;
+        }
+
+        let filtered = filter_binaries_by_ids(&linux_binaries, snap_cfg.ids.as_ref());
+        // No Linux binary for this crate in this shard (or the `ids` filter
+        // admitted none) — nothing to render. The live build's
+        // "no Linux binaries → skip" guard hits the same case.
+        if filtered.is_empty() {
+            continue;
+        }
+
+        let by_target = group_binaries_by_target(&filtered);
+        for (target_key, target_binaries) in &by_target {
+            let target = if target_key == "unknown" {
+                None
+            } else {
+                Some(target_key.as_str())
+            };
+
+            // Mirror the build's per-target arch gate: `process_snap_target`
+            // refuses to stage a target whose snap arch is unsupported by the
+            // store (e.g. riscv64). Skip the same targets here so the validated
+            // (target → snap.yaml) set is byte-identical to the built set.
+            if let Some(t) = target
+                && !is_valid_snap_arch(triple_to_snap_arch(t))
+            {
+                continue;
+            }
+
+            let binary_names: Vec<String> = target_binaries
+                .iter()
+                .map(|b| {
+                    b.path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("binary")
+                        .to_string()
+                })
+                .collect();
+            let binary_name_refs: Vec<&str> = binary_names.iter().map(|s| s.as_str()).collect();
+
+            yamls.push(render_snap_yaml(
+                ctx,
+                snap_cfg,
+                crate_name,
+                &version,
+                &binary_name_refs,
+                target,
+                Some(project_name.as_str()),
+            )?);
+        }
+    }
+
+    Ok(yamls)
 }
 
 // ---------------------------------------------------------------------------
@@ -419,11 +561,15 @@ fn process_snap_target(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Validate per-config fields and honour `skip:`. Returns `Ok(true)` when
-/// the caller should `continue` to the next snap config (skip evaluated
-/// true). Bails on invalid confinement / grade / icon settings.
-fn validate_and_check_skip(
-    ctx: &mut Context,
+/// Evaluate a snap config's `skip:` / `if:` gates against the render context.
+///
+/// Returns `Ok(true)` when the config is suppressed — `skip:` rendered truthy
+/// or the `if:` condition rendered falsy — so the caller skips it. Read-only
+/// (`&Context`), so both the build's `validate_and_check_skip` and the offline
+/// `snapcraft_snap_yamls_for_crate` renderer share one gate and never diverge
+/// on which configs a run suppresses.
+fn snap_cfg_skipped(
+    ctx: &Context,
     log: &StageLogger,
     snap_cfg: &SnapcraftConfig,
     krate_name: &str,
@@ -449,6 +595,21 @@ fn validate_and_check_skip(
         log.status(&format!(
             "skipping snapcraft config for crate {krate_name} — `if` condition evaluated falsy"
         ));
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Validate per-config fields and honour `skip:`. Returns `Ok(true)` when
+/// the caller should `continue` to the next snap config (skip evaluated
+/// true). Bails on invalid confinement / grade / icon settings.
+fn validate_and_check_skip(
+    ctx: &mut Context,
+    log: &StageLogger,
+    snap_cfg: &SnapcraftConfig,
+    krate_name: &str,
+) -> Result<bool> {
+    if snap_cfg_skipped(ctx, log, snap_cfg, krate_name)? {
         return Ok(true);
     }
 
@@ -607,12 +768,14 @@ fn stage_prime_dir(
         .collect();
     let binary_name_refs: Vec<&str> = all_binary_names.iter().map(|s| s.as_str()).collect();
 
-    let rendered_cfg = render_snap_cfg(ctx, snap_cfg, krate_name)?;
-
-    // Generate and write snap.yaml to prime/meta/snap.yaml
+    // Generate and write snap.yaml to prime/meta/snap.yaml via the shared
+    // render path the offline schema validator also calls, so the staged
+    // metadata is byte-identical to what validation checks.
     let project_name = &ctx.config.project_name;
-    let yaml_content = generate_snap_yaml(
-        &rendered_cfg,
+    let yaml_content = render_snap_yaml(
+        ctx,
+        snap_cfg,
+        krate_name,
         version,
         &binary_name_refs,
         target,

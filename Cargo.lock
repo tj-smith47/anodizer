@@ -383,6 +383,7 @@ dependencies = [
  "anodizer-core",
  "anodizer-stage-publish",
  "anodizer-stage-release",
+ "anodizer-stage-snapcraft",
  "anyhow",
  "base64",
  "flate2",

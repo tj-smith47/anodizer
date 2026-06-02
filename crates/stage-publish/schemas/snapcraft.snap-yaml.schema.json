@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anodizer.dev/schemas/snapcraft.snap-yaml.schema.json",
+  "title": "Snap metadata (snap.yaml)",
+  "description": "Derived from snapcore/snapd snap/validate.go + snap/info.go (tag 2.68) and the snap-format docs (https://snapcraft.io/docs/snap-format). This is the final snap metadata document anodizer writes to prime/meta/snap.yaml — NOT a snapcraft.yaml build recipe (the two have different schemas). snapd ships no standalone JSON Schema; it validates in Go. This file transcribes those rules. Permissive on unknown keys at every object level snapd unmarshals loosely (Go struct decoding ignores unknown fields), strict only where validate.go genuinely rejects.",
+  "type": "object",
+  "required": ["name", "version"],
+  "$comment": "snapd hard-requires only name and version in snap.yaml; summary and description are optional to snapd itself, so requiring them here would be stricter than the registry. anodizer's renderer (generate_snap_yaml) hard-errors before emitting YAML when summary or description is absent, so shipped artifacts always carry them — but the schema stays faithful to what snapd accepts.",
+  "additionalProperties": true,
+  "properties": {
+    "name": {
+      "description": "snapd ValidateName: lowercase letters, digits and single hyphens; must start and end with an alphanumeric; length 1-40; must not be all-numeric. The all-numeric rule is enforced by snapd in Go and is not expressible in pure JSON Schema, so it is documented here but not encoded (leaving it out keeps the schema from false-rejecting valid names).",
+      "$comment": "snapd validateName additionally rejects all-numeric names; that rule is not encodable in JSON Schema and is intentionally left permissive rather than over-constrain.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[a-z0-9](?:-?[a-z0-9])*$"
+    },
+    "version": {
+      "description": "snapd ValidateVersion: 1-32 chars; ASCII alphanumerics plus '.', '+', '~', '-'; must start with an alphanumeric and end with an alphanumeric, '+' or '~'.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9.+~-]*[A-Za-z0-9+~])?$"
+    },
+    "summary": {
+      "description": "snapd caps the one-line summary at 78 characters (validate.go ValidateSummary).",
+      "type": "string",
+      "maxLength": 78
+    },
+    "description": {
+      "type": "string"
+    },
+    "type": {
+      "description": "Snap type (info.go Type). We do not emit it, but a valid snap.yaml may carry it.",
+      "enum": ["app", "gadget", "kernel", "base", "snapd", "os"]
+    },
+    "confinement": {
+      "description": "snapd confinement levels (info.go ConfinementType).",
+      "enum": ["strict", "devmode", "classic"]
+    },
+    "grade": {
+      "description": "snapd grade (info.go: only 'stable' and 'devel' are valid in snap.yaml).",
+      "enum": ["stable", "devel"]
+    },
+    "architectures": {
+      "description": "snapd ValidateArchitectureList: each entry must be a known snap architecture name.",
+      "type": "array",
+      "items": {
+        "enum": [
+          "amd64",
+          "arm64",
+          "armhf",
+          "ppc64el",
+          "s390x",
+          "riscv64",
+          "i386",
+          "all"
+        ]
+      }
+    },
+    "base": {
+      "type": "string"
+    },
+    "license": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "assumes": {
+      "type": "array"
+    },
+    "apps": {
+      "description": "snapd ValidateApp per entry. `command`, when present, is a string; `daemon`, when present, is one of the supported service types. `command` is OPTIONAL — snapd accepts command-less apps (D-Bus / socket / timer-activated services), so requiring it would false-reject valid snap.yaml. Other per-app keys are decoded loosely and left permissive.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "daemon": {
+            "enum": ["simple", "forking", "oneshot", "notify", "dbus"]
+          }
+        }
+      }
+    },
+    "plugs": {
+      "type": "object"
+    },
+    "slots": {
+      "type": "object"
+    },
+    "layout": {
+      "type": "object"
+    },
+    "hooks": {
+      "type": "object"
+    }
+  }
+}

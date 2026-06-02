@@ -19,6 +19,7 @@ test-support = []
 [dependencies]
 anodizer-core.workspace = true
 anodizer-stage-release.workspace = true
+anodizer-stage-snapcraft.workspace = true
 anyhow.workspace = true
 flate2.workspace = true
 glob.workspace = true
