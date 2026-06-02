@@ -76,7 +76,7 @@ pub(crate) fn api_base() -> String {
 /// `name-version`). Falls back to the extension-stripped basename when the
 /// version doesn't appear (e.g. a snapshot-renamed archive), which is still
 /// a closer key than the raw filename.
-pub fn fury_package_name(art_name: &str, version: &str) -> String {
+pub(crate) fn fury_package_name(art_name: &str, version: &str) -> String {
     if !version.is_empty()
         && let Some(idx) = art_name.find(version)
     {
@@ -96,12 +96,12 @@ pub fn fury_package_name(art_name: &str, version: &str) -> String {
 }
 
 /// Resolved push-token env var name for the given config entry.
-pub fn push_token_env_var(cfg: &GemFuryConfig) -> &str {
+pub(crate) fn push_token_env_var(cfg: &GemFuryConfig) -> &str {
     cfg.secret_name.as_deref().unwrap_or(DEFAULT_PUSH_TOKEN_ENV)
 }
 
 /// Resolved API-token env var name for the given config entry.
-pub fn api_token_env_var(cfg: &GemFuryConfig) -> &str {
+pub(crate) fn api_token_env_var(cfg: &GemFuryConfig) -> &str {
     cfg.api_secret_name
         .as_deref()
         .unwrap_or(DEFAULT_API_TOKEN_ENV)
@@ -115,7 +115,7 @@ pub fn api_token_env_var(cfg: &GemFuryConfig) -> &str {
 /// (e.g. `myapp.DEB`) that PASSES the filter must also be detected here,
 /// otherwise the publish path would hit the "filter should have excluded it"
 /// error on an artifact the filter deliberately admitted.
-pub fn detect_gemfury_format(filename: &str) -> Option<&'static str> {
+pub(crate) fn detect_gemfury_format(filename: &str) -> Option<&'static str> {
     let lower = filename.to_ascii_lowercase();
     if lower.ends_with(".deb") {
         Some("deb")
@@ -129,7 +129,7 @@ pub fn detect_gemfury_format(filename: &str) -> Option<&'static str> {
 }
 
 /// Default `gemfury[].formats` value.
-pub fn default_formats() -> Vec<&'static str> {
+pub(crate) fn default_formats() -> Vec<&'static str> {
     crate::util::default_package_formats()
 }
 
@@ -137,7 +137,7 @@ pub fn default_formats() -> Vec<&'static str> {
 /// wins; otherwise the env var named by `secret_name`. Empty string when
 /// both unset — caller surfaces a clear "missing token" error rather than
 /// invoking the push anonymously.
-pub fn resolve_push_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<String> {
+pub(crate) fn resolve_push_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<String> {
     if let Some(raw) = cfg.token.as_deref()
         && !raw.is_empty()
     {
@@ -159,7 +159,7 @@ pub fn resolve_push_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<String> 
 /// but consults `cfg.api_token` / `api_secret_name`. The rollback path
 /// is the only consumer; an empty result causes rollback to fall through
 /// to the warn-only manual-cleanup checklist.
-pub fn resolve_api_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<String> {
+pub(crate) fn resolve_api_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<String> {
     if let Some(raw) = cfg.api_token.as_deref()
         && !raw.is_empty()
     {
@@ -226,7 +226,7 @@ fn preflight_multi_format_unambiguous(ctx: &Context, cfg: &GemFuryConfig) -> Res
 
 /// Return the configured formats filter (or the default
 /// `["apk","deb","rpm"]`).
-pub fn resolve_formats(cfg: &GemFuryConfig) -> Vec<String> {
+pub(crate) fn resolve_formats(cfg: &GemFuryConfig) -> Vec<String> {
     match cfg.formats.as_ref() {
         Some(v) if !v.is_empty() => v.clone(),
         _ => default_formats().into_iter().map(String::from).collect(),
@@ -240,7 +240,7 @@ pub fn resolve_formats(cfg: &GemFuryConfig) -> Vec<String> {
 ///
 /// Endpoint: `GET https://api.fury.io/<account>/packages/<name>/versions/<version>`.
 /// HTTP Basic auth (push token as username).
-pub fn version_already_published(
+pub(crate) fn version_already_published(
     client: &reqwest::blocking::Client,
     account: &str,
     package: &str,

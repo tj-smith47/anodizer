@@ -73,7 +73,6 @@ pub(super) fn process_msi_crate(
     log: &anodizer_core::log::StageLogger,
     krate: &anodizer_core::config::CrateConfig,
     dist: &std::path::Path,
-    version: &str,
     dry_run: bool,
     new_artifacts: &mut Vec<Artifact>,
     archives_to_remove: &mut Vec<PathBuf>,
@@ -130,7 +129,6 @@ pub(super) fn process_msi_crate(
                 binary_path,
                 &wxs_path_rendered,
                 dist,
-                version,
                 dry_run,
                 new_artifacts,
                 archives_to_remove,
@@ -169,7 +167,6 @@ fn build_msi_target(
     binary_path: &str,
     wxs_path: &str,
     dist: &std::path::Path,
-    version: &str,
     dry_run: bool,
     new_artifacts: &mut Vec<Artifact>,
     archives_to_remove: &mut Vec<PathBuf>,
@@ -185,14 +182,7 @@ fn build_msi_target(
     let wix_version = resolve_wix_version(msi_cfg, wxs_path, log);
 
     let output_dir = dist.join("windows");
-    let msi_filename = compute_msi_filename(
-        ctx,
-        msi_cfg,
-        crate_name,
-        target.as_deref(),
-        version,
-        &msi_arch,
-    )?;
+    let msi_filename = compute_msi_filename(ctx, msi_cfg, crate_name, target.as_deref())?;
     let msi_path = output_dir.join(&msi_filename);
 
     let rendered_extensions = render_msi_extensions(ctx, msi_cfg, log);

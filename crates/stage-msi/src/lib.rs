@@ -63,13 +63,6 @@ impl Stage for MsiStage {
             return Ok(());
         }
 
-        // Resolve version from template vars
-        let version = ctx
-            .template_vars()
-            .get("Version")
-            .cloned()
-            .unwrap_or_else(|| "0.0.0".to_string());
-
         let mut new_artifacts: Vec<Artifact> = Vec::new();
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
 
@@ -79,7 +72,6 @@ impl Stage for MsiStage {
                 &log,
                 krate,
                 &dist,
-                &version,
                 dry_run,
                 &mut new_artifacts,
                 &mut archives_to_remove,

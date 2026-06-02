@@ -24,10 +24,10 @@ pub enum CloudSmithDistributions {
 }
 
 impl CloudSmithDistributions {
-    /// Materialize as a `Vec<String>` regardless of which YAML form the user
+    /// Materialize as a `Vec<&str>` regardless of which YAML form the user
     /// wrote. A `Single` value yields a one-element vec so the caller can
     /// always iterate.
-    pub fn as_slice(&self) -> Vec<&str> {
+    pub fn to_str_vec(&self) -> Vec<&str> {
         match self {
             Self::Single(s) => vec![s.as_str()],
             Self::Multiple(v) => v.iter().map(String::as_str).collect(),

@@ -455,7 +455,7 @@ pub(crate) fn publish_to_cloudsmith(
             Some(ref d) => {
                 let mut out: HashMap<String, Vec<String>> = HashMap::new();
                 for (k, v) in d {
-                    let raw_entries = v.as_slice();
+                    let raw_entries = v.to_str_vec();
                     let mut rendered_entries: Vec<String> = Vec::with_capacity(raw_entries.len());
                     for raw in raw_entries {
                         let rendered = ctx.render_template(raw).with_context(|| {

@@ -61,8 +61,6 @@ pub(super) fn compute_msi_filename(
     msi_cfg: &anodizer_core::config::MsiConfig,
     crate_name: &str,
     target: Option<&str>,
-    _version: &str,
-    _msi_arch: &str,
 ) -> Result<String> {
     let name_tmpl = msi_cfg.name.as_deref().unwrap_or(DEFAULT_MSI_NAME_TEMPLATE);
     let rendered = ctx.render_template(name_tmpl).with_context(|| {
