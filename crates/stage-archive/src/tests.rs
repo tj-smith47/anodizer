@@ -4825,6 +4825,85 @@ fn archive_after_hook_sees_artifact_path() {
     );
 }
 
+/// The `before:` hook must observe THIS archive's `.ArtifactName` —
+/// previously the Artifact* vars were seeded only after the write, so a
+/// before-hook fired against a stale (or empty, on the first iteration)
+/// value. The hook touches a file named with `{{ .ArtifactName }}`; that
+/// file must equal the archive filename the stage actually produces.
+#[test]
+fn archive_before_hook_sees_artifact_name() {
+    use anodizer_core::config::{
+        ArchiveConfig, ArchiveHooksConfig, ArchivesConfig, CrateConfig, HookEntry,
+    };
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let bin_path = tmp.path().join("myapp");
+    fs::write(&bin_path, b"fake binary").unwrap();
+
+    let marker_dir = tmp.path().join("seen");
+    fs::create_dir_all(&marker_dir).unwrap();
+    // Touch `<marker_dir>/<ArtifactName>`: if the before-hook sees the
+    // populated name the file is `myapp-1.0.0.tar.gz`; if it sees an empty
+    // value the touch target collapses to the directory itself and no
+    // archive-named file appears.
+    let before_cmd = format!(
+        "touch {}/{{{{ ArtifactName }}}}",
+        marker_dir.to_string_lossy()
+    );
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist)
+        .crates(vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                id: Some("default".to_string()),
+                name_template: Some("{{ ProjectName }}-{{ Version }}".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
+                hooks: Some(ArchiveHooksConfig {
+                    before: Some(vec![HookEntry::Simple(before_cmd)]),
+                    after: None,
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .build();
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: bin_path,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: {
+            let mut m = HashMap::new();
+            m.insert("binary".to_string(), "myapp".to_string());
+            m
+        },
+        size: None,
+    });
+
+    let stage = ArchiveStage;
+    stage.run(&mut ctx).expect("archive stage runs");
+
+    assert!(
+        marker_dir.join("myapp-1.0.0.tar.gz").exists(),
+        "before-hook must see `.ArtifactName` set to this archive's filename \
+         (marker dir contents: {:?})",
+        fs::read_dir(&marker_dir)
+            .map(|rd| rd
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .collect::<Vec<_>>())
+            .unwrap_or_default()
+    );
+}
+
 /// `archives[].templated_files` must render once per (target, format)
 /// pair, with `.Format` resolving to the current archive's format string
 /// in the rendered output path.

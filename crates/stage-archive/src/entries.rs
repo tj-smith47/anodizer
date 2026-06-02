@@ -15,6 +15,7 @@ use crate::{archive_log, formats};
 
 /// An entry to add to an archive, carrying source path, archive-internal name,
 /// and optional per-file info (permissions/owner/group).
+#[derive(Clone)]
 pub(crate) struct ArchiveEntry {
     /// Source file path on disk.
     pub src: PathBuf,

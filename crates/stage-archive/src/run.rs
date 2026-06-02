@@ -304,18 +304,21 @@ fn archive_one_config(
     new_artifacts: &mut Vec<Artifact>,
 ) -> Result<()> {
     for archive_cfg in archive_cfgs {
-        let archive_id_log = archive_cfg.id.as_deref().unwrap_or("default");
+        // The archive id labels every diagnostic + staging path for this
+        // config; bound once here and reused across the per-target / per-format
+        // inner loops below.
+        let archive_id = archive_cfg.id.as_deref().unwrap_or("default");
         // `archives[].if:` conditional gate. Skip the entire archive
         // config (no archives produced for this id) when the rendered
         // condition is falsy.
         let proceed = anodizer_core::config::evaluate_if_condition(
             archive_cfg.if_condition.as_deref(),
-            &format!("archive config '{archive_id_log}'"),
+            &format!("archive config '{archive_id}'"),
             |t| ctx.render_template(t),
         )?;
         if !proceed {
             log.status(&format!(
-                "archives[{archive_id_log}]: skipped — `if` condition evaluated falsy"
+                "archives[{archive_id}]: skipped — `if` condition evaluated falsy"
             ));
             continue;
         }
@@ -338,7 +341,6 @@ fn archive_one_config(
         };
 
         if binaries.is_empty() && !is_meta {
-            let archive_id = archive_cfg.id.as_deref().unwrap_or("default");
             let id_filter_desc = archive_cfg
                 .ids
                 .as_deref()
@@ -458,7 +460,6 @@ fn archive_one_config(
         // multiple formats are set, hooks will be executed for each
         // format" and "Extra template fields
         // available: `.Format`".
-        let archive_id = archive_cfg.id.as_deref().unwrap_or("default");
         let pre_label = format!("pre-archive[{archive_id}]");
         let post_label = format!("post-archive[{archive_id}]");
 
@@ -800,15 +801,31 @@ fn archive_one_config(
                 };
                 let archive_path = dist.join(&archive_filename);
 
-                // Expose `.Format` to per-archive templated_files (and
-                // any downstream template that fires inside this scope).
-                // Reset by `clear_archive_template_vars` after the
-                // archive write completes.
-                ctx.template_vars_mut().set("Format", format);
+                // Expose `.Format` plus the resolved archive identity
+                // (`.ArtifactName` / `.ArtifactPath` / `.ArtifactExt` /
+                // `.ArtifactID`) to per-archive templated_files and to the
+                // `before:` hook below. The archive_filename / archive_path are
+                // already known here, so seeding the Artifact* vars NOW — rather
+                // than only after the write — keeps the documented hook contract:
+                // a `before:` hook that references `{{ .ArtifactPath }}` must see
+                // THIS archive's path, not a stale value carried over from the
+                // previous (target, format) iteration. Reset by
+                // `clear_archive_template_vars` after the archive write completes.
+                {
+                    let tvars = ctx.template_vars_mut();
+                    tvars.set("Format", format);
+                    tvars.set("ArtifactName", &archive_filename);
+                    tvars.set("ArtifactPath", &archive_path.to_string_lossy());
+                    tvars.set(
+                        "ArtifactExt",
+                        anodizer_core::template::extract_artifact_ext(&archive_filename),
+                    );
+                    tvars.set("ArtifactID", archive_id);
+                }
 
                 // Fire the `before:` hook here — after `.Format` / `.Os`
-                // / `.Arch` / `.Target` are wired but before the archive
-                // is written. Skipped when format is `binary` to match
+                // / `.Arch` / `.Target` / `.Artifact*` are wired but before the
+                // archive is written. Skipped when format is `binary` to match
                 // ("Skipped if archive format
                 // is binary"); the user's hook expects an archive to
                 // create or post-process, and the `binary` branch
@@ -830,7 +847,6 @@ fn archive_one_config(
                 // into the archive at its rendered `dst:` path. Skip
                 // semantics + non-UTF8 input handling match the
                 // top-level `template_files:` stage.
-                let archive_id = archive_cfg.id.as_deref().unwrap_or("default");
                 let templated_extra_entries = render_archive_templated_files(
                     ctx,
                     archive_cfg.templated_files.as_deref().unwrap_or(&[]),
@@ -842,14 +858,7 @@ fn archive_one_config(
 
                 // Combine entries, dedup, and sort. Repeated per format
                 // because the templated_files set is format-specific.
-                let mut combined: Vec<ArchiveEntry> = base_entries
-                    .iter()
-                    .map(|e| ArchiveEntry {
-                        src: e.src.clone(),
-                        archive_name: e.archive_name.clone(),
-                        info: e.info.clone(),
-                    })
-                    .collect();
+                let mut combined: Vec<ArchiveEntry> = base_entries.to_vec();
                 combined.extend(templated_extra_entries);
                 let deduped = deduplicate_entries(combined);
                 let sorted = sort_entries(deduped);
@@ -893,19 +902,9 @@ fn archive_one_config(
                     )?;
                 }
 
-                // Update stage-scoped template vars for downstream stages
-                let tvars = ctx.template_vars_mut();
-                tvars.set("ArtifactName", &archive_filename);
-                tvars.set("ArtifactPath", &archive_path.to_string_lossy());
-                tvars.set(
-                    "ArtifactExt",
-                    anodizer_core::template::extract_artifact_ext(&archive_filename),
-                );
-                // The archive ID defaults to "default" when empty.
-                // Downstream `ids:` filters rely on this to match unlabeled archives.
-                let archive_id = archive_cfg.id.as_deref().unwrap_or("default");
-                tvars.set("ArtifactID", archive_id);
-
+                // The stage-scoped `.Artifact*` template vars were seeded
+                // before the `before:` hook fired (above); downstream stages
+                // and the `after:` hook read the same values.
                 let mut metadata = HashMap::from([
                     ("format".to_string(), format.clone()),
                     ("name".to_string(), archive_stem.clone()),
