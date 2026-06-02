@@ -268,26 +268,15 @@ impl Stage for DmgStage {
                     );
                 }
 
-                // Pre-flight: a constant name_template paired with a multi-match glob
-                // would silently overwrite every matched file to the same destination name.
+                // Pre-flight: resolve extra_files through the canonical
+                // resolver so a constant name_template paired with a
+                // multi-match glob (which would silently overwrite every
+                // match to the same dst) fails before any subprocess spawn
+                // and in dry-run too. The resolved set is recomputed at copy
+                // time below.
                 if let Some(extra_files) = &dmg_cfg.extra_files {
-                    for spec in extra_files {
-                        if spec.name_template().is_some() {
-                            let pattern = spec.glob();
-                            if let Ok(entries) = glob::glob(pattern) {
-                                let matches: Vec<_> =
-                                    entries.flatten().filter(|e| e.is_file()).collect();
-                                if matches.len() > 1 {
-                                    anyhow::bail!(
-                                        "dmg extra_files: name_template is only valid when the \
-                                         glob matches exactly 1 file; got {} matches for '{}'",
-                                        matches.len(),
-                                        pattern
-                                    );
-                                }
-                            }
-                        }
-                    }
+                    anodizer_core::extrafiles::resolve(extra_files, &log)
+                        .context("dmg: validate extra_files")?;
                 }
 
                 // Collect source artifacts depending on `use` mode
@@ -513,30 +502,26 @@ impl Stage for DmgStage {
                     #[cfg(unix)]
                     maybe_create_applications_symlink(staging_dir, use_mode)?;
 
-                    // Copy extra files into staging dir
+                    // Copy extra files into staging dir via the canonical
+                    // resolver (dedup + sort + bail-on-multi-match when a
+                    // name_template is set).
                     if let Some(extra_files) = &dmg_cfg.extra_files {
-                        for spec in extra_files {
-                            let glob_pattern = spec.glob();
-                            for entry in glob::glob(glob_pattern).with_context(|| {
-                                format!("dmg: invalid extra_files glob '{}'", glob_pattern)
-                            })? {
-                                let src = entry.with_context(|| {
-                                    format!("dmg: error reading glob match for '{}'", glob_pattern)
-                                })?;
-                                let dst_name = spec
-                                    .name_template()
-                                    .map(|s| s.to_string())
-                                    .or_else(|| {
-                                        src.file_name()
-                                            .and_then(|n| n.to_str())
-                                            .map(|s| s.to_string())
-                                    })
-                                    .unwrap_or_else(|| "extra".to_string());
-                                let dst = staging_dir.join(&dst_name);
-                                fs::copy(&src, &dst).with_context(|| {
-                                    format!("copy extra file {} to staging dir", src.display())
-                                })?;
-                            }
+                        let resolved = anodizer_core::extrafiles::resolve(extra_files, &log)
+                            .context("dmg: resolve extra_files")?;
+                        for rf in resolved {
+                            let dst_name = rf
+                                .name_template
+                                .or_else(|| {
+                                    rf.path
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .map(|s| s.to_string())
+                                })
+                                .unwrap_or_else(|| "extra".to_string());
+                            let dst = staging_dir.join(&dst_name);
+                            fs::copy(&rf.path, &dst).with_context(|| {
+                                format!("copy extra file {} to staging dir", rf.path.display())
+                            })?;
                         }
                     }
 
@@ -2242,7 +2227,7 @@ crates:
             .expect_err("multi-match glob + name_template must bail");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("name_template") && msg.contains("exactly 1"),
+            msg.contains("name_template") && msg.contains("exactly one"),
             "error should mention name_template and single-match requirement, got: {msg}"
         );
     }

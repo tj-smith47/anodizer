@@ -264,26 +264,13 @@ impl Stage for NsisStage {
 
                 // Validate extra_files shape up-front so misconfiguration fails
                 // before any subprocess spawn and surfaces in dry-run too.
-                // A constant `name_template` paired with a multi-match glob
-                // would silently overwrite every match to the same dst name.
+                // The canonical resolver bails when a constant name_template is
+                // paired with a multi-match glob (which would silently
+                // overwrite every match to the same dst name). The resolved set
+                // is recomputed at copy time below.
                 if let Some(extra_files) = &nsis_cfg.extra_files {
-                    for spec in extra_files {
-                        if spec.name_template().is_some() {
-                            let pattern = spec.glob();
-                            if let Ok(entries) = glob::glob(pattern) {
-                                let matches: Vec<_> =
-                                    entries.flatten().filter(|e| e.is_file()).collect();
-                                if matches.len() > 1 {
-                                    anyhow::bail!(
-                                        "nsis extra_files: name_template is only valid when the \
-                                         glob matches exactly 1 file; got {} matches for '{}'",
-                                        matches.len(),
-                                        pattern
-                                    );
-                                }
-                            }
-                        }
-                    }
+                    anodizer_core::extrafiles::resolve(extra_files, &log)
+                        .context("nsis: validate extra_files")?;
                 }
 
                 // Check that makensis is available once per config (not per binary)
@@ -418,55 +405,26 @@ impl Stage for NsisStage {
                         format!("copy binary {} to staging dir", binary_path.display())
                     })?;
 
-                    // Copy extra files into staging dir (ExtraFileSpec: resolve globs)
+                    // Copy extra files into staging dir via the canonical
+                    // resolver (dedup + sort + bail-on-multi-match when a
+                    // name_template is set).
                     if let Some(extra_files) = &nsis_cfg.extra_files {
-                        for spec in extra_files {
-                            let pattern = spec.glob();
-                            match glob::glob(pattern) {
-                                Ok(entries) => {
-                                    let matches: Vec<_> =
-                                        entries.flatten().filter(|e| e.is_file()).collect();
-
-                                    // A constant name_template with multiple glob matches would
-                                    // silently overwrite every file to the same destination name.
-                                    // Require exactly one match when name_template is set.
-                                    if spec.name_template().is_some() && matches.len() > 1 {
-                                        anyhow::bail!(
-                                            "nsis extra_files: name_template is only valid when \
-                                             the glob matches exactly 1 file; got {} matches for \
-                                             '{}'",
-                                            matches.len(),
-                                            pattern
-                                        );
-                                    }
-
-                                    for entry in matches {
-                                        let dst_name = spec
-                                            .name_template()
-                                            .map(|s| s.to_string())
-                                            .or_else(|| {
-                                                entry
-                                                    .file_name()
-                                                    .and_then(|n| n.to_str())
-                                                    .map(|s| s.to_string())
-                                            })
-                                            .unwrap_or_else(|| "extra".to_string());
-                                        let dst = staging_dir.join(&dst_name);
-                                        fs::copy(&entry, &dst).with_context(|| {
-                                            format!(
-                                                "copy extra file {} to staging dir",
-                                                entry.display()
-                                            )
-                                        })?;
-                                    }
-                                }
-                                Err(e) => {
-                                    log.warn(&format!(
-                                        "invalid extra_files glob pattern '{}': {}",
-                                        pattern, e
-                                    ));
-                                }
-                            }
+                        let resolved = anodizer_core::extrafiles::resolve(extra_files, &log)
+                            .context("nsis: resolve extra_files")?;
+                        for rf in resolved {
+                            let dst_name = rf
+                                .name_template
+                                .or_else(|| {
+                                    rf.path
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .map(|s| s.to_string())
+                                })
+                                .unwrap_or_else(|| "extra".to_string());
+                            let dst = staging_dir.join(&dst_name);
+                            fs::copy(&rf.path, &dst).with_context(|| {
+                                format!("copy extra file {} to staging dir", rf.path.display())
+                            })?;
                         }
                     }
 
@@ -2073,7 +2031,7 @@ SectionEnd
             .expect_err("multi-match glob + name_template must bail");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("name_template is only valid"),
+            msg.contains("name_template") && msg.contains("exactly one"),
             "error must reference the name_template constraint, got: {msg}"
         );
     }
