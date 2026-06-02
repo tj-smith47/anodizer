@@ -196,32 +196,15 @@ fn check_skip_publish(
     crate_name: &str,
     log: &StageLogger,
 ) -> Result<bool> {
-    // GoReleaser checks SkipPublish early in Publish(), before any work.
-    if let Some(d) = choco_cfg.skip.as_ref() {
-        let off = d
-            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-            .with_context(|| format!("chocolatey: render skip template for '{}'", crate_name))?;
-        if off {
-            log.status(&format!(
-                "chocolatey: skipping publish for '{}' (skip=true)",
-                crate_name
-            ));
-            return Ok(true);
-        }
-    }
-    let proceed = anodizer_core::config::evaluate_if_condition(
+    let label = format!("chocolatey publisher for crate '{}'", crate_name);
+    crate::util::should_skip_publisher_with_if(
+        ctx,
+        choco_cfg.skip.as_ref(),
+        None,
         choco_cfg.if_condition.as_deref(),
-        &format!("chocolatey publisher for crate '{}'", crate_name),
-        |t| ctx.render_template(t),
-    )?;
-    if !proceed {
-        log.status(&format!(
-            "chocolatey: skipping publish for '{}' — `if` condition evaluated falsy",
-            crate_name
-        ));
-        return Ok(true);
-    }
-    Ok(false)
+        &label,
+        log,
+    )
 }
 
 /// Resolves the required nuspec metadata (description, license, authors,
@@ -897,7 +880,7 @@ mod tests {
         let msgs = cap.all_messages();
         assert!(
             msgs.iter()
-                .any(|(_, m)| m.contains("skipping publish") && m.contains("mytool")),
+                .any(|(_, m)| m.contains("skipped") && m.contains("mytool")),
             "expected skip status, got {msgs:?}"
         );
     }

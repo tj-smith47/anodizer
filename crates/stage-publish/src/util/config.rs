@@ -248,14 +248,14 @@ pub(crate) fn should_skip_publisher_with_if(
             return Ok(true);
         }
     }
-    if let Some(s) = skip_upload {
-        let off = s
-            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-            .with_context(|| format!("{label}: render skip_upload template"))?;
-        if off {
-            log.status(&format!("{label}: skipping upload (skip_upload=true)"));
-            return Ok(true);
-        }
+    // `skip_upload` honors the `auto` value (skip for prereleases) via the
+    // shared `should_skip_upload`, NOT a bare `try_evaluates_to_true` — a
+    // bare bool-eval would silently treat `auto` as an unknown string and
+    // never skip a prerelease, regressing the documented `skip_upload: auto`
+    // semantics.
+    if skip_upload.is_some() && should_skip_upload(skip_upload, ctx, log) {
+        log.status(&format!("{label}: skipping upload (skip_upload)"));
+        return Ok(true);
     }
     let proceed = anodizer_core::config::evaluate_if_condition(if_condition, label, |t| {
         ctx.render_template(t)

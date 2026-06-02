@@ -471,32 +471,18 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
     let policy = ctx.retry_policy();
 
     for entry in entries {
-        // Check skip flag.
-        if let Some(ref s) = entry.skip {
-            let off = s
-                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                .with_context(|| {
-                    format!(
-                        "artifactory: render skip template for entry '{}'",
-                        entry.name.as_deref().unwrap_or("<unnamed>")
-                    )
-                })?;
-            if off {
-                log.status("artifactory: entry skipped");
-                continue;
-            }
-        }
-
-        let proceed = anodizer_core::config::evaluate_if_condition(
+        let label = format!(
+            "artifactory entry '{}'",
+            entry.name.as_deref().unwrap_or("<unnamed>")
+        );
+        if crate::util::should_skip_publisher_with_if(
+            ctx,
+            entry.skip.as_ref(),
+            None,
             entry.if_condition.as_deref(),
-            &format!(
-                "artifactory entry '{}'",
-                entry.name.as_deref().unwrap_or("<unnamed>")
-            ),
-            |t| ctx.render_template(t),
-        )?;
-        if !proceed {
-            log.status("artifactory: entry skipped — `if` condition evaluated falsy");
+            &label,
+            log,
+        )? {
             continue;
         }
 

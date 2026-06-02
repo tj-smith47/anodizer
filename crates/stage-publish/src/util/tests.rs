@@ -676,6 +676,34 @@ fn test_should_skip_upload_auto_does_not_skip_when_no_prerelease_var() {
 }
 
 #[test]
+fn should_skip_publisher_with_if_honors_skip_upload_auto_on_prerelease() {
+    // The shared gate routes skip_upload through should_skip_upload so the
+    // `auto` value (skip on prerelease) is honored — a bare bool-eval would
+    // treat `auto` as an unknown string and never skip, regressing the
+    // winget/scoop callers that route through this helper.
+    use super::config::should_skip_publisher_with_if;
+    use anodizer_core::config::{Config, StringOrBool};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let auto = StringOrBool::String("auto".to_string());
+
+    let mut pre_ctx = Context::new(Config::default(), ContextOptions::default());
+    pre_ctx.template_vars_mut().set("Prerelease", "rc.1");
+    assert!(
+        should_skip_publisher_with_if(&pre_ctx, None, Some(&auto), None, "x", &test_log()).unwrap(),
+        "skip_upload: auto must skip when Prerelease is set"
+    );
+
+    let mut stable_ctx = Context::new(Config::default(), ContextOptions::default());
+    stable_ctx.template_vars_mut().set("Prerelease", "");
+    assert!(
+        !should_skip_publisher_with_if(&stable_ctx, None, Some(&auto), None, "x", &test_log())
+            .unwrap(),
+        "skip_upload: auto must NOT skip a stable release"
+    );
+}
+
+#[test]
 fn test_should_skip_upload_template_rendered() {
     use anodizer_core::config::{Config, StringOrBool};
     use anodizer_core::context::{Context, ContextOptions};

@@ -230,30 +230,16 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("scoop: no scoop config for '{}'", crate_name))?;
 
-    // Check skip_upload before doing any work.
-    if util::should_skip_upload(scoop_cfg.skip_upload.as_ref(), ctx, log) {
-        log.status(&format!(
-            "scoop: skipping upload for '{}' (skip_upload={})",
-            crate_name,
-            scoop_cfg
-                .skip_upload
-                .as_ref()
-                .map(|v| v.as_str())
-                .unwrap_or("")
-        ));
-        return Ok(false);
-    }
-
-    let proceed = anodizer_core::config::evaluate_if_condition(
+    // Check skip_upload / `if:` gate before doing any work.
+    let label = format!("scoop publisher for crate '{}'", crate_name);
+    if util::should_skip_publisher_with_if(
+        ctx,
+        None,
+        scoop_cfg.skip_upload.as_ref(),
         scoop_cfg.if_condition.as_deref(),
-        &format!("scoop publisher for crate '{}'", crate_name),
-        |t| ctx.render_template(t),
-    )?;
-    if !proceed {
-        log.status(&format!(
-            "scoop: skipping '{}' — `if` condition evaluated falsy",
-            crate_name
-        ));
+        &label,
+        log,
+    )? {
         return Ok(false);
     }
 

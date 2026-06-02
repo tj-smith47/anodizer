@@ -1065,29 +1065,15 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
         .ok_or_else(|| anyhow::anyhow!("winget: no winget config for '{}'", crate_name))?
         .clone();
 
-    if util::should_skip_upload(winget_cfg.skip_upload.as_ref(), ctx, log) {
-        log.status(&format!(
-            "winget: skipping upload for '{}' (skip_upload={})",
-            crate_name,
-            winget_cfg
-                .skip_upload
-                .as_ref()
-                .map(|v| v.as_str())
-                .unwrap_or("")
-        ));
-        return Ok(());
-    }
-
-    let proceed = anodizer_core::config::evaluate_if_condition(
+    let label = format!("winget publisher for crate '{}'", crate_name);
+    if crate::util::should_skip_publisher_with_if(
+        ctx,
+        None,
+        winget_cfg.skip_upload.as_ref(),
         winget_cfg.if_condition.as_deref(),
-        &format!("winget publisher for crate '{}'", crate_name),
-        |t| ctx.render_template(t),
-    )?;
-    if !proceed {
-        log.status(&format!(
-            "winget: skipping '{}' — `if` condition evaluated falsy",
-            crate_name
-        ));
+        &label,
+        log,
+    )? {
         return Ok(());
     }
 
