@@ -26,6 +26,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
 mod krew;
+mod mcp;
 mod scoop;
 mod winget;
 
@@ -126,6 +127,7 @@ fn validators() -> Vec<Box<dyn PublisherSchemaValidator>> {
         Box::new(winget::WingetSchemaValidator),
         Box::new(scoop::ScoopSchemaValidator),
         Box::new(krew::KrewSchemaValidator),
+        Box::new(mcp::McpSchemaValidator),
     ]
 }
 

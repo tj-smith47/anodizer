@@ -185,65 +185,36 @@ pub(crate) fn publish_with_registry(
     log: &StageLogger,
     registry_url: &str,
 ) -> Result<Option<McpTarget>> {
-    // ---- Skip gate ----
-    if ctx.config.mcp.name.as_deref().unwrap_or("").is_empty() {
-        log.status("mcp: skipping — no mcp.name configured");
-        ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
-            anodizer_core::SkipReason::NotConfigured,
-        ));
-        return Ok(None);
-    }
-    // Clone the block up front so the skip/if gate can record a `Skipped`
-    // outcome (a `&mut ctx` call) without holding a live `&ctx.config.mcp`
-    // borrow across it.
-    let mut mcp_rendered: McpConfig = ctx.config.mcp.clone();
-    if let Some(skip) = mcp_rendered.skip.as_ref() {
-        let off = skip
-            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-            .context("mcp: render skip template")?;
-        if off {
-            log.status("mcp: skipping — skip evaluates true");
-            ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
-                anodizer_core::SkipReason::NotApplicable,
-            ));
+    // ---- Skip gate + render (single evaluation) ----
+    // Evaluate the name / `skip` / `if` gate exactly once via the shared
+    // pipeline the schema validator also drives, then record the per-reason
+    // `Skipped` outcome + log line from that single verdict. Gating here and
+    // re-gating in the render path would render the `skip`/`if` templates twice
+    // and let the predicate drift between two homes.
+    let mcp_rendered = match render_mcp_config(ctx)? {
+        McpRenderOutcome::Rendered(cfg) => *cfg,
+        McpRenderOutcome::Skipped(skip) => {
+            log.status(skip.message);
+            ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(skip.reason));
             return Ok(None);
         }
-    }
-    let proceed = anodizer_core::config::evaluate_if_condition(
-        mcp_rendered.if_condition.as_deref(),
-        "mcp publisher",
-        |t| ctx.render_template(t),
-    )?;
-    if !proceed {
-        log.status("mcp: skipping — `if` condition evaluated falsy");
-        ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
-            anodizer_core::SkipReason::NotApplicable,
-        ));
-        return Ok(None);
-    }
+    };
 
     // ---- One-shot experimental warning ----
     warn_experimental_once(log);
 
-    // Fall back to project-level metadata for the description / homepage
-    // when the MCP block leaves them unset, so a single `metadata:` block
-    // can drive every publisher in a monorepo. Runs BEFORE `render_strings`
-    // so a templated metadata fallback (e.g. `metadata.homepage` carrying a
-    // `{{ .GitURL }}` token) is rendered with the rest of the fields rather
-    // than shipped raw — mirrors scoop's metadata-then-render ordering.
-    fill_from_project_metadata(ctx, &mut mcp_rendered);
-    // ---- Render every templated string field before submission ----
-    render_strings(ctx, &mut mcp_rendered)?;
-    infer_repository_from_release(ctx, &mut mcp_rendered);
-
-    let rendered_name = mcp_rendered.name.clone().unwrap_or_default();
+    // ---- Assemble the ServerJSON payload ----
+    // Built here (before the dry-run short-circuit) so the resolved
+    // `server.name` drives the dry-run log line, the publish POST, and the
+    // recorded target from one value — no separate defensive name binding.
+    let server = build_server_json(&mcp_rendered, &ctx.version());
 
     // ---- Dry-run short-circuits before any network I/O ----
     if ctx.is_dry_run() {
         log.status(&format!(
             "(dry-run) would publish to MCP registry {} as '{}' (auth={})",
             registry_url,
-            rendered_name,
+            server.name,
             mcp_rendered.auth.method.as_str()
         ));
         ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
@@ -276,8 +247,6 @@ pub(crate) fn publish_with_registry(
         .get_token()
         .context("mcp: could not get registry token")?;
 
-    // ---- Assemble the ServerJSON payload ----
-    let server = build_server_json(&mcp_rendered, &ctx.version());
     let body = serde_json::to_string(&server).context("mcp: serialize ServerJSON")?;
 
     // ---- POST /v0/publish with retries ----
@@ -302,6 +271,99 @@ pub(crate) fn publish_with_registry(
         version: ctx.version(),
         auth_method: mcp_rendered.auth.method,
     }))
+}
+
+/// Why the MCP publisher produced no document for this run — the single skip
+/// gate's verdict, carrying both the outcome reason the live publish records
+/// and the user-facing status line it logs.
+///
+/// One value per skip branch keeps the gate predicate and its per-reason
+/// reporting in lockstep: [`render_mcp_config`] decides, and
+/// [`publish_with_registry`] derives its `Skipped` outcome + log line from the
+/// same verdict rather than re-evaluating the gates.
+struct McpSkip {
+    /// Outcome reason recorded into the publisher outcome map.
+    reason: anodizer_core::SkipReason,
+    /// Status line shown to the user on the live publish path.
+    message: &'static str,
+}
+
+/// The verdict of the MCP render pipeline: either the fully-templated config to
+/// publish, or the skip verdict explaining why there is nothing to publish.
+enum McpRenderOutcome {
+    /// The publisher is configured and enabled; carries the rendered config.
+    Rendered(Box<McpConfig>),
+    /// The publisher is unconfigured / disabled; carries the skip verdict.
+    Skipped(McpSkip),
+}
+
+/// Evaluate the MCP skip gate once and, when it passes, render the
+/// fully-templated [`McpConfig`] this run would publish.
+///
+/// Drives the same side-effect-free pipeline the live publish runs — evaluate
+/// the name / `skip` / `if` gate, then (on pass) clone the top-level `mcp`
+/// block, apply the project-metadata fallback, template every string field, and
+/// infer the repository — without recording outcomes, emitting the experimental
+/// banner, or touching the network. The fill / render / infer helpers mutate
+/// only the local clone (they take `ctx` immutably and read config / git
+/// metadata), so this is safe to call from the schema validator on a shared
+/// `&Context`.
+///
+/// Returns [`McpRenderOutcome::Skipped`] (with the reason + log line) for an
+/// unset/empty `mcp.name`, a truthy `mcp.skip`, or a falsy `mcp.if`, so the live
+/// publish derives its per-reason outcome from this single evaluation rather
+/// than re-gating.
+fn render_mcp_config(ctx: &Context) -> Result<McpRenderOutcome> {
+    if ctx.config.mcp.name.as_deref().unwrap_or("").is_empty() {
+        return Ok(McpRenderOutcome::Skipped(McpSkip {
+            reason: anodizer_core::SkipReason::NotConfigured,
+            message: "mcp: skipping — no mcp.name configured",
+        }));
+    }
+    let mut mcp_rendered: McpConfig = ctx.config.mcp.clone();
+    if let Some(skip) = mcp_rendered.skip.as_ref() {
+        let off = skip
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .context("mcp: render skip template")?;
+        if off {
+            return Ok(McpRenderOutcome::Skipped(McpSkip {
+                reason: anodizer_core::SkipReason::NotApplicable,
+                message: "mcp: skipping — skip evaluates true",
+            }));
+        }
+    }
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        mcp_rendered.if_condition.as_deref(),
+        "mcp publisher",
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        return Ok(McpRenderOutcome::Skipped(McpSkip {
+            reason: anodizer_core::SkipReason::NotApplicable,
+            message: "mcp: skipping — `if` condition evaluated falsy",
+        }));
+    }
+
+    fill_from_project_metadata(ctx, &mut mcp_rendered);
+    render_strings(ctx, &mut mcp_rendered)?;
+    infer_repository_from_release(ctx, &mut mcp_rendered);
+    Ok(McpRenderOutcome::Rendered(Box::new(mcp_rendered)))
+}
+
+/// Render the exact [`ServerJson`] document this run would POST to the registry,
+/// or `None` when the MCP publisher is not configured / disabled.
+///
+/// One source of truth for the published payload: both [`publish_with_registry`]
+/// and the schema validator obtain the server document from the same
+/// [`render_mcp_config`] pipeline plus [`build_server_json`], so what gets
+/// validated is byte-for-byte what ships. Version is the global
+/// [`Context::version`] — MCP publishes a single top-level `server.json` per
+/// release, not a per-crate document.
+pub(crate) fn render_server_json(ctx: &Context) -> Result<Option<ServerJson>> {
+    let McpRenderOutcome::Rendered(mcp_rendered) = render_mcp_config(ctx)? else {
+        return Ok(None);
+    };
+    Ok(Some(build_server_json(&mcp_rendered, &ctx.version())))
 }
 
 /// Populate `mcp.description` and `mcp.homepage` from the project's
