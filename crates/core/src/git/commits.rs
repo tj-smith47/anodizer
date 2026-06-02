@@ -193,8 +193,16 @@ pub fn get_current_branch() -> Result<String> {
 
 /// Return `true` when `name` looks like a branch (NOT an anodize-shaped
 /// release tag). Tag shapes: `^v\d+\.\d+\.\d+` (lockstep
-/// `v1.2.3[-pre][+build]`) or any name containing `-v\d+\.\d+\.\d+`
+/// `v1.2.3[-pre][+build]`) or `^<crate>-v\d+\.\d+\.\d+`
 /// (per-crate `mycrate-v1.2.3[...]`).
+///
+/// Both regexes are start-anchored, and the per-crate `<crate>` segment is
+/// constrained to non-`/` characters. Without that, a branch like
+/// `feature/fix-v2.0.0` contains `-v2.0.0` and would be misclassified as a
+/// tag — leaving its `GITHUB_REF_NAME` fallback rejected. A real per-crate
+/// tag's name prefix is a crate name (no path separators), so anchoring on
+/// `^[^/]+-v` keeps that branch shape branch-like while still matching
+/// `mycrate-v1.2.3`.
 ///
 /// Guards the `GITHUB_REF_NAME` fallback in [`get_current_branch_in`]: on
 /// a `push: tags:` workflow trigger, `GITHUB_REF_NAME` is the TAG name
@@ -206,7 +214,8 @@ pub fn is_branchlike(name: &str) -> bool {
     static LOCKSTEP: OnceLock<Regex> = OnceLock::new();
     static PER_CRATE: OnceLock<Regex> = OnceLock::new();
     let lockstep = LOCKSTEP.get_or_init(|| Regex::new(r"^v\d+\.\d+\.\d+").expect("static regex"));
-    let per_crate = PER_CRATE.get_or_init(|| Regex::new(r"-v\d+\.\d+\.\d+").expect("static regex"));
+    let per_crate =
+        PER_CRATE.get_or_init(|| Regex::new(r"^[^/]+-v\d+\.\d+\.\d+").expect("static regex"));
     !(lockstep.is_match(name) || per_crate.is_match(name))
 }
 
@@ -1220,6 +1229,17 @@ mod tests {
         assert!(is_branchlike("publisher-required-config"));
         assert!(is_branchlike("release/v1.2.3-prep"));
         assert!(is_branchlike("dependabot/cargo/serde-1.0.200"));
+    }
+
+    #[test]
+    fn is_branchlike_accepts_slashed_branch_with_embedded_version() {
+        // `feature/fix-v2.0.0` embeds `-v2.0.0` but is a branch, not a
+        // per-crate tag: the unanchored `-v\d+\.\d+\.\d+` regex misclassified
+        // it as a tag. The `^[^/]+-v` anchor keeps slashed branch names
+        // branch-like.
+        assert!(is_branchlike("feature/fix-v2.0.0"));
+        assert!(is_branchlike("hotfix/release-v1.0.0-blocker"));
+        assert!(is_branchlike("user/wip-v3.1.4"));
     }
 
     #[test]
