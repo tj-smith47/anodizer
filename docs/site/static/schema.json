@@ -7609,6 +7609,18 @@
       "description": "Native macOS signing and notarization via `codesign` + `xcrun notarytool`.",
       "type": "object",
       "properties": {
+        "enabled": {
+          "description": "Back-compat `enabled:` alias (opt-in, default false). Inverted into [`Self::skip`] at deserialize time. Surfaced here only so the generated JSON schema documents the field; always `None` at runtime. See [`MacOSSignNotarizeConfig::enabled`].",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "ids": {
           "description": "Build IDs to filter. Default: project name.",
           "default": null,
@@ -7763,6 +7775,18 @@
       "description": "Cross-platform macOS signing and notarization via `rcodesign`.",
       "type": "object",
       "properties": {
+        "enabled": {
+          "description": "Back-compat `enabled:` alias (opt-in, default false). Inverted into [`Self::skip`] at deserialize time. Surfaced here purely so the generated JSON schema documents the field — editors/IDEs validating against the schema must recognize `enabled:` rather than flag it as unknown. Always `None` at runtime (the deserializer folds it into `skip`); runtime logic never reads it.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "ids": {
           "description": "Build IDs to filter. Default: project name.",
           "default": null,

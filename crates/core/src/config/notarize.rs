@@ -39,6 +39,14 @@ pub struct MacOSSignNotarizeConfig {
     /// canonical field at runtime is `skip:`.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
+    /// Back-compat `enabled:` alias (opt-in, default false). Inverted into
+    /// [`Self::skip`] at deserialize time. Surfaced here purely so the
+    /// generated JSON schema documents the field — editors/IDEs validating
+    /// against the schema must recognize `enabled:` rather than flag it as
+    /// unknown. Always `None` at runtime (the deserializer folds it into
+    /// `skip`); runtime logic never reads it.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// `true` when [`Self::skip`] holds a templated `enabled:` value that
     /// must be rendered verbatim and have its truthiness NEGATED at
     /// evaluation (a falsy `enabled` → skip). Bool / literal `enabled:`
@@ -79,6 +87,9 @@ impl<'de> Deserialize<'de> for MacOSSignNotarizeConfig {
         Ok(Self {
             ids: wire.ids,
             skip,
+            // `enabled:` is folded into `skip` above; the canonical field is
+            // schema-only and always `None` at runtime.
+            enabled: None,
             skip_inverts_enabled: inverts_enabled,
             sign: wire.sign,
             notarize: wire.notarize,
@@ -197,6 +208,12 @@ pub struct MacOSNativeSignNotarizeConfig {
     /// inverts it into `skip:` so both spellings work.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
+    /// Back-compat `enabled:` alias (opt-in, default false). Inverted into
+    /// [`Self::skip`] at deserialize time. Surfaced here only so the
+    /// generated JSON schema documents the field; always `None` at runtime.
+    /// See [`MacOSSignNotarizeConfig::enabled`].
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// `true` when [`Self::skip`] holds a templated `enabled:` value to be
     /// rendered verbatim and NEGATED at evaluation. See
     /// [`MacOSSignNotarizeConfig::skip_inverts_enabled`].
@@ -241,6 +258,8 @@ impl<'de> Deserialize<'de> for MacOSNativeSignNotarizeConfig {
         Ok(Self {
             ids: wire.ids,
             skip,
+            // `enabled:` is folded into `skip` above; schema-only at runtime.
+            enabled: None,
             skip_inverts_enabled: inverts_enabled,
             use_: wire.use_,
             sign: wire.sign,
