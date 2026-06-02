@@ -295,11 +295,11 @@ fn run_docker_post_hooks(
 /// fallback to `""` cannot mask a future refactor that broadens the input
 /// type (the downstream `JSON_LIST_KEYS` parser would otherwise read the
 /// empty string and skip the key without warning).
-fn insert_platforms_meta(meta: &mut HashMap<String, String>, plats: &[String]) {
-    meta.insert(
-        "Platforms".to_string(),
-        serde_json::to_string(plats).expect("serde_json::to_string on Vec<String> cannot fail"),
-    );
+fn insert_platforms_meta(meta: &mut HashMap<String, String>, plats: &[String]) -> Result<()> {
+    let encoded =
+        serde_json::to_string(plats).context("docker: serialize Platforms metadata to JSON")?;
+    meta.insert("Platforms".to_string(), encoded);
+    Ok(())
 }
 
 /// Run `build_jobs` in parallel under a channel-based semaphore bounded by
@@ -370,7 +370,7 @@ fn execute_jobs_and_register(
         for tag in &job.rendered_tags {
             let mut meta = HashMap::new();
             meta.insert("tag".to_string(), tag.clone());
-            insert_platforms_meta(&mut meta, &job.platforms_list);
+            insert_platforms_meta(&mut meta, &job.platforms_list)?;
             if let Some(ref id) = job.id {
                 meta.insert("id".to_string(), id.clone());
             }
@@ -827,11 +827,14 @@ fn queue_v2_build_for_platforms(
     let should_push = if ctx.is_snapshot() { false } else { !dry_run };
 
     // Determine whether --load is safe (requires a running daemon). In
-    // snapshot mode, warn if daemon is unavailable and skip --load.
+    // snapshot mode, warn if the daemon is unavailable and skip --load.
     // `--load` is buildx-only — podman builds load into local storage by
-    // default, so the flag is suppressed below in the spec.
-    let should_load = if ctx.is_snapshot() {
-        let daemon_ok = is_podman || is_docker_daemon_available();
+    // default and the command builder suppresses `load` for the podman
+    // backend, so the daemon probe / warn only applies to buildx.
+    let should_load = if is_podman {
+        false
+    } else if ctx.is_snapshot() {
+        let daemon_ok = is_docker_daemon_available();
         if !daemon_ok {
             log.warn(
                 "docker daemon not available; snapshot build will skip --load \
@@ -892,7 +895,7 @@ fn queue_v2_build_for_platforms(
         for tag in &image_tags {
             let mut meta = HashMap::new();
             meta.insert("tag".to_string(), tag.clone());
-            insert_platforms_meta(&mut meta, snapshot_plats);
+            insert_platforms_meta(&mut meta, snapshot_plats)?;
             meta.insert("api".to_string(), "v2".to_string());
             meta.insert(
                 "use".to_string(),
