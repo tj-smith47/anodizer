@@ -163,6 +163,17 @@ fn detect_gemfury_format_matches_known_extensions() {
     assert_eq!(detect_gemfury_format("a.zip"), None);
 }
 
+/// The detector folds case so it agrees with the case-folding artifact
+/// filter: an uppercase-extension artifact that the filter admits must be
+/// detected here too, not fall through to the "filter should have excluded
+/// it" error on the publish path.
+#[test]
+fn detect_gemfury_format_is_case_insensitive() {
+    assert_eq!(detect_gemfury_format("myapp.DEB"), Some("deb"));
+    assert_eq!(detect_gemfury_format("myapp.Rpm"), Some("rpm"));
+    assert_eq!(detect_gemfury_format("myapp.APK"), Some("apk"));
+}
+
 #[test]
 fn push_and_api_token_env_var_defaults() {
     let cfg = GemFuryConfig::default();

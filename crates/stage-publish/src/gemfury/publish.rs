@@ -109,12 +109,19 @@ pub fn api_token_env_var(cfg: &GemFuryConfig) -> &str {
 
 /// Detect the Fury format from a filename extension. Returns `None` for
 /// unrecognized extensions so the caller can skip non-matching artifacts.
+///
+/// Case-insensitive on the extension so it agrees with the case-folding
+/// artifact filter (`util::format_matches`): an uppercase-extension artifact
+/// (e.g. `myapp.DEB`) that PASSES the filter must also be detected here,
+/// otherwise the publish path would hit the "filter should have excluded it"
+/// error on an artifact the filter deliberately admitted.
 pub fn detect_gemfury_format(filename: &str) -> Option<&'static str> {
-    if filename.ends_with(".deb") {
+    let lower = filename.to_ascii_lowercase();
+    if lower.ends_with(".deb") {
         Some("deb")
-    } else if filename.ends_with(".rpm") {
+    } else if lower.ends_with(".rpm") {
         Some("rpm")
-    } else if filename.ends_with(".apk") {
+    } else if lower.ends_with(".apk") {
         Some("apk")
     } else {
         None

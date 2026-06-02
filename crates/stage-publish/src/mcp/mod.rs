@@ -238,7 +238,7 @@ pub(crate) fn publish_with_registry(
     // `{{ .GitURL }}` token) is rendered with the rest of the fields rather
     // than shipped raw — mirrors scoop's metadata-then-render ordering.
     fill_from_project_metadata(ctx, &mut mcp_rendered);
-    // ---- Template-render every string field (GR mcp.go:72-85 parity) ----
+    // ---- Render every templated string field before submission ----
     render_strings(ctx, &mut mcp_rendered)?;
     infer_repository_from_release(ctx, &mut mcp_rendered);
 
