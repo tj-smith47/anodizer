@@ -219,14 +219,31 @@ fn default_attestable_kinds() -> Vec<ArtifactKind> {
 // Subject derivation
 // ---------------------------------------------------------------------------
 
+/// The placeholder digest substituted for an absent file in dry-run: 64 zero
+/// hex chars. Same length/charset as a real sha256, so the rendered
+/// manifest/statement still validates structurally without claiming a digest
+/// over bytes that were never written.
+const DRY_RUN_PLACEHOLDER_SHA256: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
 /// Resolve an artifact's sha256: reuse the digest `stage-checksum` propagated
 /// into `metadata["sha256"]` when present; otherwise hash the file on disk.
 ///
 /// Rule #11 / derive-don't-duplicate: the manifest digest is the SAME sha256
 /// the checksum stage already computed, never a re-derived or hand-listed one.
-fn resolve_sha256(artifact: &Artifact) -> Result<String> {
+///
+/// In `dry_run`, checksum sidecars are never written, so an artifact lacking a
+/// metadata digest may point at a file that does not exist. Rather than hard-fail
+/// the dry-run, substitute [`DRY_RUN_PLACEHOLDER_SHA256`] for an absent file —
+/// the manifest/statement still renders for validation, mirroring how
+/// `write_output` no-ops in dry-run. A present file is still hashed for real, and
+/// outside dry-run a missing file surfaces the original error.
+fn resolve_sha256(artifact: &Artifact, dry_run: bool) -> Result<String> {
     if let Some(existing) = artifact.metadata.get("sha256") {
         return Ok(existing.clone());
+    }
+    if dry_run && !artifact.path.exists() {
+        return Ok(DRY_RUN_PLACEHOLDER_SHA256.to_string());
     }
     anodizer_core::hashing::sha256_file(&artifact.path).with_context(|| {
         format!(
@@ -257,6 +274,7 @@ fn collect_subjects(
     ctx: &Context,
     crate_name: &str,
     selected: Option<&[AttestationArtifactKind]>,
+    dry_run: bool,
 ) -> Result<Vec<Subject>> {
     let kinds: Vec<ArtifactKind> = match selected {
         Some(sel) => sel
@@ -281,7 +299,7 @@ fn collect_subjects(
             if !seen.insert(artifact.name.clone()) {
                 continue;
             }
-            let sha256 = resolve_sha256(artifact)?;
+            let sha256 = resolve_sha256(artifact, dry_run)?;
             subjects.push(Subject {
                 name: artifact.name.clone(),
                 digest: SubjectDigest { sha256 },
@@ -386,7 +404,7 @@ impl Stage for AttestStage {
         let mut new_artifacts: Vec<Artifact> = Vec::new();
 
         for crate_name in &crates {
-            let subjects = collect_subjects(ctx, crate_name, selected.as_deref())?;
+            let subjects = collect_subjects(ctx, crate_name, selected.as_deref(), dry_run)?;
             if subjects.is_empty() {
                 // Enabled but nothing matched: surface a warn (not a silent
                 // verbose line) so a misconfigured filter doesn't ship a green

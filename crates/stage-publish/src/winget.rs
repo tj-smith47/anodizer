@@ -1746,6 +1746,66 @@ mod publisher_tests {
         }
     }
 
+    /// Add an `UploadableBinary` (the portable-installer source) for `crate_name`
+    /// on `target`, carrying the sha256 + binary metadata winget needs.
+    fn add_uploadable_binary(ctx: &mut Context, crate_name: &str, binary: &str, target: &str) {
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("sha256".to_string(), "a".repeat(64));
+        meta.insert("binary".to_string(), binary.to_string());
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
+            kind: anodizer_core::artifact::ArtifactKind::UploadableBinary,
+            path: std::path::PathBuf::from(format!("/dist/{crate_name}-{target}")),
+            name: format!("{crate_name}-{target}"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: meta,
+            size: None,
+        });
+    }
+
+    /// The shard-guard and the live collector must agree on what a winget
+    /// Windows installer is. A linux-only `UploadableBinary` (the portable
+    /// path) is NOT a Windows installer, so the guard returns `false` — letting
+    /// the schema validator skip the crate rather than drive
+    /// `collect_winget_installers` into its "no Windows artifact" bail. The
+    /// shared `WingetArtifactFilters::matches` Windows predicate keeps the two
+    /// from drifting; this pins the portable-binary branch of that agreement.
+    #[test]
+    fn guard_skips_linux_only_portable_binary() {
+        let cfg = WingetConfig {
+            publisher: Some("AcmeCo".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("demo")])
+            .build();
+        add_uploadable_binary(&mut ctx, "demo", "demo", "x86_64-unknown-linux-gnu");
+        assert!(
+            !crate_has_winget_installer_artifacts(&ctx, "demo", &cfg),
+            "a linux-only portable binary is not a Windows installer; the guard \
+             must return false so the validator skips rather than bails"
+        );
+    }
+
+    /// The positive half: a Windows `UploadableBinary` IS a winget installer, so
+    /// the guard returns `true` and validation proceeds. Confirms the Windows
+    /// predicate the guard shares with the collector counts the real case.
+    #[test]
+    fn guard_counts_windows_portable_binary() {
+        let cfg = WingetConfig {
+            publisher: Some("AcmeCo".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("demo")])
+            .build();
+        add_uploadable_binary(&mut ctx, "demo", "demo", "x86_64-pc-windows-msvc");
+        assert!(
+            crate_has_winget_installer_artifacts(&ctx, "demo", &cfg),
+            "a windows portable binary is a winget installer; the guard must count it"
+        );
+    }
+
     #[test]
     fn winget_publisher_classification() {
         let p = WingetPublisher::new();

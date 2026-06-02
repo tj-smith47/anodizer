@@ -427,6 +427,43 @@ mod tests {
         );
     }
 
+    /// The portable-binary counterpart of the archive shard-skip above: a
+    /// linux-only `UploadableBinary` (no Windows target) for a winget-configured
+    /// crate must SKIP — the shard-guard and the live collector share one Windows
+    /// predicate, so a non-Windows portable binary never tricks the guard into
+    /// driving the renderer past `collect_winget_installers`' "no Windows
+    /// artifact" bail.
+    #[test]
+    fn crate_with_only_linux_portable_binary_is_skipped_not_failed() {
+        let cfg = every_option_winget_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![winget_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        // Only a linux portable binary — no Windows installer in this shard.
+        let mut meta = HashMap::new();
+        meta.insert("sha256".to_string(), "a".repeat(64));
+        meta.insert("binary".to_string(), "widget".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::UploadableBinary,
+            path: std::path::PathBuf::from("/dist/widget-x86_64-unknown-linux-gnu"),
+            name: "widget-x86_64-unknown-linux-gnu".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "widget".to_string(),
+            metadata: meta,
+            size: None,
+        });
+
+        let findings = WingetSchemaValidator
+            .validate(&ctx)
+            .expect("validation runs without erroring on the absent Windows artifact");
+        assert!(
+            findings.is_empty(),
+            "a crate with only a linux portable binary must be skipped, got: {findings:?}"
+        );
+    }
+
     /// The check must BITE: an installer manifest whose `Architecture` is set to
     /// an out-of-enum value is rejected by the installer schema, with a finding
     /// naming the offending field and the schema's expectation.

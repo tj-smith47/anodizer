@@ -845,3 +845,123 @@ fn empty_match_emits_warn() {
         "no manifest written when nothing matched"
     );
 }
+
+// ---------------------------------------------------------------------------
+// dry-run safety (no hashing of unwritten sidecars)
+// ---------------------------------------------------------------------------
+
+/// Register an artifact whose backing file is NOT on disk and which carries no
+/// `sha256` metadata — the shape a checksum sidecar has in a dry-run, where the
+/// checksum stage never wrote it. Returns the (absent) path.
+fn add_unwritten_artifact(
+    ctx: &mut anodizer_core::context::Context,
+    dist: &std::path::Path,
+    kind: ArtifactKind,
+    name: &str,
+    crate_name: &str,
+) -> PathBuf {
+    let path = dist.join(name);
+    ctx.artifacts.add(Artifact {
+        kind,
+        name: name.to_string(),
+        path: path.clone(),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: crate_name.to_string(),
+        metadata: Default::default(),
+        size: None,
+    });
+    path
+}
+
+/// In dry-run, the checksum stage never writes the `.sha256` sidecar, so an
+/// attestable checksum artifact points at a file that does not exist and has no
+/// metadata digest. The attest stage must still succeed — substituting the
+/// 64-zero placeholder so the manifest renders for validation — rather than
+/// hard-failing on a hash of a never-written file.
+#[test]
+fn dry_run_uses_placeholder_for_unwritten_sidecar() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    fs::create_dir_all(&dist).unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist.clone())
+        .dry_run(true)
+        .crates(vec![crate_cfg("myapp")])
+        .build();
+    ctx.config.attestations = Some(attest_config(
+        AttestationMode::Subjects,
+        Some(vec![AttestationArtifactKind::Checksum]),
+    ));
+
+    let sidecar = add_unwritten_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::Checksum,
+        "myapp-1.0.0-linux-amd64.tar.gz.sha256",
+        "myapp",
+    );
+    assert!(!sidecar.exists(), "the sidecar must be absent in dry-run");
+
+    // Pre-fix this errored: `resolve_sha256` hashed the nonexistent file.
+    let subjects = collect_subjects(
+        &ctx,
+        "myapp",
+        Some(&[AttestationArtifactKind::Checksum]),
+        true,
+    )
+    .expect("dry-run subject collection must not hash unwritten sidecars");
+
+    let subject = subjects
+        .iter()
+        .find(|s| s.name == "myapp-1.0.0-linux-amd64.tar.gz.sha256")
+        .expect("the absent sidecar still produces a subject in dry-run");
+    assert_eq!(
+        subject.digest.sha256,
+        "0".repeat(64),
+        "an unwritten sidecar gets the 64-zero placeholder digest in dry-run"
+    );
+}
+
+/// The dry-run placeholder must not mask a genuine failure: outside dry-run, a
+/// missing file with no metadata digest still surfaces the hashing error.
+#[test]
+fn non_dry_run_missing_file_still_errors() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    fs::create_dir_all(&dist).unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist.clone())
+        .crates(vec![crate_cfg("myapp")])
+        .build();
+    ctx.config.attestations = Some(attest_config(
+        AttestationMode::Subjects,
+        Some(vec![AttestationArtifactKind::Checksum]),
+    ));
+
+    add_unwritten_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::Checksum,
+        "myapp-1.0.0-linux-amd64.tar.gz.sha256",
+        "myapp",
+    );
+
+    let err = collect_subjects(
+        &ctx,
+        "myapp",
+        Some(&[AttestationArtifactKind::Checksum]),
+        false,
+    )
+    .expect_err("a missing file with no metadata digest must error outside dry-run");
+    assert!(
+        err.to_string().contains("hashing")
+            || err.chain().any(|c| c.to_string().contains("hashing")),
+        "the real hashing error must surface, got: {err:#}"
+    );
+}
