@@ -1,17 +1,17 @@
 //! `anodizer continue` command.
 //!
-//! Two modes mirroring GoReleaser Pro's `goreleaser continue`:
+//! Two modes for resuming a release:
 //!
 //! - **`--merge`** — merge artifacts from split-build workers (each worker
 //!   wrote `dist/<target>/context.json` via `anodizer release --split`) and
 //!   then run post-build stages (sign / checksum / sbom / release / publish
-//!   / announce). Equivalent to GR Pro's `goreleaser continue --merge`.
+//!   / announce). The merge mode.
 //!
 //! - **no flag** — single-host stage-resume: load artifacts from a populated
 //!   `dist/` (typically left over from a `release --prepare` run or a
 //!   previous release that failed in publish/announce) and run the
 //!   publish-only pipeline (release + publish + blob), then run the announce
-//!   stage and after-hooks. Equivalent to GR Pro's `goreleaser continue` and
+//!   stage and after-hooks. The single-host resume mode and
 //!   the long-standing flow for "transient publish failure, retry without
 //!   re-building".
 
@@ -74,7 +74,7 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
 
     // Single-host stage-resume: load artifacts from dist/ and run the
     // publish-only pipeline (release + publish + blob), matching the
-    // `publish` command's behaviour. This is the GR Pro `goreleaser
+    // `publish` command's behaviour. This is the single-host
     // continue` (no `--merge`) path: a prior release stalled mid-publish
     // (e.g. expired token, transient 5xx) and the user wants to resume
     // without rebuilding.

@@ -125,7 +125,7 @@ pub fn run(opts: ChangelogOpts) -> Result<()> {
             // Multi-crate separator is unconditional (independent of
             // --verbose) so the body of each crate's changelog stays
             // attributable in the combined output. Matches the shape
-            // GR uses for monorepo `goreleaser changelog`.
+            // used for monorepo changelog generation.
             aggregated.push_str(&format!("\n---\n{}\n---\n\n", name));
         }
         aggregated.push_str(body);

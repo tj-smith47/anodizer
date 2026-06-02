@@ -2,7 +2,7 @@
 //!
 //! Unlike regular `extra_files` (which copy files as-is), `templated_extra_files`
 //! reads file contents, renders them through the template engine, and writes the
-//! rendered output. This is a GoReleaser Pro feature.
+//! rendered output.
 
 use std::path::{Path, PathBuf};
 

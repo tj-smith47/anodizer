@@ -52,7 +52,7 @@ pub struct SnapcraftConfig {
     /// Top-level snap plug definitions (structured map).
     /// Keys are plug names, values are either `null` (simple plug) or an object
     /// with `interface` and optional attributes (e.g. `{ interface: "content", target: "$SNAP/shared" }`).
-    /// GoReleaser uses `map[string]any` for this field.
+    /// An arbitrary key/value map for this field.
     pub plugs: Option<BTreeMap<String, serde_json::Value>>,
     // No top-level `slots:` — Snapcraft itself has no top-level slots
     // concept; use `apps.<name>.slots` for per-app slots.
@@ -66,15 +66,14 @@ pub struct SnapcraftConfig {
     pub extra_files: Option<Vec<SnapcraftExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before bundling.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
-    /// GoReleaser Pro feature.
+    /// Template-rendered extra files.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Template for the output snap filename.
     pub name_template: Option<String>,
     /// Skip this snapcraft config. Accepts bool or template string
     /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip).
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat
-    /// with imported GoReleaser configs (GR's snapcraft config field is
-    /// `pkg/config/config.go:1033` `Disable string`).
+    /// with imported configs (the legacy `disable:` spelling).
     #[serde(
         default,
         alias = "disable",
@@ -89,7 +88,7 @@ pub struct SnapcraftConfig {
     pub hooks: Option<BTreeMap<String, serde_json::Value>>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the snapcraft config is
-    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
+    /// skipped. Render failure hard-errors. The
     /// `snapcrafts[].if:`. Distinct from `skip:` (always-skip predicate).
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
@@ -192,7 +191,7 @@ pub struct SnapcraftLayout {
 
 /// Specifies an extra file for snapcraft. Can be a simple source path string or
 /// a structured object with source, destination, and mode fields (matching
-/// GoReleaser's SnapcraftExtraFiles).
+/// the snapcraft extra-files shape).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum SnapcraftExtraFileSpec {

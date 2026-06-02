@@ -12,7 +12,7 @@ use crate::artifact::ArtifactKind;
 /// entire pipeline (not individual stages).
 ///
 /// The canonical key is `hooks:` for both `before:` and `after:` to
-/// match GoReleaser Pro (`hooks.md`). The `post:` spelling is accepted
+/// the conventional spelling. The `post:` spelling is accepted
 /// as a serde alias on `hooks` for back-compat with the previous
 /// anodizer spelling; users with `after: { post: [...] }` keep working
 /// and a deprecation warning is logged when both spellings appear in
@@ -20,7 +20,7 @@ use crate::artifact::ArtifactKind;
 #[derive(Debug, Clone, PartialEq, Default, JsonSchema)]
 pub struct HooksConfig {
     /// Commands to run when the block fires. The wire format accepts
-    /// either `hooks:` (canonical, GoReleaser-aligned) or the legacy
+    /// either `hooks:` (canonical) or the legacy
     /// `post:` spelling; both fold into this field at parse time.
     pub hooks: Option<Vec<HookEntry>>,
     /// Legacy alias for `hooks:` (anodizer pre-v0.4). Always `None`
@@ -125,7 +125,7 @@ pub struct StructuredHook {
     pub output: Option<bool>,
     /// Template-conditional: when set, the hook only runs if the rendered
     /// result is truthy (not `"false"` / `"0"` / `"no"` / empty). Render
-    /// failure hard-errors (not silent-skip). Mirrors GoReleaser OSS v2.7+
+    /// failure hard-errors (not silent-skip).
     /// `before.hooks[].if:` / per-build / per-archive hook `if:` surface.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
@@ -146,7 +146,7 @@ pub struct StructuredHook {
 
 /// Artifact-type filter for `before_publish[*].artifacts`.
 ///
-/// Mirrors GoReleaser Pro's `before_publish[*].artifacts` enum
+/// The `before_publish[*].artifacts` enum
 /// (`checksum` / `source` / `package` / `installer` / `diskimage` /
 /// `archive` / `binary` / `sbom` / `image` / `all`). Maps each variant
 /// to a predicate over [`ArtifactKind`]:
@@ -156,7 +156,7 @@ pub struct StructuredHook {
 /// | `Checksum` | `Checksum` |
 /// | `Source` | `SourceArchive`, `SourcePkgBuild`, `SourceSrcInfo`, `SourceRpm` |
 /// | `Package` | `LinuxPackage`, `Snap`, `PublishableSnapcraft`, `Flatpak` |
-/// | `Installer` | `Installer`, `MacOsPackage` (GR Pro's "installer" covers MSI/NSIS/Pkg) |
+/// | `Installer` | `Installer`, `MacOsPackage` |
 /// | `DiskImage` | `DiskImage` |
 /// | `Archive` | `Archive`, `Makeself` |
 /// | `Binary` | `Binary`, `UploadableBinary`, `UniversalBinary` |
@@ -165,14 +165,13 @@ pub struct StructuredHook {
 /// | `All` | every kind |
 ///
 /// Mapping notes:
-/// - `Source` includes RPM-source variants since GR groups all source-derived
+/// - `Source` includes RPM-source variants since all source-derived
 ///   artifacts under one bucket.
 /// - `Installer` covers macOS `.pkg` (`MacOsPackage`) alongside Windows
-///   MSI/NSIS — GR docs say "installer" without OS qualification, so
-///   anodizer follows GR.
+///   MSI/NSIS — "installer" is used without OS qualification.
 /// - `Image` deliberately excludes [`ArtifactKind::DockerManifest`] /
 ///   [`ArtifactKind::DockerDigest`]; those are multi-arch index entries
-///   and don't correspond to a scannable image blob. Matches GR's
+///   and don't correspond to a scannable image blob. The
 ///   per-image hook semantics (the multi-arch manifest is published
 ///   separately and isn't a vulnerability scan target).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]

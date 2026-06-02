@@ -581,7 +581,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // a free CI-cost saving: the bump commit becomes the tag target, and a
     // `[skip ci]` tag target suppresses BOTH the master-push CI re-run AND any
     // `on: push: tags:` release trigger. It is only safe with a
-    // `workflow_run`-triggered release; the GoReleaser-style tag-push pattern
+    // `workflow_run`-triggered release; the tag-push pattern
     // must leave it off or the release silently never fires.
     let mut bump_commit_created = false;
     if let Some(ws) = workspace_info {

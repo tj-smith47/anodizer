@@ -1,6 +1,6 @@
 //! Secret redaction for command output.
 //!
-//! Mirrors GoReleaser's `internal/redact/redact.go`: scans environment
+//! Scans environment
 //! variables for secret-looking entries and replaces their values in
 //! output strings with `$KEY_NAME`.
 
@@ -31,7 +31,7 @@ const SECRET_VALUE_PREFIXES: &[&str] = &[
 ///
 /// The empty string is the only excluded value — every non-empty value
 /// matching the heuristics is redacted, mirroring upstream
-/// GoReleaser's `internal/redact/redact.go::isSecret` after the
+/// Secret-detection heuristic after the
 /// length-floor was removed (commit `d1cdbb2`).
 fn is_secret(key: &str, value: &str) -> bool {
     if value.is_empty() {
@@ -48,7 +48,7 @@ fn is_secret(key: &str, value: &str) -> bool {
 ///
 /// Longer values are replaced first to prevent partial matches.
 ///
-/// Mirrors GoReleaser's `redact.String(s, env)` API.
+/// Redact secret env-var values found in a string.
 pub fn string(input: &str, env: &[(String, String)]) -> String {
     let mut secrets: Vec<(&str, &str)> = env
         .iter()
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn test_redact_includes_short_secret_when_key_looks_secret() {
-        // Mirrors upstream rename in `internal/redact/redact_test.go` after
+        // Reflects the secret-key rename after
         // the length-floor was removed: a 5-char value under a `*_KEY` key
         // must still be redacted.
         let env = vec![("API_KEY".to_string(), "short".to_string())];

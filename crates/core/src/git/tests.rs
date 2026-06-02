@@ -1290,7 +1290,7 @@ fn test_find_previous_tag_smartsemver_rc1_classified_as_prerelease() {
 #[test]
 #[serial]
 fn test_find_previous_tag_smartsemver_skips_prerelease_predecessor() {
-    // GoReleaser's canonical bug fix: shipping v0.2.0 after a v0.2.0-beta.3
+    // Regression: shipping v0.2.0 after a v0.2.0-beta.3
     // tag must surface v0.1.0 as the predecessor (not the beta) so the
     // changelog has real commits to enumerate.
     //

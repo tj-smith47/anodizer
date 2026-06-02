@@ -7,11 +7,11 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 // MCP (Model Context Protocol) registry publisher config
 // ---------------------------------------------------------------------------
 //
-// Mirrors GoReleaser's `MCP` / `MCPDetails` / `MCPRepository` / `MCPAuth` /
-// `MCPPackage` / `MCPTransport` structs (`pkg/config/config.go:1561-1603`).
+// MCP publisher config: server details, repository, auth, packages, and
+// transport.
 //
-// Anodizer collapses GR's deprecated nested `mcp.github` migration shim — that
-// alias only existed for backwards compatibility with early GR previews and
+// The deprecated nested `mcp.github` migration shim is not carried — that
+// alias only existed for backwards compatibility with early previews and
 // has no consumers in this repo. The top-level fields are the canonical
 // surface from day one.
 
@@ -19,7 +19,7 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 ///
 /// Publishes an `apiv0.ServerJSON` document to the MCP registry
 /// (`https://registry.modelcontextprotocol.io/v0/publish` by default).
-/// Mirrors GoReleaser `config.MCP` + `config.MCPDetails` flattened.
+/// MCP config (server details flattened onto the publisher block).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct McpConfig {
@@ -43,9 +43,9 @@ pub struct McpConfig {
     /// nuget, oci, mcpb).
     pub packages: Vec<McpPackage>,
 
-    /// Top-level transports list. Intentional GoReleaser config-portability
+    /// Top-level transports list. Intentional config-portability
     /// shim: `McpConfig` carries `deny_unknown_fields`, so a migrated
-    /// `.goreleaser.yaml` containing `transports:` would fail to parse if
+    /// an imported config containing `transports:` would fail to parse if
     /// the field were absent. The list is accepted and discarded — the
     /// current MCP server schema derives transports per-package via
     /// `packages[].transport`, so the top-level list is never read after
@@ -56,7 +56,7 @@ pub struct McpConfig {
     /// bool or a Tera template that renders to `"true"`/`"false"` (e.g.
     /// `"{{ if .IsSnapshot }}true{{ endif }}"`). Accepts the legacy
     /// `disable:` spelling via serde alias for back-compat with imported
-    /// GoReleaser configs (GR's MCP config field is `pkg/config/config.go`
+    /// imported configs (the MCP config field
     /// `MCP.Disable string`).
     #[serde(
         default,
@@ -85,13 +85,13 @@ pub struct McpConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the MCP publisher is skipped.
-    /// Render failure hard-errors. Mirrors GoReleaser Pro `mcp.if:`.
+    /// Render failure hard-errors. The `mcp.if:` conditional gate.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }
 
 /// Repository metadata for the MCP registry payload.
-/// Mirrors GoReleaser `config.MCPRepository` + upstream `model.Repository`.
+/// Source-repository metadata for the MCP server.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct McpRepository {
@@ -113,7 +113,7 @@ pub struct McpRepository {
 }
 
 /// Authentication method + token for the MCP registry's `/v0/publish`
-/// endpoint. Mirrors GoReleaser `config.MCPAuth`.
+/// endpoint.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpAuth {
@@ -131,8 +131,7 @@ pub struct McpAuth {
     pub token: String,
 }
 
-/// MCP auth method. Default is `None` (anonymous) which matches GoReleaser's
-/// `mcp.go::Default` migration code (`cmp.Or(..., proto.MethodNone)`).
+/// MCP auth method. Default is `None` (anonymous).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum McpAuthMethod {
     /// Anonymous publish — for testing or registries that allow it.
@@ -153,14 +152,13 @@ pub enum McpAuthMethod {
 impl McpAuthMethod {
     /// Parse the auth method from its over-the-wire string form. Accepts the
     /// three valid methods plus empty (treated as `None`, matching
-    /// GoReleaser's `mcp.go::Default` defaulting behaviour).
+    /// the anonymous default).
     ///
     /// Re-parsed from string AFTER template render so users can template
     /// `auth.type: "{{ if eq .Env.MODE \"ci\" }}github-oidc{{ else }}none{{ end }}"`.
     /// The render-emit-reparse round-trip is the cost of supporting templated
     /// enum values; without it, the enum would be locked at config-load time
-    /// before tera context is available. Mirrors GoReleaser
-    /// `internal/pipe/mcp/mcp.go::Publish` lines 72-85 where every string field
+    /// before tera context is available. Every string field
     /// (including `auth.type`, which Go represents as `string`) is passed
     /// through `tmpl.New(ctx).ApplyAll(...)` before being consumed.
     pub fn parse(s: &str) -> anyhow::Result<Self> {
@@ -202,7 +200,7 @@ pub struct McpPackage {
     pub transport: McpTransport,
 }
 
-/// Package registry type — mirrors GoReleaser's `MCPPackage.RegistryType`
+/// Package registry type
 /// enum and upstream `model.RegistryType*` constants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum McpRegistryType {
@@ -239,7 +237,7 @@ impl McpRegistryType {
     }
 }
 
-/// Transport descriptor — mirrors GoReleaser's `MCPTransport` and
+/// Transport descriptor for
 /// upstream `model.Transport`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -347,7 +345,7 @@ skip: "{{ if .IsSnapshot }}true{{ endif }}"
 
     #[test]
     fn yaml_roundtrip_disable_alias_for_back_compat() {
-        // Legacy GR-imported configs use `disable:`; the alias should keep
+        // Legacy imported configs use `disable:`; the alias should keep
         // parsing them as the canonical `skip:` field.
         let yaml = r#"
 name: io.github.test/server

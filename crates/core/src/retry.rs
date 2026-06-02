@@ -51,7 +51,7 @@ pub struct RetryPolicy {
 }
 
 impl RetryPolicy {
-    /// Canonical policy matching GoReleaser upload defaults: 10 attempts, 50ms
+    /// Canonical upload policy: 10 attempts, 50ms
     /// base, 30s cap.
     pub const UPLOAD: RetryPolicy = RetryPolicy {
         max_attempts: 10,
@@ -358,18 +358,18 @@ pub fn classify_http_sync(
 }
 
 // ---------------------------------------------------------------------------
-// Retriable-error classification (mirrors GoReleaser internal/retryx)
+// Retriable-error classification
 // ---------------------------------------------------------------------------
 
 /// Carries an HTTP status code alongside the original error so
 /// [`is_retriable`] can route 5xx / 429 to retry and 4xx to fast-fail.
 ///
-/// Mirrors GoReleaser `retryx.HTTPError`. Construct via [`HttpError::new`]
+/// HTTP error carrying status + message. Construct via [`HttpError::new`]
 /// (status-only) or wrap an existing `reqwest::Response` via
 /// [`HttpError::from_response`].
 ///
 /// A `status` of `0` denotes a network-level failure where no response was
-/// ever received (matches GR's `nil resp` branch). Network-level failures
+/// ever received (the no-response branch). Network-level failures
 /// are still classified via the inner error's message, so wrapping them in
 /// `HttpError { status: 0, .. }` does not lose retriability information.
 #[derive(Debug)]
@@ -395,7 +395,7 @@ impl HttpError {
     }
 
     /// Wrap a transport-layer error with the status code from the (possibly
-    /// missing) response. Mirrors GoReleaser `retryx.HTTP(err, resp)`.
+    /// missing) response.
     /// `None` resp yields status `0` (network-level failure).
     pub fn from_response<E>(err: E, resp: Option<&reqwest::Response>) -> Self
     where
@@ -408,7 +408,7 @@ impl HttpError {
 impl fmt::Display for HttpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Defer to the inner error so messages stay focused on the cause.
-        // Mirrors GR `(e HTTPError) Error() string { return e.Err.Error() }`.
+        // Delegate to the inner error message.
         fmt::Display::fmt(&self.source, f)
     }
 }
@@ -420,7 +420,7 @@ impl StdError for HttpError {
 }
 
 /// Marker error wrapping any inner error so [`is_retriable`] returns `true`
-/// regardless of class. Mirrors GoReleaser `retryx.Retriable` — useful when a
+/// regardless of class — useful when a
 /// caller knows the failure is transient (e.g. an idempotent registry write
 /// returning 422 because of a transient race condition) and wants the retry
 /// loop to ignore the usual 4xx fast-fail.
@@ -455,7 +455,7 @@ impl StdError for Retriable {
 
 /// Returns `true` if the message looks like a transient network-layer failure.
 ///
-/// Mirrors GoReleaser `retryx.IsNetworkError` and extends it for Rust /
+/// Network-error classification, extended for Rust /
 /// Windows. Each link in the error chain is checked two ways:
 ///
 /// 1a. **Structural [`io::ErrorKind`] check** via `downcast_ref::<io::Error>()`.
@@ -472,7 +472,7 @@ impl StdError for Retriable {
 ///     equivalent of Go's `io.EOF` sentinel).
 ///
 /// 1b. **Substring match on the lowercased Display form** against
-///     [`NETWORK_ERROR_NEEDLES`]. Covers the GR-parity surface plus the
+///     [`NETWORK_ERROR_NEEDLES`]. Covers the canonical surface plus the
 ///     Windows / Rust-stdlib phrasings that bypass the kind check when an
 ///     error has been wrapped (e.g. reqwest coercing the inner kind to
 ///     `Other` while preserving the OS message text).
@@ -517,7 +517,7 @@ pub fn is_network_error(err: &(dyn StdError + 'static)) -> bool {
 
 /// The set of substrings classified as transient.
 ///
-/// The first nine entries mirror GoReleaser's `retryx.IsNetworkError`
+/// The first nine entries are the canonical network-error needles
 /// (matching is case-insensitive). The remaining entries cover Windows and
 /// Rust-stdlib phrasings of transient transport failures that surface when
 /// an `io::Error` has been wrapped by a higher layer (reqwest, hyper,
@@ -554,7 +554,7 @@ const NETWORK_ERROR_NEEDLES: &[&str] = &[
     "no such host is known",
 ];
 
-/// Classify an error as retriable (mirrors GoReleaser `retryx.IsRetriable`).
+/// Classify an error as retriable.
 ///
 /// Returns `true` for:
 /// - any [`is_network_error`] match (substring + EOF / UnexpectedEof in the
@@ -584,7 +584,7 @@ pub fn is_retriable(err: &(dyn StdError + 'static)) -> bool {
     is_network_error(err)
 }
 
-/// Convenience: `None` passes through as `false`. Mirrors GoReleaser's
+/// Convenience: `None` passes through as `false`. The
 /// `IsRetriable(nil) -> false` semantics.
 pub fn is_retriable_opt(err: Option<&(dyn StdError + 'static)>) -> bool {
     err.is_some_and(is_retriable)
@@ -718,7 +718,7 @@ mod tests {
     // -----------------------------------------------------------------------
     // is_network_error / is_retriable / HttpError / Retriable
     //
-    // Mirrors GoReleaser internal/retryx/retryx_test.go test cases.
+    // Network-error classification test cases.
     // -----------------------------------------------------------------------
 
     /// Plain string error wrapper used in classification tests.
@@ -779,7 +779,7 @@ mod tests {
 
     // Windows-CI regression: connect() on Windows surfaces transient failures
     // as io::Error { kind: TimedOut, message: "operation timed out" }, neither
-    // of which matched the original EOF-only kind check or the GR-parity
+    // of which matched the original EOF-only kind check or the
     // needle list. Same shape for the connection-* kinds across platforms —
     // pin each branch.
 
@@ -919,7 +919,7 @@ mod tests {
 
     #[test]
     fn from_response_nil_resp_yields_status_zero() {
-        // Mirrors GR `retryx.HTTP(err, nil)` — no response means status 0.
+        // No response means status 0.
         // Use a concrete `io::Error` since `reqwest::Error` cannot be
         // synthesised in tests; the API accepts any `E: StdError + Send + Sync`.
         let inner = io::Error::other("connect: dial tcp");
@@ -949,7 +949,7 @@ mod tests {
 
     #[test]
     fn retriable_wrapper_overrides_4xx() {
-        // GR test: a 422 wrapped in Retriable is still retriable.
+        // A 422 wrapped in Retriable is still retriable.
         let inner = HttpError::new(StrErr("exists"), 422);
         let outer = Retriable::new(inner);
         assert!(is_retriable(&outer));

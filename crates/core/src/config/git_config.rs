@@ -32,7 +32,7 @@ pub struct GitConfig {
     pub ignore_tags: Option<Vec<String>>,
     /// Tag prefixes to ignore during version detection (supports templates).
     /// Tags starting with any prefix in this list are excluded.
-    /// Mirrors GoReleaser Pro's ignore_tag_prefixes feature.
+    /// The ignore-tag-prefixes feature.
     pub ignore_tag_prefixes: Option<Vec<String>>,
     /// Suffix that identifies pre-release tags for sorting purposes.
     /// When set, tags ending with this suffix are treated as pre-releases

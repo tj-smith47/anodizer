@@ -92,9 +92,9 @@ pub struct PrebuiltConfig {
     ///
     /// - `{{ .Target }}` — the full Rust target triple
     ///   (e.g. `x86_64-unknown-linux-gnu`).
-    /// - `{{ .Os }}` — the GoReleaser-style OS slug (`linux`, `darwin`,
+    /// - `{{ .Os }}` — the OS slug (`linux`, `darwin`,
     ///   `windows`, ...).
-    /// - `{{ .Arch }}` — the GoReleaser-style architecture slug (`amd64`,
+    /// - `{{ .Arch }}` — the architecture slug (`amd64`,
     ///   `arm64`, `armv7`, ...).
     /// - `{{ .Amd64 }}` — AMD64 micro-architecture variant
     ///   (`v1` / `v2` / `v3` / `v4`); set for `x86_64-*` triples.
@@ -112,7 +112,7 @@ pub struct PrebuiltConfig {
     /// path is accepted as given. A missing file, a permission error, or
     /// any other I/O failure aborts the build with a message that names
     /// both the rendered path and the originating target triple, matching
-    /// GoReleaser's "GoReleaser will fail" contract.
+    /// the "build will fail" contract.
     ///
     /// Recommendation: place the staged binaries OUTSIDE `dist/`. The
     /// release pipeline removes `dist/` on every run; pointing `path:` at
@@ -250,7 +250,7 @@ impl Default for CrateConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct UniversalBinaryConfig {
     /// Unique identifier for this universal binary, propagated into the
-    /// artifact's metadata as `id` (GoReleaser universalbinary.go:42-44).
+    /// artifact's metadata as `id`.
     #[serde(default)]
     pub id: Option<String>,
     /// Output filename template for the universal binary (supports templates).
@@ -360,8 +360,7 @@ pub struct BuildHooksConfig {
 
 /// Pre/post archive hook configuration.
 ///
-/// Archive hooks use `before`/`after` (matching GoReleaser's archive pipe);
-/// build hooks use `pre`/`post` (matching GoReleaser's build pipe).
+/// Archive hooks use `before`/`after`; build hooks use `pre`/`post`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ArchiveHooksConfig {

@@ -21,8 +21,7 @@ pub struct MilestoneConfig {
 }
 
 impl MilestoneConfig {
-    /// Default milestone name template. Mirrors GoReleaser
-    /// `internal/pipe/milestone/milestone.go` (`cfg.NameTemplate = "{{.Tag}}"`).
+    /// Default milestone name template (`"{{.Tag}}"`).
     /// Anodize uses Tera-style `{{ Tag }}`; the rendered value is
     /// identical for any tag the project produces.
     pub const DEFAULT_NAME_TEMPLATE: &'static str = "{{ Tag }}";

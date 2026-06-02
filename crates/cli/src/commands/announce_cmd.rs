@@ -1,6 +1,6 @@
 //! `anodizer announce` command.
 //! Runs only the announce stage from a completed dist/.
-//! Equivalent to GoReleaser Pro's `goreleaser announce` (and `announce --merge`).
+//! Runs the announce-only pipeline (and `announce --merge`).
 
 use super::helpers;
 use crate::pipeline;
@@ -20,7 +20,7 @@ pub struct AnnounceOpts {
     pub quiet: bool,
     /// When true, load `dist/<subdir>/context.json` shards (instead of
     /// `dist/artifacts.json`) before running the announce-only pipeline.
-    /// Mirrors GR Pro's `goreleaser announce --merge`.
+    /// The announce merge mode.
     pub merge: bool,
 }
 

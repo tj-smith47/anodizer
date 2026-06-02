@@ -251,7 +251,7 @@ fn release_prepare_skips_publish_release_announce() {
 
 /// `--prepare-only` is documented as a clap alias of `--prepare`. The
 /// alias must produce identical skip behaviour — a regression would
-/// silently break GR-imported scripts that still pass the long form.
+/// silently break imported scripts that still pass the long form.
 #[test]
 fn release_prepare_only_alias_matches_prepare() {
     let tmp = TempDir::new().unwrap();
@@ -448,8 +448,7 @@ fn continue_no_merge_does_not_recompile() {
 // `--merge` is accepted on publish and announce subcommands
 // ---------------------------------------------------------------------------
 
-/// Pin the `--merge` flag on `anodizer publish` (GR Pro
-/// `goreleaser publish --merge` parity). Clap-only check — the merge
+/// Pin the `--merge` flag on `anodizer publish`. Clap-only check — the merge
 /// branch's body needs a real dist tree, which is covered by
 /// `commands::publish_cmd::tests::merge_missing_config_bails`.
 #[test]

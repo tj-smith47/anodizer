@@ -59,15 +59,14 @@ pub struct NfpmConfig {
     /// Virtual packages provided by this package.
     pub provides: Option<Vec<String>>,
     /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
-    /// Accepts the deprecated GoReleaser `builds:` spelling via serde alias for
-    /// back-compat with imported configs (GR NFPM keeps `Builds []string`
+    /// Accepts the deprecated `builds:` spelling via serde alias for
+    /// back-compat with imported configs (the legacy `builds` key
     /// marked `deprecated`, aliasing `ids`).
     #[serde(alias = "builds")]
     pub ids: Option<Vec<String>>,
     /// amd64 microarchitecture variant filter (`["v1"]`, `["v2", "v3"]`, etc.).
     /// When set, only amd64 binaries with `amd64_variant` matching one of the
-    /// listed values are included. Mirrors GoReleaser nfpm's
-    /// `goamd64: []string` (`pkg/config/config.go:711`, `nfpm.go:147`).
+    /// listed values are included via the `goamd64: []string` filter.
     /// When unset, all amd64 variants are included (no filtering).
     pub amd64_variant: Option<Vec<String>>,
     /// Package epoch for versioning (integer as string).
@@ -104,17 +103,17 @@ pub struct NfpmConfig {
     /// Path to a YAML-format changelog file for deb/rpm packages.
     pub changelog: Option<String>,
     /// Template-conditional: skip this nfpm config if rendered result is "false" or empty.
-    /// (GoReleaser Pro v2.4+.)
+    /// Conditional-skip gate.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
-    /// Extra file contents whose source files are Tera-rendered before packaging (GoReleaser Pro).
+    /// Extra file contents whose source files are Tera-rendered before packaging.
     /// Each entry mirrors `contents`; the difference is that at stage time the file at `src` is
     /// read, rendered through the template engine, written to a temp file, and then included
     /// in the package at `dst` using the temp file as the real source. Useful for shipping
     /// config files with templated values (version, commit, maintainer, etc.).
     pub templated_contents: Option<Vec<NfpmContent>>,
     /// Lifecycle scripts whose script-file bodies are Tera-rendered before packaging
-    /// (GoReleaser Pro). Each path is read, rendered through the template engine, written to
+    /// Each path is read, rendered through the template engine, written to
     /// a temp file, and used as the real script. If a field is set on both `scripts` and
     /// `templated_scripts`, the templated version wins.
     pub templated_scripts: Option<NfpmScripts>,
@@ -446,7 +445,7 @@ mod is_empty_tests {
 /// both. The legacy SRPM `passphrase:` key is accepted as a serde alias
 /// for `key_passphrase:` so both spellings parse.
 ///
-/// GR keeps three distinct signature types (`NFPMRPMSignature`,
+/// There are three distinct signature types (`NFPMRPMSignature`,
 /// `NFPMDebSignature`, `NFPMAPKSignature`) with overlapping but slightly
 /// different fields. Anodizer's union here avoids the 3-struct cascade
 /// when 90% of fields overlap.

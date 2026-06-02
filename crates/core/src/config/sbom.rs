@@ -32,30 +32,28 @@ pub struct SbomConfig {
 }
 
 impl SbomConfig {
-    /// Default `id` when an SBOM config has none. Mirrors GoReleaser
-    /// `internal/pipe/sbom/sbom.go` (`cfg.ID = "default"`).
+    /// Default `id` when an SBOM config has none (`"default"`).
     pub const DEFAULT_ID: &'static str = "default";
 
-    /// Default SBOM-generation command. Mirrors GoReleaser `sbom.go`
+    /// Default SBOM-generation command
     /// (`cfg.Cmd = "syft"`).
     pub const DEFAULT_CMD: &'static str = "syft";
 
-    /// Default `artifacts` filter. Mirrors GoReleaser `sbom.go`
+    /// Default `artifacts` filter
     /// (`cfg.Artifacts = "archive"`).
     pub const DEFAULT_ARTIFACTS: &'static str = "archive";
 
     /// Default document-path template when `artifacts: binary`. Includes
     /// per-target Os/Arch suffix so per-arch SBOMs don't collide.
-    /// Mirrors GoReleaser `sbom.go`.
+    /// Default value.
     pub const DEFAULT_DOCUMENT_BINARY: &'static str =
         "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json";
 
     /// Default document-path template for any non-binary, non-any
-    /// `artifacts:` filter. Mirrors GoReleaser `sbom.go`.
+    /// `artifacts:` filter.
     pub const DEFAULT_DOCUMENT_OTHER: &'static str = "{{ .ArtifactName }}.sbom.json";
 
-    /// Default `args` for the syft command. Mirrors GoReleaser
-    /// `sbom.go`. Anodize matches GR's shell-style `$artifact` /
+    /// Default `args` for the syft command, using shell-style `$artifact` /
     /// `$document` placeholders verbatim — the arg-renderer rewrites
     /// these to per-artifact values at execution time.
     pub const DEFAULT_SYFT_ARGS: &[&'static str] = &[
@@ -67,7 +65,7 @@ impl SbomConfig {
     ];
 
     /// Env entry that syft requires to emit file paths in the SBOM
-    /// when cataloging archives or source. Mirrors GoReleaser `sbom.go`.
+    /// when cataloging archives or source.
     pub const DEFAULT_SYFT_ENV_KEY: &'static str = "SYFT_FILE_METADATA_CATALOGER_ENABLED";
     pub const DEFAULT_SYFT_ENV_VAL: &'static str = "true";
 
@@ -98,8 +96,8 @@ impl SbomConfig {
     }
 
     /// Resolve `args`, falling back to [`Self::DEFAULT_SYFT_ARGS`] when
-    /// `cmd` is `"syft"`; empty vec otherwise (matches GoReleaser:
-    /// `sbom.go` only initializes args when cmd is syft, and leaves
+    /// `cmd` is `"syft"`; empty vec otherwise (args are only initialized
+    /// when cmd is syft, and left
     /// args empty for other cmds).
     pub fn resolved_args(&self, cmd: &str) -> Vec<String> {
         self.args.clone().unwrap_or_else(|| {
@@ -117,7 +115,7 @@ impl SbomConfig {
     /// Default env additions for the syft sub-process. Empty unless cmd
     /// is syft AND artifacts is source/archive — in which case syft
     /// needs the file-metadata cataloger enabled to produce file paths
-    /// in the SBOM. Mirrors GoReleaser `sbom.go`.
+    /// in the SBOM.
     pub fn default_syft_env_for(cmd: &str, artifacts: &str) -> Vec<(String, String)> {
         if cmd == Self::DEFAULT_CMD && matches!(artifacts, "source" | "archive") {
             vec![(

@@ -6,7 +6,7 @@ use std::path::Path;
 // MonorepoConfig
 // ---------------------------------------------------------------------------
 
-/// GoReleaser Pro monorepo configuration.
+/// Monorepo configuration.
 ///
 /// When configured, tag discovery filters by `tag_prefix` and the working
 /// directory is scoped to `dir`.
@@ -39,9 +39,9 @@ pub struct MonorepoConfig {
 /// Prepend `monorepo.dir` to a relative path, leaving absolute paths,
 /// templates, and already-prefixed paths alone.
 ///
-/// Mirrors GoReleaser Pro's documented contract: "Extra files on the
+/// Documented contract: "Extra files on the
 /// release, archives, Docker builds, etc are prefixed with `monorepo.dir`."
-/// (`www/content/customization/monorepo.md:49-50`)
+///
 ///
 /// Rules:
 /// - Empty `dir` or empty `path` → no change.

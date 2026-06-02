@@ -1954,7 +1954,7 @@ crates: []
 #[test]
 fn test_parse_hooks_after() {
     // Legacy `after.post:` is folded into `after.hooks:` at parse time
-    // (back-compat alias for GoReleaser-style `after.hooks:`).
+    // (back-compat alias for the legacy `after.hooks:`).
     let yaml = r#"
 project_name: test
 after:
@@ -1976,7 +1976,7 @@ crates: []
 
 #[test]
 fn test_parse_hooks_after_canonical_hooks_spelling() {
-    // Canonical `after.hooks:` (matches GoReleaser Pro docs).
+    // Canonical `after.hooks:`.
     let yaml = r#"
 project_name: test
 after:

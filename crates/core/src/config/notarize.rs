@@ -32,8 +32,8 @@ pub struct MacOSSignNotarizeConfig {
     /// `skip:` (inverted semantic) to align with every other publisher /
     /// pipe in anodizer.
     ///
-    /// Back-compat: GoReleaser uses `enabled:` (opt-in, default false).
-    /// A YAML written against GR docs is accepted via the wire-level
+    /// Back-compat: the upstream uses `enabled:` (opt-in, default false).
+    /// A YAML carrying `enabled:` is accepted via the wire-level
     /// `enabled:` alias that inverts the bool — `enabled: true` becomes
     /// `skip: false`, `enabled: false` becomes `skip: true`. The
     /// canonical field at runtime is `skip:`.
@@ -52,7 +52,7 @@ pub struct MacOSSignNotarizeConfig {
     pub notarize: Option<MacOSNotarizeApiConfig>,
 }
 
-/// Wire-format mirror used to accept GoReleaser's `enabled:` field as a
+/// Wire-format mirror used to accept the `enabled:` field as a
 /// deserialize-time alias for the canonical `skip:`. `enabled: true`
 /// inverts to `skip: false` (run); `enabled: false` inverts to
 /// `skip: true` (skip).
@@ -155,8 +155,7 @@ pub struct MacOSNotarizeApiConfig {
 }
 
 impl MacOSNotarizeApiConfig {
-    /// Default notarization wait window. Mirrors GoReleaser
-    /// `internal/pipe/notary/macos.go` (`n.Notarize.Timeout = 10 * time.Minute`).
+    /// Default notarization wait window (10 minutes).
     pub const DEFAULT_TIMEOUT: &'static str = "10m";
 
     /// Resolve `wait`, falling back to `false` (don't block on notary).
@@ -193,7 +192,7 @@ pub struct MacOSNativeSignNotarizeConfig {
     /// Build IDs to filter. Default: project name.
     pub ids: Option<Vec<String>>,
     /// Skip this configuration. Accepts bool or template string.
-    /// Replaces `enabled:` with the canonical `skip:`. Imported GR
+    /// Replaces `enabled:` with the canonical `skip:`. Imported
     /// configs may continue to write `enabled:` — the deserializer
     /// inverts it into `skip:` so both spellings work.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -205,7 +204,7 @@ pub struct MacOSNativeSignNotarizeConfig {
     pub skip_inverts_enabled: bool,
     /// Artifact type to sign and notarize: `dmg` (default) or `pkg`.
     ///
-    /// Anodizer-original. GR's notarize.macos has no equivalent (signs
+    /// Anodizer-original (signs
     /// binaries directly via rcodesign). Constrained to a typed enum at
     /// parse time so an unsupported value (`zip`, `app`, etc.) fails fast
     /// instead of producing a silent no-op signing pipe.
@@ -272,7 +271,7 @@ struct ResolvedSkip {
     inverts_enabled: bool,
 }
 
-/// Invert GR's `enabled:` (opt-in, default false) into anodizer's
+/// Invert the `enabled:` (opt-in, default false) into anodizer's
 /// canonical `skip:` (opt-out, default false). Both keys may be present;
 /// if they conflict (e.g. `skip: true` AND `enabled: true`), surface a
 /// clear error.
@@ -397,7 +396,7 @@ fn string_or_bool_eq(a: &StringOrBool, b: Option<&StringOrBool>) -> bool {
 }
 
 impl MacOSNativeSignNotarizeConfig {
-    /// Default `use:` selector. Anodize-original — GR has no native
+    /// Default `use:` selector. Anodize-original — no native
     /// notarize. DMG is the canonical signed-app distribution format
     /// for macOS releases; PKG opt-in handles installers.
     pub const DEFAULT_USE: MacOSNativeArtifactKind = MacOSNativeArtifactKind::Dmg;
@@ -437,7 +436,7 @@ pub struct MacOSNativeNotarizeConfig {
 
 impl MacOSNativeNotarizeConfig {
     /// Default notarization wait window. Aligns with the cross-platform
-    /// rcodesign path (and GoReleaser `macos.go`'s `10 * time.Minute`).
+    /// rcodesign path (a 10-minute wait window).
     pub const DEFAULT_TIMEOUT: &'static str = "10m";
 
     /// Resolve `wait`, falling back to `false`. The native xcrun path

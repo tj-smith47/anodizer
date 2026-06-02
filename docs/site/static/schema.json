@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Config",
-  "description": "`deny_unknown_fields` rejects typos and unknown config fields at parse time, matching GoReleaser's `yaml.UnmarshalStrict`.",
+  "description": "`deny_unknown_fields` rejects typos and unknown config fields at parse time (strict YAML unmarshalling).",
   "type": "object",
   "properties": {
     "after": {
@@ -173,7 +173,7 @@
       }
     },
     "env": {
-      "description": "Environment variables available to all template expressions.\n\nList of `KEY=VALUE` strings (matches GoReleaser): `env: [\"MY_VAR=hello\", \"DEPLOY_ENV=staging\"]`. Order is preserved so chained env applications (sign + sbom + notarize) see entries in declared order. Values are rendered through the template engine before being set, so expressions like `{{ .Tag }}` or `{{ .Date }}` are expanded.",
+      "description": "Environment variables available to all template expressions.\n\nList of `KEY=VALUE` strings: `env: [\"MY_VAR=hello\", \"DEPLOY_ENV=staging\"]`. Order is preserved so chained env applications (sign + sbom + notarize) see entries in declared order. Values are rendered through the template engine before being set, so expressions like `{{ .Tag }}` or `{{ .Date }}` are expanded.",
       "default": null,
       "type": [
         "array",
@@ -208,7 +208,7 @@
       ]
     },
     "gemfury": {
-      "description": "GemFury (fury.io) deb/rpm/apk publishing configurations. Mirrors GoReleaser Pro's `gemfury:` block. The pre-GR-v2.14 spelling `furies:` is accepted via serde alias; a one-time deprecation warning is emitted by [`warn_on_legacy_furies_alias`].",
+      "description": "GemFury (fury.io) deb/rpm/apk publishing configurations. Mirrors The `gemfury:` block. The legacy spelling `furies:` is accepted via serde alias; a one-time deprecation warning is emitted by [`warn_on_legacy_furies_alias`].",
       "default": null,
       "type": [
         "array",
@@ -297,7 +297,7 @@
       }
     },
     "mcp": {
-      "description": "MCP (Model Context Protocol) server registry publishing configuration. When `name` is empty (the default), the publisher is skipped. Mirrors GoReleaser's `mcp:` block.",
+      "description": "MCP (Model Context Protocol) server registry publishing configuration. When `name` is empty (the default), the publisher is skipped. The `mcp:` publisher block.",
       "default": {
         "auth": {
           "type": "none"
@@ -348,7 +348,7 @@
       }
     },
     "monorepo": {
-      "description": "GoReleaser Pro monorepo configuration. When configured, tag discovery filters by tag_prefix and the working directory is scoped to dir.",
+      "description": "Monorepo configuration. When configured, tag discovery filters by tag_prefix and the working directory is scoped to dir.",
       "default": null,
       "anyOf": [
         {
@@ -384,7 +384,7 @@
       ]
     },
     "npms": {
-      "description": "NPM package registry publishing configurations. One entry per published package. In the default `optional-deps` mode anodizer emits npm's native per-platform packages (biome / git-cliff pattern); in `postinstall` mode it emits a download shim (GoReleaser Pro `npms:` parity).",
+      "description": "NPM package registry publishing configurations. One entry per published package. In the default `optional-deps` mode anodizer emits npm's native per-platform packages (biome / git-cliff pattern); in `postinstall` mode it emits a download shim (the `npms:` parity).",
       "default": null,
       "type": [
         "array",
@@ -443,7 +443,7 @@
       ]
     },
     "retry": {
-      "description": "Top-level retry configuration applied to network-bound operations (announcers, git providers, HTTP uploads, docker pipes). When omitted, `RetryConfig::default()` is used (10 attempts, 10s base, 5m cap — matching GoReleaser `Project.Retry`).",
+      "description": "Top-level retry configuration applied to network-bound operations (announcers, git providers, HTTP uploads, docker pipes). When omitted, `RetryConfig::default()` is used (10 attempts, 10s base, 5m cap — the project-level retry policy).",
       "default": null,
       "anyOf": [
         {
@@ -597,7 +597,7 @@
   "additionalProperties": false,
   "definitions": {
     "Amd64Variant": {
-      "description": "`x86_64` micro-architecture variant. Mirrors GoReleaser's `Goamd64` typed values. Used by [`AurSourceConfig::amd64_variant`] to constrain the `prepare:` / `build:` / `package:` template var surface to a known set — AUR source pkgs build from the upstream tarball so the value is template-only (no artifact filter) and a typo would render an invalid PKGBUILD silently.",
+      "description": "`x86_64` micro-architecture variant. A typed values. Used by [`AurSourceConfig::amd64_variant`] to constrain the `prepare:` / `build:` / `package:` template var surface to a known set — AUR source pkgs build from the upstream tarball so the value is template-only (no artifact filter) and a typo would render an invalid PKGBUILD silently.",
       "type": "string",
       "enum": [
         "v1",
@@ -646,7 +646,7 @@
           ]
         },
         "email": {
-          "description": "Email announcement configuration. accepts the historical `smtp:` key as an alias because GR itself renamed `smtp:` -> `email:` in v1.21+ and kept the alias for migration. Mirroring GR's own alias keeps \"use what GR uses today\" consistent without forcing a re-yaml of legacy GR configs.",
+          "description": "Email announcement configuration. accepts the historical `smtp:` key as an alias because the field was renamed `smtp:` -> `email:` in v1.21+ and kept the alias for migration. Keeping the alias avoids forcing a re-yaml of legacy configs.",
           "default": null,
           "anyOf": [
             {
@@ -667,7 +667,7 @@
           ]
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the entire announce stage is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `announce.if:`. Distinct from `skip:` (always-skip predicate) — both surfaces are documented by GR.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the entire announce stage is skipped. Render failure hard-errors. The `announce.if:`. Distinct from `skip:` (always-skip predicate) — both surfaces are documented.",
           "default": null,
           "type": [
             "string",
@@ -867,7 +867,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this app bundle config if rendered result is \"false\" or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).",
+          "description": "Template-conditional: skip this app bundle config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip).",
           "default": null,
           "type": [
             "string",
@@ -899,7 +899,7 @@
           ]
         },
         "replace": {
-          "description": "Remove source archives from artifacts, keeping only the app bundle.\n\nAnodizer-additive: GoReleaser Pro does not expose `replace:` on `app_bundles`.",
+          "description": "Remove source archives from artifacts, keeping only the app bundle.\n\nAnodizer-additive: `replace:` on `app_bundles`.",
           "default": null,
           "type": [
             "boolean",
@@ -919,7 +919,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature.",
+          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Conditional-skip gate.",
           "default": null,
           "type": [
             "array",
@@ -1166,7 +1166,7 @@
           ]
         },
         "id": {
-          "description": "Unique identifier for cross-referencing this archive from other configs. Defaults to `\"default\"` so a parse->serialise->reparse round-trip is stable (GoReleaser stores this verbatim, not as an Option).",
+          "description": "Unique identifier for cross-referencing this archive from other configs. Defaults to `\"default\"` so a parse->serialise->reparse round-trip is stable (stored verbatim, not as an Option).",
           "type": [
             "string",
             "null"
@@ -1183,7 +1183,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the archive entry is skipped entirely (no archives produced for this `id`). Render failure hard-errors. Defensive ahead of GoReleaser exposing the field on archives (GR Pro lists \"filter artifacts with `if` statements\" as a blanket promise — anodizer surfaces it explicitly to keep imported configs portable).",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the archive entry is skipped entirely (no archives produced for this `id`). Render failure hard-errors. \"Filter artifacts with `if` statements\" is listed as a blanket promise — anodizer surfaces it explicitly to keep imported configs portable).",
           "type": [
             "string",
             "null"
@@ -1222,7 +1222,7 @@
           ]
         },
         "templated_files": {
-          "description": "Templated files scoped to this archive entry. Rendered per-archive (so each entry's `dst:` and contents see `.Os`, `.Arch`, `.Target`, `.Format`, etc.) and packed into the archive at the rendered `dst:` path. Mirrors GoReleaser Pro's `archives[].templated_files:`.",
+          "description": "Templated files scoped to this archive entry. Rendered per-archive (so each entry's `dst:` and contents see `.Os`, `.Arch`, `.Target`, `.Format`, etc.) and packed into the archive at the rendered `dst:` path. The `archives[].templated_files:` field.",
           "type": [
             "array",
             "null"
@@ -1287,7 +1287,7 @@
       ]
     },
     "ArchiveHooksConfig": {
-      "description": "Pre/post archive hook configuration.\n\nArchive hooks use `before`/`after` (matching GoReleaser's archive pipe); build hooks use `pre`/`post` (matching GoReleaser's build pipe).",
+      "description": "Pre/post archive hook configuration.\n\nArchive hooks use `before`/`after`; build hooks use `pre`/`post`.",
       "type": "object",
       "properties": {
         "after": {
@@ -1411,7 +1411,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the artifactory publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `artifactories[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the artifactory publisher is skipped. Render failure hard-errors. The `artifactories[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -1566,7 +1566,7 @@
       ]
     },
     "AttestationConfig": {
-      "description": "SLSA build-provenance / attestation configuration for binaries and archives.\n\nTwo modes select how anodizer participates in attestation:\n\n- [`AttestationMode::Subjects`] (the default) emits a **subjects manifest** (`dist/attestation-subjects.json`) that `anodizer-action` feeds to GitHub's `actions/attest-build-provenance`. anodizer does NOT mint a GitHub-trusted attestation itself in this mode — the Action's OIDC identity does. This is the path fd / biome / gping use. - [`AttestationMode::Emit`] generates a self-contained in-toto v1 statement carrying an SLSA provenance v1 predicate over the selected artifacts, writes it as a release asset (`attestation.intoto.jsonl`), and lets the existing `signs:` stage sign it (keyed, not OIDC). This is for users who can't run the Action (GoReleaser Pro `--with-provenance` parity).\n\nYAML: ```yaml attestations: enabled: true mode: subjects          # or: emit ; default = subjects artifacts: [archive, binary, checksum] ```",
+      "description": "SLSA build-provenance / attestation configuration for binaries and archives.\n\nTwo modes select how anodizer participates in attestation:\n\n- [`AttestationMode::Subjects`] (the default) emits a **subjects manifest** (`dist/attestation-subjects.json`) that `anodizer-action` feeds to GitHub's `actions/attest-build-provenance`. anodizer does NOT mint a GitHub-trusted attestation itself in this mode — the Action's OIDC identity does. This is the path fd / biome / gping use. - [`AttestationMode::Emit`] generates a self-contained in-toto v1 statement carrying an SLSA provenance v1 predicate over the selected artifacts, writes it as a release asset (`attestation.intoto.jsonl`), and lets the existing `signs:` stage sign it (keyed, not OIDC). This is for users who can't run the Action (the `--with-provenance` toggle).\n\nYAML: ```yaml attestations: enabled: true mode: subjects          # or: emit ; default = subjects artifacts: [archive, binary, checksum] ```",
       "type": "object",
       "properties": {
         "artifacts": {
@@ -1758,7 +1758,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the AUR publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `aurs[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the AUR publisher is skipped. Render failure hard-errors. The `aurs[].if:` conditional gate.",
           "default": null,
           "type": [
             "string",
@@ -1903,7 +1903,7 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "`x86_64` micro-architecture variant — `v1` (baseline), `v2`, `v3` (AVX2), or `v4`. Equivalent to GR `AurSource.Goamd64`. Constrained to a typed enum because AUR source pkgs build from the upstream tarball (no binary artifacts to filter), so the value's only role is as the `Amd64` template var consumed by `prepare:` / `build:` / `package:` script bodies — typos must fail at parse time, not silently render an invalid string into the PKGBUILD. When unset, defaults to `v1` at template-render time.",
+          "description": "`x86_64` micro-architecture variant — `v1` (baseline), `v2`, `v3` (AVX2), or `v4`. Constrained to a typed enum because AUR source pkgs build from the upstream tarball (no binary artifacts to filter), so the value's only role is as the `Amd64` template var consumed by `prepare:` / `build:` / `package:` script bodies — typos must fail at parse time, not silently render an invalid string into the PKGBUILD. When unset, defaults to `v1` at template-render time.",
           "default": null,
           "anyOf": [
             {
@@ -2049,7 +2049,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the AUR source config is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `aur_sources[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the AUR source config is skipped. Render failure hard-errors. The `aur_sources[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -2199,7 +2199,7 @@
       "additionalProperties": false
     },
     "BeforePublishArtifactFilter": {
-      "description": "Artifact-type filter for `before_publish[*].artifacts`.\n\nMirrors GoReleaser Pro's `before_publish[*].artifacts` enum (`checksum` / `source` / `package` / `installer` / `diskimage` / `archive` / `binary` / `sbom` / `image` / `all`). Maps each variant to a predicate over [`ArtifactKind`]:\n\n| Variant | Matched [`ArtifactKind`] values | |---|---| | `Checksum` | `Checksum` | | `Source` | `SourceArchive`, `SourcePkgBuild`, `SourceSrcInfo`, `SourceRpm` | | `Package` | `LinuxPackage`, `Snap`, `PublishableSnapcraft`, `Flatpak` | | `Installer` | `Installer`, `MacOsPackage` (GR Pro's \"installer\" covers MSI/NSIS/Pkg) | | `DiskImage` | `DiskImage` | | `Archive` | `Archive`, `Makeself` | | `Binary` | `Binary`, `UploadableBinary`, `UniversalBinary` | | `Sbom` | `Sbom` | | `Image` | `DockerImage`, `DockerImageV2`, `PublishableDockerImage` (multi-arch `DockerManifest` excluded — covers individual images only) | | `All` | every kind |\n\nMapping notes: - `Source` includes RPM-source variants since GR groups all source-derived artifacts under one bucket. - `Installer` covers macOS `.pkg` (`MacOsPackage`) alongside Windows MSI/NSIS — GR docs say \"installer\" without OS qualification, so anodizer follows GR. - `Image` deliberately excludes [`ArtifactKind::DockerManifest`] / [`ArtifactKind::DockerDigest`]; those are multi-arch index entries and don't correspond to a scannable image blob. Matches GR's per-image hook semantics (the multi-arch manifest is published separately and isn't a vulnerability scan target).",
+      "description": "Artifact-type filter for `before_publish[*].artifacts`.\n\nThe `before_publish[*].artifacts` enum (`checksum` / `source` / `package` / `installer` / `diskimage` / `archive` / `binary` / `sbom` / `image` / `all`). Maps each variant to a predicate over [`ArtifactKind`]:\n\n| Variant | Matched [`ArtifactKind`] values | |---|---| | `Checksum` | `Checksum` | | `Source` | `SourceArchive`, `SourcePkgBuild`, `SourceSrcInfo`, `SourceRpm` | | `Package` | `LinuxPackage`, `Snap`, `PublishableSnapcraft`, `Flatpak` | | `Installer` | `Installer`, `MacOsPackage` | | `DiskImage` | `DiskImage` | | `Archive` | `Archive`, `Makeself` | | `Binary` | `Binary`, `UploadableBinary`, `UniversalBinary` | | `Sbom` | `Sbom` | | `Image` | `DockerImage`, `DockerImageV2`, `PublishableDockerImage` (multi-arch `DockerManifest` excluded — covers individual images only) | | `All` | every kind |\n\nMapping notes: - `Source` includes RPM-source variants since all source-derived artifacts under one bucket. - `Installer` covers macOS `.pkg` (`MacOsPackage`) alongside Windows MSI/NSIS — \"installer\" is used without OS qualification. - `Image` deliberately excludes [`ArtifactKind::DockerManifest`] / [`ArtifactKind::DockerDigest`]; those are multi-arch index entries and don't correspond to a scannable image blob. The per-image hook semantics (the multi-arch manifest is published separately and isn't a vulnerability scan target).",
       "type": "string",
       "enum": [
         "checksum",
@@ -2295,7 +2295,7 @@
       "type": "object",
       "properties": {
         "acl": {
-          "description": "Canned ACL for uploaded objects. **S3**: one of `private` (default), `public-read`, `public-read-write`, `authenticated-read`, `aws-exec-read`, `bucket-owner-read`, `bucket-owner-full-control`. Matches GoReleaser's accepted set; AWS's `log-delivery-write` is intentionally omitted because it is only valid on `S3LogBucket` targets and would silently fail on a normal bucket. **GCS**: pass the camelCase predefined-ACL name (e.g. `publicRead`, `bucketOwnerFullControl`); not validated up-front, so a typo surfaces as a 400 from the GCS API at upload time.",
+          "description": "Canned ACL for uploaded objects. **S3**: one of `private` (default), `public-read`, `public-read-write`, `authenticated-read`, `aws-exec-read`, `bucket-owner-read`, `bucket-owner-full-control`. The accepted ACL set; AWS's `log-delivery-write` is intentionally omitted because it is only valid on `S3LogBucket` targets and would silently fail on a normal bucket. **GCS**: pass the camelCase predefined-ACL name (e.g. `publicRead`, `bucketOwnerFullControl`); not validated up-front, so a typo surfaces as a 400 from the GCS API at upload time.",
           "default": null,
           "type": [
             "string",
@@ -2389,7 +2389,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the blob config is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `blobs[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the blob config is skipped. Render failure hard-errors. The `blobs[].if:` conditional gate.",
           "default": null,
           "type": [
             "string",
@@ -2464,7 +2464,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature.",
+          "description": "Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Conditional-skip gate.",
           "default": null,
           "type": [
             "array",
@@ -2871,7 +2871,7 @@
           ]
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the cargo publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro publisher `if:` semantics.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the cargo publisher is skipped. Render failure hard-errors. The publisher `if:` semantics.",
           "default": null,
           "type": [
             "string",
@@ -3097,7 +3097,7 @@
       "type": "object",
       "properties": {
         "abbrev": {
-          "description": "Hash abbreviation length. Default: 0 (no truncation, emit the full SHA). Set to -1 to omit the hash entirely; positive values truncate to N chars. Values below `-1` are clamped to `-1` for parity with GoReleaser (whose `git log --abbrev=N` panics for `-2`, `-3`, ...). Mirrors GoReleaser `internal/pipe/changelog/changelog.go`'s `abbrevEntry`.",
+          "description": "Hash abbreviation length. Default: 0 (no truncation, emit the full SHA). Set to -1 to omit the hash entirely; positive values truncate to N chars. Values below `-1` are clamped to `-1` (a `git log --abbrev=N` would otherwise reject `-2`, `-3`, ...).",
           "default": null,
           "type": [
             "integer",
@@ -3150,7 +3150,7 @@
           ]
         },
         "format": {
-          "description": "Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only), Logins (per-entry comma-separated list of GitHub usernames for that commit, `github` backend only), AllLogins (comma-separated list of all GitHub usernames across the entire release, `github` backend only).<br><br>Default depends on backend (mirrors GoReleaser `internal/pipe/changelog/changelog.go`'s `formatEntry`, which uses the full SHA):<br>&bull; `git` backend (default): `\"{{ SHA }} {{ Message }}\"`<br>&bull; `github`/`gitlab`/`gitea` backend: `\"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)\"` — falls back to `AuthorName <AuthorEmail>` when `Login` is empty.<br><br>When `abbrev < 0`, the default reduces to `\"{{ Message }}\"` (no hash prefix).",
+          "description": "Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only), Logins (per-entry comma-separated list of GitHub usernames for that commit, `github` backend only), AllLogins (comma-separated list of all GitHub usernames across the entire release, `github` backend only).<br><br>Default depends on backend (the full SHA is used):<br>&bull; `git` backend (default): `\"{{ SHA }} {{ Message }}\"`<br>&bull; `github`/`gitlab`/`gitea` backend: `\"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)\"` — falls back to `AuthorName <AuthorEmail>` when `Login` is empty.<br><br>When `abbrev < 0`, the default reduces to `\"{{ Message }}\"` (no hash prefix).",
           "default": null,
           "type": [
             "string",
@@ -3169,7 +3169,7 @@
           }
         },
         "header": {
-          "description": "Text prepended to the changelog. Inline string, `from_file: <path>`, or `from_url: <url>` — symmetric with the release block's header/footer so users can compose headers from a templated file or remote endpoint (GoReleaser uses a plain string here; anodizer extends to ContentSource for consistency with `release.header`).",
+          "description": "Text prepended to the changelog. Inline string, `from_file: <path>`, or `from_url: <url>` — symmetric with the release block's header/footer so users can compose headers from a templated file or remote endpoint (the upstream uses a plain string here; anodizer extends to ContentSource for consistency with `release.header`).",
           "default": null,
           "anyOf": [
             {
@@ -3192,7 +3192,7 @@
           }
         },
         "skip": {
-          "description": "Skip changelog generation. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional skip).\n\nAccepts `disable:` as an alias so GoReleaser configs (which use `changelog.disable:`) parse cleanly without a rename. Anodizer's broader convention is `skip:` (mirrors `release.skip_upload`, stage-level `skip:` flags), so the canonical key stays `skip:`.",
+          "description": "Skip changelog generation. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional skip).\n\nAccepts `disable:` as an alias so imported configs (which use `changelog.disable:`) parse cleanly without a rename. Anodizer's broader convention is `skip:` (mirrors `release.skip_upload`, stage-level `skip:` flags), so the canonical key stays `skip:`.",
           "default": null,
           "anyOf": [
             {
@@ -3204,7 +3204,7 @@
           ]
         },
         "snapshot": {
-          "description": "When `true`, render the changelog even in snapshot mode. Anodizer matches GoReleaser's default (skip changelog on `ctx.Snapshot`) and lets users opt back in here for local preview / draft generation. Wired in `crates/stage-changelog/src/lib.rs::ChangelogStage::run`.",
+          "description": "When `true`, render the changelog even in snapshot mode. Anodizer matches the default (skip changelog on snapshot) and lets users opt back in here for local preview / draft generation. Wired in `crates/stage-changelog/src/lib.rs::ChangelogStage::run`.",
           "default": null,
           "type": [
             "boolean",
@@ -3365,7 +3365,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature.",
+          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Template-rendered extra files.",
           "default": null,
           "type": [
             "array",
@@ -3467,7 +3467,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Chocolatey publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `chocolateys[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Chocolatey publisher is skipped. Render failure hard-errors. The `chocolateys[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -3687,7 +3687,7 @@
           ]
         },
         "distributions": {
-          "description": "Distribution mapping per format. Each entry accepts either a single slug (`deb: \"ubuntu/focal\"`) or an array of slugs (`deb: [\"ubuntu/focal\", \"ubuntu/jammy\"]`); the array form issues one upload per entry. Mirrors GoReleaser Pro v2.8+.",
+          "description": "Distribution mapping per format. Each entry accepts either a single slug (`deb: \"ubuntu/focal\"`) or an array of slugs (`deb: [\"ubuntu/focal\", \"ubuntu/jammy\"]`); the array form issues one upload per entry.",
           "default": null,
           "type": [
             "object",
@@ -3720,7 +3720,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `cloudsmiths[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. The `cloudsmiths[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -3785,7 +3785,7 @@
       }
     },
     "CloudSmithDistributions": {
-      "description": "Per-format distribution value. Accepts either a single distribution string (`deb: \"ubuntu/focal\"`) or an array of distribution slugs (`deb: [\"ubuntu/focal\", \"ubuntu/jammy\"]`) — the array form mirrors GoReleaser Pro v2.8+ and causes the publisher to issue one upload per distribution slug.",
+      "description": "Per-format distribution value. Accepts either a single distribution string (`deb: \"ubuntu/focal\"`) or an array of distribution slugs (`deb: [\"ubuntu/focal\", \"ubuntu/jammy\"]`) — the array form mirrors causes the publisher to issue one upload per distribution slug.",
       "anyOf": [
         {
           "description": "Single distribution slug (`\"ubuntu/focal\"`).",
@@ -3801,7 +3801,7 @@
       ]
     },
     "CommitAuthorConfig": {
-      "description": "Shared commit author configuration with optional GPG/SSH signing. Equivalent to GoReleaser's `CommitAuthor`.",
+      "description": "Shared commit author configuration with optional GPG/SSH signing. Commit-author identity for publisher commits.",
       "type": "object",
       "properties": {
         "email": {
@@ -3833,7 +3833,7 @@
           ]
         },
         "use_github_app_token": {
-          "description": "When true, omit the explicit `-c user.name=` / `-c user.email=` overrides at commit time and let the running git client use the invoking GitHub App's identity (i.e. the `<app-slug>[bot]@users.noreply.github.com` account that the GitHub Actions checkout step has already configured in the repo's local git config).\n\nMirrors GoReleaser's `CommitAuthor.UseGithubAppToken` (`internal/git/config/github.go:381`); the canonical use-case is PRs against `homebrew/homebrew-core` / `kubernetes-sigs/krew-index` / `microsoft/winget-pkgs` opened from a GitHub App workflow, where EasyCLA / DCO / signed-commit policies require the App's identity (rather than a per-user bot identity) to land the merge.",
+          "description": "When true, omit the explicit `-c user.name=` / `-c user.email=` overrides at commit time and let the running git client use the invoking GitHub App's identity (i.e. the `<app-slug>[bot]@users.noreply.github.com` account that the GitHub Actions checkout step has already configured in the repo's local git config).\n\nThe use-github-app-token toggle uses the local git identity; the canonical use-case is PRs against `homebrew/homebrew-core` / `kubernetes-sigs/krew-index` / `microsoft/winget-pkgs` opened from a GitHub App workflow, where EasyCLA / DCO / signed-commit policies require the App's identity (rather than a per-user bot identity) to land the merge.",
           "default": false,
           "type": "boolean"
         }
@@ -3967,7 +3967,7 @@
       }
     },
     "ContentSource": {
-      "description": "A content source that can be an inline string, read from a file, or fetched from a URL. Used for release header/footer values.\n\nYAML examples: header: \"inline text\" header: from_file: ./RELEASE_HEADER.md header: from_url: https://example.com/header.md header: from_url: https://example.com/header.md headers: X-API-Token: \"{{ .Env.API_TOKEN }}\" Accept: \"text/markdown\"\n\nBoth `from_file` path and `from_url` URL are template-rendered before use. Header values are template-rendered. (GoReleaser Pro parity.)",
+      "description": "A content source that can be an inline string, read from a file, or fetched from a URL. Used for release header/footer values.\n\nYAML examples: header: \"inline text\" header: from_file: ./RELEASE_HEADER.md header: from_url: https://example.com/header.md header: from_url: https://example.com/header.md headers: X-API-Token: \"{{ .Env.API_TOKEN }}\" Accept: \"text/markdown\"\n\nBoth `from_file` path and `from_url` URL are template-rendered before use. Header values are template-rendered.",
       "anyOf": [
         {
           "type": "string"
@@ -4655,7 +4655,7 @@
           ]
         },
         "color": {
-          "description": "Embed color as a decimal integer string (default: \"3888754\", GoReleaser blue). Parsed to u32 at runtime. Supports template expressions.",
+          "description": "Embed color as a decimal integer string (default: \"3888754\", a blue). Parsed to u32 at runtime. Supports template expressions.",
           "default": null,
           "type": [
             "string",
@@ -4763,7 +4763,7 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. Mirrors GoReleaser Pro DMG's `goamd64: string` field. When unset, all amd64 variants are included (no filtering).",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. The DMG `goamd64: string` field. When unset, all amd64 variants are included (no filtering).",
           "default": null,
           "type": [
             "string",
@@ -4801,7 +4801,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this DMG config if rendered result is \"false\" or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).",
+          "description": "Template-conditional: skip this DMG config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip).",
           "default": null,
           "type": [
             "string",
@@ -4845,7 +4845,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature.",
+          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Conditional-skip gate.",
           "default": null,
           "type": [
             "array",
@@ -4925,7 +4925,7 @@
           ]
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the DockerHub publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `dockerhub[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the DockerHub publisher is skipped. Render failure hard-errors. The `dockerhub[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -4959,7 +4959,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's dockerhub field is `disable:`).",
+          "description": "Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs (the legacy `disable:` spelling).",
           "default": null,
           "anyOf": [
             {
@@ -5044,7 +5044,7 @@
       }
     },
     "DockerManifestConfig": {
-      "description": "Deprecated: prefer `docker_v2` (which produces multi-arch manifests via the `platforms:` field automatically). `DockerManifestConfig` is retained for back-compat with imported GoReleaser configs and for the niche case of stitching together manifest lists from images that were not built by `docker_v2` in the same run.\n\nMirrors GoReleaser commit e09e23a, which marked the v1 docker / docker manifest pipes deprecated in favour of the v2 buildx flow. The rustdoc here is the load-bearing surface for the deprecation: it flows into the schemars-generated JSON Schema (consumed by IDEs / editor tooling) and rustdoc HTML, both of which are how downstream config authors discover that the v2 pipe is the preferred entry point.",
+      "description": "Deprecated: prefer `docker_v2` (which produces multi-arch manifests via the `platforms:` field automatically). `DockerManifestConfig` is retained for back-compat with imported configs and for the niche case of stitching together manifest lists from images that were not built by `docker_v2` in the same run.\n\nThe v1 docker / docker manifest pipes deprecated in favour of the v2 buildx flow. The rustdoc here is the load-bearing surface for the deprecation: it flows into the schemars-generated JSON Schema (consumed by IDEs / editor tooling) and rustdoc HTML, both of which are how downstream config authors discover that the v2 pipe is the preferred entry point.",
       "type": "object",
       "properties": {
         "create_flags": {
@@ -5118,7 +5118,7 @@
           ]
         },
         "use": {
-          "description": "Docker backend for manifest commands: `\"docker\"` (default) or `\"podman\"`. The `\"podman\"` backend is **Linux-only** (mirrors GoReleaser Pro): configs on macOS or Windows fail at config-validation time with a clear error rather than blowing up later when `podman` is not on `PATH`.",
+          "description": "Docker backend for manifest commands: `\"docker\"` (default) or `\"podman\"`. The `\"podman\"` backend is **Linux-only** (per Pro): configs on macOS or Windows fail at config-validation time with a clear error rather than blowing up later when `podman` is not on `PATH`.",
           "default": null,
           "type": [
             "string",
@@ -5327,7 +5327,7 @@
           }
         },
         "hooks": {
-          "description": "Pre/post hooks for this docker_v2 config. Each hook accepts the same `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks run after the staging directory is prepared but before `docker buildx build`; `post` hooks run after the image digest is captured. Hook commands, working directories, and env values are template-expanded; in addition to the standard template surface, hooks see:\n\n- `{{ .Images }}` — list of `image:tag` references for this build. Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror GR's `[]string` exposure of the same field; `{{ .Images | join(sep=\",\") }}` reproduces a flat comma-separated string for legacy templates. - `{{ .Dockerfile }}` — path to the rendered Dockerfile - `{{ .ContextDir }}` — path to the buildx context staging directory - `{{ .Digest }}` — image manifest digest (post hooks only) - `{{ .BaseImage }}` / `{{ .BaseImageDigest }}` — final-stage base image (matches the `BaseImage` / `BaseImageDigest` overlay GR adds in `internal/pipe/docker/v2/docker.go`)",
+          "description": "Pre/post hooks for this docker_v2 config. Each hook accepts the same `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks run after the staging directory is prepared but before `docker buildx build`; `post` hooks run after the image digest is captured. Hook commands, working directories, and env values are template-expanded; in addition to the standard template surface, hooks see:\n\n- `{{ .Images }}` — list of `image:tag` references for this build. Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror a list exposure of the same field; `{{ .Images | join(sep=\",\") }}` reproduces a flat comma-separated string for legacy templates. - `{{ .Dockerfile }}` — path to the rendered Dockerfile - `{{ .ContextDir }}` — path to the buildx context staging directory - `{{ .Digest }}` — image manifest digest (post hooks only) - `{{ .BaseImage }}` / `{{ .BaseImageDigest }}` — final-stage base image (the `BaseImage` / `BaseImageDigest` overlay)",
           "default": null,
           "anyOf": [
             {
@@ -5412,7 +5412,7 @@
           ]
         },
         "skip": {
-          "description": "When truthy, skip this docker build entirely. Supports templates. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's docker config field is `pkg/config/config.go:1149` `Disable string`).",
+          "description": "When truthy, skip this docker build entirely. Supports templates. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs (the legacy `disable:` spelling).",
           "default": null,
           "anyOf": [
             {
@@ -5432,7 +5432,7 @@
           }
         },
         "use": {
-          "description": "Docker backend for build commands: `\"buildx\"` (default) or `\"podman\"`.\n\nThe default `\"buildx\"` invokes `docker buildx build` with the full set of BuildKit features (multi-platform, attestations, `--rewrite-timestamp`, SBOM, OCI exporter). Setting `use: podman` swaps the binary to `podman build` and disables every buildx-only flag — anodizer rejects configs that mix `use: podman` with `sbom: true`, `--rewrite-timestamp`, `--provenance`, `--attest`, `--cache-from`, `--cache-to`, `--output`, or `--sbom` because plain podman does not recognise them.\n\n**Linux-only.** Matches GoReleaser Pro: the podman backend is restricted to Linux hosts. Configs setting `use: podman` on macOS or Windows fail at config-validation time with a clear error rather than blowing up later when `podman` is not on `PATH`.",
+          "description": "Docker backend for build commands: `\"buildx\"` (default) or `\"podman\"`.\n\nThe default `\"buildx\"` invokes `docker buildx build` with the full set of BuildKit features (multi-platform, attestations, `--rewrite-timestamp`, SBOM, OCI exporter). Setting `use: podman` swaps the binary to `podman build` and disables every buildx-only flag — anodizer rejects configs that mix `use: podman` with `sbom: true`, `--rewrite-timestamp`, `--provenance`, `--attest`, `--cache-from`, `--cache-to`, `--output`, or `--sbom` because plain podman does not recognise them.\n\n**Linux-only.** The podman backend is restricted to Linux hosts. Configs setting `use: podman` on macOS or Windows fail at config-validation time with a clear error rather than blowing up later when `podman` is not on `PATH`.",
           "default": null,
           "type": [
             "string",
@@ -5521,7 +5521,7 @@
           ]
         },
         "port": {
-          "description": "SMTP server port (default: 587 for STARTTLS).\n\nAnodize-additive UX win (locked 2026-04-28): GoReleaser's `internal/pipe/smtp/smtp.go` errors with `errNoPort` when `port` is unset (zero value). Anodize defaults to 587 — the IETF submission port — so the common case (corporate / SaaS SMTP relays exposing STARTTLS on 587) works out of the box without a config knob. The `auto` encryption mode then resolves to STARTTLS for 587, which is the conventional pairing. Pinned by `test_email_smtp_port_defaults_to_587`.",
+          "description": "SMTP server port (default: 587 for STARTTLS).\n\nAnodize-additive UX win (locked 2026-04-28): an unset SMTP `port` would otherwise be an error when it is unset (zero value). Anodize defaults to 587 — the IETF submission port — so the common case (corporate / SaaS SMTP relays exposing STARTTLS on 587) works out of the box without a config knob. The `auto` encryption mode then resolves to STARTTLS for 587, which is the conventional pairing. Pinned by `test_email_smtp_port_defaults_to_587`.",
           "default": null,
           "type": [
             "integer",
@@ -5610,7 +5610,7 @@
       ]
     },
     "EnvFilesTokenConfig": {
-      "description": "Structured token file paths for provider authentication.\n\nEach field points to a file containing a single-line token. When present, the file is read and the corresponding environment variable is set (e.g., `github_token` file -> `GITHUB_TOKEN` env var).\n\nMatches GoReleaser's `EnvFiles` struct.",
+      "description": "Structured token file paths for provider authentication.\n\nEach field points to a file containing a single-line token. When present, the file is read and the corresponding environment variable is set (e.g., `github_token` file -> `GITHUB_TOKEN` env var).\n\nToken-file path overrides.",
       "type": "object",
       "properties": {
         "gitea_token": {
@@ -5685,7 +5685,7 @@
           ]
         },
         "mode": {
-          "description": "File permission mode. Accepts a YAML int (decimal, e.g. `420` for `0o644`) or an octal-prefixed string (`\"0o644\"`, `\"0644\"`). This matches GoReleaser's `uint32` type for `Mode` on archive/nfpm contents while letting users spell octal naturally in YAML.",
+          "description": "File permission mode. Accepts a YAML int (decimal, e.g. `420` for `0o644`) or an octal-prefixed string (`\"0o644\"`, `\"0644\"`). This a `uint32` type for `Mode` on archive/nfpm contents while letting users spell octal naturally in YAML.",
           "default": null,
           "type": [
             "integer",
@@ -5894,7 +5894,7 @@
           ]
         },
         "formats": {
-          "description": "Package format filter: only push artifacts matching these formats. Defaults to `[\"apk\", \"deb\", \"rpm\"]` (GR v2.7+ adds `apk`).",
+          "description": "Package format filter: only push artifacts matching these formats. Defaults to `[\"apk\", \"deb\", \"rpm\"]`.",
           "default": null,
           "type": [
             "array",
@@ -5924,7 +5924,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the GemFury publisher entry is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `gemfury[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the GemFury publisher entry is skipped. Render failure hard-errors. The `gemfury[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -5947,7 +5947,7 @@
           ]
         },
         "skip": {
-          "description": "Template-conditional skip: if rendered result is `\"true\"`, skip this publisher entry. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser Pro `gemfury[].disable:` configs.",
+          "description": "Template-conditional skip: if rendered result is `\"true\"`, skip this publisher entry. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported `gemfury[].disable:` configs.",
           "default": null,
           "anyOf": [
             {
@@ -5974,7 +5974,7 @@
       "type": "object",
       "properties": {
         "ignore_tag_prefixes": {
-          "description": "Tag prefixes to ignore during version detection (supports templates). Tags starting with any prefix in this list are excluded. Mirrors GoReleaser Pro's ignore_tag_prefixes feature.",
+          "description": "Tag prefixes to ignore during version detection (supports templates). Tags starting with any prefix in this list are excluded. The ignore-tag-prefixes feature.",
           "default": null,
           "type": [
             "array",
@@ -6014,7 +6014,7 @@
       }
     },
     "GitHubUrlsConfig": {
-      "description": "Custom GitHub API/upload/download URLs for GitHub Enterprise installations. Matches GoReleaser's `GitHubURLs` struct.",
+      "description": "Custom GitHub API/upload/download URLs for GitHub Enterprise installations. GitHub API/download URL overrides.",
       "type": "object",
       "properties": {
         "api": {
@@ -6053,7 +6053,7 @@
       "additionalProperties": false
     },
     "GitLabUrlsConfig": {
-      "description": "Custom GitLab API/download URLs for self-hosted GitLab installations. Matches GoReleaser's `GitLabURLs` struct.",
+      "description": "Custom GitLab API/download URLs for self-hosted GitLab installations. GitLab API/download URL overrides.",
       "type": "object",
       "properties": {
         "api": {
@@ -6130,7 +6130,7 @@
       }
     },
     "GiteaUrlsConfig": {
-      "description": "Custom Gitea API/download URLs for self-hosted Gitea installations. Matches GoReleaser's `GiteaURLs` struct.",
+      "description": "Custom Gitea API/download URLs for self-hosted Gitea installations. Gitea API/download URL overrides.",
       "type": "object",
       "properties": {
         "api": {
@@ -6243,7 +6243,7 @@
           ]
         },
         "binaries": {
-          "description": "Binary stubs to create in /usr/local/bin.\n\nEach entry is either a bare string (`\"my-cli\"` → emits `binary \"my-cli\"`) or a structured `{ name, target }` object (`{ name: \"my-cli\", target: \"mycli\" }` → emits `binary \"my-cli\", target: \"mycli\"`). The `target:` form mirrors the Homebrew Ruby cask DSL for binary renames — without it, a wrapped binary installs at the wrong path. Mirrors GoReleaser `internal/pipe/brew/templates/cask.rb.tmpl`.",
+          "description": "Binary stubs to create in /usr/local/bin.\n\nEach entry is either a bare string (`\"my-cli\"` → emits `binary \"my-cli\"`) or a structured `{ name, target }` object (`{ name: \"my-cli\", target: \"mycli\" }` → emits `binary \"my-cli\", target: \"mycli\"`). The `target:` form mirrors the Homebrew Ruby cask DSL for binary renames — without it, a wrapped binary installs at the wrong path. Cask binary entry.",
           "default": null,
           "type": [
             "array",
@@ -6254,7 +6254,7 @@
           }
         },
         "binary": {
-          "description": "Deprecated singular spelling of [`Self::binaries`]. GoReleaser v2.12.6 replaced `binary: foo` with `binaries: [foo]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::binaries`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form.",
+          "description": "Deprecated singular spelling of [`Self::binaries`]. The upstream replaced `binary: foo` with `binaries: [foo]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::binaries`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form.",
           "writeOnly": true,
           "type": [
             "string",
@@ -6391,7 +6391,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `homebrew_casks[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. The `homebrew_casks[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -6407,7 +6407,7 @@
           ]
         },
         "manpage": {
-          "description": "Deprecated singular spelling of [`Self::manpages`]. GoReleaser replaced `manpage: foo.1` with `manpages: [foo.1]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::manpages`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form.",
+          "description": "Deprecated singular spelling of [`Self::manpages`]. The upstream replaced `manpage: foo.1` with `manpages: [foo.1]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::manpages`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form.",
           "writeOnly": true,
           "type": [
             "string",
@@ -6926,7 +6926,7 @@
           ]
         },
         "directory": {
-          "description": "Formula directory in the tap (e.g. \"Formula\"). Matches GoReleaser `directory`.",
+          "description": "Formula directory in the tap (e.g. \"Formula\").",
           "default": null,
           "type": [
             "string",
@@ -6969,7 +6969,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Homebrew publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `brews[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Homebrew publisher is skipped. Render failure hard-errors. The `brews[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -7154,11 +7154,11 @@
       ]
     },
     "HooksConfig": {
-      "description": "Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).\n\nThe canonical key is `hooks:` for both `before:` and `after:` to match GoReleaser Pro (`hooks.md`). The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see [`HooksConfig::merge_hook_aliases`]).",
+      "description": "Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).\n\nThe canonical key is `hooks:` for both `before:` and `after:` to the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see [`HooksConfig::merge_hook_aliases`]).",
       "type": "object",
       "properties": {
         "hooks": {
-          "description": "Commands to run when the block fires. The wire format accepts either `hooks:` (canonical, GoReleaser-aligned) or the legacy `post:` spelling; both fold into this field at parse time.",
+          "description": "Commands to run when the block fires. The wire format accepts either `hooks:` (canonical) or the legacy `post:` spelling; both fold into this field at parse time.",
           "type": [
             "array",
             "null"
@@ -7201,7 +7201,7 @@
       }
     },
     "IncludeSpec": {
-      "description": "An include specification: either a plain path string or a structured from_file/from_url.\n\nYAML examples: ```yaml includes: - ./defaults.yaml                           # plain string (backward compat) - from_file: path: ./config/goreleaser.yaml           # structured file path - from_url: url: https://example.com/config.yaml     # URL fetch headers: x-api-token: \"${MYCOMPANY_TOKEN}\"       # env var expansion in headers ```",
+      "description": "An include specification: either a plain path string or a structured from_file/from_url.\n\nYAML examples: ```yaml includes: - ./defaults.yaml                           # plain string (backward compat) - from_file: path: ./config/release.yaml              # structured file path - from_url: url: https://example.com/config.yaml     # URL fetch headers: x-api-token: \"${MYCOMPANY_TOKEN}\"       # env var expansion in headers ```",
       "anyOf": [
         {
           "description": "Plain string path (backward compatible): \"path/to/file.yaml\"",
@@ -7371,7 +7371,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Krew publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `krews[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Krew publisher is skipped. Render failure hard-errors. The `krews[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -7645,7 +7645,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this configuration. Accepts bool or template string. Replaces `enabled:` with the canonical `skip:`. Imported GR configs may continue to write `enabled:` — the deserializer inverts it into `skip:` so both spellings work.",
+          "description": "Skip this configuration. Accepts bool or template string. Replaces `enabled:` with the canonical `skip:`. Imported configs may continue to write `enabled:` — the deserializer inverts it into `skip:` so both spellings work.",
           "default": null,
           "anyOf": [
             {
@@ -7657,7 +7657,7 @@
           ]
         },
         "use": {
-          "description": "Artifact type to sign and notarize: `dmg` (default) or `pkg`.\n\nAnodizer-original. GR's notarize.macos has no equivalent (signs binaries directly via rcodesign). Constrained to a typed enum at parse time so an unsupported value (`zip`, `app`, etc.) fails fast instead of producing a silent no-op signing pipe.",
+          "description": "Artifact type to sign and notarize: `dmg` (default) or `pkg`.\n\nAnodizer-original (signs binaries directly via rcodesign). Constrained to a typed enum at parse time so an unsupported value (`zip`, `app`, etc.) fails fast instead of producing a silent no-op signing pipe.",
           "default": null,
           "anyOf": [
             {
@@ -7799,7 +7799,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this configuration. Accepts bool or template string. Replaces the previous `enabled:` toggle with the canonical `skip:` (inverted semantic) to align with every other publisher / pipe in anodizer.\n\nBack-compat: GoReleaser uses `enabled:` (opt-in, default false). A YAML written against GR docs is accepted via the wire-level `enabled:` alias that inverts the bool — `enabled: true` becomes `skip: false`, `enabled: false` becomes `skip: true`. The canonical field at runtime is `skip:`.",
+          "description": "Skip this configuration. Accepts bool or template string. Replaces the previous `enabled:` toggle with the canonical `skip:` (inverted semantic) to align with every other publisher / pipe in anodizer.\n\nBack-compat: the upstream uses `enabled:` (opt-in, default false). A YAML carrying `enabled:` is accepted via the wire-level `enabled:` alias that inverts the bool — `enabled: true` becomes `skip: false`, `enabled: false` becomes `skip: true`. The canonical field at runtime is `skip:`.",
           "default": null,
           "anyOf": [
             {
@@ -7955,7 +7955,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR makeself uses `disable: string`).",
+          "description": "Skip this config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs.",
           "default": null,
           "anyOf": [
             {
@@ -7973,7 +7973,7 @@
       "type": "object",
       "properties": {
         "destination": {
-          "description": "Destination path inside the archive. Accepts the GoReleaser `dst:` spelling via serde alias for back-compat with imported configs (GR `MakeselfFile.Destination` is keyed `dst`).",
+          "description": "Destination path inside the archive. Accepts the `dst:` spelling via serde alias for back-compat with imported configs.",
           "default": null,
           "type": [
             "string",
@@ -7981,7 +7981,7 @@
           ]
         },
         "source": {
-          "description": "Source file path (relative to project root). Accepts the GoReleaser `src:` spelling via serde alias for back-compat with imported configs (GR `MakeselfFile.Source` is keyed `src`).",
+          "description": "Source file path (relative to project root). Accepts the `src:` spelling via serde alias for back-compat with imported configs.",
           "default": "",
           "type": "string"
         },
@@ -8149,7 +8149,7 @@
       }
     },
     "McpAuth": {
-      "description": "Authentication method + token for the MCP registry's `/v0/publish` endpoint. Mirrors GoReleaser `config.MCPAuth`.",
+      "description": "Authentication method + token for the MCP registry's `/v0/publish` endpoint.",
       "type": "object",
       "properties": {
         "token": {
@@ -8169,7 +8169,7 @@
       "additionalProperties": false
     },
     "McpAuthMethod": {
-      "description": "MCP auth method. Default is `None` (anonymous) which matches GoReleaser's `mcp.go::Default` migration code (`cmp.Or(..., proto.MethodNone)`).",
+      "description": "MCP auth method. Default is `None` (anonymous).",
       "oneOf": [
         {
           "description": "Anonymous publish — for testing or registries that allow it. Serializes / deserializes as `none`.",
@@ -8195,7 +8195,7 @@
       ]
     },
     "McpConfig": {
-      "description": "MCP server registry publisher configuration.\n\nPublishes an `apiv0.ServerJSON` document to the MCP registry (`https://registry.modelcontextprotocol.io/v0/publish` by default). Mirrors GoReleaser `config.MCP` + `config.MCPDetails` flattened.",
+      "description": "MCP server registry publisher configuration.\n\nPublishes an `apiv0.ServerJSON` document to the MCP registry (`https://registry.modelcontextprotocol.io/v0/publish` by default). MCP config (server details flattened onto the publisher block).",
       "type": "object",
       "properties": {
         "auth": {
@@ -8226,7 +8226,7 @@
           ]
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the MCP publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `mcp.if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the MCP publisher is skipped. Render failure hard-errors. The `mcp.if:` conditional gate.",
           "default": null,
           "type": [
             "string",
@@ -8279,7 +8279,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this publisher when the expression evaluates truthy. Accepts a bool or a Tera template that renders to `\"true\"`/`\"false\"` (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"`). Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's MCP config field is `pkg/config/config.go` `MCP.Disable string`).",
+          "description": "Skip this publisher when the expression evaluates truthy. Accepts a bool or a Tera template that renders to `\"true\"`/`\"false\"` (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"`). Accepts the legacy `disable:` spelling via serde alias for back-compat with imported imported configs (the MCP config field `MCP.Disable string`).",
           "default": null,
           "anyOf": [
             {
@@ -8299,7 +8299,7 @@
           ]
         },
         "transports": {
-          "description": "Top-level transports list. Intentional GoReleaser config-portability shim: `McpConfig` carries `deny_unknown_fields`, so a migrated `.goreleaser.yaml` containing `transports:` would fail to parse if the field were absent. The list is accepted and discarded — the current MCP server schema derives transports per-package via `packages[].transport`, so the top-level list is never read after deserialization and is intentionally not emitted to the registry.",
+          "description": "Top-level transports list. Intentional config-portability shim: `McpConfig` carries `deny_unknown_fields`, so a migrated an imported config containing `transports:` would fail to parse if the field were absent. The list is accepted and discarded — the current MCP server schema derives transports per-package via `packages[].transport`, so the top-level list is never read after deserialization and is intentionally not emitted to the registry.",
           "default": [],
           "type": "array",
           "items": {
@@ -8342,7 +8342,7 @@
       "additionalProperties": false
     },
     "McpRegistryType": {
-      "description": "Package registry type — mirrors GoReleaser's `MCPPackage.RegistryType` enum and upstream `model.RegistryType*` constants.",
+      "description": "Package registry type enum and upstream `model.RegistryType*` constants.",
       "oneOf": [
         {
           "description": "OCI image (registry_type = \"oci\"). The `version` field in the published ServerJSON is intentionally empty for OCI packages — the version is encoded in the image identifier's `:tag` suffix.",
@@ -8382,7 +8382,7 @@
       ]
     },
     "McpRepository": {
-      "description": "Repository metadata for the MCP registry payload. Mirrors GoReleaser `config.MCPRepository` + upstream `model.Repository`.",
+      "description": "Repository metadata for the MCP registry payload. Source-repository metadata for the MCP server.",
       "type": "object",
       "properties": {
         "id": {
@@ -8409,7 +8409,7 @@
       "additionalProperties": false
     },
     "McpTransport": {
-      "description": "Transport descriptor — mirrors GoReleaser's `MCPTransport` and upstream `model.Transport`.",
+      "description": "Transport descriptor for upstream `model.Transport`.",
       "type": "object",
       "properties": {
         "type": {
@@ -8454,7 +8454,7 @@
       "type": "object",
       "properties": {
         "commit_author": {
-          "description": "Commit author identity for Pro commit workflows (GoReleaser Pro v2.12+). Reuses the shared `CommitAuthorConfig` (name + email + optional signing). Exposed as `{{ .Metadata.CommitAuthor.Name }}` / `{{ .Metadata.CommitAuthor.Email }}`.",
+          "description": "Commit author identity for commit workflows. Reuses the shared `CommitAuthorConfig` (name + email + optional signing). Exposed as `{{ .Metadata.CommitAuthor.Name }}` / `{{ .Metadata.CommitAuthor.Email }}`.",
           "default": null,
           "anyOf": [
             {
@@ -8474,7 +8474,7 @@
           ]
         },
         "full_description": {
-          "description": "Long-form project description (GoReleaser Pro v2.1+). Supports inline string, `from_file`, or `from_url`. Exposed as `{{ .Metadata.FullDescription }}`. FromUrl is resolved lazily (requires the release stage); FromFile is resolved at context-populate time with template-rendered path.",
+          "description": "Long-form project description. Supports inline string, `from_file`, or `from_url`. Exposed as `{{ .Metadata.FullDescription }}`. FromUrl is resolved lazily (requires the release stage); FromFile is resolved at context-populate time with template-rendered path.",
           "default": null,
           "anyOf": [
             {
@@ -8564,7 +8564,7 @@
       }
     },
     "MonorepoConfig": {
-      "description": "GoReleaser Pro monorepo configuration.\n\nWhen configured, tag discovery filters by `tag_prefix` and the working directory is scoped to `dir`.\n\nThis is DIFFERENT from `TagConfig.tag_prefix`: - `MonorepoConfig.tag_prefix`: tags in git already HAVE the prefix (e.g. `subproject1/v1.2.3`). The prefix is STRIPPED for `{{ .Tag }}` while `{{ .PrefixedTag }}` retains the full tag. - `TagConfig.tag_prefix`: a prefix to PREPEND when constructing `{{ .PrefixedTag }}` from a plain tag.\n\nWhen `monorepo` is configured, it takes precedence over `tag.tag_prefix` for `PrefixedTag` / `PrefixedPreviousTag` behavior.",
+      "description": "Monorepo configuration.\n\nWhen configured, tag discovery filters by `tag_prefix` and the working directory is scoped to `dir`.\n\nThis is DIFFERENT from `TagConfig.tag_prefix`: - `MonorepoConfig.tag_prefix`: tags in git already HAVE the prefix (e.g. `subproject1/v1.2.3`). The prefix is STRIPPED for `{{ .Tag }}` while `{{ .PrefixedTag }}` retains the full tag. - `TagConfig.tag_prefix`: a prefix to PREPEND when constructing `{{ .PrefixedTag }}` from a plain tag.\n\nWhen `monorepo` is configured, it takes precedence over `tag.tag_prefix` for `PrefixedTag` / `PrefixedPreviousTag` behavior.",
       "type": "object",
       "properties": {
         "dir": {
@@ -8590,7 +8590,7 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. Mirrors GoReleaser Pro MSI's `goamd64: string` field.",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. The MSI `goamd64: string` field.",
           "default": null,
           "type": [
             "string",
@@ -8620,7 +8620,7 @@
           }
         },
         "hooks": {
-          "description": "Pre/post MSI-build hooks (GoReleaser Pro v2.14+). Accepts `pre`/`post` or `before`/`after` via BuildHooksConfig's serde aliases. Runs before / after candle+light for each matched artifact.",
+          "description": "Pre/post MSI-build hooks. Accepts `pre`/`post` or `before`/`after` via BuildHooksConfig's serde aliases. Runs before / after candle+light for each matched artifact.",
           "default": null,
           "anyOf": [
             {
@@ -8651,7 +8651,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this MSI config if rendered result is \"false\" or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).",
+          "description": "Template-conditional: skip this MSI config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip).",
           "default": null,
           "type": [
             "string",
@@ -8683,7 +8683,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this MSI config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR docs list `disable: string`).",
+          "description": "Skip this MSI config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs.",
           "default": null,
           "anyOf": [
             {
@@ -8822,7 +8822,7 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (`[\"v1\"]`, `[\"v2\", \"v3\"]`, etc.). When set, only amd64 binaries with `amd64_variant` matching one of the listed values are included. Mirrors GoReleaser nfpm's `goamd64: []string` (`pkg/config/config.go:711`, `nfpm.go:147`). When unset, all amd64 variants are included (no filtering).",
+          "description": "amd64 microarchitecture variant filter (`[\"v1\"]`, `[\"v2\", \"v3\"]`, etc.). When set, only amd64 binaries with `amd64_variant` matching one of the listed values are included via the `goamd64: []string` filter. When unset, all amd64 variants are included (no filtering).",
           "default": null,
           "type": [
             "array",
@@ -8977,7 +8977,7 @@
           ]
         },
         "ids": {
-          "description": "Build IDs filter: only include artifacts from builds whose `id` is in this list. Accepts the deprecated GoReleaser `builds:` spelling via serde alias for back-compat with imported configs (GR NFPM keeps `Builds []string` marked `deprecated`, aliasing `ids`).",
+          "description": "Build IDs filter: only include artifacts from builds whose `id` is in this list. Accepts the deprecated `builds:` spelling via serde alias for back-compat with imported configs (the legacy `builds` key marked `deprecated`, aliasing `ids`).",
           "default": null,
           "type": [
             "array",
@@ -8988,7 +8988,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this nfpm config if rendered result is \"false\" or empty. (GoReleaser Pro v2.4+.)",
+          "description": "Template-conditional: skip this nfpm config if rendered result is \"false\" or empty. Conditional-skip gate.",
           "default": null,
           "type": [
             "string",
@@ -9169,7 +9169,7 @@
           }
         },
         "templated_contents": {
-          "description": "Extra file contents whose source files are Tera-rendered before packaging (GoReleaser Pro). Each entry mirrors `contents`; the difference is that at stage time the file at `src` is read, rendered through the template engine, written to a temp file, and then included in the package at `dst` using the temp file as the real source. Useful for shipping config files with templated values (version, commit, maintainer, etc.).",
+          "description": "Extra file contents whose source files are Tera-rendered before packaging. Each entry mirrors `contents`; the difference is that at stage time the file at `src` is read, rendered through the template engine, written to a temp file, and then included in the package at `dst` using the temp file as the real source. Useful for shipping config files with templated values (version, commit, maintainer, etc.).",
           "default": null,
           "type": [
             "array",
@@ -9180,7 +9180,7 @@
           }
         },
         "templated_scripts": {
-          "description": "Lifecycle scripts whose script-file bodies are Tera-rendered before packaging (GoReleaser Pro). Each path is read, rendered through the template engine, written to a temp file, and used as the real script. If a field is set on both `scripts` and `templated_scripts`, the templated version wins.",
+          "description": "Lifecycle scripts whose script-file bodies are Tera-rendered before packaging Each path is read, rendered through the template engine, written to a temp file, and used as the real script. If a field is set on both `scripts` and `templated_scripts`, the templated version wins.",
           "default": null,
           "anyOf": [
             {
@@ -9747,7 +9747,7 @@
       }
     },
     "NfpmSignatureConfig": {
-      "description": "Unified signature configuration shared by nFPM (deb/rpm/apk) and SRPM packages — SRPM's surface is a strict subset, so a single struct covers both. The legacy SRPM `passphrase:` key is accepted as a serde alias for `key_passphrase:` so both spellings parse.\n\nGR keeps three distinct signature types (`NFPMRPMSignature`, `NFPMDebSignature`, `NFPMAPKSignature`) with overlapping but slightly different fields. Anodizer's union here avoids the 3-struct cascade when 90% of fields overlap.",
+      "description": "Unified signature configuration shared by nFPM (deb/rpm/apk) and SRPM packages — SRPM's surface is a strict subset, so a single struct covers both. The legacy SRPM `passphrase:` key is accepted as a serde alias for `key_passphrase:` so both spellings parse.\n\nThere are three distinct signature types (`NFPMRPMSignature`, `NFPMDebSignature`, `NFPMAPKSignature`) with overlapping but slightly different fields. Anodizer's union here avoids the 3-struct cascade when 90% of fields overlap.",
       "type": "object",
       "properties": {
         "key_file": {
@@ -9796,7 +9796,7 @@
       "type": "object",
       "properties": {
         "draft": {
-          "description": "Override `release.draft` for nightly runs only (GoReleaser v2.12+). `None` falls through to `release.draft`; `Some(v)` overrides it.",
+          "description": "Override `release.draft` for nightly runs only. `None` falls through to `release.draft`; `Some(v)` overrides it.",
           "default": null,
           "type": [
             "boolean",
@@ -9804,7 +9804,7 @@
           ]
         },
         "keep_single_release": {
-          "description": "Delete the prior release that points at the same tag before creating the new one. Default: `false`. Set `true` to maintain a single rolling nightly release on GitHub.\n\nBack-compat alias for `retention: { keep_last: 1 }`. When both `keep_single_release` and `retention` are set, `retention` wins. Destructive: deletes a published release via the GitHub Releases API. GitHub-only (GoReleaser parity).",
+          "description": "Delete the prior release that points at the same tag before creating the new one. Default: `false`. Set `true` to maintain a single rolling nightly release on GitHub.\n\nBack-compat alias for `retention: { keep_last: 1 }`. When both `keep_single_release` and `retention` are set, `retention` wins. Destructive: deletes a published release via the GitHub Releases API. GitHub-only.",
           "default": null,
           "type": [
             "boolean",
@@ -9848,7 +9848,7 @@
           ]
         },
         "tag_name": {
-          "description": "Tag name used for the nightly release. Default: `\"nightly\"`. Templates allowed (GoReleaser v2.16+).",
+          "description": "Tag name used for the nightly release. Default: `\"nightly\"`. Templates allowed.",
           "default": null,
           "type": [
             "string",
@@ -9856,7 +9856,7 @@
           ]
         },
         "version_template": {
-          "description": "Template for the rendered version string the nightly run sets on `Version` / `RawVersion`. GoReleaser default: `\"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly\"` — produces commit-immutable nightly versions (two same-day commits yield two distinct nightly versions).\n\nThe `{{ .NightlyBuild }}` template var (a stateless per-base-version build counter derived from `git rev-list --count <last-tag>..HEAD`) enables nushell-style schemes such as `\"{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}\"`.",
+          "description": "Template for the rendered version string the nightly run sets on `Version` / `RawVersion`. Default: `\"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly\"` — produces commit-immutable nightly versions (two same-day commits yield two distinct nightly versions).\n\nThe `{{ .NightlyBuild }}` template var (a stateless per-base-version build counter derived from `git rev-list --count <last-tag>..HEAD`) enables nushell-style schemes such as `\"{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}\"`.",
           "default": null,
           "type": [
             "string",
@@ -9951,7 +9951,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Nix publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `nix[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Nix publisher is skipped. Render failure hard-errors. The `nix[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -10397,7 +10397,7 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. Mirrors GoReleaser Pro NSIS's `goamd64: string` field.",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. The NSIS `goamd64: string` field.",
           "default": null,
           "type": [
             "string",
@@ -10435,7 +10435,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this NSIS config if rendered result is \"false\" or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).",
+          "description": "Template-conditional: skip this NSIS config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip).",
           "default": null,
           "type": [
             "string",
@@ -10475,7 +10475,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this NSIS config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR docs list `disable: string`).",
+          "description": "Skip this NSIS config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs.",
           "default": null,
           "anyOf": [
             {
@@ -10487,7 +10487,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature.",
+          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Conditional-skip gate.",
           "default": null,
           "type": [
             "array",
@@ -10558,7 +10558,7 @@
       "type": "object",
       "properties": {
         "extra_files": {
-          "description": "Additional files to include in the package (glob or {glob, name_template}). Anodizer-additive: not present in GoReleaser Pro pkg.",
+          "description": "Additional files to include in the package (glob or {glob, name_template}). Anodizer-additive.",
           "default": null,
           "type": [
             "array",
@@ -10596,7 +10596,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this PKG config if rendered result is \"false\" or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).",
+          "description": "Template-conditional: skip this PKG config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip).",
           "default": null,
           "type": [
             "string",
@@ -10652,7 +10652,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this PKG config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs.",
+          "description": "Skip this PKG config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs.",
           "default": null,
           "anyOf": [
             {
@@ -10664,7 +10664,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Anodizer-additive: not present in GoReleaser Pro pkg.",
+          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Anodizer-additive.",
           "default": null,
           "type": [
             "array",
@@ -10719,7 +10719,7 @@
       "type": "object",
       "properties": {
         "path": {
-          "description": "Template path to the imported binary on disk. Rendered once per target with these template variables available in addition to the project-wide globals (`Version`, `ProjectName`, ...):\n\n- `{{ .Target }}` — the full Rust target triple (e.g. `x86_64-unknown-linux-gnu`). - `{{ .Os }}` — the GoReleaser-style OS slug (`linux`, `darwin`, `windows`, ...). - `{{ .Arch }}` — the GoReleaser-style architecture slug (`amd64`, `arm64`, `armv7`, ...). - `{{ .Amd64 }}` — AMD64 micro-architecture variant (`v1` / `v2` / `v3` / `v4`); set for `x86_64-*` triples. - `{{ .Arm64 }}` — ARM64 micro-architecture variant (`v8`); set for `aarch64-*` triples. - `{{ .Arm }}` — ARM micro-architecture variant (`6` / `7`); set for `armv6*` / `armv7*` triples. - `{{ .I386 }}` — i386 micro-architecture variant (`sse2`); set for `i686-*` / `i386-*` / `i586-*` triples. - `{{ .ArtifactExt }}` — `.exe` on Windows targets, empty elsewhere. - `{{ .ArtifactID }}` — the build entry's `id:` (empty when unset).\n\nThe rendered path is `stat()`-ed before the import, unless `--dry-run` is active, in which case the stat is skipped and the path is accepted as given. A missing file, a permission error, or any other I/O failure aborts the build with a message that names both the rendered path and the originating target triple, matching GoReleaser's \"GoReleaser will fail\" contract.\n\nRecommendation: place the staged binaries OUTSIDE `dist/`. The release pipeline removes `dist/` on every run; pointing `path:` at `dist/...` will resolve against an empty directory.",
+          "description": "Template path to the imported binary on disk. Rendered once per target with these template variables available in addition to the project-wide globals (`Version`, `ProjectName`, ...):\n\n- `{{ .Target }}` — the full Rust target triple (e.g. `x86_64-unknown-linux-gnu`). - `{{ .Os }}` — the OS slug (`linux`, `darwin`, `windows`, ...). - `{{ .Arch }}` — the architecture slug (`amd64`, `arm64`, `armv7`, ...). - `{{ .Amd64 }}` — AMD64 micro-architecture variant (`v1` / `v2` / `v3` / `v4`); set for `x86_64-*` triples. - `{{ .Arm64 }}` — ARM64 micro-architecture variant (`v8`); set for `aarch64-*` triples. - `{{ .Arm }}` — ARM micro-architecture variant (`6` / `7`); set for `armv6*` / `armv7*` triples. - `{{ .I386 }}` — i386 micro-architecture variant (`sse2`); set for `i686-*` / `i386-*` / `i586-*` triples. - `{{ .ArtifactExt }}` — `.exe` on Windows targets, empty elsewhere. - `{{ .ArtifactID }}` — the build entry's `id:` (empty when unset).\n\nThe rendered path is `stat()`-ed before the import, unless `--dry-run` is active, in which case the stat is skipped and the path is accepted as given. A missing file, a permission error, or any other I/O failure aborts the build with a message that names both the rendered path and the originating target triple, matching the \"build will fail\" contract.\n\nRecommendation: place the staged binaries OUTSIDE `dist/`. The release pipeline removes `dist/` on every run; pointing `path:` at `dist/...` will resolve against an empty directory.",
           "default": "",
           "type": "string"
         }
@@ -11058,7 +11058,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro's `customization/publishers/` `if:` field. Distinct from `skip:` (which expresses \"always skip\") and provides GR config-import parity.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the publisher is skipped. Render failure hard-errors. The `customization/publishers/` `if:` field. Distinct from `skip:` (which expresses \"always skip\") and provides config-import parity.",
           "default": null,
           "type": [
             "string",
@@ -11102,7 +11102,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before publishing. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature.",
+          "description": "Extra files whose contents are rendered through the template engine before publishing. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Conditional-skip gate.",
           "default": null,
           "type": [
             "array",
@@ -11263,7 +11263,7 @@
           ]
         },
         "extra_files": {
-          "description": "Extra files to upload to the release beyond build artifacts.\n\nPaths / globs are resolved relative to the project root. `..` segments are accepted (matches GoReleaser behaviour), so an entry like `../sibling/dist/*` will reach outside the project tree — security-conscious users should keep the entries inside the repo or canonicalise them before invoking the release pipeline.",
+          "description": "Extra files to upload to the release beyond build artifacts.\n\nPaths / globs are resolved relative to the project root. `..` segments are accepted, so an entry like `../sibling/dist/*` will reach outside the project tree — security-conscious users should keep the entries inside the repo or canonicalise them before invoking the release pipeline.",
           "default": null,
           "type": [
             "array",
@@ -11399,7 +11399,7 @@
           ]
         },
         "provider": {
-          "description": "Explicit publish target — the SCM provider whose `release.<provider>` block the publisher uses. When set, overrides the implicit token-type fallback chain in [`crate::scm::resolve_token_type`].\n\nUse this for the GoReleaser Pro **cross-platform publishing** pattern: source repo on one provider (e.g. GitLab) but releases land on another (e.g. GitHub). Without it, the publish target is inferred from which `*_TOKEN` env-var is set — fine for single-provider setups but ambiguous when both tokens are available.\n\n```yaml release: provider: github github: owner: my-org name: my-app ```",
+          "description": "Explicit publish target — the SCM provider whose `release.<provider>` block the publisher uses. When set, overrides the implicit token-type fallback chain in [`crate::scm::resolve_token_type`].\n\nUse this for **cross-platform publishing** pattern: source repo on one provider (e.g. GitLab) but releases land on another (e.g. GitHub). Without it, the publish target is inferred from which `*_TOKEN` env-var is set — fine for single-provider setups but ambiguous when both tokens are available.\n\n```yaml release: provider: github github: owner: my-org name: my-app ```",
           "anyOf": [
             {
               "$ref": "#/definitions/ForceTokenKind"
@@ -11433,7 +11433,7 @@
           ]
         },
         "skip": {
-          "description": "Skip the release stage. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional skip). GoReleaser supports template strings here since v1.15.0. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's release config field is `pkg/config/config.go:909` `Disable string`).",
+          "description": "Skip the release stage. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional skip). Template strings are supported here. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs (the legacy `disable:` spelling).",
           "default": null,
           "anyOf": [
             {
@@ -11445,7 +11445,7 @@
           ]
         },
         "skip_upload": {
-          "description": "Skip uploading artifacts: true, false, or \"auto\" (skip for snapshots). Accepts bool or template string (GoReleaser uses string type).",
+          "description": "Skip uploading artifacts: true, false, or \"auto\" (skip for snapshots). Accepts bool or template string.",
           "default": null,
           "anyOf": [
             {
@@ -11457,7 +11457,7 @@
           ]
         },
         "tag": {
-          "description": "Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `\"{{ .Tag }}\"` to publish `v1.0.0` instead of `myapp/v1.0.0`). This is a GoReleaser Pro feature provided for free by anodizer.",
+          "description": "Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `\"{{ .Tag }}\"` to publish `v1.0.0` instead of `myapp/v1.0.0`). A cross-platform publishing feature provided for free by anodizer.",
           "default": null,
           "type": [
             "string",
@@ -11473,7 +11473,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature.\n\nSame path-traversal caveat as `extra_files`: `..` segments reach outside the project tree.",
+          "description": "Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Conditional-skip gate.\n\nSame path-traversal caveat as `extra_files`: `..` segments reach outside the project tree.",
           "default": null,
           "type": [
             "array",
@@ -11504,7 +11504,7 @@
       }
     },
     "RepositoryConfig": {
-      "description": "Shared repository configuration used by all git-based publishers (Homebrew, Scoop, Winget, Krew, Nix). Equivalent to GoReleaser's `RepoRef`.",
+      "description": "Shared repository configuration used by all git-based publishers (Homebrew, Scoop, Winget, Krew, Nix). A repository reference.",
       "type": "object",
       "properties": {
         "branch": {
@@ -11587,7 +11587,7 @@
       }
     },
     "RetryConfig": {
-      "description": "User-facing retry configuration block (`retry:` at config root).\n\nAll fields are optional in YAML; missing fields fall back to GoReleaser's defaults (10 attempts, 10s base delay, 5m cap).",
+      "description": "User-facing retry configuration block (`retry:` at config root).\n\nAll fields are optional in YAML; missing fields fall back to the defaults (10 attempts, 10s base delay, 5m cap).",
       "type": "object",
       "properties": {
         "attempts": {
@@ -11815,7 +11815,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Scoop publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `scoop[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Scoop publisher is skipped. Render failure hard-errors. The `scoop[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -12656,7 +12656,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the snapcraft config is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `snapcrafts[].if:`. Distinct from `skip:` (always-skip predicate).",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the snapcraft config is skipped. Render failure hard-errors. The `snapcrafts[].if:`. Distinct from `skip:` (always-skip predicate).",
           "default": null,
           "type": [
             "string",
@@ -12707,7 +12707,7 @@
           ]
         },
         "plugs": {
-          "description": "Top-level snap plug definitions (structured map). Keys are plug names, values are either `null` (simple plug) or an object with `interface` and optional attributes (e.g. `{ interface: \"content\", target: \"$SNAP/shared\" }`). GoReleaser uses `map[string]any` for this field.",
+          "description": "Top-level snap plug definitions (structured map). Keys are plug names, values are either `null` (simple plug) or an object with `interface` and optional attributes (e.g. `{ interface: \"content\", target: \"$SNAP/shared\" }`). An arbitrary key/value map for this field.",
           "default": null,
           "type": [
             "object",
@@ -12732,7 +12732,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this snapcraft config. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"` for conditional skip). Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's snapcraft config field is `pkg/config/config.go:1033` `Disable string`).",
+          "description": "Skip this snapcraft config. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"` for conditional skip). Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs (the legacy `disable:` spelling).",
           "default": null,
           "anyOf": [
             {
@@ -12752,7 +12752,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before bundling. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature.",
+          "description": "Extra files whose contents are rendered through the template engine before bundling. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Template-rendered extra files.",
           "default": null,
           "type": [
             "array",
@@ -12774,7 +12774,7 @@
       "additionalProperties": false
     },
     "SnapcraftExtraFileSpec": {
-      "description": "Specifies an extra file for snapcraft. Can be a simple source path string or a structured object with source, destination, and mode fields (matching GoReleaser's SnapcraftExtraFiles).",
+      "description": "Specifies an extra file for snapcraft. Can be a simple source path string or a structured object with source, destination, and mode fields (matching the snapcraft extra-files shape).",
       "anyOf": [
         {
           "description": "Simple source path string.",
@@ -12852,7 +12852,7 @@
       ],
       "properties": {
         "version_template": {
-          "description": "Version string template for snapshot builds (e.g., \"{{ .Commit }}-SNAPSHOT\"). F3: accepts the deprecated `name_template:` GR alias (renamed to `version_template` upstream). GR ref: `internal/pipe/snapshot/snapshot.go:25-28` — `if NameTemplate != \"\" { VersionTemplate = NameTemplate }`. A deprecation warning is emitted at config-load time when the alias is hit (see `apply_snapshot_legacy_aliases`).",
+          "description": "Version string template for snapshot builds (e.g., \"{{ .Commit }}-SNAPSHOT\"). Accepts the deprecated `name_template:` alias (renamed to `version_template`): a non-empty `name_template` is folded into `version_template`. A deprecation warning is emitted at config-load time when the alias is hit (see `apply_snapshot_legacy_aliases`).",
           "type": "string"
         }
       }
@@ -12985,7 +12985,7 @@
       "type": "object",
       "properties": {
         "bins": {
-          "description": "Map of binary name → install path declared in the spec's `%files` section, mirroring GR `SRPM.Bins`. Each entry tells the generated `.spec` which installed file the package owns. When omitted, each binary produced by the build for this crate defaults to `%{_bindir}/<name>` (i.e. `/usr/bin/<name>`, the RPM-idiomatic location for a built binary). Provide this only to override the install path or to declare extra owned paths. Stored as a `BTreeMap` so the emitted `%files` section iterates in deterministic key order.",
+          "description": "Map of binary name → install path declared in the spec's `%files` section. Each entry tells the generated `.spec` which installed file the package owns. When omitted, each binary produced by the build for this crate defaults to `%{_bindir}/<name>` (i.e. `/usr/bin/<name>`, the RPM-idiomatic location for a built binary). Provide this only to override the install path or to declare extra owned paths. Stored as a `BTreeMap` so the emitted `%files` section iterates in deterministic key order.",
           "default": null,
           "type": [
             "object",
@@ -13133,7 +13133,7 @@
           }
         },
         "prerelease": {
-          "description": "Prerelease suffix appended to the version (e.g. `rc1`, `beta2`). Mirrors GR `NFPM.Prerelease`.",
+          "description": "Prerelease suffix appended to the version (e.g. `rc1`, `beta2`). Prerelease component of the package version.",
           "default": null,
           "type": [
             "string",
@@ -13213,7 +13213,7 @@
           ]
         },
         "version_metadata": {
-          "description": "Build metadata appended to the version (e.g. git commit hash). Mirrors GR `NFPM.VersionMetadata`.",
+          "description": "Build metadata appended to the version (e.g. git commit hash). Version-metadata component of the package version.",
           "default": null,
           "type": [
             "string",
@@ -13284,7 +13284,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: when set, the hook only runs if the rendered result is truthy (not `\"false\"` / `\"0\"` / `\"no\"` / empty). Render failure hard-errors (not silent-skip). Mirrors GoReleaser OSS v2.7+ `before.hooks[].if:` / per-build / per-archive hook `if:` surface.",
+          "description": "Template-conditional: when set, the hook only runs if the rendered result is truthy (not `\"false\"` / `\"0\"` / `\"no\"` / empty). Render failure hard-errors (not silent-skip). `before.hooks[].if:` / per-build / per-archive hook `if:` surface.",
           "default": null,
           "type": [
             "string",
@@ -13429,7 +13429,7 @@
           }
         },
         "skip_ci_on_bump": {
-          "description": "Append `[skip ci]` to the version-sync bump commit subject.\n\nOff by default. Only enable with a `workflow_run`-triggered release workflow: `[skip ci]` on the bump commit (which becomes the tag target) ALSO suppresses an `on: push: tags:` release trigger, so enabling this with a tag-push-triggered release silently skips the release. Leave off for the GoReleaser-style tag-push pattern; enable for the `workflow_run` pattern to skip the (already crate-gated, harmless) redundant CI re-run.",
+          "description": "Append `[skip ci]` to the version-sync bump commit subject.\n\nOff by default. Only enable with a `workflow_run`-triggered release workflow: `[skip ci]` on the bump commit (which becomes the tag target) ALSO suppresses an `on: push: tags:` release trigger, so enabling this with a tag-push-triggered release silently skips the release. Leave off for the tag-push pattern; enable for the `workflow_run` pattern to skip the (already crate-gated, harmless) redundant CI re-run.",
           "default": null,
           "type": [
             "boolean",
@@ -13599,7 +13599,7 @@
       }
     },
     "TemplateFileConfig": {
-      "description": "Configuration for a template file that is rendered through the template engine and placed in the dist directory as a release artifact.\n\nGoReleaser Pro feature: all rendered template files are uploaded to the release by default. Both `src` and `dst` paths support template rendering.",
+      "description": "Configuration for a template file that is rendered through the template engine and placed in the dist directory as a release artifact.\n\nAll rendered template files are uploaded to the release by default. Both `src` and `dst` paths support template rendering.",
       "type": "object",
       "properties": {
         "dst": {
@@ -13643,7 +13643,7 @@
       }
     },
     "TemplatedExtraFile": {
-      "description": "A file whose contents are rendered through the template engine before use. Used by `templated_extra_files` across multiple stages (GoReleaser Pro feature).",
+      "description": "A file whose contents are rendered through the template engine before use. Used by `templated_extra_files` across multiple stages.",
       "type": "object",
       "properties": {
         "dst": {
@@ -13710,7 +13710,7 @@
           ]
         },
         "id": {
-          "description": "Unique identifier for this universal binary, propagated into the artifact's metadata as `id` (GoReleaser universalbinary.go:42-44).",
+          "description": "Unique identifier for this universal binary, propagated into the artifact's metadata as `id`.",
           "default": null,
           "type": [
             "string",
@@ -13851,7 +13851,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the upload is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `uploads[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the upload is skipped. Render failure hard-errors. The `uploads[].if:` conditional gate.",
           "default": null,
           "type": [
             "string",
@@ -13891,7 +13891,7 @@
           ]
         },
         "password": {
-          "description": "Password for HTTP basic auth.\n\nStrongly prefer `{{ .Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will land in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Mirrors GoReleaser's `Upload.Password` cascade.",
+          "description": "Password for HTTP basic auth.\n\nStrongly prefer `{{ .Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will land in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Password-resolution cascade.",
           "default": null,
           "type": [
             "string",
@@ -14168,7 +14168,7 @@
           }
         },
         "headers": {
-          "description": "Custom HTTP headers to include in the request.\n\nPrecedence — **anodizer diverges from GoReleaser here**: - anodizer: a config-supplied `Authorization` header wins over the `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` env var. - GoReleaser (webhook.go:104-115): env-supplied `Authorization` is appended FIRST; most servers honour the first occurrence, so the env value effectively wins.\n\nMigrating configs that relied on env-overriding the config header must either remove the config entry or be reconfigured. Use templated config (`Authorization: \"Bearer {{ .Env.MY_TOKEN }}\"`) for the cleanest migration.",
+          "description": "Custom HTTP headers to include in the request.\n\nPrecedence — **anodizer-specific**: - anodizer: a config-supplied `Authorization` header wins over the `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` env var. - The conventional behaviour: env-supplied `Authorization` is appended FIRST; most servers honour the first occurrence, so the env value effectively wins.\n\nMigrating configs that relied on env-overriding the config header must either remove the config entry or be reconfigured. Use templated config (`Authorization: \"Bearer {{ .Env.MY_TOKEN }}\"`) for the cleanest migration.",
           "default": null,
           "type": [
             "object",
@@ -14290,7 +14290,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the WinGet publisher is skipped. Render failure hard-errors. Mirrors GoReleaser Pro `winget[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the WinGet publisher is skipped. Render failure hard-errors. The `winget[].if:`.",
           "default": null,
           "type": [
             "string",

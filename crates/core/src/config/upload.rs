@@ -31,7 +31,7 @@ pub struct UploadConfig {
     /// redacted from dry-run output and will land in `dist/config.yaml`
     /// when the pipeline runs with `--dry-run` / `--snapshot`. Resolution
     /// order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`.
-    /// Mirrors GoReleaser's `Upload.Password` cascade.
+    /// Password-resolution cascade.
     pub password: Option<String>,
     /// HTTP method: PUT or POST (default: PUT).
     pub method: Option<String>,
@@ -64,7 +64,7 @@ pub struct UploadConfig {
     pub skip: Option<StringOrBool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the upload is skipped.
-    /// Render failure hard-errors. Mirrors GoReleaser Pro `uploads[].if:`.
+    /// Render failure hard-errors. The `uploads[].if:` conditional gate.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }

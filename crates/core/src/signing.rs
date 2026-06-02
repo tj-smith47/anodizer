@@ -113,33 +113,32 @@ pub struct SignConfig {
 }
 
 impl SignConfig {
-    /// Default `id` when a sign config has none. Mirrors GoReleaser
-    /// `internal/pipe/sign/sign.go` (`cfg.ID = "default"`). Used to
+    /// Default `id` when a sign config has none (`"default"`). Used to
     /// label log lines and uniqueness-error messages.
     pub const DEFAULT_ID: &'static str = "default";
 
     /// Default `artifacts` filter for top-level `signs:[]`. Mirrors
-    /// GoReleaser `sign.go` (`cfg.Artifacts = "none"`) — by default
+    /// the canonical `artifacts = "none"` — by default
     /// nothing is signed unless the user opts in.
     pub const DEFAULT_ARTIFACTS: &'static str = "none";
 
     /// Default `artifacts` filter for `binary_signs:[]`. The binary-only
     /// driver always restricts the artifact-kind filter to binaries even
     /// when the user leaves `artifacts:` unset. Anodize-specific helper
-    /// (no GoReleaser equivalent — GR uses a different config type for
+    /// (anodizer-specific — distinct config type for
     /// binary signing) but kept on `SignConfig` because anodize unifies
     /// `signs[]` and `binary_signs[]` into one struct.
     pub const DEFAULT_ARTIFACTS_BINARY: &'static str = "binary";
 
     /// Default `signature` template for top-level `signs:[]`. Mirrors
-    /// GoReleaser `sign.go` (`cfg.Signature = "${artifact}.sig"`).
+    /// the canonical `signature = "${artifact}.sig"`.
     /// Anodize uses Tera-style `{{ .Artifact }}` placeholders that the
     /// arg-resolver rewrites to the same path at execution time.
     pub const DEFAULT_SIGNATURE_TEMPLATE: &'static str = "{{ .Artifact }}.sig";
 
     /// Default `signature` template for `binary_signs:[]`.
     ///
-    /// Intentionally **diverges from GoReleaser** `sign_binary.go:16`: GR
+    /// Intentional **divergence** from the binary-sign default: the upstream
     /// stores binaries under per-target subdirectories
     /// (`dist/linux_amd64/binname`), so its template appends `_{{ .Os }}_{{ .Arch }}`
     /// to the bare binary name without collision. Anodize uses a flat `dist/`
@@ -154,11 +153,11 @@ impl SignConfig {
     /// explicit per-target suffix can set `signature:` in `binary_signs:`.
     pub const DEFAULT_BINARY_SIGNATURE_TEMPLATE: &'static str = "{{ .Artifact }}.sig";
 
-    /// Default `args` for top-level `signs:[]`. Mirrors GoReleaser
-    /// `sign.go` (`["--output", "$signature", "--detach-sig", "$artifact"]`).
+    /// Default `args` for top-level `signs:[]`
+    /// (`["--output", "$signature", "--detach-sig", "$artifact"]`).
     /// Anodize substitutes `$signature` / `$artifact` for `{{ .Signature }}`
     /// / `{{ .Artifact }}` Tera placeholders that the arg-resolver
-    /// rewrites; the wire-level invocation matches GR exactly.
+    /// rewrites; the wire-level invocation is unchanged.
     pub const DEFAULT_ARGS: &[&'static str] = &[
         "--output",
         "{{ .Signature }}",
@@ -166,7 +165,7 @@ impl SignConfig {
         "{{ .Artifact }}",
     ];
 
-    /// Resolve the sign-config id, falling back to `"default"` (GoReleaser-canonical).
+    /// Resolve the sign-config id, falling back to `"default"`.
     pub fn resolved_id(&self) -> &str {
         self.id.as_deref().unwrap_or(Self::DEFAULT_ID)
     }
@@ -260,11 +259,10 @@ pub struct DockerSignConfig {
 }
 
 impl DockerSignConfig {
-    /// Default `id` when a docker-sign config has none. Mirrors GoReleaser
-    /// `internal/pipe/sign/sign_docker.go` (`cfg.ID = "default"`).
+    /// Default `id` when a docker-sign config has none (`"default"`).
     pub const DEFAULT_ID: &'static str = "default";
 
-    /// Default signing `cmd`. Mirrors GoReleaser `sign_docker.go`
+    /// Default signing `cmd`
     /// (`cfg.Cmd = "cosign"`). Unlike top-level `signs:[]` (which falls
     /// back to git's `gpg.program` config), docker signing only ever
     /// targets cosign, so the default is a static literal.
@@ -272,12 +270,11 @@ impl DockerSignConfig {
 
     /// Default `artifacts` filter when unset. Empty string is treated by
     /// the docker-sign driver as "DockerImageV2 only" (post-buildx
-    /// canonical case). Mirrors GR's lack of an explicit fallback —
-    /// GR's switch on `cfg.Artifacts` treats `""` identically.
+    /// canonical case). An empty `artifacts` is treated identically.
     pub const DEFAULT_ARTIFACTS: &'static str = "";
 
-    /// Default `args` for `docker_signs:[]`. Mirrors GoReleaser
-    /// `sign_docker.go` (`["sign", "--key=cosign.key",
+    /// Default `args` for `docker_signs:[]`
+    /// (`["sign", "--key=cosign.key",
     /// "${artifact}@${digest}", "--yes"]`). Anodize substitutes
     /// `${artifact}@${digest}` for the Tera-rewritten
     /// `{{ .Artifact }}@{{ .Digest }}` placeholders.
@@ -288,12 +285,12 @@ impl DockerSignConfig {
         "--yes",
     ];
 
-    /// Resolve the docker-sign id, falling back to `"default"` (GR-canonical).
+    /// Resolve the docker-sign id, falling back to `"default"`.
     pub fn resolved_id(&self) -> &str {
         self.id.as_deref().unwrap_or(Self::DEFAULT_ID)
     }
 
-    /// Resolve the signing command, falling back to `"cosign"` (GR-canonical).
+    /// Resolve the signing command, falling back to `"cosign"`.
     pub fn resolved_cmd(&self) -> &str {
         self.cmd.as_deref().unwrap_or(Self::DEFAULT_CMD)
     }

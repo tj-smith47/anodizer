@@ -35,7 +35,7 @@ pub struct BlobConfig {
     /// Canned ACL for uploaded objects.
     /// **S3**: one of `private` (default), `public-read`, `public-read-write`,
     /// `authenticated-read`, `aws-exec-read`, `bucket-owner-read`,
-    /// `bucket-owner-full-control`. Matches GoReleaser's accepted set;
+    /// `bucket-owner-full-control`. The accepted ACL set;
     /// AWS's `log-delivery-write` is intentionally omitted because it is only
     /// valid on `S3LogBucket` targets and would silently fail on a normal bucket.
     /// **GCS**: pass the camelCase predefined-ACL name (e.g. `publicRead`,
@@ -63,7 +63,7 @@ pub struct BlobConfig {
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before upload.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
-    /// GoReleaser Pro feature.
+    /// Conditional-skip gate.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Upload only extra files (skip artifacts).
     pub extra_files_only: Option<bool>,
@@ -86,7 +86,7 @@ pub struct BlobConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the blob config is skipped.
-    /// Render failure hard-errors. Mirrors GoReleaser Pro `blobs[].if:`.
+    /// Render failure hard-errors. The `blobs[].if:` conditional gate.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }

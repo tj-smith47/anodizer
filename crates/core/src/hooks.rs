@@ -8,7 +8,7 @@ use std::process::Command;
 /// Redact sensitive environment variable values from output strings.
 ///
 /// Auto-discovers secret-looking env vars using the same heuristics as
-/// GoReleaser's `redact.go`: key suffix matching and value prefix matching.
+/// secret detection: key suffix matching and value prefix matching.
 /// This catches both well-known and user-defined secrets.
 fn redact_secrets(output: &str) -> String {
     let env: Vec<(String, String)> = std::env::vars().collect();
@@ -36,15 +36,15 @@ pub struct HookRunContext<'a> {
     /// Sink for status lines and captured command output.
     pub log: &'a StageLogger,
     /// When set, hook `cmd` / `dir` / `env` / `if` are Tera-expanded with
-    /// these vars before execution (like GoReleaser), supporting
+    /// these vars before execution, supporting
     /// conditionals, filters, and `{{ .Env.VAR }}`. `None` runs the literal
     /// command with no rendering.
     pub template_vars: Option<&'a TemplateVars>,
     /// The active build's per-target `builds[].env` map (already
     /// rendered/expanded by the build planner). It layers BETWEEN the
     /// inherited process env (base) and each hook's own `env:` (most
-    /// specific), matching GoReleaser's `append(buildEnv, hook.Env...)`
-    /// precedence (`internal/pipe/build/build.go` `runHook`): a key present
+    /// specific) — hook `env:` entries are appended after the build env,
+    /// so a key present
     /// in both resolves to the hook value. `None` (the default via
     /// [`HookRunContext::new`]) at non-build hook sites — they have no
     /// build env.
@@ -165,9 +165,9 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
             if let Some(ref d) = dir_str {
                 command.current_dir(d);
             }
-            // GoReleaser precedence: process env (inherited, base) < build env
+            // Precedence: process env (inherited, base) < build env
             // < hook env. Apply the per-target build env first so a same-key
-            // hook `env:` entry below overrides it (matching GR's
+            // hook `env:` entry below overrides it (the
             // `append(buildEnv, hook.Env...)`).
             if let Some(be) = build_env {
                 for (k, v) in be {
@@ -216,7 +216,7 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
 /// giving operators a last-chance hook for smoke tests, antivirus scans,
 /// or external state staging against the staged dist tree.
 ///
-/// Each `hooks[*]` entry runs **once per matching artifact** (GoReleaser
+/// Each `hooks[*]` entry runs **once per matching artifact** (the
 /// Pro `before_publish:` semantics). For each entry:
 ///
 /// 1. Resolve the entry's `ids:` + `artifacts:` filters and walk

@@ -1,6 +1,6 @@
 //! Partial build target resolution for split/merge CI fan-out.
 //!
-//! Equivalent to GoReleaser Pro's `partial.Pipe` — resolves which build targets
+//! Partial-build target resolution — resolves which build targets
 //! to include when running in split mode.
 
 use anyhow::{Context as _, Result};
@@ -55,33 +55,33 @@ impl PartialTarget {
     /// - `OsArch { os: "linux", arch: Some("amd64") }` → `"linux_amd64"`
     /// - `Targets(["x86_64-...", "aarch64-..."])` → `"targets-x86_64-..."` (first triple)
     ///
-    /// # Divergence from GoReleaser
+    /// # Design note
     ///
-    /// GoReleaser Pro writes split shards to `dist/$GOOS` (or
+    /// A Go-style layout writes split shards to `dist/$GOOS` (or
     /// `dist/$GOOS_$GOARCH` when `partial.by: target`). Anodizer
     /// matches that shape for the `OsArch` variant — `OsArch { os:
-    /// "linux", arch: None }` resolves to `"linux"`, identical to GR's
+    /// "linux", arch: None }` resolves to `"linux"`, identical to the
     /// `dist/linux` — but the `Exact` variant uses the full Rust target
-    /// triple instead of GR's Go-style `<goos>_<goarch>` (because the
+    /// triple instead of the Go-style `<goos>_<goarch>` (because the
     /// triple is the natural granularity for Rust toolchains), and the
     /// `Targets` variant is anodizer-only (drives the determinism
     /// harness's sharded matrix, not user-facing CI fan-out).
     ///
     /// Practical consequence: split shards produced by anodizer cannot
-    /// be merged by `goreleaser` and vice versa. Anodizer's CLI does
+    /// be merged by a Go-style consumer and vice versa. Anodizer's CLI does
     /// not attempt cross-tool interop; the subdir name is purely
     /// internal to the per-tool merge step.
     ///
     /// ```
     /// use anodizer_core::partial::PartialTarget;
     ///
-    /// // OsArch matches GR's `dist/linux` shape exactly.
+    /// // OsArch matches the `dist/linux` shape exactly.
     /// assert_eq!(
     ///     PartialTarget::OsArch { os: "linux".into(), arch: None }.dist_subdir(),
     ///     "linux",
     /// );
     ///
-    /// // Exact uses the full Rust triple (not GR's `linux_amd64`).
+    /// // Exact uses the full Rust triple (not `linux_amd64`).
     /// assert_eq!(
     ///     PartialTarget::Exact("x86_64-unknown-linux-gnu".into()).dist_subdir(),
     ///     "x86_64-unknown-linux-gnu",
@@ -117,9 +117,9 @@ impl PartialTarget {
 
 /// Resolve the partial build target from environment variables and config.
 ///
-/// Priority chain (matching GoReleaser Pro's approach):
+/// Priority chain:
 /// 1. `TARGET` env var — exact target triple (highest priority)
-/// 2. `ANODIZER_OS`/`ANODIZER_ARCH` (canonical) or `GGOOS`/`GGOARCH` (GoReleaser
+/// 2. `ANODIZER_OS`/`ANODIZER_ARCH` (canonical) or `GGOOS`/`GGOARCH` (import
 ///    alias; filter-only — does not override the host's `GOOS`/`GOARCH` for hooks)
 /// 3. Host detection via `rustc -vV`, interpreted per `partial.by` config
 pub fn resolve_partial_target(config: &Option<PartialConfig>) -> Result<PartialTarget> {
@@ -141,7 +141,7 @@ pub fn resolve_partial_target_with_env<E: EnvSource + ?Sized>(
         return Ok(PartialTarget::Exact(t));
     }
 
-    // Priority 2: ANODIZER_OS/ANODIZER_ARCH, or GGOOS/GGOARCH alias for GoReleaser
+    // Priority 2: ANODIZER_OS/ANODIZER_ARCH, or GGOOS/GGOARCH import alias
     // compatibility. Canonical vars win when both are set.
     let os = env
         .var("ANODIZER_OS")
@@ -228,8 +228,8 @@ pub fn detect_rustc_version() -> Option<String> {
 
 /// Resolve the effective host target triple for `--single-target`.
 ///
-/// Priority chain (mirrors GoReleaser's `partial.Pipe.Run` +
-/// `getGoEnvFilter` / `findRuntime` so a config originally written for GR
+/// Priority chain (host-target detection so a config originally written for a
+/// Go-style consumer
 /// keeps the same CI escape hatches under anodizer):
 /// 1. `TARGET=<triple>` env var (exact triple, highest priority).
 /// 2. `GGOOS` / `GGOARCH` filter-only aliases combined with the host
@@ -274,7 +274,7 @@ pub fn resolve_host_target() -> Result<String> {
 
 /// Best-effort host->triple fuzzy matcher for `--single-target`.
 ///
-/// Mirrors GoReleaser's `partial.findRuntime` (OSS): walks
+/// Host-target detection: walks
 /// `goos -> {macos, darwin}` and `goarch -> {x86_64, amd64, arm64,
 /// aarch64, 386 -> i686/i586/i386}` alias tables to find a configured
 /// target that matches the runtime even when the user's `targets:`
@@ -297,7 +297,7 @@ pub fn find_runtime_target(host: &str, configured: &[String]) -> Option<String> 
 /// supplied `GGOOS` / `GGOARCH` overrides so the synthesized string
 /// passes through [`find_runtime_target`] correctly.
 ///
-/// The mapping accepts both GoReleaser-style aliases (`darwin`, `amd64`,
+/// The mapping accepts both Go-style aliases (`darwin`, `amd64`,
 /// `arm64`, `386`) and their rust-triple spellings (`apple-darwin`,
 /// `x86_64`, `aarch64`, `i686`). Unknown values are passed through
 /// verbatim — best-effort behaviour matching `findRuntime`.
@@ -642,7 +642,7 @@ mod tests {
     }
 
     /// `OsArch { os: "linux", arch: None }` must spell `"linux"` —
-    /// byte-for-byte the same name GoReleaser writes to `dist/linux`.
+    /// byte-for-byte the `dist/linux` shape.
     /// This is the only `dist_subdir` shape that round-trips between
     /// the two tools and is therefore worth pinning explicitly.
     #[test]
@@ -655,7 +655,7 @@ mod tests {
     }
 
     /// The `Exact` variant uses the full Rust target triple, which
-    /// diverges from GoReleaser's `dist/$GOOS_$GOARCH` shape. Lock
+    /// diverges from the `dist/$GOOS_$GOARCH` shape. Lock
     /// the anodizer-specific spelling in so the rustdoc-documented
     /// divergence is also enforced by a test.
     #[test]
@@ -868,7 +868,7 @@ mod tests {
     #[test]
     #[serial]
     fn resolve_host_target_blank_target_falls_through() {
-        // A whitespace-only TARGET should be ignored (matches GR's
+        // A whitespace-only TARGET should be ignored (the
         // `if t := os.Getenv("TARGET"); t != ""` early-return).
         let env = crate::MapEnvSource::new().with("TARGET", "   ");
         let triple = resolve_host_target_with_env(&env).unwrap();

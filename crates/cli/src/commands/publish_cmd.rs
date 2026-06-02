@@ -1,6 +1,6 @@
 //! `anodizer publish` command.
 //! Runs only the publish stages (release, publish, blob) from a completed dist/.
-//! Equivalent to GoReleaser Pro's `goreleaser publish` (and `publish --merge`).
+//! Runs the publish-only pipeline (and `publish --merge`).
 
 use super::helpers;
 use crate::pipeline;
@@ -19,8 +19,7 @@ pub struct PublishOpts {
     pub quiet: bool,
     /// When true, load `dist/<subdir>/context.json` artifacts emitted by
     /// `release --split` workers (instead of `dist/artifacts.json`) and
-    /// then run the publish-only pipeline. Mirrors GR Pro's
-    /// `goreleaser publish --merge` — lets operators break the merge
+    /// then run the publish-only pipeline (the merge mode) — lets operators break the merge
     /// step into smaller pieces (one machine merges + signs, another
     /// publishes).
     pub merge: bool,

@@ -18,7 +18,7 @@ use anodizer_core::config::Config;
 ///   a project prefix and three sub-projects don't all surface as `v1.2.3`.
 /// - Every relative `extra_files` / `files` glob on archive / release /
 ///   checksum / source / docker / nfpm / publisher subsystems is rewritten
-///   to be relative to `monorepo.dir`, matching GR's "Extra files on the
+///   to be relative to `monorepo.dir` ("Extra files on the
 ///   release, archives, Docker builds, etc are prefixed with monorepo.dir"
 ///   contract.
 ///
@@ -57,7 +57,7 @@ fn apply_monorepo_to_crate(crate_cfg: &mut anodizer_core::config::CrateConfig, d
         crate_cfg.path = dir.to_string();
     }
     // Default release name template to a project-prefixed form when the
-    // user has not chosen one. Mirrors GR Pro's "Release name gets prefixed
+    // user has not chosen one ("Release name gets prefixed
     // with `{{ .ProjectName }} ` if empty" rule.
     if let Some(ref mut rel) = crate_cfg.release
         && rel.name_template.is_none()
@@ -274,7 +274,7 @@ fn monorepo_tag_prefix_is_suspicious(prefix: &str) -> bool {
 }
 
 /// Emit a `tracing::warn!` for monorepo tag-prefix shapes that almost
-/// certainly indicate a typo. GR's docs strongly imply either a
+/// certainly indicate a typo. The docs strongly imply either a
 /// trailing-slash prefix (Category 1 — `subproject1/`) or a tiny
 /// well-known prefix (Category 2 — `v`).
 fn validate_monorepo_tag_prefix(config: &Config) {

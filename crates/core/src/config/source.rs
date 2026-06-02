@@ -76,7 +76,7 @@ impl SourceConfig {
     /// time honors the documented contract — stage code that already
     /// renders the (now-Some) field needs no behavioral change.
     ///
-    /// GoReleaser `internal/pipe/sourcearchive/source.go:49-57` defaults to
+    /// Defaults to
     /// empty; this is anodize-additive (more ergonomic default), aligning
     /// behavior with the long-standing doc.
     pub fn apply_prefix_template_default(&mut self) {
