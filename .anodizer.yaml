@@ -417,13 +417,16 @@ crates:
         update_existing_pr: true
       aur:
         required: false
-        skip: true  # no AUR account registered yet
         git_url: "ssh://aur@aur.archlinux.org/anodizer-bin.git"
         name: anodizer-bin
         description: "A Rust-native release automation tool"
         license: MIT
         depends:
           - glibc
+        # Binary-only package(): anodizer's archive bundles LICENSE/README only
+        # (no completions/man), so there is nothing extra to install here. To
+        # ship completions+man on AUR, bundle them into the archive stage first.
+        private_key: "{{ .Env.AUR_SSH_KEY }}"
         commit_author:
           name: TJ Smith
           email: tj@jarvispro.io

@@ -172,15 +172,16 @@ jobs:
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
           args: release --publish-only
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+          CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
-          CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
 
       - name: Rollback on release failure
         if: ${{ always() && (steps.release.outcome == 'failure' || steps.release.outcome == 'cancelled') }}

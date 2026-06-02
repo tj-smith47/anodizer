@@ -19,8 +19,7 @@ jobs:
         with:
           args: release --nightly --no-preflight
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}

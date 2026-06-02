@@ -62,5 +62,5 @@ homebrew_casks:
 | **Scoop bucket** | ✅ Verified | [`anodizer.json`](https://github.com/tj-james47/scoop-bucket/blob/master/anodizer.json), [`cfgd.json`](https://github.com/tj-smith47/scoop-bucket/blob/master/cfgd.json) |
 | **Homebrew cask** | 🟡 In progress | `homebrew_casks:` block added 2026-05-26 (GR v2.16 supported path for plain CLI binaries); pending next release to validate the tap-write end-to-end. See [`homebrew_casks:` docs](../../../docs/publish/homebrew-casks/) and [GoReleaser v2.16](https://goreleaser.com/blog/goreleaser-v2.16/). |
 | **Krew** | 🤝 Help wanted | PR flow runs in CI; cfgd plugin not yet merged into [kubernetes-sigs/krew-index](https://github.com/kubernetes-sigs/krew-index/tree/master/plugins) |
-| **AUR** | 🤝 Help wanted | Needs AUR SSH key; not pushed |
+| **AUR** | 🟡 In progress | AUR account created + `AUR_SSH_KEY` wired into release CI 2026-06-02. anodizer ships `anodizer-bin` via the `aur` (binary) publisher; cfgd ships `cfgd` via the `aur_source` (build-from-source) publisher. Pending next release to validate the push end-to-end. See [`aur:` docs](../../../docs/publish/aur/). |
 | **Flathub** | 🤝 Help wanted | Needs flatpak runtime + flathub config |
