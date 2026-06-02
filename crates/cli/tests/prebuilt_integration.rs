@@ -2,7 +2,7 @@
 //! builder that skips `cargo build` and stages an already-produced binary
 //! into the release pipeline.
 //!
-//! Each test stages a fake binary outside `dist/` (per the warning
+//! Each test stages a fake binary outside `dist/` (per GoReleaser's warning
 //! that the release pipeline removes `dist/` between runs), points the
 //! config's `prebuilt.path` template at it, and asserts the artifact lands
 //! with the expected metadata. Negative tests cover the four config-load
@@ -16,7 +16,7 @@ use tempfile::TempDir;
 use anodizer_core::test_helpers::{create_config, create_test_project, init_git_repo};
 
 /// Stage a fake binary at `output/<binary>_<target>` (the conventional
-/// shape from the docs) so the `prebuilt.path` template
+/// shape from GoReleaser's docs) so the `prebuilt.path` template
 /// renders to it on every host. Returns the absolute path of the
 /// staged file for assertion bookkeeping.
 fn stage_fake_binary(tmp: &std::path::Path, binary: &str, target: &str) -> std::path::PathBuf {

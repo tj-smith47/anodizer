@@ -99,7 +99,7 @@ pub fn detect_git_info_in(cwd: &Path, tag: &str, skip_validate: bool) -> Result<
         &["-c", "log.showSignature=false", "log", "-1", "--format=%at"],
     )
     .unwrap_or_default();
-    // Use ls-remote --get-url.
+    // Use ls-remote --get-url (matches GoReleaser git.go:355).
     // Without an explicit remote name this defaults to "origin".
     //
     // A truly missing remote (no `origin` configured) is a legitimate state —
@@ -107,7 +107,7 @@ pub fn detect_git_info_in(cwd: &Path, tag: &str, skip_validate: bool) -> Result<
     // But a *git error* during this lookup (broken config, transient SSH
     // failure, permission issue) used to be silently swallowed by
     // `unwrap_or_default()`, leaving `remote_url=""` with no diagnostic.
-    // Preserve the
+    // Mirrors the spirit of GoReleaser commit 5042b84 (Q12): preserve the
     // underlying error rather than replacing it with an empty sentinel.
     let remote_url_raw = match git_output_in(cwd, &["ls-remote", "--get-url"]) {
         Ok(url) => url,

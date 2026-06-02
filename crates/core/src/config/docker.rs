@@ -88,7 +88,8 @@ pub struct DockerV2Config {
     pub flags: Option<Vec<String>>,
     /// When truthy, skip this docker build entirely. Supports templates.
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat
-    /// with imported configs (the legacy `disable:` spelling).
+    /// with imported GoReleaser configs (GR's docker config field is
+    /// `pkg/config/config.go:1149` `Disable string`).
     #[serde(
         default,
         alias = "disable",
@@ -107,13 +108,14 @@ pub struct DockerV2Config {
     ///
     /// - `{{ .Images }}` — list of `image:tag` references for this build.
     ///   Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror
-    ///   a list exposure of the same field; `{{ .Images | join(sep=",") }}`
+    ///   GR's `[]string` exposure of the same field; `{{ .Images | join(sep=",") }}`
     ///   reproduces a flat comma-separated string for legacy templates.
     /// - `{{ .Dockerfile }}` — path to the rendered Dockerfile
     /// - `{{ .ContextDir }}` — path to the buildx context staging directory
     /// - `{{ .Digest }}` — image manifest digest (post hooks only)
     /// - `{{ .BaseImage }}` / `{{ .BaseImageDigest }}` — final-stage base image
-    ///   (the `BaseImage` / `BaseImageDigest` overlay)
+    ///   (matches the `BaseImage` / `BaseImageDigest` overlay GR adds in
+    ///   `internal/pipe/docker/v2/docker.go`)
     pub hooks: Option<BuildHooksConfig>,
     /// Docker backend for build commands: `"buildx"` (default) or `"podman"`.
     ///
@@ -125,7 +127,7 @@ pub struct DockerV2Config {
     /// `--provenance`, `--attest`, `--cache-from`, `--cache-to`, `--output`,
     /// or `--sbom` because plain podman does not recognise them.
     ///
-    /// **Linux-only.** The podman backend is
+    /// **Linux-only.** Matches GoReleaser Pro: the podman backend is
     /// restricted to Linux hosts. Configs setting `use: podman` on macOS or
     /// Windows fail at config-validation time with a clear error rather than
     /// blowing up later when `podman` is not on `PATH`.
@@ -161,11 +163,11 @@ pub struct DockerDigestConfig {
 
 /// Deprecated: prefer `docker_v2` (which produces multi-arch manifests via
 /// the `platforms:` field automatically). `DockerManifestConfig` is retained
-/// for back-compat with imported configs and for the niche case
+/// for back-compat with imported GoReleaser configs and for the niche case
 /// of stitching together manifest lists from images that were not built by
 /// `docker_v2` in the same run.
 ///
-/// The v1 docker / docker
+/// Mirrors GoReleaser commit e09e23a, which marked the v1 docker / docker
 /// manifest pipes deprecated in favour of the v2 buildx flow. The rustdoc
 /// here is the load-bearing surface for the deprecation: it flows into the
 /// schemars-generated JSON Schema (consumed by IDEs / editor tooling) and
@@ -188,7 +190,7 @@ pub struct DockerManifestConfig {
     /// Unique identifier for this manifest config.
     pub id: Option<String>,
     /// Docker backend for manifest commands: `"docker"` (default) or
-    /// `"podman"`. The `"podman"` backend is **Linux-only** (per
+    /// `"podman"`. The `"podman"` backend is **Linux-only** (mirrors GoReleaser
     /// Pro): configs on macOS or Windows fail at config-validation time with
     /// a clear error rather than blowing up later when `podman` is not on
     /// `PATH`.

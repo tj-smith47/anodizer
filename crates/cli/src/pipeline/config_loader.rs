@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use super::monorepo::apply_monorepo_defaults;
 
-/// Cap on recursion depth for `includes:` chains. There isn't
+/// Cap on recursion depth for `includes:` chains. GoReleaser doesn't
 /// document a limit; we pick 32 — well above any plausible org-shared
 /// fan-out, well below the worker-thread stack budget that
 /// `deserialize_on_worker` reserves.
@@ -166,8 +166,8 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // Walk the raw YAML pre-parse for two checks that lose information
     // once typed deserialization runs:
     //   * legacy `snapshot.name_template` (renamed to `version_template`
-    //     historically; serde alias accepts both but collapses them on parse).
-    //   * legacy V1 `dockers:` block — anodizer is V2-only by design;
+    //     in GR; serde alias accepts both but collapses them on parse).
+    //   * GR V1 `dockers:` block — anodizer is V2-only by design;
     //     without this check `deny_unknown_fields` emits a generic
     //     "unknown field" error that does not point at `docker_v2:`.
     // Best-effort — YAML parse failures are reported by the typed loader below.
@@ -194,7 +194,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // post-fold state.
     anodizer_core::config::apply_archive_legacy_aliases(&mut config);
     // Fold the singular `binary:` cask field into the canonical `binaries:`
-    // list (deprecated rename) and emit a deprecation warning per occurrence.
+    // list (GR v2.12.6 rename) and emit a deprecation warning per occurrence.
     anodizer_core::config::apply_homebrew_cask_legacy_singulars(&mut config);
 
     // Validate config schema version
@@ -221,13 +221,13 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // Validate `builder: prebuilt` builds carry a `prebuilt.path`,
     // explicit targets, and no cargo-only knobs.
     anodizer_core::config::validate_builds(&config).map_err(anyhow::Error::msg)?;
-    // Validate changelog.groups subgroup depth (capped at one level).
+    // Validate changelog.groups subgroup depth (GoReleaser caps at one level).
     anodizer_core::config::validate_changelog_groups_depth(&config).map_err(anyhow::Error::msg)?;
     // Validate changelog.paths[] syntax (reject leading `/` and empty entries).
     anodizer_core::config::validate_changelog_paths(&config).map_err(anyhow::Error::msg)?;
     anodizer_core::config::warn_on_submitter_required(&config);
     anodizer_core::config::warn_on_legacy_homebrew_formula(&config);
-    // The deprecated nested `dockers_v2[].retry:` / `docker_manifests[].retry:`
+    // GR v2.15.3 deprecated nested `dockers_v2[].retry:` / `docker_manifests[].retry:`
     // in favour of the top-level `retry:` block.
     anodizer_core::config::warn_on_legacy_docker_retry(&config);
 
@@ -244,7 +244,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     apply_monorepo_defaults(&mut config);
 
     // Normalize commit_author defaults on every publisher config that carries
-    // one. Fills in anodizer defaults
+    // one (matches GoReleaser's `Default()` pipe). Fills in anodizer defaults
     // for empty name/email so error messages referencing author identity at
     // config-validation time see non-empty strings.
     normalize_commit_author_defaults(&mut config);
@@ -268,7 +268,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
 
 /// Walk the loaded config and fill in commit_author defaults on every
 /// publisher that has one (homebrew formula + cask, scoop, chocolatey, winget,
-/// nix, aur, krew). This is the per-publisher defaulting
+/// nix, aur, krew). GoReleaser does this in its per-publisher `Default()`
 /// pass; anodizer centralises here so the normalization runs once at load.
 fn normalize_commit_author_defaults(config: &mut anodizer_core::config::Config) {
     for crate_cfg in &mut config.crates {
@@ -444,7 +444,7 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
 ///
 /// If the URL does not start with `http://` or `https://`, prepend
 /// `https://raw.githubusercontent.com/` (GitHub raw content shorthand,
-/// the merge-mode behavior).
+/// matching GoReleaser Pro behavior).
 fn normalize_include_url(url: &str) -> String {
     if url.starts_with("http://") || url.starts_with("https://") {
         url.to_string()
@@ -615,7 +615,7 @@ fn expand_path_tilde_and_env(path_str: &str) -> String {
 /// message. The same set survives across siblings, which means an
 /// include referenced twice in a chain (or twice in the same array) is
 /// deduplicated — the second hit returns an empty mapping. This matches
-/// a "load once" expectation; users wanting an include's
+/// GoReleaser's "load once" expectation; users wanting an include's
 /// values applied twice cannot express that anyway because the deep
 /// merge is idempotent.
 ///

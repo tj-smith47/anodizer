@@ -32,10 +32,10 @@ pub enum RollbackMode {
     BestEffort,
 }
 
-/// Valid --skip values for the `release` command.
+/// Valid --skip values for the `release` command (matches GoReleaser).
 ///
 /// Publisher skip names use the short canonical form (matching the CLI binary
-/// name and convention): `brew`, `choco`, `krew`, `cargo`, etc.
+/// name and GoReleaser convention): `brew`, `choco`, `krew`, `cargo`, etc.
 /// Long aliases (e.g. `homebrew`, `chocolatey`) are NOT accepted forbids
 /// aliases; use the short name everywhere.
 pub const VALID_RELEASE_SKIPS: &[&str] = &[
@@ -221,7 +221,7 @@ pub struct ContextOptions {
     /// `--allow-ai-failure`: when true, a failure inside the
     /// `changelog.ai` enhancement step (transport, non-2xx, parse) is
     /// logged as a warning and the pre-AI release notes are kept
-    /// verbatim. Default `false` (fail-closed) follows the conventional
+    /// verbatim. Default `false` (fail-closed) mirrors GoReleaser's
     /// "any hook failure aborts" pattern: a silent fall-back to the
     /// raw notes ships the wrong body without the operator noticing.
     pub allow_ai_failure: bool,
@@ -287,7 +287,7 @@ pub struct StageOutputs {
     /// Rendered `changelog.header` value, populated by the changelog stage.
     /// The release stage uses it as a fallback when `release.header` is
     /// unset so YAML-configured changelog headers reach the GitHub release
-    /// body (the release-header content-loading behaviour).
+    /// body (matching GoReleaser's `loadContent(ReleaseHeader…)` behaviour).
     pub changelog_header: Option<String>,
     /// Rendered `changelog.footer` value, populated by the changelog stage.
     /// Same fallback semantics as `changelog_header`.
@@ -315,7 +315,7 @@ pub struct Context {
     /// Aggregated skips from per-sub-config loops (signs, docker_signs,
     /// publishers, …). Drained by the pipeline runner at end-of-pipeline so
     /// the summary shows what was intentionally skipped — mirroring
-    /// the skip-memento pattern. The inner `Arc<Mutex<…>>`
+    /// GoReleaser's `pipe.SkipMemento` pattern. The inner `Arc<Mutex<…>>`
     /// lets parallel stage workers contribute without extra plumbing.
     pub skip_memento: crate::pipe_skip::SkipMemento,
     /// Trait-based publisher dispatch report, set by `PublishStage::run`
@@ -903,7 +903,7 @@ impl Context {
                 "false"
             },
         );
-        // Wire IsDraft from `release.draft`.
+        // Wire IsDraft from config (GoReleaser reads ctx.Config.Release.Draft).
         let is_draft = self
             .config
             .release
@@ -955,9 +955,9 @@ impl Context {
     ///    `Timestamp` / `Now`. Without this branch, two from-clean runs of
     ///    the same commit emit metadata.json files that differ in the `date`
     ///    field, defeating release-asset idempotency.
-    /// 2. `chrono::Utc::now()` — wall-clock fallback. The
+    /// 2. `chrono::Utc::now()` — wall-clock fallback. Matches GoReleaser's
     ///    legacy semantics for runs without SDE wired in. Note that the
-    ///    template docs explicitly call `.Now` "not deterministic"
+    ///    GoReleaser template docs explicitly call `.Now` "not deterministic"
     ///    — under SDE-aware reproducible builds we deviate from that
     ///    behavior intentionally.
     pub fn populate_time_vars(&mut self) {
@@ -989,7 +989,7 @@ impl Context {
     /// Sets:
     /// - `RuntimeGoos` — host OS in Go-compatible naming (e.g. "linux", "darwin", "windows")
     /// - `RuntimeGoarch` — host architecture in Go-compatible naming (e.g. "amd64", "arm64")
-    /// - `Runtime_Goos` / `Runtime_Goarch` — nested aliases
+    /// - `Runtime_Goos` / `Runtime_Goarch` — GoReleaser-compatible nested aliases
     /// - `RustcVersion` — host rustc release version (e.g. "1.96.0"), or "" when
     ///   rustc is unavailable
     pub fn populate_runtime_vars(&mut self) {
@@ -997,7 +997,7 @@ impl Context {
         let goarch = map_arch_to_goarch(std::env::consts::ARCH);
         self.template_vars.set("RuntimeGoos", goos);
         self.template_vars.set("RuntimeGoarch", goarch);
-        // Runtime.Goos / Runtime.Goarch — after preprocessing
+        // GoReleaser uses Runtime.Goos / Runtime.Goarch — after preprocessing
         // the dot becomes an underscore-separated flat key. We expose both forms.
         self.template_vars.set("Runtime_Goos", goos);
         self.template_vars.set("Runtime_Goarch", goarch);
@@ -1054,13 +1054,13 @@ impl Context {
     pub fn refresh_artifacts_var(&mut self) {
         // CSV metadata keys we expose as JSON arrays for template iteration.
         // Storage remains HashMap<String,String> (flat); only the
-        // template-exposed view is expanded. The
+        // template-exposed view is expanded. Matches GoReleaser's
         // ExtraBinaries / ExtraFiles list semantics.
         const CSV_LIST_KEYS: &[&str] = &["extra_binaries", "extra_files"];
         // JSON-encoded list metadata keys: stored as a JSON-array string in
         // `HashMap<String,String>`, exposed as a real array on the template
         // side so `{% for p in .Artifacts[0].metadata.Platforms %}` works.
-        // `Platforms` is the platform-list slice on
+        // `Platforms` mirrors GR's `ExtraPlatforms = "Platforms"` slice on
         // `DockerImageV2` artifacts.
         const JSON_LIST_KEYS: &[&str] = &["Platforms"];
 
@@ -1111,7 +1111,7 @@ impl Context {
     /// Populate the `Metadata` structured template variable from config.metadata.
     ///
     /// Exposes the project metadata block as a nested map with PascalCase keys
-    /// the `.Metadata.*` namespace:
+    /// matching GoReleaser's `.Metadata.*` namespace:
     /// `Description`, `Homepage`, `License`, `Maintainers`, `ModTimestamp`,
     /// `FullDescription` (resolved), `CommitAuthor.{Name,Email}`.
     /// Missing fields default to empty strings / empty arrays.
@@ -1197,7 +1197,7 @@ impl Context {
 }
 
 /// Map Rust's `std::env::consts::OS` to Go-compatible GOOS naming.
-/// Templates expect Go runtime names (e.g. "darwin" not "macos").
+/// GoReleaser templates expect Go runtime names (e.g. "darwin" not "macos").
 pub fn map_os_to_goos(os: &str) -> &str {
     match os {
         "macos" => "darwin",
@@ -1206,7 +1206,7 @@ pub fn map_os_to_goos(os: &str) -> &str {
 }
 
 /// Map Rust's `std::env::consts::ARCH` to Go-compatible GOARCH naming.
-/// Templates expect Go runtime names (e.g. "amd64" not "x86_64").
+/// GoReleaser templates expect Go runtime names (e.g. "amd64" not "x86_64").
 pub fn map_arch_to_goarch(arch: &str) -> &str {
     match arch {
         "x86_64" => "amd64",
@@ -2018,7 +2018,7 @@ mod tests {
         ctx.populate_git_vars();
 
         // When there is no previous tag, PrefixedPreviousTag should be empty
-        // (not just the prefix).
+        // (not just the prefix), matching GoReleaser behavior.
         assert_eq!(
             ctx.template_vars().get("PrefixedPreviousTag"),
             Some(&"".to_string())

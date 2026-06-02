@@ -64,7 +64,7 @@ pub struct ArtifactoryConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the artifactory publisher is
-    /// skipped. Render failure hard-errors. The
+    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
     /// `artifactories[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,

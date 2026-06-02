@@ -72,7 +72,7 @@ pub enum SkipReason {
     DryRun,
     /// Pipeline ran in `--nightly` mode and this publisher opts out of
     /// nightly publishes (e.g. homebrew, scoop, aur, krew, nix, every
-    /// announcer — the nightly skip-list).
+    /// announcer — matches GoReleaser's nightly skip-list).
     Nightly,
     /// No artifact in the current crate scope matches this publisher's
     /// applicability rules (e.g. top-level homebrew_casks declared

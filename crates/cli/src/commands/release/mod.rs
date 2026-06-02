@@ -72,7 +72,7 @@ pub struct ReleaseOpts {
     /// `merge` at the clap level.
     pub publish_only: bool,
     pub strict: bool,
-    /// `--prepare`: run local build/archive/sign/checksum/sbom
+    /// `--prepare` (GoReleaser Pro parity): run local build/archive/sign/checksum/sbom
     /// stages but NOT release/publish/announce. Implemented by augmenting `skip` with
     /// those three stages at the top of `run()`; artifacts still land under `dist/`.
     pub prepare: bool,
@@ -181,7 +181,7 @@ pub(crate) fn should_run_preflight_auto(
     !no_preflight && !snapshot && !dry_run && !split && !publish_only && !publish_skipped
 }
 
-/// `--prepare`: runs local build/archive/sign/checksum/sbom stages
+/// GoReleaser Pro `--prepare`: runs local build/archive/sign/checksum/sbom stages
 /// but skips anything that reaches upstream (release + publish + announce).
 /// Idempotent — won't duplicate stages already present in `skip`.
 ///
@@ -592,7 +592,7 @@ fn apply_release_meta_overrides(config: &mut Config, opts: &ReleaseOpts) -> Resu
 }
 
 /// Enforce the dist directory state: `--clean` removes it (logs in dry-run);
-/// otherwise a populated dist is a hard error.
+/// otherwise a populated dist is a hard error (GoReleaser's `ErrDirtyDist`).
 /// `--merge` / `--publish-only` / `--rollback-only` skip the non-empty check
 /// because each of those modes requires preserved dist content.
 fn enforce_dist_state(config: &Config, opts: &ReleaseOpts, log: &StageLogger) -> Result<()> {
@@ -746,7 +746,7 @@ pub(crate) fn resolve_tag_to_crate<'a>(
 /// Snapshot mode auto-skips every stage that performs an external upload
 /// (`publish`, `snapcraft-publish`, `blob`, `announce`); the release stage
 /// handles snapshot mode internally. Skipping `publish` implies skipping
-/// `announce`.
+/// `announce` (matches GoReleaser).
 fn compute_skip_stages(
     mut skip_stages: Vec<String>,
     workspace_skip: &[String],
@@ -1055,7 +1055,7 @@ fn run_rollback_only(ctx: &mut Context) -> Result<()> {
 }
 
 /// Run before-hooks once env AND git vars are populated. Respects
-/// `--skip=before`. Skipped in
+/// `--skip=before` (matches GoReleaser's `skip.Before`). Skipped in
 /// `--merge` / `--split` / `--publish-only` modes — CI already validates
 /// the code before tagging, and hook compilation can dirty the working
 /// tree.
@@ -1124,7 +1124,7 @@ fn render_release_notes_tmpl(
 }
 
 /// Dirty repo gate: error out if the repo has uncommitted changes unless
-/// running in snapshot, nightly, or dry-run mode.
+/// running in snapshot, nightly, or dry-run mode (matches GoReleaser).
 fn enforce_dirty_repo_gate(ctx: &Context) -> Result<()> {
     if git::is_git_dirty() && !ctx.is_snapshot() && !ctx.is_nightly() && !ctx.is_dry_run() {
         let status = git::git_status_porcelain();
@@ -1137,7 +1137,7 @@ fn enforce_dirty_repo_gate(ctx: &Context) -> Result<()> {
 }
 
 /// Apply nightly overrides after git vars are populated: render
-/// `nightly.version_template` (default
+/// `nightly.version_template` (default mirrors GoReleaser's
 /// `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"`), then override
 /// `Version` / `RawVersion` / `Tag` / `IsNightly` / `ReleaseName` template
 /// vars. SDE-aware so the harness's two from-clean rebuilds stay
@@ -1154,7 +1154,7 @@ fn apply_nightly_template_vars(
     // when rendered below.
     ctx.template_vars_mut().set("IsNightly", "true");
 
-    // Default: `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"`
+    // GoReleaser default: `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"`
     // — bumps the patch component and embeds the commit SHA so two nightly
     // runs at different commits produce distinct, commit-immutable
     // versions. Users can override with `nightly.version_template` to
@@ -1175,7 +1175,7 @@ fn apply_nightly_template_vars(
     ctx.template_vars_mut().set("Version", &nightly_version);
     ctx.template_vars_mut().set("RawVersion", &nightly_version);
 
-    // Nightly templates `tag_name` (alongside `name_template`).
+    // GR v2.16 nightly templates `tag_name` (alongside `name_template`).
     // Render after `Version` / `RawVersion` / `IsNightly` are populated so
     // `{{ .Version }}` etc. resolve to the nightly-overridden values rather
     // than the base semver. Default literal "nightly" stays template-safe.
@@ -1211,10 +1211,10 @@ fn apply_nightly_template_vars(
     Ok(())
 }
 
-/// Apply the snapshot version template (one is always applied).
+/// Apply the snapshot version template (GoReleaser always applies one).
 /// Default: `"{{ Version }}-SNAPSHOT-{{ ShortCommit }}"` when no snapshot
 /// config exists. `RawVersion` is intentionally preserved as the numeric
-/// semver base.
+/// semver base (GoReleaser parity).
 fn apply_snapshot_template_vars(
     ctx: &mut Context,
     config: &Config,
@@ -1396,7 +1396,7 @@ fn run_post_pipeline(
     // Print artifact size table if configured
     helpers::run_report_sizes(ctx, config, log);
 
-    // Write metadata.json and artifacts.json (written
+    // Write metadata.json and artifacts.json (GoReleaser writes these
     // even in dry-run mode; applies metadata.mod_timestamp when set).
     helpers::write_metadata_and_artifacts(ctx, config, log)?;
 
@@ -1416,7 +1416,7 @@ fn run_post_pipeline(
         )?;
     }
 
-    // Close milestones (skipped on nightly — a
+    // Close milestones (skipped on nightly per GoReleaser parity — a
     // rolling nightly tag does not correspond to a milestone closure).
     if let Some(ref milestones) = config.milestones {
         if ctx.is_nightly() {
@@ -1434,7 +1434,7 @@ fn run_post_pipeline(
 /// custom publishers / milestones / metadata writes (which already
 /// fired during the prior end-to-end run).
 ///
-/// Canonical key is `after.hooks:`. The legacy
+/// Canonical key is `after.hooks:` (GoReleaser Pro). The legacy
 /// `after.post:` spelling is folded into `hooks:` at config-parse
 /// time by `HooksConfig::merge_hook_aliases`, so this reader only
 /// needs the canonical field.
@@ -2302,7 +2302,7 @@ mod tests {
         );
     }
 
-    // --- `--prepare` flag ---
+    // --- `--prepare` flag (GoReleaser Pro) ---
 
     #[test]
     fn test_apply_prepare_mode_to_skip_from_empty() {
@@ -2619,7 +2619,7 @@ mod tests {
 
     // ---- apply_nightly_template_vars ------------------------------------
     //
-    // Nightly: `tag_name` accepts template syntax (e.g.
+    // GR v2.16 nightly: `tag_name` accepts template syntax (e.g.
     // `nightly-{{ .Version }}`) and is rendered AFTER `Version` /
     // `RawVersion` / `IsNightly` are populated, so user templates that
     // reference those vars resolve to the nightly-overridden values.
@@ -2632,7 +2632,7 @@ mod tests {
     /// `project_name="myproj"` config (with the caller-supplied
     /// `tag_name`, or no `nightly` block at all when `tag_name` is
     /// `None`), a fresh `Context`, and `Version` / `ProjectName` /
-    /// `ShortCommit` pre-populated (the default version_template
+    /// `ShortCommit` pre-populated (the GR default version_template
     /// references `ShortCommit`).
     fn setup_nightly_ctx(tag_name: Option<&str>, version: &str) -> (Config, Context) {
         let config = Config {

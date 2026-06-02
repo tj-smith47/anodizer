@@ -157,7 +157,7 @@ pub fn clear_per_target_vars(tv: &mut TemplateVars) {
 /// The template-variable keys that per-target packaging loops populate
 /// and must clear on exit.
 ///
-/// The per-artifact template key set
+/// Mirrors GoReleaser's `internal/tmpl/tmpl.go` per-artifact key set
 /// (`KeyOS`, `KeyArch`, `KeyAmd64`, `Key386`, `KeyArm`, `KeyArm64`, `KeyMips`,
 /// `KeyPpc64`, `KeyRiscv64` plus `target`). Keeping the set in sync keeps
 /// templates that branch on `{{ .Ppc64 }}` / `{{ .Riscv64 }}` from raising
@@ -191,6 +191,6 @@ pub(super) const NUMERIC_FIELDS: &[&str] =
 
 /// Regex matching `Env.VARNAME` references in a preprocessed template.
 /// Used to discover env var keys referenced by the template so they can be
-/// pre-populated with empty strings (missing env vars resolve to "").
+/// pre-populated with empty strings (GoReleaser returns "" for missing env vars).
 pub(super) static ENV_REF_RE: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"Env\.([A-Za-z_][A-Za-z0-9_]*)"));

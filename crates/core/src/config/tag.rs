@@ -53,7 +53,7 @@ pub struct TagConfig {
     /// workflow: `[skip ci]` on the bump commit (which becomes the tag target)
     /// ALSO suppresses an `on: push: tags:` release trigger, so enabling this
     /// with a tag-push-triggered release silently skips the release. Leave off
-    /// for the tag-push pattern; enable for the `workflow_run`
+    /// for the GoReleaser-style tag-push pattern; enable for the `workflow_run`
     /// pattern to skip the (already crate-gated, harmless) redundant CI re-run.
     pub skip_ci_on_bump: Option<bool>,
     /// When true, print verbose tag calculation output.

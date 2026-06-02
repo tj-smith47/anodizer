@@ -75,7 +75,7 @@ impl EnvFilesConfig {
 /// the file is read and the corresponding environment variable is set
 /// (e.g., `github_token` file -> `GITHUB_TOKEN` env var).
 ///
-/// Token-file path overrides.
+/// Matches GoReleaser's `EnvFiles` struct.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct EnvFilesTokenConfig {
@@ -121,11 +121,11 @@ pub fn read_token_file(path: &str) -> Result<Option<String>, String> {
 ///
 /// For each configured token file path, reads the file and returns the
 /// corresponding environment variable name and token value.
-/// Falls back to the default token-file paths (`~/.config/goreleaser/...`) when
+/// Falls back to GoReleaser defaults (`~/.config/goreleaser/...`) when
 /// a field is not specified.
 ///
 /// Only returns entries where the corresponding process env var is NOT already
-/// set (env var takes precedence).
+/// set, matching GoReleaser's `loadEnv` behavior (env var takes precedence).
 pub fn load_token_files(
     config: &EnvFilesTokenConfig,
     log: &crate::log::StageLogger,
@@ -134,7 +134,7 @@ pub fn load_token_files(
 
     // Per-token candidate paths. The user's explicit `github_token` / etc.
     // config value wins if present; otherwise we try anodizer-native first,
-    // then the conventional path for users migrating in.
+    // then the goreleaser-compat path for users migrating in.
     let github_candidates: Vec<&str> = match config.github_token.as_deref() {
         Some(p) => vec![p],
         None => vec![

@@ -21,8 +21,8 @@ use anyhow::{Context as _, Result};
 use crate::context::Context;
 use crate::target::map_target;
 
-/// Canonical archive name template used when a crate sets no
-/// `archive.name_template:`. The default
+/// Canonical GoReleaser-style archive name template used when a crate sets no
+/// `archive.name_template:`. Mirrors GoReleaser's default
 /// (`{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}…`) with the
 /// micro-architecture variant suffixes appended.
 pub const DEFAULT_NAME_TEMPLATE: &str = "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}";

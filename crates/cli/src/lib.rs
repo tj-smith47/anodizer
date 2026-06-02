@@ -409,8 +409,8 @@ pub enum Commands {
     ///
     /// `continue` vs `publish`: both consume a populated `dist/` and run
     /// the release / publish / blob chain. `continue` is the recommended
-    /// alias for "resume a stalled single-host release" — the
-    /// `continue` command and the in-repo `--prepare` → `continue`
+    /// alias for "resume a stalled single-host release" — it matches GR
+    /// Pro's `goreleaser continue` and the in-repo `--prepare` → `continue`
     /// flow. `publish` is the lower-level entry point that does the same
     /// thing without the resume framing; prefer `continue` unless you're
     /// invoking the publish chain on a dist that was never paused. Neither
@@ -443,8 +443,8 @@ pub enum Commands {
     /// the same release / publish / blob chain. `publish` is the
     /// lower-level entry point — no resume framing, no after-hooks /
     /// milestone closure. `continue` is the recommended alias when
-    /// resuming a stalled single-host release (the
-    /// `continue` command); it additionally invokes the announce
+    /// resuming a stalled single-host release (matches GR Pro's
+    /// `goreleaser continue`); it additionally invokes the announce
     /// stage and treats the dist as a paused-release surface. Prefer
     /// `continue` unless you specifically want the unframed publish
     /// chain. `--dist` overrides the configured dist directory;

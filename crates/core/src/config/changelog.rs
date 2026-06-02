@@ -20,7 +20,7 @@ pub struct ChangelogConfig {
     /// Text prepended to the changelog. Inline string, `from_file: <path>`,
     /// or `from_url: <url>` — symmetric with the release block's header/footer
     /// so users can compose headers from a templated file or remote endpoint
-    /// (the upstream uses a plain string here; anodizer extends to ContentSource
+    /// (GoReleaser uses a plain string here; anodizer extends to ContentSource
     /// for consistency with `release.header`).
     pub header: Option<ContentSource>,
     /// Text appended to the changelog. Same shape as `header`.
@@ -28,7 +28,7 @@ pub struct ChangelogConfig {
     /// Skip changelog generation. Accepts bool or template string
     /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip).
     ///
-    /// Accepts `disable:` as an alias so imported configs (which use
+    /// Accepts `disable:` as an alias so GoReleaser configs (which use
     /// `changelog.disable:`) parse cleanly without a rename. Anodizer's
     /// broader convention is `skip:` (mirrors `release.skip_upload`,
     /// stage-level `skip:` flags), so the canonical key stays `skip:`.
@@ -47,10 +47,12 @@ pub struct ChangelogConfig {
     pub use_source: Option<String>,
     /// Hash abbreviation length. Default: 0 (no truncation, emit the full
     /// SHA). Set to -1 to omit the hash entirely; positive values truncate
-    /// to N chars. Values below `-1` are clamped to `-1` (a `git log
-    /// --abbrev=N` would otherwise reject `-2`, `-3`, ...).
+    /// to N chars. Values below `-1` are clamped to `-1` for parity with
+    /// GoReleaser (whose `git log --abbrev=N` panics for `-2`, `-3`, ...).
+    /// Mirrors GoReleaser `internal/pipe/changelog/changelog.go`'s
+    /// `abbrevEntry`.
     pub abbrev: Option<i32>,
-    /// Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only), Logins (per-entry comma-separated list of GitHub usernames for that commit, `github` backend only), AllLogins (comma-separated list of all GitHub usernames across the entire release, `github` backend only).<br><br>Default depends on backend (the full SHA is used):<br>&bull; `git` backend (default): `"{{ SHA }} {{ Message }}"`<br>&bull; `github`/`gitlab`/`gitea` backend: `"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)"` — falls back to `AuthorName <AuthorEmail>` when `Login` is empty.<br><br>When `abbrev < 0`, the default reduces to `"{{ Message }}"` (no hash prefix).
+    /// Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only), Logins (per-entry comma-separated list of GitHub usernames for that commit, `github` backend only), AllLogins (comma-separated list of all GitHub usernames across the entire release, `github` backend only).<br><br>Default depends on backend (mirrors GoReleaser `internal/pipe/changelog/changelog.go`'s `formatEntry`, which uses the full SHA):<br>&bull; `git` backend (default): `"{{ SHA }} {{ Message }}"`<br>&bull; `github`/`gitlab`/`gitea` backend: `"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)"` — falls back to `AuthorName <AuthorEmail>` when `Login` is empty.<br><br>When `abbrev < 0`, the default reduces to `"{{ Message }}"` (no hash prefix).
     pub format: Option<String>,
     /// File paths to filter commits by. Only commits touching files under these
     /// paths are included. Works with `use: git` for precise per-commit filtering.
@@ -64,7 +66,7 @@ pub struct ChangelogConfig {
     /// AI-powered changelog enhancement configuration.
     pub ai: Option<ChangelogAiConfig>,
     /// When `true`, render the changelog even in snapshot mode. Anodizer
-    /// matches the default (skip changelog on snapshot) and
+    /// matches GoReleaser's default (skip changelog on `ctx.Snapshot`) and
     /// lets users opt back in here for local preview / draft generation.
     /// Wired in `crates/stage-changelog/src/lib.rs::ChangelogStage::run`.
     pub snapshot: Option<bool>,
@@ -72,14 +74,14 @@ pub struct ChangelogConfig {
 
 impl ChangelogConfig {
     /// Default `sort` value. Empty string means "preserve commit order"
-    /// (no sort applied). The
+    /// (no sort applied). Mirrors GoReleaser `changelog.go`'s
     /// `checkSortDirection`, which accepts "", "asc", "desc".
     pub const DEFAULT_SORT: &'static str = "";
 
     /// Valid `sort` values. Anything else is a config error.
     pub const VALID_SORT: &[&'static str] = &["", "asc", "desc"];
 
-    /// Default changelog source —
+    /// Default changelog source. Mirrors GoReleaser `changelog.go` —
     /// the unset field falls back to git log parsing.
     pub const DEFAULT_USE_SOURCE: &'static str = "git";
 
@@ -89,12 +91,12 @@ impl ChangelogConfig {
     pub const VALID_USE_SOURCE: &[&'static str] =
         &["git", "github", "gitlab", "gitea", "github-native"];
 
-    /// Default changelog title heading
+    /// Default changelog title heading. Mirrors GoReleaser `changelog.go`
     /// (always emits a `## Changelog` heading when title is unset).
     pub const DEFAULT_TITLE: &'static str = "Changelog";
 
     /// Default `abbrev` (hash truncation length). 0 = full SHA, mirroring
-    /// the abbrev-entry behaviour. The misleading "Default: 7" docstring
+    /// GoReleaser `abbrevEntry`. The misleading "Default: 7" docstring
     /// previously on the field has been corrected.
     pub const DEFAULT_ABBREV: i32 = 0;
 
@@ -106,7 +108,7 @@ impl ChangelogConfig {
     /// `AuthorName <AuthorEmail>` when the API returned no login.
     pub const DEFAULT_FORMAT_SCM: &'static str = "{{ SHA }}: {{ Message }} ({% if Login %}@{{ Login }}{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %})";
 
-    /// Default `format` template for the `git` backend.
+    /// Default `format` template for the `git` backend. Mirrors GoReleaser.
     pub const DEFAULT_FORMAT_GIT: &'static str = "{{ SHA }} {{ Message }}";
 
     /// Resolve the `sort` mode, falling back to [`Self::DEFAULT_SORT`]
@@ -142,9 +144,10 @@ impl ChangelogConfig {
 
     /// Resolve `abbrev`, falling back to [`Self::DEFAULT_ABBREV`] (0 = full SHA).
     ///
-    /// Values below `-1` are clamped to `-1`. A `git log
-    /// --abbrev=N` would reject `-2`, `-3`, etc.; anodizer renders SHAs in
-    /// Rust so it would not fail, but still clamps for behavioural parity
+    /// Mirrors GoReleaser `internal/pipe/changelog/changelog.go` (commit
+    /// 88daaf3): values below `-1` are clamped to `-1`. Upstream's `git log
+    /// --abbrev=N` panics for `-2`, `-3`, etc.; anodizer renders SHAs in
+    /// Rust so it would not panic, but we still clamp for behavioural parity
     /// — a configuration like `abbrev: -5` produces the same "omit hash"
     /// output as `abbrev: -1`.
     pub fn resolved_abbrev(&self) -> i32 {
@@ -169,7 +172,7 @@ impl ChangelogConfig {
         }
     }
 
-    /// Resolve `snapshot`, falling back to `false` (the default:
+    /// Resolve `snapshot`, falling back to `false` (matches GoReleaser:
     /// skip changelog on `ctx.Snapshot`).
     pub fn resolved_snapshot(&self) -> bool {
         self.snapshot.unwrap_or(false)

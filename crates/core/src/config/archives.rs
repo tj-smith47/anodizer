@@ -217,7 +217,7 @@ impl WrapInDirectory {
 pub struct ArchiveConfig {
     /// Unique identifier for cross-referencing this archive from other configs.
     /// Defaults to `"default"` so a parse->serialise->reparse round-trip is
-    /// stable (stored verbatim, not as an Option).
+    /// stable (GoReleaser stores this verbatim, not as an Option).
     pub id: Option<String>,
     /// Archive filename template (supports templates, e.g., "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}").
     pub name_template: Option<String>,
@@ -251,12 +251,13 @@ pub struct ArchiveConfig {
     /// Templated files scoped to this archive entry. Rendered per-archive
     /// (so each entry's `dst:` and contents see `.Os`, `.Arch`, `.Target`,
     /// `.Format`, etc.) and packed into the archive at the rendered `dst:`
-    /// path. The `archives[].templated_files:` field.
+    /// path. Mirrors GoReleaser Pro's `archives[].templated_files:`.
     pub templated_files: Option<Vec<super::TemplateFileConfig>>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the archive entry is skipped
     /// entirely (no archives produced for this `id`). Render failure
-    /// hard-errors. "Filter artifacts with `if` statements" is listed as a
+    /// hard-errors. Defensive ahead of GoReleaser exposing the field on
+    /// archives (GR Pro lists "filter artifacts with `if` statements" as a
     /// blanket promise — anodizer surfaces it explicitly to keep imported
     /// configs portable).
     #[serde(rename = "if")]
@@ -300,11 +301,11 @@ fn fold_format_into_formats(
     formats
 }
 
-// Custom Deserialize that accepts deprecated aliases:
+// Custom Deserialize that accepts deprecated GR aliases:
 // - `format: tar.gz` (singular String) folded into `formats: [tar.gz]`
-//
+//   (`internal/pipe/archive/archive.go:62-64`)
 // - `builds: [foo]` folded into `ids: [foo]`
-//
+//   (`internal/pipe/archive/archive.go:79-82`)
 // Each alias hit emits a `tracing::warn!` deprecation notice.
 impl<'de> Deserialize<'de> for ArchiveConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -389,7 +390,8 @@ pub struct FormatOverride {
 }
 
 // Custom Deserialize that accepts both `formats: [tar.gz]` (canonical) and
-// the deprecated singular `format: tar.gz`. The legacy spelling is folded
+// the deprecated singular `format: tar.gz` (GR
+// `internal/pipe/archive/archive.go:71-74`). The legacy spelling is folded
 // into `formats` at parse time via the shared `fold_format_into_formats`
 // helper, which also emits the deprecation warning.
 impl<'de> Deserialize<'de> for FormatOverride {
@@ -462,7 +464,7 @@ pub struct FileInfo {
     pub group: Option<String>,
     /// File permission mode. Accepts a YAML int (decimal, e.g. `420` for
     /// `0o644`) or an octal-prefixed string (`"0o644"`, `"0644"`). This
-    /// a `uint32` type for `Mode` on archive/nfpm contents
+    /// matches GoReleaser's `uint32` type for `Mode` on archive/nfpm contents
     /// while letting users spell octal naturally in YAML.
     pub mode: Option<StringOrU32>,
     /// File modification time in RFC3339 format (e.g., "2024-01-01T00:00:00Z").
@@ -545,7 +547,7 @@ impl ExtraFileSpec {
 }
 
 /// A file whose contents are rendered through the template engine before use.
-/// Used by `templated_extra_files` across multiple stages.
+/// Used by `templated_extra_files` across multiple stages (GoReleaser Pro feature).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema, PartialEq)]
 #[serde(default)]
 pub struct TemplatedExtraFile {
@@ -573,7 +575,7 @@ pub struct ChecksumConfig {
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before inclusion.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
-    /// Template-rendered extra files.
+    /// GoReleaser Pro feature.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Build IDs filter: only checksum artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
@@ -583,10 +585,11 @@ pub struct ChecksumConfig {
 
 impl ChecksumConfig {
     /// Default checksum filename template (combined mode). Mirrors
-    /// the checksums config.
+    /// `internal/pipe/checksums/checksums.go:48` in GoReleaser.
     pub const DEFAULT_NAME_TEMPLATE: &'static str = "{{ ProjectName }}_{{ Version }}_checksums.txt";
 
-    /// Default hash algorithm (`sha256`).
+    /// Default hash algorithm. Mirrors GoReleaser
+    /// (`internal/pipe/checksums/checksums.go:42`).
     pub const DEFAULT_ALGORITHM: &'static str = "sha256";
 
     /// Resolve the hash algorithm, falling back to the project default
@@ -598,13 +601,13 @@ impl ChecksumConfig {
     }
 
     /// Whether split-mode (one sidecar per artifact) is requested.
-    /// Defaults to `false` (combined-file mode).
+    /// Defaults to `false` (combined-file mode, matching GoReleaser).
     pub fn resolved_split(&self) -> bool {
         self.split.unwrap_or(false)
     }
 
     /// Resolve the combined-mode checksum filename template, falling back
-    /// to the canonical default. Returns the raw template
+    /// to the GoReleaser-canonical default. Returns the raw template
     /// string; the caller still renders it through Tera.
     ///
     /// Split mode constructs sidecar names per-artifact at the call site
@@ -637,7 +640,7 @@ impl ChecksumConfig {
 ///       Accept: "text/markdown"
 ///
 /// Both `from_file` path and `from_url` URL are template-rendered before use.
-/// Header values are template-rendered.
+/// Header values are template-rendered. (GoReleaser Pro parity.)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ContentSource {

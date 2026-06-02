@@ -51,7 +51,7 @@ pub fn resolve(source: &ContentSource, kind: &str, ctx: &Context) -> Result<Stri
                 .render_template(from_url)
                 .with_context(|| format!("{kind}: render from_url '{from_url}'"))?;
 
-            // Render header values (keys are literal).
+            // Render header values (keys are literal per GoReleaser docs).
             // Reject CR/LF anywhere in keys or rendered values — a template
             // interpolating user-tainted data could otherwise inject a new
             // header line.
@@ -217,7 +217,7 @@ mod tests {
         let (addr, captured) = spawn_request_capturing_responder(response);
 
         let mut headers = HashMap::new();
-        // Key is literal; value is template-rendered.
+        // Key is literal per GoReleaser docs; value is template-rendered.
         headers.insert(
             "X-App-Name".to_string(),
             "name={{ .ProjectName }}".to_string(),

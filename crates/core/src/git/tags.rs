@@ -165,7 +165,7 @@ fn semver_pairs_filtered(
 /// When `git_config` is provided:
 /// - `ignore_tags`: tags matching any entry (glob patterns) are excluded.
 ///   When `template_vars` is also provided, each entry is rendered through the
-///   template engine first.
+///   template engine first (matching GoReleaser's behavior).
 /// - `ignore_tag_prefixes`: tags starting with any prefix are excluded.
 ///   Also template-rendered when `template_vars` is provided.
 /// - `tag_sort` controls ordering:
@@ -253,7 +253,7 @@ pub fn find_latest_tag_matching_with_prefix_in(
 
     // Compile ignore_tags entries as glob patterns for consistent behavior
     // with `find_previous_tag` (which passes them to `git describe --exclude`
-    // which interprets globs).
+    // which interprets globs). This matches GoReleaser's behavior.
     let ignore_tag_globs: Vec<glob::Pattern> = rendered_ignore_tags
         .iter()
         .filter_map(|pat| glob::Pattern::new(pat).ok())

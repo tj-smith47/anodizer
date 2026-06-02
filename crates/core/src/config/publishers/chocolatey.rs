@@ -104,7 +104,7 @@ pub struct ChocolateyConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the Chocolatey publisher is
-    /// skipped. Render failure hard-errors. The
+    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
     /// `chocolateys[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,

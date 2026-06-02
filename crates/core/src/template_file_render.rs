@@ -33,7 +33,7 @@ pub struct TemplatedFileRender {
 ///
 /// Returns `Ok(None)` when the entry should be silently skipped:
 /// either `entry.skip` evaluates truthy, or the rendered `dst` is the
-/// empty string (the "ignored if empty" contract).
+/// empty string (matches GoReleaser's "Ignored if empty" contract).
 ///
 /// `label_prefix` is the error-context prefix the caller wants on every
 /// rendered error (e.g. `"templatefiles: id 'greeting'"` or

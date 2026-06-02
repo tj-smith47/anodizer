@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 /// Rich artifact format for split/merge serialization.
-/// Artifact JSON with OS/arch metadata.
+/// Mirrors GoReleaser's artifact JSON with OS/arch metadata.
 ///
 /// **Cross-format compatibility with `PreservedDistContext`**: the
 /// `sha256` + `size` fields are `Option`, default to `None`, and are
@@ -64,7 +64,7 @@ pub struct SplitArtifact {
 /// [`BTreeMap`] rather than [`HashMap`] so two `release --split` runs
 /// against the same inputs serialize byte-identically — a hard
 /// requirement for the idempotency contract called out at
-/// the partial-build flow ("this step
+/// <https://goreleaser.com/customization/general/partial/> ("this step
 /// will not run anything that the previous step already did"). With
 /// `HashMap`, key iteration order is randomized per-process and the
 /// resulting `context.json` would drift across re-runs even when the
@@ -1236,7 +1236,7 @@ mod tests {
 
     #[test]
     fn worker_completeness_errors_when_workers_missing() {
-        // Regression guard for
+        // GR-aligned regression guard for second-opinion finding
         // Q-merge1: a worker silently dropping its
         // `dist/<target>/context.json` (CI cancellation, transient
         // build failure) must be a hard error, not a silent partial

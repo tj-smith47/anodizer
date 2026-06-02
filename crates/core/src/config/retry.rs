@@ -1,7 +1,7 @@
 //! Top-level `retry:` block — user-facing YAML configuration for the shared
 //! retry-with-backoff machinery.
 //!
-//! Project-level retry policy:
+//! Mirrors GoReleaser's `Project.Retry` (`pkg/config/config.go::Retry`):
 //!
 //! ```yaml
 //! retry:
@@ -10,14 +10,14 @@
 //!   max_delay: 5m
 //! ```
 //!
-//! Defaults are `Attempts:10, Delay:10s, MaxDelay:5m`
-//! so that consumers see identical retry behaviour with the
+//! Defaults match GoReleaser exactly (`Retry{Attempts:10, Delay:10s, MaxDelay:5m}`)
+//! so that consumers porting from GR see identical retry behaviour with the
 //! same YAML.
 //!
 //! [`RetryConfig::to_policy`] bridges the user-facing type to
 //! [`crate::retry::RetryPolicy`] which is what `retry_sync` / `retry_async`
 //! consume. The conversion fixes the multiplier at 2.0 (hard-coded in
-//! `RetryPolicy::delay_for`); a fixed 2× backoff is used via
+//! `RetryPolicy::delay_for`); GR also uses a fixed 2× backoff via
 //! `retry.BackOffDelay`.
 //!
 //! ## See also
@@ -34,7 +34,7 @@ use crate::retry::RetryPolicy;
 
 /// User-facing retry configuration block (`retry:` at config root).
 ///
-/// All fields are optional in YAML; missing fields fall back to the
+/// All fields are optional in YAML; missing fields fall back to GoReleaser's
 /// defaults (10 attempts, 10s base delay, 5m cap).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -52,18 +52,18 @@ pub struct RetryConfig {
 }
 
 impl RetryConfig {
-    /// Default attempt count (10).
+    /// Default attempt count (matches GoReleaser `pkg/config.Retry.Attempts`).
     pub const DEFAULT_ATTEMPTS: u32 = 10;
-    /// Default initial delay (10s).
+    /// Default initial delay (matches GoReleaser `pkg/config.Retry.Delay = 10s`).
     pub const DEFAULT_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
-    /// Default delay cap (5m).
+    /// Default delay cap (matches GoReleaser `pkg/config.Retry.MaxDelay = 5m`).
     pub const DEFAULT_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
     /// Bridge to the internal [`RetryPolicy`] consumed by
     /// [`crate::retry::retry_sync`] / [`crate::retry::retry_async`].
     ///
     /// If `max_delay < delay`, every backoff is immediately capped to
-    /// `max_delay`. This is parity-correct passthrough
+    /// `max_delay`. This is parity-correct passthrough (GR behaves the same)
     /// but almost certainly a config mistake, so a `tracing::warn!` fires
     /// once at conversion time to surface the issue in logs.
     pub fn to_policy(&self) -> RetryPolicy {

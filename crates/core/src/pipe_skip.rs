@@ -1,6 +1,6 @@
 //! Aggregated per-stage skip tracking.
 //!
-//! Skip-memento bookkeeping. Pipeline
+//! Mirrors GoReleaser's `internal/pipe/pipe.go::SkipMemento`. Pipeline
 //! stages that iterate multiple sub-configs (signs, docker_signs, custom
 //! publishers, archives, nfpms, …) occasionally need to skip a sub-config
 //! for a legitimate reason: `artifacts: none`, an `if:` conditional that

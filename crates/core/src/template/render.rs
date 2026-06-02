@@ -11,14 +11,14 @@ use super::vars::{ENV_REF_RE, NUMERIC_FIELDS, TemplateVars};
 /// Build a `tera::Context` from `TemplateVars`, pre-populating missing env var
 /// keys referenced in the template with empty strings.
 ///
-/// An empty string is returned for `{{ .Env.NONEXISTENT }}` rather than
+/// GoReleaser returns empty string for `{{ .Env.NONEXISTENT }}` rather than
 /// erroring. Tera's strict mode would error on a missing map key, so we scan
 /// the preprocessed template for `Env.VARNAME` references and ensure every
 /// referenced key exists in the env map (defaulting to "").
 ///
 /// Fallback semantics: when an `Env.X` key is not in `TemplateVars::env`,
 /// `std::env::var(X)` is consulted before defaulting to `""`. This is
-/// intentional — these semantics let a user reference any
+/// intentional — GoReleaser-compat semantics let a user reference any
 /// process env var via `{{ Env.X }}`, and the `StageLogger`-level
 /// redaction layer (see `crate::redact`) prevents accidental secret
 /// prints in the rendered output. A `*_TOKEN` / `*_KEY` / `*_PASSWORD`
@@ -83,7 +83,7 @@ fn build_tera_context(vars: &TemplateVars) -> tera::Context {
     // Always insert Var (even when empty) so that referencing the `Var`
     // namespace does not produce a hard Tera error. Accessing a missing key
     // within the map still requires `| default(value="")`. This matches
-    // an empty .Var map is provided by default.
+    // GoReleaser which provides an empty .Var map by default.
     ctx.insert("Var", &vars.custom_vars);
 
     // Always insert Outputs (even when empty) so that referencing the
@@ -91,7 +91,7 @@ fn build_tera_context(vars: &TemplateVars) -> tera::Context {
     // missing key within the map still requires `| default(value="")`.
     ctx.insert("Outputs", &vars.outputs);
 
-    // Build a nested `Runtime` map for `Runtime.Goos` / `Runtime.Goarch`.
+    // Build a nested `Runtime` map for GoReleaser `Runtime.Goos` / `Runtime.Goarch` compat.
     let mut runtime = HashMap::new();
     if let Some(goos) = vars.vars.get("RuntimeGoos") {
         runtime.insert("Goos".to_string(), goos.clone());
@@ -120,7 +120,7 @@ fn build_tera_context(vars: &TemplateVars) -> tera::Context {
 /// conditionals (`{% if %}` / `{% else %}` / `{% endif %}`), loops (`{% for %}`),
 /// filters (`| lower`, `| upper`, `| default`, `| trim`, `| title`, `| replace`, etc.).
 ///
-/// Custom filters are registered:
+/// Custom GoReleaser-compat filters are registered:
 /// - `tolower` / `toupper` — aliases for Tera's built-in `lower` / `upper`
 /// - `trimprefix(prefix="v")` — strip a prefix from a string
 /// - `trimsuffix(suffix=".exe")` — strip a suffix from a string
@@ -261,7 +261,7 @@ pub fn render_with_env(
 /// `.tar.sz`. Returns the extension with a leading dot (e.g. `.tar.gz`, `.exe`,
 /// `.dmg`), or an empty string if there is no extension.
 ///
-/// This is the `.ArtifactExt` behavior.
+/// This matches GoReleaser's `.ArtifactExt` behavior.
 pub fn extract_artifact_ext(filename: &str) -> &str {
     // Check for compound tar extensions first
     const TAR_COMPOUND_SUFFIXES: &[&str] = &[

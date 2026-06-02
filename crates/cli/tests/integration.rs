@@ -243,7 +243,7 @@ fn test_timeout_kills_long_running_release() {
     init_git_repo(tmp.path());
 
     // Config with a before-hook that sleeps for 60 seconds (much longer than our timeout).
-    // The git pipe (including the dirty-repo gate) runs BEFORE the before-hooks,
+    // GoReleaser's git.Pipe (including the dirty-repo gate) runs BEFORE before.Pipe,
     // so the config file must be committed — otherwise the dirty-repo check aborts
     // with exit 1 before the hook gets a chance to hit the timeout.
     create_config(
@@ -751,7 +751,7 @@ fn test_e2e_snapshot_release_produces_artifacts() {
 /// E2E: `anodizer release --prepare` produces the same skip-stage behaviour
 /// as an explicit `--skip=release,publish,announce`.
 ///
-/// Locks in the `--prepare` contract end-to-end. The unit
+/// Locks in the GoReleaser Pro `--prepare` contract end-to-end. The unit
 /// tests for `apply_prepare_mode_to_skip()` cover the helper's input/output;
 /// this asserts the helper is actually wired into `release::run()` and that
 /// the augmented skip list reaches the pipeline so `release`, `publish`, and
@@ -958,7 +958,7 @@ fn test_e2e_dry_run_no_side_effects() {
             "dist/ should NOT contain checksum files after dry-run, found: {:?}",
             entries
         );
-        // metadata.json and artifacts.json are written even in dry-run mode.
+        // GoReleaser writes metadata.json and artifacts.json even in dry-run mode.
         // Anodizer matches this behavior: metadata is always written for debugging.
     }
     // If dist/ doesn't exist at all, that's the expected case for dry-run.
@@ -2369,7 +2369,7 @@ crates:
     );
 
     // Linux/macOS: bare binary (no extension). Windows: `.exe` is appended
-    // by the binary-format archiver.
+    // by the binary-format archiver (matches GoReleaser windowsBinaryName).
     let has_binary = if cfg!(windows) {
         entries
             .iter()
@@ -3464,7 +3464,7 @@ crates:
         stderr
     );
 
-    // CHANGELOG.md is written even in dry-run mode.
+    // GoReleaser writes CHANGELOG.md even in dry-run mode.
     // Anodizer matches this behavior for debugging and downstream stage consumption.
 }
 
@@ -4457,7 +4457,7 @@ crates:
 }
 
 /// `anodizer build` must produce the same per-stage outputs as
-/// The build-command pipeline: before-hook marker file,
+/// GoReleaser's `BuildCmdPipeline`: before-hook marker file,
 /// effective `dist/config.yaml`, `dist/metadata.json`,
 /// `dist/artifacts.json`, and a size-report line when
 /// `report_sizes: true`.
@@ -4470,7 +4470,7 @@ fn test_e2e_build_command_matches_goreleaser_pipeline_outputs() {
     init_git_repo(tmp.path());
 
     // Use a before-hook that creates a sentinel file; `anodizer build`
-    // must execute the hook (the build-command pipeline includes
+    // must execute the hook (GoReleaser BuildCmdPipeline includes
     // before.Pipe). Cross-platform marker write uses sh-style on unix
     // and powershell on Windows so the test runs on every CI runner.
     let before_marker = tmp.path().join("before-ran");

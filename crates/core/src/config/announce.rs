@@ -38,9 +38,9 @@ pub struct AnnounceConfig {
     pub skip: Option<StringOrBool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the entire announce stage is
-    /// skipped. Render failure hard-errors. The
+    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
     /// `announce.if:`. Distinct from `skip:` (always-skip predicate) — both
-    /// surfaces are documented.
+    /// surfaces are documented by GR.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// Selects when AnnounceStage runs vs. skips based on the
@@ -64,9 +64,10 @@ pub struct AnnounceConfig {
     /// Mattermost announcement configuration.
     pub mattermost: Option<MattermostAnnounce>,
     /// Email announcement configuration. accepts the
-    /// historical `smtp:` key as an alias because the field was renamed
+    /// historical `smtp:` key as an alias because GR itself renamed
     /// `smtp:` -> `email:` in v1.21+ and kept the alias for migration.
-    /// Keeping the alias avoids forcing a re-yaml of legacy configs.
+    /// Mirroring GR's own alias keeps "use what GR uses today" consistent
+    /// without forcing a re-yaml of legacy GR configs.
     #[serde(alias = "smtp")]
     pub email: Option<EmailAnnounce>,
     /// Reddit announcement configuration.
@@ -180,7 +181,7 @@ pub struct DiscordAnnounce {
     pub message_template: Option<String>,
     /// Author name displayed in the embed.
     pub author: Option<String>,
-    /// Embed color as a decimal integer string (default: "3888754", a blue).
+    /// Embed color as a decimal integer string (default: "3888754", GoReleaser blue).
     /// Parsed to u32 at runtime. Supports template expressions.
     pub color: Option<String>,
     /// Icon URL for the embed footer.
@@ -202,10 +203,10 @@ pub struct WebhookConfig {
     pub endpoint_url: Option<String>,
     /// Custom HTTP headers to include in the request.
     ///
-    /// Precedence — **anodizer-specific**:
+    /// Precedence — **anodizer diverges from GoReleaser here**:
     /// - anodizer: a config-supplied `Authorization` header wins over the
     ///   `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` env var.
-    /// - The conventional behaviour: env-supplied `Authorization` is
+    /// - GoReleaser (webhook.go:104-115): env-supplied `Authorization` is
     ///   appended FIRST; most servers honour the first occurrence, so the
     ///   env value effectively wins.
     ///
@@ -325,8 +326,8 @@ pub struct EmailAnnounce {
     pub host: Option<String>,
     /// SMTP server port (default: 587 for STARTTLS).
     ///
-    /// Anodize-additive UX win (locked 2026-04-28): an unset SMTP
-    /// `port` would otherwise be an error when it is
+    /// Anodize-additive UX win (locked 2026-04-28): GoReleaser's
+    /// `internal/pipe/smtp/smtp.go` errors with `errNoPort` when `port` is
     /// unset (zero value). Anodize defaults to 587 — the IETF submission
     /// port — so the common case (corporate / SaaS SMTP relays exposing
     /// STARTTLS on 587) works out of the box without a config knob. The

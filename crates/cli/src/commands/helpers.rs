@@ -290,8 +290,8 @@ pub fn resolve_git_context(
     }
 
     // Allow env var overrides for tag discovery. Anodizer-native var wins;
-    // a compat alias is checked as a fallback so CI jobs migrating
-    // pick up their existing env vars without rewiring. As a
+    // the GoReleaser compat alias is checked as a fallback so CI jobs migrating
+    // from GoReleaser pick up their existing env vars without rewiring. As a
     // last resort, GitHub Actions exposes the triggering tag as GITHUB_REF_NAME
     // when GITHUB_REF_TYPE=tag — use that so workflows that didn't explicitly
     // export ANODIZER_CURRENT_TAG (e.g. `Release.yml` jobs dispatched by a tag
@@ -389,7 +389,7 @@ pub fn resolve_git_context(
             }
         };
 
-        // Validate HEAD points at the tag.
+        // Validate HEAD points at the tag (like GoReleaser's ErrWrongRef).
         // Skip this check for the synthetic v0.0.0 tag since it doesn't exist in git.
         let is_synthetic_tag = tag == "v0.0.0" && tag_override.is_none();
         if !is_synthetic_tag
@@ -407,7 +407,7 @@ pub fn resolve_git_context(
         match git::detect_git_info(&tag, ctx.skip_validate()) {
             Ok(mut git_info) => {
                 // Validate dirty working tree: error in non-snapshot/non-dry-run mode,
-                // a dirty-tree check.
+                // matching GoReleaser's CheckDirty behavior.
                 if git_info.dirty && !ctx.options.snapshot {
                     if ctx.options.dry_run {
                         log.warn("git is in a dirty state; run `git status` to see what changed.");
@@ -419,7 +419,7 @@ pub fn resolve_git_context(
                     }
                 }
 
-                // Allow ANODIZER_PREVIOUS_TAG (or the compat
+                // Allow ANODIZER_PREVIOUS_TAG (or GoReleaser compat
                 // GORELEASER_PREVIOUS_TAG) env override for the previous tag.
                 let prev_override = ctx
                     .env_var("ANODIZER_PREVIOUS_TAG")
@@ -535,7 +535,7 @@ fn merge_env_with_defaults(
 ///    (so per-config entries override defaults on duplicate keys)
 ///
 /// This ensures config-defined env vars always take precedence over process
-/// environment, where all process env vars are
+/// environment, matching GoReleaser's behavior where all process env vars are
 /// accessible in templates via `{{ .Env.VAR }}`.
 pub fn setup_env(
     ctx: &mut Context,
@@ -582,7 +582,7 @@ pub fn setup_env(
     }
 
     // Populate user-defined env vars into template context (highest priority).
-    // Env values are rendered through the template engine.
+    // GoReleaser renders env values through the template engine.
     let merged_env = merge_env_with_defaults(
         config.defaults.as_ref().and_then(|d| d.env.as_ref()),
         config.env.as_ref(),
@@ -627,7 +627,7 @@ pub fn setup_env(
         }
     }
 
-    // When force_token is active, clear non-forced
+    // GoReleaser env.go:75-86: when force_token is active, clear non-forced
     // token env vars BEFORE the multi-token check so it cannot fire.
     let resolved_force = resolve_force_token(config);
     if let Some(ref forced) = resolved_force {
@@ -653,7 +653,7 @@ pub fn setup_env(
         }
     }
 
-    // Multiple-token detection.
+    // Multiple-token detection (GoReleaser env.go:88-101 ErrMultipleTokens).
     // When multiple SCM tokens are set without force_token, error early.
     if resolved_force.is_none() {
         let has_github =
@@ -689,7 +689,7 @@ pub fn setup_env(
         }
     }
 
-    // Missing token hard error.
+    // Missing token hard error (GoReleaser env.go:138-142 ErrMissingToken).
     // Error early if no SCM token and the pipeline needs one.
     // Snapshot mode, dry-run, and release.skip can proceed without a token.
     //
@@ -738,7 +738,7 @@ pub fn setup_env(
 
 /// Write `dist/config.yaml` with the fully-resolved (effective) config.
 ///
-/// This is always written, including in dry-run mode.
+/// GoReleaser always writes this, including in dry-run mode (effectiveconfig.go).
 /// Shared by `release` and `build` pipelines so both surface the same artifact.
 ///
 /// Two runs of the determinism harness must emit a byte-identical
@@ -829,7 +829,7 @@ pub fn run_report_sizes(ctx: &mut Context, config: &Config, log: &StageLogger) {
 /// full-release callers `ctx.config.dist == config.dist`, so this is
 /// behaviour-preserving for them.
 ///
-/// Writes the metadata file. Does **not** register the file
+/// Mirrors GoReleaser's metadata.Pipe. Does **not** register the file
 /// as an artifact — callers that need the registry entry (full release
 /// post-pipeline) add it; callers that already rehydrated the registry
 /// (per-crate publish-only) reuse the existing entry.
@@ -885,7 +885,7 @@ pub fn write_metadata_json(
 /// Write `dist/metadata.json` and `dist/artifacts.json` and apply the
 /// configured `metadata.mod_timestamp` to both files.
 ///
-/// Writes the metadata + artifacts files. Registers
+/// Mirrors GoReleaser's metadata.Pipe + artifacts.Pipe. Registers
 /// `metadata.json` as an artifact so downstream stages can pick it up.
 pub fn write_metadata_and_artifacts(
     ctx: &mut Context,
@@ -942,7 +942,7 @@ pub fn write_metadata_and_artifacts(
 
 /// Auto-infer `project_name` from Cargo.toml when not set in config.
 ///
-/// The project name is inferred from Cargo.toml,
+/// GoReleaser's project.go:22-43 infers the project name from Cargo.toml,
 /// go.mod, or the git remote. We mirror the Cargo.toml branch here so
 /// every pipeline command (release, build, check, continue) resolves the
 /// project name consistently.
@@ -996,7 +996,7 @@ pub fn setup_context(ctx: &mut Context, config: &Config, log: &StageLogger) -> R
     resolve_scm_token_type(ctx, config);
     ctx.populate_time_vars();
     ctx.populate_runtime_vars();
-    // Default the `IsPrepare` template var to `"false"` for every
+    // Default the GR-Pro `IsPrepare` template var to `"false"` for every
     // command that flows through `setup_context`. The release command
     // overrides this when `--prepare` is passed (see
     // `commands/release/mod.rs`). Setting it unconditionally avoids a
@@ -1013,7 +1013,7 @@ pub fn setup_context(ctx: &mut Context, config: &Config, log: &StageLogger) -> R
 /// This sets `ctx.token_type` based on priority (highest first):
 /// 1. `config.force_token` — explicit user config (`force_token: gitlab`)
 /// 2. `ANODIZER_FORCE_TOKEN` env var — e.g. `github`, `gitlab`, `gitea`
-/// 3. `GORELEASER_FORCE_TOKEN` env var — compat fallback
+/// 3. `GORELEASER_FORCE_TOKEN` env var — GoReleaser compat fallback
 /// 4. Environment variable presence — `GITLAB_TOKEN` → GitLab, `GITEA_TOKEN` → Gitea
 /// 5. Default — GitHub
 ///
@@ -1035,7 +1035,7 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
         None
     };
 
-    // Resolution priority: explicit `release.provider:` (cross-platform
+    // Resolution priority: explicit `release.provider:` (GoReleaser Pro
     // cross-platform publishing) > top-level `force_token:` > env-var
     // detection. `release.provider:` makes the cross-platform case
     // declarative: a project that lives on GitLab but publishes to

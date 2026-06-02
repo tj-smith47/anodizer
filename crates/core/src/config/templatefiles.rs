@@ -10,7 +10,7 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 /// Configuration for a template file that is rendered through the template
 /// engine and placed in the dist directory as a release artifact.
 ///
-/// All rendered template files are uploaded to the
+/// GoReleaser Pro feature: all rendered template files are uploaded to the
 /// release by default. Both `src` and `dst` paths support template rendering.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]

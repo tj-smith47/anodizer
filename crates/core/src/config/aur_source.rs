@@ -70,7 +70,7 @@ pub struct AurSourceConfig {
     /// Explicit architecture list (default: auto-detect from artifacts).
     pub arches: Option<Vec<String>>,
     /// `x86_64` micro-architecture variant — `v1` (baseline), `v2`, `v3`
-    /// (AVX2), or `v4`. Constrained
+    /// (AVX2), or `v4`. Equivalent to GR `AurSource.Goamd64`. Constrained
     /// to a typed enum because AUR source pkgs build from the upstream
     /// tarball (no binary artifacts to filter), so the value's only role
     /// is as the `Amd64` template var consumed by `prepare:` / `build:` /
@@ -86,13 +86,13 @@ pub struct AurSourceConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the AUR source config is
-    /// skipped. Render failure hard-errors. The
+    /// skipped. Render failure hard-errors. Mirrors GoReleaser Pro
     /// `aur_sources[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }
 
-/// `x86_64` micro-architecture variant. A typed
+/// `x86_64` micro-architecture variant. Mirrors GoReleaser's `Goamd64` typed
 /// values. Used by [`AurSourceConfig::amd64_variant`] to constrain the
 /// `prepare:` / `build:` / `package:` template var surface to a known set —
 /// AUR source pkgs build from the upstream tarball so the value is
@@ -108,7 +108,7 @@ pub enum Amd64Variant {
 }
 
 impl Amd64Variant {
-    /// Canonical lowercase string form (`"v1"`..`"v4"`). Matches the
+    /// Canonical lowercase string form (`"v1"`..`"v4"`). Matches the GR
     /// `Goamd64` external surface and the value rendered into the PKGBUILD
     /// `Amd64` template var.
     pub fn as_str(&self) -> &'static str {

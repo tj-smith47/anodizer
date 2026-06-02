@@ -22,7 +22,7 @@ pub struct DmgConfig {
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before inclusion.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
-    /// Conditional-skip gate.
+    /// GoReleaser Pro feature.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Remove source archives from artifacts, keeping only DMG.
     pub replace: Option<bool>,
@@ -36,11 +36,11 @@ pub struct DmgConfig {
     pub use_: Option<String>,
     /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
     /// When set, only artifacts with the matching `amd64_variant` metadata
-    /// are included. The DMG `goamd64: string` field.
+    /// are included. Mirrors GoReleaser Pro DMG's `goamd64: string` field.
     /// When unset, all amd64 variants are included (no filtering).
     pub amd64_variant: Option<String>,
     /// Template-conditional: skip this DMG config if rendered result is "false"
-    /// or empty. Render failure hard-errors (not silent-skip).
+    /// or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// Volume label shown in Finder when the image is mounted.
@@ -72,7 +72,7 @@ pub struct MsiConfig {
     pub mod_timestamp: Option<String>,
     /// Skip this MSI config. Accepts bool or template string.
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat
-    /// with imported configs.
+    /// with imported GoReleaser configs (GR docs list `disable: string`).
     #[serde(
         default,
         alias = "disable",
@@ -81,17 +81,17 @@ pub struct MsiConfig {
     pub skip: Option<StringOrBool>,
     /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
     /// When set, only artifacts with the matching `amd64_variant` metadata
-    /// are included. The MSI `goamd64: string` field.
+    /// are included. Mirrors GoReleaser Pro MSI's `goamd64: string` field.
     pub amd64_variant: Option<String>,
     /// Additional files available in the WiX build context (simple filenames).
     pub extra_files: Option<Vec<String>>,
     /// WiX extensions to enable (e.g., "WixUIExtension"). Templates allowed.
     pub extensions: Option<Vec<String>>,
     /// Template-conditional: skip this MSI config if rendered result is "false"
-    /// or empty. Render failure hard-errors (not silent-skip).
+    /// or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
-    /// Pre/post MSI-build hooks. Accepts `pre`/`post`
+    /// Pre/post MSI-build hooks (GoReleaser Pro v2.14+). Accepts `pre`/`post`
     /// or `before`/`after` via BuildHooksConfig's serde aliases. Runs before
     /// / after candle+light for each matched artifact.
     pub hooks: Option<BuildHooksConfig>,
@@ -119,11 +119,11 @@ pub struct PkgConfig {
     /// Path to scripts directory containing preinstall/postinstall scripts. Templates allowed.
     pub scripts: Option<String>,
     /// Additional files to include in the package (glob or {glob, name_template}).
-    /// Anodizer-additive.
+    /// Anodizer-additive: not present in GoReleaser Pro pkg.
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before inclusion.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
-    /// Anodizer-additive.
+    /// Anodizer-additive: not present in GoReleaser Pro pkg.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Remove source archives from artifacts, keeping only PKG.
     pub replace: Option<bool>,
@@ -136,7 +136,7 @@ pub struct PkgConfig {
     pub min_os_version: Option<String>,
     /// Skip this PKG config. Accepts bool or template string.
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat
-    /// with imported configs.
+    /// with imported GoReleaser configs.
     #[serde(
         default,
         alias = "disable",
@@ -144,7 +144,7 @@ pub struct PkgConfig {
     )]
     pub skip: Option<StringOrBool>,
     /// Template-conditional: skip this PKG config if rendered result is "false"
-    /// or empty. Render failure hard-errors (not silent-skip).
+    /// or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }
@@ -168,11 +168,11 @@ pub struct NsisConfig {
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before inclusion.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
-    /// Conditional-skip gate.
+    /// GoReleaser Pro feature.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Skip this NSIS config. Accepts bool or template string.
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat
-    /// with imported configs.
+    /// with imported GoReleaser configs (GR docs list `disable: string`).
     #[serde(
         default,
         alias = "disable",
@@ -181,14 +181,14 @@ pub struct NsisConfig {
     pub skip: Option<StringOrBool>,
     /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
     /// When set, only artifacts with the matching `amd64_variant` metadata
-    /// are included. The NSIS `goamd64: string` field.
+    /// are included. Mirrors GoReleaser Pro NSIS's `goamd64: string` field.
     pub amd64_variant: Option<String>,
     /// Remove source archives from artifacts, keeping only the installer.
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
     /// Template-conditional: skip this NSIS config if rendered result is "false"
-    /// or empty. Render failure hard-errors (not silent-skip).
+    /// or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }
@@ -217,13 +217,13 @@ pub struct AppBundleConfig {
     pub extra_files: Option<Vec<ArchiveFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before inclusion.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
-    /// Conditional-skip gate.
+    /// GoReleaser Pro feature.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
     /// Remove source archives from artifacts, keeping only the app bundle.
     ///
-    /// Anodizer-additive: `replace:` on `app_bundles`.
+    /// Anodizer-additive: GoReleaser Pro does not expose `replace:` on `app_bundles`.
     pub replace: Option<bool>,
     /// Minimum macOS version written to `LSMinimumSystemVersion` in `Info.plist`.
     ///
@@ -233,7 +233,7 @@ pub struct AppBundleConfig {
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Template-conditional: skip this app bundle config if rendered result is
-    /// "false" or empty. Render failure hard-errors (not silent-skip).
+    /// "false" or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }

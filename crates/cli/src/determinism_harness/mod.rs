@@ -359,7 +359,7 @@ pub struct Harness {
     /// and `--output=type=oci,...` are not recognised by plain `podman
     /// build`. Operators who want byte-stability for podman-built images
     /// must verify reproducibility outside the harness (the build path
-    /// itself stays canonical).
+    /// itself stays GR-aligned).
     ///
     /// `None` / `Some("buildx")` / `Some("docker")` preserve the historical
     /// behaviour of always invoking `docker buildx build`.

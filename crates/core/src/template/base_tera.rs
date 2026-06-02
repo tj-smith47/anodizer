@@ -99,7 +99,7 @@ enum VersionPart {
 /// Parse and increment a semver version string, returning a tera-friendly
 /// error when the input isn't valid semver.
 ///
-/// Version-increment behavior, which calls
+/// Mirrors GoReleaser's `internal/tmpl/tmpl.go:440-449` behavior, which calls
 /// `semver.MustParse(v)` and surfaces a hard template error on non-semver
 /// input. Previously every component was best-effort `unwrap_or(0)`, so
 /// `{{ "garbage" | incpatch }}` silently returned `"0.0.1"`.
@@ -143,7 +143,7 @@ fn increment_version(v: &str, part: VersionPart) -> Result<String, tera::Error> 
 pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     let mut tera = tera::Tera::default();
 
-    // Compatibility aliases
+    // GoReleaser-compat aliases
     tera.register_filter("tolower", |value: &Value, _: &HashMap<String, Value>| {
         let s = tera::try_get_value!("tolower", "value", String, value);
         Ok(Value::String(s.to_lowercase()))
@@ -210,7 +210,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         },
     );
 
-    // --- Version increment functions ---
+    // --- Version increment functions (GoReleaser parity) ---
 
     // incpatch("1.2.3") → "1.2.4"
     tera.register_function(
@@ -248,7 +248,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         },
     );
 
-    // --- Hash functions (all 14 algorithms) ---
+    // --- Hash functions (GoReleaser parity — all 14 algorithms) ---
 
     macro_rules! register_hash_fn {
         ($tera:expr, $name:expr, $hash_fn:expr) => {
@@ -338,8 +338,8 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // --- File reading functions ---
 
     // readFile(path="file.txt") — reads file, returns empty string on error.
-    // Intentionally returns empty on all errors (not just ENOENT).
-    // Whitespace is trimmed from the result.
+    // Intentionally returns empty on all errors (not just ENOENT) for GoReleaser-compatible behavior.
+    // GoReleaser trims whitespace from the result (strings.TrimSpace).
     tera.register_function(
         "readFile",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
@@ -354,7 +354,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // mustReadFile(path="file.txt") — reads file, errors if file doesn't exist
-    // Whitespace is trimmed from the result.
+    // GoReleaser trims whitespace from the result (strings.TrimSpace).
     tera.register_function(
         "mustReadFile",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
@@ -434,7 +434,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         |value: &Value, _: &HashMap<String, Value>| {
             let s = tera::try_get_value!("urlPathEscape", "value", String, value);
             // Percent-encode all non-unreserved characters per RFC 3986.
-            // Path escaping encodes `/` as `%2F`.
+            // GoReleaser's url.PathEscape encodes `/` as `%2F`.
             let encoded: String = s
                 .bytes()
                 .map(|b| {
@@ -501,7 +501,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // map(pairs=[k1, v1, k2, v2, ...]) — create a map from alternating key-value pairs
-    // Example: {{ $m := map "a" "1" "b" "2" }}
+    // GoReleaser: {{ $m := map "a" "1" "b" "2" }}
     tera.register_function(
         "map",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
@@ -523,7 +523,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         },
     );
 
-    // in(items=[...], value="x") — check if a list contains a value
+    // in(items=[...], value="x") — check if a list contains a value (GoReleaser Pro parity)
     // Go-style: {{ in (list "a" "b" "c") "b" }} → true
     // Named:    {{ in(items=["a","b","c"], value="b") }} → true
     // Compares all elements as strings.
@@ -545,7 +545,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // `{% set x = ... %}` / `{% if ... %}` bodies.
     tera.register_function("contains_any", in_fn);
 
-    // reReplaceAll(pattern="...", input="...", replacement="...") — regex replace
+    // reReplaceAll(pattern="...", input="...", replacement="...") — regex replace (GoReleaser Pro parity)
     // Go-style: {{ reReplaceAll "(.*)" .Message "$1" }}
     // Named:    {{ reReplaceAll(pattern="(.*)", input="hello", replacement="$1") }}
     // Supports capture group references ($1, $2, etc.).
@@ -605,7 +605,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // englishJoin(items=[...], oxford=true) — join list items with commas and "and"
-    // Empty/whitespace-only items are filtered out before joining.
+    // GoReleaser filters out empty/whitespace-only items before joining.
     tera.register_function(
         "englishJoin",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
@@ -640,7 +640,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         },
     );
 
-    // englishJoin filter: {{ list "a" "b" "c" | englishJoin }} — pipe form
+    // englishJoin filter: {{ list "a" "b" "c" | englishJoin }} — GoReleaser pipe form
     tera.register_filter(
         "englishJoin",
         |value: &Value, args: &HashMap<String, Value>| {
@@ -704,7 +704,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // filter(items=<string|array>, regexp="pattern") — keep elements matching regex
-    // Accepts a multiline STRING (splits by newline, filters lines, rejoins).
+    // GoReleaser accepts a multiline STRING (splits by newline, filters lines, rejoins).
     // We also accept an array for convenience.
     // Note: regex is compiled per call. This is acceptable for template rendering
     // where each pattern is typically used once per render pass.
@@ -746,7 +746,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // reverseFilter(items=<string|array>, regexp="pattern") — exclude elements matching regex
-    // Accepts a multiline STRING (splits by newline, filters lines, rejoins).
+    // GoReleaser accepts a multiline STRING (splits by newline, filters lines, rejoins).
     // We also accept an array for convenience.
     // Note: regex is compiled per call. This is acceptable for template rendering
     // where each pattern is typically used once per render pass.
@@ -807,7 +807,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         },
     );
 
-    // --- replace function ---
+    // --- replace function (GoReleaser strings.ReplaceAll parity) ---
     // Function form: replace(s="input", old="x", new="y")
     tera.register_function(
         "replace",
@@ -843,7 +843,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         Ok(Value::String(s.replace(from, to)))
     });
 
-    // --- split function ---
+    // --- split function (GoReleaser strings.Split parity) ---
     // split(s="a,b,c", sep=",") → ["a", "b", "c"]
     tera.register_function(
         "split",
@@ -884,7 +884,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         },
     );
 
-    // --- trim function ---
+    // --- trim function (GoReleaser strings.TrimSpace parity) ---
     // Function form: trim(s="  hello  ") → "hello"
     // Tera already has a built-in `trim` filter, so we only add the function form.
     tera.register_function(
@@ -898,7 +898,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         },
     );
 
-    // --- title function ---
+    // --- title function (GoReleaser strings.ToTitle parity) ---
     // Function form: title(s="hello world") → "Hello World"
     // Tera already has a built-in `title` filter, so we only add the function form.
     tera.register_function(
@@ -1110,7 +1110,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // Formats the current UTC time using the given format string.
     // Accepts both Go time layout (e.g. "2006-01-02") and chrono strftime
     // (e.g. "%Y-%m-%d"). The piped value (Now) is ignored — the filter always
-    // uses the current UTC time, the `.Now.Format` behavior.
+    // uses the current UTC time, matching GoReleaser's `.Now.Format` behavior.
     //
     // SDE-aware: honors `SOURCE_DATE_EPOCH` so the harness's two from-clean
     // rebuilds produce identical output for templates like
@@ -1131,7 +1131,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // index(map={...}, key="k") — access a map by key or array by index.
     // Go template: {{ index .Map "key" }} → access map by key.
     // Go template: {{ index .Slice 0 }} → access array by index.
-    // Returns empty string if key/index not found.
+    // Returns empty string if key/index not found (matches GoReleaser behavior).
     tera.register_function(
         "index",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {

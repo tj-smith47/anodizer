@@ -35,7 +35,8 @@ pub fn async_client(timeout: Duration) -> Result<reqwest::Client> {
 
 /// Format an HTTP body-read failure as a descriptive placeholder string.
 ///
-/// Used by [`body_of`] / [`body_of_blocking`]: a transport-level
+/// Used by [`body_of`] / [`body_of_blocking`] to mirror upstream GoReleaser's
+/// `internal/client/github.go::bodyOf` (commit `8b77358`): a transport-level
 /// read error becomes `"could not read response body: <err>"` rather than
 /// silently truncating to `""`. Exposed as a free function so unit tests can
 /// pin the exact wording without standing up a fault-injecting HTTP server.
@@ -46,7 +47,7 @@ pub fn body_read_error_message<E: std::fmt::Display>(err: E) -> String {
 /// Read an HTTP response body to a `String`, returning a descriptive
 /// placeholder on read failure.
 ///
-/// Reads and scrubs an HTTP response body for error reporting after
+/// Mirrors GoReleaser's `internal/client/github.go::bodyOf` after upstream
 /// commit `8b77358`: a transport-level read error becomes
 /// `"could not read response body: <err>"` rather than silently truncating
 /// to an empty string. Callers typically pass the resulting text into a
@@ -85,7 +86,7 @@ mod tests {
     #[test]
     fn test_body_read_error_message_uses_descriptive_prefix() {
         // Pin the exact wording: callers may parse / match on this string,
-        // and the error-body contract requires the
+        // and parity with upstream GoReleaser's `bodyOf` requires the
         // `"could not read response body: "` prefix verbatim.
         let formatted = body_read_error_message("connection reset by peer");
         assert_eq!(

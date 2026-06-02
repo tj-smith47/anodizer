@@ -20,7 +20,7 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 ///   carrying an SLSA provenance v1 predicate over the selected artifacts,
 ///   writes it as a release asset (`attestation.intoto.jsonl`), and lets the
 ///   existing `signs:` stage sign it (keyed, not OIDC). This is for users who
-///   can't run the Action (the `--with-provenance` toggle).
+///   can't run the Action (GoReleaser Pro `--with-provenance` parity).
 ///
 /// YAML:
 /// ```yaml

@@ -40,7 +40,7 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodizer_stage_upx::UpxStage;
     use anodizer_stage_verify_release::VerifyReleaseStage;
 
-    // Canonical stage order.
+    // Stage order matches GoReleaser pipeline.go for parity.
     // Anodizer-specific stages (appbundle, dmg, msi, pkg, nsis, templatefiles,
     // release, snapcraft-publish, blob) are interleaved at logical positions.
     let mut p = Pipeline::new();
@@ -919,7 +919,7 @@ before_publish:
     }
 
     // -----------------------------------------------------------------------
-    // before_publish per-artifact iteration
+    // before_publish per-artifact iteration (GR Pro contract)
     // -----------------------------------------------------------------------
 
     /// Register N archives, one hook with `artifacts: archive`, and verify

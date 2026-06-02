@@ -383,7 +383,7 @@ fn test_invalid_filter_name_error_mentions_filter() {
 
 #[test]
 fn test_missing_env_var_returns_empty_string() {
-    // Missing env vars resolve to an empty string.
+    // GoReleaser returns empty string for missing env vars.
     // Anodizer scans the template for Env.X references and pre-populates
     // missing keys with "" so Tera doesn't error.
     let vars = test_vars();
@@ -560,7 +560,7 @@ fn test_is_env_set_missing_name_error() {
 }
 
 // ---- Hash function tests (known-answer vectors) ----
-// Hash functions read file contents, so tests use temp files.
+// Hash functions read file contents (GoReleaser parity), so tests use temp files.
 
 fn hash_test_file() -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
@@ -686,7 +686,8 @@ fn test_incpatch_handles_prerelease() {
 }
 
 // Q-bump1: non-semver input must hard-error rather than silently
-// returning "0.0.1" / "0.1.0" / "1.0.0". A non-semver input panics on parse.
+// returning "0.0.1" / "0.1.0" / "1.0.0". Mirrors GR
+// `internal/tmpl/tmpl.go:440-449` `semver.MustParse(v)` panic.
 //
 // `render()` wraps the underlying Tera error in `anyhow::Error`, so we
 // walk the source chain to find the actual semver-validation message.
@@ -943,7 +944,8 @@ fn test_reverse_filter_removes_matches() {
 }
 
 // Q15.2 — `filter` and `reverseFilter` must return an error (not panic)
-// when the user supplies an invalid regex. A POSIX regex compiler
+// when the user supplies an invalid regex. Mirrors GoReleaser commit
+// c2f16b9 (internal/tmpl/tmpl.go): upstream replaced `regexp.MustCompilePOSIX`
 // (panicking) with `regexp.CompilePOSIX` (returning error). Rust's
 // `regex::Regex::new` already returns `Result`, so this contract is
 // panic-free by construction; this test pins it.
@@ -1269,7 +1271,7 @@ fn test_positional_replace_with_env_var() {
 
 #[test]
 fn test_positional_replace_empty_replacement() {
-    // Common pattern: strip "v" prefix
+    // Common GoReleaser pattern: strip "v" prefix
     let vars = test_vars();
     let result = render("{{ replace .Tag \"v\" \"\" }}", &vars).unwrap();
     assert_eq!(result, "1.2.3");
@@ -1522,7 +1524,7 @@ fn test_re_replace_all_with_capture_groups() {
 
 #[test]
 fn test_re_replace_all_capture_group_goreleaser_style() {
-    // Mimics the docs example:
+    // Mimics the GoReleaser docs example:
     // reReplaceAll "(.*) \(#(.*)\)" .Message "$1 [#$2](url/$2)"
     let mut vars = test_vars();
     vars.set("Message", "fix bug (#123)");
@@ -2008,7 +2010,7 @@ fn test_now_format_filter_chrono_format() {
 
 #[test]
 fn test_now_format_preprocessed_from_go_style() {
-    // Date formatting: {{ .Now.Format "2006-01-02" }}
+    // GoReleaser-style: {{ .Now.Format "2006-01-02" }}
     // After preprocessing: {{ Now | now_format(format="2006-01-02") }}
     let mut vars = test_vars();
     vars.set("Now", "2026-04-05T12:00:00Z");
@@ -2170,7 +2172,7 @@ fn test_map_and_index_missing_key_returns_empty() {
 
 // ---- per-target var coverage (Q-tpl1) ----
 //
-// The per-artifact key set: every key
+// Mirrors GoReleaser `internal/tmpl/tmpl.go` per-artifact key set: every key
 // must be a member of `PER_TARGET_VARS` so the clear-on-exit pass touches it
 // (and so `{{ .Ppc64 }}` / `{{ .Riscv64 }}` references render empty rather
 // than raising a Tera "missing key" error in strict mode).

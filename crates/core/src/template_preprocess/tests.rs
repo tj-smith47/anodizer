@@ -539,7 +539,7 @@ fn test_go_blocks_plain_expressions_unchanged() {
 
 #[test]
 fn test_go_complex_nfpm_template() {
-    // Real-world template: nfpm default name_template
+    // Real-world GoReleaser template: nfpm default name_template
     let input = "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ if not (eq .Amd64 \"v1\") }}{{ .Amd64 }}{{ end }}";
     let result = preprocess(input);
     // `(eq Amd64 "v1")` is rewritten to `Amd64 == "v1"` by Pass 2b

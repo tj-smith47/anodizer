@@ -917,7 +917,8 @@ fn test_changelog_resolved_abbrev_user_value_wins() {
     assert_eq!(cfg.resolved_abbrev(), 7);
 }
 
-// abbrev clamp: values below `-1` are clamped
+// Q15.1 — abbrev clamp. Mirrors GoReleaser commit 88daaf3
+// (internal/pipe/changelog/changelog.go): values below `-1` are clamped
 // to `-1`. Upstream's `git log --abbrev=N` panics on `-2`, `-3`, …;
 // anodizer renders SHAs in Rust so it would not panic, but the clamp
 // keeps behavioural parity (negative-of-any-magnitude → "omit hash").
@@ -971,7 +972,7 @@ fn test_changelog_resolved_format_default_scm() {
             tmpl.contains("{% if Login %}"),
             "expected SCM template for backend {backend}, got: {tmpl}"
         );
-        // Changelog-entry format:
+        // Match GoReleaser (internal/pipe/changelog/changelog.go:54-61):
         // the SCM-mode default uses the FULL SHA, not the abbreviated
         // ShortSHA. Pin the prefix to catch silent ShortSHA regressions.
         assert!(
@@ -1994,7 +1995,7 @@ crates = []
     assert!(env.contains(&"STAGE=prod".to_string()));
 }
 
-// ---- env list form tests ----
+// ---- env list form tests (GoReleaser parity) ----
 
 #[test]
 fn test_env_list_form_parsed() {
@@ -2882,7 +2883,7 @@ crates: []
 
 #[test]
 fn test_announce_smtp_aliases_email() {
-    // The `smtp:` → `email:` rename (both are kept as
+    // Mirrors GR's own `smtp:` → `email:` rename (GR keeps both as
     // aliases; anodizer matches).
     let yaml = r#"
 project_name: test
@@ -3143,9 +3144,9 @@ crates: []
     assert_eq!(macos[0].skip, Some(StringOrBool::Bool(false)));
 }
 
-/// The upstream writes `enabled:` (opt-in, default false) where anodizer
+/// GoReleaser writes `enabled:` (opt-in, default false) where anodizer
 /// writes `skip:` (opt-out once the block is present). The deserializer
-/// inverts the bool so an imported YAML runs the pipeline
+/// inverts the bool so a YAML imported from GR docs runs the pipeline
 /// instead of being rejected at parse time.
 #[test]
 fn test_notarize_macos_enabled_alias_inverts_to_skip() {
@@ -5814,7 +5815,7 @@ cloudsmiths:
     }
 }
 
-/// Multi-distribution array form: `deb: ["ubuntu/focal", ...]`
+/// Multi-distribution array form (GR Pro v2.8+): `deb: ["ubuntu/focal", ...]`
 /// must parse into [`CloudSmithDistributions::Multiple`] so the publisher
 /// can issue one upload per slug.
 #[test]
@@ -6432,11 +6433,11 @@ fn test_evaluate_if_condition_render_error_propagates() {
     );
 }
 
-// ---- F2: `disable` → `skip` serde aliases ----
+// ---- F2: `disable` → `skip` serde aliases (GR import compat) ----
 //
-// Imported docker_v2/snapcraft/nsis/msi/release configs use `disable:`;
+// GoReleaser's docker_v2/snapcraft/nsis/msi/release configs use `disable:`;
 // anodizer renamed to `skip:`. With `deny_unknown_fields` on the
-// strictly-validated structs, an imported YAML carrying `disable:`
+// strictly-validated structs, an imported GR YAML carrying `disable:`
 // would fail to parse. The `#[serde(alias = "disable")]` attribute lets
 // both spellings deserialize into the same field.
 
@@ -6529,7 +6530,7 @@ crates:
 
 // ---- amd64_variant field on DMG/MSI/NSIS/nfpm ----
 //
-// The `goamd64` field; previously absent on these surfaces, so
+// Mirrors GR's `Goamd64` field; previously absent on these surfaces, so
 // multi-amd64-variant builds couldn't filter. Tests assert the YAML round-
 // trips into the new struct field. Stage-level wiring (filter the artifact
 // set against the configured variant) lives in stage-{dmg,msi,nsis,nfpm}/
@@ -6588,7 +6589,7 @@ crates:
 
 #[test]
 fn test_nfpm_amd64_variant_field_deserializes_as_list() {
-    // nfpm uses `[]string` (multi-variant filter), not `string`.
+    // GR nfpm uses `[]string` (multi-variant filter), not `string`.
     let yaml = r#"
 project_name: test
 crates:
@@ -6751,12 +6752,12 @@ fn test_source_prefix_template_remains_none_when_name_template_unset() {
 
 // ---- Q-brew1: HomebrewConflict accepts both string and object shapes ----
 //
-// Homebrew conflicts is `[]string` (just names). anodizer's
+// GR's Homebrew.Conflicts is `[]string` (just names). anodizer's
 // HomebrewConflict is a strict superset (`Name` | `WithReason`), modeled as
 // an untagged enum so a YAML list of either bare strings, structured
 // `{name, because}` objects, or a mixed list all deserializes correctly.
 // These tests pin that behavior so a refactor cannot accidentally drop the
-// string form, which would silently drop all conflicts: from imported
+// string form, which would silently drop all conflicts: from imported GR
 // configs.
 
 #[test]
@@ -6805,7 +6806,7 @@ fn test_homebrew_conflicts_mixed_form_accepted() {
 
 #[test]
 fn test_homebrew_conflicts_full_yaml_with_string_list_form() {
-    // End-to-end: a homebrew block with `conflicts: [foo, bar]` (the
+    // End-to-end: a homebrew block with `conflicts: [foo, bar]` (the GR
     // import shape) must round-trip through Config without issue.
     let yaml = r#"
 project_name: test
@@ -6834,7 +6835,7 @@ crates:
     assert_eq!(conflicts[1].name(), "bar");
 }
 
-// ---- legacy V1 `dockers:` block rejection ----
+// ---- legacy GR V1 `dockers:` block rejection ----
 
 #[test]
 fn test_v1_dockers_block_rejected_with_migration_message() {
@@ -7004,8 +7005,8 @@ fn test_makeself_config_rejects_renamed_go_fields() {
 
 #[test]
 fn test_makeself_config_accepts_disable_alias() {
-    // The legacy makeself spelling uses `disable: string` as its skip
-    // mechanism. With `deny_unknown_fields` on MakeselfConfig it would hard-reject
+    // GoReleaser makeself uses `disable: string` as its skip mechanism. With
+    // `deny_unknown_fields` on MakeselfConfig the GR spelling would hard-reject
     // unless aliased — assert the alias folds `disable:` into `skip`.
     let cfg: super::MakeselfConfig = serde_yaml_ng::from_str("disable: true\n").unwrap();
     match cfg.skip {
@@ -7016,8 +7017,8 @@ fn test_makeself_config_accepts_disable_alias() {
 
 #[test]
 fn test_makeself_file_accepts_src_dst_aliases() {
-    // The legacy MakeselfFile keys its fields `src`/`dst`; anodizer renamed
-    // them to source/destination. Assert the legacy spellings still parse via alias.
+    // GoReleaser's MakeselfFile keys its fields `src`/`dst`; anodizer renamed
+    // them to source/destination. Assert the GR spellings still parse via alias.
     let f: super::MakeselfFile =
         serde_yaml_ng::from_str("src: bin/app\ndst: usr/bin/app\n").unwrap();
     assert_eq!(f.source, "bin/app");
@@ -7082,8 +7083,8 @@ fn test_appimage_extra_accepts_source_destination_aliases() {
 
 #[test]
 fn test_nfpm_config_accepts_builds_alias_into_ids() {
-    // The legacy NFPM config keeps a deprecated `builds []string` aliasing
-    // `ids`. With `deny_unknown_fields` on NfpmConfig it would hard-reject
+    // GoReleaser NFPM keeps a deprecated `builds []string` aliasing `ids`. With
+    // `deny_unknown_fields` on NfpmConfig the GR spelling would hard-reject
     // unless aliased — assert `builds:` lands in `ids`.
     let cfg: super::NfpmConfig = serde_yaml_ng::from_str("builds: [foo, bar]\n").unwrap();
     assert_eq!(
@@ -7545,7 +7546,7 @@ workspaces:
 }
 
 // ---------------------------------------------------------------------------
-// warn_on_legacy_homebrew_formula — deprecation of brews / publish.homebrew
+// warn_on_legacy_homebrew_formula — GR v2.16 deprecation of brews / publish.homebrew
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -7932,7 +7933,7 @@ crates:
 }
 
 // ---------------------------------------------------------------------------
-// Deprecation aliases
+// GR v2.12.6 – v2.15.3 deprecation aliases (Section C of the v2.16 delta spec)
 // ---------------------------------------------------------------------------
 
 // ---- Row 1+2: nested docker_v2[].retry / docker_manifests[].retry ----
@@ -8043,7 +8044,7 @@ workspaces:
     );
 }
 
-// ---- Row 3: V1 dockers: block rejection ----
+// ---- Row 3: GR V1 dockers: block rejection (verify pre-existing test) ----
 //
 // `test_v1_dockers_block_rejected_with_migration_message` already covers the
 // rejection. Add a sibling test asserting the load_config path also surfaces
@@ -8429,7 +8430,7 @@ gemfury:
 
 #[test]
 fn legacy_disable_alias_warns_on_furies_legacy_alias_key() {
-    // The legacy `furies:` block key maps to the same GemFuryConfig, so
+    // The pre-GR-v2.14 `furies:` block key maps to the same GemFuryConfig, so
     // `furies[].disable:` must warn under its legacy key too.
     let warnings = disable_alias_warnings(
         r#"
@@ -8681,7 +8682,7 @@ homebrew_casks:
         .manpages
         .as_ref()
         .unwrap();
-    // The legacy singular is appended to the END of manpages.
+    // GR appends the legacy singular to the END of manpages.
     assert_eq!(manpages, &vec!["new.1".to_string(), "legacy.1".to_string()]);
 }
 

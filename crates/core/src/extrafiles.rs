@@ -1,11 +1,11 @@
 //! Shared `extra_files` glob resolution.
 //!
-//! Canonical implementation of extra-file glob resolution —
+//! Canonical implementation of the GoReleaser `extrafiles.Find()` function —
 //! a single resolver used by every pipe that accepts an `extra_files:` config
 //! (checksum, blob upload, custom publisher, artifactory/fury/cloudsmith,
 //! release body uploads).
 //!
-//! Semantics:
+//! Semantics match `goreleaser/internal/extrafiles/extra_files.go`:
 //! - An empty glob (after template rendering) emits a warning and is skipped.
 //! - Glob expansion errors bubble up as `Err`.
 //! - If a `name_template` is set on a spec, the glob must match **exactly one**
