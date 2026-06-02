@@ -12,22 +12,11 @@ use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
+mod common;
+use common::run_git;
+
 fn anodizer() -> Command {
     Command::new(env!("CARGO_BIN_EXE_anodizer"))
-}
-
-fn run_git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {:?} failed to spawn: {e}", args));
-    assert!(
-        out.status.success(),
-        "git {:?} failed: {}",
-        args,
-        String::from_utf8_lossy(&out.stderr)
-    );
 }
 
 fn git_init(dir: &Path) {
@@ -563,5 +552,55 @@ workspaces:
         read_dep_version(tmp.path(), "crates/app/Cargo.toml", "lib"),
         "0.2.0",
         "intra-workspace dep pin app→lib must be rewritten to the new version"
+    );
+}
+
+#[test]
+fn per_crate_no_output_when_push_fails() {
+    // The `anodizer-output crates=…` / `versions=…` lines advertise a
+    // successful tag+push to a downstream consumer. They must be emitted
+    // only AFTER the atomic push succeeds — never before it. Point `origin`
+    // at an unreachable URL and run under `--strict` so the atomic push hard-
+    // fails; the command must exit non-zero AND emit no `anodizer-output`
+    // line (a pre-push emission would advertise tags that never landed).
+    let tmp = TempDir::new().unwrap();
+    flat_two_crate_workspace(tmp.path());
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "core-v0.1.0"]);
+    run_git(tmp.path(), &["tag", "cli-v0.1.0"]);
+    // Unreachable remote so the push leg fails rather than being skipped
+    // (no-remote is a soft skip; we need a hard push failure here).
+    run_git(
+        tmp.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "file:///nonexistent/anodizer-test-bare-repo.git",
+        ],
+    );
+
+    // Touch only crates/core so there is exactly one crate to tag.
+    fs::write(tmp.path().join("crates/core/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(tmp.path(), "fix: core bug");
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["--strict", "tag"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "tag must fail when the atomic push to a bad remote fails: \
+         stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("anodizer-output"),
+        "no anodizer-output line may be emitted when the push fails \
+         (would advertise tags that never landed): stdout={stdout}"
     );
 }

@@ -1215,11 +1215,14 @@ fn run_per_crate_tag(
         }
     }
 
-    // Emit structured output. In dry-run the lines still appear so CI can
-    // observe what would be tagged.
+    // Build the structured-output payloads up front, but DON'T print them
+    // yet: a downstream consumer treats `anodizer-output crates=…` as "these
+    // crates are tagged and pushed". Emitting before the atomic push would
+    // advertise a successful tagging even when the push then fails (the `?`
+    // below aborts mid-command, leaving the consumer believing the tags
+    // landed). Defer the `println!`s until after the push returns Ok.
     let crates_json =
         serde_json::to_string(&all_tagged_crates).unwrap_or_else(|_| "[]".to_string());
-    println!("anodizer-output crates={}", crates_json);
 
     // Build crate-name → new-version map from version_updates (path → version),
     // joined against crate_names so the output uses canonical crate names rather
@@ -1234,7 +1237,6 @@ fn run_per_crate_tag(
         })
         .collect();
     let versions_json = serde_json::to_string(&versions_map).unwrap_or_else(|_| "{}".to_string());
-    println!("anodizer-output versions={}", versions_json);
 
     // Per-crate auto-dispatch defaults to pushing the bump commit + tags
     // atomically (path_default = true). `--no-push` pushes the tags only,
@@ -1252,6 +1254,12 @@ fn run_per_crate_tag(
         },
         log,
     )?;
+
+    // Push succeeded (or was a dry-run/preview no-op that returns Ok). Now it
+    // is safe to advertise the tagged crates + versions. In dry-run the lines
+    // still appear so CI can observe what would be tagged.
+    println!("anodizer-output crates={}", crates_json);
+    println!("anodizer-output versions={}", versions_json);
 
     Ok(())
 }
