@@ -84,8 +84,12 @@ pub fn conventional_filename(format: &str, info: &FileNameInfo<'_>) -> Option<St
 // deb
 // ---------------------------------------------------------------------------
 
-/// Debian arch translation. Keyed on Go-style arch.
-/// Debian arch translation (matching nfpm v2.46.3).
+/// Debian arch translation, keyed on Go-style arch (matching nfpm
+/// v2.46.3's `archToDebian`).
+///
+/// Rows mirror nfpm exactly, plus anodizer's `armv5`/`armv6`/`armv7`
+/// aliases for the `arm5`/`arm6`/`arm7` keys. Unmapped archs (`amd64`,
+/// `ppc64`, `riscv64`, …) pass through, matching nfpm's fall-through.
 fn debian_arch(arch: &str) -> &str {
     match arch {
         "386" => "i386",
@@ -97,8 +101,8 @@ fn debian_arch(arch: &str) -> &str {
         "mipsle" => "mipsel",
         "ppc64le" => "ppc64el",
         "s390" => "s390x",
-        // Unmapped archs (including amd64, ppc64, riscv64, s390x already)
-        // pass through — upstream does the same.
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
         other => other,
     }
 }
@@ -127,7 +131,8 @@ fn deb_filename(info: &FileNameInfo<'_>) -> String {
 // rpm
 // ---------------------------------------------------------------------------
 
-/// RPM arch translation (matching nfpm v2.46.3).
+/// RPM arch translation, keyed on Go-style arch (matching nfpm
+/// v2.46.3's `archToRPM`).
 fn rpm_arch(arch: &str) -> &str {
     match arch {
         "all" => "noarch",
@@ -140,6 +145,7 @@ fn rpm_arch(arch: &str) -> &str {
         "mips64le" => "mips64el",
         "mipsle" => "mipsel",
         "mips" => "mips",
+        "loong64" => "loongarch64",
         other => other,
     }
 }
@@ -172,9 +178,11 @@ fn rpm_filename(info: &FileNameInfo<'_>) -> String {
 // apk
 // ---------------------------------------------------------------------------
 
-/// Alpine arch translation (matching nfpm v2.46.3).
+/// Alpine arch translation, keyed on Go-style arch (matching nfpm
+/// v2.46.3's `archToAlpine`).
 fn apk_arch(arch: &str) -> &str {
     match arch {
+        "all" => "noarch",
         "386" => "x86",
         "amd64" => "x86_64",
         "arm64" => "aarch64",
@@ -182,6 +190,11 @@ fn apk_arch(arch: &str) -> &str {
         "arm7" | "armv7" => "armv7",
         "ppc64le" => "ppc64le",
         "s390" => "s390x",
+        "loong64" => "loongarch64",
+        "aarch64" => "aarch64",
+        "x86_64" => "x86_64",
+        "i386" => "x86",
+        "i686" => "x86",
         other => other,
     }
 }
@@ -233,7 +246,8 @@ fn apk_pkgver(info: &FileNameInfo<'_>) -> String {
 // archlinux
 // ---------------------------------------------------------------------------
 
-/// Arch Linux arch translation (matching nfpm v2.46.3).
+/// Arch Linux arch translation, keyed on Go-style arch (matching nfpm
+/// v2.46.3's `archToArchLinux`).
 fn archlinux_arch(arch: &str) -> &str {
     match arch {
         "all" => "any",
@@ -243,6 +257,9 @@ fn archlinux_arch(arch: &str) -> &str {
         "arm7" | "armv7" => "armv7h",
         "arm6" | "armv6" => "armv6h",
         "arm5" | "armv5" => "arm",
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        "i386" => "i686",
         other => other,
     }
 }
@@ -297,7 +314,8 @@ pub fn control_arch(format: &str, arch: &str) -> String {
     mapped.to_string()
 }
 
-/// IPK arch translation (matching nfpm v2.46.3).
+/// IPK arch translation, keyed on Go-style arch (matching nfpm
+/// v2.46.3's `archToIPK`).
 fn ipk_arch(arch: &str) -> &str {
     match arch {
         "386" => "i386",
@@ -310,6 +328,9 @@ fn ipk_arch(arch: &str) -> &str {
         "mipsle" => "mipsel",
         "ppc64le" => "ppc64el",
         "s390" => "s390x",
+        "x86_64" => "x86_64",
+        "aarch64" => "arm64",
+        "i386" => "i386",
         other => other,
     }
 }
@@ -625,5 +646,136 @@ mod tests {
         );
         // Unknown formats return None so callers can fall back.
         assert_eq!(conventional_filename("snap", &info), None);
+    }
+
+    #[test]
+    fn apk_all_is_noarch() {
+        // An arch-independent apk must be named `..._noarch.apk`, not
+        // `..._all.apk`. The `all` token reaches apk via the synthetic
+        // `darwin-universal` arch and the `control_arch` / arch-override
+        // surfaces; before nfpm v2.46.3 parity it leaked through as `all`.
+        assert_eq!(apk_arch("all"), "noarch");
+        assert_eq!(apk_filename(&base("all")), "myapp_1.2.3_noarch.apk");
+        assert_eq!(control_arch("apk", "all"), "noarch");
+    }
+
+    #[test]
+    fn loong64_translates_per_format() {
+        // anodizer's `map_target` feeds `loong64` for loongarch64 triples;
+        // rpm/apk must name it `loongarch64`.
+        assert_eq!(rpm_arch("loong64"), "loongarch64");
+        assert_eq!(apk_arch("loong64"), "loongarch64");
+    }
+
+    /// nfpm v2.46.3 arch maps, verbatim from `deb/deb.go`, `rpm/rpm.go`,
+    /// `apk/apk.go`, `arch/arch.go`, `ipk/ipk.go` at tag v2.46.3. Each
+    /// per-format helper must reproduce its map key-for-key (plus
+    /// anodizer's `armv5`/`armv6`/`armv7` superset aliases, asserted
+    /// separately below).
+    #[test]
+    fn tables_replicate_nfpm_2_46_3() {
+        let arch_to_debian = [
+            ("386", "i386"),
+            ("arm64", "arm64"),
+            ("arm5", "armel"),
+            ("arm6", "armhf"),
+            ("arm7", "armhf"),
+            ("mips64le", "mips64el"),
+            ("mipsle", "mipsel"),
+            ("ppc64le", "ppc64el"),
+            ("s390", "s390x"),
+            ("x86_64", "amd64"),
+            ("aarch64", "arm64"),
+        ];
+        for (k, v) in arch_to_debian {
+            assert_eq!(debian_arch(k), v, "debian_arch({k})");
+        }
+
+        let arch_to_rpm = [
+            ("all", "noarch"),
+            ("amd64", "x86_64"),
+            ("386", "i386"),
+            ("arm64", "aarch64"),
+            ("arm5", "armv5tel"),
+            ("arm6", "armv6hl"),
+            ("arm7", "armv7hl"),
+            ("mips64le", "mips64el"),
+            ("mipsle", "mipsel"),
+            ("mips", "mips"),
+            ("loong64", "loongarch64"),
+        ];
+        for (k, v) in arch_to_rpm {
+            assert_eq!(rpm_arch(k), v, "rpm_arch({k})");
+        }
+
+        let arch_to_alpine = [
+            ("all", "noarch"),
+            ("386", "x86"),
+            ("amd64", "x86_64"),
+            ("arm64", "aarch64"),
+            ("arm6", "armhf"),
+            ("arm7", "armv7"),
+            ("ppc64le", "ppc64le"),
+            ("s390", "s390x"),
+            ("loong64", "loongarch64"),
+            ("aarch64", "aarch64"),
+            ("x86_64", "x86_64"),
+            ("i386", "x86"),
+            ("i686", "x86"),
+        ];
+        for (k, v) in arch_to_alpine {
+            assert_eq!(apk_arch(k), v, "apk_arch({k})");
+        }
+
+        let arch_to_archlinux = [
+            ("all", "any"),
+            ("amd64", "x86_64"),
+            ("386", "i686"),
+            ("arm64", "aarch64"),
+            ("arm7", "armv7h"),
+            ("arm6", "armv6h"),
+            ("arm5", "arm"),
+            ("x86_64", "x86_64"),
+            ("aarch64", "aarch64"),
+            ("i386", "i686"),
+        ];
+        for (k, v) in arch_to_archlinux {
+            assert_eq!(archlinux_arch(k), v, "archlinux_arch({k})");
+        }
+
+        let arch_to_ipk = [
+            ("386", "i386"),
+            ("amd64", "x86_64"),
+            ("arm64", "arm64"),
+            ("arm5", "armel"),
+            ("arm6", "armhf"),
+            ("arm7", "armhf"),
+            ("mips64le", "mips64el"),
+            ("mipsle", "mipsel"),
+            ("ppc64le", "ppc64el"),
+            ("s390", "s390x"),
+            ("x86_64", "x86_64"),
+            ("aarch64", "arm64"),
+            ("i386", "i386"),
+        ];
+        for (k, v) in arch_to_ipk {
+            assert_eq!(ipk_arch(k), v, "ipk_arch({k})");
+        }
+    }
+
+    #[test]
+    fn armv_aliases_mirror_arm_keys() {
+        // anodizer's documented superset: `armvN` aliases resolve
+        // identically to nfpm's `armN` keys, per format.
+        for (a, n) in [("armv5", "arm5"), ("armv6", "arm6"), ("armv7", "arm7")] {
+            assert_eq!(debian_arch(a), debian_arch(n), "debian {a}/{n}");
+            assert_eq!(rpm_arch(a), rpm_arch(n), "rpm {a}/{n}");
+            assert_eq!(archlinux_arch(a), archlinux_arch(n), "archlinux {a}/{n}");
+            assert_eq!(ipk_arch(a), ipk_arch(n), "ipk {a}/{n}");
+        }
+        // apk has no arm5 key; arm6/arm7 only.
+        for (a, n) in [("armv6", "arm6"), ("armv7", "arm7")] {
+            assert_eq!(apk_arch(a), apk_arch(n), "apk {a}/{n}");
+        }
     }
 }
