@@ -389,18 +389,7 @@ fn signature_suffix(template: &str) -> Option<String> {
 /// Best-effort: a missing / unparseable config yields no entries (the
 /// harness still runs; real config errors surface elsewhere).
 fn derive_signature_allowlist_entries(repo_root: &std::path::Path) -> Vec<AllowListEntry> {
-    let prev_cwd = std::env::current_dir().ok();
-    if std::env::set_current_dir(repo_root).is_err() {
-        return Vec::new();
-    }
-    let cfg_path = crate::pipeline::find_config(None).ok();
-    let cfg = cfg_path
-        .as_ref()
-        .and_then(|p| crate::pipeline::load_config(p).ok());
-    if let Some(p) = prev_cwd {
-        std::env::set_current_dir(p).ok();
-    }
-    match cfg {
+    match crate::pipeline::load_repo_config(repo_root).ok() {
         Some(cfg) => signature_allowlist_entries_from_config(&cfg),
         None => Vec::new(),
     }
@@ -453,18 +442,9 @@ fn signature_allowlist_entries_from_config(
 /// Soft on errors: a missing or unparseable config falls through to
 /// `false` so the existing harness flow surfaces the real error.
 fn all_builds_prebuilt_in_repo(repo_root: &std::path::Path) -> bool {
-    let prev_cwd = std::env::current_dir().ok();
-    if std::env::set_current_dir(repo_root).is_err() {
-        return false;
-    }
-    let cfg_path = crate::pipeline::find_config(None).ok();
-    let cfg = cfg_path
+    crate::pipeline::load_repo_config(repo_root)
+        .ok()
         .as_ref()
-        .and_then(|p| crate::pipeline::load_config(p).ok());
-    if let Some(p) = prev_cwd {
-        std::env::set_current_dir(p).ok();
-    }
-    cfg.as_ref()
         .map(anodizer_core::config::all_builds_prebuilt)
         .unwrap_or(false)
 }
@@ -482,16 +462,7 @@ fn all_builds_prebuilt_in_repo(repo_root: &std::path::Path) -> bool {
 /// validation surfaces elsewhere in the pipeline with a more actionable
 /// error. The fallthrough simply runs the legacy buildx probe.
 fn detect_docker_backend_hint(repo_root: &std::path::Path) -> Option<String> {
-    let prev_cwd = std::env::current_dir().ok();
-    std::env::set_current_dir(repo_root).ok()?;
-    let cfg_path = crate::pipeline::find_config(None).ok();
-    let cfg = cfg_path
-        .as_ref()
-        .and_then(|p| crate::pipeline::load_config(p).ok());
-    if let Some(p) = prev_cwd {
-        std::env::set_current_dir(p).ok();
-    }
-    let cfg = cfg?;
+    let cfg = crate::pipeline::load_repo_config(repo_root).ok()?;
     let mut saw_buildx = false;
     let mut iter: Vec<&Option<String>> = Vec::new();
     if let Some(ref defaults) = cfg.defaults

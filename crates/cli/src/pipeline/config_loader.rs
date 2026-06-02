@@ -75,6 +75,53 @@ pub fn find_config_with_logger(
     )
 }
 
+/// Find an anodizer config by searching `base` for the well-known config
+/// file names, without mutating the process-global cwd.
+///
+/// [`find_config`] resolves candidates relative to the current directory,
+/// so callers that want to probe a *different* directory must `set_current_dir`
+/// around the call — a process-global mutation that is fragile under any
+/// concurrency and easy to leak on an early return. This variant joins each
+/// candidate against `base` instead. Returns the matched path (joined under
+/// `base`, including the `Cargo.toml` fallback, so [`load_config`] still
+/// recognizes the fallback by filename). Best-effort callers (allow-list /
+/// hint derivation) can `.ok()` the result.
+pub fn find_config_in(base: &Path) -> Result<PathBuf> {
+    let candidates = [
+        ".anodizer.yaml",
+        ".anodizer.yml",
+        ".anodizer.toml",
+        "anodizer.yaml",
+        "anodizer.yml",
+        "anodizer.toml",
+    ];
+    for name in &candidates {
+        let path = base.join(name);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+    let cargo_toml = base.join("Cargo.toml");
+    if cargo_toml.exists() {
+        return Ok(cargo_toml);
+    }
+    bail!(
+        "no anodizer config file found under {} (tried: {}). Run `anodizer init` to generate one.",
+        base.display(),
+        candidates.join(", ")
+    )
+}
+
+/// Find + load the anodizer config rooted at `base` in one call, without
+/// mutating the process-global cwd. Thin combinator over [`find_config_in`]
+/// and [`load_config`] for the best-effort config probes (signature
+/// allow-list, docker-backend hint, all-prebuilt short-circuit) that each
+/// previously open-coded a cwd-save / find / load / cwd-restore block.
+pub fn load_repo_config(base: &Path) -> Result<Config> {
+    let path = find_config_in(base)?;
+    load_config(&path)
+}
+
 /// Deep-merge `overlay` into `base`. Mappings are merged recursively,
 /// sequences are concatenated, and scalars/other values are replaced.
 fn merge_yaml(base: &mut serde_yaml_ng::Value, overlay: &serde_yaml_ng::Value) {

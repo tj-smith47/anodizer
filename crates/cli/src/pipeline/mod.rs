@@ -28,7 +28,7 @@ pub use builders::{
     build_announce_pipeline, build_merge_pipeline, build_publish_pipeline, build_release_pipeline,
     build_split_pipeline,
 };
-pub use config_loader::{find_config, find_config_with_logger, load_config};
+pub use config_loader::{find_config, find_config_with_logger, load_config, load_repo_config};
 
 pub struct Pipeline {
     stages: Vec<Box<dyn Stage>>,
