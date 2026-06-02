@@ -111,29 +111,55 @@ pub(super) fn matches_ids(artifact: &Artifact, ids: &Option<Vec<String>>) -> boo
 // Base64 cert / key materialization
 // ---------------------------------------------------------------------------
 
-/// Detect whether `value` looks like a base64-encoded P12 / P8 blob
-/// (as opposed to a filesystem path). GR's `notarize.macos[*].sign.certificate`
-/// and `notarize.macos[*].notarize.key` both accept either spelling so the
-/// secret can flow through an env-var without a sidecar file. The heuristic:
+/// Detect whether `value` is an inline base64-encoded P12 / P8 blob (as
+/// opposed to a filesystem path to one). The
+/// `notarize.macos[*].sign.certificate` and `notarize.macos[*].notarize.key`
+/// fields both accept either spelling so the secret can flow through an
+/// env-var without a sidecar file.
+///
+/// The discriminator (path vs. base64), in order:
 ///
 /// 1. Value is non-empty.
-/// 2. Value does NOT contain a path separator (`/` or `\`).
-/// 3. Value is longer than typical bare filenames (>= 64 chars) so we
-///    don't false-positive on a literal `cert.p12`.
-/// 4. Value matches the base64 alphabet (`[A-Za-z0-9+/=]`) end-to-end.
+/// 2. Value does NOT name an existing file on disk — an extant path is always
+///    a path, never an inline blob.
+/// 3. Value is longer than a typical bare filename (>= 64 chars) so a short
+///    non-existent path like `cert.p12` does not false-positive.
+/// 4. Value matches the STANDARD base64 alphabet end-to-end (`[A-Za-z0-9+/=]`,
+///    plus newline padding). Crucially `/` is part of that alphabet — a real
+///    base64 blob routinely contains it — so it is NOT treated as a path
+///    separator. A backslash (`\`), absent from the alphabet, still
+///    disqualifies the value (it is a Windows path separator).
+/// 5. Value decodes cleanly as standard base64. This is the load-bearing
+///    discriminator: a filesystem path that happens to clear the alphabet
+///    guard almost never decodes to a whole number of base64 quanta, whereas
+///    a real encoded blob always does.
 pub(super) fn looks_like_base64(value: &str) -> bool {
     if value.is_empty() {
         return false;
     }
-    if value.contains('/') || value.contains('\\') {
+    // An existing file is unambiguously a path. Checked before any base64
+    // heuristic so a real on-disk P12/P8 is never decoded as inline bytes.
+    if std::path::Path::new(value.trim()).is_file() {
+        return false;
+    }
+    // A backslash is a Windows path separator and is not in the base64
+    // alphabet; `/` IS in the standard alphabet and must be allowed.
+    if value.contains('\\') {
         return false;
     }
     if value.len() < 64 {
         return false;
     }
-    value
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'=' || b == b'\n' || b == b'\r')
+    let alphabet_ok = value.bytes().all(|b| {
+        b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=' || b == b'\n' || b == b'\r'
+    });
+    if !alphabet_ok {
+        return false;
+    }
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(value.trim().replace(['\r', '\n'], "").as_bytes())
+        .is_ok()
 }
 
 /// Materialize a path-or-base64 value into a path the underlying tool
@@ -240,3 +266,73 @@ pub(super) fn redact_args(args: &[String], log: &anodizer_core::log::StageLogger
 // `retries:` config is being added in a separate wave; until then this
 // stage carries a self-contained 3-attempt exponential schedule (delays
 // 30s / 60s before the 2nd and 3rd attempts respectively).
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine as _;
+
+    /// A real standard-base64 blob containing `/` must be classified as inline
+    /// base64, NOT as a filesystem path. Standard base64 includes `/` in its
+    /// alphabet, so the old "contains `/` => path" rule misclassified genuine
+    /// encoded P12/P8 secrets and produced a bogus "path does not exist".
+    #[test]
+    fn base64_blob_containing_slash_is_inline_not_path() {
+        // Force `/` into the encoded output: byte 0xFF maps to a quantum
+        // ending in `/` under the standard alphabet.
+        let raw = vec![0xFFu8; 96];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&raw);
+        assert!(
+            encoded.contains('/'),
+            "fixture must contain a `/` to exercise the bug; got: {encoded}"
+        );
+        assert!(
+            looks_like_base64(&encoded),
+            "a standard-base64 blob with `/` must be treated as inline base64"
+        );
+
+        // And it materializes to a tempfile holding the decoded bytes, not the
+        // literal string used as a path.
+        let secret = materialize_secret(&encoded, "sign.certificate").unwrap();
+        assert_ne!(secret.path, encoded);
+        let written = std::fs::read(&secret.path).unwrap();
+        assert_eq!(written, raw);
+    }
+
+    /// An actual on-disk file path resolves as a path (passed through verbatim),
+    /// even when it is long enough to clear the length guard.
+    #[test]
+    fn existing_file_path_is_treated_as_path() {
+        let tf = tempfile::NamedTempFile::new().unwrap();
+        let path = tf.path().to_str().unwrap().to_string();
+        assert!(
+            !looks_like_base64(&path),
+            "an existing file path must be classified as a path, not base64"
+        );
+        let secret = materialize_secret(&path, "notarize.key").unwrap();
+        assert_eq!(
+            secret.path, path,
+            "an existing path passes through verbatim"
+        );
+    }
+
+    /// A short bare filename (e.g. `cert.p12`) is a path, not base64 — below
+    /// the length guard.
+    #[test]
+    fn short_filename_is_path() {
+        assert!(!looks_like_base64("cert.p12"));
+    }
+
+    /// A Windows-style path with backslashes is a path, not base64.
+    #[test]
+    fn windows_path_is_path() {
+        let win = "C:\\Users\\ci\\secrets\\developer-id-application-certificate.p12";
+        assert!(!looks_like_base64(win));
+    }
+
+    /// An empty value is never base64.
+    #[test]
+    fn empty_is_not_base64() {
+        assert!(!looks_like_base64(""));
+    }
+}
