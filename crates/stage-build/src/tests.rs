@@ -2666,3 +2666,76 @@ fn test_rustup_target_add_failure_is_hard_error() {
         );
     }
 }
+
+/// A glibc-pinned target (`<triple>.<ver>`) must have its cargo-zigbuild suffix
+/// stripped before the host comparison and the `rustup target add` arg — rustup
+/// only knows the bare triple. Here the pin is on the *host* triple, so the
+/// helper must strip the suffix, recognize it as the host, and skip without
+/// ever shelling out to rustup (otherwise `rustup target add <host>.2.28` would
+/// hard-error on a rustup-present runner).
+#[test]
+fn test_glibc_suffixed_host_target_is_stripped_and_skipped() {
+    use crate::workspace::ensure_targets_installed;
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
+    // The strip only applies to `*-linux-gnu` / `*-linux-musl` hosts; skip on
+    // non-glibc/musl runners (e.g. macOS darwin) where the pin is meaningless.
+    if !(host.ends_with("-linux-gnu") || host.ends_with("-linux-musl")) {
+        return;
+    }
+
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let log = ctx.logger("build");
+
+    let pinned_host = format!("{host}.2.28");
+    let result = ensure_targets_installed(&ctx, std::slice::from_ref(&pinned_host), &log, false);
+    assert!(
+        result.is_ok(),
+        "a glibc-pinned host target must be stripped, matched as host, and \
+         skipped without invoking rustup: {result:?}"
+    );
+}
+
+/// Two glibc pins on the same *non-host* triple must de-dup to a single
+/// `rustup target add`. The pins differ only by glibc version (`.2.28` vs
+/// `.2.17`) — a cargo-zigbuild link-time concept rustup is blind to — so both
+/// strip to one bare triple and the `seen` set collapses them. Driven in
+/// `dry_run` mode so the single emitted "would run" line is the observable
+/// proof of the de-dup, with no rustup/network dependency.
+#[test]
+fn test_duplicate_glibc_pins_collapse_to_single_rustup_call() {
+    use crate::workspace::ensure_targets_installed;
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
+    // Pick a Linux triple guaranteed to differ from the host so the entries
+    // reach the `seen` de-dup branch rather than the host-skip short-circuit.
+    let other = if host.starts_with("x86_64") {
+        "aarch64-unknown-linux-gnu"
+    } else {
+        "x86_64-unknown-linux-gnu"
+    };
+
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let (log, capture) = StageLogger::with_capture("build", Verbosity::Normal);
+
+    let targets = vec![format!("{other}.2.28"), format!("{other}.2.17")];
+    let result = ensure_targets_installed(&ctx, &targets, &log, true);
+    assert!(result.is_ok(), "dry-run must not error: {result:?}");
+
+    let would_run: Vec<String> = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .filter(|m| m.contains(&format!("rustup target add {other}")))
+        .collect();
+    assert_eq!(
+        would_run.len(),
+        1,
+        "two glibc pins on {other} must collapse to one rustup invocation, got: {would_run:?}"
+    );
+}

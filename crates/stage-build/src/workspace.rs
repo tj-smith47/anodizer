@@ -8,6 +8,8 @@ use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::context::Context;
 use anodizer_core::{EnvSource, ProcessEnvSource};
 
+use crate::validation::strip_glibc_suffix;
+
 // ---------------------------------------------------------------------------
 // check_workspace_package — validate --package flag for workspace crates
 // ---------------------------------------------------------------------------
@@ -213,20 +215,31 @@ pub(crate) fn ensure_targets_installed(
     dry_run: bool,
 ) -> Result<()> {
     let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
     for target in targets {
-        if target == &host {
+        // A `*-linux-gnu.<ver>` / `*-linux-musl.<ver>` glibc pin is a
+        // cargo-zigbuild `--target` concept; rustup only knows the bare
+        // triple. Strip the suffix before both the host-skip check and the
+        // rustup arg, and de-dup so two pins on the same triple add once.
+        let rustup_target = strip_glibc_suffix(target).0;
+        if rustup_target == host {
+            continue;
+        }
+        if !seen.insert(rustup_target) {
             continue;
         }
         if dry_run {
-            log.status(&format!("(dry-run) would run: rustup target add {target}"));
+            log.status(&format!(
+                "(dry-run) would run: rustup target add {rustup_target}"
+            ));
             continue;
         }
         let output = Command::new("rustup")
-            .args(["target", "add", target])
+            .args(["target", "add", rustup_target])
             .output();
         match output {
             Ok(o) if o.status.success() => {
-                log.verbose(&format!("ensured target installed: {target}"));
+                log.verbose(&format!("ensured target installed: {rustup_target}"));
             }
             Ok(o) => {
                 // `rustup target add` failure is a hard
@@ -236,7 +249,7 @@ pub(crate) fn ensure_targets_installed(
                 // `cargo build --target=...` fail with a less-clear
                 // "no such target" error.
                 anyhow::bail!(
-                    "rustup target add {target} failed: {}",
+                    "rustup target add {rustup_target} failed: {}",
                     String::from_utf8_lossy(&o.stderr).trim()
                 );
             }
