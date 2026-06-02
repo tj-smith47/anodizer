@@ -474,14 +474,20 @@ impl From<GemFuryTarget> for anodizer_core::publish_evidence::GemFuryTargetSnaps
 }
 
 // -----------------------------------------------------------------------------
-// Retry on transient 5xx — via a MockServer-style assertion using httpmock
-// is overkill; instead we cover the classifier indirectly by hitting the
-// real probe against a 404 endpoint and confirming the no-error contract.
+// Probe classifier: a 404 from the API base means "version not present" and
+// must surface as Ok(false) so the publish path proceeds. Hermetic via the
+// ANODIZE_GEMFURY_API_BASE seam pointing at a local responder.
 // -----------------------------------------------------------------------------
 
 #[test]
+#[serial_test::serial]
 fn version_already_published_returns_false_on_404() {
     use super::publish::version_already_published;
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    let (api_addr, _calls) =
+        spawn_oneshot_http_responder(vec!["HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"]);
+
     let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(2))
         .expect("http client");
     let policy = anodizer_core::retry::RetryPolicy {
@@ -490,21 +496,30 @@ fn version_already_published_returns_false_on_404() {
         max_delay: std::time::Duration::from_millis(1),
     };
     let log = anodizer_core::log::StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
-    // Account that almost-certainly does not exist; the probe must
-    // surface `false` rather than bubbling the 404 as an error.
+
+    unsafe {
+        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
+    }
     let result = version_already_published(
         &client,
-        "anodize-fixture-account-zzz",
-        "definitely-not-a-package.deb",
-        "0.0.0",
+        "acme",
+        "demo",
+        "1.2.3",
         "fake-push-token",
         &policy,
         &log,
     );
-    // Either Ok(false) (server returned 404) or some transport failure —
-    // both must not panic. The classifier already coerces to false on
-    // inconclusive shapes.
-    let _ = result;
+    unsafe {
+        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
+    }
+
+    // A 404 is the documented "not present" response: the probe must
+    // coerce it to Ok(false) so the publish path runs.
+    assert!(
+        matches!(result, Ok(false)),
+        "404 probe must surface Ok(false), got {:?}",
+        result
+    );
 }
 
 // -----------------------------------------------------------------------------

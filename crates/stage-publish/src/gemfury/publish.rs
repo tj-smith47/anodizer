@@ -406,7 +406,14 @@ pub fn publish_to_gemfury(ctx: &Context, log: &StageLogger) -> Result<Vec<GemFur
             }
             let art_name = artifact.name().to_string();
             let format = detect_gemfury_format(&art_name)
-                .expect("artifact list pre-filtered on detect_gemfury_format")
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "gemfury: artifact '{}' has no recognized package format \
+                         (expected .deb/.rpm/.apk); the artifact filter should have \
+                         excluded it",
+                        art_name
+                    )
+                })?
                 .to_string();
 
             // Idempotency probe: skip if `<package>@<version>` is already on
@@ -462,7 +469,12 @@ pub fn publish_to_gemfury(ctx: &Context, log: &StageLogger) -> Result<Vec<GemFur
                     .mime_str(mime)
                 {
                     Ok(p) => p,
-                    Err(_) => unreachable!("application/octet-stream is a valid MIME type"),
+                    Err(e) => {
+                        return Err(ControlFlow::Break(anyhow::Error::new(e).context(format!(
+                            "gemfury: build multipart part for '{}' (mime '{}')",
+                            art_name, mime
+                        ))));
+                    }
                 };
                 let form = reqwest::blocking::multipart::Form::new().part("package", file_part);
                 let req = client
