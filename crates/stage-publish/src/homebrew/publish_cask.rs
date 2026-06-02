@@ -94,10 +94,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
     // Honor `cask_cfg.directory:` so the tap can place casks in a sub-tree
     // (e.g. `Casks/versioned/`) instead of always landing under `Casks/`.
     // Mirrors GR Pro `internal/pipe/cask/cask.go:65-67`.
-    let directory_raw = cask_cfg.directory.as_deref().unwrap_or("Casks");
-    let directory = ctx
-        .render_template(directory_raw)
-        .unwrap_or_else(|_| directory_raw.to_string());
+    let directory = super::resolve_cask_directory(cask_cfg.directory.as_deref(), ctx)?;
     let casks_dir = repo_path.join(&directory);
     std::fs::create_dir_all(&casks_dir).with_context(|| {
         format!(

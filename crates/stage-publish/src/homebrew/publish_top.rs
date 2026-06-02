@@ -127,10 +127,7 @@ pub fn publish_top_level_homebrew_casks(
         // directory typically breaks `brew install` on end-user machines
         // (homebrew-cask only auto-discovers files under "Casks/"). Pin
         // C-new-10: emit the same warning here.
-        let directory_raw = cask_cfg.directory.as_deref().unwrap_or("Casks");
-        let directory = ctx
-            .render_template(directory_raw)
-            .unwrap_or_else(|_| directory_raw.to_string());
+        let directory = super::resolve_cask_directory(cask_cfg.directory.as_deref(), ctx)?;
         if directory != "Casks" {
             log.warn(&format!(
                 "homebrew_casks: directory {:?} might not work properly for end users; \

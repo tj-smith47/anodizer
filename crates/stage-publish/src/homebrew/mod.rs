@@ -26,6 +26,26 @@ pub use cask::{
     CaskArchEntry, CaskParams, CaskPlatformBlock, generate_cask, render_generate_completions,
 };
 pub(crate) use commit_msg::{render_commit_msg, render_commit_msg_with_prev};
+
+use anodizer_core::context::Context;
+use anyhow::{Context as _, Result};
+
+/// Resolve the cask `directory:` field to its rendered, on-tap subdirectory.
+///
+/// Defaults to `"Casks"` (the homebrew-cask auto-discovery convention) when
+/// unset, then renders the value through the template engine. A Tera render
+/// failure PROPAGATES rather than being swallowed: a swallowed error would
+/// leave the literal `{{ … }}` template as a directory name and commit + push
+/// it to the tap, producing an unusable cask path.
+pub(crate) fn resolve_cask_directory(directory: Option<&str>, ctx: &Context) -> Result<String> {
+    let directory_raw = directory.unwrap_or("Casks");
+    ctx.render_template(directory_raw).with_context(|| {
+        format!(
+            "homebrew cask: render `directory` template '{}'",
+            directory_raw
+        )
+    })
+}
 pub use formula::{FormulaOptions, generate_formula, generate_formula_with_opts};
 pub use publish_cask::publish_cask;
 pub use publish_formula::publish_to_homebrew;

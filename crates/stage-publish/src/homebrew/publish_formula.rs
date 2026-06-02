@@ -406,10 +406,7 @@ fn maybe_write_cask_into_tap(
     // casks in a sub-tree. Defaults to "Casks". The cask config field
     // takes precedence; without it we land at the conventional
     // homebrew-cask path.
-    let directory_raw = cask_cfg.directory.as_deref().unwrap_or("Casks");
-    let directory = ctx
-        .render_template(directory_raw)
-        .unwrap_or_else(|_| directory_raw.to_string());
+    let directory = super::resolve_cask_directory(cask_cfg.directory.as_deref(), ctx)?;
     let casks_dir = repo_path.join(&directory);
     std::fs::create_dir_all(&casks_dir).with_context(|| {
         format!(

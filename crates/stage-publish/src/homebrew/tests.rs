@@ -1840,6 +1840,34 @@ fn hb_ctx(hb_cfg: HomebrewConfig, dry_run: bool) -> Context {
     )
 }
 
+/// `resolve_cask_directory`: an unset directory falls back to "Casks" and a
+/// plain (non-template) value renders verbatim.
+#[test]
+fn resolve_cask_directory_defaults_and_renders() {
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    assert_eq!(super::resolve_cask_directory(None, &ctx).unwrap(), "Casks");
+    assert_eq!(
+        super::resolve_cask_directory(Some("Casks/versioned"), &ctx).unwrap(),
+        "Casks/versioned"
+    );
+}
+
+/// `resolve_cask_directory`: an invalid `directory` template PROPAGATES the
+/// render error instead of swallowing it into a literal-braces path that would
+/// be committed + pushed to the tap.
+#[test]
+fn resolve_cask_directory_invalid_template_errors() {
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let result = super::resolve_cask_directory(Some("Casks/{{ unclosed"), &ctx);
+    let err =
+        result.expect_err("invalid directory template must error, not yield a literal-braces path");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("render `directory` template"),
+        "error must name the directory render failure; got: {msg}"
+    );
+}
+
 /// publish_to_homebrew: missing `publish.homebrew` block => actionable error.
 #[test]
 fn publish_to_homebrew_missing_config_errors() {
