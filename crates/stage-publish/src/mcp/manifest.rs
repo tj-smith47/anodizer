@@ -34,20 +34,21 @@ pub struct ServerJson {
     /// Server name in reverse-DNS format (required).
     pub name: String,
     /// Clear human-readable description (required by upstream schema; we
-    /// allow empty since the registry does not enforce non-empty here either).
+    /// allow empty since GR's mcp.go does not enforce non-empty here either).
     pub description: String,
     /// Optional human-readable title.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
-    /// Optional source-repository metadata. Omitted when the repository
-    /// URL is empty.
+    /// Optional source-repository metadata. Omitted when GR's
+    /// `mcp.Repository.URL == ""` — mirror that exact gate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository: Option<Repository>,
     /// Version string for this server. Required (≥1 char). Anodizer sets
     /// this from `ctx.version()` at publish time.
     pub version: String,
     /// Optional homepage / documentation URL. JSON key is `websiteUrl`
-    /// (camelCase, single 'L').
+    /// (camelCase, single 'L') — pinned from upstream
+    /// `apiv0/types.go:43`.
     #[serde(
         rename = "websiteUrl",
         default,
@@ -77,10 +78,10 @@ pub struct Repository {
 }
 
 /// `model.Package` mirror. Anodizer only fills the small subset of fields
-/// the registry populates — `RegistryType`, `Identifier`, `Version`,
+/// GR's MCP pipe ever populates — `RegistryType`, `Identifier`, `Version`,
 /// `Transport` — matching `mcp.go::Publish`'s loop body. Other Package
 /// fields (`registryBaseUrl`, `fileSha256`, runtime args, env vars) are
-/// not surfaced because the registry does not consume them.
+/// not surfaced because GR doesn't surface them either.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Package {
     /// Package registry type (`oci` / `npm` / `pypi` / `nuget` / `mcpb`).
@@ -104,8 +105,9 @@ pub struct Package {
     pub transport: Transport,
 }
 
-/// Package transport. Only the `type` field is surfaced (e.g. `stdio`,
-/// `streamable-http`, `sse`).
+/// `model.Transport` mirror. Anodizer only surfaces `Type` (matching the
+/// GR `mcp.go::Publish` loop, which sets `Transport: model.Transport{
+/// Type: pkg.Transport.Type }` and nothing else).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Transport {
     /// Transport protocol (`stdio`, `streamable-http`, `sse`).
@@ -150,7 +152,7 @@ mod tests {
 
     #[test]
     fn server_json_round_trips_with_npm_package() {
-        // Expected payload — npm package,
+        // Mirrors the GR `TestPublishSuccess` expected payload — npm package,
         // populated repository, version === ctx.Version.
         let server = ServerJson {
             schema: CURRENT_SCHEMA_URL.to_string(),
@@ -190,7 +192,7 @@ mod tests {
 
     #[test]
     fn server_json_omits_repository_when_url_empty() {
-        // The entire repository object is omitted
+        // Per GR mcp.go:108-116, the entire repository object is omitted
         // when `mcp.Repository.URL == ""`. The publisher passes
         // `repository: None` in that branch; the JSON must reflect that.
         let server = ServerJson {

@@ -7,7 +7,7 @@
 
 use anyhow::{Context as _, Result};
 
-/// Dual-arch install script (both 32-bit and 64-bit).
+/// Dual-arch install script (both 32-bit and 64-bit). GoReleaser parity.
 const INSTALL_SCRIPT_TEMPLATE_DUAL: &str = r#"$ErrorActionPreference = 'Stop'
 
 $packageName = '{{ name }}'

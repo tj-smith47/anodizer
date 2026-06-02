@@ -3,7 +3,7 @@
 //! The Tera template is embedded as a string literal so the generator
 //! is self-contained — no template-file lookup at runtime. License
 //! identifiers are validated against the canonical `lib.licenses`
-//! attrset of recognised SPDX license identifiers.
+//! attrset enumerated by GoReleaser's `internal/pipe/nix/licenses.go`.
 
 use anyhow::{Context as _, Result};
 
@@ -147,7 +147,7 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> Result<String> {
     // literals interpret `\`, `"`, and `${...}` specially, so a value
     // containing any of those would either escape the literal (yielding
     // malformed Nix) or trigger antiquotation. Apply the Nix string-escape
-    // rules before insertion. The value is not escaped at
+    // rules before insertion. GoReleaser does not escape at
     // `internal/pipe/nix/tmpl.nix:135`; anodize escapes for robustness so
     // legitimate user-input main_program values (e.g. containing apostrophes
     // turned into curly-quote analogs, or interpolation-like substrings)
@@ -225,7 +225,7 @@ pub(super) fn nix_escape_string(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Known valid Nix license identifiers from `lib.licenses`.
-/// The recognised SPDX license identifiers accepted by nixpkgs.
+/// Sourced from GoReleaser's internal/pipe/nix/licenses.go.
 pub(crate) const VALID_NIX_LICENSES: &[&str] = &[
     "abstyles",
     "acsl14",

@@ -39,6 +39,7 @@ static PACKAGE_IDENTIFIER_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// the characters `\`, `/`, `:`, `*`, `?`, `"`, `<`, `>`, `|`.
 ///
 /// Pattern: `^[^\.\s\\/:\*\?"<>\|\x01-\x1f]{1,32}(\.[^\.\s\\/:\*\?"<>\|\x01-\x1f]{1,32}){1,7}$`
+/// (matches GoReleaser `internal/pipe/winget/winget.go:37`).
 pub fn validate_package_identifier(id: &str) -> Result<()> {
     // NUL (`\x00`) is also forbidden by winget. The regex's character class
     // already excludes `\x01-\x1f` but excluding `\x00` inside an
@@ -60,9 +61,10 @@ pub fn validate_package_identifier(id: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Render a commit message for WinGet with PackageIdentifier in the context.
-/// `PackageIdentifier` is exposed as an extra template field.
+/// GoReleaser exposes `PackageIdentifier` as an extra template field
+/// (winget.go:291-293).
 fn render_winget_commit_msg(template: Option<&str>, package_id: &str, version: &str) -> String {
-    // Default: "New version: {{ .PackageIdentifier }} {{ .Version }}"
+    // GoReleaser default: "New version: {{ .PackageIdentifier }} {{ .Version }}"
     let default_tmpl = "New version: {{ PackageIdentifier }} {{ Version }}";
     let tmpl = template.unwrap_or(default_tmpl);
 
@@ -148,7 +150,7 @@ struct InstallerManifest {
     package_version: String,
     installer_locale: String,
     installer_type: String,
-    /// Commands for portable binaries.
+    /// Commands for portable binaries (GoReleaser parity: winget.go:477).
     #[serde(skip_serializing_if = "Option::is_none")]
     commands: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -337,7 +339,7 @@ pub(crate) fn generate_manifests(
         .unwrap_or("zip");
 
     // Collect Commands from portable binary installers for top-level placement
-    // (Commands sits on the top-level Installer struct).
+    // (GoReleaser parity: winget.go:477 sets Commands on the top-level Installer struct).
     let top_commands: Option<Vec<String>> = {
         let cmds: Vec<String> = params
             .installers
@@ -635,8 +637,9 @@ fn resolve_installer_url(
     }
 }
 
-/// Artifact-selection filters for windows winget installers: windows-only,
-/// optional id allow-list, and amd64_variant selection.
+/// Filters that mirror GoReleaser's artifact selection for windows winget
+/// installers: windows-only, optional id allow-list, and amd64_variant
+/// selection.
 struct WingetArtifactFilters<'a> {
     ids: Option<&'a [String]>,
     amd64_variant: Option<&'a str>,
@@ -761,8 +764,8 @@ fn build_portable_installer(
 }
 
 /// Collect, filter, and validate all windows installers (zip archives +
-/// portable binaries) for a crate. Rejects mixed archive/portable formats
-/// and duplicate-architecture entries.
+/// portable binaries) for a crate. Mirrors GoReleaser parity by rejecting
+/// mixed archive/portable formats and duplicate-architecture entries.
 fn collect_winget_installers(
     ctx: &Context,
     crate_name: &str,
@@ -868,7 +871,7 @@ fn resolve_winget_release_date(ctx: &Context) -> Option<String> {
 /// Template-rendered string fields that feed [`WingetManifestParams`].
 /// Each field mirrors the same-named winget config entry after running
 /// it through the template engine with the standard variable set plus
-/// `Changelog` as an extra field.
+/// `Changelog` (matching GoReleaser's `WithExtraFields`).
 struct RenderedWingetFields {
     publisher: String,
     publisher_url: Option<String>,
@@ -889,7 +892,8 @@ struct RenderedWingetFields {
 }
 
 /// Template-render all 18 winget config string fields against the live
-/// context, injecting `Changelog` as an extra field per render.
+/// context, injecting `Changelog` per render to match GoReleaser's
+/// `WithExtraFields` semantics.
 fn render_winget_fields(
     ctx: &Context,
     winget_cfg: &anodizer_core::config::WingetConfig,
@@ -2132,7 +2136,8 @@ mod tests {
     // publish_to_winget dry-run tests
     // -----------------------------------------------------------------------
 
-    /// Regression: when short_description, description, and meta.description are all
+    /// Regression for parity with GoReleaser's `errNoShortDescription`:
+    /// when short_description, description, and meta.description are all
     /// unset, winget must hard-fail with an actionable error. The old
     /// lenient fallback to `crate_name` produced a meaningless manifest.
     #[test]
@@ -2481,7 +2486,7 @@ mod tests {
 
     #[test]
     fn test_validate_package_identifier_segment_length_limit() {
-        // The regex pins each segment to 1..=32 chars.
+        // GoReleaser regex pins each segment to 1..=32 chars; anodizer must too.
         let segment_32 = "A".repeat(32);
         let segment_33 = "A".repeat(33);
         // OK: a 32-char segment is the upper bound.
@@ -2521,7 +2526,7 @@ mod tests {
 
     #[test]
     fn test_winget_commit_msg_with_package_identifier_template() {
-        // PackageIdentifier is exposed in the template context
+        // GoReleaser exposes PackageIdentifier in the template context
         let msg = render_winget_commit_msg(
             Some("winget: {{ PackageIdentifier }} v{{ version }}"),
             "Org.MyTool",

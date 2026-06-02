@@ -517,7 +517,7 @@ fn submit_krew_release_webhook(
 ///    already end in `.exe`. Krew takes `bin:` literally — it does NOT
 ///    add `.exe` itself — so a Windows entry without the suffix fails to
 ///    install (krew validator: "source binary cannot be found in extracted
-///    archive"). The `.exe` suffix is produced naturally because the
+///    archive"). GoReleaser produces `.exe` naturally because its Go
 ///    builder appends it to `binary.Name`; anodizer's archive metadata
 ///    stores the suffix-less name, so we normalize here.
 fn artifacts_to_platforms(
@@ -641,7 +641,7 @@ pub fn publish_to_krew(
     }
 
     // Resolve repository owner/name from `repository:` (RepositoryConfig).
-    // Repository fields are template-rendered.
+    // GoReleaser applies TemplateRef() to repository fields (krew.go:292-296).
     let (repo_owner_raw, repo_name_raw) =
         crate::util::resolve_repo_owner_name(krew_cfg.repository.as_ref())
             .ok_or_else(|| anyhow::anyhow!("krew: no repository config for '{}'", crate_name))?;
@@ -661,7 +661,7 @@ pub fn publish_to_krew(
     let version = ctx.version();
 
     // validate required fields before proceeding.
-    // Fall back to `metadata.description` when krew config unset.
+    // GoReleaser Pro parity: fall back to `metadata.description` when krew config unset.
     let effective_description: Option<&str> = krew_cfg
         .description
         .as_deref()
@@ -722,7 +722,7 @@ pub fn publish_to_krew(
     let homepage = ctx
         .render_template(&homepage_raw)
         .with_context(|| format!("krew: render homepage template for '{}'", crate_name))?;
-    // Caveats is templated alongside the other
+    // GoReleaser krew.go:154-160 templates Caveats alongside the other
     // narrative fields; anodizer was passing it through verbatim.
     let caveats_raw = krew_cfg.caveats.clone().unwrap_or_default();
     let caveats = ctx
@@ -772,7 +772,7 @@ pub fn publish_to_krew(
     let url_template = krew_cfg.url_template.as_deref();
 
     if all_artifacts.is_empty() {
-        // An empty archive set is a hard error — a krew manifest
+        // GR krew.go:115-117 returns ErrNoArchivesFound — a krew manifest
         // with no real artifacts is unusable (the placeholder URL was a
         // fabricated guess that produced 404s on install). Fail loudly.
         anyhow::bail!(

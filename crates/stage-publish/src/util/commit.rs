@@ -44,14 +44,17 @@ pub(crate) struct CommitOptions<'a> {
     /// Q-author1: when true, suppress emitting `-c user.name=` /
     /// `-c user.email=` so the running git client uses the GitHub App's
     /// identity (already configured in the repo's local git config by the
-    /// Actions checkout step).
+    /// Actions checkout step). Mirrors GR
+    /// `internal/git/config/github.go:381`.
     pub use_github_app_token: bool,
 }
 
 /// Default commit author name used when no author is configured.
+/// Mirrors GoReleaser's default of "goreleaserbot" (internal/commitauthor/author.go:11).
 const DEFAULT_COMMIT_AUTHOR_NAME: &str = "anodizer";
 
 /// Default commit author email used when no author is configured.
+/// Mirrors GoReleaser's default of "bot@goreleaser.com" (internal/commitauthor/author.go:12).
 const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodizer.dev";
 
 /// Resolve commit author name/email from a CommitAuthorConfig, falling back
@@ -67,9 +70,10 @@ const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodizer.dev";
 /// so that values read from git config (which need allocation) can be returned
 /// alongside borrowed config values.
 ///
-/// The commit-author resolution template-renders `Name`, `Email`, and
-/// `Signing.{Key, Program, Format}` before applying built-in defaults:
-/// each non-empty config-supplied value is passed through
+/// Q-author1: GoReleaser's `commitauthor.Get(ctx, og)`
+/// (`internal/commitauthor/author.go`) template-renders `Name`, `Email`, and
+/// `Signing.{Key, Program, Format}` before applying built-in defaults. We
+/// mirror that here by passing each non-empty config-supplied value through
 /// `ctx.render_template(...)` before the local-git / built-in fallbacks.
 /// Templates that fail to render fall back to the literal string (rather
 /// than returning an error that would break the publish stage), matching
@@ -80,7 +84,7 @@ const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodizer.dev";
 /// resulting `CommitOptions`. When true, downstream
 /// `commit_and_push_with_opts` skips the `-c user.name=…` / `-c user.email=…`
 /// overrides so the local git config (configured by the Actions checkout
-/// step) wins.
+/// step) wins. Mirrors GR `internal/git/config/github.go:381`.
 pub(crate) fn resolve_commit_opts<'a>(
     ctx: &Context,
     commit_author: Option<&'a anodizer_core::config::CommitAuthorConfig>,
@@ -248,7 +252,7 @@ pub(crate) fn commit_and_push_with_opts(
     // skip the explicit `-c user.name=` / `-c user.email=` overrides so the
     // local git config (already populated by the GitHub Actions checkout step
     // with the App's `<app-slug>[bot]` identity) is the authority on commit
-    // identity.
+    // identity. Mirrors GR `internal/git/config/github.go:381`.
     let mut commit_args: Vec<&str> = Vec::new();
     let name_cfg;
     let email_cfg;
@@ -279,7 +283,7 @@ pub(crate) fn commit_and_push_with_opts(
             sign_program_cfg = format!("gpg.program={}", program);
             commit_args.extend_from_slice(&["-c", &sign_program_cfg]);
         }
-        // signing.format defaults to
+        // GoReleaser commitauthor/author.go:49-52 defaults signing.format to
         // "openpgp" when signing is enabled but format is unset — otherwise
         // users inherit the system's `gpg.format` (ssh/x509) which isn't what
         // they asked for.

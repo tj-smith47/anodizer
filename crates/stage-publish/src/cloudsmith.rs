@@ -383,7 +383,7 @@ pub(crate) fn publish_to_cloudsmith(
 
     // Single retry policy resolved from the top-level `retry:` block; reused
     // for every step of the 3-stage upload (files/create → S3 presigned →
-    // packages/upload). The retry policy is set
+    // packages/upload). Mirrors GoReleaser, where the retry policy is set
     // once per pipe invocation.
     let policy = ctx.retry_policy();
 
@@ -447,7 +447,7 @@ pub(crate) fn publish_to_cloudsmith(
 
         // Resolve distributions map (format -> Vec<distro string>). Each
         // entry yields one or more distribution slugs (the publisher
-        // issues one upload per slug). A
+        // issues one upload per slug, GR Pro v2.8+ semantics). A
         // template-rendering failure on any slug is a config error and
         // hard-bails so a typo doesn't silently route an upload to the
         // wrong distribution.
@@ -578,13 +578,13 @@ pub(crate) fn publish_to_cloudsmith(
             // Look up distribution(s) for this format. Cloudsmith accepts an
             // `any-distro/any-version` pseudo-entry for repos that aren't
             // distro-pinned, so an empty list is valid input and treated as
-            // "no distribution override". The array form
+            // "no distribution override". The array form (GR Pro v2.8+)
             // produces one upload per slug.
             //
             // Routing is keyed on the API-side format slug (`apk`/`alpine`,
             // `deb`, `rpm`, `srpm`). The user-facing config key may be
             // either spelling — handle both so a config written against
-            // the docs (which use `apk`) and one written against
+            // GR docs (which use `apk`) and one written against
             // CloudSmith's API path (`alpine`) both work.
             let distro_slugs: Vec<String> = {
                 let mut slugs: Vec<String> = distributions.get(fmt).cloned().unwrap_or_default();
@@ -690,7 +690,7 @@ pub(crate) fn publish_to_cloudsmith(
             // uploaded raw file and register it as a deb/rpm/alpine
             // package. Without this step the bytes are dangling.
             //
-            // When multiple distributions are configured
+            // When multiple distributions are configured (GR Pro v2.8+
             // array form), step 3 is issued once per slug — CloudSmith's
             // API accepts only one `distribution` per call. Each
             // files/create slot (`identifier`) is consumed by a single
@@ -1341,7 +1341,7 @@ mod tests {
     }
 
     /// YAML array form (`deb: ["ubuntu/focal", "ubuntu/jammy"]`) parses
-    /// into [`CloudSmithDistributions::Multiple`].
+    /// into [`CloudSmithDistributions::Multiple`] (GR Pro v2.8+).
     #[test]
     fn distributions_array_form_parses() {
         use anodizer_core::config::CloudSmithDistributions;

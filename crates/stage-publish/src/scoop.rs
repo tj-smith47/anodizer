@@ -90,6 +90,7 @@ pub(crate) fn generate_manifest_with_opts(
 
     // Scoop bin entry: use explicit binary names when provided, otherwise
     // derive from the manifest name. Append `.exe` only if not already present.
+    // GoReleaser uses artifact metadata binary names as-is (they already include .exe).
     let ensure_exe = |b: &str| -> String {
         if b.ends_with(".exe") {
             b.to_string()
@@ -100,8 +101,9 @@ pub(crate) fn generate_manifest_with_opts(
 
     // Compute bin value for a given wrap_in_directory prefix.
     // When wrap_in_directory is set, each bin entry becomes a pair:
-    //   ["wrap_dir/binary.exe", "alias"]
+    //   ["wrap_dir/binary.exe", "alias"]  (GoReleaser scoop.go:384 parity)
     // where alias is the binary name without the .exe extension.
+    // This matches GoReleaser's WrappedIn handling for Scoop manifests.
     let make_bin_value = |wrap_dir: Option<&str>| -> serde_json::Value {
         let raw_bins: Vec<String> = match opts.bin {
             Some(bins) if !bins.is_empty() => bins.iter().map(|b| ensure_exe(b)).collect(),
@@ -255,7 +257,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
 
     let version = ctx.version();
 
-    // Fall back to project `metadata.*` when scoop config unset.
+    // GoReleaser Pro parity: fall back to project `metadata.*` when scoop config unset.
     let description_raw = scoop_cfg
         .description
         .as_deref()
@@ -293,7 +295,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     let raw_arch_entries: Vec<(ArchEntry, String)> = all_artifacts
         .into_iter()
         // OnlyReplacingUnibins: exclude universal binaries that didn't replace
-        // single-arch variants.
+        // single-arch variants (GoReleaser parity).
         .filter(|a| a.only_replacing_unibins())
         .filter(|a| {
             // Only windows artifacts.
@@ -449,7 +451,8 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
 
     // Template-render homepage so users can write
     // `homepage: "https://{{ .Env.HOSTED_DOMAIN }}/{{ .ProjectName }}"`.
-    // Name, Description, Homepage, and SkipUpload are all template-rendered.
+    // Matches GoReleaser scoop.go:147-152 ApplyAll(Name, Description,
+    // Homepage, SkipUpload).
     let homepage_raw = scoop_cfg
         .homepage
         .as_deref()
@@ -1332,21 +1335,21 @@ mod tests {
             "https://github.com/tj-smith47/anodizer/releases/download/v3.2.1/anodizer-3.2.1-windows-amd64.zip"
         );
         assert_eq!(arch_64["hash"], "aabbccdd1122334455667788");
-        // `bin` is always an array, even for a single binary.
+        // GoReleaser parity: `bin` is always an array, even for a single binary.
         assert_eq!(
             arch_64["bin"],
             serde_json::json!(["anodizer.exe"]),
-            "single-binary `bin` must still be a JSON array"
+            "single-binary `bin` must still be a JSON array (scoop.go:378-388)"
         );
 
         // checkver and autoupdate are NOT emitted.
         assert!(
             json.get("checkver").is_none(),
-            "should NOT have checkver key"
+            "should NOT have checkver key (GoReleaser parity)"
         );
         assert!(
             json.get("autoupdate").is_none(),
-            "should NOT have autoupdate key"
+            "should NOT have autoupdate key (GoReleaser parity)"
         );
     }
 
@@ -1442,7 +1445,7 @@ mod tests {
         assert_eq!(
             json["architecture"]["64bit"]["bin"],
             serde_json::json!(["my-special-cli.exe"]),
-            "bin should match the tool name (always an array)"
+            "bin should match the tool name (always an array per GR scoop.go:378-388)"
         );
     }
 
@@ -1500,7 +1503,7 @@ mod tests {
         assert_eq!(
             arch64["bin"],
             serde_json::json!(["myapp.exe"]),
-            "single-binary `bin` must still be a JSON array"
+            "single-binary `bin` must still be a JSON array (scoop.go:378-388)"
         );
     }
 
@@ -1518,11 +1521,11 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert!(
             json.get("checkver").is_none(),
-            "should NOT have checkver key"
+            "should NOT have checkver key (GoReleaser parity)"
         );
         assert!(
             json.get("autoupdate").is_none(),
-            "should NOT have autoupdate key"
+            "should NOT have autoupdate key (GoReleaser parity)"
         );
     }
 
@@ -1800,11 +1803,11 @@ mod tests {
         // checkver/autoupdate are never emitted.
         assert!(
             json.get("checkver").is_none(),
-            "should NOT have checkver key"
+            "should NOT have checkver key (GoReleaser parity)"
         );
         assert!(
             json.get("autoupdate").is_none(),
-            "should NOT have autoupdate key"
+            "should NOT have autoupdate key (GoReleaser parity)"
         );
     }
 
@@ -1831,7 +1834,7 @@ mod tests {
         .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         // With wrap_in_directory, single bin becomes a pair: ["dir/bin.exe", "alias"]
-        // Paths use forward slashes.
+        // (GoReleaser scoop.go:384 uses filepath.ToSlash → forward slashes.)
         let bin = &json["architecture"]["64bit"]["bin"];
         assert!(bin.is_array(), "bin should be an array");
         let pair = &bin[0];
@@ -1931,7 +1934,7 @@ mod tests {
 
     #[test]
     fn test_scoop_commit_msg_default() {
-        // Canonical default: "Scoop update for {{ .ProjectName }} version {{ .Tag }}"
+        // GoReleaser canonical default: "Scoop update for {{ .ProjectName }} version {{ .Tag }}"
         let scoop_default = "Scoop update for {{ ProjectName }} version {{ Tag }}";
         let msg =
             crate::homebrew::render_commit_msg(Some(scoop_default), "mytool", "1.2.3", "manifest");

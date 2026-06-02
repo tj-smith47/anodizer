@@ -33,7 +33,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         return Ok(());
     }
 
-    // Cask-level `if:` conditional gate. Cask-level `if:` wins; if
+    // GoReleaser Pro `homebrew_cask.if:` parity. Cask-level `if:` wins; if
     // unset, fall back to the parent formula's `if:` so a per-crate gate on
     // homebrew covers both surfaces in one declaration.
     let effective_if = cask_cfg
@@ -93,7 +93,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
 
     // Honor `cask_cfg.directory:` so the tap can place casks in a sub-tree
     // (e.g. `Casks/versioned/`) instead of always landing under `Casks/`.
-    // Directory defaults to "Casks".
+    // Mirrors GR Pro `internal/pipe/cask/cask.go:65-67`.
     let directory = super::resolve_cask_directory(cask_cfg.directory.as_deref(), ctx)?;
     let casks_dir = repo_path.join(&directory);
     std::fs::create_dir_all(&casks_dir).with_context(|| {
@@ -109,7 +109,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         .with_context(|| format!("homebrew cask: write cask file {}", cask_path.display()))?;
     log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
 
-    // `alternative_names:` versioned-file emission. Each entry that
+    // GR Pro `alternative_names:` versioned-file emission. Each entry that
     // renders to a token containing `@` (e.g. `myapp@1.2.3`) becomes its
     // own `.rb` file so `brew install myapp@1.2.3` installs a pinned
     // version. Aliases without `@` are rendered inline as `name "..."`

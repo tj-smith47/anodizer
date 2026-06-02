@@ -147,7 +147,7 @@ pub(crate) fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> Result<String> {
 
     // Sources as objects for template iteration.
     // Replace the version string in URLs with ${pkgver} so the PKGBUILD
-    // automatically uses the pkgver variable.
+    // automatically uses the pkgver variable (GoReleaser convention).
     let substituted_sources: Vec<(String, String, String, String)> = params
         .sources
         .iter()
@@ -271,21 +271,23 @@ pub(crate) fn generate_srcinfo(params: &PkgbuildParams<'_>) -> Result<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Default resolution
+// Default resolution (GoReleaser parity: aur.go::Default)
 // ---------------------------------------------------------------------------
 
 /// Resolved AUR `Default()`-time fields: conflicts, provides, and pkgrel.
-/// Extracted from `publish_to_aur` so the defaults can be exercised in
-/// unit tests without standing up a full publish-to-git flow:
+/// Extracted from `publish_to_aur` so the GoReleaser-aligned defaults can
+/// be exercised in unit tests without standing up a full publish-to-git
+/// flow. Mirrors GoReleaser's `internal/pipe/aur/aur.go::Default()`
+/// behaviour:
 ///
 /// - `name` raw default is computed by `aur_default_package_name`
 ///   (`<crate_name>` with `-bin` suffix appended when the crate name does
 ///   not already end in `-bin`); the caller renders templates and feeds
 ///   the rendered string into `aur_resolve_defaults` so `base_name` is
 ///   derived from the post-template name.
-/// - `conflicts` defaults to `[base_name]` when unset/empty.
-/// - `provides` defaults to `[base_name]` when unset/empty.
-/// - `pkgrel` defaults to `1` when unset.
+/// - `conflicts` defaults to `[base_name]` when unset/empty (GR aur.go:58-63).
+/// - `provides` defaults to `[base_name]` when unset/empty (GR aur.go:58-63).
+/// - `pkgrel` defaults to `1` when unset (GR aur.go:64-66).
 ///
 /// `base_name` is the project name when set, otherwise the rendered package
 /// name with any trailing `-bin` stripped (covers the edge case where
@@ -318,7 +320,7 @@ pub(crate) fn aur_default_package_name(
     })
 }
 
-/// Apply the `Default()` rules for `conflicts`, `provides`, and
+/// Apply the GoReleaser `Default()` rules for `conflicts`, `provides`, and
 /// `pkgrel`, given a `rendered_package_name` (post-template) and a
 /// `project_name` (use `""` when no project name is configured). The
 /// returned struct holds the post-default values that `publish_to_aur`
@@ -472,7 +474,7 @@ fn aur_resolve_fields(
     // AUR pkgver does not allow hyphens; replace with underscores.
     let version = ctx.version().replace('-', "_");
 
-    // Default() resolution: name auto-suffix `-bin`, conflicts /
+    // GR-parity Default() resolution: name auto-suffix `-bin`, conflicts /
     // provides default to [base_name], pkgrel default `"1"`. The defaults
     // are split across two helpers (`aur_default_package_name` →
     // template-render → `aur_resolve_defaults`) to expose the default
@@ -490,7 +492,7 @@ fn aur_resolve_fields(
     let package_name = util::render_or_warn(ctx, log, "aur.name", &raw_package_name);
     let resolved_defaults = aur_resolve_defaults(aur_cfg, &package_name, project_name_for_defaults);
 
-    // Fall back to project `metadata.*` when aur config unset.
+    // GoReleaser Pro parity: fall back to project `metadata.*` when aur config unset.
     let description_raw = aur_cfg
         .description
         .as_deref()
@@ -541,8 +543,8 @@ fn aur_resolve_fields(
     let contributors = aur_cfg.contributors.clone().unwrap_or_default();
     let depends = aur_cfg.depends.clone().unwrap_or_default();
     let optdepends = aur_cfg.optdepends.clone().unwrap_or_default();
-    // conflicts / provides come from the default resolver, which was
-    // fed the *rendered* package name,
+    // conflicts / provides come from the GR-aligned default resolver
+    // (cf. aur.go:58-63). The resolver was fed the *rendered* package name,
     // so `base_name` reflects post-template values when `project_name` is
     // empty.
     let conflicts = resolved_defaults.conflicts;
@@ -570,7 +572,7 @@ fn aur_resolve_fields(
 
 /// Build the `(arch, download_url, sha256)` source tuples for the
 /// PKGBUILD `source_<arch>=` / `sha256sums_<arch>=` arrays. Filters
-/// `ctx.artifacts` to Linux archives matching `aur.ids` + the
+/// `ctx.artifacts` to Linux archives matching `aur.ids` + the GR-
 /// hardcoded `amd64_variant`/`arm_variant=7` rules, validates that at
 /// least one archive matched and that every match carries a non-empty
 /// sha256, then dedupes by PKGBUILD architecture (`x86_64`, `aarch64`,
@@ -582,7 +584,7 @@ fn aur_build_sources(
     version: &str,
 ) -> Result<Vec<(String, String, String)>> {
     // Find Linux artifacts for the AUR package, applying IDs + amd64_variant filter.
-    // arm_variant is hardcoded to "7" for AUR (no config option).
+    // GoReleaser hardcodes arm_variant to "7" for AUR (no config option).
     let ids_filter = aur_cfg.ids.as_deref();
     let amd64_variant = aur_cfg.amd64_variant.as_deref().or(Some("v1"));
     let linux_artifacts = util::find_artifacts_by_os_with_variant(
@@ -696,8 +698,8 @@ fn aur_clone_repo(
 }
 
 /// Resolve the output directory inside the cloned repo, optionally
-/// creating a subdirectory rendered from `aur.directory`. The directory
-/// template is rendered first, then the path is created.
+/// creating a subdirectory rendered from `aur.directory`. Matches the
+/// GoReleaser template-then-mkdir behaviour at aur.go:103-108.
 fn aur_resolve_output_dir(
     ctx: &Context,
     aur_cfg: &anodizer_core::config::AurConfig,
@@ -774,7 +776,8 @@ fn aur_commit_and_push(
     let commit_opts = util::resolve_commit_opts(ctx, aur_cfg.commit_author.as_ref());
     // AUR repositories are always on `master`. Pin the push branch via the
     // shared [`AUR_REPO_BRANCH`] constant so the publish and rollback
-    // paths can never drift (e.g. one renamed to `main`).
+    // paths can never drift (e.g. one renamed to `main`). Matches
+    // GoReleaser `internal/pipe/aur/aur.go`.
     let outcome = util::commit_and_push_with_opts(
         repo_path,
         &["."],
@@ -2199,8 +2202,8 @@ mod tests {
         assert!(!pushed, "dry-run must return false (not pushed)");
     }
 
-    /// Regression: an empty linux-archive set must hard-fail with an
-    /// actionable error instead of
+    /// Regression for parity with GoReleaser's `ErrNoArchivesFound`: an empty
+    /// linux-archive set must hard-fail with an actionable error instead of
     /// silently writing a PKGBUILD with placeholder URL + empty sha256.
     #[test]
     fn test_publish_to_aur_empty_linux_archive_set_hard_errors() {
@@ -2305,11 +2308,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Default() resolution
+    // GoReleaser Default() parity (aur.go::Default — C-new-12)
     //
-    // Four defaults are applied at config-load time: name auto-suffixed
-    // `-bin`, conflicts/provides default to the project name, and pkgrel
-    // defaults to "1". These tests pin each rule
+    // GoReleaser applies four defaults at config-load time that anodizer must
+    // mirror: name auto-suffixed `-bin`, conflicts/provides default to the
+    // project name, and pkgrel defaults to "1". These tests pin each rule
     // against the helper pair (`aur_default_package_name` →
     // `aur_resolve_defaults`) so a regression trips a unit test instead of
     // slipping through to a malformed PKGBUILD on disk.
@@ -2349,7 +2352,7 @@ mod tests {
         );
     }
 
-    /// `aur.conflicts` unset/empty → defaults to `[project_name]`.
+    /// `aur.conflicts` unset/empty → defaults to `[project_name]` (GR aur.go:58-63).
     /// When `project_name` is empty, falls back to the rendered package name
     /// with any trailing `-bin` stripped.
     #[test]
@@ -2394,7 +2397,7 @@ mod tests {
         assert_eq!(resolved_explicit.conflicts, vec!["other-pkg".to_string()]);
     }
 
-    /// `aur.provides` unset/empty → defaults to `[project_name]`.
+    /// `aur.provides` unset/empty → defaults to `[project_name]` (GR aur.go:58-63).
     #[test]
     fn test_aur_default_provides_uses_project_name() {
         use anodizer_core::config::AurConfig;
@@ -2427,7 +2430,7 @@ mod tests {
         assert_eq!(resolved_explicit.provides, vec!["virtual-pkg".to_string()]);
     }
 
-    /// `aur.rel` unset → defaults to `1`. Non-numeric or
+    /// `aur.rel` unset → defaults to `1` (GR aur.go:64-66). Non-numeric or
     /// unparseable values also collapse to `1` rather than erroring; explicit
     /// numeric values pass through unchanged.
     #[test]
@@ -2447,9 +2450,9 @@ mod tests {
         let resolved_explicit = aur_resolve_defaults(&cfg_explicit, "mytool-bin", "mytool");
         assert_eq!(resolved_explicit.pkgrel, 3);
 
-        // Non-numeric value falls back to 1 (defensive — the field is a
-        // string, so any unparseable input is accepted rather than failing
-        // the publish).
+        // Non-numeric value falls back to 1 (defensive — GR's Default() pins
+        // the field as a string, so we accept any unparseable input rather
+        // than fail the publish).
         let cfg_bad = AurConfig {
             rel: Some("not-a-number".to_string()),
             ..Default::default()
@@ -2490,7 +2493,8 @@ mod tests {
         assert_eq!(resolved.provides[0], "");
     }
 
-    /// Regression: `aur.skip_upload: "{{ .IsSnapshot }}"` must template-expand
+    /// Regression for GoReleaser parity P9.1 (commit cba5b9f):
+    /// `aur.skip_upload: "{{ .IsSnapshot }}"` must template-expand
     /// before its bool/auto/empty interpretation. On a snapshot run
     /// the rendered value is `"true"` and the publish path must
     /// short-circuit to `Ok(())` (no git-push attempt).
@@ -2536,7 +2540,7 @@ mod tests {
         let log = StageLogger::new("publish", Verbosity::Normal);
         publish_to_aur(&ctx, "mytool", &log).expect(
             "skip_upload='{{ .IsSnapshot }}' on snapshot must short-circuit \
-             to Ok(()) before the archive-set check",
+             to Ok(()) before the archive-set check (GR cba5b9f)",
         );
     }
 }

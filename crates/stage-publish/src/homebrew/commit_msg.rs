@@ -3,8 +3,8 @@ use anodizer_core::template::{self, TemplateVars};
 /// Render a commit message from an optional Tera template string.
 ///
 /// The template receives `ProjectName` (= name) and `Tag`/`Version` variables
-/// in the template context.  When `template` is `None` the default for
-/// the publisher `kind` is used.
+/// matching GoReleaser's template context.  When `template` is `None` the
+/// GoReleaser default for the publisher `kind` is used.
 pub(crate) fn render_commit_msg(
     template: Option<&str>,
     name: &str,
@@ -22,7 +22,7 @@ pub(crate) fn render_commit_msg_with_prev(
     previous_tag: &str,
     kind: &str,
 ) -> String {
-    // Default commit messages per publisher type:
+    // GoReleaser default commit messages per publisher type:
     //   brew formula: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
     //   brew cask:    "Brew cask update for {{ .ProjectName }} version {{ .Tag }}"
     //   krew:         "Krew manifest update for {{ .ProjectName }} version {{ .Tag }}"

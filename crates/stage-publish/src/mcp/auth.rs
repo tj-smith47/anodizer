@@ -1,15 +1,19 @@
 //! MCP registry authentication providers.
 //!
 //! Each provider matches a `McpAuthMethod` variant and produces a bearer
-//! token suitable for `POST {registry}/v0/publish`:
+//! token suitable for `POST {registry}/v0/publish`. The Rust implementations
+//! mirror the upstream Go sources:
 //!
-//! - anonymous: POST `/v0/auth/none` -> registry JWT
-//! - PAT exchange: POST `/v0/auth/github-at` -> JWT
-//! - Actions OIDC: GET `${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=<registry>`
-//!   then POST `/v0/auth/github-oidc`
+//! - `auth/none.go`        — anonymous: POST `/v0/auth/none` -> registry JWT
+//! - `auth/github-at.go`   — PAT exchange: POST `/v0/auth/github-at` -> JWT
+//! - `auth/github-oidc.go` — Actions OIDC: GET `${ACTIONS_ID_TOKEN_REQUEST_URL}
+//!                            &audience=<registry>` then POST `/v0/auth/github-oidc`
 //!
-//! Tokens are kept in memory only — no `.mcpregistry_*_token` files are
-//! written to the cwd.
+//! Anodizer keeps tokens in memory only — GR writes
+//! `.mcpregistry_github_token` / `.mcpregistry_registry_token` to the cwd
+//! and deletes them post-publish; we skip those on-disk files entirely.
+//! Network shape (URLs, body, headers) is preserved end-to-end so the
+//! registry can't tell the difference.
 //!
 //! The retry policy is threaded through every HTTP call — auth-exchange
 //! 5xx / transport failures retry per the user's top-level `retry:` block,
@@ -29,12 +33,14 @@ use anodizer_core::config::McpAuthMethod;
 
 /// Anything that can produce a bearer token for `Authorization: Bearer ...`.
 ///
-/// The auth method is logged via `McpAuthMethod::as_str()` directly.
+/// Mirrors the upstream `auth.Provider` interface — minus the `Name()`
+/// accessor (which only existed for log lines in the GR CLI; we log the
+/// method via `McpAuthMethod::as_str()` directly).
 pub trait McpAuthProvider {
     /// Perform any pre-token work (currently a no-op for all in-tree
-    /// providers — interactive device-flow login is intentionally not
-    /// surfaced because anodizer is non-interactive). Errors abort the
-    /// publish with a `could not login: ...` message.
+    /// providers — GR's interactive device-flow login is intentionally
+    /// not surfaced because anodizer is non-interactive). Errors abort
+    /// the publish with a `could not login: ...` message matching GR.
     fn login(&self) -> Result<()> {
         Ok(())
     }
@@ -58,21 +64,22 @@ struct RegistryTokenResponse {
     registry_token: String,
 }
 
-/// Body shape for `/v0/auth/github-at` (PAT exchange): a JSON object
-/// `{"github_token": ...}`.
+/// Body shape for `/v0/auth/github-at` (PAT exchange). Mirrors upstream
+/// `github-at.go:300`'s `map[string]string{"github_token": ...}`.
 #[derive(Debug, Serialize)]
 struct GithubAtBody<'a> {
     github_token: &'a str,
 }
 
-/// Body shape for `/v0/auth/github-oidc` (OIDC exchange): a JSON object
-/// `{"oidc_token": ...}`.
+/// Body shape for `/v0/auth/github-oidc` (OIDC exchange). Mirrors upstream
+/// `github-oidc.go:66`'s `map[string]string{"oidc_token": ...}`.
 #[derive(Debug, Serialize)]
 struct GithubOidcBody<'a> {
     oidc_token: &'a str,
 }
 
-/// `GitHub Actions ID-token` response wrapping a `value` field.
+/// `GitHub Actions ID-token` response wrapping a `value` field. Mirrors
+/// upstream `github-oidc.go:153-156`.
 #[derive(Debug, Deserialize)]
 struct OidcTokenValue {
     #[serde(default)]
@@ -83,7 +90,7 @@ struct OidcTokenValue {
 // Provider factory
 // ---------------------------------------------------------------------------
 
-/// Build the auth provider for a given method.
+/// Build the auth provider for a given method. Mirrors GR `mcp.go::authProvider`.
 ///
 /// `registry_url` is the base URL (no trailing slash) — the providers append
 /// `/v0/auth/...` paths themselves. `token` is the static token, only
@@ -141,13 +148,15 @@ pub fn provider_for_with_env(
 // NoneAuthProvider — anonymous (or static-token override)
 // ---------------------------------------------------------------------------
 
-/// Anonymous auth provider. Two behaviours:
+/// `auth.NoneProvider` mirror. Two behaviours:
 ///
-/// - When `token` is non-empty, return it verbatim — useful for staging
-///   registries that accept a pre-issued JWT without going through
-///   `/v0/auth/none`.
+/// - When `token` is non-empty, return it verbatim. This is an anodizer
+///   extension — useful for staging registries that accept a pre-issued JWT
+///   without going through `/v0/auth/none`. The upstream Go provider does
+///   honour an in-memory token field on the same code path
+///   (`none.go:28-32`), so the wire behaviour is equivalent.
 /// - When `token` is empty, POST `/v0/auth/none` and return the
-///   `registry_token` from the response.
+///   `registry_token` from the response. Mirrors upstream `none.go:33-62`.
 pub struct NoneAuthProvider {
     pub registry_url: String,
     pub token: String,
@@ -189,11 +198,13 @@ impl McpAuthProvider for NoneAuthProvider {
 // GithubAtAuthProvider — PAT exchange
 // ---------------------------------------------------------------------------
 
-/// PAT-exchange auth provider — the non-interactive branch.
+/// `auth.GitHubATProvider` mirror — the non-interactive branch.
 ///
-/// Anodizer is non-interactive by design, so only the explicit token is
-/// supported (no device-code flow). If `token` is empty it falls back to
-/// the `MCP_GITHUB_TOKEN` env var; both empty is a hard error.
+/// GR's `github-at.go::Login` supports both an explicit `--token` (or
+/// `MCP_GITHUB_TOKEN` env var) AND an interactive device-code flow. Anodizer
+/// is non-interactive by design, so we only support the explicit token. If
+/// `token` is empty we fall back to the `MCP_GITHUB_TOKEN` env var to keep
+/// the env-var ergonomics GR users expect; both empty is a hard error.
 pub struct GithubAtAuthProvider {
     pub registry_url: String,
     pub token: String,

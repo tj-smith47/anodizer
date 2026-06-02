@@ -128,7 +128,7 @@ pub fn detect_gemfury_format(filename: &str) -> Option<&'static str> {
     }
 }
 
-/// Default `gemfury[].formats` value.
+/// Default formats matching GoReleaser Pro's `gemfury[].formats` default.
 pub fn default_formats() -> Vec<&'static str> {
     crate::util::default_package_formats()
 }

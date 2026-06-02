@@ -161,7 +161,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
 
     // Single retry policy resolved from the top-level `retry:` block; reused
     // for every entry's full_description fetch, login, and PATCH (mirrors
-    // the retry policy is captured once per pipe).
+    // GoReleaser, where the retryx policy is captured once per pipe).
     let policy = ctx.retry_policy();
 
     // JWT cache keyed by `(username, secret_env_name)`. When N entries
@@ -183,7 +183,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             }
         }
 
-        // Check `if:` conditional gate.
+        // Check `if:` conditional gate (GoReleaser Pro parity).
         let proceed = anodizer_core::config::evaluate_if_condition(
             entry.if_condition.as_deref(),
             "dockerhub entry",
@@ -208,7 +208,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             },
         };
 
-        // Render each image entry through the template engine. The docs
+        // Render each image entry through the template engine. GR docs
         // say image entries are templated; without this pass a config like
         // `images: ["{{ .Env.NAMESPACE }}/myapp"]` would be rejected as
         // malformed by the path-validation loop below.
@@ -993,7 +993,7 @@ mod tests {
     }
 
     /// `disable:` is a serde alias for `skip:` so YAML configs imported from
-    /// parse without renaming the field.
+    /// GoReleaser parse without renaming the field.
     #[test]
     fn dockerhub_disable_alias_parses_as_skip() {
         let yaml = r#"

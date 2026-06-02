@@ -1,17 +1,21 @@
 //! MCP (Model Context Protocol) server registry publisher.
 //!
 //! Posts an `apiv0.ServerJSON` document to `{registry}/v0/publish` after
-//! exchanging the configured credentials for a registry JWT. Two design
-//! choices worth calling out:
+//! exchanging the configured credentials for a registry JWT. Mirrors
+//! GoReleaser `internal/pipe/mcp/mcp.go` end-to-end, with two intentional
+//! deviations:
 //!
-//! 1. **No on-disk token files.** Tokens are kept in memory rather than
-//!    written to the cwd and deleted post-publish — same wire behaviour,
-//!    fewer artefacts left behind on disk if the process dies mid-publish.
-//! 2. **No separate defaulting phase.** There is no nested `mcp.github:`
-//!    block to migrate, and `McpAuth::default()` already defaults to
-//!    `None`, so no `Default` phase is needed here.
+//! 1. **No on-disk token files.** GR writes `.mcpregistry_github_token` and
+//!    `.mcpregistry_registry_token` to the cwd and deletes them post-
+//!    publish. Anodizer keeps tokens in memory — same wire behaviour, fewer
+//!    artefacts left behind on disk if the process dies mid-publish.
+//! 2. **Defaulting collapsed.** GR's `Default(ctx)` migrates a deprecated
+//!    `mcp.github:` block to the top-level fields and defaults
+//!    `auth.type=none`. Anodizer never had the nested form, and our
+//!    `McpAuth::default()` already defaults to `None`, so there's no
+//!    separate `Default` phase here.
 //!
-//! Skip gate:
+//! Skip gate (matches GR `mcp.go::Skip`):
 //!   - `ctx.should_skip("mcp")` (uniform `--skip=mcp` flag), OR
 //!   - `ctx.config.mcp.name` is unset/empty, OR
 //!   - `ctx.config.mcp.skip` evaluates truthy.
@@ -64,7 +68,9 @@ pub(crate) type McpTarget = anodizer_core::publish_evidence::McpTargetSnapshot;
 
 /// Process-wide flag — the "mcp is experimental" warning is emitted at
 /// most once per anodizer invocation regardless of how many crates trigger
-/// the publisher.
+/// the publisher. Matches GR's `warnExperimental` which uses
+/// `caarlos0/log`'s side-effect-on-construction pattern (the deprecation
+/// notice is similarly one-shot).
 static EXPERIMENTAL_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Top-level entry point — dispatched from `PublishStage::run` under the
@@ -185,7 +191,7 @@ pub(crate) fn publish_with_registry(
     log: &StageLogger,
     registry_url: &str,
 ) -> Result<Option<McpTarget>> {
-    // ---- Skip gate ----
+    // ---- Skip gate (GR mcp.go::Skip parity) ----
     if ctx.config.mcp.name.as_deref().unwrap_or("").is_empty() {
         log.status("mcp: skipping — no mcp.name configured");
         ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
@@ -450,7 +456,8 @@ fn apply_inferred_repository(
 
 /// Emit the experimental-warning banner the first time the publisher runs in
 /// this process; subsequent invocations are silent. The atomic flag is
-/// process-wide.
+/// process-wide (matches GR's package-level `sync.Once`-ish behaviour for
+/// log lines emitted via `caarlos0/log`).
 ///
 /// Returns `true` if THIS call emitted the warning (the swap flipped the
 /// flag from `false` to `true`), `false` otherwise. The return value lets
@@ -473,9 +480,10 @@ fn warn_experimental_once(log: &StageLogger) -> bool {
 
 /// Apply `ctx.render_template` to every templatable string in `mcp`.
 ///
-/// Renders the top-level fields (name, description, ...) and the
-/// per-package identifier. One-stop helper so the publisher orchestration
-/// stays linear.
+/// Mirrors GR `mcp.go::Publish` lines 72-85 (the `tmpl.New(ctx).ApplyAll(&mcp.Name,
+/// &mcp.Description, ...)` block) AND the per-package render at lines 127-129
+/// (`tmpl.New(ctx).ApplyAll(&pkg.Identifier)`). One-stop helper so the
+/// publisher orchestration stays linear.
 fn render_strings(ctx: &Context, mcp: &mut McpConfig) -> Result<()> {
     render_opt_in_place(ctx, &mut mcp.name, "name")?;
     render_opt_in_place(ctx, &mut mcp.description, "description")?;
@@ -486,9 +494,10 @@ fn render_strings(ctx: &Context, mcp: &mut McpConfig) -> Result<()> {
     render_in_place(ctx, &mut mcp.repository.id, "repository.id")?;
     render_in_place(ctx, &mut mcp.repository.subfolder, "repository.subfolder")?;
 
-    // auth.type is rendered by serializing the enum to its wire-format
-    // string, rendering that, and re-parsing — so a user can write
-    // `auth.type: "{{ if eq .Env.MODE \"ci\" }}github-oidc{{ else }}none{{ end }}"`
+    // auth.type: GR renders this through tmpl.ApplyAll despite it being an
+    // enum on its config struct (Go uses a string type). We mirror the
+    // behaviour by rendering the wire-format string and re-parsing — so a
+    // user can write `auth.type: "{{ if eq .Env.MODE \"ci\" }}github-oidc{{ else }}none{{ end }}"`
     // and have it resolve at publish time.
     let mut type_str = mcp.auth.method.as_str().to_string();
     render_in_place(ctx, &mut type_str, "auth.type")?;
@@ -528,7 +537,7 @@ fn render_opt_in_place(ctx: &Context, s: &mut Option<String>, label: &str) -> Re
 
 /// Assemble the `ServerJson` payload from a fully-templated `McpConfig`.
 ///
-/// Server-document assembly:
+/// Mirrors GR `mcp.go::Publish` lines 108-144:
 ///   - `repository` is omitted entirely when `mcp.Repository.URL == ""`.
 ///   - Per-package `version` is `ctx.Version` for all registry types
 ///     **except** `oci`, which forces `""` (the version is embedded in
@@ -591,7 +600,8 @@ pub(crate) fn build_server_json(mcp: &McpConfig, version: &str) -> ServerJson {
 /// publishes, 200 for re-publishes / status updates). 4xx fast-fails.
 ///
 /// On success, parses the response body for `_meta.official.status` and
-/// logs `published to MCP registry name=<...> status=<...>`.
+/// logs `published to MCP registry name=<...> status=<...>` — matching GR
+/// `mcp.go:181-184`'s log shape.
 /// Maximum response-body bytes embedded in the user-visible HTTP-error
 /// message. Cap is byte-based (cheap `len()`) instead of char-based so a
 /// large response body is rejected after a single O(1) length check —
@@ -726,9 +736,9 @@ fn publish_payload(
 }
 
 /// Reset the experimental-warning flag. **Test-only** — production code never
-/// resets the flag (the warning fires exactly once per process), but unit
-/// tests assert the one-shot behaviour by invoking the publisher multiple
-/// times.
+/// resets the flag (we want the warning to fire exactly once per process,
+/// per the GR parity rule), but unit tests assert the one-shot behaviour by
+/// invoking the publisher multiple times.
 #[cfg(test)]
 pub(crate) fn reset_experimental_warned_for_test() {
     EXPERIMENTAL_WARNED.store(false, Ordering::SeqCst);

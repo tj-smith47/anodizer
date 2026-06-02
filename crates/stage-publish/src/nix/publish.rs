@@ -370,7 +370,7 @@ fn resolve_nix_metadata(
         .with_context(|| format!("nix: render homepage template for '{}'", crate_name))?;
 
     // The raw value can be a nix `lib.licenses` attribute (config-supplied,
-    // a direct nix attr) OR an SPDX id derived from `Cargo.toml`
+    // GoReleaser-style) OR an SPDX id derived from `Cargo.toml`
     // `[package].license`. Resolve to a nix attribute so both paths emit a
     // valid `lib.licenses.<attr>`; an empty value suppresses `meta.license`.
     let license_raw = nix_cfg

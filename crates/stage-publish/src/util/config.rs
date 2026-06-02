@@ -228,7 +228,7 @@ pub(crate) fn should_skip_upload(
 /// Returns `Ok(true)` to skip; `Ok(false)` to proceed. Consolidates the
 /// per-publisher pattern of near-identical `if let Some(d) = ...` blocks
 /// that previously lived in aur_source.rs (per-crate AND top-level paths),
-/// extended to also evaluate the `if:` conditional gate.
+/// extended to also evaluate the GoReleaser Pro `if:` conditional gate.
 /// `if_condition` is the resource's `if:` template (or `None` when the
 /// resource does not yet expose `if:`).
 pub(crate) fn should_skip_publisher_with_if(
