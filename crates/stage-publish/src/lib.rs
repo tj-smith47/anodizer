@@ -239,8 +239,8 @@ pub fn write_report_to_run_dir(ctx: &Context, log: &StageLogger) {
         return;
     }
 
+    let path = report_path_for(ctx, &run_id);
     let dir: PathBuf = ctx.config.dist.join(format!("run-{}", run_id));
-    let path = dir.join("report.json");
 
     if let Err(e) = std::fs::create_dir_all(&dir) {
         log.warn(&format!(
@@ -596,11 +596,7 @@ fn refuse_rerun_if_report_exists(ctx: &Context) -> Result<()> {
         return Ok(());
     }
 
-    let report_path = ctx
-        .config
-        .dist
-        .join(format!("run-{}", run_id))
-        .join("report.json");
+    let report_path = report_path_for(ctx, &run_id);
     if report_path.exists() {
         anyhow::bail!(
             "publish refusing to run: a prior report.json exists at {} (run_id={}). \

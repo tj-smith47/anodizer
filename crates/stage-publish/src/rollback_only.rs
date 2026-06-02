@@ -98,12 +98,11 @@ pub fn validate_run_id(run_id: &str) -> Result<()> {
 }
 
 /// Resolve the path to the prior run's `report.json` under
-/// `<ctx.config.dist>/run-<id>/report.json`.
+/// `<ctx.config.dist>/run-<id>/report.json`. Delegates to the crate-level
+/// [`crate::report_path_for`] so the read path and the writer in
+/// `write_report_to_run_dir` share one path-shape definition.
 fn report_path(ctx: &Context, run_id: &str) -> PathBuf {
-    ctx.config
-        .dist
-        .join(format!("run-{}", run_id))
-        .join("report.json")
+    crate::report_path_for(ctx, run_id)
 }
 
 /// Resolve the path the replay writes its updated state to:
