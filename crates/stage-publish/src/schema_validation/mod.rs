@@ -25,6 +25,7 @@ use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
+mod aur;
 mod chocolatey;
 mod homebrew;
 mod krew;
@@ -136,6 +137,7 @@ fn validators() -> Vec<Box<dyn PublisherSchemaValidator>> {
         Box::new(snapcraft::SnapcraftSchemaValidator),
         Box::new(homebrew::HomebrewSchemaValidator),
         Box::new(nfpm::NfpmSchemaValidator),
+        Box::new(aur::AurSchemaValidator),
     ]
 }
 

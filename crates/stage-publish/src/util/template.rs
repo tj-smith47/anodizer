@@ -88,7 +88,24 @@ pub(crate) fn render_url_template_with_ctx(
 /// `"aur_source.directory"`); the warn message does not prepend a stage
 /// prefix because `StageLogger` already does that for every line.
 pub(crate) fn render_or_warn(ctx: &Context, log: &StageLogger, field: &str, raw: &str) -> String {
-    match ctx.render_template(raw) {
+    render_or_warn_with_vars(ctx.template_vars(), log, field, raw)
+}
+
+/// Like [`render_or_warn`], but renders against an explicit `vars` set instead
+/// of the context's global template vars.
+///
+/// Used where a publisher scopes an extra template variable for a single
+/// resource's renders (e.g. the AUR-source `Amd64` micro-architecture variable)
+/// and the `directory:` / `url_template:` strings must see that same scoped
+/// value — rendering them against the global vars would resolve the scoped
+/// variable to its stale/empty global value.
+pub(crate) fn render_or_warn_with_vars(
+    vars: &TemplateVars,
+    log: &StageLogger,
+    field: &str,
+    raw: &str,
+) -> String {
+    match template::render(raw, vars) {
         Ok(rendered) => rendered,
         Err(e) => {
             log.warn(&format!(

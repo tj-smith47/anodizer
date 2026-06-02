@@ -3,20 +3,42 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
+use crate::aur::AurRendered;
 use crate::util;
 
-/// Shared core logic for publishing a single AUR source entry.
+/// A rendered source-AUR entry plus the identifiers the write/push path needs.
+pub(crate) struct AurSourceRender {
+    /// The rendered `PKGBUILD` + `.SRCINFO`.
+    pub(crate) rendered: AurRendered,
+    /// Resolved AUR package name (post-template, post `-bin` strip when the
+    /// caller requested it).
+    pub(crate) pkg_name: String,
+    /// `<pkg_name>.install` — the filename the optional `install:` content is
+    /// written to and the PKGBUILD `install=` line references.
+    pub(crate) install_filename: String,
+    /// The template vars used for this entry's renders, with the per-config
+    /// `Amd64` micro-architecture variable scoped in. The write/push path
+    /// renders the `directory:` template against these so `{{ .Amd64 }}`
+    /// resolves to the same configured variant every other per-entry render
+    /// saw — not the stale/empty global value.
+    pub(crate) scoped_vars: anodizer_core::template::TemplateVars,
+}
+
+/// Skip-unaware render of a single source-AUR entry's `PKGBUILD` + `.SRCINFO`.
 ///
-/// Both per-crate (`publish_to_aur_source`) and top-level (`publish_top_level_aur_sources`)
-/// delegate here after resolving which `AurSourceConfig` to use.
-fn publish_aur_source_entry(
-    ctx: &mut Context,
+/// Resolves every field default, derives the source tarball URL (honoring
+/// `url_template`, with the `Amd64` micro-architecture variable scoped onto a
+/// throwaway copy of the template vars so this stays a pure read of `ctx`), and
+/// renders both artifacts. The skip / `skip_upload` / `if` gate is evaluated by
+/// the callers, so this never double-evaluates it and `ctx` is not mutated.
+fn render_aur_source_inner(
+    ctx: &Context,
     cfg: &AurSourceConfig,
     default_name: &str,
     strip_bin_suffix: bool,
     label: &str,
     log: &StageLogger,
-) -> Result<bool> {
+) -> Result<AurSourceRender> {
     let version = ctx
         .template_vars()
         .get("Version")
@@ -42,22 +64,27 @@ fn publish_aur_source_entry(
 
     // Surface the configured x86_64 micro-architecture variant as a template
     // var (default `v1`) so user-supplied `prepare` / `build` / `package`
-    // scripts can branch on the variant when the source builds need to pick
-    // CPU-feature-specific cargo flags. Constrained to a typed enum at the
-    // config layer (no artifact filter applies — AUR source pkgs build from
-    // the upstream tarball, so this is template-only).
+    // scripts and the `url_template` / `directory` templates can branch on the
+    // variant when the source builds need to pick CPU-feature-specific cargo
+    // flags. Constrained to a typed enum at the config layer (no artifact
+    // filter applies — AUR source pkgs build from the upstream tarball, so this
+    // is template-only). Scoped onto a clone of the live vars so rendering
+    // stays a pure read of `ctx` (the live path and the offline validator both
+    // render from the same immutable context); the scoped copy is threaded out
+    // so the write/push path's `directory:` render sees the same `Amd64`.
     let amd64_variant = cfg
         .amd64_variant
         .as_ref()
         .map(|v| v.as_str())
         .unwrap_or("v1");
-    ctx.template_vars_mut().set("Amd64", amd64_variant);
+    let mut scoped_vars = ctx.template_vars().clone();
+    scoped_vars.set("Amd64", amd64_variant);
 
     // Source URL — use url_template or default release URL
     let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
 
     let source_url = if let Some(ref tmpl) = cfg.url_template {
-        ctx.render_template(tmpl)
+        anodizer_core::template::render(tmpl, &scoped_vars)
             .with_context(|| format!("{}: render url_template", label))?
     } else {
         let git_url = ctx
@@ -155,6 +182,126 @@ fn publish_aur_source_entry(
     let pkgbuild = generate_source_pkgbuild(&meta, &deps, &extras, &source_url);
     let srcinfo = generate_source_srcinfo(&meta, &deps, &source_url);
 
+    Ok(AurSourceRender {
+        rendered: AurRendered {
+            pkgbuild,
+            srcinfo,
+            package_name: pkg_name.clone(),
+        },
+        pkg_name,
+        install_filename,
+        scoped_vars,
+    })
+}
+
+/// Render the source-AUR artifacts a live publish would write for a per-crate
+/// `aur_source:` block, honoring `skip` / `skip_upload` / the `if:` condition.
+///
+/// Returns `Ok(None)` when the publisher would skip the crate (a truthy `skip`
+/// / `skip_upload` or a falsy `if`), or when the crate carries no `aur_source`
+/// block. The live publish path and the offline schema validator both render
+/// through the same skip-unaware [`render_aur_source_inner`], so the validated
+/// artifacts are byte-for-byte what a release pushes.
+pub(crate) fn render_aur_source_pkgbuild_and_srcinfo_for_crate(
+    ctx: &Context,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Option<AurRendered>> {
+    let Some(cfg) = ctx
+        .config
+        .crates
+        .iter()
+        .find(|c| c.name == crate_name)
+        .and_then(|c| c.publish.as_ref())
+        .and_then(|p| p.aur_source.as_ref())
+        .cloned()
+    else {
+        return Ok(None);
+    };
+
+    let label = format!("aur_source: crate '{crate_name}'");
+    if crate::util::should_skip_publisher_with_if(
+        ctx,
+        cfg.skip.as_ref(),
+        cfg.skip_upload.as_ref(),
+        cfg.if_condition.as_deref(),
+        &label,
+        log,
+    )? {
+        return Ok(None);
+    }
+
+    let render = render_aur_source_inner(ctx, &cfg, crate_name, false, "aur_source", log)?;
+    Ok(Some(render.rendered))
+}
+
+/// Render every applicable top-level `aur_sources:` array entry, honoring each
+/// entry's `skip` / `skip_upload` / `if:` gate. Returns an empty Vec when the
+/// array is unset/empty or every entry is skipped — the validator treats that
+/// as "nothing to validate".
+pub(crate) fn render_top_level_aur_source(
+    ctx: &Context,
+    log: &StageLogger,
+) -> Result<Vec<AurRendered>> {
+    let entries = match ctx.config.aur_sources {
+        Some(ref v) if !v.is_empty() => v.clone(),
+        _ => return Ok(Vec::new()),
+    };
+
+    let project_name = ctx
+        .template_vars()
+        .get("ProjectName")
+        .cloned()
+        .unwrap_or_default();
+
+    let mut out = Vec::new();
+    for (i, cfg) in entries.iter().enumerate() {
+        let label = format!("aur_sources[{}]", i);
+        if crate::util::should_skip_publisher_with_if(
+            ctx,
+            cfg.skip.as_ref(),
+            cfg.skip_upload.as_ref(),
+            cfg.if_condition.as_deref(),
+            &label,
+            log,
+        )? {
+            continue;
+        }
+        let render = render_aur_source_inner(ctx, cfg, &project_name, true, &label, log)?;
+        out.push(render.rendered);
+    }
+    Ok(out)
+}
+
+/// Shared core logic for publishing a single AUR source entry.
+///
+/// Both per-crate (`publish_to_aur_source`) and top-level
+/// (`publish_top_level_aur_sources`) delegate here after resolving which
+/// `AurSourceConfig` to use and after evaluating the skip / `if:` gate.
+fn publish_aur_source_entry(
+    ctx: &mut Context,
+    cfg: &AurSourceConfig,
+    default_name: &str,
+    strip_bin_suffix: bool,
+    label: &str,
+    log: &StageLogger,
+) -> Result<bool> {
+    let AurSourceRender {
+        rendered: AurRendered {
+            pkgbuild, srcinfo, ..
+        },
+        pkg_name,
+        install_filename,
+        scoped_vars,
+    } = render_aur_source_inner(ctx, cfg, default_name, strip_bin_suffix, label, log)?;
+
+    let version = ctx
+        .template_vars()
+        .get("Version")
+        .cloned()
+        .unwrap_or_else(|| "0.0.0".to_string())
+        .replace('-', "_");
+
     if ctx.is_dry_run() {
         log.status(&format!(
             "(dry-run) would publish AUR source package '{}' ({})",
@@ -228,7 +375,10 @@ fn publish_aur_source_entry(
         }
 
         let output_dir = if let Some(ref dir) = cfg.directory {
-            let rendered_dir = util::render_or_warn(ctx, log, label, dir);
+            // Render against the `Amd64`-scoped vars from the inner render so a
+            // `directory: "{{ .Amd64 }}/…"` template resolves to the configured
+            // variant, consistent with the url_template / hook renders.
+            let rendered_dir = util::render_or_warn_with_vars(&scoped_vars, log, label, dir);
             let d = repo_path.join(&rendered_dir);
             std::fs::create_dir_all(&d)?;
             d
@@ -712,7 +862,7 @@ pub(crate) fn is_aur_source_configured(ctx: &Context) -> bool {
 
 /// True when the named crate has a `publish.aur_source` block. Per-crate
 /// gate for the iteration in `run()`.
-fn is_aur_source_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
+pub(crate) fn is_aur_source_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
     crate::util::all_crates(ctx)
         .into_iter()
         .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.aur_source.is_some()))
