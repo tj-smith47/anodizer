@@ -1338,13 +1338,12 @@ mod tests {
         })
         .unwrap();
 
+        // Assert the exact `metadata.name` line (two-space indent under
+        // `metadata:`), not a substring that formatting could satisfy
+        // elsewhere.
         assert!(
-            manifest.contains("  name: kubectl-mytool"),
+            manifest.contains("\nmetadata:\n  name: kubectl-mytool\n"),
             "metadata.name must be the krew.name override; got:\n{manifest}"
-        );
-        assert!(
-            !manifest.contains("name: mytool\n"),
-            "metadata.name must NOT be the bare crate name; got:\n{manifest}"
         );
     }
 
@@ -1809,11 +1808,14 @@ fn collect_krew_run_targets(ctx: &Context) -> Vec<KrewPrTarget> {
         let fork_owner = ctx
             .render_template(&fork_owner_raw)
             .unwrap_or(fork_owner_raw);
-        // Plugin-name override mirrors `publish_to_krew`'s resolution.
-        let plugin_name_raw = krew_cfg.name.as_deref().unwrap_or(&c.name);
-        let plugin_name = ctx
-            .render_template(plugin_name_raw)
-            .unwrap_or_else(|_| plugin_name_raw.to_string());
+        // Plugin-name override resolved through the same single-source helper
+        // as `publish_to_krew` so the rollback-evidence branch name cannot
+        // drift from the manifest `metadata.name` / file basename / webhook.
+        let Ok(plugin_name) = resolve_plugin_name(krew_cfg.name.as_deref(), &c.name, |t| {
+            ctx.render_template(t)
+        }) else {
+            continue;
+        };
         let branch = format!("{}-v{}", plugin_name, version);
         let (upstream_owner, upstream_repo) = resolve_krew_upstream(krew_cfg);
         out.push(KrewPrTarget {
