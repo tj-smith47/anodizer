@@ -613,7 +613,7 @@ mod tests {
         assert_eq!(finding.publisher, "snapcraft");
 
         // Names that contain digits but are not entirely numeric must conform.
-        for name in ["v1", "my-app", "app2", "1-2"] {
+        for name in ["v1", "my-app", "app2", "1-2", "0ad"] {
             let ok = with_name(name);
             assert!(
                 ok.iter().all(|f| f.field != "/name"),
