@@ -1155,7 +1155,7 @@ mod tests {
     /// `already exists`, so a future real error can't be swallowed.
     #[test]
     fn webhook_already_submitted_classifier() {
-        // The benign signals the server emits.
+        // The two (now three-phrasing) benign signals the server emits.
         assert!(webhook_body_is_already_submitted(
             "opening pr: A pull request already exists for acme:mytool-v1.2.3"
         ));

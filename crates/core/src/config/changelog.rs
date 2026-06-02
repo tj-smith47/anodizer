@@ -191,7 +191,7 @@ pub struct ChangelogAiConfig {
     /// Defaults to the provider's default model when unset.
     pub model: Option<String>,
     /// Prompt template for the AI. Can be a string, or use `from_url`/`from_file`.
-    /// Template variable `{{ ReleaseNotes }}` contains the current changelog.
+    /// Template variable `.ReleaseNotes` contains the current changelog.
     pub prompt: Option<ChangelogAiPrompt>,
 }
 

@@ -3025,7 +3025,7 @@
           ]
         },
         "prompt": {
-          "description": "Prompt template for the AI. Can be a string, or use `from_url`/`from_file`. Template variable `{{ ReleaseNotes }}` contains the current changelog.",
+          "description": "Prompt template for the AI. Can be a string, or use `from_url`/`from_file`. Template variable `.ReleaseNotes` contains the current changelog.",
           "default": null,
           "anyOf": [
             {

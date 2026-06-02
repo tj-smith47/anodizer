@@ -231,7 +231,7 @@ mod tests {
         assert_eq!(v["registryType"], "oci");
         assert!(
             v.get("version").is_none(),
-            "version key must be omitted when empty (the registry rejects an empty version)"
+            "version key must be omitted when empty (registry rejects \"\" with 422)"
         );
     }
 

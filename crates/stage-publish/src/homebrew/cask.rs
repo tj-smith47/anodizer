@@ -70,7 +70,8 @@ cask "{{ name }}" do
 /// The bare-string YAML form `"my-cli"` deserialises to `name = "my-cli",
 /// target = None`, which renders `binary "my-cli"`. The structured form
 /// `{ name, target }` preserves the rename so the template emits
-/// `binary "my-cli", target: "mycli"`.
+/// `binary "my-cli", target: "mycli"`. Mirrors GR
+/// `internal/pipe/brew/templates/cask.rb.tmpl`.
 #[derive(serde::Serialize, Clone)]
 pub struct CaskBinaryEntry {
     /// Path inside the .app bundle.
@@ -123,7 +124,8 @@ pub struct CaskParams<'a> {
     pub caveats: Option<&'a str>,
     /// Pre-rendered `zap` stanza Ruby (full `zap launchctl: [...], quit: [...]`
     /// block) — empty string when no `zap` config is present.  Built via
-    /// [`render_zap_block`].
+    /// [`render_zap_block`]; mirrors GoReleaser `zapString` /
+    /// `makeUninstallLikeBlock` output (`internal/pipe/cask/template.go:95-121`).
     pub zap_block: &'a str,
     /// Pre-rendered `uninstall` stanza Ruby (full `uninstall launchctl: [...]`
     /// block) — empty string when no `uninstall` config is present.  Built
@@ -157,7 +159,8 @@ pub struct CaskParams<'a> {
     /// no [`HomebrewCaskURL`] sub-fields (`verified`, `using`, `cookies`,
     /// `referer`, `headers`, `user_agent`, `data`) are configured. When
     /// non-empty, starts with `,\n      verified: "..."` so it splices
-    /// directly after the closing `"` of `url "..."`.
+    /// directly after the closing `"` of `url "..."`. Mirrors GR's
+    /// `internal/pipe/cask/templates/additional_url_params.rb`.
     pub url_extras: &'a str,
     /// Same payload as [`Self::url_extras`] but indented two extra spaces so
     /// it can splice into the per-arch `on_{intel,arm}` blocks (which are
@@ -172,18 +175,20 @@ pub struct CaskParams<'a> {
     pub generate_completions: Option<String>,
 }
 
-/// Recognised `shell_parameter_format` values. Unknown values fall back
-/// to a quoted string so user input round-trips without surprise.
+/// Recognised `shell_parameter_format` values (mirrors GoReleaser's
+/// `knownShellParameterFormats`). Unknown values fall back to a quoted
+/// string so user input round-trips without surprise.
 const KNOWN_SHELL_PARAMETER_FORMATS: &[&str] =
     &["arg", "clap", "click", "cobra", "flag", "none", "typer"];
 
 /// Render a `generate_completions_from_executable` directive from config.
 ///
-/// Returns `None` when no executable is configured. The returned string
-/// has no trailing newline and is intended to be injected directly into
-/// the cask template.
+/// Returns `None` when no executable is configured (matches GoReleaser
+/// `generateCompletionsString` returning `""` in that case). The returned
+/// string has no trailing newline and is intended to be injected directly
+/// into the cask template.
 ///
-/// Output shape:
+/// Output shape mirrors upstream (`internal/pipe/cask/template.go`):
 ///
 /// ```ruby
 /// generate_completions_from_executable "bin/myapp", "completions",
@@ -238,10 +243,13 @@ pub fn render_generate_completions(
 }
 
 // ---------------------------------------------------------------------------
-// uninstall / zap block rendering.
+// uninstall / zap block rendering — mirrors GoReleaser
+// `internal/pipe/cask/template.go::makeUninstallLikeBlock`.
 // ---------------------------------------------------------------------------
 
 /// Helper: render one keyed group of items as a Ruby array literal.
+///
+/// Matches GR `groupToS` (`template.go:142-150`):
 ///
 /// ```ruby
 /// launchctl: [
@@ -255,7 +263,8 @@ fn group_to_ruby_array(name: &str, lines: &[String]) -> String {
     for l in lines {
         sb.push_str("      ");
         // Use Rust's `Debug` formatting for `&str` to get Ruby-compatible
-        // double-quoted, backslash-escaped output for ASCII-safe strings.
+        // double-quoted, backslash-escaped output (the same shape GR's
+        // `fmt.Sprintf("%q", l)` produces for ASCII-safe strings).
         sb.push_str(&format!("{:?}", l));
         sb.push_str(",\n");
     }
@@ -264,6 +273,8 @@ fn group_to_ruby_array(name: &str, lines: &[String]) -> String {
 }
 
 /// Helper: join the per-key groups into a single `<stanza> ...` Ruby block.
+///
+/// Mirrors GR `joinGroups` (`template.go:123-140`).
 fn join_groups(stanza: &str, groups: &[String]) -> String {
     if groups.is_empty() {
         return String::new();
@@ -320,7 +331,7 @@ fn make_uninstall_like_groups(u: &anodizer_core::config::HomebrewCaskUninstall) 
 
 /// Render the full `uninstall <key>: [...], <key>: [...]` Ruby block from
 /// structured uninstall config. Returns `""` when no uninstall config is
-/// configured.
+/// configured. Matches GR `uninstallString` (`cask/template.go:99-101`).
 pub(super) fn render_uninstall_block(
     uninstall: Option<&anodizer_core::config::HomebrewCaskUninstall>,
 ) -> String {
@@ -332,9 +343,10 @@ pub(super) fn render_uninstall_block(
 }
 
 /// Render the full `zap <key>: [...], <key>: [...]` Ruby block from
-/// structured zap config. Unlike `uninstall`, an empty config still
-/// emits a `# No zap stanza required` comment so the cask file shape
-/// stays identical whether or not a zap stanza is configured.
+/// structured zap config. Matches GR `zapString` (`cask/template.go:95-97`).
+/// Unlike `uninstall`, GR emits a `# No zap stanza required` comment when
+/// the config is empty — anodizer mirrors that so the cask file shape stays
+/// identical.
 pub(super) fn render_zap_block(
     zap: Option<&anodizer_core::config::HomebrewCaskUninstall>,
 ) -> String {
@@ -349,15 +361,15 @@ pub(super) fn render_zap_block(
 }
 
 // ---------------------------------------------------------------------------
-// additional_url_params
+// additional_url_params (GR `internal/pipe/cask/templates/additional_url_params.rb`)
 // ---------------------------------------------------------------------------
 
 /// Render Ruby kwargs for the `url "<url>"` line: `verified`, `using`,
 /// `cookies`, `referer`, `header`, `user_agent`, `data`. Returns `""` when
 /// every sub-field is unset.
 ///
-/// `indent` is the leading whitespace placed before each kwarg (6 spaces
-/// at top level, 8 spaces when the call site is inside an
+/// `indent` is the leading whitespace placed before each kwarg (GR uses
+/// 6 spaces / 8 spaces depending on whether the call site is inside an
 /// `on_<arch> do ... end` block). The returned string starts with `,\n`
 /// + indent so it splices directly after the closing `"` of `url "..."`.
 pub(super) fn render_additional_url_params(
@@ -374,7 +386,8 @@ pub(super) fn render_additional_url_params(
         && !v.is_empty()
     {
         // `using:` accepts either a Ruby symbol (`:homebrew_curl`) or a
-        // class name (no quotes). Pass through verbatim without quoting.
+        // class name (no quotes). Pass through verbatim — matches GR which
+        // splices `{{ .Using }}` without quoting.
         parts.push(format!("using: {}", v));
     }
     if let Some(ref cookies) = u.cookies
@@ -455,7 +468,8 @@ pub(super) fn render_additional_url_params(
 ///   `.rb` file named after the alt entry (e.g. `myapp@1.2.3.rb`) so
 ///   users can `brew install myapp@1.2.3` for a downgrade path.
 ///
-/// The split follows `alternative_names:` semantics: the example
+/// The split mirrors GR Pro's `alternative_names:` semantics
+/// (`publish/homebrew_casks.md:28-35`): the example
 /// `myproject@{{ .Version }}` only makes sense as a separate file, since
 /// using it as an alias would mean every release overwrites the previous
 /// version's record.
@@ -586,9 +600,10 @@ pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
         params.uninstall_postflight.unwrap_or(""),
     );
 
-    // generate_completions_from_executable (rendered after postflight:
-    // postflight may strip the macOS quarantine attribute, which must run
-    // before Homebrew executes the binary to generate completions).
+    // generate_completions_from_executable (rendered after postflight; see
+    // upstream commit bb9062f / GR issue #5958 — postflight may strip the
+    // macOS quarantine attribute, which must run before Homebrew executes
+    // the binary to generate completions).
     let has_generate_completions = params.generate_completions.is_some();
     ctx.insert("has_generate_completions", &has_generate_completions);
     ctx.insert(
@@ -901,10 +916,11 @@ pub(super) fn generate_cask_from_context(
     let uninstall_block = render_uninstall_block(cask_cfg.uninstall.as_ref());
     let zap_block = render_zap_block(cask_cfg.zap.as_ref());
 
-    // Pre-rendered Ruby kwargs continuation for the `url` line. When the
-    // cask config does not set `url:` (a `url_template` was used instead),
-    // there are no kwargs to splice — empty string emits `url "..."` with
-    // no trailing kwargs, which is valid Cask DSL.
+    // Pre-rendered Ruby kwargs continuation for the `url` line —
+    // mirrors GR `internal/pipe/cask/templates/additional_url_params.rb`.
+    // When the cask config does not set `url:` (a `url_template` was used
+    // upstream instead), there are no kwargs to splice — empty string emits
+    // `url "..."` with no trailing kwargs, which is valid Cask DSL.
     let url_extras_top = cask_cfg
         .url
         .as_ref()
@@ -917,10 +933,10 @@ pub(super) fn generate_cask_from_context(
         .unwrap_or_default();
 
     // Pre-render every `alternative_names` entry through the user's
-    // template engine. Entries like `myproject@{{ .Version }}` are
-    // templated, not literal. Without this pass the rendered Ruby would
-    // carry the unresolved `{{ .Version }}` substring and `brew style`
-    // would reject it.
+    // template engine. GR Pro docs (`homebrew_casks.md:28-35`) show
+    // `myproject@{{ .Version }}` which is templated, not literal. Without
+    // this pass the rendered Ruby would carry the unresolved `{{ .Version }}`
+    // substring and `brew style` would reject it.
     let rendered_alts = render_alternative_names(
         ctx,
         cask_cfg.alternative_names.as_deref().unwrap_or(&empty_vec),

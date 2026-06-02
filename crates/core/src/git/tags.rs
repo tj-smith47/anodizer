@@ -852,7 +852,7 @@ pub fn delete_remote_tag_in(cwd: &Path, tag: &str) -> Result<()> {
         // `"unable to delete '<refspec>': remote ref does not exist"`
         // wording — substring match catches both.
         if stderr.contains("remote ref does not exist") {
-            tracing::warn!(
+            eprintln!(
                 "remote tag {tag} already absent on origin — treating as deleted (idempotent)"
             );
             return Ok(());

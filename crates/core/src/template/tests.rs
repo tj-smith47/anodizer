@@ -145,7 +145,7 @@ fn test_toupper_alias() {
 
 #[test]
 fn test_english_join_pipe_form_on_structured_var() {
-    // Regression guard: the changelog renderer publishes per-entry
+    // Regression guard for B15: the changelog renderer publishes per-entry
     // `LoginsList` / `AuthorsList` via `set_structured`, then user format
     // templates pipe through `englishJoin`. Existing englishJoin tests
     // only exercised inline-literal arrays — pin the

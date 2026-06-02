@@ -13,9 +13,8 @@
 //! [`check`] runs at the point in the pipeline where the binary artifact
 //! set for each in-scope crate is known, and errors when a crate declares
 //! a binary-requiring surface but no compiled-binary artifact
-//! ([`ArtifactKind::Binary`] / [`ArtifactKind::UploadableBinary`] /
-//! [`ArtifactKind::UniversalBinary`], or the per-target
-//! [`ArtifactKind::Archive`] that wraps one) exists for it.
+//! ([`ArtifactKind::Binary`] / [`ArtifactKind::UniversalBinary`], or the
+//! per-target [`ArtifactKind::Archive`] that wraps one) exists for it.
 
 use crate::artifact::{ArtifactKind, ArtifactRegistry};
 use crate::config::{Config, CrateConfig, PublishConfig};

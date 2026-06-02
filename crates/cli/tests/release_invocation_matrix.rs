@@ -168,7 +168,8 @@ fn assert_skip_matrix(stderr: &str, must_skip: &[&str], must_not_skip: &[&str], 
 // ---------------------------------------------------------------------------
 
 /// Row: `anodizer release --snapshot` runs local stages, skips
-/// publish/snapcraft-publish/blob/announce.
+/// publish/snapcraft-publish/blob/announce. The skip injection lives in
+/// `compute_skip_stages`.
 #[test]
 fn release_snapshot_skips_publish_chain() {
     let tmp = TempDir::new().unwrap();

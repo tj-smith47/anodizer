@@ -159,8 +159,8 @@ pub(crate) fn run_github_backend(
         check_github_rate_limit_with_env(&rate_limit_client, &token_str, 10, env_source).await;
 
         // Cleanup is unconditional on the NEW release's draft flag: a leftover
-        // draft is stale state to remove whether the upcoming release publishes
-        // or re-drafts. `find_draft_by_name` only ever matches `r.draft` releases,
+        // draft is stale state to remove whether we are about to publish or
+        // re-draft. `find_draft_by_name` only ever matches `r.draft` releases,
         // so deleting what it returns can never touch a published/live
         // release — gating on `draft` would only leave the stale draft in
         // place when publishing (`draft: false`), and that draft's id later
@@ -225,10 +225,10 @@ pub(crate) fn run_github_backend(
         // arithmetic ([`nightly_releases_to_prune`]) — no parallel path.
         //
         // Skipped when an existing-draft reuse is in play (the draft IS the
-        // release that gets PATCHed).
+        // release we'll PATCH).
         //
         // Tag handling: each pruned release's git ref is deleted too, EXCEPT
-        // the tag about to be (re)created — leaving that ref intact lets the
+        // the tag we are about to (re)create — leaving that ref intact lets the
         // create POST below reuse it instead of dangling. For distinct-tag
         // schemes (nushell `…-nightly.<build>+<sha>`) every pruned tag differs
         // from the current one, so all stale refs are cleaned up.
@@ -280,7 +280,7 @@ pub(crate) fn run_github_backend(
                     }
                 }
                 // Delete the pruned release's git tag too, unless it is the tag
-                // about to be (re)created (which the create POST reuses).
+                // we're about to (re)create (which the create POST reuses).
                 if rel_tag != tag && !rel_tag.is_empty() {
                     let tag_route = format!(
                         "/repos/{}/{}/git/refs/tags/{}",
@@ -314,7 +314,7 @@ pub(crate) fn run_github_backend(
         }
 
         // When updating an existing release, apply mode-based body composition.
-        // Also track any existing release found by tag so it can be PATCHed
+        // Also track any existing release found by tag so we can PATCH it
         // instead of POSTing a new one (which would 422 on duplicate tags).
         let (final_body, existing_by_tag) = if let Some(ref existing) = existing_draft {
             let existing_body = existing.body.as_deref();
@@ -397,13 +397,13 @@ pub(crate) fn run_github_backend(
             }
         }
 
-        // Create or update the release. Raw API calls are used for all paths
+        // Create or update the release. We use raw API calls for all paths
         // to support target_commitish and discussion_category_name, which
         // are not fully exposed by octocrab's builder API.
         //
         // Draft-then-publish: always create as draft first so users never
         // see a release with missing artifacts. After all uploads succeed,
-        // a PATCH sets draft=false when the user wanted a non-draft release.
+        // we PATCH draft=false if the user wanted a non-draft release.
         let user_wants_draft = draft;
         // GitHub ignores discussion_category_name on draft releases and
         // make_latest is meaningless until publish. Send them only in the
@@ -479,9 +479,9 @@ pub(crate) fn run_github_backend(
                 github.owner, github.name, existing.id
             );
             // preserve the existing
-            // release's draft state on PATCH. The default json_body is
+            // release's draft state on PATCH. Our default json_body is
             // built with `draft=true` for the create path; when updating
-            // an existing release it must not flip back to draft.
+            // an existing release we must not flip it back to draft.
             let mut patch_body = json_body.clone();
             if let Some(obj) = patch_body.as_object_mut() {
                 obj.insert(
@@ -667,10 +667,10 @@ pub(crate) fn run_github_backend(
                         std::cmp::max(configured_attempts, MIN_UPLOAD_TRANSIENT_ATTEMPTS);
 
                     let mut last_err: Option<anyhow::Error> = None;
-                    // One-shot overwrite guard: once a stale asset has been
-                    // successfully deleted and the upload *still* hits `already_exists`, give
+                    // One-shot overwrite guard: once we've successfully deleted a
+                    // stale asset and the upload *still* hits `already_exists`, give
                     // up gracefully instead of looping. This happens when GitHub's
-                    // release-asset delete is eventually consistent: the delete
+                    // release-asset delete is eventually consistent: our delete
                     // returns Ok immediately but the subsequent upload still sees
                     // the stale asset for a short window. Rather than burn 10
                     // retries (and ultimately fail the whole release), accept the
@@ -1651,8 +1651,8 @@ mod orchestrator_tests {
 
         // Two existing nightly releases sharing the name "demo-nightly" but
         // with distinct tags (newest-first, as GitHub lists them). The new
-        // release (tag v1.2.3) will become the newest, so with keep_last=2
-        // id=11 is kept and id=10 + its tag "nightly.0" is pruned.
+        // release (tag v1.2.3) will become the newest, so with keep_last=2 we
+        // keep id=11 and prune id=10 + its tag "nightly.0".
         let list_body = format!(
             "[{},{}]",
             release_json_named(addr, 11, "demo-nightly", "nightly.1"),
