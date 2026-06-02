@@ -82,7 +82,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     if ctx.skip_in_snapshot(&log, "announce") {
         return Ok(());
     }
-    // GoReleaser `customization/publish/nightlies.md`: every announcer is
+    // Every announcer is
     // skipped on nightly runs (a nightly is not a "release the world
     // should hear about"). Stage-level skip — bypasses the per-provider
     // dispatch entirely so a misconfigured webhook can't bypass the gate.
@@ -113,7 +113,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
         }
     }
 
-    // GoReleaser Pro `announce.if:` parity.
+    // `announce.if:` conditional gate.
     let proceed = anodizer_core::config::evaluate_if_condition(
         announce.if_condition.as_deref(),
         "announce",

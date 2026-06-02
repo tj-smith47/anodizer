@@ -305,7 +305,7 @@ fn archive_one_config(
 ) -> Result<()> {
     for archive_cfg in archive_cfgs {
         let archive_id_log = archive_cfg.id.as_deref().unwrap_or("default");
-        // GoReleaser Pro `archives[].if:` parity. Skip the entire archive
+        // `archives[].if:` conditional gate. Skip the entire archive
         // config (no archives produced for this id) when the rendered
         // condition is falsy.
         let proceed = anodizer_core::config::evaluate_if_condition(
@@ -377,8 +377,8 @@ fn archive_one_config(
 
         // allow_different_binary_count check: when false (default),
         // error if different targets have different binary counts
-        // (matches GoReleaser behavior which errors, not warns).
-        // GoReleaser archive/archive.go:129 exempts the "binary"
+        // (errors, not warns).
+        // The "binary" format is exempted
         // format from this check via `slices.Contains(archive.Formats,
         // "binary")`.
         let is_binary_format = archive_cfg
@@ -454,10 +454,10 @@ fn archive_one_config(
         // (target, format) pair gets its own before/after pair with
         // `.Format` / `.Os` / `.Arch` / `.Target` / `.ArtifactPath` /
         // `.ArtifactName` / `.ArtifactExt` / `.ArtifactID` set on the
-        // live template-var scope. Mirrors GR Pro's contract: "If
+        // live template-var scope. Contract: "If
         // multiple formats are set, hooks will be executed for each
-        // format" (`archives.md:183`) and "Extra template fields
-        // available: `.Format`" (`archives.md:184`).
+        // format" and "Extra template fields
+        // available: `.Format`".
         let archive_id = archive_cfg.id.as_deref().unwrap_or("default");
         let pre_label = format!("pre-archive[{archive_id}]");
         let post_label = format!("post-archive[{archive_id}]");
@@ -485,8 +485,8 @@ fn archive_one_config(
             // own `formats` list (or the global default).
             let formats_to_produce: Vec<String> = {
                 let (os, _arch) = map_target(target);
-                // GR-aligned (archive.go:349 `strings.HasPrefix(platform,
-                // override.Goos)`): a FormatOverride.os matches when the
+                // Format-override OS match via prefix: a FormatOverride.os
+                // matches when the
                 // resolved target's os field starts with the configured
                 // value. Behavior matches `==` for canonical OS names
                 // ("linux", "darwin", "windows"); the prefix relaxation
@@ -523,7 +523,7 @@ fn archive_one_config(
             // `{{ .CrateName }}`) can produce distinct archive stems.
             tvars.set("CrateName", crate_name);
 
-            // Set Binary to the first selected binary's name (matches GoReleaser behavior)
+            // Set Binary to the first selected binary's name
             if let Some(bin_name) = selected_bins.first().and_then(|b| b.metadata.get("binary")) {
                 tvars.set("Binary", bin_name);
             }
@@ -611,8 +611,8 @@ fn archive_one_config(
 
             // Extra files (LICENSE, README, etc.) — with ArchiveFileSpec support.
             // When no files are configured, auto-include common files
-            // (LICENSE*, README*, CHANGELOG*) matching GoReleaser defaults.
-            // GoReleaser renders file spec source patterns through the
+            // (LICENSE*, README*, CHANGELOG*) default set.
+            // File spec source patterns are rendered through the
             // template engine before glob expansion.
             let extra_files: Vec<ResolvedExtraFile> = if let Some(file_specs) = &archive_cfg.files {
                 let rendered_specs: Vec<ArchiveFileSpec> = file_specs
@@ -672,7 +672,7 @@ fn archive_one_config(
             }
 
             // builds_info: permissions applied to binary entries.
-            // GoReleaser archive.go:99 always forces BuildsInfo.Mode = 0o755
+            // The build info mode is always forced to 0o755
             // when unset. Clone user's builds_info (or create default) and
             // ensure mode defaults to "0755" when None, preserving other
             // user-supplied fields (owner, group, mtime, etc).
@@ -753,7 +753,7 @@ fn archive_one_config(
                 .collect::<Result<Vec<_>>>()?;
 
             // Combine binary + extra entries and deduplicate by archive_name.
-            // Matches GoReleaser's unique() — first occurrence wins,
+            // Deduplicate — first occurrence wins,
             // duplicates are warned and skipped.
             //
             // Per-archive `templated_files:` are appended INSIDE the
@@ -774,11 +774,10 @@ fn archive_one_config(
                 }
 
                 // For binary format, no extension by default; on Windows
-                // targets append `.exe` to match upstream GoReleaser
-                // (archive.go:298-302 — Windows binaries keep their
+                // targets append `.exe` (Windows binaries keep their
                 // executable suffix even in binary-format archives).
                 // For non-binary formats, append the format as the extension.
-                // GoReleaser uses {{ .Binary }} prefix (not {{ .ProjectName }})
+                // The default uses the {{ Binary }} prefix (not {{ ProjectName }})
                 // for binary format when no custom name_template is set.
                 let archive_filename = if format == "binary" {
                     let stem = if has_custom_name_tmpl {
@@ -810,7 +809,7 @@ fn archive_one_config(
                 // Fire the `before:` hook here — after `.Format` / `.Os`
                 // / `.Arch` / `.Target` are wired but before the archive
                 // is written. Skipped when format is `binary` to match
-                // GR Pro (`archives.md:182`: "Skipped if archive format
+                // ("Skipped if archive format
                 // is binary"); the user's hook expects an archive to
                 // create or post-process, and the `binary` branch
                 // creates none.
@@ -902,7 +901,7 @@ fn archive_one_config(
                     "ArtifactExt",
                     anodizer_core::template::extract_artifact_ext(&archive_filename),
                 );
-                // GoReleaser archive Default() sets ID="default" when empty.
+                // The archive ID defaults to "default" when empty.
                 // Downstream `ids:` filters rely on this to match unlabeled archives.
                 let archive_id = archive_cfg.id.as_deref().unwrap_or("default");
                 tvars.set("ArtifactID", archive_id);
@@ -948,11 +947,11 @@ fn archive_one_config(
                 // winget, scoop, krew) can consume them.
                 //   - Replaces: first non-empty value wins.
                 //   - DynamicallyLinked (ndynlink): true if ANY source
-                //     binary was dynamically linked. Mirrors GR
-                //     archive.go:266-270 where `art.Extra[ExtranDynLink]`
+                //     binary was dynamically linked, via the
+                //     `DynamicallyLinked` extra
                 //     is set when any source binary carries it.
                 //   - amd64_variant: copied from the first source
-                //     binary (mirrors GR archive.go:255
+                //     binary (the
                 //     `art.Goamd64 = binaries[0].Goamd64`). Without
                 //     this, publisher filters keyed on
                 //     `metadata.get("amd64_variant")` fall back to the
@@ -967,7 +966,7 @@ fn archive_one_config(
                     {
                         replaces_val = Some(r.clone());
                     }
-                    // Match the canonical GoReleaser key (`ExtranDynLink
+                    // Match the canonical key (`DynamicallyLinked
                     // = "DynamicallyLinked"`) that the build stage
                     // writes via `is_dynamically_linked` detection.
                     if let Some(d) = b.metadata.get("DynamicallyLinked")
@@ -990,7 +989,7 @@ fn archive_one_config(
                 }
 
                 if format == "binary" {
-                    // GoReleaser archive.go:143-145,296-336: `format=binary`
+                    // `format=binary`
                     // emits one UploadableBinary artifact per source
                     // binary, not a single Archive. Registering an Archive
                     // with the "parent" archive_path would point downstream
@@ -1039,7 +1038,7 @@ fn archive_one_config(
                 // `.ArtifactExt` / `.ArtifactID` vars are wired so the
                 // hook can reference the freshly-built archive (e.g.,
                 // `cosign sign-blob {{ ArtifactPath }}`). Skipped for
-                // `binary` to match GR Pro (`archives.md:182`).
+                // `binary`.
                 if format != "binary"
                     && let Some(post) = archive_cfg.hooks.as_ref().and_then(|h| h.after.as_ref())
                 {

@@ -2,9 +2,9 @@
 //!
 //! Supports two modes:
 //! 1. **Built-in**: Parses `Cargo.lock` to generate CycloneDX 1.5 or SPDX 2.3 JSON.
-//!    This is a Rust-specific value-add not present in GoReleaser.
+//!    This is a Rust-specific value-add.
 //! 2. **External command**: Runs an external tool (default: `syft`) to catalog artifacts.
-//!    Matches GoReleaser's SBOM pipe behavior exactly.
+//!    Standard SBOM-generation behavior.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -372,8 +372,8 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     // Filter artifacts from the registry based on artifacts type.
     //
     // For `artifacts: binary` we match Binary + UploadableBinary + UniversalBinary
-    // and dedup by path, preferring UploadableBinary (this mirrors GoReleaser's
-    // `artifact.ByBinaryLikeArtifacts`: `internal/artifact/artifact.go:733-761`).
+    // and dedup by path, preferring UploadableBinary (binary-like
+    // artifact selection).
     // Without this, each per-arch Binary *plus* its UploadableBinary registration
     // would produce its own SBOM at the same path, causing file collisions.
     let matching_artifacts: Vec<(PathBuf, HashMap<String, String>, Option<String>)> =
@@ -504,7 +504,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
             // artifact registration. An absolute path would silently bypass
             // dist (Path::join discards the base when joined with absolute)
             // and produce an artifact registered at a nonexistent
-            // dist/$rendered location. GoReleaser refuses absolute paths
+            // dist/$rendered location. Absolute paths are refused
             // here for the same reason — keep SBOMs inside dist or the
             // checksum/release stages can't find them.
             if Path::new(&rendered).is_absolute() {
@@ -571,11 +571,11 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         let mut any_doc_found = false;
         for doc_path in &rendered_docs {
             // Each rendered document path is glob-expanded against `dist`,
-            // matching GoReleaser's `internal/pipe/sbom/sbom.go`. This lets a
+            // for the SBOM document path. This lets a
             // user write `documents: ["*.spdx.json"]` and get a separate
             // registered artifact per matched file (e.g.
             // `myproj-1.0.spdx.json`), rather than one artifact whose name
-            // is the literal glob pattern. Mirrors GR commit 292203e:
+            // is the literal glob pattern:
             // `Name: filepath.Base(match)` (NOT `filepath.Base(path)`).
             let full_pattern = dist.join(doc_path);
             let pattern_str = full_pattern.to_string_lossy().into_owned();
@@ -951,7 +951,7 @@ mod tests {
     #[cfg(unix)]
     use anodizer_core::test_helpers::TestContextBuilder;
 
-    /// Regression for GoReleaser parity P8.1 (commit 292203e):
+    /// Regression:
     /// when `documents:` contains a glob pattern that matches multiple
     /// files, each match must be registered as its own SBOM artifact
     /// using the matched filename — NOT the unexpanded glob pattern.

@@ -1,8 +1,8 @@
 //! Proactive GitHub API rate-limit checking.
 //!
 //! Before every PATCH/POST/PUT we hit `/rate_limit`; if the remaining quota
-//! sits at or below `threshold` we sleep until reset. Mirrors GoReleaser's
-//! `internal/client/github.go::checkRateLimit` (PR #6540, commit
+//! sits at or below `threshold` the loop sleeps until reset. Uses the
+//! the secondary-rate-limit reset header (commit
 //! `60028b19eb6845164ed7bac541032efe1b07fe14`, which made the wait
 //! iterative + ctx-cancellable). The Go version uses `time.After(sleep)`
 //! inside `select { case <-ctx.Done() ... }`; the Rust analog races the
@@ -167,7 +167,7 @@ pub(crate) async fn check_github_rate_limit_with_sleep<E: EnvSource + ?Sized>(
 
     let duration = Duration::from_secs(sleep_secs);
 
-    // Mirrors GoReleaser PR #6540 (commit
+    // Reads the secondary-rate-limit reset header (commit
     // `60028b19eb6845164ed7bac541032efe1b07fe14`) — use a single `select`-
     // based wait so a cancellation signal aborts the sleep instead of
     // stalling the whole release for up to an hour. Race the timer against
@@ -553,7 +553,7 @@ mod compute_tests {
     }
 
     /// Future reset returns `(reset - now) + 1` — the +1 buffer
-    /// matches GoReleaser's behaviour so a release doesn't retry at
+    /// so a release doesn't retry at
     /// the exact reset instant and race the upstream window flip.
     #[test]
     fn compute_returns_future_reset_diff_plus_one_when_reset_in_future() {

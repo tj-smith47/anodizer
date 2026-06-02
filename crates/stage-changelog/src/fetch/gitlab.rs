@@ -37,7 +37,7 @@ pub(crate) fn fetch_gitlab_commits(
         .api
         .unwrap_or_else(|| "https://gitlab.com/api/v4".to_string());
     let api = api_url.trim_end_matches('/');
-    // Match GoReleaser's `checkUseJobToken`: only send JOB-TOKEN when
+    // Only send JOB-TOKEN when
     // CI_JOB_TOKEN is set, the flag is on, and the provided token equals
     // CI_JOB_TOKEN. Otherwise fall back to PRIVATE-TOKEN.
     let use_job_token = {

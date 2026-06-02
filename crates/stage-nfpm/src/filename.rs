@@ -1,5 +1,5 @@
-//! Per-packager `ConventionalFileName` implementations, ported from
-//! upstream nfpm v2.44.0.
+//! Per-packager `ConventionalFileName` implementations, matching
+//! nfpm v2.44.0 output.
 //!
 //! Before this module, the `ConventionalFileName` template variable was
 //! hand-rolled as `{name}_{version}_{os}_{arch}{ext}` — wrong for every
@@ -10,18 +10,15 @@
 //! (expects `{name}-{version}-{pkgrel}-{arch}.pkg.tar.zst`), ipk
 //! (same shape as deb but with ipk-specific arch translation).
 //!
-//! The code here mirrors the upstream Go implementations:
+//! The conventional file-name shape per format:
 //!
-//! - deb: `ConventionalFileName` in `/tmp/nfpm/deb/deb.go` (see
-//!   <https://github.com/goreleaser/nfpm/blob/v2.44.0/deb/deb.go>).
-//! - rpm: `ConventionalFileName` + `formatVersion` + `setDefaults` in
-//!   `/tmp/nfpm/rpm/rpm.go`.
-//! - apk: `ConventionalFileName` + `pkgver` in `/tmp/nfpm/apk/apk.go`.
-//! - archlinux: `ConventionalFileName` + `validPkgName` in
-//!   `/tmp/nfpm/arch/arch.go`.
-//! - ipk: `ConventionalFileName` in `/tmp/nfpm/ipk/ipk.go`.
+//! - deb: `{name}_{version}_{arch}.deb`
+//! - rpm: `{name}-{version}-{release}.{arch}.rpm`
+//! - apk: `{name}_{pkgver}_{arch}.apk`
+//! - archlinux: `{name}-{version}-{pkgrel}-{arch}.pkg.tar.zst`
+//! - ipk: deb-shaped, with ipk-specific arch translation.
 //!
-//! Arch translation tables match upstream byte-for-byte.
+//! Arch translation tables match nfpm output byte-for-byte.
 
 use anodizer_core::config::NfpmConfig;
 
@@ -88,7 +85,7 @@ pub fn conventional_filename(format: &str, info: &FileNameInfo<'_>) -> Option<St
 // ---------------------------------------------------------------------------
 
 /// Debian arch translation. Keyed on Go-style arch.
-/// Source: `archToDebian` in nfpm v2.44.0 `deb/deb.go`.
+/// Debian arch translation (matching nfpm v2.44.0).
 fn debian_arch(arch: &str) -> &str {
     match arch {
         "386" => "i386",
@@ -107,7 +104,7 @@ fn debian_arch(arch: &str) -> &str {
 }
 
 fn deb_filename(info: &FileNameInfo<'_>) -> String {
-    // deb version composition (from nfpm deb.go::ConventionalFileName):
+    // deb version composition:
     //   {version}[~prerelease][+metadata][-release]
     let mut version = info.version.to_string();
     if !info.prerelease.is_empty() {
@@ -130,7 +127,7 @@ fn deb_filename(info: &FileNameInfo<'_>) -> String {
 // rpm
 // ---------------------------------------------------------------------------
 
-/// RPM arch translation. Source: `archToRPM` in nfpm v2.44.0 `rpm/rpm.go`.
+/// RPM arch translation (matching nfpm v2.44.0).
 fn rpm_arch(arch: &str) -> &str {
     match arch {
         "all" => "noarch",
@@ -148,7 +145,7 @@ fn rpm_arch(arch: &str) -> &str {
 }
 
 fn rpm_filename(info: &FileNameInfo<'_>) -> String {
-    // rpm version composition (from nfpm rpm.go::formatVersion):
+    // rpm version composition:
     //   {version}[~sanitized_prerelease][+metadata]
     // Prerelease dashes are replaced with underscores to stay within the
     // RPM version grammar.
@@ -161,7 +158,7 @@ fn rpm_filename(info: &FileNameInfo<'_>) -> String {
         version.push('+');
         version.push_str(info.version_metadata);
     }
-    // Release defaults to "1" when empty (nfpm rpm.go::setDefaults).
+    // Release defaults to "1" when empty.
     let release = if info.release.is_empty() {
         "1"
     } else {
@@ -175,7 +172,7 @@ fn rpm_filename(info: &FileNameInfo<'_>) -> String {
 // apk
 // ---------------------------------------------------------------------------
 
-/// Alpine arch translation. Source: `archToAlpine` in nfpm v2.44.0 `apk/apk.go`.
+/// Alpine arch translation (matching nfpm v2.44.0).
 fn apk_arch(arch: &str) -> &str {
     match arch {
         "386" => "x86",
@@ -195,7 +192,7 @@ fn apk_filename(info: &FileNameInfo<'_>) -> String {
     format!("{}_{}_{}.apk", info.name, version, arch)
 }
 
-/// apk version composition (from nfpm apk.go::pkgver):
+/// apk version composition:
 ///   {version}[_prerelease]["-r"+release][-{p,cvs,svn,git,hg}prefix+metadata]
 /// Release always gets an `r` prefix if the user omitted it; metadata
 /// gets a `p` prefix unless it already starts with a known VCS tag.
@@ -236,7 +233,7 @@ fn apk_pkgver(info: &FileNameInfo<'_>) -> String {
 // archlinux
 // ---------------------------------------------------------------------------
 
-/// Arch Linux arch translation. Source: `archToArchLinux` in nfpm v2.44.0 `arch/arch.go`.
+/// Arch Linux arch translation (matching nfpm v2.44.0).
 fn archlinux_arch(arch: &str) -> &str {
     match arch {
         "all" => "any",
@@ -253,7 +250,7 @@ fn archlinux_arch(arch: &str) -> &str {
 fn archlinux_filename(info: &FileNameInfo<'_>) -> String {
     // Archlinux: {name}-{version}{_sanitized_prerelease}-{pkgrel}-{arch}.pkg.tar.zst
     // pkgrel is parsed as int, defaults to 1 on parse failure (matches
-    // nfpm arch.go where strconv.Atoi errors fall back to 1).
+    // an unparseable pkgrel falls back to 1).
     let pkgrel: i64 = info.release.parse().unwrap_or(1);
     let prerelease_sanitized = info.prerelease.replace('-', "_");
     let arch = info
@@ -266,7 +263,7 @@ fn archlinux_filename(info: &FileNameInfo<'_>) -> String {
     valid_pkg_name(&raw)
 }
 
-/// Mirror of `validPkgName` + `mapValidChar` in nfpm arch.go: keep only
+/// Arch-Linux package-name sanitisation: keep only
 /// `[A-Za-z0-9]`, `.`, `_`, `+`, `-`; then strip leading `-` / `.`.
 fn valid_pkg_name(s: &str) -> String {
     let filtered: String = s
@@ -280,7 +277,7 @@ fn valid_pkg_name(s: &str) -> String {
 // ipk
 // ---------------------------------------------------------------------------
 
-/// IPK arch translation. Source: `archToIPK` in nfpm v2.44.0 `ipk/ipk.go`.
+/// IPK arch translation (matching nfpm v2.44.0).
 fn ipk_arch(arch: &str) -> &str {
     match arch {
         "386" => "i386",
@@ -299,7 +296,7 @@ fn ipk_arch(arch: &str) -> &str {
 
 fn ipk_filename(info: &FileNameInfo<'_>) -> String {
     // ipk version composition matches deb exactly — upstream shares the
-    // same format in `ipk/ipk.go::ConventionalFileName`.
+    // same format as the ipk conventional file name.
     let mut version = info.version.to_string();
     if !info.prerelease.is_empty() {
         version.push('~');
@@ -342,7 +339,7 @@ mod tests {
     #[test]
     fn deb_amd64_basic() {
         // amd64 passes through unmapped under archToDebian — upstream does
-        // the same. See nfpm v2.44 deb/deb.go archToDebian.
+        // the same.
         assert_eq!(deb_filename(&base("amd64")), "myapp_1.2.3_amd64.deb");
     }
 
@@ -370,7 +367,7 @@ mod tests {
 
     #[test]
     fn deb_with_release_prerelease_metadata() {
-        // Matches deb.go ordering: ~prerelease, +metadata, -release.
+        // deb ordering: ~prerelease, +metadata, -release.
         let info = FileNameInfo {
             name: "myapp",
             version: "1.2.3",
@@ -409,13 +406,13 @@ mod tests {
 
     #[test]
     fn rpm_default_release_is_1() {
-        // Matches nfpm rpm.go::setDefaults: empty release → "1".
+        // empty release → "1".
         assert_eq!(rpm_filename(&base("amd64")), "myapp-1.2.3-1.x86_64.rpm");
     }
 
     #[test]
     fn rpm_prerelease_dash_becomes_underscore() {
-        // rpm.go::formatVersion replaces `-` with `_` in prerelease strings
+        // rpm version formatting replaces `-` with `_` in prerelease strings
         // so the version stays within the RPM version grammar.
         let info = FileNameInfo {
             name: "myapp",
@@ -453,7 +450,7 @@ mod tests {
 
     #[test]
     fn apk_release_prefixed_r_once() {
-        // Matches apk.go::pkgver: if release already starts with "r",
+        // apk pkgver: if release already starts with "r",
         // don't double-prefix.
         let info = FileNameInfo {
             release: "r5",
@@ -469,7 +466,7 @@ mod tests {
 
     #[test]
     fn apk_metadata_p_prefix_unless_vcs() {
-        // apk.go::pkgver prefixes metadata with "p" UNLESS it already
+        // apk pkgver prefixes metadata with "p" UNLESS it already
         // starts with one of p/cvs/svn/git/hg.
         let a = FileNameInfo {
             version_metadata: "abc123",
@@ -527,7 +524,7 @@ mod tests {
 
     #[test]
     fn archlinux_release_non_numeric_defaults_to_1() {
-        // arch.go parses pkgrel via strconv.Atoi; on error falls back to 1.
+        // pkgrel is parsed as an integer; on error falls back to 1.
         let info = FileNameInfo {
             release: "not-a-number",
             ..base("amd64")

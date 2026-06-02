@@ -66,7 +66,7 @@ static SHA256_HEX_RE: LazyLock<Regex> =
 /// is returned verbatim — callers must short-circuit it before any
 /// digest-resolution call.
 ///
-/// Behaviour mirrors GoReleaser's `internal/pipe/docker/v2/baseimage.go`
+/// Base-image reference parsing.
 /// `parseBaseImage`:
 ///
 /// - Line-continuation (`\\` + newline) joins physical lines back into a
@@ -85,8 +85,7 @@ static SHA256_HEX_RE: LazyLock<Regex> =
 /// - `${NAME}`, `${NAME:-default}` and `$NAME` ARG references inside the
 ///   image string are substituted with the ARG table (defaulting to the
 ///   inline `:-default`, then to empty). The bare-dash `${NAME-default}`
-///   form is NOT supported, matching GR's `strings.Cut(name, ":-")`
-///   semantic.
+///   form is NOT supported (the `:-` separator is matched literally).
 /// - Alias chains (`FROM a AS b` followed by `FROM b`) walk to the root;
 ///   cyclic aliases (`a→b, b→a`) terminate on revisit via a visited set.
 pub fn parse_base_image(content: &str) -> String {
@@ -269,17 +268,17 @@ fn split_at_directive_boundary(line: &str) -> Vec<String> {
 }
 
 /// Strip any leading / trailing `"` or `'` characters from `s` until
-/// neither remains on either end. Mirrors GR's
+/// neither remains on either end.
 /// `strings.Trim(m[2], "\"'")` semantic.
 fn trim_quotes(s: &str) -> &str {
     s.trim_matches(|c: char| c == '"' || c == '\'')
 }
 
 /// Substitute `$NAME` and `${NAME[:-default]}` references in `s` using
-/// the ARG table. Mirrors GoReleaser's `os.Expand` + `strings.Cut(name,
-/// ":-")` — the bare-dash `${NAME-default}` form is intentionally NOT
-/// recognised, because `os.Expand` only sees the `${...}` body and
-/// `strings.Cut` splits on the literal substring `":-"`, not `"-"`.
+/// the ARG table via shell-style `${VAR}` expansion and a `:-` cut on the
+/// name. The bare-dash `${NAME-default}` form is intentionally NOT
+/// recognised: expansion only sees the `${...}` body, and the cut splits
+/// on the literal substring `":-"`, not `"-"`.
 fn substitute_args(s: &str, args: &HashMap<String, String>) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.char_indices().peekable();
@@ -469,11 +468,11 @@ mod tests {
         StageLogger::new("baseimage-test", Verbosity::from_flags(true, false, false))
     }
 
-    // Fixtures ported verbatim from GoReleaser
+    // Base-image parse fixtures.
     // `internal/pipe/docker/v2/testdata/dockerfiles/`. Each pair (name,
     // content) is asserted against the expected `parseBaseImage` output
     // in `expected_for_fixture` below — the same assertion table used by
-    // GR's `TestParseBaseImage`.
+    // Base-image parse cases.
     const FIXTURES: &[(&str, &str)] = &[
         ("empty", ""),
         ("comment", "# FROM alpine\n"),
@@ -567,8 +566,8 @@ mod tests {
             "alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1";
         std::fs::write(&dockerfile, format!("FROM {pinned}\n")).unwrap();
         // `dry_run=false` here is safe because the pinned-digest branch
-        // returns before any subprocess spawn — same contract as GR's
-        // baseimage_test.go::"digest pinned in FROM".
+        // returns before any subprocess spawn — same contract as the
+        // case: digest pinned in FROM.
         let got = get_base_image(&dockerfile, false, &test_logger())
             .unwrap()
             .unwrap();
@@ -591,7 +590,7 @@ mod tests {
         assert_eq!(got.digest, "");
     }
 
-    // B2 regression test: GR's `strings.Cut(name, ":-")` only matches
+    // Regression test: the `:-` separator only matches
     // the `:-` form. The bare-dash `${VER-3.20}` form must resolve to
     // empty when `VER` is unset, matching `os.Expand` semantics.
     #[test]
@@ -651,7 +650,7 @@ mod tests {
     }
 
     // B6 regression test: mixed/multiple outer quotes are stripped to
-    // bare value, matching GR's `strings.Trim(m[2], "\"'")`.
+    // bare value, trimming surrounding quotes.
     #[test]
     fn trim_quotes_strips_mixed_layers() {
         assert_eq!(trim_quotes("\"'alpine:3.20'\""), "alpine:3.20");

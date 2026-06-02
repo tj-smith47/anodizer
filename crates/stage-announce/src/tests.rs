@@ -1180,7 +1180,7 @@ fn test_skips_disabled_mastodon() {
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
-/// Q-mast1: GoReleaser marks `MASTODON_CLIENT_ID` and
+/// `MASTODON_CLIENT_ID` and
 /// `MASTODON_CLIENT_SECRET` as `notEmpty` alongside `MASTODON_ACCESS_TOKEN`.
 /// Tests that just need a happy-path Mastodon dry-run inject all three
 /// creds via the [`Context`]'s env source.
@@ -1318,7 +1318,7 @@ fn test_mastodon_empty_server_skips() {
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
-/// Q-mast1: GoReleaser marks `MASTODON_CLIENT_ID` as `notEmpty`. Anodizer
+/// `MASTODON_CLIENT_ID` is required. Anodizer
 /// must fail-fast when it is missing instead of silently proceeding with
 /// only the access token.
 #[test]
@@ -1355,7 +1355,7 @@ fn test_mastodon_missing_client_id_returns_error() {
     );
 }
 
-/// Q-mast1 (the second half): `MASTODON_CLIENT_SECRET` is `notEmpty` in GR.
+/// `MASTODON_CLIENT_SECRET` is required.
 #[test]
 fn test_mastodon_missing_client_secret_returns_error() {
     let announce = AnnounceConfig {
@@ -1392,7 +1392,7 @@ fn test_mastodon_missing_client_secret_returns_error() {
 
 /// Q-tg1: the Telegram default template MUST NOT use Tera's `~` concatenation
 /// operator. Copy-pasting the default into a custom user template tends to
-/// mix it with GR-style `print` blocks (Tera then refuses to parse `print`)
+/// mix it with `print` blocks (Tera then refuses to parse `print`)
 /// or rewrite the `~` and break the filter pipeline. Drives a dry-run end
 /// to end with `message_template: None` so the default path actually fires.
 #[test]
@@ -1426,7 +1426,7 @@ fn test_telegram_default_template_renders_without_tilde() {
 }
 
 /// Q-disc1: Discord webhook URL must percent-encode the env-derived
-/// id+token segments. GoReleaser uses `url.URL.JoinPath`, which escapes path
+/// id+token segments. The URL join escapes path
 /// segments; we mirror that via `percent_encode_path_segment`. Unit test of
 /// the helper boundary — `crates/core/src/url.rs` already pins the encoding
 /// table; this verifies the segments we feed it round-trip safely.
@@ -2054,12 +2054,12 @@ fn test_discourse_empty_env_var_errors() {
 }
 
 // ----------------------------------------------------------------
-// Anodize-additive UX divergences from GoReleaser
+// Anodize-additive UX behaviours
 // ----------------------------------------------------------------
 
 /// Pins the webhook User-Agent as `anodizer/<crate-version>` (anodize-
 /// additive UX win documented in lib.rs near the User-Agent header
-/// fallback). GoReleaser sends a static `User-Agent: goreleaser`; the
+/// fallback). A static user-agent is the baseline; the
 /// version-suffixed variant is debuggable on the receiving end without
 /// any wire-shape cost.
 #[test]
@@ -2080,7 +2080,7 @@ fn test_webhook_user_agent_is_anodizer_versioned() {
 /// Pins the SMTP port default at 587 (anodize-additive UX win
 /// documented on `EmailAnnounce::port`). When both the config field
 /// and the SMTP_PORT env var are unset, the announcer defaults to the
-/// IETF submission port instead of GoReleaser's `errNoPort` bail.
+/// IETF submission port instead of bailing on a missing port.
 #[test]
 fn test_email_smtp_port_defaults_to_587() {
     // No config port, no env override → submission port.
@@ -2093,7 +2093,7 @@ fn test_email_smtp_port_defaults_to_587() {
 }
 
 /// Pins Mattermost `channel` as template-rendered (anodize-additive UX
-/// win documented near the mattermost render block). GoReleaser passes
+/// win documented near the mattermost render block). The renderer passes
 /// `channel` raw — no template substitution. Anodize renders it through
 /// the engine, unlocking per-tag channel routing like
 /// `channel: "release-{{ Tag }}"`. We pin this by feeding a malformed

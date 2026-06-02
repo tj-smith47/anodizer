@@ -16,8 +16,8 @@ use anyhow::{Context as _, Result};
 /// Anodizer-local precedence: `release.header` / `release.footer` is the more
 /// specific override and wins; `changelog.header` / `changelog.footer` is the
 /// fallback so a YAML-configured changelog wrapper still reaches the release
-/// body. GoReleaser only has the `release.*` source (loaded via
-/// `loadContent(ReleaseHeader…)` in `internal/pipe/changelog/changelog.go`);
+/// body. The `release.*` source is loaded via
+/// the changelog stage loads the release header;
 /// we extend that to a second source as a Rust-first ergonomic.
 ///
 /// `release_value` is the already-rendered `release.header` / `release.footer`
@@ -189,7 +189,7 @@ pub(crate) fn collect_extra_files(
 /// - `"false"` / `"0"` / `""` → `MakeLatest::False`
 /// - `"auto"` → `MakeLatest::Legacy`
 ///
-/// This matches GoReleaser, which renders `make_latest` through `tmpl.Apply` at
+/// `make_latest` is rendered through the template engine at
 /// publish time.
 pub(crate) fn resolve_make_latest<F>(
     config: &Option<MakeLatestConfig>,
@@ -210,7 +210,7 @@ where
                 "true" | "1" => Some(MakeLatest::True),
                 "false" | "0" | "" => Some(MakeLatest::False),
                 "auto" => Some(MakeLatest::Legacy),
-                _ => Some(MakeLatest::True), // non-empty = truthy, matching GoReleaser
+                _ => Some(MakeLatest::True), // non-empty = truthy
             }
         }
         None => None,
@@ -297,8 +297,7 @@ pub(crate) struct ReleaseJsonSpec<'a> {
 /// payload. The github-native changelog flow calls
 /// `POST /repos/{o}/{r}/releases/generate-notes` upfront (see
 /// `stage-changelog/src/github_native.rs`) and embeds the returned body
-/// in `spec.body`, mirroring GoReleaser
-/// `internal/client/github.go::GenerateReleaseNotes`. The create-release
+/// in `spec.body`. The create-release
 /// `generate_release_notes: true` toggle silently uses GitHub's "most
 /// recent published release" as the previous tag — wrong for monorepos
 /// and tag-prefixed re-releases.
@@ -333,10 +332,10 @@ pub(crate) fn build_release_json(spec: &ReleaseJsonSpec<'_>) -> serde_json::Valu
     // asset list.
     if !body.is_empty() {
         let truncated_body = if body.len() > GITHUB_RELEASE_BODY_MAX_CHARS {
-            // GoReleaser parity: `internal/client/client.go:21` —
+            // Truncation marker —
             //     ellipsis = "..."
             // Anodizer previously appended `"\n\n...(truncated)"` (16 chars);
-            // GR appends a literal three-dot ellipsis. Aligned to GR.
+            // a literal three-dot ellipsis.
             let suffix = "...";
             let max_content = GITHUB_RELEASE_BODY_MAX_CHARS - suffix.len();
             let safe_end = body
@@ -365,8 +364,7 @@ pub(crate) fn build_release_json(spec: &ReleaseJsonSpec<'_>) -> serde_json::Valu
 
 /// Build the JSON body for the un-draft (publish) PATCH on `/repos/{o}/{r}/releases/{id}`.
 ///
-/// Mirrors GoReleaser `internal/client/github.go::PublishRelease` PR
-/// [#6591](https://github.com/goreleaser/goreleaser/pull/6591) (commits
+/// Publish-PATCH body composition (commits
 /// `6ecba31405e8ade89b335bf05e19734d0fd8d2d8` +
 /// `2e17678c4be30b1c53b5931919b57e71532b6d16`):
 ///
@@ -374,14 +372,14 @@ pub(crate) fn build_release_json(spec: &ReleaseJsonSpec<'_>) -> serde_json::Valu
 /// - Re-renders the release `name` (callers pass the already-rendered template
 ///   value) so a stale draft created with an older name template is corrected
 ///   on publish.
-/// - Sends `prerelease = true` when `prerelease` is set; GoReleaser only sends
+/// - Sends `prerelease = true` when `prerelease` is set; only sends
 ///   the field when true (omitted == GitHub default of "preserve").
 /// - Sends `make_latest = "false"` whenever `prerelease` is true, regardless of
 ///   the user's `make_latest` template — a prerelease cannot be the latest.
 ///   When `prerelease` is false, the user's `make_latest` value (if any) is
 ///   sent verbatim.
 /// - Sends `discussion_category_name` only on publish (GitHub ignores it on
-///   draft creation, matching GR behaviour).
+///   draft creation).
 pub(crate) fn build_publish_patch_body(
     release_name: &str,
     prerelease: bool,
@@ -394,20 +392,19 @@ pub(crate) fn build_publish_patch_body(
     }
     if prerelease {
         body["prerelease"] = serde_json::Value::Bool(true);
-        // Force make_latest=false for prereleases. Mirrors GoReleaser PR
+        // Force make_latest=false for prereleases (PR
         // #6591 (commit `6ecba31...` — see PR ref above): a prerelease
         // cannot also be marked "latest", regardless of the user's
         // `make_latest` template.
         body["make_latest"] = serde_json::Value::String("false".to_string());
     } else if let Some(ml) = make_latest {
-        // NB: only set `prerelease` when true. Mirrors GoReleaser PR #6591:
+        // NB: only set `prerelease` when true:
         // an un-draft PATCH that *omits* `prerelease` leaves whatever flag
         // GitHub already has on the draft. So a stale draft created earlier
         // with `prerelease=true` whose user has since re-rendered to false
         // will keep the `prerelease=true` flag in GitHub. To clear it the
-        // user must delete + recreate the draft. GoReleaser has the same
-        // behaviour; do NOT "fix" this by also sending `prerelease=false`
-        // here without first changing GR.
+        // user must delete + recreate the draft; do NOT "fix" this by also
+        // sending `prerelease=false` here.
         body["make_latest"] = serde_json::Value::String(ml.to_string());
     }
     if let Some(dc) = discussion_category {
@@ -419,7 +416,7 @@ pub(crate) fn build_publish_patch_body(
 /// Resolve the GitHub release tag for a crate.
 ///
 /// If `release_tag_override` is `Some`, render it as a template and use the
-/// result.  Otherwise, render `tag_template`.  This implements the GoReleaser
+/// result.  Otherwise, render `tag_template`.  This implements the
 /// Pro `release.tag` override behaviour.
 ///
 /// Bails when the rendered tag is empty: the GitHub / GitLab / Gitea Releases

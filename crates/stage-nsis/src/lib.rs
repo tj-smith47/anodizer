@@ -93,7 +93,7 @@ fn os_arch_from_target(target: Option<&str>) -> (String, String) {
 
 /// Map a Go/Rust-style architecture identifier to the NSIS-native name.
 ///
-/// GoReleaser Pro documents these values at `nsis.md:93`:
+/// Recognised values:
 /// `x86` for 32-bit, `x64` for 64-bit AMD, `arm64` for ARM 64-bit.
 pub(crate) fn map_arch_to_nsis(arch: &str) -> &str {
     match arch {
@@ -117,7 +117,7 @@ pub(crate) fn program_files_for_arch(nsis_arch: &str) -> &str {
     }
 }
 
-/// Default output filename template — matches GoReleaser Pro's default.
+/// Default output filename template.
 ///
 /// `Arch` here is the NSIS-native arch (`x86`, `x64`, `arm64`) injected
 /// per-target before the name is rendered.
@@ -173,7 +173,7 @@ impl Stage for NsisStage {
             for nsis_cfg in nsis_configs {
                 let nsis_id_for_log = nsis_cfg.id.as_deref().unwrap_or("default").to_string();
 
-                // GoReleaser Pro `nsis.if`: template-conditional skip (opt-in).
+                // `nsis.if`: template-conditional skip (opt-in).
                 // Render error => hard bail (W1 avoidance).
                 let proceed = anodizer_core::config::evaluate_if_condition(
                     nsis_cfg.if_condition.as_deref(),
@@ -221,8 +221,8 @@ impl Stage for NsisStage {
                     });
                 }
 
-                // `amd64_variant` filter (GR Pro `nsis.goamd64: string`).
-                // Mirrors `goreleaser/internal/artifact/artifact.go::ByGoamd64`:
+                // `amd64_variant` filter.
+                // amd64-variant filtering:
                 // only constrains `amd64` artifacts. Non-amd64 always passes.
                 // Unset `amd64_variant` metadata is treated as `v1`.
                 if let Some(ref want) = nsis_cfg.amd64_variant {
@@ -292,7 +292,7 @@ impl Stage for NsisStage {
                         .set("Target", target.as_deref().unwrap_or(""));
 
                     // Build a one-shot render context with NSIS-native vars so
-                    // user scripts can use GR-compatible names without polluting
+                    // user scripts can use these names without polluting
                     // the global template var table.
                     let nsis_arch = map_arch_to_nsis(&arch);
                     let program_files = program_files_for_arch(nsis_arch);
@@ -1437,7 +1437,7 @@ crates:
         }
     }
 
-    // --- `nsis.if` template-conditional (GoReleaser Pro) ---
+    // --- `nsis.if` template-conditional ---
 
     fn nsis_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
         use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -1507,7 +1507,7 @@ crates:
     }
 
     // -------------------------------------------------------------------
-    // `nsis.amd64_variant` filter (GR Pro `nsis.goamd64: string`)
+    // `nsis.amd64_variant` filter
     // -------------------------------------------------------------------
 
     /// Build a context with three windows/amd64 binaries (v1/v2/v3) +
@@ -1784,7 +1784,7 @@ crates:
     }
 
     // -------------------------------------------------------------------
-    // GR-compatible NSIS script template vars
+    // NSIS script template vars
     // -------------------------------------------------------------------
 
     /// Render the built-in default script with realistic vars and ensure the
@@ -1839,8 +1839,8 @@ crates:
         assert!(!out.contains("$PROGRAMFILES64"));
     }
 
-    /// Pin the GR-documented vars (`Name`, `ProgramFiles`, `Binary`, NSIS-native
-    /// `Arch`) are usable inside a custom user script — pasting GR's example
+    /// Pin the documented vars (`Name`, `ProgramFiles`, `Binary`, NSIS-native
+    /// `Arch`) are usable inside a custom user script — pasting an example
     /// script must not raise an undefined-variable error.
     #[test]
     fn test_custom_script_can_use_gr_documented_vars() {
@@ -1849,7 +1849,7 @@ crates:
 
         let tmp = tempfile::TempDir::new().unwrap();
         let script_path = tmp.path().join("installer.nsi");
-        // Mirror the shape of GR's example script: every GR-documented var
+        // Mirror the shape of the example script: every documented var
         // appears at least once.
         std::fs::write(
             &script_path,

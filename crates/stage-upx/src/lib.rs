@@ -39,7 +39,7 @@ pub fn validate_compress(level: Option<&str>) -> Result<()> {
 /// Check if an artifact should be compressed by this UPX config.
 /// Returns `true` if the artifact matches the ids and targets filters.
 ///
-/// Id matching follows GoReleaser `ByID` semantics: only the artifact's
+/// Id matching: only the artifact's
 /// `id` metadata is consulted (no fallback to `name`).
 pub(crate) fn should_compress(
     upx_cfg: &UpxConfig,
@@ -121,7 +121,7 @@ impl Stage for UpxStage {
             }
 
             // Collect matching Binary + UniversalBinary artifacts
-            // (GoReleaser parity: upx.go:119 filters ByTypes(Binary, UniversalBinary)).
+            // ).
             //
             // Pipeline ordering: UPX runs after both `build` (per-arch Binary) and
             // `universal` (UniversalBinary lipo'd from per-arch Binaries), so
@@ -184,7 +184,7 @@ impl Stage for UpxStage {
             }
 
             // compress artifacts in parallel using
-            // semerrgroup-style bounded concurrency (upx.go uses
+            // bounded concurrency (
             // semerrgroup.New(ctx.Parallelism)). Shared helper in
             // anodizer_core::parallel preserves bounded concurrency,
             // submission-order results, fail-fast within a chunk, and

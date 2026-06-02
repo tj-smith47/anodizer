@@ -6,7 +6,7 @@
 //! Project Markdown Uploads (POST multipart), then create a release link to
 //! the uploaded file.
 //!
-//! Reference: GoReleaser `internal/client/gitlab.go`.
+//! GitLab release backend.
 
 use std::path::Path;
 
@@ -122,7 +122,7 @@ fn auth_header(use_job_token: bool) -> &'static str {
 
 /// Resolve whether the `JOB-TOKEN` header should be used for the given token.
 ///
-/// Mirrors GoReleaser's `checkUseJobToken` (`internal/client/gitlab.go:642`).
+/// Decide whether to send a JOB-TOKEN header.
 /// Returns true only when all three hold:
 ///
 /// 1. `CI_JOB_TOKEN` env var is non-empty (we're inside a GitLab runner).
@@ -373,7 +373,7 @@ pub(crate) async fn gitlab_create_release(
 ///
 /// When `replace_existing` is true and the link creation returns HTTP 400/422
 /// (duplicate), the existing link with the same name is deleted and the POST
-/// is retried — matching GoReleaser's `replace_existing_artifacts` behavior.
+/// is retried per the `replace_existing_artifacts` setting.
 ///
 /// `ctx.policy` is the user-configured `Config.retry` block (or default 10 ×
 /// 10s × 5m cap) — every HTTP call routes through [`retry_http_async`].
@@ -550,11 +550,11 @@ pub(crate) async fn gitlab_upload_asset(
 
 /// Detect whether the GitLab server is pre-v17.
 ///
-/// Strategy (matching GoReleaser `isV17`):
+/// Strategy:
 /// 1. Check `CI_SERVER_VERSION` environment variable (set in GitLab CI runners)
 /// 2. Fall back to `GET /api/v4/version` API call
 /// 3. If both fail, default to pre-v17 behavior (`filepath`) — conservative
-///    approach matching GoReleaser, which returns `isV17 = false` on failure.
+///    approach: treat the API as pre-v17 on failure.
 async fn detect_pre_v17_gitlab(client: &Client, api_url: &str) -> bool {
     detect_pre_v17_gitlab_with_env(client, api_url, &ProcessEnvSource).await
 }
@@ -586,7 +586,7 @@ async fn detect_pre_v17_gitlab_with_env<E: EnvSource + ?Sized>(
             // Could not parse version — default to pre-v17 (conservative).
             true
         }
-        // API call failed — default to pre-v17 (conservative, matching GoReleaser).
+        // API call failed — default to pre-v17 (conservative).
         _ => true,
     }
 }
@@ -731,7 +731,7 @@ async fn upload_via_project_uploads(
         .context("gitlab: parse upload response JSON")?;
 
     // GitLab returns `{ "full_path": "/uploads/...", "url": "/uploads/...", ... }`.
-    // GoReleaser constructs: `gitlabBaseURL + "/" + projectFile.FullPath`.
+    // Construct: `gitlabBaseURL + "/" + projectFile.FullPath`.
     // We follow the same simple approach.
     let full_path = body["full_path"]
         .as_str()
@@ -825,7 +825,7 @@ pub(crate) fn run_gitlab_backend(
         .download
         .unwrap_or_else(|| "https://gitlab.com".to_string());
     let skip_tls = gitlab_urls.skip_tls_verify.unwrap_or(false);
-    // Match GoReleaser's `checkUseJobToken`: only send JOB-TOKEN when
+    // Only send JOB-TOKEN when
     // CI_JOB_TOKEN is set, the flag is on, and the token equals CI_JOB_TOKEN.
     // Otherwise fall back to PRIVATE-TOKEN.
     let use_job_token = resolve_use_job_token_with_env(
@@ -864,7 +864,7 @@ pub(crate) fn run_gitlab_backend(
 
     // Per-publisher retry policy. 5xx / 429 / network errors retry with
     // exponential backoff through `retry_http_async` inside every gitlab_*
-    // function. Default: 10 attempts × 10s base × 5m cap (matches GoReleaser
+    // function. Default: 10 attempts × 10s base × 5m cap (the
     // `pkg/config.Retry` defaults).
     let policy = ctx.retry_policy();
     let tag = spec.tag;

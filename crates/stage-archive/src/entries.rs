@@ -26,7 +26,7 @@ pub(crate) struct ArchiveEntry {
 
 /// Deduplicate archive entries by `archive_name`. When a duplicate destination
 /// path is found, emit a warning to stderr and keep only the first occurrence.
-/// This matches GoReleaser's `unique()` in archivefiles.go.
+/// Deduplicate entries, first occurrence wins.
 pub(crate) fn deduplicate_entries(entries: Vec<ArchiveEntry>) -> Vec<ArchiveEntry> {
     let mut seen: HashMap<PathBuf, PathBuf> = HashMap::new();
     let mut result = Vec::with_capacity(entries.len());
@@ -47,7 +47,7 @@ pub(crate) fn deduplicate_entries(entries: Vec<ArchiveEntry>) -> Vec<ArchiveEntr
 }
 
 /// Sort archive entries by `archive_name` to ensure deterministic ordering.
-/// This matches GoReleaser's sort in archivefiles.go:66-68 and is essential
+/// This sort is essential
 /// for reproducible archives.
 pub(crate) fn sort_entries(mut entries: Vec<ArchiveEntry>) -> Vec<ArchiveEntry> {
     entries.sort_by(|a, b| a.archive_name.cmp(&b.archive_name));

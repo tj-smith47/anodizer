@@ -43,7 +43,7 @@ pub(super) fn run_cross_platform(
         .with_context(|| format!("notarize: macos[{idx}] render sign.certificate"))?
         .ok_or_else(|| anyhow::anyhow!("notarize: macos[{idx}] sign.certificate is required"))?;
 
-    // GR docs allow `certificate:` to be either a path OR a base64-encoded
+    // `certificate:` may be either a path OR a base64-encoded
     // P12 blob (the latter is the common shape for storing the cert in a
     // CI secret store). Materialize the base64 form to a tempfile so
     // rcodesign can read it via its `--p12-file` flag.
@@ -116,7 +116,7 @@ pub(super) fn run_cross_platform(
         None
     };
 
-    // Default IDs to project name when not specified (GoReleaser parity: macos.go:35)
+    // Default IDs to project name when not specified
     let ids = cfg.ids.clone().or_else(|| {
         if ctx.config.project_name.is_empty() {
             None
@@ -325,7 +325,7 @@ pub(super) fn run_native(
 
     let timeout = Some(notarize.resolved_timeout());
 
-    // Default IDs to project name when not specified (GoReleaser parity: macos.go:35)
+    // Default IDs to project name when not specified
     let ids = cfg.ids.clone().or_else(|| {
         if ctx.config.project_name.is_empty() {
             None

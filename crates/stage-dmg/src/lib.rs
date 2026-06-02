@@ -107,7 +107,7 @@ fn os_arch_from_target(target: Option<&str>) -> (String, String) {
     anodizer_core::target::os_arch_with_default(target, "darwin")
 }
 
-/// Default output filename template matching GoReleaser's `'{{.ProjectName}}_{{.Arch}}'`.
+/// Default output filename template `'{{.ProjectName}}_{{.Arch}}'`.
 const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}";
 
 /// Copy `binary_path` into `staging_dir` and, when `use_mode == "binary"` on
@@ -148,7 +148,7 @@ pub(crate) fn stage_binary_into(
 ///
 /// On Windows hosts the symlink may not resolve correctly when the image
 /// is mounted; this helper is `#[cfg(unix)]` so non-Unix builds skip it
-/// silently — matching GoReleaser's documented behavior.
+/// silently.
 #[cfg(unix)]
 pub(crate) fn maybe_create_applications_symlink(
     staging_dir: &std::path::Path,
@@ -228,7 +228,7 @@ impl Stage for DmgStage {
             for dmg_cfg in dmgs {
                 let dmg_id_for_log = dmg_cfg.id.as_deref().unwrap_or("default").to_string();
 
-                // GoReleaser Pro `dmg.if`: template-conditional skip (opt-in).
+                // `dmg.if`: template-conditional skip (opt-in).
                 // Render error => hard bail (avoids the W1 silent-skip
                 // footgun: user's typo must surface, not silently ship a
                 // release without the DMG they asked for).
@@ -325,8 +325,8 @@ impl Stage for DmgStage {
                     });
                 }
 
-                // `amd64_variant` filter (GR Pro `dmg.goamd64: string`).
-                // Mirrors `goreleaser/internal/artifact/artifact.go::ByGoamd64`:
+                // `amd64_variant` filter.
+                // amd64-variant filtering:
                 // only constrains `amd64` artifacts. Non-amd64 always passes.
                 // Unset `amd64_variant` metadata is treated as `v1`.
                 if let Some(ref want) = dmg_cfg.amd64_variant {
@@ -371,7 +371,7 @@ impl Stage for DmgStage {
 
                 // Group binaries by target so a multi-binary crate (e.g. CLI
                 // with several `bin = ` entries) produces ONE DMG per target
-                // containing all binaries — matching GoReleaser's per-target
+                // containing all binaries — the per-target
                 // DMG layout, not per-binary.
                 let mut by_target: std::collections::BTreeMap<Option<String>, Vec<PathBuf>> =
                     std::collections::BTreeMap::new();
@@ -1850,7 +1850,7 @@ crates:
         );
     }
 
-    // --- `dmg.if` template-conditional (GoReleaser Pro) ---
+    // --- `dmg.if` template-conditional ---
 
     fn dmg_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
         use anodizer_core::config::{Config, CrateConfig, DmgConfig};
@@ -1925,7 +1925,7 @@ crates:
     }
 
     // -------------------------------------------------------------------
-    // `dmg.amd64_variant` filter (GR Pro `dmg.goamd64: string`)
+    // `dmg.amd64_variant` filter
     // -------------------------------------------------------------------
 
     /// Build a context with three darwin/amd64 binaries (variants v1/v2/v3)
@@ -2024,7 +2024,7 @@ crates:
     }
 
     // -------------------------------------------------------------------
-    // Default name template matches GoReleaser shape
+    // Default name template shape
     // -------------------------------------------------------------------
 
     #[test]
@@ -2067,7 +2067,7 @@ crates:
         let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
         assert_eq!(dmgs.len(), 1);
         let name = dmgs[0].path.file_name().unwrap().to_string_lossy();
-        // GR default: ProjectName_Arch (no version segment, .dmg appended)
+        // Default: ProjectName_Arch (no version segment, .dmg appended)
         assert!(
             name.starts_with("myapp_") && name.ends_with("arm64.dmg"),
             "default name should be ProjectName_Arch.dmg, got: {name}"

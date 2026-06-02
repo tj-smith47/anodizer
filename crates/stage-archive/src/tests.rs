@@ -184,10 +184,10 @@ fn test_resolve_default_extra_files_dedup_single_file() {
     );
 }
 
-/// Pins C-new-6: GR-aligned default extra-file glob order is lowercase-first
+/// Default extra-file glob order is lowercase-first
 /// for each of license / readme / changelog. On case-insensitive
 /// filesystems where both `LICENSE` and `license` exist, the lowercase
-/// glob's first match wins. Mirrors GoReleaser archive.go:84-91.
+/// glob's first match wins.
 #[test]
 fn test_resolve_default_extra_files_gr_aligned_lowercase_first() {
     let tmp = TempDir::new().unwrap();
@@ -610,7 +610,7 @@ fn test_archive_stage_run() {
 
 /// Pins C-new-4: when `archives: []` (or omitted) is set on a crate WITH
 /// builds, the stage auto-injects `ArchiveConfig::default()` so the user
-/// still gets a default `tar.gz`. Mirrors GoReleaser archive.go:57-59:
+/// still gets a default `tar.gz`:
 /// `if len(ctx.Config.Archives) == 0 { Archives = append(Archives, Archive{}) }`.
 #[test]
 fn test_archive_stage_empty_archives_auto_injects_default() {
@@ -899,7 +899,7 @@ fn test_archive_stage_binary_format() {
     stage.run(&mut ctx).unwrap();
 
     // `format: binary` registers UploadableBinary artifacts, one per source binary
-    // (matches GoReleaser archive.go:143-145,296-336).
+    // (binary-format handling).
     let bins = ctx.artifacts.by_kind(ArtifactKind::UploadableBinary);
     assert_eq!(bins.len(), 1);
     let name = bins[0].path.file_name().unwrap().to_str().unwrap();
@@ -2270,7 +2270,7 @@ fn test_archive_id_metadata_absent_when_not_set() {
 
     let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
     assert_eq!(archives.len(), 1);
-    // GoReleaser archive Default() sets id="default" when empty so
+    // The archive ID defaults to "default" when empty so
     // downstream `ids:` filters can match unlabeled archives. The
     // metadata reflects that effective id.
     assert_eq!(
@@ -2847,7 +2847,7 @@ crates:
 #[test]
 fn test_config_parse_archive_hooks() {
     use anodizer_core::config::Config;
-    // Archive hooks use `before:` / `after:` (matching GoReleaser's archive pipe).
+    // Archive hooks use `before:` / `after:`.
     let yaml = r#"
 project_name: test
 crates:
@@ -2910,8 +2910,7 @@ fn test_create_gz_nonexistent_fails() {
 }
 
 // -----------------------------------------------------------------------
-// Q17.1 — `xz` single-file format. Mirrors GoReleaser commit bb532b6
-// (#6520, pkg/archive/xz/xz.go): a top-level xz container holds exactly
+// `xz` single-file format. A top-level xz container holds exactly
 // one file. The unit-level writer + the stage-level dispatch both pin
 // this contract.
 // -----------------------------------------------------------------------
@@ -3035,7 +3034,7 @@ fn test_archive_stage_xz_format_multi_file_errors() {
             // Adding an extra file forces a multi-file payload, which xz
             // (a single-file format) must reject — mirrors the upstream
             // `xz: failed to add %s, only one file can be archived in xz`
-            // error from `pkg/archive/xz/xz.go`.
+            // error from the xz writer.
             files: Some(vec![ArchiveFileSpec::Glob(license_path)]),
             ..Default::default()
         }]),
@@ -3226,7 +3225,7 @@ fn test_format_override_no_match_falls_back_to_default() {
     assert_eq!(result, vec!["zip"]);
 }
 
-/// Pins C-new-5: FormatOverride.os matches via prefix, mirroring GR's
+/// FormatOverride.os matches via prefix; the
 /// `strings.HasPrefix(platform, override.Goos)`. For canonical OS names
 /// the behavior is identical to `==`; the prefix relaxation kicks in for
 /// any future os value that gains a sub-variant suffix.
@@ -3263,7 +3262,7 @@ fn test_format_override_prefix_no_match() {
 /// Pins W2: empty `FormatOverride.os` is rejected as a typo guard. A user
 /// who accidentally writes `os:` (yaml-empty) gets a clean fallback to the
 /// default format instead of an empty-prefix match-everything override.
-/// Anodizer-stricter than GR.
+/// Stricter than the upstream.
 #[test]
 fn test_format_override_empty_os_rejected() {
     let overrides = vec![FormatOverride {
@@ -3284,7 +3283,7 @@ fn test_format_override_empty_os_rejected() {
 
 #[test]
 fn test_allow_different_binary_count_default_errors_on_mismatch() {
-    // GoReleaser errors (not warns) when binary counts differ and
+    // Errors (not warns) when binary counts differ and
     // allow_different_binary_count is false (default).
     use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
     use anodizer_core::test_helpers::TestContextBuilder;
@@ -3345,7 +3344,7 @@ fn test_allow_different_binary_count_default_errors_on_mismatch() {
         size: None,
     });
 
-    // Should error when binary counts differ (matching GoReleaser behavior)
+    // Should error when binary counts differ
     let result = ArchiveStage.run(&mut ctx);
     assert!(
         result.is_err(),
@@ -3362,7 +3361,7 @@ fn test_allow_different_binary_count_default_errors_on_mismatch() {
     );
 }
 
-/// Regression test for parity with GoReleaser archive/archive.go:129 —
+/// Regression test —
 /// plural `formats: ["binary"]` must exempt allow_different_binary_count
 /// the same way singular `format: "binary"` does.
 #[test]
@@ -3647,7 +3646,7 @@ fn test_resolve_file_specs_dst_with_strip_parent_ignores_lcp() {
     let resolved = resolve_file_specs(&specs).unwrap();
     assert_eq!(resolved.len(), 2);
 
-    // GoReleaser archivefiles.go:117-118 — with both dst AND strip_parent,
+    // With both dst AND strip_parent,
     // per-file dst becomes dst/basename(path). Each file gets its own
     // basename appended so they do not collide at a single dst.
     let dst_values: std::collections::HashSet<Option<String>> =
@@ -3671,7 +3670,7 @@ fn test_resolve_file_specs_literal_src_with_dst_preserves_filename() {
 
     // Literal (non-glob) src with a dst directory — our LCP logic should
     // produce "licenses/LICENSE" rather than renaming the file to "licenses".
-    // This is an intentional divergence from GoReleaser, which would rename
+    // This is an intentional divergence from the upstream, which would rename
     // the file.
     let specs = vec![ArchiveFileSpec::Detailed {
         src: license.to_string_lossy().to_string(),
@@ -4262,7 +4261,7 @@ fn test_archive_multi_crate_default_template_uses_crate_name() {
     );
 }
 
-/// a single-crate config keeps the GoReleaser-canonical
+/// a single-crate config keeps the canonical
 /// `{{ .ProjectName }}_..` default — the multi-crate template change
 /// is opt-in via crate count, not unconditional.
 #[test]
@@ -4329,7 +4328,7 @@ fn test_archive_single_crate_keeps_project_name_default() {
 // 2026-05-08 second-opinion parity audit regressions (C1, C2, Q-arch1)
 // ---------------------------------------------------------------------------
 
-/// C1 — Build stage writes the canonical GR `DynamicallyLinked` extra key
+/// Build stage writes the canonical `DynamicallyLinked` extra key
 /// (mirrors `artifact.ExtranDynLink`). The archive stage previously read a
 /// snake-case `dynamically_linked`, so the propagation never fired and the
 /// resulting archive's `ndynlink` flag was always absent. Confirm the
@@ -4362,7 +4361,7 @@ fn test_archive_dynlink_propagation_uses_canonical_key() {
 
     let mut meta = HashMap::new();
     meta.insert("binary".to_string(), "myapp".to_string());
-    // GoReleaser-canonical key — see artifact.ExtranDynLink.
+    // Canonical key — see the `DynamicallyLinked` extra.
     meta.insert("DynamicallyLinked".to_string(), "true".to_string());
 
     ctx.artifacts.add(Artifact {
@@ -4389,7 +4388,7 @@ fn test_archive_dynlink_propagation_uses_canonical_key() {
 
 /// C2 — Archive metadata previously dropped `amd64_variant` so publishers
 /// (winget/scoop/aur/krew) that filter on it would silently match v2/v3/v4
-/// binaries as v1. Mirrors GR archive.go:255 (`art.Goamd64 = binaries[0].Goamd64`).
+/// binaries as v1 (the first binary's amd64 variant wins).
 #[test]
 fn test_archive_amd64_variant_propagated_from_first_binary() {
     use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
@@ -4447,9 +4446,9 @@ fn test_archive_amd64_variant_propagated_from_first_binary() {
 
 /// Q-arch1 — Multi-crate archives must render `{{ .ProjectName }}` to the
 /// per-crate name (with `{{ .CrateName }}` still available separately) so
-/// users migrating GR configs whose name templates reference `ProjectName`
-/// see GR-equivalent filenames. The `default_name_template_multi_crate()`
-/// also resolves to the canonical GR shape after the iteration override.
+/// configs whose name templates reference `ProjectName`
+/// see equivalent filenames. The `default_name_template_multi_crate()`
+/// also resolves to the canonical shape after the iteration override.
 #[test]
 fn test_multi_crate_archive_projectname_resolves_to_crate() {
     use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
@@ -4715,7 +4714,7 @@ fn archive_hooks_skipped_for_binary_format() {
     )
     .expect("archive stage runs for binary format");
 
-    // GR contract: hooks skipped when format is `binary`. The sentinels
+    // Contract: hooks skipped when format is `binary`. The sentinels
     // would be `BEFORE.binary` / `AFTER.binary` if the hooks had fired.
     let before_marker = tmp.path().join("BEFORE.binary");
     let after_marker = tmp.path().join("AFTER.binary");
@@ -4744,8 +4743,8 @@ fn archive_hooks_run_per_format() {
     )
     .expect("archive stage runs for multi-format");
 
-    // GR contract: "If multiple formats are set, hooks will be executed
-    // for each format" (`archives.md:183`). Each format must observe
+    // Contract: "If multiple formats are set, hooks will be executed
+    // for each format". Each format must observe
     // its own `.Format` value so the per-format `touch X.{{ Format }}`
     // creates one sentinel per format.
     let before_tar = tmp.path().join("BEFORE.tar.gz");

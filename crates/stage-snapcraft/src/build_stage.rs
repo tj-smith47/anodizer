@@ -515,7 +515,7 @@ fn validate_and_check_skip(
     Ok(false)
 }
 
-/// Render `snap_cfg.name_template` (or the default GoReleaser template)
+/// Render `snap_cfg.name_template` (or the default template)
 /// with per-target `Os` / `Arch` / `Arm` / `Amd64` / `Mips` / `Target`
 /// substitutions. Saves and restores `ProjectName` around the render so
 /// subsequent stages observe the same template-var state.
@@ -528,7 +528,7 @@ fn compute_snap_filename(
     os: &str,
     arch: &str,
 ) -> Result<String> {
-    // GoReleaser's defaultNameTemplate (snapcraft.go:103):
+    // Default snap name template:
     //   {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ with .Mips }}_{{ . }}{{ end }}{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}
     let saved_project_name = ctx
         .template_vars()
@@ -655,7 +655,7 @@ fn stage_prime_dir(
 }
 
 /// Clone `snap_cfg` and pre-render its summary / description / grade
-/// fields through the template engine. GoReleaser Pro parity: fall back
+/// fields through the template engine. Fall back
 /// to project `metadata.description` when snapcraft's `description` is
 /// unset.
 fn render_snap_cfg(

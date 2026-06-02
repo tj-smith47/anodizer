@@ -2,9 +2,8 @@
 //!
 //! Used by the `changelog.use: github-native` flow to fetch GitHub's
 //! auto-generated release notes upfront and embed them in the per-crate
-//! changelog body. Mirrors GoReleaser
-//! `internal/client/github.go::GenerateReleaseNotes`
-//! (`internal/pipe/changelog/changelog.go::githubNativeChangeloger.Log`):
+//! changelog body.
+//! GitHub's generate-release-notes endpoint:
 //!
 //! ```text
 //! POST /repos/{owner}/{repo}/releases/generate-notes
@@ -137,7 +136,7 @@ mod tests {
     #[test]
     fn request_body_includes_previous_tag_when_set() {
         let body = build_request_body("v2.0.0", Some("v1.0.0"));
-        // GR's contract: when `previous_tag_name` is set, it is sent as a
+        // When `previous_tag_name` is set, it is sent as a
         // top-level string field. GitHub's `/releases/generate-notes`
         // endpoint uses this as the "since" boundary for the commit range
         // — which is the load-bearing parity decision over the
@@ -151,7 +150,7 @@ mod tests {
     fn request_body_omits_previous_tag_when_none() {
         let body = build_request_body("v2.0.0", None);
         // No previous_tag_name field — GitHub falls back to its default
-        // "previous release" heuristic. Mirrors GR's behaviour when
+        // "previous release" heuristic when
         // `ctx.Git.PreviousTag == ""` (first release).
         assert_eq!(body["tag_name"], "v2.0.0");
         assert!(body.get("previous_tag_name").is_none());

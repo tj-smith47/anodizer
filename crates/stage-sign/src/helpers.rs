@@ -19,16 +19,15 @@ use anodizer_core::log::StageLogger;
 ///
 /// Filter values:
 /// - `"none"`          → nothing is signed
-/// - `"all"` / `"any"` → release-uploadable artifact kinds (matching GoReleaser's
-///   sign.go filter which includes Archive, Binary, LinuxPackage,
+/// - `"all"` / `"any"` → release-uploadable artifact kinds (Archive,
+///   Binary, LinuxPackage,
 ///   SourceArchive, Makeself, Flatpak, Sbom, Snap, MacOsPackage,
 ///   Installer, DiskImage, Checksum, but NOT internal types like
 ///   DockerImage, BrewFormula, etc.). `Signature` and `Certificate`
 ///   ARE in `release_uploadable_kinds()` (they DO get uploaded), but
 ///   are explicitly excluded from this filter so re-running the sign
 ///   stage on a partially-built dist doesn't produce `*.sig.sig` /
-///   `*.pem.sig` chains. Mirrors GoReleaser
-///   `internal/pipe/sign/sign.go:101-110`
+///   `*.pem.sig` chains.
 ///   (`Not(ByTypes(Signature, Certificate))`, fix #6509).
 /// - `"source"`        → only `ArtifactKind::SourceArchive`
 /// - `"archive"`       → only `ArtifactKind::Archive`
@@ -62,11 +61,11 @@ pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<b
 }
 
 /// Returns `true` if the given artifact kind is in the shared release-uploadable
-/// list — i.e. the kinds that GoReleaser's `artifacts: all` sign filter selects.
+/// list — i.e. the kinds that the `artifacts: all` sign filter selects.
 ///
 /// Delegates to `anodizer_core::artifact::release_uploadable_kinds()` so the
-/// stage-sign and stage-release paths stay in lockstep and match GoReleaser's
-/// `internal/pipe/sign/sign.go:103-104` (`ByTypes(ReleaseUploadableTypes()...)`).
+/// stage-sign and stage-release paths stay in lockstep on the
+/// release-uploadable type set.
 fn is_release_uploadable(kind: ArtifactKind) -> bool {
     anodizer_core::artifact::release_uploadable_kinds().contains(&kind)
 }

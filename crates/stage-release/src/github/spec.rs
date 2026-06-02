@@ -75,7 +75,7 @@ pub(crate) struct UploadOpts {
 /// Extracted from the body of [`run_github_backend`] so the logic can be
 /// unit-tested without standing up a fake octocrab.
 ///
-/// Mirrors GoReleaser `internal/client/github.go:734-744`:
+/// 422 upload-conflict decision rule:
 ///
 /// ```text
 /// if resp.StatusCode == http.StatusUnprocessableEntity {
@@ -217,7 +217,7 @@ mod already_exists_tests {
 
     #[test]
     fn bails_when_replace_forbidden_and_sizes_differ() {
-        // GR parity: `if !ReplaceExistingArtifacts { return Unrecoverable }`.
+        // `if !replace_existing_artifacts { return unrecoverable }`.
         // Surfaces the conflict instead of silently overwriting.
         assert_eq!(
             classify_already_exists(false, Some(100), 200),
@@ -374,7 +374,7 @@ mod upload_retry_locals_tests {
 
     #[test]
     fn surfaces_the_upload_canonical_policy_unchanged() {
-        // GoReleaser-aligned canonical upload policy: 10 attempts, 50ms base,
+        // Canonical upload policy: 10 attempts, 50ms base,
         // 30s cap. The locals helper must NOT mutate these on the way to the
         // upload loop — drift here is a user-visible behaviour change in the
         // retry envelope.
@@ -521,7 +521,7 @@ mod spec_struct_surface_tests {
     fn upload_opts_all_false_is_constructible() {
         // The "default-ish" shape (no opt-ins): the upload loop must see
         // every flag as `false` so the production code path runs as the
-        // GR-aligned default. A drift to e.g. `Option<bool>` would break
+        // Canonical default. A drift to e.g. `Option<bool>` would break
         // this all-false literal.
         let opts = UploadOpts {
             skip_upload: false,
