@@ -356,6 +356,14 @@ fn resolve_child_snapshot(snapshot: bool, no_snapshot: bool, head_at_tag: bool) 
 /// artifact) and a tail of `"."` would yield `*.` (matching any name ending
 /// in a dot) — both would silently suppress real drift. Require at least
 /// one extension character after the leading dot.
+///
+/// This also (correctly) returns `None` when the final path segment is
+/// itself an expansion — e.g. `{{ .Artifact }}.{{ .Format }}` or
+/// `sigs/{{ .ArtifactName }}`. There the text after the last `}}` is empty
+/// (or has no leading-dot literal), so no static suffix exists to anchor an
+/// allow-list pattern on. Such templates can't be reduced to a `*.<ext>`
+/// glob; the harness falls back to its other classification paths rather
+/// than minting a meaningless or over-broad entry.
 fn signature_suffix(template: &str) -> Option<String> {
     let tail = match template.rfind("}}") {
         Some(idx) => &template[idx + 2..],

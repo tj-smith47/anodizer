@@ -296,22 +296,14 @@ fn render_commit_line(
     // semantic. Co-author entries (parsed from `Co-Authored-By:` trailers)
     // carry both bare name and "Name <email>" form; we surface their raw
     // trailer payload as the Authors join target.
-    let mut commit_authors: Vec<String> = Vec::new();
-    if !commit.author_name.is_empty() {
-        commit_authors.push(commit.author_name.clone());
-    }
-    for ca in &commit.co_authors {
-        commit_authors.push(ca.clone());
-    }
-    vars.set("Authors", &commit_authors.join(", "));
-    // `Authors` is also surfaced as a structured list of
-    // {Name, Email, Username} records so templates can iterate
-    // (`{% for a in AuthorsList %}@{{ a.Username }}{% endfor %}`).
-    // Anodizer exposes the same shape under `AuthorsList` to keep the
-    // existing comma-string `Authors` working (backward compat) while
-    // adding the structured access pattern. Co-author trailers
-    // contribute Name only (email is in the raw trailer string,
-    // Username is unknown without an extra SCM API hit — left empty).
+    //
+    // `Authors` (comma-string, backward-compatible) and `AuthorsList`
+    // (structured {Name, Email, Username} records for
+    // `{% for a in AuthorsList %}@{{ a.Username }}{% endfor %}`) are built
+    // from a SINGLE walk over the author + co-author set: the comma-string
+    // is derived from the structured list's names rather than re-iterating.
+    // Co-author trailers contribute Name only (email is in the raw trailer
+    // string; Username is unknown without an extra SCM API hit — left empty).
     let mut authors_list: Vec<JsonValue> = Vec::new();
     if !commit.author_name.is_empty() {
         let mut obj = serde_json::Map::new();
@@ -330,6 +322,12 @@ fn render_commit_line(
         obj.insert("Username".into(), JsonValue::String(String::new()));
         authors_list.push(JsonValue::Object(obj));
     }
+    let authors_join = authors_list
+        .iter()
+        .filter_map(|a| a.get("Name").and_then(JsonValue::as_str))
+        .collect::<Vec<_>>()
+        .join(", ");
+    vars.set("Authors", &authors_join);
     vars.set_structured("AuthorsList", JsonValue::Array(authors_list));
     // For per-entry Logins: include the primary commit login when present.
     // Co-author logins aren't extractable from the email-only trailer

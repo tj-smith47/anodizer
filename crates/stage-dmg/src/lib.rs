@@ -415,18 +415,30 @@ impl Stage for DmgStage {
 
                     let vol_name = resolve_volume_name(ctx, dmg_cfg, &project_name)?;
 
+                    // Resolve each source binary's staged leaf name ONCE: the
+                    // pre-flight duplicate check and the copy loop below both
+                    // need it, so compute the (path, leaf-name) pairs here and
+                    // reuse them rather than re-deriving `file_name()` twice.
+                    let staged: Vec<(&std::path::PathBuf, String)> = binary_paths
+                        .iter()
+                        .map(|p| {
+                            let name = p
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(&krate.name)
+                                .to_string();
+                            (p, name)
+                        })
+                        .collect();
+
                     // Pre-flight: two source paths with the same leaf name would
                     // silently overwrite the first during staging. Detect early so
                     // this fires in both dry-run and live mode.
                     {
-                        let mut staged_names: std::collections::HashSet<String> =
+                        let mut staged_names: std::collections::HashSet<&str> =
                             std::collections::HashSet::new();
-                        for binary_path in binary_paths {
-                            let binary_name = binary_path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or(&krate.name);
-                            if !staged_names.insert(binary_name.to_string()) {
+                        for (_, binary_name) in &staged {
+                            if !staged_names.insert(binary_name.as_str()) {
                                 anyhow::bail!(
                                     "dmg: duplicate filename '{}' in staging dir for crate \
                                      '{}' target {:?}; two source binaries resolve to the \
@@ -490,12 +502,9 @@ impl Stage for DmgStage {
                         tempfile::tempdir().context("create temp dir for dmg staging")?;
                     let staging_dir = staging_tmp.path();
 
-                    // Copy every binary for this target into the staging dir.
-                    for binary_path in binary_paths {
-                        let binary_name = binary_path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or(&krate.name);
+                    // Copy every binary for this target into the staging dir,
+                    // reusing the leaf names resolved for the pre-flight above.
+                    for (binary_path, binary_name) in &staged {
                         stage_binary_into(staging_dir, binary_path, binary_name, use_mode)?;
                     }
 
