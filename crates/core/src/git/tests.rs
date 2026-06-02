@@ -423,6 +423,59 @@ fn test_get_all_semver_tags_ignore_tag_prefixes() {
     assert_eq!(tags, vec!["v2.0.0".to_string(), "v1.0.0".to_string()]);
 }
 
+/// `find_latest_tag_matching` matches `ignore_tag_prefixes` WITHOUT skipping
+/// empty entries (`skip_empty_ignore_prefix = false`): an empty prefix
+/// matches every tag (`starts_with("")`), so all candidates are ignored and
+/// the lookup yields `None`. Locks the subtler half of the dedup divergence.
+#[test]
+#[serial]
+fn test_find_latest_tag_empty_ignore_prefix_excludes_all() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tags(dir, &["v1.0.0", "v2.0.0", "v3.0.0"]);
+
+    let _cwd = CwdGuard::new(dir).unwrap();
+
+    let gc = crate::config::GitConfig {
+        ignore_tag_prefixes: Some(vec![String::new()]),
+        ..Default::default()
+    };
+    let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
+    assert_eq!(
+        result, None,
+        "empty ignore_tag_prefixes must exclude every tag in find_latest"
+    );
+}
+
+/// The smartsemver previous-tag path matches `ignore_tag_prefixes` WITH the
+/// empty-prefix skip (`skip_empty_ignore_prefix = true`): an empty entry is
+/// ignored, so candidates are retained and the previous tag is returned.
+/// The opposite polarity from `find_latest` above — flipping the flag in the
+/// shared helper would break exactly one of this pair.
+#[test]
+#[serial]
+fn test_smartsemver_empty_ignore_prefix_is_skipped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tags(dir, &["v1.0.0", "v2.0.0", "v3.0.0"]);
+
+    let _cwd = CwdGuard::new(dir).unwrap();
+
+    let gc = crate::config::GitConfig {
+        tag_sort: Some("smartsemver".to_string()),
+        ignore_tag_prefixes: Some(vec![String::new()]),
+        ..Default::default()
+    };
+    // Releasing v3.0.0 → previous is v2.0.0; the empty prefix is skipped, so
+    // it does NOT swallow the candidate list.
+    let result = find_previous_tag_with_prefix("v3.0.0", Some(&gc), None, None).unwrap();
+    assert_eq!(
+        result,
+        Some("v2.0.0".to_string()),
+        "empty ignore_tag_prefixes must be skipped on the smartsemver path"
+    );
+}
+
 #[test]
 #[serial]
 fn test_get_all_semver_tags_no_config_unchanged() {
