@@ -564,7 +564,7 @@ mod summary_tests {
     }
 
     // `emit_summary` is invoked at the pipeline layer (see
-    // `crates/cli/src/pipeline.rs::Pipeline::run`), not from inside
+    // `crates/cli/src/pipeline/mod.rs::Pipeline::run`), not from inside
     // `AnnounceStage::run`. These tests exercise `emit_summary`
     // directly to keep the stage-level contract pinned; the
     // pipeline-layer integration that ensures the call always fires

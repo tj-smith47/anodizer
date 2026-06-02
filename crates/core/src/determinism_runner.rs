@@ -20,7 +20,7 @@ use std::process::Command;
 ///
 /// Single source of truth for the `--skip=...` list passed to the child
 /// `anodize release --snapshot` invocation. Every entry here is a stage
-/// in `crates/cli/src/pipeline.rs::build_release_pipeline` that either:
+/// in `crates/cli/src/pipeline/builders.rs::build_release_pipeline` that either:
 ///
 /// - touches upstream (uploads, API calls, push, announce), OR
 /// - mutates host state outside `<worktree>/dist` (docker daemon, kms),

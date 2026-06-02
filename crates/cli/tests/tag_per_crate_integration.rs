@@ -569,8 +569,9 @@ fn per_crate_no_output_when_push_fails() {
     git_add_commit(tmp.path(), "initial");
     run_git(tmp.path(), &["tag", "core-v0.1.0"]);
     run_git(tmp.path(), &["tag", "cli-v0.1.0"]);
-    // Unreachable remote so the push leg fails rather than being skipped
-    // (no-remote is a soft skip; we need a hard push failure here).
+    // Unreachable remote so the push leg fails rather than being skipped:
+    // no-remote is a soft skip, so a hard push failure requires a
+    // configured-but-unreachable remote.
     run_git(
         tmp.path(),
         &[

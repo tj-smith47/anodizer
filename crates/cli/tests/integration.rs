@@ -5087,7 +5087,7 @@ crates:
 /// E2E: `anodizer release --skip=announce --summary-json=<path>` writes
 /// the per-publisher summary even when the announce stage is operator-
 /// skipped. Binary-surface coverage for B6 finding I1; the unit-level
-/// equivalent lives at `pipeline.rs::tests::pipeline_emits_summary_when_announce_is_skipped_via_skip_flag`.
+/// equivalent lives at `pipeline/builders.rs::tests::pipeline_emits_summary_when_announce_is_skipped_via_skip_flag`.
 ///
 /// Snapshot + dry-run mode keep the test self-contained (no network,
 /// no git tag required). We skip the heavy stages so the test runs

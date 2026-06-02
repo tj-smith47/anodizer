@@ -95,8 +95,8 @@ pub struct RollbackOpts {
 /// `foo-bar` (no `-v` suffix) doesn't accidentally match.
 ///
 /// Compiled once at first use (the pattern is a compile-time literal) so
-/// the classifier doesn't recompile it per tag — mirrors `is_branchlike`
-/// in `core/git/commits.rs`.
+/// the classifier doesn't recompile it per tag — same caching idea as
+/// `is_branchlike` in `core/git/commits.rs`.
 static PER_CRATE_TAG_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[A-Za-z_][A-Za-z0-9_-]*-v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$")
         .expect("static regex compiles")
