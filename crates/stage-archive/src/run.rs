@@ -801,31 +801,25 @@ fn archive_one_config(
                 };
                 let archive_path = dist.join(&archive_filename);
 
-                // Expose `.Format` plus the resolved archive identity
-                // (`.ArtifactName` / `.ArtifactPath` / `.ArtifactExt` /
-                // `.ArtifactID`) to per-archive templated_files and to the
-                // `before:` hook below. The archive_filename / archive_path are
-                // already known here, so seeding the Artifact* vars NOW — rather
-                // than only after the write — keeps the documented hook contract:
-                // a `before:` hook that references `{{ .ArtifactPath }}` must see
-                // THIS archive's path, not a stale value carried over from the
-                // previous (target, format) iteration. Reset by
-                // `clear_archive_template_vars` after the archive write completes.
-                {
-                    let tvars = ctx.template_vars_mut();
-                    tvars.set("Format", format);
-                    tvars.set("ArtifactName", &archive_filename);
-                    tvars.set("ArtifactPath", &archive_path.to_string_lossy());
-                    tvars.set(
-                        "ArtifactExt",
-                        anodizer_core::template::extract_artifact_ext(&archive_filename),
-                    );
-                    tvars.set("ArtifactID", archive_id);
-                }
+                // Expose `.Format` to per-archive templated_files (and
+                // any downstream template that fires inside this scope).
+                // Reset by `clear_archive_template_vars` after the
+                // archive write completes.
+                //
+                // NOTE: the archive-identity vars (`.ArtifactName` /
+                // `.ArtifactPath` / `.ArtifactExt` / `.ArtifactID`) are
+                // deliberately NOT set on `ctx` here — `templated_files` render
+                // below must see `.ArtifactPath` EMPTY (a templated file is an
+                // INPUT to the archive and cannot reference the archive that
+                // contains it; see `mode_a_*_does_not_leak` regression test).
+                // They are overlaid onto the hook's var snapshot instead, just
+                // below, so the `before:` hook still sees this archive's
+                // identity without polluting the templated_files scope.
+                ctx.template_vars_mut().set("Format", format);
 
                 // Fire the `before:` hook here — after `.Format` / `.Os`
-                // / `.Arch` / `.Target` / `.Artifact*` are wired but before the
-                // archive is written. Skipped when format is `binary` to match
+                // / `.Arch` / `.Target` are wired but before the archive
+                // is written. Skipped when format is `binary` to match
                 // ("Skipped if archive format
                 // is binary"); the user's hook expects an archive to
                 // create or post-process, and the `binary` branch
@@ -833,7 +827,20 @@ fn archive_one_config(
                 if format != "binary"
                     && let Some(pre) = archive_cfg.hooks.as_ref().and_then(|h| h.before.as_ref())
                 {
-                    let hook_vars = ctx.template_vars().clone();
+                    // Overlay the archive-identity vars onto the hook's snapshot
+                    // ONLY (not `ctx`), so a `before:` hook referencing
+                    // `{{ .ArtifactPath }}` sees THIS archive's path — not a
+                    // stale carry-over from the previous (target, format)
+                    // iteration, and not an empty value — while the
+                    // templated_files render below still sees them unset.
+                    let mut hook_vars = ctx.template_vars().clone();
+                    hook_vars.set("ArtifactName", &archive_filename);
+                    hook_vars.set("ArtifactPath", &archive_path.to_string_lossy());
+                    hook_vars.set(
+                        "ArtifactExt",
+                        anodizer_core::template::extract_artifact_ext(&archive_filename),
+                    );
+                    hook_vars.set("ArtifactID", archive_id);
                     run_hooks(
                         pre,
                         &pre_label,
@@ -902,9 +909,20 @@ fn archive_one_config(
                     )?;
                 }
 
-                // The stage-scoped `.Artifact*` template vars were seeded
-                // before the `before:` hook fired (above); downstream stages
-                // and the `after:` hook read the same values.
+                // Now that the archive is written (and templated_files have
+                // rendered with `.ArtifactPath` unset, per the input-not-output
+                // contract above), seed the stage-scoped `.Artifact*` vars on
+                // `ctx` so downstream stages and the `after:` hook resolve THIS
+                // archive's identity.
+                let tvars = ctx.template_vars_mut();
+                tvars.set("ArtifactName", &archive_filename);
+                tvars.set("ArtifactPath", &archive_path.to_string_lossy());
+                tvars.set(
+                    "ArtifactExt",
+                    anodizer_core::template::extract_artifact_ext(&archive_filename),
+                );
+                tvars.set("ArtifactID", archive_id);
+
                 let mut metadata = HashMap::from([
                     ("format".to_string(), format.clone()),
                     ("name".to_string(), archive_stem.clone()),
