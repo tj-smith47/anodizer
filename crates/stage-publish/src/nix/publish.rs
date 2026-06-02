@@ -47,12 +47,6 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
         repo_name,
     } = resolve_repo_coords(ctx, nix_cfg, crate_name)?;
 
-    let name_raw = nix_cfg.name.as_deref().unwrap_or(crate_name);
-    let name_rendered = ctx
-        .render_template(name_raw)
-        .unwrap_or_else(|_| name_raw.to_string());
-    let name = name_rendered.as_str();
-
     if ctx.is_dry_run() {
         log.status(&format!(
             "(dry-run) would publish Nix expression for '{}' to {}/{}",
@@ -62,45 +56,17 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
     }
 
     let version = ctx.version();
-    let meta = resolve_nix_metadata(ctx, nix_cfg, crate_name)?;
 
-    let all_artifacts = collect_platform_artifacts(ctx, crate_name, nix_cfg)?;
-    let archives = build_archive_tuples(&all_artifacts, nix_cfg, crate_name, &version, log)?;
-
-    let needs_unzip = all_artifacts.iter().any(|a| a.url.ends_with(".zip"));
-    let deps = nix_cfg.dependencies.as_deref().unwrap_or(&[]);
-    let needs_make_wrapper = !deps.is_empty();
-    let dep_args = unique_dep_args(deps);
-
-    let install_lines = build_install_lines(nix_cfg, crate_cfg, name, deps, needs_make_wrapper);
-    let post_install_lines: Vec<String> = nix_cfg
-        .post_install
-        .as_ref()
-        .map(|s| s.lines().map(|l| l.to_string()).collect())
-        .unwrap_or_default();
-
-    let (source_root, source_root_map) =
-        resolve_source_roots(crate_cfg, &all_artifacts, name, &version);
-
-    let dynamically_linked = detect_dynamically_linked(ctx, crate_name);
-
-    let nix_expr = generate_nix_expression(&NixParams {
+    // Single render source of truth: the same skip-unaware render the snapshot
+    // validator runs. The skip / `if` / skip_upload gate above is evaluated
+    // exactly once on this live path; `render_nix_derivation_inner` is itself
+    // gate-free so it is never double-evaluated.
+    let NixRender {
         name,
-        version: &version,
-        description: meta.description.as_str(),
-        homepage: meta.homepage.as_str(),
-        license: meta.license.as_str(),
-        main_program: meta.main_program.as_str(),
-        archives: &archives,
-        install_lines: &install_lines,
-        post_install_lines: &post_install_lines,
-        needs_unzip,
-        needs_make_wrapper,
-        dep_args: &dep_args,
-        source_root: source_root.as_deref(),
-        source_root_map: source_root_map.as_deref(),
-        dynamically_linked,
-    })?;
+        expr: nix_expr,
+        archives: _,
+    } = render_nix_derivation_inner(ctx, crate_cfg, nix_cfg, crate_name, log)?;
+    let name = name.as_str();
 
     let token = util::resolve_repo_token(ctx, nix_cfg.repository.as_ref(), Some("NIX_PKGS_TOKEN"));
 
@@ -185,7 +151,7 @@ pub(crate) struct NixRender {
 /// skip_upload), so the validator treats a skipped emission as nothing to
 /// validate rather than a failure.
 pub(crate) fn render_nix_for_validation(
-    ctx: &mut Context,
+    ctx: &Context,
     crate_name: &str,
     log: &StageLogger,
 ) -> Result<Option<NixRender>> {
@@ -205,6 +171,51 @@ pub(crate) fn render_nix_for_validation(
         return Ok(None);
     }
 
+    let render = render_nix_derivation_inner(ctx, crate_cfg, nix_cfg, crate_name, log)?;
+    Ok(Some(render))
+}
+
+/// `Ok(true)` when at least one release archive maps to a Nix system double
+/// (`x86_64-linux` / `aarch64-darwin` / …) for `crate_name` — i.e. the
+/// derivation's `src = fetchurl { … }` has at least one asset to point at.
+/// `Ok(false)` when NO artifact maps to a Nix system (genuine absence): a
+/// sharded / single-target snapshot that built no Nix-mappable archive, which
+/// the snapshot validator treats as a skip rather than tripping the publisher's
+/// "no Linux/Darwin archive artifacts" guard.
+///
+/// Distinguishes ABSENCE from ERROR by propagating the `Err`:
+/// [`collect_platform_artifacts`] returns `Err` when a MATCHED artifact is
+/// missing its `sha256` metadata — the bail fires upstream in
+/// `util::artifacts::artifact_to_os_artifact`'s empty-sha256 guard (reached via
+/// `find_all_platform_artifacts_with_variant`), the same metadata defect that
+/// would otherwise embed an empty `sha256 = "";` the fixed-output derivation
+/// cannot verify. That `Err` flows through here so the caller surfaces a
+/// present-but-broken artifact rather than silently skipping it; only a clean
+/// `Ok(empty)` (true absence) skips.
+pub(crate) fn crate_has_nix_archive(
+    ctx: &Context,
+    nix_cfg: &NixConfig,
+    crate_name: &str,
+) -> Result<bool> {
+    let all_artifacts = collect_platform_artifacts(ctx, crate_name, nix_cfg)?;
+    Ok(all_artifacts
+        .iter()
+        .any(|a| nix_system(&a.os, &a.arch).is_some()))
+}
+
+/// The skip-unaware render body shared by the live [`publish_to_nix`] path and
+/// the snapshot validator: resolve metadata, collect platform artifacts, build
+/// the `(nix_system, url, hash)` archive tuples, and render the `default.nix`
+/// derivation expression. Carries NO skip / `if` / skip_upload gate — every
+/// caller evaluates that gate exactly once before calling in, so it is never
+/// double-evaluated.
+fn render_nix_derivation_inner(
+    ctx: &Context,
+    crate_cfg: &anodizer_core::config::CrateConfig,
+    nix_cfg: &NixConfig,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<NixRender> {
     let name_raw = nix_cfg.name.as_deref().unwrap_or(crate_name);
     let name = ctx
         .render_template(name_raw)
@@ -251,11 +262,11 @@ pub(crate) fn render_nix_for_validation(
         dynamically_linked,
     })?;
 
-    Ok(Some(NixRender {
+    Ok(NixRender {
         name,
         expr,
         archives,
-    }))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +292,7 @@ struct NixMetadata {
 /// `log.status` line before returning, so the caller needs only the
 /// boolean — the specific reason is already in the log.
 fn check_skip_guards(
-    ctx: &mut Context,
+    ctx: &Context,
     nix_cfg: &NixConfig,
     crate_name: &str,
     log: &StageLogger,
@@ -324,11 +335,7 @@ fn check_skip_guards(
 
 /// Resolves `(owner, name)` from the repository config and renders both
 /// halves through the template engine.
-fn resolve_repo_coords(
-    ctx: &mut Context,
-    nix_cfg: &NixConfig,
-    crate_name: &str,
-) -> Result<RepoCoords> {
+fn resolve_repo_coords(ctx: &Context, nix_cfg: &NixConfig, crate_name: &str) -> Result<RepoCoords> {
     let (repo_owner_raw, repo_name_raw) =
         crate::util::resolve_repo_owner_name(nix_cfg.repository.as_ref())
             .ok_or_else(|| anyhow::anyhow!("nix: no repository config for '{}'", crate_name))?;
@@ -347,7 +354,7 @@ fn resolve_repo_coords(
 /// rendering. Empty strings are valid sentinels that suppress the
 /// corresponding `meta.<field>` attribute in the Tera template.
 fn resolve_nix_metadata(
-    ctx: &mut Context,
+    ctx: &Context,
     nix_cfg: &NixConfig,
     crate_name: &str,
 ) -> Result<NixMetadata> {

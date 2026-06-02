@@ -1360,7 +1360,7 @@ fn render_with_derived_license(spdx: &str) -> anyhow::Result<String> {
     let mut ctx = Context::new(config, ContextOptions::default());
     add_linux_darwin_archives(&mut ctx, "mytool");
 
-    render_nix_for_validation(&mut ctx, "mytool", &nix_log())
+    render_nix_for_validation(&ctx, "mytool", &nix_log())
         .map(|r| r.expect("render should not skip").expr)
 }
 
@@ -1412,7 +1412,7 @@ fn explicit_nix_attr_license_passes_through_unchanged() {
     };
     let mut ctx = nix_ctx(cfg, false);
     add_linux_darwin_archives(&mut ctx, "mytool");
-    let expr = render_nix_for_validation(&mut ctx, "mytool", &nix_log())
+    let expr = render_nix_for_validation(&ctx, "mytool", &nix_log())
         .unwrap()
         .expect("render should not skip")
         .expr;
@@ -1496,11 +1496,11 @@ fn per_crate_workspace_each_crate_derives_its_own_nix_license() {
     add_linux_darwin_archives(&mut ctx, "alpha");
     add_linux_darwin_archives(&mut ctx, "beta");
 
-    let alpha = render_nix_for_validation(&mut ctx, "alpha", &nix_log())
+    let alpha = render_nix_for_validation(&ctx, "alpha", &nix_log())
         .unwrap()
         .expect("alpha render should not skip")
         .expr;
-    let beta = render_nix_for_validation(&mut ctx, "beta", &nix_log())
+    let beta = render_nix_for_validation(&ctx, "beta", &nix_log())
         .unwrap()
         .expect("beta render should not skip")
         .expr;
@@ -1572,11 +1572,11 @@ fn lockstep_workspace_each_crate_derives_its_own_nix_license() {
     add_linux_darwin_archives(&mut ctx, "alpha");
     add_linux_darwin_archives(&mut ctx, "beta");
 
-    let alpha = render_nix_for_validation(&mut ctx, "alpha", &nix_log())
+    let alpha = render_nix_for_validation(&ctx, "alpha", &nix_log())
         .unwrap()
         .expect("alpha render should not skip")
         .expr;
-    let beta = render_nix_for_validation(&mut ctx, "beta", &nix_log())
+    let beta = render_nix_for_validation(&ctx, "beta", &nix_log())
         .unwrap()
         .expect("beta render should not skip")
         .expr;

@@ -191,22 +191,127 @@ pub(super) fn write_flake(repo_path: &Path, attr: &str, nix_path: &str) -> Resul
     Ok("flake.nix")
 }
 
-/// Cheap structural validity check for a generated `flake.nix`: braces
-/// balance AND every emitted overlay `callPackage` line round-trips
-/// through [`parse_overlay_line`] (the same recovery parser the next
-/// publish relies on). Used by the snapshot emission validator to fail
-/// loud locally on a malformed flake rather than at `nix build` time on
-/// the consumer's machine.
+/// Assert every Nix bracket pair — `{}`, `()`, and `[]` — is balanced and
+/// correctly nested across `text`, accounting for the Nix lexical contexts
+/// where a bracket character is data, not structure:
+/// - a `"…"` double-quoted string (with `\"` / `\\` escapes),
+/// - a `''…''` indented string (terminated by the next `''`, honoring its
+///   `'''` and `''${` escapes so an escaped quote-run or antiquotation marker
+///   inside the body does not look like the terminator),
+/// - a `#`-to-end-of-line comment.
 ///
-/// Returns the recovered package set on success so the caller can run
-/// the system→asset cross-check; returns `Err` on imbalance or an
-/// overlay line the recovery parser cannot read back.
-pub(crate) fn flake_is_well_formed(flake: &str) -> Result<Vec<FlakePackage>> {
-    let opens = flake.matches('{').count();
-    let closes = flake.matches('}').count();
-    if opens != closes {
-        anyhow::bail!("generated flake.nix has unbalanced braces ({opens} '{{' vs {closes} '}}')");
+/// A naive `count('{') == count('}')` miscounts a flake or derivation whose
+/// `installPhase = ''…''` body or `meta.description` string carries a literal
+/// brace, so the scan walks character-by-character and only counts delimiters
+/// in code context. Returns `Err` describing the first imbalance (an unmatched
+/// or mismatched closer, or unclosed openers at end of input); `Ok(())` when
+/// every pair nests cleanly. Shared by the flake and derivation structural
+/// floors so both speak the same definition of "balanced".
+///
+/// Antiquotation (`${…}`) bodies inside either string form are treated as
+/// opaque string content, NOT re-entered as code. This is sound only because
+/// the renderer escapes user free-text (`description` / `homepage`) via
+/// `nix_escape_string`, which turns `${` into `\${` (double-quoted) / `''${`
+/// (indented) before it reaches this scanner — so no un-escaped `${` opening a
+/// real interpolation ever survives into the input. Feeding this fn raw,
+/// un-escaped Nix that opens an antiquotation would under-count the delimiters
+/// inside it.
+pub(crate) fn nix_delimiters_balanced(text: &str) -> Result<()> {
+    let mut stack: Vec<char> = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            // `#`-to-EOL comment: skip until newline.
+            '#' => {
+                for n in chars.by_ref() {
+                    if n == '\n' {
+                        break;
+                    }
+                }
+            }
+            // Double-quoted string: consume until the matching unescaped `"`.
+            '"' => {
+                while let Some(n) = chars.next() {
+                    match n {
+                        '\\' => {
+                            // Skip the escaped character.
+                            chars.next();
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            // Indented string `''…''`: consume until the terminating `''`. A
+            // `''` only opens a string here (not after an identifier/value),
+            // but brace-balancing does not care about the value form — the body
+            // between is opaque. Inside the body, two escapes use a `''` prefix
+            // and must NOT be mistaken for the terminator:
+            //   `'''`   → a literal `''` (the third `'` is content),
+            //   `''${`  → a literal `${` (suppressed antiquotation).
+            // So on a `''`, peek the next char: a `'` or `$` means an escape —
+            // consume it as content and keep scanning; anything else (or EOF)
+            // is the real string end.
+            '\'' if chars.peek() == Some(&'\'') => {
+                chars.next(); // consume the second opening quote
+                while let Some(n) = chars.next() {
+                    if n == '\'' && chars.peek() == Some(&'\'') {
+                        chars.next(); // consume the paired second `'`
+                        match chars.peek() {
+                            // `'''` (escaped `''`) or `''${` (escaped `${`):
+                            // the run is content, not the terminator — eat the
+                            // escape char and stay inside the string.
+                            Some('\'') | Some('$') => {
+                                chars.next();
+                            }
+                            // A plain `''` — the indented string ends here.
+                            _ => break,
+                        }
+                    }
+                }
+            }
+            '{' | '(' | '[' => stack.push(c),
+            '}' | ')' | ']' => {
+                let want = match c {
+                    '}' => '{',
+                    ')' => '(',
+                    _ => '[',
+                };
+                match stack.pop() {
+                    Some(open) if open == want => {}
+                    Some(open) => anyhow::bail!(
+                        "mismatched delimiter: '{c}' closes an open '{open}' (expected the matching closer)"
+                    ),
+                    None => {
+                        anyhow::bail!("unbalanced delimiters: stray closing '{c}' with no opener")
+                    }
+                }
+            }
+            _ => {}
+        }
     }
+    if let Some(open) = stack.last() {
+        anyhow::bail!(
+            "unbalanced delimiters: {} opener(s) never closed (innermost '{open}')",
+            stack.len()
+        );
+    }
+    Ok(())
+}
+
+/// Cheap structural validity check for a generated `flake.nix`: every Nix
+/// bracket pair balances (string/comment-aware, via
+/// [`nix_delimiters_balanced`]) AND every emitted overlay `callPackage` line
+/// round-trips through [`parse_overlay_line`] (the same recovery parser the
+/// next publish relies on). Used by the snapshot emission validator to fail
+/// loud locally on a malformed flake rather than at `nix build` time on the
+/// consumer's machine.
+///
+/// Returns the recovered package set on success so the caller can run the
+/// system→asset cross-check; returns `Err` on imbalance or an overlay line the
+/// recovery parser cannot read back.
+pub(crate) fn flake_is_well_formed(flake: &str) -> Result<Vec<FlakePackage>> {
+    nix_delimiters_balanced(flake).context("generated flake.nix has unbalanced delimiters")?;
     let mut recovered: Vec<FlakePackage> = Vec::new();
     for line in flake.lines() {
         // Only lines shaped like the overlay callPackage emission are

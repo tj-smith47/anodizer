@@ -525,17 +525,17 @@ fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -
     };
 
     // The derivation expression itself must be structurally well-formed —
-    // `nix-build` rejects an unbalanced expression outright. Same cheap
-    // brace-balance smoke test the flake gets.
-    let opens = render.expr.matches('{').count();
-    let closes = render.expr.matches('}').count();
-    if opens != closes {
-        bail!(
-            "nix: crate '{}' derivation expression has unbalanced braces \
-             ({opens} '{{' vs {closes} '}}'); nix-build would reject it",
+    // `nix-build` rejects an unbalanced expression outright. Same
+    // string/comment-aware delimiter balance the flake gets, so a literal
+    // brace inside the `installPhase = ''…''` body or a `meta.description`
+    // string does not miscount.
+    nix::nix_delimiters_balanced(&render.expr).with_context(|| {
+        format!(
+            "nix: crate '{}' derivation expression has unbalanced delimiters; \
+             nix-build would reject it",
             crate_cfg.name,
-        );
-    }
+        )
+    })?;
 
     // The flake the next publish would write merges this package into the
     // prior set; for validation we render the single-package flake and assert

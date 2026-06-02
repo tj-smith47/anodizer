@@ -31,6 +31,7 @@ mod homebrew;
 mod krew;
 mod mcp;
 mod nfpm;
+mod nix;
 mod scoop;
 mod snapcraft;
 mod winget;
@@ -138,6 +139,7 @@ fn validators() -> Vec<Box<dyn PublisherSchemaValidator>> {
         Box::new(homebrew::HomebrewSchemaValidator),
         Box::new(nfpm::NfpmSchemaValidator),
         Box::new(aur::AurSchemaValidator),
+        Box::new(nix::NixSchemaValidator),
     ]
 }
 

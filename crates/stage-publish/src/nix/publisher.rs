@@ -75,7 +75,7 @@ fn collect_nix_run_targets(ctx: &Context) -> Vec<NixTarget> {
     out
 }
 
-fn is_nix_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
+pub(crate) fn is_nix_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
     crate::util::all_crates(ctx)
         .into_iter()
         .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.nix.is_some()))
