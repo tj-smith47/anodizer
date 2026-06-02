@@ -86,6 +86,7 @@ impl PublisherSchemaValidator for NfpmSchemaValidator {
                      shard (skipped or no eligible artifact); skipping schema validation",
                     crate_name
                 ));
+                continue;
             }
 
             for cfg in &configs {

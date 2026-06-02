@@ -25,6 +25,8 @@ use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
+#[cfg(test)]
+mod acceptance;
 mod aur;
 mod chocolatey;
 mod homebrew;

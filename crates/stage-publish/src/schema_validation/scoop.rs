@@ -438,6 +438,61 @@ mod tests {
         );
     }
 
+    /// A PRESENT Windows archive missing its sha256 is a REAL defect the live
+    /// publish refuses to push — the validator must SURFACE it (the render's
+    /// bail propagates through `validate`), NOT collapse it to a shard skip.
+    /// The presence probe is a bare `bool` that does not read sha256, so this
+    /// is the validator-PATH guard against a future refactor reintroducing the
+    /// silent-skip bug (propagation itself is proven one layer down in
+    /// `scoop_sha256_empty_metadata_bails_with_actionable_error`).
+    #[test]
+    fn present_archive_missing_sha256_surfaces_not_skips() {
+        let cfg = every_option_scoop_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![scoop_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        // A Windows zip that is PRESENT (clears the presence probe) but carries
+        // no sha256 — the manifest render bails on it.
+        let target = "x86_64-pc-windows-msvc";
+        let mut archive_meta = HashMap::new();
+        archive_meta.insert(
+            "url".to_string(),
+            format!("https://acme.example/v1.0.0/widget-{target}.zip"),
+        );
+        archive_meta.insert("format".to_string(), "zip".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/dist/widget-{target}.zip")),
+            name: format!("widget-{target}.zip"),
+            target: Some(target.to_string()),
+            crate_name: "widget".to_string(),
+            metadata: archive_meta,
+            size: None,
+        });
+        let mut bin_meta = HashMap::new();
+        bin_meta.insert("binary".to_string(), "widget".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("/dist/widget.exe"),
+            name: "widget.exe".to_string(),
+            target: Some(target.to_string()),
+            crate_name: "widget".to_string(),
+            metadata: bin_meta,
+            size: None,
+        });
+
+        let err = ScoopSchemaValidator.validate(&ctx).expect_err(
+            "a present-but-broken Windows archive (missing sha256) must surface as an \
+             error, not a silent skip",
+        );
+        assert!(
+            format!("{err:#}").contains("sha256"),
+            "the surfaced error must name the missing sha256, got: {err:#}"
+        );
+    }
+
     /// The check must BITE: the `architecture` block pins its keys to
     /// `64bit`/`32bit`/`arm64` with `additionalProperties: false`, so an
     /// out-of-place architecture key is rejected — with a finding naming the
