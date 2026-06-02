@@ -4,11 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anodizer_core::env_source::EnvSource;
-use anodizer_core::http::blocking_client;
-use anyhow::{Context as _, Result, bail};
-use serde_json::{Value, json};
+use anyhow::Result;
+use serde_json::json;
 
-use super::AiProvider;
+use super::{AiProvider, post_for_json};
 
 /// Default model for the OpenAI provider.
 pub(crate) const DEFAULT_MODEL: &str = "gpt-4o-mini";
@@ -63,33 +62,24 @@ impl AiProvider for OpenAiProvider {
             "messages": [{"role": "user", "content": prompt}]
         });
 
-        let client = blocking_client(TIMEOUT).context("openai: build HTTP client")?;
         let url = format!("{}/v1/chat/completions", self.base_url);
-        let resp = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {api_key}"))
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .context("openai: POST /v1/chat/completions")?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .unwrap_or_else(|e| format!("<body decode error: {e}>"));
-
-        if !status.is_success() {
-            bail!("openai: request failed ({status}): {text}");
-        }
-
-        let parsed: Value = serde_json::from_str(&text).context("openai: parse response JSON")?;
+        let parsed = post_for_json(
+            TIMEOUT,
+            &url,
+            &[
+                ("Authorization", format!("Bearer {api_key}")),
+                ("content-type", "application/json".to_string()),
+            ],
+            &body,
+            "openai",
+        )?;
 
         // Extract choices[0].message.content.
         parsed["choices"]
             .as_array()
             .and_then(|arr| arr.first())
             .and_then(|choice| choice["message"]["content"].as_str().map(str::to_owned))
-            .ok_or_else(|| anyhow::anyhow!("openai: no content in choices[0].message: {text}"))
+            .ok_or_else(|| anyhow::anyhow!("openai: no content in choices[0].message: {parsed}"))
     }
 
     fn default_model(&self) -> &str {

@@ -4,11 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anodizer_core::env_source::EnvSource;
-use anodizer_core::http::blocking_client;
-use anyhow::{Context as _, Result, bail};
-use serde_json::{Value, json};
+use anyhow::Result;
+use serde_json::json;
 
-use super::AiProvider;
+use super::{AiProvider, post_for_json};
 
 /// Default model for the Anthropic provider.
 pub(crate) const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
@@ -65,28 +64,18 @@ impl AiProvider for AnthropicProvider {
             "messages": [{"role": "user", "content": prompt}]
         });
 
-        let client = blocking_client(TIMEOUT).context("anthropic: build HTTP client")?;
         let url = format!("{}/v1/messages", self.base_url);
-        let resp = client
-            .post(&url)
-            .header("x-api-key", &api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .context("anthropic: POST /v1/messages")?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .unwrap_or_else(|e| format!("<body decode error: {e}>"));
-
-        if !status.is_success() {
-            bail!("anthropic: request failed ({status}): {text}");
-        }
-
-        let parsed: Value =
-            serde_json::from_str(&text).context("anthropic: parse response JSON")?;
+        let parsed = post_for_json(
+            TIMEOUT,
+            &url,
+            &[
+                ("x-api-key", api_key),
+                ("anthropic-version", "2023-06-01".to_string()),
+                ("content-type", "application/json".to_string()),
+            ],
+            &body,
+            "anthropic",
+        )?;
 
         // Extract the first text block from the content array.
         parsed["content"]
@@ -99,7 +88,7 @@ impl AiProvider for AnthropicProvider {
                     None
                 }
             })
-            .ok_or_else(|| anyhow::anyhow!("anthropic: no text block in response: {text}"))
+            .ok_or_else(|| anyhow::anyhow!("anthropic: no text block in response: {parsed}"))
     }
 
     fn default_model(&self) -> &str {

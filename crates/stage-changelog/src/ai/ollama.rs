@@ -4,11 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anodizer_core::env_source::EnvSource;
-use anodizer_core::http::blocking_client;
-use anyhow::{Context as _, Result};
-use serde_json::{Value, json};
+use anyhow::Result;
+use serde_json::json;
 
-use super::AiProvider;
+use super::{AiProvider, post_for_json};
 
 /// Default model for the Ollama provider.
 pub(crate) const DEFAULT_MODEL: &str = "llama3.1";
@@ -50,31 +49,20 @@ impl AiProvider for OllamaProvider {
             "stream": false
         });
 
-        let client = blocking_client(TIMEOUT).context("ollama: build HTTP client")?;
         let url = format!("{}/api/generate", self.base_url);
-        let resp = client
-            .post(&url)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .context("ollama: POST /api/generate")?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .unwrap_or_else(|e| format!("<body decode error: {e}>"));
-
-        if !status.is_success() {
-            anyhow::bail!("ollama: request failed ({status}): {text}");
-        }
-
-        let parsed: Value = serde_json::from_str(&text).context("ollama: parse response JSON")?;
+        let parsed = post_for_json(
+            TIMEOUT,
+            &url,
+            &[("content-type", "application/json".to_string())],
+            &body,
+            "ollama",
+        )?;
 
         // Extract the "response" field.
         parsed["response"]
             .as_str()
             .map(str::to_owned)
-            .ok_or_else(|| anyhow::anyhow!("ollama: no `response` field in reply: {text}"))
+            .ok_or_else(|| anyhow::anyhow!("ollama: no `response` field in reply: {parsed}"))
     }
 
     fn default_model(&self) -> &str {
