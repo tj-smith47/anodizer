@@ -20,6 +20,7 @@ use anodizer_core::git;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::{Result, bail};
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// Scope filter for which tag shape(s) to operate on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,16 +93,21 @@ pub struct RollbackOpts {
 /// rejected), then letters/digits/`_`/`-` for the remainder; we then
 /// assert the suffix is anodize's `v<semver>` form so a tag like
 /// `foo-bar` (no `-v` suffix) doesn't accidentally match.
-fn per_crate_tag_re() -> Regex {
+///
+/// Compiled once at first use (the pattern is a compile-time literal) so
+/// the classifier doesn't recompile it per tag — mirrors `is_branchlike`
+/// in `core/git/commits.rs`.
+static PER_CRATE_TAG_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[A-Za-z_][A-Za-z0-9_-]*-v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$")
         .expect("static regex compiles")
-}
+});
 
-/// Lockstep tag pattern: `v<MAJOR>.<MINOR>.<PATCH>[-pre][+build]`.
-fn lockstep_tag_re() -> Regex {
+/// Lockstep tag pattern: `v<MAJOR>.<MINOR>.<PATCH>[-pre][+build]`. Compiled
+/// once at first use (see [`PER_CRATE_TAG_RE`]).
+static LOCKSTEP_TAG_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$")
         .expect("static regex compiles")
-}
+});
 
 /// Classification used to filter tags against the requested `--scope`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,9 +123,9 @@ fn classify_tag(tag: &str) -> Option<TagKind> {
     // Lockstep first — `vX.Y.Z` would also fail the per-crate regex's
     // `<crate>-` prefix requirement, but the explicit ordering keeps the
     // intent obvious to a reader.
-    if lockstep_tag_re().is_match(tag) {
+    if LOCKSTEP_TAG_RE.is_match(tag) {
         Some(TagKind::Lockstep)
-    } else if per_crate_tag_re().is_match(tag) {
+    } else if PER_CRATE_TAG_RE.is_match(tag) {
         Some(TagKind::PerCrate)
     } else {
         None
@@ -145,7 +151,7 @@ fn scope_includes(scope: Scope, kind: TagKind) -> bool {
 fn build_revert_message(target_sha: &str, deleted_tags: &[String], dry_run: bool) -> String {
     let primary = deleted_tags
         .iter()
-        .find(|t| lockstep_tag_re().is_match(t))
+        .find(|t| LOCKSTEP_TAG_RE.is_match(t))
         .cloned()
         .unwrap_or_else(|| {
             deleted_tags
@@ -367,16 +373,20 @@ fn resolve_push_branch(
         return Ok(b.to_string());
     }
     if let Ok(branches) = git::branches_containing_sha_in(cwd, bump_sha) {
-        match branches.len() {
-            1 => return Ok(branches.into_iter().next().expect("len 1")),
-            n if n > 1 => bail!(
+        // Drive off the slice directly so the single-branch case needs no
+        // `.expect()` on a re-derived `next()`: `[only]` binds the one branch
+        // by value, `[_, ..]` (2+) is the ambiguous case, `[]` falls through
+        // to the HEAD-resolution fallback below.
+        match branches.as_slice() {
+            [only] => return Ok(only.clone()),
+            [_, ..] => bail!(
                 "bump commit {} is reachable from {} remote branches: {}.\n\
                  pass --branch <name> to disambiguate.",
                 &bump_sha[..bump_sha.len().min(12)],
-                n,
+                branches.len(),
                 branches.join(", ")
             ),
-            _ => {}
+            [] => {}
         }
     }
     match git::get_current_branch_in(cwd) {
