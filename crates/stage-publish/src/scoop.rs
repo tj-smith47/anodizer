@@ -42,8 +42,12 @@ pub(crate) struct ArchEntry {
     pub(crate) wrap_in_directory: Option<String>,
 }
 
-/// Generate a Scoop JSON manifest string for a Windows binary.
-#[allow(dead_code)]
+/// Generate a single-architecture Scoop JSON manifest string for a Windows
+/// binary. A thin wrapper over [`generate_manifest_with_opts`] that the unit
+/// tests use to exercise manifest shape without assembling an `ArchEntry` set;
+/// the production publish path always renders through
+/// [`generate_manifest_with_opts`] directly.
+#[cfg(test)]
 pub(crate) fn generate_manifest(
     name: &str,
     version: &str,
@@ -210,19 +214,120 @@ pub(crate) fn disambiguate_arch_entries(
 }
 
 // ---------------------------------------------------------------------------
-// publish_to_scoop
+// Windows-artifact eligibility (shared by the live collector + schema guard)
 // ---------------------------------------------------------------------------
 
-/// Render and push the Scoop manifest for `crate_name`.
+/// True when an artifact is a Windows build — by target triple or by path —
+/// i.e. one the scoop bucket manifest's `architecture` block consumes.
 ///
-/// Returns `Ok(true)` when an actual git push was made to the bucket
-/// repo; `Ok(false)` when the publish was skipped (skip_upload, dry-run,
-/// or any future early-exit guard). The caller (Publisher::run) uses
-/// the boolean to decide whether to record rollback evidence — see
-/// `publish_to_homebrew` for the long-form rationale.
-pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
-    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "scoop")?;
+/// The single home for this classification so the live `publish_to_scoop`
+/// collector and the offline schema validator's snapshot-shard guard agree on
+/// which artifacts feed a scoop manifest; if Windows detection later changes,
+/// both update together rather than the guard silently suppressing validation
+/// of an artifact that would publish.
+fn is_scoop_windows_artifact(a: &anodizer_core::artifact::Artifact) -> bool {
+    a.target
+        .as_deref()
+        .map(|t| t.to_ascii_lowercase().contains("windows"))
+        .unwrap_or(false)
+        || a.path
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .contains("windows")
+}
 
+/// Artifact-selection filters for scoop: Windows-only, the
+/// `only_replacing_unibins` universal-binary rule, an optional `ids` allow-list,
+/// and `amd64_variant` microarchitecture selection.
+struct ScoopArtifactFilters<'a> {
+    ids: Option<&'a [String]>,
+    amd64_variant: Option<&'a str>,
+}
+
+impl<'a> ScoopArtifactFilters<'a> {
+    fn matches(&self, a: &anodizer_core::artifact::Artifact) -> bool {
+        // OnlyReplacingUnibins: exclude universal binaries that didn't replace
+        // single-arch variants.
+        if !a.only_replacing_unibins() {
+            return false;
+        }
+        if !is_scoop_windows_artifact(a) {
+            return false;
+        }
+        if let Some(ids) = self.ids {
+            let matched = a
+                .metadata
+                .get("id")
+                .map(|id| ids.iter().any(|i| i == id))
+                .unwrap_or(false);
+            if !matched {
+                return false;
+            }
+        }
+        let target = a.target.as_deref().unwrap_or("");
+        let (_, arch) = anodizer_core::target::map_target(target);
+        if arch == "amd64"
+            && let Some(want) = self.amd64_variant
+            && a.metadata.get("amd64_variant").is_some_and(|v| v != want)
+        {
+            return false;
+        }
+        true
+    }
+
+    /// Derive the scoop artifact filters from a crate's scoop config, applying
+    /// the `amd64_variant` default (`v1`) once so the live collector and the
+    /// schema validator's shard-guard cannot disagree on which artifacts are
+    /// eligible.
+    fn from_config(scoop_cfg: &'a anodizer_core::config::ScoopConfig) -> Self {
+        ScoopArtifactFilters {
+            ids: scoop_cfg.ids.as_deref(),
+            amd64_variant: scoop_cfg.amd64_variant.as_deref().or(Some("v1")),
+        }
+    }
+}
+
+/// True when `crate_name` has at least one Windows archive artifact this run
+/// would feed into a scoop manifest, after the same `ids` / `amd64_variant`
+/// filters [`publish_to_scoop`] applies.
+///
+/// A real release always produces one (the publish path errors otherwise), but
+/// a single-target / sharded snapshot legitimately builds only one platform —
+/// so the offline schema validator consults this to skip a crate whose Windows
+/// archive was not built in the current shard rather than fail on the
+/// publisher's own "no Windows archive artifact" guard.
+pub(crate) fn crate_has_scoop_artifacts(
+    ctx: &Context,
+    crate_name: &str,
+    scoop_cfg: &anodizer_core::config::ScoopConfig,
+) -> bool {
+    let filters = ScoopArtifactFilters::from_config(scoop_cfg);
+    let artifact_kind = util::resolve_artifact_kind(scoop_cfg.use_artifact.as_deref());
+    ctx.artifacts
+        .by_kind_and_crate(artifact_kind, crate_name)
+        .iter()
+        .any(|a| filters.matches(a))
+}
+
+// ---------------------------------------------------------------------------
+// render_scoop_manifest_for_crate
+// ---------------------------------------------------------------------------
+
+/// Resolve a crate's scoop config and render its bucket manifest in-memory,
+/// with no clone, disk, or network side effects.
+///
+/// Returns `Ok(None)` when the publisher would skip this crate (`skip_upload`
+/// or a falsy `if` condition). Errors when the crate carries no `scoop` block,
+/// or when a matched Windows archive is missing its `sha256` metadata (which
+/// would render a manifest `scoop install` rejects). The live publish path and
+/// the offline schema validator both call this so the validated document is
+/// byte-for-byte what a real publish would push.
+pub(crate) fn render_scoop_manifest_for_crate(
+    ctx: &Context,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Option<String>> {
+    let (crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "scoop")?;
     let scoop_cfg = publish
         .scoop
         .as_ref()
@@ -238,19 +343,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         &label,
         log,
     )? {
-        return Ok(false);
-    }
-
-    let (repo_owner, repo_name) =
-        crate::util::resolve_repo_owner_name(scoop_cfg.repository.as_ref())
-            .ok_or_else(|| anyhow::anyhow!("scoop: no repository config for '{}'", crate_name))?;
-
-    if ctx.is_dry_run() {
-        log.status(&format!(
-            "(dry-run) would update Scoop bucket {}/{} for '{}'",
-            repo_owner, repo_name, crate_name
-        ));
-        return Ok(false);
+        return Ok(None);
     }
 
     let version = ctx.version();
@@ -283,51 +376,15 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     let manifest_name = manifest_name_rendered.as_str();
 
     // Find all Windows Archive artifacts, applying IDs + amd64_variant filter.
-    let ids_filter = scoop_cfg.ids.as_deref();
     let url_template = scoop_cfg.url_template.as_deref();
-    let amd64_variant = scoop_cfg.amd64_variant.as_deref().or(Some("v1"));
+    let filters = ScoopArtifactFilters::from_config(scoop_cfg);
 
     let artifact_kind = util::resolve_artifact_kind(scoop_cfg.use_artifact.as_deref());
     let all_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
 
     let raw_arch_entries: Vec<(ArchEntry, String)> = all_artifacts
         .into_iter()
-        // OnlyReplacingUnibins: exclude universal binaries that didn't replace
-        // single-arch variants.
-        .filter(|a| a.only_replacing_unibins())
-        .filter(|a| {
-            // Only windows artifacts.
-            a.target
-                .as_deref()
-                .map(|t| t.to_ascii_lowercase().contains("windows"))
-                .unwrap_or(false)
-                || a.path
-                    .to_string_lossy()
-                    .to_ascii_lowercase()
-                    .contains("windows")
-        })
-        .filter(|a| {
-            // Apply IDs filter if configured.
-            if let Some(ids) = ids_filter {
-                a.metadata
-                    .get("id")
-                    .map(|id| ids.iter().any(|i| i == id))
-                    .unwrap_or(false)
-            } else {
-                true
-            }
-        })
-        // Filter by amd64_variant microarchitecture variant.
-        .filter(|a| {
-            let target = a.target.as_deref().unwrap_or("");
-            let (_, arch) = anodizer_core::target::map_target(target);
-            if arch == "amd64"
-                && let Some(want) = amd64_variant
-            {
-                return a.metadata.get("amd64_variant").is_none_or(|v| v == want);
-            }
-            true
-        })
+        .filter(|a| filters.matches(a))
         .map(|a| -> Result<(ArchEntry, String)> {
             let target = a.target.as_deref().unwrap_or("");
             let (_, raw_arch) = anodizer_core::target::map_target(target);
@@ -403,27 +460,27 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
 
     // Disambiguate: when ids: is unset and multiple archives share a scoop_arch
     // key, prefer .zip then .tar.gz over other formats.
-    let arch_entries =
-        disambiguate_arch_entries(raw_arch_entries, ids_filter.is_some(), crate_name, log)?;
+    let arch_entries = disambiguate_arch_entries(
+        raw_arch_entries,
+        scoop_cfg.ids.as_deref().is_some(),
+        crate_name,
+        log,
+    )?;
 
-    // Collect binary names from artifact metadata.  The archive stage stores
-    // the binary name in the `"binary"` metadata key.  We deduplicate to get
-    // a unique set of binary names across all architecture variants.
+    // Collect binary names from artifact metadata. The archive stage stores
+    // the binary name in the `"binary"` metadata key. Deduplicate to a unique
+    // set of binary names across all architecture variants.
+    //
+    // Gated on the same `filters.matches` the arch-entry collector above
+    // applies — not a looser Windows-only check — so a binary name from an
+    // artifact that `ids` / `amd64_variant` excluded cannot leak into the
+    // manifest's `bin` field while that artifact's arch entry is (correctly)
+    // absent.
     let bin_names: Vec<String> = {
         let mut names = Vec::new();
-        let artifact_kind = util::resolve_artifact_kind(scoop_cfg.use_artifact.as_deref());
         let all_win = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
         for a in &all_win {
-            let is_win = a
-                .target
-                .as_deref()
-                .map(|t| t.to_ascii_lowercase().contains("windows"))
-                .unwrap_or(false)
-                || a.path
-                    .to_string_lossy()
-                    .to_ascii_lowercase()
-                    .contains("windows");
-            if !is_win {
+            if !filters.matches(a) {
                 continue;
             }
             if let Some(bin) = a.metadata.get("binary")
@@ -441,7 +498,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     };
 
     // Derive GitHub slug (owner/repo) for homepage fallback.
-    let github_slug = _crate_cfg
+    let github_slug = crate_cfg
         .release
         .as_ref()
         .and_then(|r| r.github.as_ref())
@@ -480,6 +537,74 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         &license,
         &opts,
     )?;
+
+    Ok(Some(manifest))
+}
+
+// ---------------------------------------------------------------------------
+// publish_to_scoop
+// ---------------------------------------------------------------------------
+
+/// Render and push the Scoop manifest for `crate_name`.
+///
+/// Returns `Ok(true)` when an actual git push was made to the bucket
+/// repo; `Ok(false)` when the publish was skipped (skip_upload, dry-run,
+/// or any future early-exit guard). The caller (Publisher::run) uses
+/// the boolean to decide whether to record rollback evidence — see
+/// `publish_to_homebrew` for the long-form rationale.
+pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
+    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "scoop")?;
+
+    let scoop_cfg = publish
+        .scoop
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("scoop: no scoop config for '{}'", crate_name))?;
+
+    // Check skip_upload / `if:` gate before doing any work, matching the order
+    // the shared renderer applies — so a skipped crate short-circuits before
+    // repo resolution or the dry-run log line, exactly as before.
+    let label = format!("scoop publisher for crate '{}'", crate_name);
+    if util::should_skip_publisher_with_if(
+        ctx,
+        None,
+        scoop_cfg.skip_upload.as_ref(),
+        scoop_cfg.if_condition.as_deref(),
+        &label,
+        log,
+    )? {
+        return Ok(false);
+    }
+
+    let (repo_owner, repo_name) =
+        crate::util::resolve_repo_owner_name(scoop_cfg.repository.as_ref())
+            .ok_or_else(|| anyhow::anyhow!("scoop: no repository config for '{}'", crate_name))?;
+
+    if ctx.is_dry_run() {
+        log.status(&format!(
+            "(dry-run) would update Scoop bucket {}/{} for '{}'",
+            repo_owner, repo_name, crate_name
+        ));
+        return Ok(false);
+    }
+
+    let version = ctx.version();
+
+    // Use name override if set, otherwise crate name; render through template
+    // engine. Recomputed here (cheap) because the manifest filename and commit
+    // message key off the rendered name; the manifest body itself is rendered
+    // by `render_scoop_manifest_for_crate`.
+    let manifest_name_raw = scoop_cfg.name.as_deref().unwrap_or(crate_name);
+    let manifest_name_rendered = ctx
+        .render_template(manifest_name_raw)
+        .unwrap_or_else(|_| manifest_name_raw.to_string());
+    let manifest_name = manifest_name_rendered.as_str();
+
+    // Render the manifest via the same path the schema validator uses. The
+    // skip_upload / `if:` gate was already evaluated above; the renderer
+    // re-checks it (returning None) but on this path it always yields Some.
+    let Some(manifest) = render_scoop_manifest_for_crate(ctx, crate_name, log)? else {
+        return Ok(false);
+    };
 
     // Clone bucket repo, write manifest, commit, push.
     let token = util::resolve_repo_token(
@@ -674,7 +799,7 @@ fn collect_scoop_run_targets(ctx: &Context) -> Vec<ScoopTarget> {
     out
 }
 
-fn is_scoop_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
+pub(crate) fn is_scoop_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
     crate::util::all_crates(ctx)
         .into_iter()
         .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.scoop.is_some()))
@@ -778,7 +903,7 @@ impl anodizer_core::Publisher for ScoopPublisher {
         // `publish_to_scoop` return Ok(false) without pushing; that's
         // still a successful run of the correct code path, so it must
         // not trigger the no-eligible-crates warning. `any_pushed` (below)
-        // tracks the orthogonal "did we mutate a bucket" question used
+        // tracks the orthogonal "was a bucket mutated" question used
         // to gate evidence recording.
         let mut processed = 0usize;
         let mut any_pushed = false;
@@ -1968,9 +2093,8 @@ mod tests {
         StageLogger::new("publish", Verbosity::Normal)
     }
 
-    /// Extract the error message from a `Result<Vec<ArchEntry>>`. We can't
-    /// use `.unwrap_err()` because `ArchEntry` deliberately doesn't derive
-    /// `Debug`.
+    /// Extract the error message from a `Result<Vec<ArchEntry>>`. `.unwrap_err()`
+    /// is unusable here because `ArchEntry` deliberately doesn't derive `Debug`.
     fn expect_err(result: anyhow::Result<Vec<ArchEntry>>) -> String {
         match result {
             Ok(_) => panic!("expected error, got Ok"),

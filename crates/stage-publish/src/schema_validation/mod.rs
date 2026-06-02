@@ -25,6 +25,7 @@ use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
+mod scoop;
 mod winget;
 
 /// A single schema-conformance violation in a rendered publisher artifact.
@@ -120,7 +121,10 @@ pub(crate) trait PublisherSchemaValidator: Send + Sync {
 /// Each per-publisher implementation appends its validator here so
 /// [`validate_publisher_schemas`] picks it up automatically.
 fn validators() -> Vec<Box<dyn PublisherSchemaValidator>> {
-    vec![Box::new(winget::WingetSchemaValidator)]
+    vec![
+        Box::new(winget::WingetSchemaValidator),
+        Box::new(scoop::ScoopSchemaValidator),
+    ]
 }
 
 /// Render and schema-validate every registered publisher's artifacts for the
