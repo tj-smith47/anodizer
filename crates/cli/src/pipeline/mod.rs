@@ -151,7 +151,16 @@ impl Pipeline {
         // build stage), so the guard runs up-front here; the full-release
         // and determinism-harness-child pipelines compile in-process, so
         // their guard runs immediately after the build stage completes.
-        let build_in_pipeline = self.stages.iter().any(|s| s.name() == "build");
+        //
+        // `--skip=build` registers the build stage but skips its body in the
+        // loop below, so a registered-but-skipped build must count as "not
+        // running": otherwise the up-front guard never fires (build appears
+        // in-pipeline) AND the post-build guard never fires (the stage body
+        // is `continue`d) — silently bypassing the guard. Honoring the skip
+        // set routes such runs through the up-front guard, which validates
+        // the prebuilt / pre-loaded binaries.
+        let build_in_pipeline =
+            self.stages.iter().any(|s| s.name() == "build") && !ctx.should_skip("build");
 
         // Merge-mode checkpoint: binaries are already loaded, so the
         // artifact set is final before the first stage runs.
@@ -320,4 +329,106 @@ fn write_pre_release_metadata(ctx: &mut anodizer_core::context::Context) -> anyh
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    /// No-op stage standing in for `BuildStage`: it shares the `"build"`
+    /// name (so the pipeline's skip-set + guard plumbing treats it as the
+    /// build stage) but produces no artifacts, mimicking a misconfigured
+    /// build that compiles nothing.
+    struct NoopBuildStage;
+    impl Stage for NoopBuildStage {
+        fn name(&self) -> &str {
+            "build"
+        }
+        fn run(&self, _ctx: &mut Context) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn binary_surface_config() -> Config {
+        Config {
+            crates: vec![CrateConfig {
+                name: "svc".to_string(),
+                docker_v2: Some(vec![DockerV2Config::default()]),
+                ..CrateConfig::default()
+            }],
+            ..Config::default()
+        }
+    }
+
+    fn source_artifact() -> Artifact {
+        Artifact {
+            kind: ArtifactKind::SourceArchive,
+            path: PathBuf::from("dist/svc.tar.gz"),
+            name: "svc.tar.gz".to_string(),
+            target: None,
+            crate_name: "svc".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        }
+    }
+
+    /// `--skip=build` must NOT disarm the binary-presence guard: the crate
+    /// configures a binary-requiring surface (docker_v2) but only a source
+    /// archive is present, so the up-front guard must fire rather than the
+    /// pipeline silently proceeding with a source-only dist.
+    #[test]
+    fn skip_build_still_runs_binary_presence_guard() {
+        let mut p = Pipeline::new();
+        p.add(Box::new(NoopBuildStage));
+        p.expect_binaries();
+
+        let opts = ContextOptions {
+            skip_stages: vec!["build".to_string()],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(binary_surface_config(), opts);
+        ctx.artifacts.add(source_artifact());
+
+        let log = ctx.logger("pipeline-test");
+        let err = p
+            .run(&mut ctx, &log)
+            .expect_err("guard must fire with --skip=build and no binary");
+        let msg = err.to_string();
+        assert!(msg.contains("crate 'svc'"), "{msg}");
+        assert!(msg.contains("no binary artifacts"), "{msg}");
+    }
+
+    /// Control: with a real prebuilt binary present, `--skip=build` passes
+    /// the guard cleanly — the fix validates binaries, it does not blanket-
+    /// fail every skip-build run.
+    #[test]
+    fn skip_build_passes_guard_when_prebuilt_binary_present() {
+        let mut p = Pipeline::new();
+        p.add(Box::new(NoopBuildStage));
+        p.expect_binaries();
+
+        let opts = ContextOptions {
+            skip_stages: vec!["build".to_string()],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(binary_surface_config(), opts);
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: PathBuf::from("dist/svc"),
+            name: "svc".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "svc".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let log = ctx.logger("pipeline-test");
+        p.run(&mut ctx, &log)
+            .expect("prebuilt binary satisfies the guard under --skip=build");
+    }
 }
