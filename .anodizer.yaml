@@ -93,8 +93,7 @@ defaults:
   # for that crate (DEC-9). `index_timeout` defaults to 300s in the publisher,
   # so it is omitted here (keeping the empty `{}` is the explicit opt-in).
   publish:
-    cargo:
-      required: true
+    cargo: {}
 
 before:
   hooks:
