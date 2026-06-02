@@ -6,7 +6,7 @@
 //! - Token / secret resolution (`resolve_token`, `resolve_repo_token`,
 //!   `resolve_secret_name`).
 //! - Repository owner/name extraction (`resolve_repo_owner_name`).
-//! - Skip-gate evaluation (`should_skip_upload`, `should_skip_publisher`).
+//! - Skip-gate evaluation (`should_skip_upload`, `should_skip_publisher_with_if`).
 
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::config::{CrateConfig, PublishConfig};

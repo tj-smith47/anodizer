@@ -52,8 +52,8 @@ const PER_TARGET_VARS: &[&str] = &[
 /// rendering a target's binary name and paths.
 ///
 /// `os` is the already-mapped OS (`map_target(target).0`) so callers that
-/// need it for other decisions don't re-map. The arch-family var mirrors
-/// GoReleaser's `Arm64`/`Arm`/`Amd64`/`I386` build-context variables.
+/// need it for other decisions don't re-map. The arch-family var is one of
+/// `Arm64`/`Arm`/`Amd64`/`I386`, selected from the target's arch.
 fn set_per_target_vars(
     vars: &mut anodizer_core::template::TemplateVars,
     target: &str,
@@ -193,9 +193,8 @@ impl Stage for super::BuildStage {
 
         // Rust builds sharing the same workspace target/ directory can deadlock
         // when multiple cargo invocations run in parallel (they contend on
-        // target/ directory locks). GoReleaser explicitly serializes Rust builds
-        // for this reason. Force sequential execution unless the user has only
-        // a single build job.
+        // target/ directory locks). Force sequential execution unless the user
+        // has only a single build job.
         let effective_parallelism = if build_jobs.len() > 1 { 1 } else { parallelism };
 
         let template_vars = ctx.template_vars().clone();
@@ -424,8 +423,8 @@ fn plan_build_jobs(
             // (os, arch) alias-table match via
             // `anodizer_core::partial::find_runtime_target` so a config
             // listing `x86_64-apple-darwin` still picks up a host triple
-            // spelled differently by `rustc -vV` (mirrors GR's
-            // `partial.findRuntime` OS / arch alias tables). When the
+            // spelled differently by `rustc -vV` via the OS / arch alias
+            // tables. When the
             // user explicitly requested `--single-target` and zero
             // configured targets match (even after alias resolution),
             // this is an error: silent "warn then skip" produced empty
@@ -480,7 +479,7 @@ fn plan_build_jobs(
                 continue;
             }
 
-            // Validate targets against known list (error, matching GoReleaser)
+            // Validate targets against the known list (unknown target is an error)
             for target in &targets {
                 let validation_target = target_for_validation(target);
                 if !KNOWN_TARGETS.contains(&validation_target) {
@@ -838,7 +837,7 @@ fn plan_build_jobs(
                     // Fully-rendered per-target build env (overrides + the
                     // reproducible RUSTFLAGS/SOURCE_DATE_EPOCH merges already
                     // folded in) flows into this job's build hooks beneath the
-                    // hook's own env:, matching GoReleaser precedence.
+                    // hook's own env:, which takes precedence.
                     build_env: target_env.clone(),
                 });
             }
