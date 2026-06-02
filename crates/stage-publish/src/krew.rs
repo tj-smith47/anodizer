@@ -148,6 +148,22 @@ pub(crate) fn generate_manifest(params: &KrewManifestParams<'_>) -> Result<Strin
     ))
 }
 
+/// Resolve the effective krew plugin name: the `krew.name` override when set,
+/// else the crate name, rendered through the template engine.
+///
+/// This is the single source of truth shared by the manifest `metadata.name`,
+/// the `plugins/<name>.yaml` file basename, and the webhook `pluginName`.
+/// krew-index CI rejects a plugin whose `metadata.name` disagrees with the
+/// manifest filename, so these three must never drift apart.
+fn resolve_plugin_name(
+    name_override: Option<&str>,
+    crate_name: &str,
+    render: impl Fn(&str) -> Result<String>,
+) -> Result<String> {
+    let raw = name_override.unwrap_or(crate_name);
+    render(raw).with_context(|| format!("krew: render plugin name template for '{}'", crate_name))
+}
+
 /// Map the internal arch names to Krew's expected labels.
 ///
 /// This is a publisher-specific mapping layer on top of the generic
@@ -797,8 +813,19 @@ pub fn publish_to_krew(
         plats
     };
 
+    // Resolve the plugin name (honoring the `krew.name` override) BEFORE
+    // generating the manifest: krew-index CI rejects a plugin whose
+    // `metadata.name` disagrees with the manifest filename / declared plugin
+    // name. The manifest `metadata.name`, the published file basename, and the
+    // webhook `pluginName` are all fed this single resolved value so they
+    // cannot drift apart.
+    let plugin_name_rendered = resolve_plugin_name(krew_cfg.name.as_deref(), crate_name, |t| {
+        ctx.render_template(t)
+    })?;
+    let plugin_name = plugin_name_rendered.as_str();
+
     let manifest = generate_manifest(&KrewManifestParams {
-        name: crate_name,
+        name: plugin_name,
         version: &version,
         homepage: &homepage,
         short_description: &short_description,
@@ -806,13 +833,6 @@ pub fn publish_to_krew(
         caveats: &caveats,
         platforms: &platforms,
     })?;
-
-    // Use name override if set; render through template engine.
-    let plugin_name_raw = krew_cfg.name.as_deref().unwrap_or(crate_name);
-    let plugin_name_rendered = ctx
-        .render_template(plugin_name_raw)
-        .unwrap_or_else(|_| plugin_name_raw.to_string());
-    let plugin_name = plugin_name_rendered.as_str();
 
     // Clone the krew-index fork, write the plugin manifest, commit, push.
     let token =
@@ -1288,6 +1308,67 @@ mod tests {
         assert!(manifest.contains("os: darwin"));
         assert!(manifest.contains("uri: https://example.com/mytool-darwin-amd64.tar.gz"));
         assert!(manifest.contains("sha256: cafebabe"));
+    }
+
+    /// The manifest `metadata.name` must carry the resolved `krew.name`
+    /// override, not the crate name — krew-index CI rejects a plugin whose
+    /// `metadata.name` disagrees with the declared plugin name / filename.
+    #[test]
+    fn manifest_name_uses_krew_name_override_not_crate_name() {
+        // `resolve_plugin_name` picks the override over the crate name, and
+        // renders it (here a no-op template render that returns its input).
+        let plugin_name =
+            resolve_plugin_name(Some("kubectl-mytool"), "mytool", |t| Ok(t.to_string())).unwrap();
+        assert_eq!(plugin_name, "kubectl-mytool");
+
+        let manifest = generate_manifest(&KrewManifestParams {
+            name: &plugin_name,
+            version: "1.0.0",
+            homepage: "https://example.com",
+            short_description: "A kubectl plugin",
+            description: "desc",
+            caveats: "",
+            platforms: &[KrewPlatform {
+                os: "linux".to_string(),
+                arch: "amd64".to_string(),
+                url: "https://example.com/mytool.tar.gz".to_string(),
+                sha256: "deadbeef".to_string(),
+                bin: "kubectl-mytool".to_string(),
+            }],
+        })
+        .unwrap();
+
+        assert!(
+            manifest.contains("  name: kubectl-mytool"),
+            "metadata.name must be the krew.name override; got:\n{manifest}"
+        );
+        assert!(
+            !manifest.contains("name: mytool\n"),
+            "metadata.name must NOT be the bare crate name; got:\n{manifest}"
+        );
+    }
+
+    /// With no `krew.name` override, the plugin name falls back to the crate
+    /// name (still rendered through the template engine).
+    #[test]
+    fn resolve_plugin_name_falls_back_to_crate_name() {
+        let name = resolve_plugin_name(None, "mytool", |t| Ok(t.to_string())).unwrap();
+        assert_eq!(name, "mytool");
+    }
+
+    /// A render failure in the plugin-name template propagates (it is not
+    /// swallowed into a literal-template plugin name).
+    #[test]
+    fn resolve_plugin_name_propagates_render_error() {
+        let err = resolve_plugin_name(Some("{{ bad"), "mytool", |_| {
+            anyhow::bail!("template parse error")
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("render plugin name template"),
+            "render error must be contextualized; got: {err}"
+        );
     }
 
     #[test]
