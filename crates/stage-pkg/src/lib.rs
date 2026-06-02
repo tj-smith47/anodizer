@@ -369,7 +369,7 @@ impl Stage for PkgStage {
                     // Installer.app and breaks the homebrew-cask pkg stanza +
                     // checksum naming; a user-supplied `name` already ending in
                     // `.pkg` is not doubled. Mirrors stage-dmg's `.dmg` append.
-                    let pkg_filename = if pkg_filename.to_lowercase().ends_with(".pkg") {
+                    let pkg_filename = if pkg_filename.to_ascii_lowercase().ends_with(".pkg") {
                         pkg_filename
                     } else {
                         format!("{pkg_filename}.pkg")
