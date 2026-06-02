@@ -90,6 +90,75 @@ pub fn strip_monorepo_prefix<'a>(tag: &'a str, prefix: &str) -> &'a str {
     tag.strip_prefix(prefix).unwrap_or(tag)
 }
 
+/// Which form of a tag the `ignore_tags` / `ignore_tag_prefixes` filters match
+/// against in a monorepo context.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IgnoreMatchTarget {
+    /// Match ignores against the monorepo-stripped tag (so user patterns like
+    /// `v*-rc*` work without the prefix). Used by [`find_latest_tag_matching_in`].
+    Stripped,
+    /// Match ignores against the full tag name — identical to the legacy
+    /// `git describe --exclude=<pat>` path regardless of `monorepo_prefix`.
+    /// Used by [`smartsemver_previous_tag_in`].
+    Full,
+}
+
+/// Parse `tags_output` lines into `(SemVer, tag)` pairs, applying the shared
+/// monorepo-prefix membership filter, the `ignore_tags` glob filter, the
+/// `ignore_tag_prefixes` starts-with filter, and SemVer parsing (stripping the
+/// monorepo prefix before parsing). Unsorted — the caller picks ascending vs
+/// descending and may layer additional per-site filters (regex match,
+/// current-tag exclusion, prerelease skip).
+///
+/// `ignore_target` selects whether the ignore filters see the stripped or full
+/// tag. `skip_empty_ignore_prefix` controls whether an empty rendered
+/// `ignore_tag_prefixes` entry is ignored (`true`) or allowed to match every
+/// tag (`false`) — preserving each call site's historical behavior.
+fn semver_pairs_filtered(
+    tags_output: &str,
+    monorepo_prefix: Option<&str>,
+    ignore_tag_globs: &[glob::Pattern],
+    rendered_ignore_prefixes: &[String],
+    ignore_target: IgnoreMatchTarget,
+    skip_empty_ignore_prefix: bool,
+) -> Vec<(SemVer, String)> {
+    let ignore_view = |t: &str| -> String {
+        match ignore_target {
+            IgnoreMatchTarget::Stripped => monorepo_prefix
+                .map(|pfx| strip_monorepo_prefix(t, pfx))
+                .unwrap_or(t)
+                .to_string(),
+            IgnoreMatchTarget::Full => t.to_string(),
+        }
+    };
+    tags_output
+        .lines()
+        .filter(|t| {
+            monorepo_prefix
+                .map(|pfx| t.starts_with(pfx))
+                .unwrap_or(true)
+        })
+        .filter(|t| {
+            let view = ignore_view(t);
+            !ignore_tag_globs.iter().any(|g| g.matches(&view))
+        })
+        .filter(|t| {
+            let view = ignore_view(t);
+            !rendered_ignore_prefixes.iter().any(|p| {
+                (!skip_empty_ignore_prefix || !p.is_empty()) && view.starts_with(p.as_str())
+            })
+        })
+        .filter_map(|t| {
+            let tag_for_parse = monorepo_prefix
+                .map(|pfx| strip_monorepo_prefix(t, pfx))
+                .unwrap_or(t);
+            parse_semver_tag(tag_for_parse)
+                .ok()
+                .map(|v| (v, t.to_string()))
+        })
+        .collect()
+}
+
 /// Find the latest tag matching a template pattern.
 /// E.g., tag_template "cfgd-core-v{{ .Version }}" → matches tags like "cfgd-core-v1.2.3"
 ///
@@ -218,53 +287,28 @@ pub fn find_latest_tag_matching_with_prefix_in(
         return Ok(None);
     }
 
-    let mut matching: Vec<(SemVer, String)> = tags_output
-        .lines()
-        // When monorepo_prefix is set, only consider tags starting with it.
-        .filter(|t| {
-            monorepo_prefix
-                .map(|pfx| t.starts_with(pfx))
-                .unwrap_or(true)
-        })
-        // For regex matching: when monorepo_prefix is set, strip the prefix
-        // before matching (the tag_template pattern matches the version portion).
-        .filter(|t| {
-            let tag_for_match = monorepo_prefix
-                .map(|pfx| strip_monorepo_prefix(t, pfx))
-                .unwrap_or(t);
-            re.is_match(tag_for_match)
-        })
-        // Apply ignore_tags: exclude via glob matching (template-rendered).
-        // In monorepo mode, match against the STRIPPED tag so that user-defined
-        // patterns like "v*-rc*" work without needing the monorepo prefix.
-        .filter(|t| {
-            let tag_for_ignore = monorepo_prefix
-                .map(|pfx| strip_monorepo_prefix(t, pfx))
-                .unwrap_or(t);
-            !ignore_tag_globs
-                .iter()
-                .any(|pat| pat.matches(tag_for_ignore))
-        })
-        // Apply ignore_tag_prefixes: exclude tags starting with any prefix
-        // (template-rendered). In monorepo mode, match against stripped tag.
-        .filter(|t| {
-            let tag_for_ignore = monorepo_prefix
-                .map(|pfx| strip_monorepo_prefix(t, pfx))
-                .unwrap_or(t);
-            !rendered_ignore_prefixes
-                .iter()
-                .any(|pfx| tag_for_ignore.starts_with(pfx.as_str()))
-        })
-        // For SemVer parsing: strip the monorepo prefix before parsing.
-        .filter_map(|t| {
-            let tag_for_parse = monorepo_prefix
-                .map(|pfx| strip_monorepo_prefix(t, pfx))
-                .unwrap_or(t);
-            parse_semver_tag(tag_for_parse)
-                .ok()
-                .map(|v| (v, t.to_string()))
-        })
-        .collect();
+    // Shared monorepo-prefix + ignore-glob + ignore-prefix + SemVer-parse
+    // pipeline. The tag_template regex is layered on top — it only narrows the
+    // kept set (all filters are conjunctive), so applying it after the shared
+    // helper leaves the final set and git-preserved order unchanged. Matches
+    // ignores against the STRIPPED tag and does NOT skip empty ignore prefixes,
+    // preserving this site's historical behavior.
+    let mut matching: Vec<(SemVer, String)> = semver_pairs_filtered(
+        &tags_output,
+        monorepo_prefix,
+        &ignore_tag_globs,
+        &rendered_ignore_prefixes,
+        IgnoreMatchTarget::Stripped,
+        false,
+    )
+    .into_iter()
+    .filter(|(_, t)| {
+        let tag_for_match = monorepo_prefix
+            .map(|pfx| strip_monorepo_prefix(t, pfx))
+            .unwrap_or(t);
+        re.is_match(tag_for_match)
+    })
+    .collect();
 
     if use_git_sort {
         // Git already sorted; the first entry in --sort=-version:* output is
@@ -613,33 +657,23 @@ fn smartsemver_previous_tag_in(
             .unwrap_or(false)
     };
 
-    let mut candidates: Vec<(SemVer, String)> = tags_output
-        .lines()
-        .filter(|t| *t != current_tag)
-        .filter(|t| {
-            monorepo_prefix
-                .map(|pfx| t.starts_with(pfx))
-                .unwrap_or(true)
-        })
-        // Match ignore_tags and ignore_tag_prefixes against the FULL tag name
-        // so behavior is identical to the legacy `git describe --exclude=<pat>`
-        // path regardless of monorepo_prefix.
-        .filter(|t| !ignore_tag_globs.iter().any(|g| g.matches(t)))
-        .filter(|t| {
-            !rendered_ignore_prefixes
-                .iter()
-                .any(|p| !p.is_empty() && t.starts_with(p.as_str()))
-        })
-        .filter_map(|t| {
-            let stripped = monorepo_prefix
-                .map(|pfx| strip_monorepo_prefix(t, pfx))
-                .unwrap_or(t);
-            parse_semver_tag(stripped)
-                .ok()
-                .map(|sv| (sv, t.to_string()))
-        })
-        .filter(|(sv, _)| !skip_prereleases || !sv.is_prerelease())
-        .collect();
+    // Shared monorepo-prefix + ignore-glob + ignore-prefix + SemVer-parse
+    // pipeline. Matches ignores against the FULL tag (legacy `git describe
+    // --exclude` parity) and skips empty ignore prefixes. The current-tag
+    // exclusion and prerelease skip are conjunctive, so layering them on the
+    // helper output leaves the final candidate set unchanged.
+    let mut candidates: Vec<(SemVer, String)> = semver_pairs_filtered(
+        &tags_output,
+        monorepo_prefix,
+        &ignore_tag_globs,
+        &rendered_ignore_prefixes,
+        IgnoreMatchTarget::Full,
+        true,
+    )
+    .into_iter()
+    .filter(|(_, t)| t != current_tag)
+    .filter(|(sv, _)| !skip_prereleases || !sv.is_prerelease())
+    .collect();
 
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
     Ok(candidates.into_iter().next().map(|(_, tag)| tag))
