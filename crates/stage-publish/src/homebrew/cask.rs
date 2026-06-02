@@ -606,15 +606,15 @@ pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
 /// Intermediate result from cask content generation: the rendered cask file
 /// string, the cask name used as the filename stem, and any versioned
 /// alternative-name files to emit alongside (one extra `.rb` per entry).
-pub(super) struct CaskGenResult {
-    pub(super) content: String,
-    pub(super) cask_name: String,
+pub(crate) struct CaskGenResult {
+    pub(crate) content: String,
+    pub(crate) cask_name: String,
     /// Tuples of (filename-stem, file-body) for each versioned alt-name
     /// (e.g. `myapp@1.2.3`). Empty when no alt-name templated to a
     /// versioned form. Each body is the same as `content` but with the
     /// `cask "<name>"` header re-keyed to the alt-name so
     /// `brew install <alt>` resolves to the version-pinned cask.
-    pub(super) versioned_files: Vec<(String, String)>,
+    pub(crate) versioned_files: Vec<(String, String)>,
 }
 
 /// Generate a Homebrew Cask `.rb` file string from the project context.
@@ -849,7 +849,12 @@ pub(super) fn generate_cask_from_context(
     // OR `{ name, target }`) into the template-side `CaskBinaryEntry` shape so
     // the template renders `binary "<n>"` for the bare form and
     // `binary "<n>", target: "<t>"` when the rename target is set.
-    let cask_binaries: Vec<CaskBinaryEntry> = cask_cfg
+    //
+    // When neither `binaries:` nor `app:` is configured, default to a single
+    // `binary "<cask_name>"` so the cask declares at least one artifact stanza
+    // — a cask with no artifact directive fails `brew audit` and installs
+    // nothing. Mirrors the top-level `homebrew_casks:` path's default.
+    let mut cask_binaries: Vec<CaskBinaryEntry> = cask_cfg
         .binaries
         .as_deref()
         .unwrap_or(&[])
@@ -859,6 +864,12 @@ pub(super) fn generate_cask_from_context(
             target: b.target().map(str::to_string),
         })
         .collect();
+    if cask_binaries.is_empty() && cask_cfg.app.is_none() {
+        cask_binaries.push(CaskBinaryEntry {
+            name: cask_name.to_string(),
+            target: None,
+        });
+    }
 
     // Build dependency and conflict directive strings for the template
     let cask_depends: Vec<String> = cask_cfg
@@ -1103,4 +1114,39 @@ pub(super) fn find_top_level_cask_artifact<'a>(
                 .filter(|a| a.only_replacing_unibins())
                 .find(|a| filter(a))
         })
+}
+
+/// True when `crate_name` has a macOS (darwin) `DiskImage` or `Archive`
+/// artifact in scope — i.e. [`generate_cask_from_context`]'s primary-artifact
+/// lookup will succeed. Mirrors that lookup's darwin predicate exactly so a
+/// validator can gate a not-applicable skip on artifact PRESENCE, then call the
+/// render and propagate any `Err` (a present-but-broken artifact, missing
+/// url/sha256), instead of collapsing every render `bail!` to "skip".
+pub(crate) fn crate_has_macos_cask_artifact(ctx: &Context, crate_name: &str) -> bool {
+    // A DiskImage is a macOS-only format, so a target-less one counts as darwin
+    // (`unwrap_or(true)`) — exactly the primary-artifact lookup's predicate. An
+    // Archive must name a darwin/macos target (`unwrap_or(false)`).
+    let dmg_is_darwin = |a: &anodizer_core::artifact::Artifact| {
+        a.target
+            .as_deref()
+            .map(|t| t.contains("darwin") || t.contains("macos"))
+            .unwrap_or(true)
+    };
+    let archive_is_darwin = |a: &anodizer_core::artifact::Artifact| {
+        a.target
+            .as_deref()
+            .map(|t| t.contains("darwin") || t.contains("macos"))
+            .unwrap_or(false)
+    };
+    ctx.artifacts
+        .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::DiskImage, crate_name)
+        .iter()
+        .filter(|a| a.only_replacing_unibins())
+        .any(|a| dmg_is_darwin(a))
+        || ctx
+            .artifacts
+            .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Archive, crate_name)
+            .iter()
+            .filter(|a| a.only_replacing_unibins())
+            .any(|a| archive_is_darwin(a))
 }

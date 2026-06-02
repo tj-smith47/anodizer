@@ -174,16 +174,18 @@ fn render_install_and_test_blocks(
     }
 }
 
-/// Collect, filter, and disambiguate archive entries (Archive +
-/// UploadableBinary) for the formula. Returns `(target, url, sha256)`
-/// tuples ready to feed into the formula renderer.
-fn collect_archive_entries(
-    ctx: &Context,
+/// Filter `crate_name`'s `Archive` + `UploadableBinary` artifacts down to the
+/// set a homebrew formula would draw from: drop universal-binary leftovers and
+/// raw `gz` blobs, apply the `ids:` allow-list, and apply the
+/// `amd64_variant` / `arm_variant` microarch selectors. Reads no url/sha256
+/// metadata, so it only answers "does a candidate exist" — a presence probe
+/// that is `bail!`-free, distinct from [`collect_archive_entries`]'s render
+/// path (which errors when a matched artifact is missing url/sha256).
+fn homebrew_matching_artifacts<'a>(
+    ctx: &'a Context,
     hb_cfg: &HomebrewConfig,
     crate_name: &str,
-    version: &str,
-    log: &StageLogger,
-) -> Result<Vec<(String, String, String)>> {
+) -> Vec<&'a anodizer_core::artifact::Artifact> {
     let ids_filter = hb_cfg.ids.as_deref();
     let amd64_variant = hb_cfg.amd64_variant.as_deref().or(Some("v1"));
     // Goarm defaults to "6" for Homebrew.
@@ -195,10 +197,8 @@ fn collect_archive_entries(
         anodizer_core::artifact::ArtifactKind::UploadableBinary,
         crate_name,
     ));
-    // Collect as (target, url, sha256, format) so the disambiguator can prefer
-    // .tar.gz when multiple archives match the same OS/arch and ids: is unset.
-    let raw_archive_data: Vec<(String, String, String, String)> = all_artifacts
-        .iter()
+    all_artifacts
+        .into_iter()
         // OnlyReplacingUnibins: exclude universal binaries that didn't replace
         // single-arch variants.
         .filter(|a| a.only_replacing_unibins())
@@ -232,47 +232,76 @@ fn collect_archive_entries(
             }
             true
         })
-        .map(|a| {
-            let target = a.target.as_deref().unwrap_or("");
-            // When url_template is set, render it to produce the download URL;
-            // otherwise use the artifact metadata URL (from the release stage).
-            let url = if let Some(tmpl) = hb_cfg.url_template.as_deref() {
-                let (os, arch) = anodizer_core::target::map_target(target);
-                crate::util::render_url_template_with_ctx(ctx, tmpl, a.name(), version, &arch, &os)
-            } else {
-                a.metadata
-                    .get("url")
-                    .map(|v| v.to_string())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "homebrew formula: artifact '{}' is missing 'url' metadata — \
+        .collect()
+}
+
+/// Collect, filter, and disambiguate archive entries (Archive +
+/// UploadableBinary) for the formula. Returns `(target, url, sha256)`
+/// tuples ready to feed into the formula renderer.
+fn collect_archive_entries(
+    ctx: &Context,
+    hb_cfg: &HomebrewConfig,
+    crate_name: &str,
+    version: &str,
+    log: &StageLogger,
+) -> Result<Vec<(String, String, String)>> {
+    let ids_filter = hb_cfg.ids.as_deref();
+    let amd64_variant = hb_cfg.amd64_variant.as_deref().or(Some("v1"));
+    // Goarm defaults to "6" for Homebrew.
+    let arm_variant = hb_cfg.arm_variant.as_deref().or(Some("6"));
+    // Collect as (target, url, sha256, format) so the disambiguator can prefer
+    // .tar.gz when multiple archives match the same OS/arch and ids: is unset.
+    let raw_archive_data: Vec<(String, String, String, String)> =
+        homebrew_matching_artifacts(ctx, hb_cfg, crate_name)
+            .iter()
+            .map(|a| {
+                let target = a.target.as_deref().unwrap_or("");
+                // When url_template is set, render it to produce the download URL;
+                // otherwise use the artifact metadata URL (from the release stage).
+                let url = if let Some(tmpl) = hb_cfg.url_template.as_deref() {
+                    let (os, arch) = anodizer_core::target::map_target(target);
+                    crate::util::render_url_template_with_ctx(
+                        ctx,
+                        tmpl,
+                        a.name(),
+                        version,
+                        &arch,
+                        &os,
+                    )
+                } else {
+                    a.metadata
+                        .get("url")
+                        .map(|v| v.to_string())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "homebrew formula: artifact '{}' is missing 'url' metadata — \
                              ensure the release stage ran successfully and populated \
                              dist/artifacts.json",
-                            a.name()
-                        )
-                    })?
-            };
-            let sha256 = a
-                .metadata
-                .get("sha256")
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "homebrew formula: artifact '{}' is missing sha256 metadata — \
+                                a.name()
+                            )
+                        })?
+                };
+                let sha256 = a
+                    .metadata
+                    .get("sha256")
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "homebrew formula: artifact '{}' is missing sha256 metadata — \
                          ensure the checksum stage ran before the publish stage; \
                          without a valid sha256 the generated formula would fail \
                          `brew audit`",
-                        a.name()
-                    )
-                })?;
-            // `format` feeds the multi-archive disambiguator (prefers .tar.gz
-            // > tgz). Empty value just demotes this entry to lowest preference;
-            // never reaches the rendered formula.
-            let format = a.metadata.get("format").cloned().unwrap_or_default();
-            Ok((target.to_string(), url, sha256, format))
-        })
-        .collect::<Result<Vec<_>>>()?;
+                            a.name()
+                        )
+                    })?;
+                // `format` feeds the multi-archive disambiguator (prefers .tar.gz
+                // > tgz). Empty value just demotes this entry to lowest preference;
+                // never reaches the rendered formula.
+                let format = a.metadata.get("format").cloned().unwrap_or_default();
+                Ok((target.to_string(), url, sha256, format))
+            })
+            .collect::<Result<Vec<_>>>()?;
 
     let archive_data =
         disambiguate_homebrew_archives(raw_archive_data, ids_filter.is_some(), crate_name, log)?;
@@ -375,18 +404,21 @@ struct CaskInTapOutcome {
     versioned_paths: Vec<PathBuf>,
 }
 
-/// When a cask config is present alongside the formula config, generate and
-/// write the cask into the same tap clone so the commit/push covers both
-/// files in a single round-trip.
-fn maybe_write_cask_into_tap(
+/// Render the same-tap cask that accompanies a formula, honoring the cask's
+/// own `skip_upload`. Returns `Ok(None)` when no cask is configured or the
+/// cask's `skip_upload` is truthy — the formula still publishes on its own.
+///
+/// Splits the cask's skip gate (evaluated here, once) from the pure
+/// [`generate_cask_from_context`] render so the live publish path and the
+/// offline schema validator share one render without double-warning.
+pub(crate) fn render_same_tap_cask_for_crate(
     ctx: &Context,
     hb_cfg: &HomebrewConfig,
     crate_name: &str,
-    repo_path: &Path,
     log: &StageLogger,
-) -> Result<CaskInTapOutcome> {
+) -> Result<Option<super::cask::CaskGenResult>> {
     let Some(cask_cfg) = hb_cfg.cask.as_ref() else {
-        return Ok(CaskInTapOutcome::default());
+        return Ok(None);
     };
     if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log) {
         log.status(&format!(
@@ -398,9 +430,28 @@ fn maybe_write_cask_into_tap(
                 .map(|v| v.as_str())
                 .unwrap_or("")
         ));
-        return Ok(CaskInTapOutcome::default());
+        return Ok(None);
     }
     let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg)?;
+    Ok(Some(cask_result))
+}
+
+/// When a cask config is present alongside the formula config, generate and
+/// write the cask into the same tap clone so the commit/push covers both
+/// files in a single round-trip.
+fn maybe_write_cask_into_tap(
+    ctx: &Context,
+    hb_cfg: &HomebrewConfig,
+    crate_name: &str,
+    repo_path: &Path,
+    log: &StageLogger,
+) -> Result<CaskInTapOutcome> {
+    let Some(cask_result) = render_same_tap_cask_for_crate(ctx, hb_cfg, crate_name, log)? else {
+        return Ok(CaskInTapOutcome::default());
+    };
+    let cask_cfg = hb_cfg.cask.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("homebrew cask: cask config vanished for '{}'", crate_name)
+    })?;
 
     // Honor `cask.directory:` so a tap can place
     // casks in a sub-tree. Defaults to "Casks". The cask config field
@@ -576,6 +627,155 @@ fn submit_homebrew_pr(
     }
 }
 
+/// A rendered formula plus the formula name used as its `.rb` filename stem.
+pub(crate) struct RenderedFormula {
+    /// The rendered Ruby formula body.
+    pub(crate) formula: String,
+    /// The post-Tera formula name (filename stem + `class` token source).
+    pub(crate) formula_name: String,
+}
+
+/// Render the Ruby formula a live publish would write for `crate_name`,
+/// honoring `skip_upload` and the `if:` condition.
+///
+/// Returns `Ok(None)` when the publisher would skip this crate (`skip_upload`
+/// truthy or a falsy `if`) — nothing to render or validate. The live publish
+/// path and the offline schema validator both produce the formula through the
+/// same skip-unaware [`render_formula_inner`] so the validated document is
+/// byte-for-byte what a release pushes.
+///
+/// Errors when the crate carries no `homebrew` block or no archive artifact
+/// matches the configured filters (a release always builds at least one). A
+/// sharded snapshot that built no matching archive surfaces as that error; the
+/// validator treats it as a skip via [`crate_has_homebrew_archives`].
+pub(crate) fn render_homebrew_formula_for_crate(
+    ctx: &Context,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Option<RenderedFormula>> {
+    let (crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
+    let hb_cfg = publish
+        .homebrew
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("homebrew: no homebrew config for '{}'", crate_name))?;
+
+    if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log) {
+        log.status(&format!(
+            "homebrew: skipping upload for '{}' (skip_upload={})",
+            crate_name,
+            hb_cfg
+                .skip_upload
+                .as_ref()
+                .map(|v| v.as_str())
+                .unwrap_or("")
+        ));
+        return Ok(None);
+    }
+
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        hb_cfg.if_condition.as_deref(),
+        &format!("homebrew publisher for crate '{}'", crate_name),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status(&format!(
+            "homebrew: skipping '{}' — `if` condition evaluated falsy",
+            crate_name
+        ));
+        return Ok(None);
+    }
+
+    let github_slug = crate_cfg
+        .release
+        .as_ref()
+        .and_then(|r| r.github.as_ref())
+        .map(|gh| format!("{}/{}", gh.owner, gh.name));
+    let rendered = render_formula_inner(ctx, hb_cfg, crate_name, github_slug, log)?;
+    Ok(Some(rendered))
+}
+
+/// True when at least one archive artifact (`Archive` or `UploadableBinary`)
+/// for `crate_name` survives the homebrew filters — i.e. the formula render
+/// has a candidate to point at. A sharded snapshot that built no matching
+/// archive returns false so the validator can SKIP rather than trip the
+/// publisher's "no archives matched" guard.
+///
+/// This is presence-only: it does NOT read url/sha256, so it returns `true`
+/// even for a matched artifact whose metadata is incomplete. That is
+/// deliberate — a present-but-broken artifact is a real defect the caller must
+/// surface by then calling the render (which `Err`s), not silently skip.
+pub(crate) fn crate_has_homebrew_archives(
+    ctx: &Context,
+    hb_cfg: &HomebrewConfig,
+    crate_name: &str,
+) -> bool {
+    !homebrew_matching_artifacts(ctx, hb_cfg, crate_name).is_empty()
+}
+
+/// Skip-unaware formula render: resolve metadata, build the install/test
+/// blocks, collect + disambiguate archive entries, and produce the Ruby body.
+/// The skip / `if` gate is evaluated by the callers — both the live publish
+/// path (which has already evaluated it) and
+/// [`render_homebrew_formula_for_crate`] — so each resolved-with-warning value
+/// is logged exactly once.
+fn render_formula_inner(
+    ctx: &Context,
+    hb_cfg: &HomebrewConfig,
+    crate_name: &str,
+    github_slug: Option<String>,
+    log: &StageLogger,
+) -> Result<RenderedFormula> {
+    let version = ctx.version();
+    let meta = resolve_homebrew_metadata(ctx, hb_cfg, crate_name);
+    let code = render_install_and_test_blocks(ctx, hb_cfg, crate_name, &version);
+
+    let opts = FormulaOptions {
+        homepage: meta.homepage.as_deref(),
+        github_slug,
+        dependencies: hb_cfg.dependencies.as_deref(),
+        conflicts: hb_cfg.conflicts.as_deref(),
+        caveats: hb_cfg.caveats.as_deref(),
+        extra_install: code.extra_install.as_deref(),
+        post_install: code.post_install.as_deref(),
+        download_strategy: hb_cfg.download_strategy.as_deref(),
+        url_headers: hb_cfg.url_headers.as_deref(),
+        custom_require: hb_cfg.custom_require.as_deref(),
+        custom_block: hb_cfg.custom_block.as_deref(),
+        plist: hb_cfg.plist.as_deref(),
+        service: hb_cfg.service.as_deref(),
+    };
+
+    let archive_data = collect_archive_entries(ctx, hb_cfg, crate_name, &version, log)?;
+    let archives: Vec<(&str, &str, &str)> = archive_data
+        .iter()
+        .map(|(t, u, s)| (t.as_str(), u.as_str(), s.as_str()))
+        .collect();
+
+    let formula_name = meta.formula_name.as_str();
+    let formula = generate_formula_with_opts(
+        &super::formula::FormulaCore {
+            name: formula_name,
+            version: &version,
+            description: &meta.description,
+            // FORMULA_TEMPLATE wraps `license` in `{% if license %}`, so empty
+            // string renders as no `license` stanza. Homebrew formulae accept
+            // omitting the license line (lint warns but does not error); the
+            // formula remains installable.
+            license: meta.license.as_deref().unwrap_or(""),
+        },
+        &archives,
+        &super::formula::FormulaCode {
+            install: &code.install,
+            test: &code.test,
+        },
+        &opts,
+    )?;
+    Ok(RenderedFormula {
+        formula,
+        formula_name: meta.formula_name,
+    })
+}
+
 /// Render and push a Homebrew formula/cask for `crate_name`.
 ///
 /// Returns `Ok(true)` when an actual git push was made to the tap repo;
@@ -642,50 +842,12 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         .and_then(|r| r.github.as_ref())
         .map(|gh| format!("{}/{}", gh.owner, gh.name));
 
-    let meta = resolve_homebrew_metadata(ctx, &hb_cfg_owned, crate_name);
-    let code = render_install_and_test_blocks(ctx, &hb_cfg_owned, crate_name, &version);
-
-    let opts = FormulaOptions {
-        homepage: meta.homepage.as_deref(),
-        github_slug,
-        dependencies: hb_cfg_owned.dependencies.as_deref(),
-        conflicts: hb_cfg_owned.conflicts.as_deref(),
-        caveats: hb_cfg_owned.caveats.as_deref(),
-        extra_install: code.extra_install.as_deref(),
-        post_install: code.post_install.as_deref(),
-        download_strategy: hb_cfg_owned.download_strategy.as_deref(),
-        url_headers: hb_cfg_owned.url_headers.as_deref(),
-        custom_require: hb_cfg_owned.custom_require.as_deref(),
-        custom_block: hb_cfg_owned.custom_block.as_deref(),
-        plist: hb_cfg_owned.plist.as_deref(),
-        service: hb_cfg_owned.service.as_deref(),
-    };
-
-    let archive_data = collect_archive_entries(ctx, &hb_cfg_owned, crate_name, &version, log)?;
-    let archives: Vec<(&str, &str, &str)> = archive_data
-        .iter()
-        .map(|(t, u, s)| (t.as_str(), u.as_str(), s.as_str()))
-        .collect();
-
-    let formula_name = meta.formula_name.as_str();
-    let formula = generate_formula_with_opts(
-        &super::formula::FormulaCore {
-            name: formula_name,
-            version: &version,
-            description: &meta.description,
-            // FORMULA_TEMPLATE wraps `license` in `{% if license %}`, so empty
-            // string renders as no `license` stanza. Homebrew formulae accept
-            // omitting the license line (lint warns but does not error); the
-            // formula remains installable.
-            license: meta.license.as_deref().unwrap_or(""),
-        },
-        &archives,
-        &super::formula::FormulaCode {
-            install: &code.install,
-            test: &code.test,
-        },
-        &opts,
-    )?;
+    // The skip / `if` / dry-run gates above already ran, so render via the
+    // skip-unaware inner — re-running the gate here would double every
+    // resolved-with-warning value's log line.
+    let rendered = render_formula_inner(ctx, &hb_cfg_owned, crate_name, github_slug, log)?;
+    let formula = rendered.formula;
+    let formula_name = rendered.formula_name.as_str();
 
     let tmp_dir = tempfile::tempdir().context("homebrew: create temp dir")?;
     let tap = TapLocation {

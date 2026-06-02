@@ -26,6 +26,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
 mod chocolatey;
+mod homebrew;
 mod krew;
 mod mcp;
 mod scoop;
@@ -132,6 +133,7 @@ fn validators() -> Vec<Box<dyn PublisherSchemaValidator>> {
         Box::new(mcp::McpSchemaValidator),
         Box::new(chocolatey::ChocolateySchemaValidator),
         Box::new(snapcraft::SnapcraftSchemaValidator),
+        Box::new(homebrew::HomebrewSchemaValidator),
     ]
 }
 

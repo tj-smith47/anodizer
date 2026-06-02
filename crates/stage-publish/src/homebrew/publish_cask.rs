@@ -1,25 +1,24 @@
 //! `publish_cask` — standalone cask publisher (used when the cask needs its
 //! own tap repo, distinct from the formula tap).
-use super::cask::generate_cask_from_context;
+use super::cask::{CaskGenResult, generate_cask_from_context};
 use super::commit_msg::render_commit_msg;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
-pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
-    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
 
-    let hb_cfg = publish
-        .homebrew
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("homebrew cask: no homebrew config for '{}'", crate_name))?;
-
-    let cask_cfg = hb_cfg
-        .cask
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("homebrew cask: no cask config for '{}'", crate_name))?;
-
-    // Check skip_upload before doing any work. Per-crate cask skip_upload
-    // takes precedence; falls back to the formula's skip_upload.
+/// True when the standalone cask's effective skip gates trip for `crate_name`:
+/// the cask `skip_upload` (per-cask wins, else the formula's `skip_upload`) is
+/// truthy, or the effective `if:` (cask-level wins, else the formula's)
+/// evaluates falsy. Logs the reason. Shared by the live `publish_cask` and the
+/// validator-facing `render_homebrew_cask_for_crate` so the gate is defined
+/// once.
+fn cask_skip_gates_trip(
+    ctx: &Context,
+    hb_cfg: &anodizer_core::config::HomebrewConfig,
+    cask_cfg: &anodizer_core::config::HomebrewCaskConfig,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<bool> {
     let effective_skip = cask_cfg
         .skip_upload
         .as_ref()
@@ -30,12 +29,11 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
             crate_name,
             effective_skip.map(|v| v.as_str()).unwrap_or("")
         ));
-        return Ok(());
+        return Ok(true);
     }
 
-    // Cask-level `if:` conditional gate. Cask-level `if:` wins; if
-    // unset, fall back to the parent formula's `if:` so a per-crate gate on
-    // homebrew covers both surfaces in one declaration.
+    // Cask-level `if:` wins; if unset, fall back to the parent formula's `if:`
+    // so a per-crate gate on homebrew covers both surfaces in one declaration.
     let effective_if = cask_cfg
         .if_condition
         .as_deref()
@@ -50,6 +48,59 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
             "homebrew cask: skipping '{}' — `if` condition evaluated falsy",
             crate_name
         ));
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Render the standalone Ruby cask a live publish would write for
+/// `crate_name`, honoring the cask's effective `skip_upload` (per-cask wins,
+/// else the formula's) and effective `if:` condition.
+///
+/// Returns `Ok(None)` when no cask is configured or the publisher would skip
+/// it. The live publish path and the offline schema validator both render the
+/// cask through the same [`generate_cask_from_context`] so the validated
+/// document is byte-for-byte what a release pushes.
+pub(crate) fn render_homebrew_cask_for_crate(
+    ctx: &Context,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Option<CaskGenResult>> {
+    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
+    let Some(hb_cfg) = publish.homebrew.as_ref() else {
+        return Ok(None);
+    };
+    let Some(cask_cfg) = hb_cfg.cask.as_ref() else {
+        return Ok(None);
+    };
+
+    if cask_skip_gates_trip(ctx, hb_cfg, cask_cfg, crate_name, log)? {
+        return Ok(None);
+    }
+
+    let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg)?;
+    Ok(Some(cask_result))
+}
+
+pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
+
+    let hb_cfg = publish
+        .homebrew
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("homebrew cask: no homebrew config for '{}'", crate_name))?;
+
+    let cask_cfg = hb_cfg
+        .cask
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("homebrew cask: no cask config for '{}'", crate_name))?;
+
+    // Evaluate the cask's effective skip gates (per-cask wins, else the
+    // formula's) before resolving the tap repo so a skipped cask with no
+    // `repository:` block is a no-op rather than an error. The validator-facing
+    // `render_homebrew_cask_for_crate` evaluates the same gates over the same
+    // `generate_cask_from_context` render.
+    if cask_skip_gates_trip(ctx, hb_cfg, cask_cfg, crate_name, log)? {
         return Ok(());
     }
 

@@ -65,6 +65,343 @@ pub struct TopLevelCaskRunResult {
     pub applicable: usize,
 }
 
+/// A rendered top-level cask: the primary `.rb` body plus any versioned
+/// alt-name files (one extra `.rb` per `myapp@<version>` entry).
+pub(crate) struct RenderedTopCask {
+    /// The rendered primary cask Ruby body.
+    pub(crate) content: String,
+    /// `(filename-stem, body)` for each versioned alt-name file.
+    pub(crate) versioned_files: Vec<(String, String)>,
+}
+
+/// Render the Ruby cask a live publish would write for one `homebrew_casks:`
+/// entry, honoring `skip_upload` and the `if:` condition, and the macOS-artifact
+/// applicability check (no darwin artifact in scope ⇒ not applicable).
+///
+/// Returns `Ok(None)` when the entry is skipped (`skip_upload` / falsy `if`) or
+/// not applicable (no matching macOS artifact). Errors only on a genuine
+/// misconfiguration (an `ids:` filter that matches no darwin artifact when other
+/// darwin artifacts exist, or a missing url/sha256). It does NOT consult
+/// `ctx.is_dry_run()` — the validator must render in dry-run; the live push loop
+/// applies its own dry-run short-circuit before reaching the file write. The
+/// live push path and the offline schema validator share this one render.
+pub(crate) fn render_top_level_cask_entry(
+    ctx: &Context,
+    cask_cfg: &HomebrewCaskConfig,
+    log: &StageLogger,
+) -> Result<Option<RenderedTopCask>> {
+    let project_name = &ctx.config.project_name;
+    let cask_name = cask_cfg.name.as_deref().unwrap_or(project_name);
+
+    if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log) {
+        log.status(&format!(
+            "homebrew_casks: skipping upload for '{}' (skip_upload)",
+            cask_name
+        ));
+        return Ok(None);
+    }
+
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        cask_cfg.if_condition.as_deref(),
+        &format!("homebrew_casks entry '{}'", cask_name),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status(&format!(
+            "homebrew_casks: skipping '{}' — `if` condition evaluated falsy",
+            cask_name
+        ));
+        return Ok(None);
+    }
+
+    render_top_level_cask_inner(ctx, cask_cfg, cask_name, log)
+}
+
+/// Skip-unaware top-level cask render: assumes `skip_upload` and `if:` have
+/// already been evaluated. Resolves the macOS artifact, builds the cask params,
+/// and renders the Ruby body (plus versioned alt-name bodies).
+///
+/// Returns `Ok(None)` when no in-scope macOS artifact matches — a
+/// config-vs-scope mismatch the caller treats as not-applicable (a sharded /
+/// Linux-only snapshot hits this). Errors only on a genuine misconfiguration
+/// (`ids:` matching no darwin artifact when other darwin artifacts exist, or a
+/// missing url/sha256). The live publish loop and
+/// [`render_top_level_cask_entry`] share this body so each `if`/skip gate is
+/// evaluated exactly once per path.
+fn render_top_level_cask_inner(
+    ctx: &Context,
+    cask_cfg: &HomebrewCaskConfig,
+    cask_name: &str,
+    log: &StageLogger,
+) -> Result<Option<RenderedTopCask>> {
+    let version = ctx.version();
+
+    let Some(macos_artifact) = find_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref()) else {
+        // Distinguish "no darwin build exists at all" (a genuine
+        // NotApplicable skip — e.g. a Linux-only pipeline or a per-crate
+        // publish-only pass over a library workspace) from "an `ids:` filter
+        // is set but matched no darwin artifact" (a typo'd id, or an id that
+        // produces no macOS build). The latter is a misconfiguration: the
+        // cask would silently never publish. Surface it as an error so the
+        // typo is caught at release time rather than when `brew install`
+        // 404s.
+        let ids_set = cask_cfg.ids.as_deref().is_some_and(|ids| !ids.is_empty());
+        if ids_set && find_top_level_cask_artifact(ctx, None).is_some() {
+            anyhow::bail!(
+                "homebrew_casks: cask '{}' has `ids: {:?}` but no macOS artifact \
+                 matches those ids, even though other macOS artifacts exist. This is \
+                 almost always a typo in `ids:` — check the id names against your \
+                 build matrix. Remove the `ids:` filter to accept any macOS artifact.",
+                cask_name,
+                cask_cfg.ids.as_deref().unwrap_or(&[])
+            );
+        }
+        log.status(&format!(
+            "homebrew_casks: no macOS artifact in scope for cask '{}' — skipping (not applicable)",
+            cask_name
+        ));
+        return Ok(None);
+    };
+
+    // Build URL.
+    let url = if let Some(ref url_cfg) = cask_cfg.url {
+        if let Some(ref tmpl) = url_cfg.template {
+            let target = macos_artifact.target.as_deref().unwrap_or("");
+            let (os, arch) = anodizer_core::target::map_target(target);
+            crate::util::render_url_template_with_ctx(
+                ctx,
+                tmpl,
+                macos_artifact.name(),
+                &version,
+                &arch,
+                &os,
+            )
+        } else {
+            macos_artifact.metadata.get("url").cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "homebrew_casks: artifact for cask '{}' has no 'url' metadata \
+                         and no url.template configured to synthesize one. A cask with \
+                         an empty `url \"\"` line is rejected by `brew style` and fails \
+                         on `brew install` (no download endpoint). Either set \
+                         `homebrew_casks[].url.template` to render a URL from \
+                         `{{{{ .Tag }}}}` / `{{{{ .Os }}}}` / `{{{{ .Arch }}}}`, or \
+                         ensure the release stage seeds `metadata.url` onto the \
+                         macOS artifact for '{}'.",
+                    cask_name,
+                    cask_name
+                )
+            })?
+        }
+    } else {
+        macos_artifact.metadata.get("url").cloned().ok_or_else(|| {
+            anyhow::anyhow!(
+                "homebrew_casks: artifact for '{}' has no 'url' metadata; set url.template",
+                cask_name
+            )
+        })?
+    };
+
+    // replace version string with #{version} for auto-update
+    let url = url.replace(&version, "#{version}");
+
+    let sha256 = macos_artifact
+        .metadata
+        .get("sha256")
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "homebrew_casks: artifact has no 'sha256' metadata for cask '{}'",
+                cask_name
+            )
+        })?;
+
+    // Pre-render multi-key uninstall + zap blocks (see
+    // `cask::render_zap_block` doc-comment).
+    let uninstall_block = render_uninstall_block(cask_cfg.uninstall.as_ref());
+    let zap_block = render_zap_block(cask_cfg.zap.as_ref());
+
+    // Pre-render Ruby kwargs continuation for the `url` line.
+    let url_extras_top = cask_cfg
+        .url
+        .as_ref()
+        .map(|u| render_additional_url_params(u, "      "))
+        .unwrap_or_default();
+    let url_extras_arch = cask_cfg
+        .url
+        .as_ref()
+        .map(|u| render_additional_url_params(u, "        "))
+        .unwrap_or_default();
+
+    let empty_vec: Vec<String> = Vec::new();
+    // Map config-side `HomebrewCaskBinary` (untagged enum: bare string OR
+    // `{ name, target }`) into the template-side `CaskBinaryEntry` shape
+    // — same translation used in the per-crate cask renderer.
+    //
+    // Default to a single `binary "<cask_name>"` ONLY when neither `binaries:`
+    // nor `app:` is configured, so a cask declares at least one artifact stanza
+    // without emitting a spurious `binary` alongside an explicit `app`. Mirrors
+    // the per-crate cask renderer's default (`cask::generate_cask_from_context`).
+    let configured_binaries: Vec<super::cask::CaskBinaryEntry> = cask_cfg
+        .binaries
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|b| super::cask::CaskBinaryEntry {
+            name: b.name().to_string(),
+            target: b.target().map(str::to_string),
+        })
+        .collect();
+    let default_binaries;
+    let binaries: &[super::cask::CaskBinaryEntry] =
+        if configured_binaries.is_empty() && cask_cfg.app.is_none() {
+            default_binaries = vec![super::cask::CaskBinaryEntry {
+                name: cask_name.to_string(),
+                target: None,
+            }];
+            &default_binaries
+        } else {
+            &configured_binaries
+        };
+
+    // Build depends_on directives from structured config
+    let depends_directives = build_depends_directives(cask_cfg.dependencies.as_deref());
+    let conflicts_directives = build_conflicts_directives(cask_cfg.conflicts.as_deref());
+
+    // Extract hooks
+    let preflight = cask_cfg
+        .hooks
+        .as_ref()
+        .and_then(|h| h.pre.as_ref())
+        .and_then(|p| p.install.as_deref());
+    let postflight = cask_cfg
+        .hooks
+        .as_ref()
+        .and_then(|h| h.post.as_ref())
+        .and_then(|p| p.install.as_deref());
+    let uninstall_preflight = cask_cfg
+        .hooks
+        .as_ref()
+        .and_then(|h| h.pre.as_ref())
+        .and_then(|p| p.uninstall.as_deref());
+    let uninstall_postflight = cask_cfg
+        .hooks
+        .as_ref()
+        .and_then(|h| h.post.as_ref())
+        .and_then(|p| p.uninstall.as_deref());
+
+    // Extract completions
+    let completions_bash = cask_cfg
+        .completions
+        .as_ref()
+        .and_then(|c| c.bash.as_deref());
+    let completions_zsh = cask_cfg.completions.as_ref().and_then(|c| c.zsh.as_deref());
+    let completions_fish = cask_cfg
+        .completions
+        .as_ref()
+        .and_then(|c| c.fish.as_deref());
+
+    let manpages = cask_cfg.manpages.as_deref().unwrap_or(&empty_vec);
+
+    // Pre-render `alternative_names` entries through the template engine
+    // (`myproject@{{ .Version }}` style) and split into aliases vs
+    // versioned-file emission. Aliases stay inside the primary file;
+    // versioned alt-names get their own `.rb`.
+    let rendered_alts = super::cask::render_alternative_names(
+        ctx,
+        cask_cfg.alternative_names.as_deref().unwrap_or(&empty_vec),
+    )?;
+    let (alias_alts, versioned_alts) =
+        super::cask::split_alternative_names(&rendered_alts, cask_name);
+
+    let params = CaskParams {
+        name: cask_name,
+        display_name: cask_name,
+        alternative_names: &alias_alts,
+        version: &version,
+        sha256: &sha256,
+        url: &url,
+        url_extras: &url_extras_top,
+        url_extras_indented: &url_extras_arch,
+        // Per-cask homepage / description fall back to the project's
+        // global `metadata.homepage` / `metadata.description` so a
+        // monorepo only needs to declare those once. Same pattern the
+        // formula publisher uses (`publish_formula::resolve_homebrew_metadata`).
+        homepage: resolve_top_cask_homepage(cask_cfg, ctx),
+        description: resolve_top_cask_description(cask_cfg, ctx),
+        app: cask_cfg.app.as_deref(),
+        binaries,
+        caveats: cask_cfg.caveats.as_deref(),
+        zap_block: &zap_block,
+        uninstall_block: &uninstall_block,
+        custom_block: cask_cfg.custom_block.as_deref(),
+        service: cask_cfg.service.as_deref(),
+        manpages,
+        completions_bash,
+        completions_zsh,
+        completions_fish,
+        depends_on: &depends_directives,
+        conflicts_with: &conflicts_directives,
+        preflight,
+        postflight,
+        uninstall_preflight,
+        uninstall_postflight,
+        platforms: Vec::new(), // Top-level cask uses single artifact
+        generate_completions: cask_cfg
+            .generate_completions_from_executable
+            .as_ref()
+            .and_then(super::cask::render_generate_completions),
+    };
+
+    let content = generate_cask(&params)?;
+
+    // Emit one extra `.rb` per versioned alt-name (e.g. `myapp@1.2.3.rb`)
+    // so users can `brew install myapp@1.2.3` to pin / downgrade.
+    let mut versioned_files: Vec<(String, String)> = Vec::with_capacity(versioned_alts.len());
+    for alt in &versioned_alts {
+        let alt_params = CaskParams {
+            name: alt,
+            display_name: alt,
+            alternative_names: &[],
+            ..super::cask::clone_cask_params(&params)
+        };
+        let alt_body = generate_cask(&alt_params)?;
+        versioned_files.push((alt.clone(), alt_body));
+    }
+
+    Ok(Some(RenderedTopCask {
+        content,
+        versioned_files,
+    }))
+}
+
+/// Render every applicable top-level `homebrew_casks:` entry to its Ruby body
+/// (and any versioned alt-name bodies), with no disk/network side effects.
+///
+/// Skipped / not-applicable / dry-run entries are omitted. An empty config
+/// block yields an empty Vec. This is the render-only path the offline schema
+/// validator drives; the live publish loop calls
+/// [`render_top_level_cask_entry`] per entry for the same Ruby.
+pub(crate) fn render_top_level_homebrew_casks(
+    ctx: &Context,
+    log: &StageLogger,
+) -> Result<Vec<String>> {
+    let entries = match ctx.config.homebrew_casks {
+        Some(ref v) if !v.is_empty() => v.clone(),
+        _ => return Ok(Vec::new()),
+    };
+    let mut out: Vec<String> = Vec::new();
+    for cask_cfg in &entries {
+        let Some(rendered) = render_top_level_cask_entry(ctx, cask_cfg, log)? else {
+            continue;
+        };
+        out.push(rendered.content);
+        for (_alt, body) in rendered.versioned_files {
+            out.push(body);
+        }
+    }
+    Ok(out)
+}
+
 /// Render and push every entry in `homebrew_casks:`. See
 /// [`TopLevelCaskRunResult`] for the returned counts.
 pub fn publish_top_level_homebrew_casks(
@@ -144,235 +481,17 @@ pub fn publish_top_level_homebrew_casks(
             continue;
         }
 
-        // Find macOS artifact: prefer DiskImage, then Archive with darwin
-        // target. For top-level cask, iterate all crates' artifacts.
-        //
-        // When the current crate scope has no matching darwin artifact
-        // (per-crate publish-only iterating a library workspace, or a
-        // pipeline that built no darwin targets), the cask has nothing to
-        // publish — that is a config-vs-scope mismatch, not a publish
-        // failure. Log + continue; the caller (HomebrewPublisher::run)
-        // aggregates `applicable` across the entire entry list and decides
-        // whether the overall outcome is `Skipped(NotApplicable)` so the
-        // submitter gate doesn't fire on a phantom required-Manager
-        // failure.
-        let Some(macos_artifact) = find_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref())
-        else {
-            // Distinguish "no darwin build exists at all" (a genuine
-            // NotApplicable skip — e.g. a Linux-only pipeline or a
-            // per-crate publish-only pass over a library workspace) from
-            // "an `ids:` filter is set but matched no darwin artifact"
-            // (a typo'd id, or an id that produces no macOS build). The
-            // latter is a misconfiguration: the cask would silently never
-            // publish. Surface it as an error so the typo is caught at
-            // release time rather than discovered when `brew install` 404s.
-            let ids_set = cask_cfg.ids.as_deref().is_some_and(|ids| !ids.is_empty());
-            if ids_set && find_top_level_cask_artifact(ctx, None).is_some() {
-                anyhow::bail!(
-                    "homebrew_casks: cask '{}' has `ids: {:?}` but no macOS artifact \
-                     matches those ids, even though other macOS artifacts exist. This is \
-                     almost always a typo in `ids:` — check the id names against your \
-                     build matrix. Remove the `ids:` filter to accept any macOS artifact.",
-                    cask_name,
-                    cask_cfg.ids.as_deref().unwrap_or(&[])
-                );
-            }
-            log.status(&format!(
-                "homebrew_casks: no macOS artifact in scope for cask '{}' — skipping (not applicable)",
-                cask_name
-            ));
+        // Render the cask Ruby via the skip-unaware inner (skip / `if` already
+        // ran above; the `directory` warning + dry-run gate ran too). A `None`
+        // return is a config-vs-scope mismatch — no in-scope macOS artifact —
+        // which is not-applicable, not a failure. Same render the offline
+        // schema validator drives.
+        let Some(rendered) = render_top_level_cask_inner(ctx, cask_cfg, cask_name, log)? else {
             continue;
         };
         applicable += 1;
-
-        // Build URL.
-        let url = if let Some(ref url_cfg) = cask_cfg.url {
-            if let Some(ref tmpl) = url_cfg.template {
-                let target = macos_artifact.target.as_deref().unwrap_or("");
-                let (os, arch) = anodizer_core::target::map_target(target);
-                crate::util::render_url_template_with_ctx(
-                    ctx,
-                    tmpl,
-                    macos_artifact.name(),
-                    &version,
-                    &arch,
-                    &os,
-                )
-            } else {
-                macos_artifact.metadata.get("url").cloned().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "homebrew_casks: artifact for cask '{}' has no 'url' metadata \
-                             and no url.template configured to synthesize one. A cask with \
-                             an empty `url \"\"` line is rejected by `brew style` and fails \
-                             on `brew install` (no download endpoint). Either set \
-                             `homebrew_casks[].url.template` to render a URL from \
-                             `{{{{ .Tag }}}}` / `{{{{ .Os }}}}` / `{{{{ .Arch }}}}`, or \
-                             ensure the release stage seeds `metadata.url` onto the \
-                             macOS artifact for '{}'.",
-                        cask_name,
-                        cask_name
-                    )
-                })?
-            }
-        } else {
-            macos_artifact.metadata.get("url").cloned().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "homebrew_casks: artifact for '{}' has no 'url' metadata; set url.template",
-                    cask_name
-                )
-            })?
-        };
-
-        // replace version string with #{version} for auto-update
-        let url = url.replace(&version, "#{version}");
-
-        let sha256 = macos_artifact
-            .metadata
-            .get("sha256")
-            .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "homebrew_casks: artifact has no 'sha256' metadata for cask '{}'",
-                    cask_name
-                )
-            })?;
-
-        // Pre-render multi-key uninstall + zap blocks (see
-        // `cask::render_zap_block` doc-comment).
-        let uninstall_block = render_uninstall_block(cask_cfg.uninstall.as_ref());
-        let zap_block = render_zap_block(cask_cfg.zap.as_ref());
-
-        // Pre-render Ruby kwargs continuation for the `url` line —
-        // for the `url` line kwargs.
-        let url_extras_top = cask_cfg
-            .url
-            .as_ref()
-            .map(|u| render_additional_url_params(u, "      "))
-            .unwrap_or_default();
-        let url_extras_arch = cask_cfg
-            .url
-            .as_ref()
-            .map(|u| render_additional_url_params(u, "        "))
-            .unwrap_or_default();
-
-        let empty_vec: Vec<String> = Vec::new();
-        // Map config-side `HomebrewCaskBinary` (untagged enum: bare string OR
-        // `{ name, target }`) into the template-side `CaskBinaryEntry` shape
-        // — same translation used in the per-crate cask renderer. Defaults
-        // to `[{ name: cask_name, target: None }]` so the bare default still
-        // emits `binary "<n>"`.
-        let configured_binaries: Vec<super::cask::CaskBinaryEntry> = cask_cfg
-            .binaries
-            .as_deref()
-            .unwrap_or(&[])
-            .iter()
-            .map(|b| super::cask::CaskBinaryEntry {
-                name: b.name().to_string(),
-                target: b.target().map(str::to_string),
-            })
-            .collect();
-        let default_binaries;
-        let binaries: &[super::cask::CaskBinaryEntry] = if configured_binaries.is_empty() {
-            default_binaries = vec![super::cask::CaskBinaryEntry {
-                name: cask_name.to_string(),
-                target: None,
-            }];
-            &default_binaries
-        } else {
-            &configured_binaries
-        };
-
-        // Build depends_on directives from structured config
-        let depends_directives = build_depends_directives(cask_cfg.dependencies.as_deref());
-        let conflicts_directives = build_conflicts_directives(cask_cfg.conflicts.as_deref());
-
-        // Extract hooks
-        let preflight = cask_cfg
-            .hooks
-            .as_ref()
-            .and_then(|h| h.pre.as_ref())
-            .and_then(|p| p.install.as_deref());
-        let postflight = cask_cfg
-            .hooks
-            .as_ref()
-            .and_then(|h| h.post.as_ref())
-            .and_then(|p| p.install.as_deref());
-        let uninstall_preflight = cask_cfg
-            .hooks
-            .as_ref()
-            .and_then(|h| h.pre.as_ref())
-            .and_then(|p| p.uninstall.as_deref());
-        let uninstall_postflight = cask_cfg
-            .hooks
-            .as_ref()
-            .and_then(|h| h.post.as_ref())
-            .and_then(|p| p.uninstall.as_deref());
-
-        // Extract completions
-        let completions_bash = cask_cfg
-            .completions
-            .as_ref()
-            .and_then(|c| c.bash.as_deref());
-        let completions_zsh = cask_cfg.completions.as_ref().and_then(|c| c.zsh.as_deref());
-        let completions_fish = cask_cfg
-            .completions
-            .as_ref()
-            .and_then(|c| c.fish.as_deref());
-
-        let manpages = cask_cfg.manpages.as_deref().unwrap_or(&empty_vec);
-
-        // Pre-render `alternative_names` entries through the template engine
-        // (`myproject@{{ .Version }}` style) and split into aliases
-        // vs versioned-file emission. Aliases stay inside the primary
-        // file; versioned alt-names get their own `.rb` so users can
-        // `brew install myapp@1.2.3`.
-        let rendered_alts = super::cask::render_alternative_names(
-            ctx,
-            cask_cfg.alternative_names.as_deref().unwrap_or(&empty_vec),
-        )?;
-        let (alias_alts, versioned_alts) =
-            super::cask::split_alternative_names(&rendered_alts, cask_name);
-
-        let params = CaskParams {
-            name: cask_name,
-            display_name: cask_name,
-            alternative_names: &alias_alts,
-            version: &version,
-            sha256: &sha256,
-            url: &url,
-            url_extras: &url_extras_top,
-            url_extras_indented: &url_extras_arch,
-            // Per-cask homepage / description fall back to the project's
-            // global `metadata.homepage` / `metadata.description` so a
-            // monorepo only needs to declare those once. Same pattern the
-            // formula publisher uses (`publish_formula::resolve_homebrew_metadata`).
-            homepage: resolve_top_cask_homepage(cask_cfg, ctx),
-            description: resolve_top_cask_description(cask_cfg, ctx),
-            app: cask_cfg.app.as_deref(),
-            binaries,
-            caveats: cask_cfg.caveats.as_deref(),
-            zap_block: &zap_block,
-            uninstall_block: &uninstall_block,
-            custom_block: cask_cfg.custom_block.as_deref(),
-            service: cask_cfg.service.as_deref(),
-            manpages,
-            completions_bash,
-            completions_zsh,
-            completions_fish,
-            depends_on: &depends_directives,
-            conflicts_with: &conflicts_directives,
-            preflight,
-            postflight,
-            uninstall_preflight,
-            uninstall_postflight,
-            platforms: Vec::new(), // Top-level cask uses single artifact
-            generate_completions: cask_cfg
-                .generate_completions_from_executable
-                .as_ref()
-                .and_then(super::cask::render_generate_completions),
-        };
-
-        let content = generate_cask(&params)?;
+        let content = rendered.content;
+        let versioned_files = rendered.versioned_files;
 
         // Clone tap repo, write cask, commit, push.
         let tmp_dir = tempfile::tempdir().context("homebrew_casks: create temp dir")?;
@@ -401,16 +520,9 @@ pub fn publish_top_level_homebrew_casks(
         // Emit one extra `.rb` per versioned alt-name (e.g. `myapp@1.2.3.rb`)
         // so users can `brew install myapp@1.2.3` to pin / downgrade.
         let mut written_paths: Vec<std::path::PathBuf> = vec![cask_path.clone()];
-        for alt in &versioned_alts {
-            let alt_params = CaskParams {
-                name: alt,
-                display_name: alt,
-                alternative_names: &[],
-                ..super::cask::clone_cask_params(&params)
-            };
-            let alt_body = generate_cask(&alt_params)?;
+        for (alt, alt_body) in &versioned_files {
             let alt_path = cask_dir.join(format!("{}.rb", alt));
-            std::fs::write(&alt_path, &alt_body).with_context(|| {
+            std::fs::write(&alt_path, alt_body).with_context(|| {
                 format!(
                     "homebrew_casks: write versioned cask file {}",
                     alt_path.display()
