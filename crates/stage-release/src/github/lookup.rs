@@ -31,7 +31,7 @@ const LIST_RELEASES_PAGE_SIZE: usize = 100;
 /// `name`, paginating through `GET /repos/{owner}/{repo}/releases` 100
 /// results at a time until a match is found or the listing is exhausted.
 ///
-/// Finds an existing draft release by name,
+/// GoReleaser parity: mirrors `internal/client/github.go::findDraftRelease`,
 /// which searches releases by *name* (not tag) and loops while
 /// `resp.NextPage != 0`. There is no artificial page cap so repos with
 /// thousands of historical draft releases still locate the target —

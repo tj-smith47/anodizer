@@ -105,7 +105,7 @@ pub(crate) fn parse_git_log_records(text: &str) -> Vec<anodizer_core::git::Commi
 /// Returns `true` when an SCM-mode changelog should pre-empt to the git
 /// fallback because there is no previous tag to compare against.
 ///
-/// Resolve the commit source: for `use: github` / `use: gitlab` /
+/// Mirrors GoReleaser's `getChangeloger`: for `use: github` / `use: gitlab` /
 /// `use: gitea`, when `ctx.Git.PreviousTag == ""`, it warns and returns the
 /// git changeloger directly instead of issuing an SCM compare-API call (which
 /// would 404 / produce nothing useful with no base ref). The pre-empt also

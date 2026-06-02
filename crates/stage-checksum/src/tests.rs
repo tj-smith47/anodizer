@@ -19,15 +19,15 @@ use super::hashing::{
 };
 use super::run::ChecksumStage;
 
-/// Divergence test — pins the inherited sort behavior for
+/// Divergence test — pins the inherited GoReleaser sort behavior for
 /// filenames that contain a two-space sequence. If this assertion ever
-/// breaks, someone "fixed" the sort and diverged from the canonical order.
+/// breaks, someone "fixed" the sort and diverged from GoReleaser.
 /// Update the source comment if that is intentional.
 #[test]
 fn test_combined_sort_doublespace_divergence() {
     // Mirrors the `split_once("  ")` keying used in the combined-line
     // sort above. A filename containing a double-space splits early,
-    // producing a wrong key — inherited behaviour.
+    // producing a wrong key — inherited from GoReleaser checksums.go.
     let line = "deadbeef  weird  name.tar.gz";
     let (_hash, rest) = line.split_once("  ").unwrap();
     assert_eq!(
@@ -41,7 +41,7 @@ fn test_combined_sort_doublespace_divergence() {
     assert_eq!(key, "weird", "inherited divergence — not a real filename");
 }
 
-/// Regression:
+/// Regression for GoReleaser parity Q16.1 (commit f39c233):
 /// the combined-checksum sort key derivation must NOT panic when
 /// fed a line that lacks the canonical `<hash>  <name>` double-space
 /// separator. Upstream's prior `strings.Split(a, "  ")[1]` panicked
@@ -2075,7 +2075,7 @@ fn test_split_mode_with_name_template() {
         "default sidecar name should NOT be used when name_template is set"
     );
 
-    // Verify content is correct — ONLY the raw hex hash is written
+    // Verify content is correct — GoReleaser writes ONLY the raw hex hash
     // in sidecar files (no filename, no trailing newline).
     let content = fs::read_to_string(&custom_sidecar).unwrap();
     let expected_hash = sha256_file(&archive).unwrap();
@@ -2289,7 +2289,7 @@ fn test_checksum_stage_with_templated_extra_files() {
 #[test]
 fn test_checksum_source_list_cross_links_release_uploadable_kinds() {
     // Pins C-new-23: stage-checksum's source-list is the cross-linked
-    // `release_uploadable_kinds()` minus `Checksum` (the
+    // `release_uploadable_kinds()` minus `Checksum` (mirroring GR's
     // `Not(ByType(Checksum))` filter). Six kinds previously absent —
     // Makeself, Flatpak, SourceRpm, UploadableFile, Signature, Certificate
     // — must now be checksummed; Snap and raw Binary must NOT.

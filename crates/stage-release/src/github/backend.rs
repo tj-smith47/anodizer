@@ -127,7 +127,7 @@ pub(crate) fn run_github_backend(
 
     // Extract github_urls config for GitHub Enterprise support.
     let github_urls = ctx.config.github_urls.clone();
-    // Default download URL to "https://github.com".
+    // Default download URL to "https://github.com" (matches GoReleaser's DefaultGitHubDownloadURL).
     let gh_download_base = github_urls
         .as_ref()
         .and_then(|u| u.download.clone())
@@ -407,7 +407,7 @@ pub(crate) fn run_github_backend(
         let user_wants_draft = draft;
         // GitHub ignores discussion_category_name on draft releases and
         // make_latest is meaningless until publish. Send them only in the
-        // un-draft PATCH (below).
+        // un-draft PATCH (below) to match GoReleaser behaviour.
         if final_body.len() > GITHUB_RELEASE_BODY_MAX_CHARS {
             log.warn(&format!(
                 "release body ({} chars) exceeds GitHub limit ({}); truncating",
@@ -534,7 +534,7 @@ pub(crate) fn run_github_backend(
         }
 
         // Construct the public release URL deterministically from
-        // owner/repo/tag.
+        // owner/repo/tag, matching GoReleaser `internal/pipe/release/scm.go:26-33`.
         // The GitHub API's `html_url` for draft releases is
         // `.../releases/tag/untagged-<sha>` (because no git tag exists
         // yet), and keeping that URL makes announcement emails /
@@ -720,7 +720,8 @@ pub(crate) fn run_github_backend(
                                 // from "different bytes, user opted out of
                                 // overwrites" (unrecoverable). The classifier
                                 // [`classify_already_exists`] encodes the
-                                // 422 decision rule.
+                                // GR-aligned 422 decision rule
+                                // (`internal/client/github.go:734-744`).
                                 let remote_size = find_release_asset_size(
                                     &octo,
                                     &gh_owner,
@@ -756,7 +757,8 @@ pub(crate) fn run_github_backend(
                                         // `replace_existing_artifacts: false`
                                         // and the bytes differ: surface the
                                         // conflict rather than overwriting.
-                                        // Treated as an unrecoverable error.
+                                        // Mirrors GR's `Unrecoverable(err)`
+                                        // return at `github.go:736`.
                                         return Err(anyhow::anyhow!(err)).with_context(|| {
                                             format!(
                                                 "release: artifact '{}' already exists on release '{}' \
@@ -984,7 +986,8 @@ pub(crate) fn run_github_backend(
                 "/repos/{}/{}/releases/{}",
                 github.owner, github.name, release_id_raw
             );
-            // Build the publish PATCH body via the helper:
+            // Build the publish PATCH body via the GR-aligned helper
+            // (GoReleaser PR #6591):
             // - includes `name` (re-rendered name_template) so the published
             //   release reflects the current template, even if the draft was
             //   created with an older name (commit
@@ -1004,7 +1007,7 @@ pub(crate) fn run_github_backend(
             // during un-draft when the release has many assets attached, and
             // the user-configurable `retry:` block is the surface that
             // controls how aggressively to retry. Defaults (10 attempts, 10s
-            // base, 5m cap) are the retry defaults.
+            // base, 5m cap) match GoReleaser's `pkg/config.Retry` defaults.
             let _published: octocrab::models::repos::Release =
                 retry_octocrab_call(&policy, "publish PATCH", Some(&retry_after_capture), || {
                     let publish_route = publish_route.clone();

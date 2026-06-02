@@ -6,7 +6,7 @@ use anyhow::{Context as _, Result};
 use anodizer_core::config::{DockerRetryConfig, RetryConfig};
 
 // One-shot deprecation warning for `docker.retry` / `docker_manifest.retry`.
-// Deprecation marker on `Docker.Retry`. Fires at most once per
+// Mirrors GR's deprecation marker on `Docker.Retry`. Fires at most once per
 // process so a config with N docker pipes doesn't spam the user.
 static DOCKER_RETRY_DEPRECATED_WARNED: OnceLock<()> = OnceLock::new();
 
@@ -49,7 +49,7 @@ pub fn parse_duration_string(s: &str) -> Result<Duration> {
             .with_context(|| format!("invalid seconds in duration '{s}'"))?;
         Ok(Duration::from_secs(secs))
     } else if let Ok(secs) = s.parse::<u64>() {
-        // Bare number without suffix — treat as seconds
+        // Bare number without suffix — treat as seconds (GoReleaser compat)
         Ok(Duration::from_secs(secs))
     } else {
         anyhow::bail!(
@@ -60,14 +60,14 @@ pub fn parse_duration_string(s: &str) -> Result<Duration> {
 
 /// Resolve retry parameters with documented precedence.
 ///
-/// Resolution order:
+/// Resolution order (matches GR's `Docker.Retry` deprecation handling):
 ///
 /// 1. **`per_pipe`** (`docker.retry` / `docker_manifest.retry`) — when set,
 ///    wins outright, BUT a one-shot `tracing::warn!` fires informing the user
 ///    that the per-pipe block is deprecated and they should migrate to the
 ///    top-level `retry:` block.
 /// 2. **`top_level`** (`Project.Retry`) — used when `per_pipe` is absent.
-/// 3. **defaults** (10 attempts, 10s base, 5m cap
+/// 3. **defaults** (10 attempts, 10s base, 5m cap — matching GR
 ///    `Project.Retry` defaults) — used when neither is set.
 ///
 /// Returns `(attempts, base_delay, max_delay)`.

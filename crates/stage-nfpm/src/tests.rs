@@ -50,7 +50,7 @@ fn test_generate_nfpm_yaml_multi_binary() {
         bindir: Some("/usr/bin".to_string()),
         ..Default::default()
     };
-    // All binaries for the same platform are grouped into one package
+    // GoReleaser groups all binaries for the same platform into one package
     let yaml = generate_nfpm_yaml(
         &nfpm_cfg,
         "1.0.0",
@@ -1386,7 +1386,7 @@ fn test_ids_filter_with_multiple_matching_ids() {
     NfpmStage.run(&mut ctx).unwrap();
 
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
-    // All binaries for the same platform are grouped into one package.
+    // GoReleaser groups all binaries for the same platform into one package.
     // Two matching binaries on x86_64-linux → one package containing both.
     assert_eq!(
         pkgs.len(),
@@ -3767,7 +3767,7 @@ fn test_libdirs_defaults_applied_when_block_present() {
         &lib_paths,
     )
     .unwrap();
-    // Defaults: header=/usr/include
+    // GoReleaser defaults: header=/usr/include
     assert!(
         yaml.contains("dst: /usr/include/myapp.h"),
         "default header dir /usr/include expected:\n{yaml}"
@@ -4053,7 +4053,7 @@ fn test_changelog_with_absolute_path() {
 fn test_libdirs_no_artifacts_no_entries() {
     use anodizer_core::config::NfpmLibdirs;
     // When libdirs config exists but no library artifacts, no entries should be added.
-    // Library entries are only added when actual artifacts exist.
+    // GoReleaser only adds library entries when actual artifacts exist.
     let nfpm_cfg = NfpmConfig {
         package_name: Some("mylib-dev".to_string()),
         formats: vec!["deb".to_string()],
@@ -4500,7 +4500,7 @@ fn test_library_paths_use_actual_artifact_paths() {
 #[test]
 fn test_library_paths_without_libdirs_config() {
     // When library artifacts exist but no libdirs config is set,
-    // Defaults should be used.
+    // GoReleaser defaults should be used.
     let nfpm_cfg = NfpmConfig {
         package_name: Some("mylib".to_string()),
         formats: vec!["deb".to_string()],
@@ -4527,7 +4527,7 @@ fn test_library_paths_without_libdirs_config() {
     );
 }
 
-// --- `nfpm.if` template-conditional ---
+// --- `nfpm.if` template-conditional (GoReleaser Pro v2.4+) ---
 
 fn nfpm_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
     use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
@@ -4612,7 +4612,7 @@ fn test_nfpm_if_render_failure_is_hard_error() {
     );
 }
 
-// --- `nfpm.templated_contents` + `nfpm.templated_scripts` ---
+// --- `nfpm.templated_contents` + `nfpm.templated_scripts` (GoReleaser Pro) ---
 
 #[test]
 fn test_nfpm_templated_contents_renders_file_body() {
@@ -4741,7 +4741,7 @@ fn test_nfpm_templated_scripts_renders_script_body() {
 
 #[test]
 fn test_nfpm_falls_back_to_project_metadata() {
-    // When nfpm config doesn't set homepage/license/
+    // GoReleaser Pro parity: when nfpm config doesn't set homepage/license/
     // description/maintainer, the values from project `metadata.*` should be used.
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::config::{Config, CrateConfig, MetadataConfig, NfpmConfig};
@@ -4850,7 +4850,7 @@ fn test_setup_lintian_overrides_emits_file_and_content() {
     };
     setup_lintian_overrides(&mut cfg, "deb", "myapp", "amd64", dist, false).unwrap();
 
-    // 1. Lintian file exists at the expected path.
+    // 1. Lintian file exists at the expected GR path.
     let expected_path = dist.join("deb").join("myapp_amd64").join("lintian");
     assert!(expected_path.exists(), "lintian file not written");
     let body = fs::read_to_string(&expected_path).unwrap();
@@ -4884,7 +4884,7 @@ fn test_setup_lintian_overrides_emits_file_and_content() {
     assert!(cfg.deb.unwrap().lintian_overrides.is_none());
 }
 
-/// termux.deb shares the lintian-setup code path, but the dist
+/// termux.deb shares the GR setupLintian code path, but the dist
 /// subdirectory is the literal format string ("termux.deb"), not just "deb".
 #[test]
 fn test_setup_lintian_overrides_termux_deb_uses_format_dir() {
@@ -4909,7 +4909,7 @@ fn test_setup_lintian_overrides_termux_deb_uses_format_dir() {
     );
 }
 
-/// Lintian setup is debian-specific (`format == "deb" || format == "termux.deb"`).
+/// setupLintian is debian-specific in GR (`format == "deb" || format == "termux.deb"`).
 /// For rpm/apk/etc. the helper must not write a lintian file or alter
 /// contents, even if a stray `lintian_overrides:` is present on the deb
 /// config (which can happen in shared-defaults configs).
@@ -4977,7 +4977,7 @@ fn test_setup_lintian_overrides_dry_run_skips_write_but_injects_content() {
 // `nfpm.amd64_variant` filter
 // -----------------------------------------------------------------------
 //
-// The amd64-variant filter calls
+// GR `internal/pipe/nfpm/nfpm.go:147` calls
 // `artifact.ByGoamd64s(fpm.GoAmd64...)` — the field is `[]string`, so
 // multiple variants may be allowed simultaneously. Empty slice == no
 // filter.
@@ -5070,7 +5070,7 @@ fn test_nfpm_amd64_variant_v3_only_keeps_matching_variant() {
 
 #[test]
 fn test_nfpm_amd64_variant_multiple_variants_pass_listed() {
-    // The `goamd64: [v2, v3]` form passes BOTH v2 and v3 amd64 binaries
+    // GR's `goamd64: [v2, v3]` form passes BOTH v2 and v3 amd64 binaries
     // (autoOr semantics).
     let mut ctx = nfpm_amd64_variant_test_ctx(Some(vec!["v2", "v3"]));
     NfpmStage.run(&mut ctx).unwrap();
@@ -5096,7 +5096,7 @@ fn test_nfpm_amd64_variant_filter_does_not_drop_arm64() {
 
 #[test]
 fn test_nfpm_amd64_variant_empty_vec_is_no_op() {
-    // An auto-or with zero args is a passthrough (no filter applied) —
+    // GR `autoOr` with zero args is a passthrough (no filter applied) —
     // mirror that semantics here so `amd64_variant: []` doesn't accidentally
     // filter every amd64 out.
     let mut ctx = nfpm_amd64_variant_test_ctx(Some(Vec::new()));

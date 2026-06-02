@@ -10,7 +10,7 @@ use anodizer_core::target::map_target;
 
 use super::platform::platform_to_arch;
 
-/// Stage artifacts into docker build context using the V2 layout.
+/// Stage artifacts into docker build context using GoReleaser V2 layout.
 ///
 /// V2 uses `<os>/<arch>/<name>` directory structure (matching `$TARGETPLATFORM`)
 /// and stages Binary, LinuxPackage, CArchive, and CShared artifacts.

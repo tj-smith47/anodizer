@@ -2,14 +2,14 @@
 //!
 //! Gitea's release API is simpler than GitLab's: assets are uploaded directly
 //! via multipart POST to the release endpoint (no package registry indirection).
-//! Draft support is limited (Gitea has it but the release client treats
+//! Draft support is limited (Gitea has it but the GoReleaser client treats
 //! `PublishRelease` as a no-op), so we follow that same approach.
 //!
-//! Gitea release backend.
+//! Reference: GoReleaser `internal/client/gitea.go`.
 //!
 //! ## Note on commit 4a9d25f (default-branch fallback)
 //!
-//! A `CreateFile` path previously hard-coded
+//! GoReleaser commit 4a9d25f fixes a `CreateFile` path that hard-coded
 //! `master` when the server-side default-branch lookup failed. Anodizer
 //! does not call Gitea's `repos/{owner}/{repo}/contents/{path}` create-file
 //! endpoint — every publisher (homebrew, scoop, krew, nix, aur, …) targets
@@ -261,7 +261,7 @@ pub(crate) async fn gitea_create_release(
 ///
 /// Iterates through paginated release listings (capped at 10 pages to avoid
 /// runaway pagination on repos with very long release histories). This is
-/// an intentional improvement: the listing paginates rather than truncating;
+/// an intentional improvement over GoReleaser, which does not paginate
 /// and only checks the first page of results.
 ///
 /// Returns `Some((release_id, body))` if found, `None` otherwise.
@@ -518,7 +518,7 @@ pub(crate) fn gitea_upload_action(
 /// Mirrors the GitHub backend's `find_release_asset_size`. Used by the
 /// preemptive-delete path's idempotency check: when the remote asset's
 /// size matches the local file, the upload is treated as an idempotent
-/// no-op so the published bytes are not mutated (immutable-
+/// no-op so the published bytes are not mutated (GR v2.16 immutable-
 /// releases policy).
 pub(crate) async fn gitea_find_asset_size(
     ctx: &GiteaCtx<'_>,
@@ -837,7 +837,7 @@ pub(crate) fn run_gitea_backend(
             }
         }
 
-        // Gitea PublishRelease is a no-op.
+        // Gitea PublishRelease is a no-op (matching GoReleaser).
 
         let html_url = gitea_release_url(&download_url, &repo_cfg.owner, &repo_cfg.name, tag);
         Ok::<String, anyhow::Error>(html_url)

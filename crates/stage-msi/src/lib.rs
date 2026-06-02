@@ -323,7 +323,7 @@ mod tests {
             installers[0].metadata.get("format"),
             Some(&"msi".to_string())
         );
-        // Default name uses the `{{ ProjectName }}_{{ MsiArch }}` shape.
+        // Default name matches GoReleaser's `{{ ProjectName }}_{{ MsiArch }}` shape.
         assert!(
             installers[0]
                 .path
@@ -1571,7 +1571,7 @@ crates:
         );
     }
 
-    // --- `msi.if` + `msi.hooks` ---
+    // --- `msi.if` + `msi.hooks` (GoReleaser Pro) ---
 
     fn msi_test_ctx_with_if(if_expr: Option<&str>) -> anodizer_core::context::Context {
         use anodizer_core::config::{Config, CrateConfig, MsiConfig};
@@ -1631,7 +1631,7 @@ crates:
 
     #[test]
     fn test_config_parse_msi_hooks_pre_post() {
-        // BuildHooksConfig uses `pre:` / `post:`.
+        // BuildHooksConfig uses `pre:` / `post:` (matching GoReleaser's build pipe).
         use anodizer_core::config::Config;
         let yaml = r#"
 project_name: test
@@ -1665,7 +1665,7 @@ crates:
     }
 
     // -------------------------------------------------------------------
-    // `msi.amd64_variant` filter
+    // `msi.amd64_variant` filter (GoReleaser Pro `msi.goamd64: string`)
     // -------------------------------------------------------------------
 
     /// Build a context with three windows/amd64 binaries (variants v1/v2/v3)
@@ -2098,7 +2098,7 @@ crates:
     }
 
     // -----------------------------------------------------------------------
-    // default name shape
+    // default name matches GoReleaser shape
     // -----------------------------------------------------------------------
 
     #[test]
@@ -2150,7 +2150,7 @@ crates:
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
         assert_eq!(installers.len(), 1);
         let filename = installers[0].path.file_name().unwrap().to_str().unwrap();
-        // Default: ProjectName_MsiArch (no version injection).
+        // GoReleaser default: ProjectName_MsiArch (no version injection).
         assert_eq!(filename, "myapp_x64.msi");
         assert!(
             !filename.contains("2.0.0"),

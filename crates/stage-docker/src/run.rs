@@ -15,7 +15,7 @@ use anodizer_core::stage::Stage;
 /// Per-docker_v2-config post-hook state captured during config preparation
 /// and consumed after all parallel builds for that config have completed.
 /// Fires exactly once per config (not per snapshot platform job) —
-/// the build-image lifecycle.
+/// matching GR's `buildImage` lifecycle.
 struct PerConfigPostHook {
     idx: usize,
     id: Option<String>,
@@ -93,7 +93,8 @@ impl Stage for super::DockerStage {
         let mut config_first_digest: std::collections::BTreeMap<usize, String> =
             std::collections::BTreeMap::new();
         // Pre-hook failures for individual docker_v2 configs are isolated:
-        // parallel-per-config error semantic: a failed config
+        // mirrors GR's `semerrgroup` parallel-per-config error semantic at
+        // `internal/pipe/docker/v2/docker.go:118-140`, where a failed config
         // does not cancel sibling configs already in flight. anodize collects
         // the errors and surfaces them after all parallel jobs finish — an
         // early-return past a failed pre-hook skips that config's build +
@@ -114,7 +115,7 @@ impl Stage for super::DockerStage {
                 None => Vec::new(),
             };
 
-            // Apply defaults to V2 configs. The per-crate
+            // Apply GoReleaser-compatible defaults to V2 configs. The per-crate
             // `images` default uses THIS crate's name, not the project primary.
             let docker_v2_configs: Vec<_> = docker_v2_configs
                 .into_iter()
@@ -159,7 +160,7 @@ impl Stage for super::DockerStage {
         }
 
         // Surface accumulated pre-hook errors AFTER successful per-config
-        // builds — the wait returns
+        // builds — matches GR's `g.Wait()` (`v2/docker.go:141`) which returns
         // the first error only after every parallel config has finished. The
         // first error is most informative; remaining errors were already
         // logged inline via `log.warn` in the per-config collector above.
@@ -247,7 +248,7 @@ pub(crate) fn resolve_registry_owner(
 }
 
 /// Fire per-config post-hooks once per docker_v2 config, after all
-/// snapshot-platform jobs for that config have completed.
+/// snapshot-platform jobs for that config have completed. Matches GR's
 /// `buildImage` lifecycle (pre -> build -> post).
 fn run_docker_post_hooks(
     ctx: &Context,
@@ -286,9 +287,10 @@ fn run_docker_post_hooks(
 }
 
 /// Insert the `Platforms` artifact-metadata entry on a `DockerImageV2`
-/// artifact's metadata map. `Platforms` is the key (capital P,
+/// artifact's metadata map. `Platforms` is the GR-aligned key (capital P,
 /// JSON-array string) exposed as `extra.Platforms` so custom publishers can
-/// route on the resolved platform list. The serialization is infallible
+/// route on the resolved platform list. Mirrors `ExtraPlatforms = "Platforms"`
+/// in `internal/pipe/docker/v2/docker.go`. The serialization is infallible
 /// for `Vec<String>` slices — `.expect` documents the invariant so a silent
 /// fallback to `""` cannot mask a future refactor that broadens the input
 /// type (the downstream `JSON_LIST_KEYS` parser would otherwise read the
@@ -301,7 +303,7 @@ fn insert_platforms_meta(meta: &mut HashMap<String, String>, plats: &[String]) -
 }
 
 /// Run `build_jobs` in parallel under a channel-based semaphore bounded by
-/// `parallelism`.
+/// `parallelism`, matching GoReleaser's `semerrgroup.New(ctx.Parallelism)`.
 /// After all jobs return, registers `DockerImageV2` + `DockerDigest`
 /// artifacts in `new_artifacts` and captures the first digest per docker_v2
 /// config index into `config_first_digest` for the post-hook lifecycle.
@@ -416,7 +418,7 @@ fn execute_jobs_and_register(
         // per-config post-hook (fired by the caller, after all jobs
         // complete) can render `{{ .Digest }}`. In snapshot multi-platform
         // mode anodize emits one job per platform — any platform's digest
-        // is representative since the post-hook lifecycle has only one
+        // is representative since GR's post-hook lifecycle has only one
         // digest variable per config.
         if !config_first_digest.contains_key(&job.idx)
             && let Some(d) = build_result.tag_digests.values().next()
@@ -431,7 +433,7 @@ fn execute_jobs_and_register(
 /// Prepare a single docker_v2 config: render templates, stage artifacts,
 /// fire the pre-hook, queue one or more build jobs (one per
 /// snapshot-platform slice), and enqueue the post-hook record. Isolates
-/// pre-hook failure so sibling configs continue (the
+/// pre-hook failure so sibling configs continue (matches GR's
 /// `semerrgroup` semantics).
 #[allow(clippy::too_many_arguments)]
 fn prepare_v2_config(
@@ -457,7 +459,7 @@ fn prepare_v2_config(
         return Ok(());
     }
 
-    // Template-render platforms and filter empty results.
+    // Template-render platforms and filter empty results (GoReleaser's tpl.ApplySlice).
     let platforms: Vec<String> = v2_cfg
         .platforms
         .clone()
@@ -473,7 +475,7 @@ fn prepare_v2_config(
     // short-circuits before touching the filesystem (avoids orphan staging
     // dirs / stale staged artifacts when
     // `dockerfile: "{{ if .IsSnapshot }}Dockerfile{{ end }}"` renders to ""
-    // during release). Check the *rendered*
+    // during release). GR parity (commit d788340): check the *rendered*
     // template for emptiness — not the raw template.
     let rendered_dockerfile = ctx.render_template(&v2_cfg.dockerfile).with_context(|| {
         format!(
@@ -577,7 +579,7 @@ fn prepare_v2_config(
         rendered_images.push(rendered);
     }
 
-    // For snapshot builds, multi-platform configs are split into
+    // For snapshot builds, GoReleaser splits multi-platform configs into
     // per-platform builds with --load (no push) and tag suffix, so images
     // are available locally.
     let snapshot_platforms: Vec<Vec<String>> = if ctx.is_snapshot() && platforms.len() > 1 {
@@ -586,12 +588,12 @@ fn prepare_v2_config(
         vec![platforms.clone()]
     };
 
-    // Pre-build hooks fire ONCE per docker_v2 config.
+    // Pre-build hooks fire ONCE per docker_v2 config, matching GR's
     // `buildImage` lifecycle. `Images` is the full cross-product of
     // `rendered_images × rendered_tags` (no per-platform arch suffix —
     // that's a snapshot-only tag-disambiguation step that runs after the
     // hook). Exposed as a real Tera list so `{% for img in Images %}`
-    // works: the `keyImages` field carries `da.images`, where
+    // works, mirroring GR's `tmpl.Fields{ keyImages: da.images }` where
     // `images` is `[]string`.
     let staging_str = staging_dir.to_string_lossy().into_owned();
     let cfg_image_tags = generate_v2_image_tags(&rendered_images, &rendered_tags);
@@ -694,7 +696,8 @@ fn prepare_v2_config(
     // Remove per-config BaseImage / BaseImageDigest so the next docker_v2
     // config — or any downstream stage — does not observe stale values.
     // `unset` (not `set("")`) so strict-mode templates can distinguish
-    // "undefined" from "defined-empty"; an overlay-drop semantic.
+    // "undefined" from "defined-empty"; mirrors GR's overlay-drop semantic
+    // from `tpl.WithExtraFields` in `v2/docker.go:319`.
     ctx.template_vars_mut().unset("BaseImage");
     ctx.template_vars_mut().unset("BaseImageDigest");
 
@@ -800,7 +803,7 @@ fn queue_v2_build_for_platforms(
         })?;
     }
 
-    // Evaluate sbom — SBOM is only added in the Publish path (not snapshot).
+    // Evaluate sbom — GoReleaser only adds SBOM in the Publish path (not snapshot).
     // SBOM is a buildx-only attestation; under `use: podman` it must be off.
     let sbom_enabled = if ctx.is_snapshot() {
         false
@@ -818,7 +821,7 @@ fn queue_v2_build_for_platforms(
 
     let platform_refs: Vec<&str> = snapshot_plats.iter().map(|s| s.as_str()).collect();
 
-    // Snapshot builds never push (--load is used per-platform). The
+    // Snapshot builds never push (GoReleaser uses --load per-platform). The
     // canonical `skip:` field suppresses publish via `is_active`-style gating
     // earlier in the pipeline.
     let should_push = if ctx.is_snapshot() { false } else { !dry_run };
@@ -959,8 +962,9 @@ fn queue_v2_build_for_platforms(
     Ok(())
 }
 
-/// Validate Docker V2 config ID uniqueness. Duplicate IDs are a hard
-/// error because downstream filters rely on IDs to disambiguate
+/// Validate Docker V2 config ID uniqueness. Matches GoReleaser
+/// `internal/ids/ids.go:26-36` — duplicate IDs are a hard error in
+/// `v2/docker.go:93`, because downstream filters rely on IDs to disambiguate
 /// artifacts.
 fn validate_docker_v2_id_uniqueness(crates: &[anodizer_core::config::CrateConfig]) -> Result<()> {
     let mut v2_ids: HashSet<String> = HashSet::new();
@@ -983,7 +987,7 @@ fn validate_docker_v2_id_uniqueness(crates: &[anodizer_core::config::CrateConfig
 
 /// Validate the buildx plugin once if any V2 configs exist (V2 always uses
 /// buildx). `check_buildx_version` confirms the plugin is reachable (mirrors
-/// the driver check), and `check_buildx_driver` validates
+/// GoReleaser commit e09e23a / #6526), and `check_buildx_driver` validates
 /// the active driver supports multi-platform builds. Both are warn-only:
 /// downstream `buildx build` surfaces a hard error if it cannot actually run.
 fn run_buildx_probes(stage: &super::DockerStage, log: &anodizer_core::log::StageLogger) {
@@ -996,7 +1000,7 @@ fn run_buildx_probes(stage: &super::DockerStage, log: &anodizer_core::log::Stage
 
 /// Render a `key: value` template map (build_args / annotations / labels)
 /// through the engine. Empty rendered keys or values are dropped. Output is
-/// sorted by rendered key for deterministic emission.
+/// sorted by rendered key for deterministic emission. Matches GoReleaser's
 /// `tplMapFlags`.
 fn render_v2_kv_map(
     ctx: &mut Context,
@@ -1039,7 +1043,7 @@ fn render_v2_flag_list(ctx: &mut Context, flags: Option<&Vec<String>>) -> Result
 
 /// Process one `docker_manifests[N]` entry: render templates, build/push the
 /// manifest (with retry), and register a `DockerManifest` artifact in
-/// `new_artifacts`.
+/// `new_artifacts`. Mirrors GoReleaser's docker-manifest pipe.
 #[allow(clippy::too_many_arguments)]
 fn process_docker_manifest(
     ctx: &mut Context,
@@ -1157,7 +1161,8 @@ fn process_docker_manifest(
             log.status(&format!("(dry-run) would run: {}", push_cmd.join(" ")));
         }
     } else {
-        // Remove any existing manifest before recreating:
+        // Remove any existing manifest before recreating. Matches GoReleaser
+        // `internal/pipe/docker/api_docker.go:26`:
         //   `_ = runCommand(ctx, ".", "docker", "manifest", "rm", manifest)`
         // — all errors ignored. A missing manifest is the common case (first
         // run / new tag), and any other failure (auth, network, daemon
@@ -1445,7 +1450,7 @@ fn run_manifest_push_with_retry(
     Ok(manifest_digest)
 }
 
-/// Write the combined `DockerDigest` format file. Each line is
+/// Write the combined GoReleaser `DockerDigest` format file. Each line is
 /// `<hex_digest>  <image_name>`, sorted, with `sha256:` stripped from the
 /// digest. The filename is resolved from the first non-empty
 /// `docker_digest.name_template` across configured crates, falling back to

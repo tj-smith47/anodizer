@@ -22,7 +22,7 @@ pub(crate) struct SourceArchiveInputs<'a> {
     pub(crate) sde_mtime: Option<u64>,
 }
 
-/// Extra files are placed under the prefix directory
+/// Extra files are placed under the prefix directory (matching GoReleaser)
 /// by creating a temporary staging directory and using `tar --append` to
 /// insert them into the archive after creation.
 pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<PathBuf> {
@@ -65,8 +65,8 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
     cmd.current_dir(repo_root);
     cmd.arg("archive").arg("--format").arg(initial_format);
 
-    // Only pass --prefix when prefix is non-empty; omit it when unset.
-    // Pass the user's prefix verbatim — do not force-append `/`.
+    // Only pass --prefix when prefix is non-empty; GoReleaser omits it when unset.
+    // Pass the user's prefix verbatim — GoReleaser does not force-append `/`.
     // Users who want directory semantics supply the trailing slash themselves.
     if !prefix.is_empty() {
         cmd.arg(format!("--prefix={}", prefix));
@@ -109,7 +109,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
         let mut archive = zip::ZipArchive::new(reader).context("source: open zip archive")?;
 
         // Track the compression method observed in the source archive's
-        // entries. The copy preserves the original
+        // entries. GoReleaser's `archive.Copy` preserves the original
         // archive's compression on round-trip; anodizer must do the same
         // for appended extras so a Stored (uncompressed) source archive
         // does not silently grow Deflated members.
@@ -261,7 +261,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                 }
 
                 // Compute destination name inside the prefix.
-                // When Destination is empty,
+                // GoReleaser archivefiles.go:126 — when Destination is empty,
                 // the full (relative) path is used; strip_parent reduces to
                 // basename only.
                 let dest_rel: PathBuf = if let Some(ref dst) = entry.dst {
@@ -322,7 +322,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                 // SHAs) across OS shards — breaking publish-only's
                 // cross-shard hash-verify even though every shard produced
                 // the "same" archive content. Forcing 0o644 under SDE
-                // matches Windows's hardcode and the source-stage
+                // matches Windows's hardcode and GoReleaser's source-stage
                 // default; users needing exec bits inside the source
                 // archive should use the `info.mode:` override.
                 let default_mode: u32 = if sde_mtime.is_some() {

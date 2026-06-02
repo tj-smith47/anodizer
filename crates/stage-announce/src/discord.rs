@@ -15,7 +15,7 @@ pub struct DiscordOptions<'a> {
     pub icon_url: Option<&'a str>,
 }
 
-/// Default blue colour.
+/// GoReleaser default blue colour.
 const DEFAULT_COLOR: u32 = 3_888_754;
 
 // ---------------------------------------------------------------------------

@@ -438,7 +438,7 @@ fn webhook_body_is_already_submitted(body: &str) -> bool {
 /// the response to a publish result.
 ///
 /// A single attempt with a 30s timeout mirrors the bot's own client
-/// (the PR-submit action runner). The retry helper is deliberately
+/// (`action_runner.go::submitForPR`). The retry helper is deliberately
 /// NOT used here: the server returns HTTP 500 for every failure path,
 /// including the benign "PR already exists" case, so a generic 5xx-retry
 /// classifier would both burn the budget on an idempotent re-run and

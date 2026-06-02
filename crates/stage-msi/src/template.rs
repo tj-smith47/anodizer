@@ -46,7 +46,7 @@ pub(super) fn set_msi_template_vars(
     ctx.template_vars_mut().set("BinaryPath", binary_path);
 }
 
-/// Default output filename template.
+/// Default output filename template — matches GoReleaser Pro's default.
 ///
 /// `MsiArch` is the WiX-native arch (`x86`, `x64`, `arm64`) injected
 /// per-target before the name is rendered. The user controls the extension;
@@ -54,7 +54,7 @@ pub(super) fn set_msi_template_vars(
 const DEFAULT_MSI_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ MsiArch }}";
 
 /// Resolve the output `.msi` filename: rendered `name:` template wins
-/// (auto-appending `.msi` when absent), otherwise the default
+/// (auto-appending `.msi` when absent), otherwise the GR-compatible default
 /// `<ProjectName>_<MsiArch>.msi` (rendered from `DEFAULT_MSI_NAME_TEMPLATE`).
 pub(super) fn compute_msi_filename(
     ctx: &mut Context,

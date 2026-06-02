@@ -203,7 +203,7 @@ impl Stage for SrpmStage {
             }
             // Expose `Bins` as a structured binary→install-path map so
             // user spec templates can range over it
-            // (`{% for bin, path in Bins %}`), via the
+            // (`{% for bin, path in Bins %}`), mirroring GR's
             // `map[string]string` template field.
             if !effective_bins.is_empty() {
                 let map: serde_json::Map<String, serde_json::Value> = effective_bins
@@ -289,7 +289,7 @@ impl Stage for SrpmStage {
         let spec_dest = specs_dir.join(format!("{}.spec", package_name));
         fs::copy(&spec_path, &spec_dest).with_context(|| "srpm: copy spec to rpmbuild SPECS")?;
 
-        // Resolve signature configuration
+        // Resolve signature configuration (GoReleaser parity: skip_sign + SRPM_PASSPHRASE)
         let effective_signature = if skip_sign {
             None
         } else {
@@ -354,7 +354,7 @@ impl Stage for SrpmStage {
 
         // Register artifact
         let mut metadata = HashMap::new();
-        // SRPM signing resolution:
+        // Mirrors GR `internal/pipe/srpm/srpm.go` (commit e696cf8):
         //   ExtraFormat: strings.TrimPrefix(extension, ".") == "src.rpm"
         //   ExtraExt:    extension                          == ".src.rpm"
         // Downstream template consumers (`.Artifact.Format`, `.Artifact.Ext`)
@@ -484,7 +484,7 @@ fn rpm_source_name(artifact_name: &str, raw_version: &str, rpm_version: &str) ->
 /// A user-supplied `bins:` map (`override_bins`) is authoritative and is
 /// returned verbatim. When absent, every binary the build produced
 /// (`built_binaries`) defaults to `%{_bindir}/<name>` (i.e. `/usr/bin/<name>`,
-/// the RPM-idiomatic install location for a built binary). The
+/// the RPM-idiomatic install location for a built binary). Mirrors GR's
 /// `SRPM.Bins` default, with `%{_bindir}/<name>` substituted for Go's
 /// `%{goipath}` since Rust has no import path.
 ///
@@ -523,7 +523,7 @@ fn resolve_bins(
 /// - `bins` (the resolved binary→install-path map passed in `bins`) →
 ///   emitted as real `%files` ownership entries (one install path per
 ///   line), declaring which installed files the package owns. Mirrors
-///   the binary→path map, whose values feed the spec's `%files` section.
+///   GR `SRPM.Bins`, whose values feed the spec's `%files` section.
 fn generate_default_spec(
     package_name: &str,
     version: &str,
@@ -539,7 +539,7 @@ fn generate_default_spec(
     let description = cfg.description.as_deref().unwrap_or(package_name);
 
     // Compose the RAW version string with prerelease (~suffix) and version
-    // metadata (+suffix) per the SrpmConfig contract, THEN run a
+    // metadata (+suffix) per the GR-aligned SrpmConfig contract, THEN run a
     // single total `rpm_version_field` pass over the whole thing. Sanitizing
     // once at the end (rather than per-fragment) means a `-` anywhere — in the
     // base version (`0.5.0-rc.1`), in a configured `prerelease: rc-1`, or in
@@ -634,7 +634,7 @@ fn generate_default_spec(
     }
     // Binary ownership entries — one install path per binary, in
     // deterministic key order (BTreeMap). These declare which installed
-    // files the package owns (the binary→path map). The map values
+    // files the package owns (GR `SRPM.Bins` semantics). The map values
     // are the install paths; the keys (binary names) are not emitted
     // verbatim because RPM `%files` lists paths, not logical names.
     for install_path in bins.values() {
@@ -773,7 +773,7 @@ mod tests {
         );
     }
 
-    /// `format` and `ext` extras follow the conventional
+    /// `format` and `ext` extras mirror GoReleaser's
     /// `artifact.ExtraFormat: "src.rpm"` / `artifact.ExtraExt: ".src.rpm"` so
     /// downstream filename templates and publisher stages see the canonical
     /// extension and routing key. Because the artifact emission path runs
@@ -1180,7 +1180,7 @@ mod tests {
     }
 
     /// An explicit `bins:` override is emitted verbatim into the `%files`
-    /// section (binary→install-path map), in
+    /// section (binary→install-path map, GR `SRPM.Bins` semantics), in
     /// deterministic key order.
     #[test]
     fn test_generate_default_spec_emits_bins_override_in_files() {
@@ -1364,7 +1364,7 @@ mod tests {
 
     /// Cover the six optional fields surfaced through
     /// `generate_default_spec`: epoch, section, compression, docs,
-    /// contents, license_file_name. Each emits the rpm-idiom shape
+    /// contents, license_file_name. Each emits the GR/rpm-idiom shape
     /// that downstream tooling expects to see.
     #[test]
     fn test_generate_default_spec_emits_optional_fields() {

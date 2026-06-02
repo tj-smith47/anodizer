@@ -92,7 +92,7 @@ impl Stage for NotarizeStage {
             }
         }
 
-        // Refresh artifact checksums after signing.
+        // Refresh artifact checksums after signing (GoReleaser parity: macos.go:144).
         // Signing modifies binaries in-place, so SHA256 metadata becomes stale.
         if !dry_run {
             refresh_artifact_checksums(ctx, &log);
@@ -1258,7 +1258,7 @@ crates: []
     }
 
     // -----------------------------------------------------------------------
-    // Inverted `enabled:` — must NOT fail open
+    // Inverted `enabled:` (GR alias) — must NOT fail open
     // -----------------------------------------------------------------------
 
     /// Parse a one-entry `notarize.macos` block carrying the given `enabled:`

@@ -779,7 +779,7 @@ fn source_prefix_var_set_from_rendered_prefix_template() {
 
 #[test]
 fn source_prefix_var_empty_when_prefix_template_unset() {
-    // Default: no prefix_template → flat archive, empty
+    // GoReleaser default: no prefix_template → flat archive, empty
     // SourcePrefix. The srpm auto-gen spec turns this into `%autosetup -c`.
     use anodizer_core::config::{SbomConfig, SourceConfig};
     use anodizer_core::test_helpers::{create_test_project, init_git_repo};
@@ -1393,7 +1393,7 @@ fn test_source_extra_files_with_info() {
 /// Q-src1 — `core::git::get_head_commit` resolves HEAD to the full SHA via
 /// `git rev-parse HEAD`. Used by `SourceStage` when `ctx.git_info` was not
 /// pre-populated, replacing the previous literal `"HEAD"` string passed to
-/// `git archive`, pinned to the full commit.
+/// `git archive`. Matches GR `ctx.Git.FullCommit`.
 ///
 /// Runs `git rev-parse HEAD` against the cargo workspace itself (the
 /// anodizer repo is a git repo); avoids `set_current_dir` so the test is
@@ -1425,7 +1425,7 @@ fn test_get_head_commit_resolves_to_sha() {
 }
 
 /// Q-src2 — Source-archive zip append must reuse the source archive's
-/// compression method for extras. A copy-style round-trip
+/// compression method for extras. Mirrors GR `archive.Copy`-style round-trip
 /// preservation. Previously hardcoded `zip::CompressionMethod::Deflated`,
 /// which silently mismatched the source's method when (e.g.) git produced a
 /// `Stored` zip.

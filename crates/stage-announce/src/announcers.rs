@@ -142,7 +142,7 @@ impl Announcer for DiscordAnnouncer {
                     .env_var("DISCORD_API")
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "https://discord.com/api".to_string());
-                // Build the webhook URL via
+                // Q-disc1: GoReleaser builds the webhook URL via
                 // `url.URL.JoinPath(...)`, which percent-encodes path
                 // segments. Discord webhook IDs and tokens are
                 // alphanumeric+`_-` in practice, but a malformed env
@@ -419,8 +419,9 @@ impl Announcer for WebhookAnnouncer {
         // Anodize-additive UX win: a `User-Agent: anodizer/<version>`
         // header is appended (unless the user overrides) so operators
         // can attribute incoming webhooks to anodizer for routing,
-        // rate-limiting, and audit-log tagging. A static user-agent with
-        // no version suffix would be the baseline; the
+        // rate-limiting, and audit-log tagging. GoReleaser
+        // (`internal/pipe/webhook/webhook.go`) sends a static
+        // `User-Agent: goreleaser` with no version suffix; the
         // version-suffixed variant is tradeoff-free (same wire shape,
         // strictly more debuggable). Pinned by
         // `test_webhook_user_agent_is_anodizer_versioned`.
@@ -433,7 +434,7 @@ impl Announcer for WebhookAnnouncer {
             anodizer_core::http::USER_AGENT,
         );
 
-        // Default content-type is "application/json; charset=utf-8".
+        // GoReleaser defaults to "application/json; charset=utf-8".
         let content_type = cfg
             .content_type
             .clone()
@@ -506,19 +507,19 @@ impl Announcer for TelegramAnnouncer {
         // Telegram defaults to MarkdownV2 parse mode, so the default
         // message template must apply the mdv2escape filter.
         //
-        // The upstream telegram template uses Go-template syntax:
+        // Q-tg1: GoReleaser telegram.go:18 uses Go-template syntax:
         //   `{{ print .ProjectName " " .Tag " is out! ... " .ReleaseURL | mdv2escape }}`
         // anodizer renders via Tera. Previously this template used
         // Tera's `~` concatenation operator (`{{ A ~ " " ~ B | filter }}`)
         // — which works, but is hostile to copy-paste: a user pulling
         // the default into a custom template tends to mix it with
-        // `print` blocks (Tera then refuses to parse `print`)
+        // GR-style `print` blocks (Tera then refuses to parse `print`)
         // or rewrite the `~` and break the filter pipeline.
         //
         // The new form uses one `mdv2escape` filter per dynamic value
         // plus pre-escaped literal text (`is out\!` — `!` must be
         // backslash-escaped in MarkdownV2 per the Telegram docs). The
-        // rendered output is byte-equivalent to the upstream
+        // rendered output is byte-equivalent to GR's
         // `{{ print … | mdv2escape }}` form, but the template itself
         // is `{{ … }}`-only and copy-pastes cleanly into custom
         // user templates. Pinned by
@@ -529,7 +530,7 @@ impl Announcer for TelegramAnnouncer {
                 .as_deref()
                 .unwrap_or(TELEGRAM_DEFAULT_TEMPLATE),
         )?;
-        // Default parse_mode to "MarkdownV2".
+        // Default parse_mode to "MarkdownV2" to match GoReleaser behaviour.
         // Validate against known values; default to MarkdownV2 with a warning for unknowns.
         let parse_mode_raw = cfg.parse_mode.as_deref().unwrap_or("MarkdownV2");
         let parse_mode_validated = match parse_mode_raw {
@@ -669,7 +670,8 @@ impl Announcer for MattermostAnnouncer {
         let message = render_message(ctx, cfg.message_template.as_deref())?;
         // Anodize-additive UX win (locked 2026-04-28): channel,
         // username, icon_url, and icon_emoji all run through the
-        // template engine. The conventional behaviour passes these
+        // template engine. GoReleaser
+        // (`internal/pipe/mattermost/mattermost.go`) passes these
         // fields raw — no template substitution. Rendering is
         // tradeoff-free (raw strings still pass through unchanged)
         // and unlocks per-tag channel routing like
@@ -677,19 +679,19 @@ impl Announcer for MattermostAnnouncer {
         // the strict_guard collected-errors path, same as message.
         // Pinned by `test_mattermost_renders_channel_template`.
         let channel = ctx.render_template_opt(cfg.channel.as_deref())?;
-        // Default username to DEFAULT_DISPLAY_NAME (brand-default policy
-        // keeps anodizer's own attribution).
+        // Default username to DEFAULT_DISPLAY_NAME (GoReleaser defaults to
+        // "GoReleaser"; brand-default policy keeps anodizer's own attribution).
         let username =
             ctx.render_template_opt(cfg.username.as_deref().or(Some(DEFAULT_DISPLAY_NAME)))?;
         let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
         let icon_emoji = ctx.render_template_opt(cfg.icon_emoji.as_deref())?;
-        // Default color to "#2D313E". We read
+        // Default color to "#2D313E" (GoReleaser default). We read
         // from `MattermostAnnounce.color` — anodizer always has, even
-        // before a cross-pipe bug was fixed upstream
+        // before upstream commit 7e7f9b2 fixed the GR cross-pipe bug
         // where mattermost mistakenly consulted `TeamsAnnounce.Color`.
         // Pinned by `test_mattermost_reads_own_color_not_teams`.
         let color_val = cfg.color.clone().unwrap_or_else(|| "#2D313E".to_string());
-        // Default title to "{{ ProjectName }} {{ Tag }} is out!".
+        // Default title to "{{ ProjectName }} {{ Tag }} is out!" (GoReleaser default).
         let title_template = cfg
             .title_template
             .as_deref()
@@ -876,12 +878,12 @@ impl Announcer for MastodonAnnouncer {
             return Ok(());
         }
         let message = render_message(ctx, cfg.message_template.as_deref())?;
-        // The mastodon config declares all three
+        // Q-mast1: GoReleaser's `mastodon.Config` declares all three
         // env-backed fields (ClientID, ClientSecret, AccessToken) as
         // `notEmpty`, so missing any one of them fails fast at
         // validation time. Anodizer used to require only
-        // ACCESS_TOKEN, silently sending without the credentials
-        // required for the OAuth refresh flow. Mirror that
+        // ACCESS_TOKEN, silently sending without the credentials GR
+        // requires for its OAuth refresh flow. Mirror the GR
         // fail-fast here so misconfigured releases die up front
         // instead of mid-announce.
         let access_token =
@@ -1113,7 +1115,7 @@ impl Announcer for EmailAnnouncer {
         };
         let log_line = format!("to {}: {}", cfg.to.join(", "), subject);
 
-        // Support SMTP_HOST and SMTP_PORT env vars as fallbacks.
+        // Support SMTP_HOST and SMTP_PORT env vars as fallbacks (like GoReleaser).
         let smtp_host = cfg
             .host
             .clone()

@@ -34,7 +34,7 @@ pub(crate) struct ChangelogRenderOpts<'a> {
     pub title: Option<&'a str>,
     pub divider: Option<&'a str>,
     /// Overrides `use_source` for newline selection only (matches
-    /// the backend token type).
+    /// GoReleaser's `newLineFor()` which inspects `ctx.TokenType`).
     pub scm_provider: Option<&'a str>,
 }
 
@@ -70,7 +70,7 @@ fn collect_all_authors(grouped: &[GroupedCommits]) -> String {
 }
 
 /// Inner render function that accepts an optional SCM provider override for
-/// newline handling, keyed on the backend token type, not
+/// newline handling. GoReleaser's `newLineFor()` checks `ctx.TokenType`, not
 /// the changelog source. When `scm_provider` is set, it overrides `use_source`
 /// for newline selection (but not for default format template selection).
 pub(crate) fn render_changelog_with_provider(
@@ -96,7 +96,7 @@ pub(crate) fn render_changelog_with_provider(
     };
     let tmpl: &str = probe.resolved_format(use_source, abbrev);
     // GitLab and Gitea need trailing spaces before newlines for markdown line breaks.
-    // Newline handling is keyed on the backend token type, not the changelog source.
+    // GoReleaser's newLineFor() checks ctx.TokenType, not the changelog source.
     // See https://docs.gitlab.com/ee/user/markdown.html#newlines
     let nl_source = scm_provider.unwrap_or(use_source);
     let newline = match nl_source {
@@ -105,17 +105,17 @@ pub(crate) fn render_changelog_with_provider(
     };
     let mut out = String::new();
     // Title heading. Three states:
-    //   - title == None        → emits `## Changelog` (default).
+    //   - title == None        → emits `## Changelog` (GoReleaser-equivalent default).
     //   - title == Some("foo") → emits `## foo`.
     //   - title == Some("")    → suppresses the heading entirely (anodize-additive
     //                            UX win — see divergence note below).
     //
-    // Intentional carve-out: the upstream convention emits the
+    // Divergence from GoReleaser (intentional carve-out): GoReleaser emits the
     // `## Changelog` heading unconditionally and offers no way to suppress it.
     // Anodizer treats an explicit empty `title:` as a request to omit the
     // heading, which lets users compose changelogs into other surfaces (release
     // bodies, RSS feeds, embedded docs) without a redundant heading. Default
-    // the carve-out is opt-in.
+    // behaviour still matches GoReleaser; the carve-out is opt-in.
     let changelog_title = title.unwrap_or(ChangelogConfig::DEFAULT_TITLE);
     if !changelog_title.is_empty() {
         out.push_str(&format!("## {}\n\n", changelog_title));
@@ -178,7 +178,7 @@ fn render_groups(
         // Only emit a heading when the group has a non-empty title.
         // When no changelog groups are configured, the default group has an
         // empty title so commits render as a plain bullet list without a
-        // spurious heading.
+        // spurious heading — matching GoReleaser behaviour.
         if !group.title.is_empty() {
             // Group titles are pre-rendered by the stage before reaching
             // this function (`run.rs::resolve_changelog_opts` walks the
@@ -217,7 +217,7 @@ fn render_groups(
 /// - `SHA` — full commit hash
 /// - `ShortSHA` — abbreviated commit hash (controlled by `abbrev`)
 /// - `Message` — commit subject / description
-/// - `AuthorName` — commit author name. Marked
+/// - `AuthorName` — commit author name. GoReleaser v2.14 marks
 ///   `AuthorName` / `AuthorEmail` / `AuthorUsername` as deprecated in
 ///   favour of `AuthorsList[0].Name` / `.Email` / `.Username`. Anodizer
 ///   keeps the flat fields for backward compatibility; new templates
@@ -225,11 +225,11 @@ fn render_groups(
 /// - `AuthorEmail` — commit author email (see `AuthorName` deprecation note).
 /// - `Login` — per-commit GitHub username (populated only with `github` backend)
 /// - `Authors` — comma-separated names for this commit (primary author +
-///   `Co-Authored-By:` trailers). The per-entry
+///   `Co-Authored-By:` trailers). matches GR's per-entry
 ///   Authors template var.
 /// - `Logins` — comma-separated logins for this commit (primary author's
 ///   login + parsed co-author logins, where the trailer carries one).
-///   The per-entry Logins template var.
+///   Matches GR's per-entry Logins template var.
 /// - `AllLogins` — comma-separated list of *all* GitHub logins seen in the
 ///   release. Was the previous `Logins` semantic (release-wide) before
 ///   `Logins` was reclaimed for per-entry data; renamed to keep both
@@ -249,7 +249,7 @@ fn render_commit_line(
     newline: &str,
 ) -> Result<()> {
     let short_sha = if abbrev < 0 {
-        // Negative abbrev (e.g. -1) means omit hash entirely.
+        // Negative abbrev (e.g. GoReleaser's -1) means omit hash entirely.
         String::new()
     } else if abbrev == 0 {
         // abbrev 0 means full SHA (no truncation).
@@ -282,13 +282,13 @@ fn render_commit_line(
     vars.set("AuthorName", &commit.author_name);
     vars.set("AuthorEmail", &commit.author_email);
     vars.set("Login", &commit.login);
-    // Alias: the default format string when
+    // GR-aligned alias: the upstream default format string when
     // `use ∈ {github,gitlab,gitea}` is
     // `"{{ .SHA }}: {{ .Message }} ({{ with .AuthorUsername }}@{{ . }}{{ else }}{{ .AuthorName }} <{{ .AuthorEmail }}>{{ end }})"`
-    // populated for
+    // (`internal/pipe/changelog/changelog.go:59,259-271`). GR populates the
     // `AuthorUsername` template var from the SCM commit author's username;
     // anodizer surfaces the same datum under `Login`. Bind both keys so
-    // configs copy-paste cleanly without a "missing key" error.
+    // GR-shape configs copy-paste cleanly without a "missing key" error.
     vars.set("AuthorUsername", &commit.login);
     // Per-entry `Authors` and `Logins` template vars: each entry gets its
     // own commit-author + co-author list. The release-wide GitHub login
@@ -304,12 +304,12 @@ fn render_commit_line(
         commit_authors.push(ca.clone());
     }
     vars.set("Authors", &commit_authors.join(", "));
-    // `Authors` is also surfaced as a structured list of
+    // GR Pro v2.14 also surfaces `Authors` as a structured list of
     // {Name, Email, Username} records so templates can iterate
     // (`{% for a in AuthorsList %}@{{ a.Username }}{% endfor %}`).
     // Anodizer exposes the same shape under `AuthorsList` to keep the
     // existing comma-string `Authors` working (backward compat) while
-    // adding the structured access pattern. Co-author trailers
+    // adding the GR Pro structured access pattern. Co-author trailers
     // contribute Name only (email is in the raw trailer string,
     // Username is unknown without an extra SCM API hit — left empty).
     let mut authors_list: Vec<JsonValue> = Vec::new();
@@ -342,8 +342,8 @@ fn render_commit_line(
     }
     vars.set("Logins", &commit_logins.join(", "));
     // `Logins` as a structured list too — symmetric with `AuthorsList`
-    // so `{{ Logins | englishJoin }}` from a dotted-variable config works
-    // (`.Logins` is a list while ours has historically been a
+    // so `{{ Logins | englishJoin }}` from a copy-pasted GR config works
+    // (GR's `.Logins` is a `[]string` while ours has historically been a
     // comma-string for the bare `{{ Logins }}` render. The structured
     // alias under `LoginsList` lets templates iterate or filter without
     // re-splitting on commas.

@@ -373,7 +373,7 @@ fn release_repo(crate_cfg: &CrateConfig, ctx: &Context) -> Option<(String, Strin
 }
 
 /// Pick the archive entry cargo-binstall should install from: the first entry
-/// whose default format is binstallable (tar.gz / zip / …),
+/// whose default format is binstallable (tar.gz / zip / …). GoReleaser-style,
 /// the primary archive is the one consumers fetch; auxiliary entries (e.g. a
 /// `tar.xz`/`tar.zst` `-extra` entry) are skipped.
 fn binstallable_archive(crate_cfg: &CrateConfig) -> Option<ArchiveConfig> {
@@ -1077,7 +1077,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
             );
         }
 
-        // Concrete spot-checks for the two endpoints.
+        // Concrete spot-checks for the two GoReleaser-style endpoints.
         assert_eq!(
             override_asset(binstall, "x86_64-unknown-linux-gnu", "9.9.9"),
             "anodizer-9.9.9-linux-amd64.tar.gz"
@@ -1225,7 +1225,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
         let updated = std::fs::read_to_string(&cargo_toml).unwrap();
         let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
         let binstall = &doc["package"]["metadata"]["binstall"];
-        // Default template → `myapp_1.0.0_linux_amd64.tar.gz`.
+        // Default GR template → `myapp_1.0.0_linux_amd64.tar.gz`.
         assert_eq!(
             override_asset(binstall, "x86_64-unknown-linux-gnu", "1.0.0"),
             "myapp_1.0.0_linux_amd64.tar.gz"

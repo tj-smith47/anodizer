@@ -32,7 +32,7 @@ mod tests;
 // ---------------------------------------------------------------------------
 
 /// Retry an async upload operation with exponential backoff.
-/// 10 attempts, 50ms initial delay, 30s cap.
+/// Matches GoReleaser: 10 attempts, 50ms initial delay, 30s cap.
 ///
 /// # Layering note
 ///
@@ -43,7 +43,7 @@ mod tests;
 /// loop retries up to its own 10 attempts. The total worst-case latency
 /// grows accordingly. This is intentional — the per-publisher inner
 /// policy gives the user a configurable surface that didn't exist before,
-/// and the outer loop stays as the safety net.
+/// and the outer loop stays as the GR-aligned safety net.
 ///
 /// # Classifier alignment with the inner helpers
 ///
@@ -53,7 +53,7 @@ mod tests;
 /// `Err` would amplify a 4xx fast-fail by 10×, defeating the inner's
 /// decision. We re-run [`is_retriable`] on the bubbled-up error and
 /// `Break` on non-retriable failures, matching the inner's policy and
-/// the intended retry envelope.
+/// the GoReleaser parity intent.
 pub(crate) async fn retry_upload<F, Fut>(operation_name: &str, mut f: F) -> Result<()>
 where
     F: FnMut() -> Fut,
@@ -81,7 +81,7 @@ where
 
 /// Set `metadata["url"]` on every artifact for the given crate, constructing
 /// the download URL from the SCM backend's download base, owner/repo, tag, and
-/// artifact name. This is the release-URL-template pattern and
+/// artifact name. This matches GoReleaser's `ReleaseURLTemplate()` pattern and
 /// allows publishers to resolve download URLs without explicit `url_template`.
 pub(crate) fn populate_artifact_download_urls(
     ctx: &mut Context,
@@ -124,7 +124,7 @@ pub(crate) fn populate_artifact_download_urls(
 /// its `owner` and `name` fields.
 ///
 /// Resolution order:
-/// 1. Explicit `release.provider:`.
+/// 1. Explicit `release.provider:` (GR Pro cross-platform publishing).
 /// 2. Active SCM token type with provider-side fallback (the historical
 ///    behaviour — preserved so existing configs don't change shape).
 ///
@@ -190,10 +190,10 @@ pub(crate) fn compose_release_url(
 /// - `Bool(b)`  – use the explicit value regardless of the tag.
 /// - `None`     – default to `false`.
 ///
-/// # Design note
+/// # Divergence from GoReleaser (BY DESIGN)
 ///
-/// The `prerelease == "auto"` check could be evaluated once at config-load
-/// time: it inspects
+/// GoReleaser evaluates `prerelease == "auto"` once at `Default()`-time
+/// (`internal/pipe/release/release.go:76-85`): it inspects
 /// `ctx.Semver.Prerelease` and stores a single `ctx.PreRelease` flag for the
 /// whole release run. Every release in the run shares that one decision.
 ///
@@ -227,14 +227,14 @@ pub(crate) fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &st
 ///
 /// # Mode selection
 ///
-/// The release-body description emits two shapes:
+/// GoReleaser's `describeBody` (`release/body.go:24-44`) emits two shapes:
 ///
 /// - 0 artifacts → unset / empty string
 /// - 1 artifact  → string with the combined file's contents
 /// - ≥2 artifacts (split-mode sidecars) → `map[ChecksumOf]contents` so a
 ///   Tera template can do `{% for k, v in Checksums %}…{% endfor %}`
 ///
-/// Anodizer's workspace model adds a third case:
+/// Anodizer's workspace model adds a third case GoReleaser doesn't have:
 /// **multiple combined-mode sidecars**, one per crate. The checksum stage
 /// marks those with `metadata["combined"] = "true"` (and leaves
 /// `ChecksumOf` unset). Without aggregation, the ≥2-artifact branch above
@@ -244,12 +244,12 @@ pub(crate) fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &st
 /// artifact is a combined-mode sidecar, this helper UNIONS all per-crate
 /// content lines into a single SHA256SUMS-style block, deduplicated and
 /// sorted alphabetically by filename (matching the per-crate sort the
-/// checksum stage already applies, and following the convention so a
+/// checksum stage already applies, and matching the GR convention so a
 /// release body templated with `{{ .Checksums }}` renders the full
 /// workspace inventory).
 ///
 /// Mixed mode (some combined + some split sidecars) falls back to the
-/// a map keyed by `ChecksumOf` for every artifact, with the
+/// GR-style map keyed by `ChecksumOf` for every artifact, with the
 /// combined files keyed by their artifact `name` since they have no
 /// `ChecksumOf`. Mixed mode is unusual but the map shape stays consistent
 /// for templates that already iterate with `{% for k, v in Checksums %}`.

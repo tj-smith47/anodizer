@@ -59,12 +59,12 @@ pub fn formats_for_target(
 ) -> Vec<String> {
     let (os, _arch) = map_target(target);
     for ov in overrides {
-        // Format-override OS match via prefix:
+        // GR-aligned (archive.go:349 `strings.HasPrefix(platform, override.Goos)`):
         // FormatOverride.os matches when the resolved target's os field starts
         // with the configured value. Same call-site rationale as the primary
         // archive run loop.
         //
-        // Empty `os` is rejected as a user typo (stricter than the upstream,
+        // Empty `os` is rejected as a user typo (anodizer-stricter than GR,
         // which lets `os: ""` match every target via empty-prefix). A user who
         // accidentally writes `os:` (yaml-empty) gets a clean fallback to the
         // default format instead of a silent global-override.
@@ -101,7 +101,7 @@ pub(crate) fn default_name_template() -> &'static str {
 }
 
 /// Multi-crate variant of [`default_name_template`]: identical to the
-/// canonical template, but relies on the archive stage to override the
+/// canonical GR template, but relies on the archive stage to override the
 /// `ProjectName` template var to the per-crate name so each crate's archive
 /// stem is distinct without forcing every user to hand-author
 /// `archive.name_template:`. `{{ .CrateName }}` remains separately available

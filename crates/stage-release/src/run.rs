@@ -62,7 +62,7 @@ impl Stage for super::ReleaseStage {
 /// Emit once-per-run warnings about workspace-level nightly configuration
 /// combinations that are technically valid but operationally surprising.
 ///
-/// Surfaces the gotcha that `nightly.draft = true`
+/// Surfaces the GoReleaser-documented gotcha that `nightly.draft = true`
 /// combined with `nightly.keep_single_release = true` leaves no published
 /// nightly release in a non-draft state, because each run replaces the prior
 /// draft before it can be promoted.
@@ -282,7 +282,7 @@ fn resolve_release_name(
 /// Collect the full set of `(path, Option<custom_name>)` entries to upload as
 /// release assets for one crate.
 ///
-/// Composition order:
+/// Composition order (matches GoReleaser `internal/pipe/release/release.go`):
 ///
 /// 1. Uploadable artifacts produced by upstream stages, filtered by
 ///    `ids_filter` and the crate name (`release_uploadable_kinds()` +
@@ -293,8 +293,8 @@ fn resolve_release_name(
 ///    optional `name_template` honored).
 /// 4. `release.templated_extra_files` are rendered into the dist dir and
 ///    appended with their `dst` name as the custom_name.
-/// 5. `include_meta: true` appends `metadata.json` (only the Metadata
-///    kind, not anodizer's
+/// 5. `include_meta: true` appends `metadata.json` (GoReleaser
+///    `release.go:170-172` — only the Metadata kind, not anodizer's
 ///    private `artifacts.json` manifest).
 fn assemble_artifact_entries(
     ctx: &mut Context,
@@ -331,9 +331,9 @@ fn assemble_artifact_entries(
         }
     }
 
-    // Refresh combined checksum files before
+    // GoReleaser release.go:121 — refresh combined checksum files before
     // upload so they include signatures/artifacts added after the checksum
-    // stage ran.
+    // stage ran. Mirrors GoReleaser's ExtraRefresh hook.
     anodizer_stage_checksum::refresh_combined_checksums(ctx, dry_run)?;
 
     if let Some(extra_specs) = &release_cfg.extra_files {
@@ -387,9 +387,9 @@ fn assemble_artifact_entries(
 /// # Header / footer precedence (anodizer-local)
 ///
 /// `release.header` wins over `changelog.header` (the latter is stashed by
-/// the changelog stage in `ctx.stage_outputs.changelog_header`). The
+/// the changelog stage in `ctx.stage_outputs.changelog_header`). GoReleaser
 /// only has the `release.*` source (loaded via `loadContent(ReleaseHeader…)`
-/// from the changelog stage); anodizer extends that to a
+/// in `internal/pipe/changelog/changelog.go`); anodizer extends that to a
 /// second source as a Rust-first ergonomic so a YAML-configured changelog
 /// wrapper still reaches the release body. Same for the footer.
 ///
@@ -459,7 +459,7 @@ fn compose_full_release_body(
 /// Resolve the `skip_upload` decision for one crate's release.
 ///
 /// Accepts a template (`{{ .IsSnapshot }}`, etc.) that renders to one of
-/// `true` / `false` / `auto` / `1` / `0` / "". `auto` resolves as:
+/// `true` / `false` / `auto` / `1` / `0` / "". `auto` mirrors GoReleaser:
 /// skip when the run is a snapshot. Any other rendered value bails with
 /// the actionable error message.
 fn resolve_skip_upload(
@@ -718,7 +718,8 @@ struct DryRunSummary<'a> {
 ///
 /// Falls back to the public default for each provider when no override is
 /// configured. For Gitea, the download base is additionally derived from the
-/// API URL by stripping the `/api/v1` suffix.
+/// API URL by stripping the `/api/v1` suffix to mirror GoReleaser's
+/// `defaults.go:29-36`.
 fn dry_run_download_base(ctx: &Context) -> String {
     match ctx.token_type {
         ScmTokenType::GitHub => ctx
@@ -899,7 +900,7 @@ fn handle_dry_run(
 /// Enumerate the release-upload candidate set for a single crate.
 ///
 /// Source of truth for which artifacts get uploaded to a GitHub/GitLab/Gitea
-/// release. The upload set:
+/// release. Mirrors GoReleaser's `release.go` upload set:
 /// `release_uploadable_kinds()` plus `Metadata` when `include_meta` is true.
 ///
 /// Filters applied (in order):
@@ -1181,7 +1182,7 @@ mod tests {
     #[test]
     fn validate_nightly_config_warns_when_nightly_draft_and_keep_single_release_both_true() {
         // draft=true + keep_single_release=true on a nightly run is the
-        // Documented gotcha. The function must run without
+        // GoReleaser-documented gotcha. The function must run without
         // panicking (the warn-emission path is exercised end-to-end).
         let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
         ctx.options.nightly = true;

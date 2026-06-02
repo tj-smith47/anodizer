@@ -108,7 +108,7 @@ fn test_generate_snap_yaml_with_apps() {
 
 #[test]
 fn test_generate_snap_yaml_app_missing_command_defaults_to_app_name() {
-    // A missing
+    // GoReleaser (internal/pipe/snapcraft/snapcraft.go) defaults a missing
     // app command to the app key name (`command := name`), NOT erroring.
     let mut apps = BTreeMap::new();
     apps.insert(
@@ -279,7 +279,7 @@ fn test_generate_snapcraft_yaml_defaults() {
         ..Default::default()
     };
     let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
-    // Do NOT default `base:`. Classic-confinement snaps
+    // GoReleaser parity: do NOT default `base:`. Classic-confinement snaps
     // need no base at all, and modern snaps may want `core24`. Forcing
     // `base: core22` breaks both. The line must be absent unless the
     // user-supplied config provides one.
@@ -332,7 +332,7 @@ fn test_generate_snapcraft_yaml_minimal_with_required_fields() {
     let yaml = generate_snap_yaml(&cfg, "0.1.0", &["mytool"], None, None).unwrap();
     assert!(yaml.contains("name: mytool"), "missing fallback name");
     assert!(yaml.contains("version: 0.1.0"), "missing version");
-    // `base:` is only emitted when the user supplied one.
+    // GoReleaser parity: `base:` is only emitted when the user supplied one.
     assert!(
         !yaml.contains("base:"),
         "no `base:` line should appear when user did not configure one\n{yaml}"
@@ -938,7 +938,7 @@ fn test_stage_dry_run_registers_artifacts() {
     assert_eq!(snaps[0].crate_name, "myapp");
 
     // Default filename (B2 fix): {name}_{version}_{os}_{arch}.snap —
-    // matches the default snap-name shape.
+    // matches GoReleaser snapcraft.go:103,120-122.
     let path_str = snaps[0].path.to_string_lossy();
     assert!(
         path_str.ends_with("mysnap_1.0.0_linux_amd64.snap"),
@@ -2495,7 +2495,7 @@ fn test_new_app_fields_omitted_when_empty() {
 #[test]
 fn snapcraft_5xx_classifies_retriable() {
     // Bracketed-status form (canonical upstream `isRetriableSnapPush`
-    // shape).
+    // shape, mirroring GR commit eb944f9).
     for marker in ["[500]", "[502]", "[503]", "[504]"] {
         let combined = format!("snapcraft: server returned {marker} while pushing snap\n");
         assert!(

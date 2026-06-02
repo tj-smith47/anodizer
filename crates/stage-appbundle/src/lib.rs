@@ -331,7 +331,7 @@ impl Stage for AppBundleStage {
             for bundle_cfg in bundle_configs {
                 let bundle_id_for_log = bundle_cfg.id.as_deref().unwrap_or("default").to_string();
 
-                // `app_bundle.if`: template-conditional skip (opt-in).
+                // GoReleaser Pro `app_bundle.if`: template-conditional skip (opt-in).
                 // Render error => hard bail (W1 avoidance).
                 let proceed = anodizer_core::config::evaluate_if_condition(
                     bundle_cfg.if_condition.as_deref(),
@@ -1769,7 +1769,7 @@ crates:
         );
     }
 
-    // --- `app_bundle.if` template-conditional ---
+    // --- `app_bundle.if` template-conditional (GoReleaser Pro) ---
 
     fn appbundle_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
         use anodizer_core::artifact::{Artifact, ArtifactKind};

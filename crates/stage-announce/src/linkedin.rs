@@ -11,7 +11,7 @@ const API_BASE: &str = "https://api.linkedin.com";
 
 /// Build the user-facing error message for a LinkedIn HTTP failure on the
 /// given endpoint stage ("share", "GET /v2/userinfo", "GET /v2/me"). The
-/// response body is included verbatim:
+/// response body is included verbatim, mirroring GoReleaser commit 0944b0e:
 /// LinkedIn's JSON error envelope (`{ "message": "...", "serviceErrorCode": ... }`)
 /// is the only actionable signal the user gets, so it must reach them.
 pub(crate) fn format_linkedin_http_error(
@@ -76,7 +76,7 @@ pub fn validate_token_shape(token: &str) -> Result<()> {
 
 /// Post a share to LinkedIn via the v2 Share API.
 ///
-/// Two-step flow:
+/// Two-step flow matching GoReleaser:
 /// 1. Resolve the profile URN via `/v2/userinfo` (newer, uses `sub` field).
 ///    Falls back to `/v2/me` (legacy, uses `id` field) only on 403 Forbidden.
 /// 2. POST the share to `/v2/shares`.

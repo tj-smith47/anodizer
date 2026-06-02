@@ -13,14 +13,16 @@ use anyhow::{Context as _, Result};
 /// Display name shown to recipients in chat-platform announcements
 /// (Discord embed `author`, Slack/Mattermost webhook `username`).
 ///
-/// **Brand-default policy**: anodizer keeps its own attribution. The
-/// message *is* from anodize, and impersonating a different release tool in
-/// someone's release channels is wrong UX.
+/// **Brand-default policy**: anodizer keeps its own attribution instead of
+/// GR's `"GoReleaser"` default. The message *is* from anodize, not
+/// GoReleaser, and impersonating a different release tool in someone's
+/// release channels is wrong UX. The deviation is the documented
+/// exception to the GR-alignment rule.
 ///
 /// Companion decision: discord/teams `icon_url` defaults stay `None` rather
-/// than pointing at a third-party avatar URL — anodizer does not host an
-/// avatar URL today, and an image it does not control is a worse default
-/// than no image. Revisit when the docsite ships an avatar.
+/// than pointing at `https://goreleaser.com/static/avatar.png` — we don't
+/// host an avatar URL today, and a third-party image we don't control is a
+/// worse default than no image. Revisit when the docsite ships an avatar.
 ///
 /// `User-Agent` has its own const (`anodizer_core::http::USER_AGENT`) which
 /// includes the version suffix; this one is the bare display string.
@@ -76,14 +78,14 @@ pub(crate) fn require_env_with_env<E: EnvSource + ?Sized>(
 /// Read an env var that is required and must not be empty, returning a clear
 /// error message identifying both the announcer and the missing variable.
 ///
-/// Env-tag presence validation, which fail-fasts before
+/// Mirrors GoReleaser's `notEmpty` env-tag validation, which fail-fasts before
 /// any network calls when a required credential env var is missing.
 ///
 /// Distinct from [`require_env`]: the former bails on missing OR empty (after
 /// trim), and is used for env vars that are *the* credential (a single token).
 /// This helper is intentionally stricter — it bails on **empty after trim**
-/// just like `require_env`, but exists as a named entry-point for the
-/// required-env tag set so call sites read like the config they mirror.
+/// just like `require_env`, but exists as a named entry-point for the GR
+/// `notEmpty` tag set so call sites read like the GR config they mirror.
 #[allow(dead_code)]
 pub(crate) fn require_non_empty_env(provider: &str, name: &str) -> Result<String> {
     require_non_empty_env_with_env(provider, name, &ProcessEnvSource)
@@ -156,9 +158,9 @@ pub(crate) fn render_message(ctx: &mut Context, tmpl: Option<&str>) -> Result<St
 /// Anodize-additive UX win (locked 2026-04-28): when both `cfg.port` and
 /// `SMTP_PORT` are unset we default to **587** — the IETF submission port,
 /// the conventional STARTTLS endpoint exposed by virtually every modern
-/// SMTP relay (Postfix, Exim, sendgrid, mailgun, AWS SES, …). The
-/// An unset port would otherwise be an error; the default-587 path is
-/// tradeoff-free because operators who need a
+/// SMTP relay (Postfix, Exim, sendgrid, mailgun, AWS SES, …). GoReleaser's
+/// `internal/pipe/smtp/smtp.go` errors out with `errNoPort` in this case;
+/// the default-587 path is tradeoff-free because operators who need a
 /// different port set it explicitly, and the `auto` encryption mode then
 /// picks STARTTLS for 587 (matching the wire reality). Pinned by
 /// `test_email_smtp_port_defaults_to_587`.

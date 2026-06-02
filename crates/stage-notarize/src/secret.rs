@@ -73,7 +73,7 @@ pub(super) fn refresh_artifact_checksums(ctx: &mut Context, log: &anodizer_core:
 use anodizer_core::artifact::matches_id_filter;
 
 /// Check whether an artifact matches the given ids filter — delegates to the
-/// canonical `anodizer_core::artifact::matches_id_filter`.
+/// canonical `anodizer_core::artifact::matches_id_filter` (GoReleaser `ByID`).
 pub(super) fn matches_ids(artifact: &Artifact, ids: &Option<Vec<String>>) -> bool {
     matches_id_filter(artifact, ids.as_deref())
 }

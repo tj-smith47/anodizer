@@ -1018,7 +1018,7 @@ fn test_universal_binary_artifact_has_correct_metadata() {
 }
 
 /// Pins C-new-1: universal-binary metadata copy is the FULL `Extra` map of
-/// the first source binary (the extra-map copy
+/// the first source binary (matching GoReleaser `universalbinary.go:236-239`
 /// `maps.Copy(extra, binaries[0].Extra)`), not a hardcoded whitelist. A
 /// regression that re-introduces the old 4-key whitelist would silently
 /// drop arbitrary metadata keys downstream stages emit.
@@ -1143,7 +1143,7 @@ fn test_universal_binary_filter_id_only_no_binary_fallback() {
     );
 }
 
-/// Regression test for the universal-binary default name template —
+/// Regression test for parity with GoReleaser universalbinary.go:45 —
 /// default `name_template` is `{{ .ProjectName }}`, NOT the source binary
 /// filename. Source binaries named `myapp-bin` with project_name `myapp`
 /// must produce `myapp_darwin_all/myapp`, not `myapp_darwin_all/myapp-bin`.
@@ -2502,7 +2502,7 @@ fn test_detect_amd64_variant_no_rustflags() {
 // ---------------------------------------------------------------------------
 
 /// Q-univ1 — `universal_binaries[].id` default falls back to ProjectName-derived
-/// ids so a config that says `ids: [<project>]` matches
+/// ids so a user migrating a GR config that says `ids: [<project>]` matches
 /// in single-crate workspaces. Exercises the "binary id == project_name" path.
 #[test]
 fn test_universal_binary_default_id_matches_project_name() {
@@ -2512,7 +2512,7 @@ fn test_universal_binary_default_id_matches_project_name() {
 
     let mut config = Config::default();
     // Single-crate workspace where the binary id matches project_name (the
-    // typical case). Crate name differs from project_name on purpose so
+    // GR-typical case). Crate name differs from project_name on purpose so
     // the legacy `crate_name` fallback would fail to match.
     config.project_name = "myproject".to_string();
     config.crates.push(CrateConfig {
@@ -2627,7 +2627,8 @@ fn test_universal_binary_default_id_falls_back_to_crate_name() {
     );
 }
 
-/// `rustup target add` failure is a hard error. Previously a warn that allowed
+/// Q-rust1 — `rustup target add` failure is a hard error (mirrors GR
+/// `internal/builders/rust/build.go:60-62`). Previously a warn that allowed
 /// the subsequent `cargo build --target=...` to fail with a less-clear
 /// "no such target" error.
 #[test]

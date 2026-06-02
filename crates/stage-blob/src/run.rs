@@ -315,7 +315,7 @@ impl BlobStage {
                     continue;
                 }
 
-                // `blobs[].if:` conditional gate.
+                // GoReleaser Pro `blobs[].if:` parity.
                 let proceed = anodizer_core::config::evaluate_if_condition(
                     blob_cfg.if_condition.as_deref(),
                     &format!("blob config for crate {}", krate.name),
@@ -386,10 +386,10 @@ impl BlobStage {
                     })
                     .transpose()?;
 
-                // Default `{{ ProjectName }}/{{ Tag }}`,
-                // expressed in Tera syntax (no leading `.`).
+                // Default mirrors GoReleaser's `{{ .ProjectName }}/{{ .Tag }}`
+                // (blob.go:27) but expressed in Tera syntax (no leading `.`).
                 // Anodizer's renderer accepts both forms, so a YAML lifted from
-                // a config that overrides `directory:` keeps working.
+                // a goreleaser config that overrides `directory:` keeps working.
                 let directory_template = blob_cfg
                     .directory
                     .as_deref()

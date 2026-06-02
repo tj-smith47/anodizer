@@ -26,7 +26,7 @@ const OBJECT_STORE_RETRY_TIMEOUT_CAP: std::time::Duration = std::time::Duration:
 /// Bridge anodizer's user-facing [`RetryConfig`] (top-level `retry:` block)
 /// into [`object_store::RetryConfig`] so the bucket SDK retries align with
 /// every other HTTP-uploading publisher. `attempts` includes the first try
-/// `attempts` includes the first try, so subtract one to get `max_retries`.
+/// (matches GoReleaser semantics), so we subtract one to get `max_retries`.
 ///
 /// `retry_timeout` is `min(max_delay × attempts, 5 minutes)`. The naive
 /// product (without the cap) yields ~50 minutes for the
@@ -113,7 +113,8 @@ pub(crate) fn build_s3_store(
     // We set it as a default header on the client — since each blob config
     // gets its own ObjectStore client, this is per-config ACL.
     if let Some(ref acl) = config.acl {
-        // Validate against the S3 canned ACL enum — `log-delivery-write`
+        // Validate against the S3 canned ACL enum. Matches GoReleaser
+        // internal/pipe/blob/upload.go:113-119 exactly — `log-delivery-write`
         // (a valid AWS S3 canned ACL) is omitted to match upstream.
         const VALID_S3_ACLS: &[&str] = &[
             "private",
@@ -243,7 +244,7 @@ mod retry_bridge_tests {
 
     #[test]
     fn max_retries_subtracts_one_from_attempts() {
-        // `attempts` includes the first try; `max_retries` does not.
+        // GR semantics: `attempts` includes the first try; `max_retries` does not.
         let cfg = RetryConfig {
             attempts: 4,
             ..RetryConfig::default()

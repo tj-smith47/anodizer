@@ -63,7 +63,7 @@ pub(crate) fn collect_snapcraft_targets(ctx: &Context) -> Vec<SnapcraftTarget> {
                 continue;
             }
             let package_name = snap_cfg.name.clone().unwrap_or_else(|| krate.name.clone());
-            // `channel_templates` is a Vec rendered
+            // GoReleaser parity: `channel_templates` is a Vec rendered
             // through the template engine. Capture the first non-empty
             // rendering — operators reading the warn line only need one
             // channel pointer to find the listing page.

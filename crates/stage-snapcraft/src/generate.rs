@@ -29,7 +29,7 @@ pub fn generate_snap_yaml(
     project_name: Option<&str>,
 ) -> Result<String> {
     let primary_binary = binary_names.first().copied().unwrap_or("binary");
-    // The snap name defaults to the project name, not the binary name.
+    // GoReleaser defaults snap name to ctx.Config.ProjectName, not binary name.
     let name = config
         .name
         .clone()
@@ -55,7 +55,7 @@ pub fn generate_snap_yaml(
 
     // Build apps section — if args is set, append it to command.
     // When no apps are configured, generate a default app entry using the
-    // first binary's name.
+    // first binary's name (like GoReleaser does).
     //
     // The per-app Vec / BTreeMap fields below (plugs / environment / after /
     // aliases / before / command_chain / extensions / passthrough / slots /
@@ -71,10 +71,10 @@ pub fn generate_snap_yaml(
         app_map
             .iter()
             .map(|(app_name, app_cfg)| {
-                // A missing app command defaults a
+                // GoReleaser (internal/pipe/snapcraft/snapcraft.go) defaults a
                 // missing app command to the app key name (`command := name`),
                 // not erroring — snapcraft itself requires every app to carry a
-                // command, so the app name is the fallback.
+                // command, so the app name is the GR-exact fallback.
                 let command = match (&app_cfg.command, &app_cfg.args) {
                     (Some(cmd), Some(args)) => Some(format!("{cmd} {args}")),
                     (Some(cmd), None) => Some(cmd.clone()),

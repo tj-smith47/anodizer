@@ -59,7 +59,7 @@ pub(crate) fn telegram_payload(
 ///
 /// Even on HTTP 200, the Telegram API returns `{"ok": false, ...}` for logical
 /// errors.  We parse the response body and surface `error_code` + `description`
-/// when `ok` is false.
+/// when `ok` is false (matches GoReleaser telegram.go lines 87-94).
 pub fn send_telegram(
     bot_token: &str,
     chat_id: &str,

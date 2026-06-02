@@ -11,7 +11,7 @@ use crate::provider::Provider;
 
 /// Identifies how the KMS key should be used for encryption.
 ///
-/// Supported KMS URL schemes: `awskms://`, `gcpkms://`, and `azurekeyvault://`
+/// GoReleaser supports `awskms://`, `gcpkms://`, and `azurekeyvault://` URL
 /// schemes via gocloud.dev/secrets for **client-side** encryption of blob data
 /// before upload. A plain key ARN/ID (no scheme) means server-side encryption
 /// (SSE-KMS on S3).

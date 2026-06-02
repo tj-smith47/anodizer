@@ -12,7 +12,7 @@ use crate::helpers::retry_http;
 /// `policy` controls retry behaviour: 5xx / 429 / transport-level failures
 /// retry up to `policy.max_attempts` with exponential backoff; 4xx fast-fails.
 /// Pass `RetryConfig::default().to_policy()` (or
-/// `ctx.config.retry.unwrap_or_default().to_policy()`) for canonical
+/// `ctx.config.retry.unwrap_or_default().to_policy()`) for GoReleaser-aligned
 /// defaults (10 attempts × 10s base × 5m cap).
 ///
 /// Routed through the shared `retry_http` helper so all chat-webhook

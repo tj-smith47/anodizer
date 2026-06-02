@@ -8,7 +8,8 @@ use anodizer_core::log::StageLogger;
 // ---------------------------------------------------------------------------
 
 /// Determine whether a docker error message indicates a transient failure
-/// worth retrying — a narrow predicate: `io.EOF` plus the exact HTTP
+/// worth retrying. Matches GoReleaser's narrow `isRetriablePush`
+/// (internal/pipe/docker/docker.go:389-418): `io.EOF` plus the exact HTTP
 /// status set 500/502/503/504/506/510. Network-level failures (`dial tcp`,
 /// `connection refused`, TLS handshake, DNS `no such host`, `REFUSED_STREAM`,
 /// `timeout`) fast-fail — waiting through a 10× exponential backoff when the
@@ -30,8 +31,8 @@ pub fn is_retriable_error(error_msg: &str) -> bool {
     retriable_patterns.iter().any(|p| error_msg.contains(p))
 }
 
-/// V2-specific retry predicate. A narrow predicate matching
-/// `isRetriableManifestCreate`: only retries when
+/// V2-specific retry predicate. Matches GoReleaser's narrow
+/// `isRetriableManifestCreate` (`v2/docker.go:544-549`): only retries when
 /// the output contains `"manifest verification failed for digest"`. All
 /// other errors — network timeouts, build failures, registry 5xx — are
 /// considered fatal under V2, because V2 runs `buildx build --push` as a
@@ -49,7 +50,7 @@ pub fn is_retriable_error_v2(error_msg: &str) -> bool {
 
 /// Cached result of probing `docker buildx build --help` for `--provenance`.
 ///
-/// Probe `docker build --help` output before unconditionally
+/// GoReleaser probes `docker build --help` output before unconditionally
 /// adding `--provenance=false` and `--sbom=false`.  We do the same: run the
 /// help command once, cache the result, and only add the flags when the
 /// installed Docker version actually recognises them.
@@ -124,7 +125,7 @@ pub(crate) enum BuildxVersionProbe {
 ///
 /// Returns `None` when buildx is available (no warning needed). The
 /// "DockerMissing" and "BuildxMissing" variants both produce warnings that
-/// name buildx explicitly so the user can act, via the
+/// name buildx explicitly so the user can act, mirroring GoReleaser's
 /// `docker buildx version` healthcheck added in commit e09e23a (#6526).
 pub(crate) fn format_buildx_version_warning(probe: &BuildxVersionProbe) -> Option<String> {
     match probe {
@@ -186,7 +187,7 @@ pub(crate) fn check_buildx_version(log: &StageLogger) {
 /// Check the current buildx driver and warn if it is not one of the standard
 /// types ("docker-container" or "docker").
 ///
-/// Validate the driver via `docker buildx inspect` and error
+/// GoReleaser v2 validates the driver via `docker buildx inspect` and errors
 /// on invalid drivers. We warn rather than error to be lenient, but the
 /// check ensures users know their setup may not work for multi-platform builds.
 pub(crate) fn check_buildx_driver(log: &StageLogger) {

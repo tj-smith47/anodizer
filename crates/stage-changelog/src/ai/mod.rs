@@ -32,7 +32,7 @@ pub(crate) use openai::OpenAiProvider;
 
 /// Default AI prompt used when `changelog.ai.prompt` is not configured.
 ///
-/// Frozen copy of the canonical default prompt (matches the
+/// Derived from GoReleaser's canonical gist (frozen copy; matches the
 /// behaviour documented in changelog.md line 232). Asks the model to:
 /// - Write a short intro paragraph.
 /// - Merge dependency-bump commits into a single "Dependencies updated" line.

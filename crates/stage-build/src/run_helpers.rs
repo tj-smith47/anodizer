@@ -44,7 +44,7 @@ pub(crate) struct BuildJob {
     pub amd64_variant: Option<String>,
     /// Fully-rendered per-(crate, target) `builds[].env` map for THIS job.
     /// Layered into this job's build hooks beneath each hook's own `env:`,
-    /// the build-hook env precedence. Empty when the build
+    /// matching GoReleaser's build-hook env precedence. Empty when the build
     /// declares no `env:` for the active target.
     pub build_env: HashMap<String, String>,
 }

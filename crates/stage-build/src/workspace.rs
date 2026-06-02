@@ -229,8 +229,8 @@ pub(crate) fn ensure_targets_installed(
                 log.verbose(&format!("ensured target installed: {target}"));
             }
             Ok(o) => {
-                // `rustup target add` failure is a hard
-                // error (returns
+                // GoReleaser parity: `rustup target add` failure is a hard
+                // error (rust/build.go:60-62 returns
                 // `fmt.Errorf("could not add target %s: %w: %s", ...)`).
                 // The previous warn-and-continue let the subsequent
                 // `cargo build --target=...` fail with a less-clear

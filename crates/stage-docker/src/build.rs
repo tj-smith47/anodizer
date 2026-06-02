@@ -45,7 +45,7 @@ pub(crate) fn list_staging_dir_recursive(
 // ---------------------------------------------------------------------------
 
 /// Format the v2 created-images log line with `images` and `digest` as
-/// **separate** fields. Older
+/// **separate** fields. GR parity (commit e7a4afa, issue #6515): older
 /// versions embedded `image@digest` in a single field, which was hard to
 /// parse from log aggregators. Now each field is independently
 /// addressable.
@@ -82,8 +82,9 @@ pub(crate) struct DockerBuildJob {
     /// Rendered image tags — used for digest capture and artifact registration.
     pub(crate) rendered_tags: Vec<String>,
     /// Docker platforms for this job. Used by the artifact-metadata
-    /// `Platforms` key (JSON-array encoded), populated from the resolved
-    /// platform set.
+    /// `Platforms` key (JSON-array encoded). Matches GR's
+    /// `ExtraPlatforms = "Platforms"` slice in
+    /// `internal/pipe/docker/v2/docker.go`.
     pub(crate) platforms_list: Vec<String>,
     /// Staging directory path.
     pub(crate) staging_dir: PathBuf,
@@ -277,10 +278,10 @@ pub(crate) fn execute_docker_build(
     if let Ok(digest_content) = fs::read_to_string(&iidfile) {
         let digest = digest_content.trim().to_string();
         if !digest.is_empty() {
-            // Emit the created-images log with
+            // GR parity (commit e7a4afa): emit the created-images log with
             // `images` and `digest` as *separate* structured fields rather
             // than embedding `image@digest` in a single field. Easier to
-            // query in log aggregators (the `images` field carries
+            // query in log aggregators and matches GR's `WithField("images",
             // ...).WithField("digest", ...)` shape.
             tracing::info!(
                 images = %job.rendered_tags.join(","),

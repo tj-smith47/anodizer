@@ -72,7 +72,7 @@ impl Stage for SnapcraftPublishStage {
 
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.options.dry_run;
-        // Wrap snapcraft upload in retry.
+        // Q8.1 — wrap snapcraft upload in retry. Mirrors GR upstream
         // commit eb944f9 (`isRetriableSnapPush`): 5xx Store responses
         // (500/502/503/504) are transient, every other failure is fatal.
         let retry_policy = ctx.retry_policy();
@@ -274,7 +274,7 @@ fn run_uploads(
                 for artifact in &matching {
                     let snap_path = artifact.path.to_string_lossy();
 
-                    // Each channel template is rendered through the
+                    // GoReleaser renders each channel template through the
                     // template engine, filtering out empty results.
                     let rendered_channels: Option<Vec<String>> =
                         snap_cfg.channel_templates.as_ref().map(|templates| {
@@ -285,7 +285,7 @@ fn run_uploads(
                                 })
                                 .collect()
                         });
-                    // grade is also rendered through the template engine
+                    // GoReleaser also renders grade through the template engine
                     let rendered_grade: Option<String> = snap_cfg
                         .grade
                         .as_deref()

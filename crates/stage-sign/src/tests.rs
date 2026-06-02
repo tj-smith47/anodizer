@@ -88,7 +88,7 @@ fn test_filter_artifacts_checksum() {
 #[test]
 fn test_filter_artifacts_all() {
     // "all" matches anodizer_core::artifact::release_uploadable_kinds().
-    // Installer-family kinds (MSI/NSIS as Installer, DMG as
+    // GR-Pro-equivalent installers (MSI/NSIS as Installer, DMG as
     // DiskImage, PKG as MacOsPackage) are part of the release-uploadable
     // set so they are signed alongside archives. Dedicated filters
     // (`installer`, `diskimage`, `macos_package`) remain available for
@@ -107,7 +107,7 @@ fn test_filter_artifacts_all() {
     assert!(should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
     assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
 
-    // Signature + Certificate are excluded from the `all` filter (the
+    // Signature + Certificate are excluded from the `all` filter (GoReleaser
     // 87a55ea / #6509). Although both kinds are otherwise release-uploadable,
     // signing them on a re-run of the stage would produce `.sig.sig` /
     // `.pem.sig` chains and corrupt checksums. See
@@ -145,7 +145,7 @@ fn test_filter_artifacts_none() {
     assert!(!should_sign_artifact(ArtifactKind::Checksum, "none").unwrap());
 }
 
-/// Regression:
+/// Regression for GoReleaser parity P4.2 (commit 87a55ea / #6509):
 /// signing a previously-signed dist must not chain `*.sig.sig` /
 /// `*.pem.sig` files. The `all` and `any` filters explicitly skip the
 /// `Signature` and `Certificate` kinds even though both are otherwise
@@ -335,7 +335,7 @@ fn test_multiple_sign_configs_run_independently() {
 
 #[test]
 fn test_artifacts_filter_selects_correct_kinds() {
-    // "all" = release_uploadable_kinds(). Installer-family kinds
+    // "all" = release_uploadable_kinds(). GR-Pro-equivalent installers
     // (MSI/NSIS as Installer, DMG as DiskImage, PKG as MacOsPackage) are
     // all in the canonical set, so all three are signed under "all".
     assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
@@ -347,7 +347,7 @@ fn test_artifacts_filter_selects_correct_kinds() {
     assert!(should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
     assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
     // Signature + Certificate are excluded from `all` to prevent
-    // recursive signing.
+    // recursive signing (GR 87a55ea / #6509).
     assert!(!should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
     assert!(!should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
 
@@ -1523,7 +1523,7 @@ fn test_if_condition_template_renders_to_empty_skips_sign() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     // A template that RENDERS to an empty / whitespace-only string must skip
-    // the sign config (rendered "" / "false" / "0" / "no"
+    // the sign config (matches GR Pro: rendered "" / "false" / "0" / "no"
     // are falsy). NOTE: an EMPTY LITERAL `if: ""` is a separate no-op-gate
     // case (covered by config-tests) — this test exercises the
     // template-that-renders-empty path, which is the actual runtime
@@ -1909,7 +1909,7 @@ fn test_output_capture_with_real_command() {
 
 /// Regression: DEFAULT_BINARY_SIGNATURE_TEMPLATE must produce `<artifact>.sig`
 /// for anodize's flat layout where binaries are already named with the platform
-/// suffix (e.g. `myapp_linux_amd64`). The old template appended Os/Arch
+/// suffix (e.g. `myapp_linux_amd64`). The old GR-style template appended Os/Arch
 /// again, producing `myapp_linux_amd64_linux_amd64` with no `.sig` extension.
 #[test]
 fn test_binary_signature_no_duplicate_suffix_has_dot_sig() {
@@ -2388,9 +2388,9 @@ fn test_all_filter_excludes_internal_types() {
 #[test]
 fn test_all_filter_includes_release_uploadable_types() {
     // "all" = anodizer_core::artifact::release_uploadable_kinds().
-    // Mapping: MSI/NSIS (Installer), DMG (DiskImage), and
+    // GoReleaser Pro mapping: MSI/NSIS (Installer), DMG (DiskImage), and
     // PKG (MacOsPackage) are all part of the release-uploadable set so
-    // they get signed and uploaded alongside archives.
+    // they get signed and uploaded alongside archives. GR OSS omits these
     // formats; anodizer treats them as first-class.
     assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
     assert!(should_sign_artifact(ArtifactKind::UploadableBinary, "all").unwrap());
@@ -2405,7 +2405,7 @@ fn test_all_filter_includes_release_uploadable_types() {
     assert!(should_sign_artifact(ArtifactKind::Sbom, "all").unwrap());
     assert!(should_sign_artifact(ArtifactKind::Checksum, "all").unwrap());
     assert!(should_sign_artifact(ArtifactKind::UploadableFile, "all").unwrap());
-    // Signature + Certificate are excluded from `all`
+    // Signature + Certificate are excluded from `all` (GR 87a55ea
     // / #6509) so re-running sign on a partially-built dist does not
     // produce `*.sig.sig` chains.
     assert!(!should_sign_artifact(ArtifactKind::Signature, "all").unwrap());

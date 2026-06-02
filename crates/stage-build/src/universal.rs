@@ -13,23 +13,23 @@ use anodizer_core::util::find_binary;
 // build_universal_binary — run `lipo` to combine arm64 + x86_64 macOS binaries
 // ---------------------------------------------------------------------------
 
-/// Resolve the default `ids` filter for a `universal_binaries[]` entry.
+/// Resolve the default `ids` filter for a `universal_binaries[]` entry, GR-aligned.
 ///
-/// The default `unibin.ID` is the project name,
+/// GR (universalbinary.go:42-44) defaults `unibin.ID` to `ctx.Config.ProjectName`,
 /// then `unibin.IDs` to `[unibin.ID]`. Anodizer's per-crate workspace model
 /// complicates this — `Binary` artifacts default their `id` metadata to the
 /// binary name (= crate name in the common case), not to `project_name`. To
-/// match the "ids: [<project>]" idiom while keeping multi-crate workspaces
+/// match GR's "ids: [<project>]" idiom while keeping multi-crate workspaces
 /// working, the resolved default is:
 ///
 ///   1. `ub.id` if explicitly set (verbatim);
 ///   2. `project_name` if any candidate Binary actually carries that id
-///      (the typical single-crate case where binary name == project name,
+///      (the GR-typical single-crate case where binary name == project name,
 ///      or where the user set `build.id: <project_name>`);
 ///   3. otherwise `crate_name` — anodizer's per-crate fallback for
 ///      multi-crate workspaces where Binary `id` defaults to the binary name.
 ///
-/// This way a config that says `ids: [<project>]` sees
+/// This way a user migrating a GR config that says `ids: [<project>]` sees
 /// the expected match in single-crate workspaces, and multi-crate workspaces
 /// continue to scope per-crate without forcing every user to set
 /// `universal_binaries[].id` explicitly.
@@ -79,7 +79,7 @@ pub(crate) fn project_universal_out_path(
         binaries
             .into_iter()
             .filter(|a| {
-                // `id`-only filter (
+                // GR-aligned: `id`-only filter (mirrors universalbinary.go:255-258
                 // `artifact.ByIDs(unibin.IDs...)`). Binary artifacts now always
                 // carry an `id` metadata key (see `artifact_meta`), defaulted to
                 // the binary name when `build.id` is unset, so the historical
@@ -136,7 +136,7 @@ pub(crate) fn build_universal_binary(
         binaries
             .into_iter()
             .filter(|a| {
-                // `id`-only filter (
+                // GR-aligned: `id`-only filter (universalbinary.go:255-258
                 // `artifact.ByIDs(unibin.IDs...)`). `id` is now always populated
                 // on Binary artifacts (defaulted to the binary name when
                 // `build.id` is unset) so the historical `binary` fallback is
@@ -182,7 +182,7 @@ pub(crate) fn build_universal_binary(
 
     // Determine output path / name.
     //
-    // The default `name_template` is
+    // GoReleaser universalbinary.go:45 — the default `name_template` is
     // `{{ .ProjectName }}`, NOT the source binary filename. We render the
     // default explicitly so `.exe`-suffixed source names and custom
     // `BuildConfig.binary` values do not leak into the universal output.
@@ -197,7 +197,7 @@ pub(crate) fn build_universal_binary(
     };
 
     // Place the universal binary in dist/{crate_name}_darwin_all/{name}
-    // the convention for universal binaries.
+    // matching GoReleaser's convention for universal binaries.
     let dist_dir = &ctx.config.dist;
     let ub_dir = dist_dir.join(format!("{}_darwin_all", crate_name));
     let out_path = ub_dir.join(&out_name);
@@ -208,7 +208,7 @@ pub(crate) fn build_universal_binary(
         && let Some(ref pre) = hooks.pre
     {
         // Universal-binary hooks are not build hooks (no builds[].env applies);
-        // The universal-binary run hook injects only ctx env + hook env.
+        // GoReleaser's universalbinary runHook injects only ctx.Env + hook.Env.
         run_hooks(
             pre,
             "pre-universal-binary",
@@ -297,12 +297,12 @@ pub(crate) fn build_universal_binary(
     // true = this universal binary supersedes per-arch variants in publishers.
     let replaces = ub.replace == Some(true);
 
-    // Copy the entire `Extra` map
+    // GR-aligned (universalbinary.go:236-239): copy the entire `Extra` map
     // from the first source binary, then overwrite universal-specific keys.
     // The previous 4-key whitelist (`dynamically_linked`, `abi`, `libc`, `id`)
     // silently dropped any other metadata stage-build emits today or might
     // emit tomorrow (e.g. `DynamicallyLinked`, `amd64_variant`, future keys),
-    // so fidelity is preserved.
+    // so anodizer was losing fidelity GR preserves.
     //
     // Caveat for downstream consumers: any metadata key inherited here
     // (notably `DynamicallyLinked`) reflects the FIRST source arch only —
@@ -322,8 +322,8 @@ pub(crate) fn build_universal_binary(
     metadata.insert("universal".to_string(), "true".to_string());
     metadata.insert("replaces".to_string(), replaces.to_string());
     // Universal binary's own id, if configured (otherwise the inherited
-    // source-binary `id` remains via the `id` extra
-    // override — when `unibin.ID` is empty, the
+    // source-binary `id` remains, matching GR's `extra[ExtraID] = unibin.ID`
+    // override at universalbinary.go:239 — when `unibin.ID` is empty, the
     // first source's id passes through unchanged).
     if let Some(ref id) = ub.id {
         metadata.insert("id".to_string(), id.clone());

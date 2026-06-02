@@ -2,7 +2,7 @@
 //!
 //! Each `build_yaml_*` translates an `Nfpm*Config` from anodizer-core into
 //! the corresponding `NfpmYaml*` struct from `yaml`. `resolve_passphrase_from_env`
-//! implements a 3-level env-var fallback for signing passphrases.
+//! implements GoReleaser's 3-level env-var fallback for signing passphrases.
 
 use std::collections::HashMap;
 
@@ -17,7 +17,7 @@ use crate::yaml::{
     NfpmYamlRpmScripts, NfpmYamlSignature,
 };
 
-/// Resolve the signing passphrase using a 3-level env var fallback:
+/// Resolve the signing passphrase using GoReleaser's 3-level env var fallback:
 ///   1. NFPM_{ID}_{format}_PASSPHRASE  (format preserved as-is, e.g. `deb`/`rpm`)
 ///   2. NFPM_{ID}_PASSPHRASE
 ///   3. NFPM_PASSPHRASE
@@ -25,7 +25,7 @@ use crate::yaml::{
 /// `env_map` is the anodizer ctx env map (process env + project `env:` +
 /// `env_files:`). Looking up here — instead of `std::env::var` directly —
 /// means values defined in `.anodizer.yaml` `env:` are visible to the signer,
-/// reading from
+/// matching GoReleaser internal/pipe/nfpm/nfpm.go:640 which reads from
 /// `ctx.Env` rather than `os.Getenv`.
 ///
 /// Returns `None` if no env var is set at any level.
@@ -42,7 +42,7 @@ pub(super) fn resolve_passphrase_from_env(
             .filter(|v| !v.is_empty())
     };
     let id_upper = nfpm_id.to_uppercase();
-    // Level 1: NFPM_{ID}_{format}_PASSPHRASE (format preserved as-is)
+    // Level 1: NFPM_{ID}_{format}_PASSPHRASE (format preserved as-is, per GoReleaser)
     if let Some(fmt) = format
         && let Some(val) = lookup(&format!("NFPM_{id_upper}_{fmt}_PASSPHRASE"))
     {
