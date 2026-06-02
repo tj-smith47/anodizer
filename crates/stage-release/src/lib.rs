@@ -161,22 +161,6 @@ pub(crate) fn resolve_release_repo(
     Ok(Some(anodizer_core::config::ScmRepoConfig { owner, name }))
 }
 
-/// Map an explicit `release.provider:` (when set) to the [`ScmTokenType`]
-/// the rest of the release pipeline should use for URL composition,
-/// auth-header selection, and asset-upload routing. Returns `None` when
-/// no explicit provider was declared so the caller falls back to the
-/// token-type detection chain.
-pub fn release_provider_token_type(
-    release_cfg: &anodizer_core::config::ReleaseConfig,
-) -> Option<ScmTokenType> {
-    use anodizer_core::config::ForceTokenKind;
-    release_cfg.provider.as_ref().map(|p| match p {
-        ForceTokenKind::GitHub => ScmTokenType::GitHub,
-        ForceTokenKind::GitLab => ScmTokenType::GitLab,
-        ForceTokenKind::Gitea => ScmTokenType::Gitea,
-    })
-}
-
 /// Compose the public release HTML URL for the active SCM provider.
 pub(crate) fn compose_release_url(
     token_type: ScmTokenType,
