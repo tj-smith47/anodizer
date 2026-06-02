@@ -5,6 +5,7 @@ use super::tags::{
     find_previous_tag_with_prefix, get_all_semver_tags, strip_monorepo_prefix,
 };
 use crate::redact::redact_url_credentials;
+use crate::test_helpers::CwdGuard;
 
 #[test]
 fn test_parse_semver() {
@@ -377,13 +378,10 @@ fn test_find_latest_tag_none_config_unchanged_behavior() {
     init_repo_with_tags(dir, &["v1.0.0", "v1.1.0", "v2.0.0"]);
 
     // Change to the temp repo so git commands work.
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let result = find_latest_tag_matching("v{{ .Version }}", None, None).unwrap();
     assert_eq!(result, Some("v2.0.0".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -397,8 +395,7 @@ fn test_get_all_semver_tags_ignore_tags() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v2.0.0", "v3.0.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         ignore_tags: Some(vec!["v3.0.0".to_string()]),
@@ -406,8 +403,6 @@ fn test_get_all_semver_tags_ignore_tags() {
     };
     let tags = get_all_semver_tags("v", Some(&gc), None).unwrap();
     assert_eq!(tags, vec!["v2.0.0".to_string(), "v1.0.0".to_string()]);
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -417,8 +412,7 @@ fn test_get_all_semver_tags_ignore_tag_prefixes() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v2.0.0", "nightly-v3.0.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         ignore_tag_prefixes: Some(vec!["nightly-".to_string()]),
@@ -427,8 +421,6 @@ fn test_get_all_semver_tags_ignore_tag_prefixes() {
     let tags = get_all_semver_tags("", Some(&gc), None).unwrap();
     // "nightly-v3.0.0" is excluded by prefix; only v2, v1 survive, ordered desc.
     assert_eq!(tags, vec!["v2.0.0".to_string(), "v1.0.0".to_string()]);
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -438,13 +430,10 @@ fn test_get_all_semver_tags_no_config_unchanged() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v2.0.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let tags = get_all_semver_tags("v", None, None).unwrap();
     assert_eq!(tags, vec!["v2.0.0".to_string(), "v1.0.0".to_string()]);
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -454,8 +443,7 @@ fn test_find_latest_tag_ignore_tags_exact_match() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v2.0.0", "v3.0.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         ignore_tags: Some(vec!["v3.0.0".to_string()]),
@@ -463,8 +451,6 @@ fn test_find_latest_tag_ignore_tags_exact_match() {
     };
     let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
     assert_eq!(result, Some("v2.0.0".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -474,8 +460,7 @@ fn test_find_latest_tag_ignore_tags_multiple() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v2.0.0", "v3.0.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         ignore_tags: Some(vec!["v3.0.0".to_string(), "v2.0.0".to_string()]),
@@ -483,8 +468,6 @@ fn test_find_latest_tag_ignore_tags_multiple() {
     };
     let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
     assert_eq!(result, Some("v1.0.0".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -497,8 +480,7 @@ fn test_find_latest_tag_ignore_tag_prefixes() {
         &["v1.0.0", "v2.0.0", "nightly-v3.0.0", "nightly-v4.0.0"],
     );
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     // Without prefix filtering, the template "v{{ .Version }}" won't match
     // nightly-v* tags anyway (regex mismatch). So test with a broader template
@@ -522,8 +504,6 @@ fn test_find_latest_tag_ignore_tag_prefixes() {
     let result_filtered =
         find_latest_tag_matching("nightly-v{{ .Version }}", Some(&gc), None).unwrap();
     assert_eq!(result_filtered, None);
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -533,8 +513,7 @@ fn test_find_latest_tag_ignore_all_returns_none() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v2.0.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         ignore_tags: Some(vec!["v1.0.0".to_string(), "v2.0.0".to_string()]),
@@ -542,8 +521,6 @@ fn test_find_latest_tag_ignore_all_returns_none() {
     };
     let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
     assert_eq!(result, None);
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -553,8 +530,7 @@ fn test_find_latest_tag_ignore_tags_and_prefixes_combined() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v2.0.0", "v3.0.0-beta.1"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     // ignore v2.0.0 by exact match, and anything starting with "v3" by prefix
     let gc = crate::config::GitConfig {
@@ -564,8 +540,6 @@ fn test_find_latest_tag_ignore_tags_and_prefixes_combined() {
     };
     let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
     assert_eq!(result, Some("v1.0.0".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -583,8 +557,7 @@ fn test_find_latest_tag_with_prefixed_template() {
         ],
     );
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     // Ignore myapp-v3.0.0 specifically
     let gc = crate::config::GitConfig {
@@ -593,8 +566,6 @@ fn test_find_latest_tag_with_prefixed_template() {
     };
     let result = find_latest_tag_matching("myapp-v{{ .Version }}", Some(&gc), None).unwrap();
     assert_eq!(result, Some("myapp-v2.0.0".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -604,8 +575,7 @@ fn test_find_latest_tag_default_git_config_same_as_none() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v1.1.0", "v2.0.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     // Default GitConfig has all fields None — should behave identically to None
     let gc = crate::config::GitConfig::default();
@@ -613,8 +583,6 @@ fn test_find_latest_tag_default_git_config_same_as_none() {
     let with_none = find_latest_tag_matching("v{{ .Version }}", None, None).unwrap();
     assert_eq!(with_default, with_none);
     assert_eq!(with_default, Some("v2.0.0".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -630,8 +598,7 @@ fn test_find_latest_tag_prerelease_suffix_with_default_sort() {
     // patch levels.
     init_repo_with_tags(dir, &["v1.0.0", "v1.1.0", "v1.1.1-rc.1"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     // Without prerelease_suffix, using Rust-side SemVer sort:
     // v1.1.1-rc.1 is a prerelease of v1.1.1, which is > v1.1.0 but
@@ -690,8 +657,6 @@ fn test_find_latest_tag_prerelease_suffix_with_default_sort() {
         result_both.is_some(),
         "should find a tag with both release and rc present"
     );
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -701,8 +666,7 @@ fn test_find_latest_tag_ignore_tags_template_rendered() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v2.0.0", "v3.0.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     // Set up template vars with an env variable
     let mut vars = crate::template::TemplateVars::new();
@@ -724,8 +688,6 @@ fn test_find_latest_tag_ignore_tags_template_rendered() {
     let result_rendered =
         find_latest_tag_matching("v{{ .Version }}", Some(&gc), Some(&vars)).unwrap();
     assert_eq!(result_rendered, Some("v2.0.0".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 /// Create a git repo in `dir` with separate commits for each tag
@@ -773,8 +735,7 @@ fn test_find_previous_tag_with_ignore_tags() {
     // Each tag on a separate commit so git describe can find them.
     init_repo_with_tagged_commits(dir, &["v1.0.0", "v2.0.0", "v3.0.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     // Without ignore_tags, previous tag of v3.0.0 should be v2.0.0
     let result = find_previous_tag("v3.0.0", None, None).unwrap();
@@ -788,8 +749,6 @@ fn test_find_previous_tag_with_ignore_tags() {
     };
     let result_filtered = find_previous_tag("v3.0.0", Some(&gc), None).unwrap();
     assert_eq!(result_filtered, Some("v1.0.0".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -800,8 +759,7 @@ fn test_find_previous_tag_with_ignore_tag_prefixes() {
     // Create tags where the previous tag has a prefix we want to ignore
     init_repo_with_tagged_commits(dir, &["v1.0.0", "nightly-v2.0.0", "v3.0.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     // Without filtering, previous tag of v3.0.0 is nightly-v2.0.0
     let result = find_previous_tag("v3.0.0", None, None).unwrap();
@@ -815,8 +773,6 @@ fn test_find_previous_tag_with_ignore_tag_prefixes() {
     };
     let result_filtered = find_previous_tag("v3.0.0", Some(&gc), None).unwrap();
     assert_eq!(result_filtered, Some("v1.0.0".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -826,13 +782,10 @@ fn test_find_previous_tag_no_config_unchanged_behavior() {
     let dir = tmp.path();
     init_repo_with_tagged_commits(dir, &["v1.0.0", "v2.0.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let result = find_previous_tag("v2.0.0", None, None).unwrap();
     assert_eq!(result, Some("v1.0.0".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 // -----------------------------------------------------------------------
@@ -885,8 +838,7 @@ fn test_find_latest_tag_with_monorepo_prefix_filters_and_returns_full_tag() {
         ],
     );
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     // With monorepo prefix "subproject1/", should only find subproject1 tags
     // and return the FULL tag (with prefix).
@@ -898,8 +850,6 @@ fn test_find_latest_tag_with_monorepo_prefix_filters_and_returns_full_tag() {
         Some("subproject1/v2.0.0".to_string()),
         "should return the full tag with prefix"
     );
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -910,8 +860,7 @@ fn test_find_latest_tag_with_monorepo_prefix_semver_comparison_uses_stripped_tag
     // Versions should be compared using the stripped tag
     init_repo_with_tags(dir, &["myapp/v1.0.0", "myapp/v2.0.0", "myapp/v1.5.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let result =
         find_latest_tag_matching_with_prefix("v{{ .Version }}", None, None, Some("myapp/"))
@@ -921,8 +870,6 @@ fn test_find_latest_tag_with_monorepo_prefix_semver_comparison_uses_stripped_tag
         Some("myapp/v2.0.0".to_string()),
         "should pick the highest version based on stripped semver"
     );
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -932,16 +879,13 @@ fn test_find_latest_tag_with_monorepo_prefix_no_matching_tags() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v2.0.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     // No tags start with "myapp/" so result should be None.
     let result =
         find_latest_tag_matching_with_prefix("v{{ .Version }}", None, None, Some("myapp/"))
             .unwrap();
     assert_eq!(result, None);
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -951,8 +895,7 @@ fn test_find_latest_tag_with_monorepo_prefix_none_behaves_like_original() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v1.1.0", "v2.0.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     // Without monorepo prefix, should behave exactly like find_latest_tag_matching.
     let result_with_prefix =
@@ -960,8 +903,6 @@ fn test_find_latest_tag_with_monorepo_prefix_none_behaves_like_original() {
     let result_original = find_latest_tag_matching("v{{ .Version }}", None, None).unwrap();
     assert_eq!(result_with_prefix, result_original);
     assert_eq!(result_with_prefix, Some("v2.0.0".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -971,8 +912,7 @@ fn test_find_latest_tag_with_monorepo_prefix_and_prerelease() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["svc/v1.0.0", "svc/v1.1.0-rc.1", "svc/v1.1.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let result =
         find_latest_tag_matching_with_prefix("v{{ .Version }}", None, None, Some("svc/")).unwrap();
@@ -981,8 +921,6 @@ fn test_find_latest_tag_with_monorepo_prefix_and_prerelease() {
         Some("svc/v1.1.0".to_string()),
         "release v1.1.0 should win over v1.1.0-rc.1"
     );
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 // -----------------------------------------------------------------------
@@ -1188,8 +1126,7 @@ fn test_find_latest_tag_semver_mode_orders_by_semver() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v1.1.0-rc.1", "v1.1.0", "v1.2.0-beta.1"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         tag_sort: Some("semver".to_string()),
@@ -1198,8 +1135,6 @@ fn test_find_latest_tag_semver_mode_orders_by_semver() {
     let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
     // v1.2.0-beta.1 has the highest M.m.p tuple even though it's a prerelease.
     assert_eq!(result, Some("v1.2.0-beta.1".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -1211,8 +1146,7 @@ fn test_find_latest_tag_semver_mode_ignores_prerelease_suffix_setting() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v1.1.0-rc.1", "v1.1.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         tag_sort: Some("semver".to_string()),
@@ -1222,8 +1156,6 @@ fn test_find_latest_tag_semver_mode_ignores_prerelease_suffix_setting() {
     let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
     // SemVer: release v1.1.0 > prerelease v1.1.0-rc.1.
     assert_eq!(result, Some("v1.1.0".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -1237,8 +1169,7 @@ fn test_find_latest_tag_smartsemver_returns_semver_highest() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v1.1.0-rc.1", "v1.1.0", "v1.2.0-beta.1"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         tag_sort: Some("smartsemver".to_string()),
@@ -1248,8 +1179,6 @@ fn test_find_latest_tag_smartsemver_returns_semver_highest() {
     let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
     // v1.2.0-beta.1 has the highest M.m.p tuple; no prerelease filtering here.
     assert_eq!(result, Some("v1.2.0-beta.1".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -1259,8 +1188,7 @@ fn test_find_latest_tag_smartsemver_keeps_prereleases_for_prerelease_target() {
     let dir = tmp.path();
     init_repo_with_tags(dir, &["v1.0.0", "v1.1.0-rc.1", "v1.1.0", "v1.2.0-beta.1"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         tag_sort: Some("smartsemver".to_string()),
@@ -1275,8 +1203,6 @@ fn test_find_latest_tag_smartsemver_keeps_prereleases_for_prerelease_target() {
         Some("v1.2.0-beta.1".to_string()),
         "smartsemver with prerelease target keeps all candidates"
     );
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -1290,8 +1216,7 @@ fn test_find_previous_tag_smartsemver_rc1_classified_as_prerelease() {
     let dir = tmp.path();
     init_repo_with_tagged_commits(dir, &["v1.0.0", "v1.1.0-rc1", "v1.1.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         tag_sort: Some("smartsemver".to_string()),
@@ -1307,8 +1232,6 @@ fn test_find_previous_tag_smartsemver_rc1_classified_as_prerelease() {
     // Confirm the parser agrees: v1.1.0-rc1 has prerelease = Some("rc1").
     let sv = parse_semver_tag("v1.1.0-rc1").unwrap();
     assert!(sv.is_prerelease());
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -1323,8 +1246,7 @@ fn test_find_previous_tag_smartsemver_skips_prerelease_predecessor() {
     let dir = tmp.path();
     init_repo_with_tagged_commits(dir, &["v0.1.0", "v0.2.0-beta.3", "v0.2.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         tag_sort: Some("smartsemver".to_string()),
@@ -1334,8 +1256,6 @@ fn test_find_previous_tag_smartsemver_skips_prerelease_predecessor() {
     // No template vars — signal is derived from current_tag "v0.2.0" (release).
     let result = find_previous_tag("v0.2.0", Some(&gc), None).unwrap();
     assert_eq!(result, Some("v0.1.0".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -1345,8 +1265,7 @@ fn test_find_previous_tag_smartsemver_keeps_prerelease_when_current_is_prereleas
     let dir = tmp.path();
     init_repo_with_tagged_commits(dir, &["v0.1.0", "v0.2.0-beta.1", "v0.2.0-beta.2"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         tag_sort: Some("smartsemver".to_string()),
@@ -1356,8 +1275,6 @@ fn test_find_previous_tag_smartsemver_keeps_prerelease_when_current_is_prereleas
     // current_tag is a prerelease → filter is off → v0.2.0-beta.1 is found.
     let result = find_previous_tag("v0.2.0-beta.2", Some(&gc), None).unwrap();
     assert_eq!(result, Some("v0.2.0-beta.1".to_string()));
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -1368,8 +1285,7 @@ fn test_find_previous_tag_smartsemver_release_tag_filters_prereleases() {
     let dir = tmp.path();
     init_repo_with_tagged_commits(dir, &["v0.1.0", "v0.2.0-beta.3", "v0.2.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         tag_sort: Some("smartsemver".to_string()),
@@ -1381,8 +1297,6 @@ fn test_find_previous_tag_smartsemver_release_tag_filters_prereleases() {
         Some("v0.1.0".to_string()),
         "smartsemver must skip v0.2.0-beta.3 with current_tag v0.2.0"
     );
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -1395,8 +1309,7 @@ fn test_find_previous_tag_smartsemver_monorepo_prefix() {
     let dir = tmp.path();
     init_repo_with_tagged_commits(dir, &["svc/v0.1.0", "svc/v0.2.0-beta.3", "svc/v0.2.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         tag_sort: Some("smartsemver".to_string()),
@@ -1409,8 +1322,6 @@ fn test_find_previous_tag_smartsemver_monorepo_prefix() {
         Some("svc/v0.1.0".to_string()),
         "smartsemver must skip svc/v0.2.0-beta.3 in monorepo mode"
     );
-
-    std::env::set_current_dir(orig).unwrap();
 }
 
 #[test]
@@ -1421,8 +1332,7 @@ fn test_find_previous_tag_smartsemver_early_dev_no_panic() {
     let dir = tmp.path();
     init_repo_with_tagged_commits(dir, &["v0.0.0"]);
 
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir).unwrap();
+    let _cwd = CwdGuard::new(dir).unwrap();
 
     let gc = crate::config::GitConfig {
         tag_sort: Some("smartsemver".to_string()),
@@ -1430,6 +1340,4 @@ fn test_find_previous_tag_smartsemver_early_dev_no_panic() {
     };
     let result = find_previous_tag("v0.0.0", Some(&gc), None).unwrap();
     assert_eq!(result, None);
-
-    std::env::set_current_dir(orig).unwrap();
 }
