@@ -54,7 +54,9 @@ pub struct AurSourceConfig {
     pub build: Option<String>,
     /// Custom `package()` function body for PKGBUILD.
     pub package: Option<String>,
-    /// AUR SSH git URL.
+    /// AUR SSH git URL override. Defaults to
+    /// `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved
+    /// package name; set this only for a non-standard endpoint.
     pub git_url: Option<String>,
     /// Custom SSH command for git operations.
     pub git_ssh_command: Option<String>,

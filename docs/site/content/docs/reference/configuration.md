@@ -188,7 +188,7 @@ Defaults to `[archive, binary, checksum]` when omitted. |
 | `description` | string | — | Short description of the package. |
 | `directory` | string | — | Subdirectory in the git repo for committed files. |
 | `git_ssh_command` | string | — | Custom SSH command for git operations. |
-| `git_url` | string | — | AUR SSH git URL. |
+| `git_url` | string | — | AUR SSH git URL override. Defaults to `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved package name; set this only for a non-standard endpoint. |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR source config is skipped. Render failure hard-errors. The `aur_sources[].if:`. |
@@ -1178,7 +1178,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `description` | string | — | Short description of the package for PKGBUILD. |
 | `directory` | string | — | Subdirectory in the git repo for committed files. |
 | `git_ssh_command` | string | — | Custom SSH command for git operations. |
-| `git_url` | string | — | AUR SSH git URL (e.g., `ssh://aur@aur.archlinux.org/<package>.git`). |
+| `git_url` | string | — | AUR SSH git URL override. Defaults to `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved package name; set this only for a non-standard endpoint. |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR publisher is skipped. Render failure hard-errors. The `aurs[].if:` conditional gate. |
@@ -1214,7 +1214,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `description` | string | — | Short description of the package. |
 | `directory` | string | — | Subdirectory in the git repo for committed files. |
 | `git_ssh_command` | string | — | Custom SSH command for git operations. |
-| `git_url` | string | — | AUR SSH git URL. |
+| `git_url` | string | — | AUR SSH git URL override. Defaults to `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved package name; set this only for a non-standard endpoint. |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR source config is skipped. Render failure hard-errors. The `aur_sources[].if:`. |

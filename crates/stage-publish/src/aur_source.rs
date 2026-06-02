@@ -356,82 +356,76 @@ fn publish_aur_source_entry(
         size: None,
     });
 
-    // Push to AUR git repo if configured
-    if let Some(ref git_url) = cfg.git_url {
-        let tmp_dir = tempfile::tempdir().context(format!("{}: create temp dir", label))?;
-        let repo_path = tmp_dir.path();
+    // Push to the AUR git repo. An explicit `git_url` is a verbatim
+    // override; otherwise derive the canonical AUR remote from the resolved
+    // package name (the same `pkgbase` written into PKGBUILD/.SRCINFO) so the
+    // push target can never drift from the package name.
+    let git_url = aur_source_push_git_url(cfg, &pkg_name);
 
-        if cfg.private_key.is_some() || cfg.git_ssh_command.is_some() {
-            util::clone_repo_ssh(
-                git_url,
-                cfg.private_key.as_deref(),
-                cfg.git_ssh_command.as_deref(),
-                repo_path,
-                label,
-                log,
-            )?;
-        } else {
-            util::clone_repo_with_auth(git_url, None, repo_path, label, log)?;
-        }
+    let tmp_dir = tempfile::tempdir().context(format!("{}: create temp dir", label))?;
+    let repo_path = tmp_dir.path();
 
-        let output_dir = if let Some(ref dir) = cfg.directory {
-            // Render against the `Amd64`-scoped vars from the inner render so a
-            // `directory: "{{ .Amd64 }}/…"` template resolves to the configured
-            // variant, consistent with the url_template / hook renders.
-            let rendered_dir = util::render_or_warn_with_vars(&scoped_vars, log, label, dir);
-            let d = repo_path.join(&rendered_dir);
-            std::fs::create_dir_all(&d)?;
-            d
-        } else {
-            repo_path.to_path_buf()
-        };
-
-        std::fs::copy(aur_dir.join("PKGBUILD"), output_dir.join("PKGBUILD"))
-            .with_context(|| format!("{label}: copy PKGBUILD to output dir"))?;
-        std::fs::copy(aur_dir.join(".SRCINFO"), output_dir.join(".SRCINFO"))
-            .with_context(|| format!("{label}: copy .SRCINFO to output dir"))?;
-        if cfg.install.is_some() {
-            std::fs::copy(
-                aur_dir.join(&install_filename),
-                output_dir.join(&install_filename),
-            )
-            .with_context(|| format!("{label}: copy {install_filename} to output dir"))?;
-        }
-
-        let commit_msg = crate::homebrew::render_commit_msg(
-            cfg.commit_msg_template.as_deref(),
-            &pkg_name,
-            &version,
-            "package",
-        );
-        let commit_opts = util::resolve_commit_opts(ctx, cfg.commit_author.as_ref());
-        let outcome = util::commit_and_push_with_opts(
+    if cfg.private_key.is_some() || cfg.git_ssh_command.is_some() {
+        util::clone_repo_ssh(
+            &git_url,
+            cfg.private_key.as_deref(),
+            cfg.git_ssh_command.as_deref(),
             repo_path,
-            &["."],
-            &commit_msg,
-            None,
             label,
-            &commit_opts,
+            log,
         )?;
-        match outcome {
-            util::CommitOutcome::Pushed => {
-                log.status(&format!(
-                    "{}: package '{}' pushed to {}",
-                    label, pkg_name, git_url
-                ));
-            }
-            util::CommitOutcome::NoChanges => {
-                log.status(&format!(
-                    "{}: nothing to push, package '{}' already up to date",
-                    label, pkg_name
-                ));
-            }
-        }
-        return Ok(outcome.is_pushed());
+    } else {
+        util::clone_repo_with_auth(&git_url, None, repo_path, label, log)?;
     }
 
-    log.status(&format!("{}: published '{}'", label, pkg_name));
-    Ok(false)
+    let output_dir = if let Some(ref dir) = cfg.directory {
+        // Render against the `Amd64`-scoped vars from the inner render so a
+        // `directory: "{{ .Amd64 }}/…"` template resolves to the configured
+        // variant, consistent with the url_template / hook renders.
+        let rendered_dir = util::render_or_warn_with_vars(&scoped_vars, log, label, dir);
+        let d = repo_path.join(&rendered_dir);
+        std::fs::create_dir_all(&d)?;
+        d
+    } else {
+        repo_path.to_path_buf()
+    };
+
+    std::fs::copy(aur_dir.join("PKGBUILD"), output_dir.join("PKGBUILD"))
+        .with_context(|| format!("{label}: copy PKGBUILD to output dir"))?;
+    std::fs::copy(aur_dir.join(".SRCINFO"), output_dir.join(".SRCINFO"))
+        .with_context(|| format!("{label}: copy .SRCINFO to output dir"))?;
+    if cfg.install.is_some() {
+        std::fs::copy(
+            aur_dir.join(&install_filename),
+            output_dir.join(&install_filename),
+        )
+        .with_context(|| format!("{label}: copy {install_filename} to output dir"))?;
+    }
+
+    let commit_msg = crate::homebrew::render_commit_msg(
+        cfg.commit_msg_template.as_deref(),
+        &pkg_name,
+        &version,
+        "package",
+    );
+    let commit_opts = util::resolve_commit_opts(ctx, cfg.commit_author.as_ref());
+    let outcome =
+        util::commit_and_push_with_opts(repo_path, &["."], &commit_msg, None, label, &commit_opts)?;
+    match outcome {
+        util::CommitOutcome::Pushed => {
+            log.status(&format!(
+                "{}: package '{}' pushed to {}",
+                label, pkg_name, git_url
+            ));
+        }
+        util::CommitOutcome::NoChanges => {
+            log.status(&format!(
+                "{}: nothing to push, package '{}' already up to date",
+                label, pkg_name
+            ));
+        }
+    }
+    Ok(outcome.is_pushed())
 }
 
 /// Publish AUR source packages for a crate (per-crate config path).
@@ -885,16 +879,29 @@ fn resolve_aur_source_package_name(
     }
 }
 
+/// Resolve the AUR push remote for a source package: an explicit
+/// `cfg.git_url` is a verbatim override; otherwise derive the canonical
+/// `ssh://aur@aur.archlinux.org/<pkg_name>.git` from the resolved package
+/// name, so the push target tracks `pkgbase` and cannot drift.
+fn aur_source_push_git_url(cfg: &AurSourceConfig, pkg_name: &str) -> String {
+    cfg.git_url
+        .as_deref()
+        .filter(|u| !u.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| util::aur_default_git_url(pkg_name))
+}
+
 /// Build an [`AurSourceTarget`] for a single per-crate `aur_source:` block.
 fn collect_aur_source_per_crate_target(ctx: &Context, crate_name: &str) -> Option<AurSourceTarget> {
     let c = ctx.config.crates.iter().find(|c| c.name == crate_name)?;
     let cfg = c.publish.as_ref().and_then(|p| p.aur_source.as_ref())?;
     let pkg_name = resolve_aur_source_package_name(cfg, crate_name, false);
+    let git_url = aur_source_push_git_url(cfg, &pkg_name);
     Some(AurSourceTarget {
         target: format!("aur_source: crate '{}'", crate_name),
         package: pkg_name,
         tag: ctx.version(),
-        git_url: cfg.git_url.clone().unwrap_or_default(),
+        git_url,
     })
 }
 
@@ -912,11 +919,12 @@ fn collect_aur_source_top_level_targets(ctx: &Context) -> Vec<AurSourceTarget> {
         .unwrap_or_default();
     for (i, cfg) in entries.iter().enumerate() {
         let pkg_name = resolve_aur_source_package_name(cfg, &project_name, true);
+        let git_url = aur_source_push_git_url(cfg, &pkg_name);
         out.push(AurSourceTarget {
             target: format!("aur_sources[{}]", i),
             package: pkg_name,
             tag: ctx.version(),
-            git_url: cfg.git_url.clone().unwrap_or_default(),
+            git_url,
         });
     }
     out
@@ -1051,6 +1059,64 @@ mod publisher_tests {
         assert_eq!(p.group(), PublisherGroup::Submitter);
         assert!(!p.required());
         assert_eq!(p.rollback_scope_needed(), Some("AUR_SSH_KEY write"));
+    }
+
+    /// `git_url` unset → derives `ssh://aur@aur.archlinux.org/<pkg>.git`
+    /// (no `-bin` suffix for source packages); an explicit `git_url` is used
+    /// verbatim; an empty-string `git_url` is treated as unset.
+    #[test]
+    fn aur_source_push_git_url_derives_from_name() {
+        use anodizer_core::config::AurSourceConfig;
+
+        // Per-crate path: default name is the crate name (no -bin strip).
+        let cfg = AurSourceConfig::default();
+        let pkg = resolve_aur_source_package_name(&cfg, "mytool", false);
+        assert_eq!(pkg, "mytool");
+        assert_eq!(
+            aur_source_push_git_url(&cfg, &pkg),
+            "ssh://aur@aur.archlinux.org/mytool.git",
+        );
+
+        // Top-level path: default name is the project name with a trailing
+        // `-bin` stripped, so a `foo-bin` project yields `foo`.
+        let pkg_top = resolve_aur_source_package_name(&cfg, "foo-bin", true);
+        assert_eq!(pkg_top, "foo");
+        assert_eq!(
+            aur_source_push_git_url(&cfg, &pkg_top),
+            "ssh://aur@aur.archlinux.org/foo.git",
+        );
+
+        // Explicit `name:` override → url tracks the override.
+        let cfg_name = AurSourceConfig {
+            name: Some("widget".to_string()),
+            ..Default::default()
+        };
+        let pkg_name = resolve_aur_source_package_name(&cfg_name, "mytool", false);
+        assert_eq!(
+            aur_source_push_git_url(&cfg_name, &pkg_name),
+            "ssh://aur@aur.archlinux.org/widget.git",
+        );
+
+        // Empty-string git_url is treated as unset (still derives).
+        let cfg_empty = AurSourceConfig {
+            git_url: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(
+            aur_source_push_git_url(&cfg_empty, "mytool"),
+            "ssh://aur@aur.archlinux.org/mytool.git",
+        );
+
+        // Explicit git_url is a verbatim override.
+        let cfg_override = AurSourceConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/custom.git".to_string()),
+            name: Some("widget".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            aur_source_push_git_url(&cfg_override, "widget"),
+            "ssh://aur@aur.archlinux.org/custom.git",
+        );
     }
 
     #[test]

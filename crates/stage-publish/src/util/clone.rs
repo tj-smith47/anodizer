@@ -200,6 +200,18 @@ pub(crate) fn clone_repo(
     clone_repo_with_auth(&repo_url, token, tmp_dir, label, log)
 }
 
+/// Build the canonical AUR SSH remote for a resolved package name.
+///
+/// AUR repositories always live at
+/// `ssh://aur@aur.archlinux.org/<package>.git`, where `<package>` is the
+/// `pkgbase`/`pkgname` the publisher already resolved. Used as the default
+/// `git_url` for both the binary (`aur`) and source (`aur_source`)
+/// publishers when no explicit override is configured, so the push target
+/// can never drift from the package name written into PKGBUILD/.SRCINFO.
+pub(crate) fn aur_default_git_url(package_name: &str) -> String {
+    format!("ssh://aur@aur.archlinux.org/{}.git", package_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +219,18 @@ mod tests {
     use anodizer_core::log::{StageLogger, Verbosity};
     use std::process::Command;
     use std::sync::OnceLock;
+
+    #[test]
+    fn aur_default_git_url_is_canonical_remote() {
+        assert_eq!(
+            aur_default_git_url("mytool-bin"),
+            "ssh://aur@aur.archlinux.org/mytool-bin.git",
+        );
+        assert_eq!(
+            aur_default_git_url("widget"),
+            "ssh://aur@aur.archlinux.org/widget.git",
+        );
+    }
 
     /// Ensure the test process has a git identity. Subprocess `git`
     /// invocations inside the clone helpers inherit env from the test

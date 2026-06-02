@@ -1731,7 +1731,7 @@
           ]
         },
         "git_url": {
-          "description": "AUR SSH git URL (e.g., `ssh://aur@aur.archlinux.org/<package>.git`).",
+          "description": "AUR SSH git URL override. Defaults to `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved package name; set this only for a non-standard endpoint.",
           "default": null,
           "type": [
             "string",
@@ -2022,7 +2022,7 @@
           ]
         },
         "git_url": {
-          "description": "AUR SSH git URL.",
+          "description": "AUR SSH git URL override. Defaults to `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved package name; set this only for a non-standard endpoint.",
           "default": null,
           "type": [
             "string",

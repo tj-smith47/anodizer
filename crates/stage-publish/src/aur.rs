@@ -389,8 +389,32 @@ struct AurResolvedFields {
     backup: Vec<String>,
 }
 
-/// Evaluate the early-exit gates (`skip`, `skip_upload`, missing
-/// `git_url`, dry-run) for the AUR publisher.
+/// Resolve the AUR push remote for the binary publisher: an explicit
+/// `aur.git_url` is a verbatim override; otherwise derive the canonical
+/// `ssh://aur@aur.archlinux.org/<package>.git` from the resolved package
+/// name (rendered the same way the PKGBUILD path renders `aur.name`), so the
+/// push target tracks `pkgbase`/`pkgname` and cannot drift. A broken
+/// `aur.name` template falls back to the raw value here and is surfaced
+/// (once) by the downstream PKGBUILD render.
+fn aur_resolve_push_git_url(
+    ctx: &Context,
+    aur_cfg: &anodizer_core::config::AurConfig,
+    crate_name: &str,
+) -> String {
+    match aur_cfg.git_url.as_deref().filter(|u| !u.trim().is_empty()) {
+        Some(url) => url.to_string(),
+        None => {
+            let raw_name = aur_default_package_name(aur_cfg, crate_name);
+            let package_name = ctx
+                .render_template(&raw_name)
+                .unwrap_or_else(|_| raw_name.clone());
+            crate::util::aur_default_git_url(&package_name)
+        }
+    }
+}
+
+/// Evaluate the early-exit gates (`skip`, `skip_upload`, dry-run) for the
+/// AUR publisher and resolve the push `git_url`.
 ///
 /// Returns `Ok(Some(git_url))` when the caller should proceed with
 /// the publish; `Ok(None)` when an early-exit fired (the helper has
@@ -438,11 +462,7 @@ fn aur_check_skip_and_resolve_git_url(
         return Ok(None);
     }
 
-    let git_url = aur_cfg
-        .git_url
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("aur: no git_url config for '{}'", crate_name))?
-        .clone();
+    let git_url = aur_resolve_push_git_url(ctx, aur_cfg, crate_name);
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -1199,16 +1219,18 @@ fn collect_aur_our_run_targets(ctx: &Context) -> Vec<AurOurTarget> {
         let Some(ac) = c.publish.as_ref().and_then(|p| p.aur.as_ref()) else {
             continue;
         };
-        let Some(git_url) = ac.git_url.as_ref() else {
-            continue;
-        };
+        // Record the exact remote the live push resolves to (explicit
+        // override, else the canonical derived url) so the rollback target
+        // never drifts from the pushed repo. Reuses the live-push resolver
+        // as the single source of truth.
+        let git_url = aur_resolve_push_git_url(ctx, ac, &c.name);
         // Use the package name (or the AUR-default of `<crate>-bin`)
         // as the human label so log lines say what was rolled back.
         let raw_pkg = aur_default_package_name(ac, &c.name);
         let label = ctx.render_template(&raw_pkg).unwrap_or(raw_pkg);
         out.push(AurOurTarget {
             target: label,
-            git_url: git_url.clone(),
+            git_url,
             private_key: ac.private_key.clone(),
             git_ssh_command: ac.git_ssh_command.clone(),
         });
@@ -1624,9 +1646,10 @@ mod publisher_tests {
     }
 
     #[test]
-    fn aur_collect_run_targets_skips_when_git_url_absent() {
-        // No git_url: the publish path itself bails, so we should
-        // also skip recording.
+    fn aur_collect_run_targets_records_derived_url_when_git_url_absent() {
+        // No git_url: the live push derives the canonical AUR remote and
+        // pushes, so the rollback collector must record that same derived
+        // target — not skip it (else a pushed package has no rollback entry).
         let mut crate_cfg = aur_crate("demo");
         if let Some(p) = crate_cfg.publish.as_mut()
             && let Some(a) = p.aur.as_mut()
@@ -1635,7 +1658,12 @@ mod publisher_tests {
         }
         let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
         let targets = collect_aur_our_run_targets(&ctx);
-        assert!(targets.is_empty(), "expected no targets, got {targets:?}");
+        assert_eq!(targets.len(), 1, "expected one target, got {targets:?}");
+        assert_eq!(targets[0].target, "demo-bin");
+        assert_eq!(
+            targets[0].git_url,
+            "ssh://aur@aur.archlinux.org/demo-bin.git",
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2425,37 +2453,67 @@ mod tests {
         assert!(publish_to_aur(&ctx, "mytool", &log).is_err());
     }
 
+    /// `git_url` unset + default name → derives
+    /// `ssh://aur@aur.archlinux.org/<crate>-bin.git`. An explicit `name:`
+    /// override (including a template) must produce a matching url. An
+    /// explicit `git_url` is used verbatim.
     #[test]
-    fn test_publish_to_aur_missing_git_url() {
-        use anodizer_core::config::{AurConfig, Config, CrateConfig, PublishConfig};
+    fn test_aur_resolve_push_git_url_derives_from_name() {
+        use anodizer_core::config::{AurConfig, Config};
         use anodizer_core::context::{Context, ContextOptions};
-        use anodizer_core::log::{StageLogger, Verbosity};
 
-        let mut config = Config::default();
-        config.crates = vec![CrateConfig {
-            name: "mytool".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            publish: Some(PublishConfig {
-                aur: Some(AurConfig {
-                    git_url: None, // Missing
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }];
+        let ctx = Context::new(Config::default(), ContextOptions::default());
 
-        let ctx = Context::new(
-            config,
-            ContextOptions {
-                dry_run: true,
-                ..Default::default()
-            },
+        // Unset git_url + default name → `<crate>-bin`.
+        let cfg = AurConfig::default();
+        assert_eq!(
+            aur_resolve_push_git_url(&ctx, &cfg, "mytool"),
+            "ssh://aur@aur.archlinux.org/mytool-bin.git",
         );
-        let log = StageLogger::new("publish", Verbosity::Normal);
 
-        assert!(publish_to_aur(&ctx, "mytool", &log).is_err());
+        // Empty-string git_url is treated as unset (still derives).
+        let cfg_empty = AurConfig {
+            git_url: Some("   ".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            aur_resolve_push_git_url(&ctx, &cfg_empty, "mytool"),
+            "ssh://aur@aur.archlinux.org/mytool-bin.git",
+        );
+
+        // Explicit `name:` override → url tracks the overridden package name
+        // (no `-bin` suffix forced onto an explicit name).
+        let cfg_name = AurConfig {
+            name: Some("widget".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            aur_resolve_push_git_url(&ctx, &cfg_name, "mytool"),
+            "ssh://aur@aur.archlinux.org/widget.git",
+        );
+
+        // Templated `name:` renders to a matching url.
+        let cfg_tmpl = AurConfig {
+            name: Some("{{ .ProjectName }}-bin".to_string()),
+            ..Default::default()
+        };
+        // `ProjectName` is empty in a bare default context, so the rendered
+        // name is `-bin`; the url must reflect the rendered name exactly.
+        assert_eq!(
+            aur_resolve_push_git_url(&ctx, &cfg_tmpl, "mytool"),
+            "ssh://aur@aur.archlinux.org/-bin.git",
+        );
+
+        // Explicit git_url is a verbatim override.
+        let cfg_override = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/custom.git".to_string()),
+            name: Some("widget".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            aur_resolve_push_git_url(&ctx, &cfg_override, "mytool"),
+            "ssh://aur@aur.archlinux.org/custom.git",
+        );
     }
 
     // -----------------------------------------------------------------------
