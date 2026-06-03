@@ -209,6 +209,11 @@ pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
     if crate_cfg.cross.is_none() && defaults.cross.is_some() {
         crate_cfg.cross = defaults.cross.clone();
     }
+    // Override-not-append: a per-crate list wins outright; defaults supply the
+    // whole list only when the crate declares none.
+    if crate_cfg.version_files.is_none() && defaults.version_files.is_some() {
+        crate_cfg.version_files = defaults.version_files.clone();
+    }
 
     // ---- Single-struct deep-merge fields ----
     // Per-crate block with truthy `skip:` suppresses inheritance entirely —
@@ -1511,6 +1516,40 @@ crates:
                 Some(MacOSNativeArtifactKind::Dmg)
             ),
             "deep-merge should fold defaults.notarize.macos_native[0].use_ into Config.notarize"
+        );
+    }
+
+    /// `defaults.version_files` is folded into a crate that declares none.
+    #[test]
+    fn defaults_version_files_fill_when_crate_unset() {
+        let defaults = Defaults {
+            version_files: Some(vec!["charts/app/Chart.yaml".to_string()]),
+            ..Default::default()
+        };
+        let mut crate_cfg = CrateConfig::default();
+        apply_to_crate(&defaults, &mut crate_cfg);
+        assert_eq!(
+            crate_cfg.version_files.as_deref(),
+            Some(&["charts/app/Chart.yaml".to_string()][..])
+        );
+    }
+
+    /// A per-crate `version_files` list wins outright over the defaults list
+    /// (override-not-append).
+    #[test]
+    fn crate_version_files_override_defaults() {
+        let defaults = Defaults {
+            version_files: Some(vec!["from-defaults.md".to_string()]),
+            ..Default::default()
+        };
+        let mut crate_cfg = CrateConfig {
+            version_files: Some(vec!["from-crate.md".to_string()]),
+            ..Default::default()
+        };
+        apply_to_crate(&defaults, &mut crate_cfg);
+        assert_eq!(
+            crate_cfg.version_files.as_deref(),
+            Some(&["from-crate.md".to_string()][..])
         );
     }
 }

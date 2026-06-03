@@ -156,6 +156,20 @@ pub struct Config {
     /// repository, commit_author, directory, skip_upload, hooks, dependencies,
     /// conflicts, completions, manpages, structured uninstall/zap, etc.
     pub homebrew_casks: Option<Vec<HomebrewCaskConfig>>,
+    /// Repo-committed files that embed the release version outside
+    /// `Cargo.toml` (e.g. a Helm `Chart.yaml`, an install doc, a README
+    /// badge), given as repo-root-relative path strings. At `tag` time each
+    /// listed file has its occurrences of the old version rewritten to the new
+    /// version — both the bare (`0.1.0`) and `v`-prefixed (`v0.1.0`) forms,
+    /// word-boundary anchored — and is staged into the same bump commit as
+    /// `Cargo.toml` / `Cargo.lock`, so these files never drift from the tag.
+    ///
+    /// ```yaml
+    /// version_files:
+    ///   - charts/cfgd/Chart.yaml
+    ///   - docs/installation.md
+    /// ```
+    pub version_files: Option<Vec<String>>,
     /// Automatic semantic version tagging configuration.
     pub tag: Option<TagConfig>,
     /// Git-level tag discovery and sorting settings.
@@ -326,6 +340,7 @@ impl Default for Config {
             artifactories: None,
             cloudsmiths: None,
             homebrew_casks: None,
+            version_files: None,
             tag: None,
             git: None,
             partial: None,

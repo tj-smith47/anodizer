@@ -73,6 +73,9 @@ List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Orde
 Stored as a `BTreeMap` so rendering iterates in deterministic (sorted) key order — without this guarantee, a value that references another variable (`b: "{{ .Var.a }}_v2"`) could render before its dependency on a different process / host. The current resolver is single-pass (one render per value), so cross-variable references only resolve when the referenced key sorts earlier. |
 | `verify_release` | VerifyReleaseConfig | `{"assert_assets":true,"enabled":false,"install_smoke":null}` | Opt-in post-release verification gate. Runs LAST (after the release is created and every publisher has run) and REPORTS post-publish defects — missing assets, failed install smoke-tests, glibc-ceiling violations. Because it runs after the irreversible publish, a failure exits non-zero to flag CI but never undoes the release. Off unless `verify_release.enabled: true`. |
 | `version` | integer | — | Schema version. Currently supports 1 (implicit default) and 2. |
+| `version_files` | list of string | — | Repo-committed files that embed the release version outside `Cargo.toml` (e.g. a Helm `Chart.yaml`, an install doc, a README badge), given as repo-root-relative path strings. At `tag` time each listed file has its occurrences of the old version rewritten to the new version — both the bare (`0.1.0`) and `v`-prefixed (`v0.1.0`) forms, word-boundary anchored — and is staged into the same bump commit as `Cargo.toml` / `Cargo.lock`, so these files never drift from the tag.
+
+```yaml version_files: - charts/cfgd/Chart.yaml - docs/installation.md ``` |
 | `workspaces` | list of WorkspaceConfig | — | Independent workspace roots in a monorepo. |
 
 ## `after`
@@ -311,6 +314,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `tag_template` | string | — | Git tag template used to tag and identify releases (supports templates). |
 | `universal_binaries` | list of UniversalBinaryConfig | — | macOS universal binary (fat binary) configurations for this crate. |
 | `version` | string | — | Pinned semver version. When set, `anodizer bump --strict` refuses to edit this crate's `Cargo.toml` to anything other than this value; without `--strict`, the bump proceeds with a warning. Lets a release captain freeze a crate's version while still running broad `--workspace` bumps. |
+| `version_files` | list of string | — | Repo-committed files that embed this crate's release version outside `Cargo.toml` (repo-root-relative path strings). At `tag` time each file has its occurrences of the old version rewritten to the new version — both bare and `v`-prefixed forms, word-boundary anchored — and is staged into the same bump commit as this crate's `Cargo.toml`. Overrides the workspace-level `defaults.version_files`. |
 | `version_sync` | VersionSyncConfig | — | Automatic version number synchronization configuration for this crate. |
 
 ## `defaults`
@@ -345,6 +349,7 @@ Multi-publisher fields are single-struct on both sides today: defaults supplies 
 | `srpms` | SrpmConfig | — | Default SRPM settings applied to all crates. |
 | `targets` | list of string | — | Default build targets (e.g., ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]). |
 | `upx` | UpxConfig | — | Default UPX compression settings applied to all crates. |
+| `version_files` | list of string | — | Default repo-committed files whose embedded release version is rewritten at `tag` time (repo-root-relative path strings). Hoisted across crates; folded into each crate's `version_files` by `defaults_merge` when the crate does not set its own list. Mirrors `CrateConfig.version_files`. |
 | `workspaces` | DefaultsWorkspaceBlock | — | Workspace-axis defaults marker. Only valid when top-level `workspaces:` is set. Reserved for per-workspace overrides keyed by workspace name (future waves). |
 
 ## `docker_signs`

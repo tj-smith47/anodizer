@@ -189,6 +189,13 @@ pub struct CrateConfig {
     pub binstall: Option<BinstallConfig>,
     /// Automatic version number synchronization configuration for this crate.
     pub version_sync: Option<VersionSyncConfig>,
+    /// Repo-committed files that embed this crate's release version outside
+    /// `Cargo.toml` (repo-root-relative path strings). At `tag` time each file
+    /// has its occurrences of the old version rewritten to the new version —
+    /// both bare and `v`-prefixed forms, word-boundary anchored — and is staged
+    /// into the same bump commit as this crate's `Cargo.toml`. Overrides the
+    /// workspace-level `defaults.version_files`.
+    pub version_files: Option<Vec<String>>,
     /// macOS universal binary (fat binary) configurations for this crate.
     pub universal_binaries: Option<Vec<UniversalBinaryConfig>>,
     /// When true (or template evaluating to "true"), all build outputs are
@@ -236,6 +243,7 @@ impl Default for CrateConfig {
             blobs: None,
             binstall: None,
             version_sync: None,
+            version_files: None,
             universal_binaries: None,
             no_unique_dist_dir: None,
         }

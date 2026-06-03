@@ -179,12 +179,14 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // scope change detection to only that directory.
     let mut crate_path: Option<String> = None;
     let mut version_sync_enabled = false;
+    let mut crate_version_files: Vec<String> = Vec::new();
     if let Some(ref crate_name) = opts.crate_name
         && let Some(info) = load_crate_tag_info(&opts, crate_name)
     {
         cfg.tag_prefix = info.tag_prefix;
         crate_path = Some(info.path);
         version_sync_enabled = info.version_sync;
+        crate_version_files = info.version_files;
     }
 
     // Per-crate / hybrid-workspace dispatch: when no --crate is given and the
@@ -575,10 +577,19 @@ pub fn run(opts: TagOpts) -> Result<()> {
         let root = workspace_root_path
             .as_deref()
             .unwrap_or_else(|| Path::new("."));
+        // Lockstep shares one version across the whole workspace, so the
+        // top-level `Config.version_files` list (no single crate to scope to)
+        // is the enrollment, rewritten with the shared old→new.
+        let ws_version_files = resolve_version_files(None, loaded_config.as_ref());
+        let ws_old = bare_version_from_tag(old_tag_str);
         bump_commit_created = apply_workspace_bump(
             root,
             ws,
             &new_version,
+            &VersionFilesBump {
+                old: ws_old.as_deref(),
+                files: &ws_version_files,
+            },
             opts.dry_run,
             cfg.skip_ci_on_bump,
             &log,
@@ -644,6 +655,24 @@ pub fn run(opts: TagOpts) -> Result<()> {
             let cargo_toml = format!("{}/Cargo.toml", path);
             let mut files_to_stage: Vec<&str> = vec![&cargo_toml, "Cargo.lock"];
             for f in &dep_modified {
+                files_to_stage.push(f);
+            }
+            // Rewrite enrolled version_files in the same bump commit so a Helm
+            // Chart.yaml / install doc / README badge never drifts from the
+            // tag. Old version comes from the previous tag; absent a previous
+            // tag there is nothing to rewrite from.
+            let vf_old = bare_version_from_tag(old_tag_str);
+            let vf_changed = match vf_old {
+                Some(ref old) => rewrite_and_stage_version_files(
+                    &crate_version_files,
+                    old,
+                    &new_version,
+                    opts.dry_run,
+                    &log,
+                )?,
+                None => Vec::new(),
+            };
+            for f in &vf_changed {
                 files_to_stage.push(f);
             }
             // Propagate a commit failure (index lock, hook rejection, …)
@@ -718,10 +747,20 @@ pub fn run(opts: TagOpts) -> Result<()> {
 ///
 /// Returns `true` when a bump commit was actually created, `false` when the
 /// workspace was already at the target (or in `dry_run`).
+/// The shared old→new bump and the files enrolled to be rewritten by it,
+/// passed through to the workspace bump so `version_files` rewriting rides in
+/// the same commit. `old` is `None` when there is no previous tag to rewrite
+/// from.
+struct VersionFilesBump<'a> {
+    old: Option<&'a str>,
+    files: &'a [String],
+}
+
 fn apply_workspace_bump(
     workspace_root: &Path,
     ws: &WorkspaceInfo,
     new_version: &str,
+    vf: &VersionFilesBump<'_>,
     dry_run: bool,
     skip_ci_on_bump: bool,
     log: &StageLogger,
@@ -767,6 +806,9 @@ fn apply_workspace_bump(
             rows.iter().filter(|r| r.level != BumpLevel::Skip).count(),
             new_version
         ));
+        if let Some(old) = vf.old {
+            rewrite_and_stage_version_files(vf.files, old, new_version, true, log)?;
+        }
         return Ok(false);
     }
 
@@ -795,7 +837,7 @@ fn apply_workspace_bump(
         staged.push(lockfile);
     }
 
-    let staged_rel: Vec<String> = staged
+    let mut staged_rel: Vec<String> = staged
         .iter()
         .map(|p| {
             p.strip_prefix(workspace_root)
@@ -804,6 +846,18 @@ fn apply_workspace_bump(
                 .into_owned()
         })
         .collect();
+
+    // version_files are repo-root-relative already; rewrite the shared old→new
+    // and fold the changed paths into the same bump commit.
+    if let Some(old) = vf.old {
+        let vf_changed = rewrite_and_stage_version_files(vf.files, old, new_version, false, log)?;
+        for f in vf_changed {
+            if !staged_rel.contains(&f) {
+                staged_rel.push(f);
+            }
+        }
+    }
+
     let staged_refs: Vec<&str> = staged_rel.iter().map(|s| s.as_str()).collect();
 
     git::stage_and_commit(
@@ -903,6 +957,12 @@ struct GroupTagResult {
     new_tags: Vec<(String, String)>,
     /// Bump commit paths that need version updates.
     version_updates: Vec<(String, String)>,
+    /// Bare previous version this group bumps FROM, or `None` when the group
+    /// has no previous tag (nothing to rewrite version_files from).
+    old_version: Option<String>,
+    /// Effective `version_files` enrollment per crate, parallel to
+    /// `version_updates` (same crate order within the group).
+    crate_version_files: Vec<Vec<String>>,
 }
 
 /// Compute tag results for all per-crate groups, performing change detection.
@@ -1021,6 +1081,7 @@ fn compute_per_crate_tags(
         // Build per-crate tags and version updates.
         let mut new_tags: Vec<(String, String)> = Vec::new();
         let mut version_updates: Vec<(String, String)> = Vec::new();
+        let mut crate_version_files: Vec<Vec<String>> = Vec::new();
         for crate_cfg in group {
             let crate_prefix = git::extract_tag_prefix(&crate_cfg.tag_template)
                 .unwrap_or_else(|| tag_prefix.clone());
@@ -1028,12 +1089,18 @@ fn compute_per_crate_tags(
             let message = format!("Release {}", new_tag);
             new_tags.push((new_tag, message));
             version_updates.push((crate_cfg.path.clone(), new_version.clone()));
+            crate_version_files.push(resolve_version_files(
+                Some(crate_cfg),
+                Some(anodizer_config),
+            ));
         }
 
         results.push(GroupTagResult {
             crate_names: group.iter().map(|c| c.name.clone()).collect(),
             new_tags,
             version_updates,
+            old_version: bare_version_from_tag(old_tag_str),
+            crate_version_files,
         });
     }
 
@@ -1150,6 +1217,67 @@ fn run_per_crate_tag(
                 files_to_stage.push(rel);
             }
         }
+        // Rewrite enrolled version_files per crate using that crate's group
+        // old→new. The same enrolled path bumped to DIFFERENT versions by two
+        // crates in one run is a genuine conflict (the file cannot hold two
+        // versions at once) — bail naming the file and the crates. The same
+        // path bumped to the SAME version is deduped so it is rewritten once.
+        use std::collections::HashMap;
+        let mut vf_targets: HashMap<String, (String, String)> = HashMap::new();
+        for group_result in &tag_results {
+            let Some(ref old) = group_result.old_version else {
+                continue;
+            };
+            for ((_, new_version), files) in group_result
+                .version_updates
+                .iter()
+                .zip(group_result.crate_version_files.iter())
+            {
+                for file in files {
+                    match vf_targets.get(file) {
+                        Some((existing_new, existing_crate)) if existing_new != new_version => {
+                            let this_crate = group_result
+                                .crate_names
+                                .first()
+                                .map(String::as_str)
+                                .unwrap_or("?");
+                            bail!(
+                                "version_files conflict: {} is enrolled by crates bumped to \
+                                 different versions ({} → {} vs {} → {}); a file cannot hold two \
+                                 versions in one tag run",
+                                file,
+                                existing_crate,
+                                existing_new,
+                                this_crate,
+                                new_version
+                            );
+                        }
+                        Some(_) => {}
+                        None => {
+                            let this_crate = group_result
+                                .crate_names
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| "?".to_string());
+                            vf_targets.insert(file.clone(), (new_version.clone(), this_crate));
+                            let vf_changed = rewrite_and_stage_version_files(
+                                std::slice::from_ref(file),
+                                old,
+                                new_version,
+                                false,
+                                log,
+                            )?;
+                            for f in vf_changed {
+                                if !files_to_stage.contains(&f) {
+                                    files_to_stage.push(f);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         files_to_stage.push("Cargo.lock".to_string());
         let staged_refs: Vec<&str> = files_to_stage.iter().map(|s| s.as_str()).collect();
 
@@ -1186,6 +1314,20 @@ fn run_per_crate_tag(
         for group_result in &tag_results {
             for (tag, message) in &group_result.new_tags {
                 git::create_tag_local_only(&cwd, tag, message, false, log)?;
+            }
+        }
+    } else {
+        // Dry-run: preview the version_files rewrites without touching disk.
+        for group_result in &tag_results {
+            let Some(ref old) = group_result.old_version else {
+                continue;
+            };
+            for ((_, new_version), files) in group_result
+                .version_updates
+                .iter()
+                .zip(group_result.crate_version_files.iter())
+            {
+                rewrite_and_stage_version_files(files, old, new_version, true, log)?;
             }
         }
     }
@@ -1244,6 +1386,9 @@ struct CrateTagInfo {
     tag_prefix: String,
     path: String,
     version_sync: bool,
+    /// Effective `version_files` enrollment for this crate (per-crate /
+    /// defaults list, else the top-level `Config.version_files`).
+    version_files: Vec<String>,
 }
 
 /// When `--crate` is specified, look up the crate in top-level crates and
@@ -1274,10 +1419,12 @@ fn load_crate_tag_info(opts: &TagOpts, crate_name: &str) -> Option<CrateTagInfo>
         .as_ref()
         .and_then(|vs| vs.enabled)
         .unwrap_or(false);
+    let version_files = resolve_version_files(Some(crate_cfg), Some(&config));
     Some(CrateTagInfo {
         tag_prefix,
         path: crate_cfg.path.clone(),
         version_sync,
+        version_files,
     })
 }
 
@@ -1513,6 +1660,82 @@ fn detect_conventional_bump(messages: &[String]) -> Option<BumpKind> {
     } else {
         None
     }
+}
+
+/// Resolve the effective `version_files` enrollment for a crate.
+///
+/// `defaults.version_files` has already been folded into `crate_cfg` by the
+/// defaults merge at config load, so the per-crate list (when set) is the
+/// crate-or-defaults value; the top-level `Config.version_files` is the final
+/// fallback for projects that declare neither a per-crate nor a defaults list.
+fn resolve_version_files(
+    crate_cfg: Option<&CrateConfig>,
+    config: Option<&anodizer_core::config::Config>,
+) -> Vec<String> {
+    crate_cfg
+        .and_then(|c| c.version_files.clone())
+        .or_else(|| config.and_then(|c| c.version_files.clone()))
+        .unwrap_or_default()
+}
+
+/// Bare semver version embedded in a tag string (the tag with its prefix
+/// stripped). Returns `None` for an empty tag (no previous release) or a tag
+/// that does not parse as a semver tag.
+fn bare_version_from_tag(tag: &str) -> Option<String> {
+    if tag.is_empty() {
+        return None;
+    }
+    let sv = git::parse_semver_tag(tag).ok()?;
+    let mut v = format!("{}.{}.{}", sv.major, sv.minor, sv.patch);
+    if let Some(pre) = sv.prerelease {
+        v.push('-');
+        v.push_str(&pre);
+    }
+    Some(v)
+}
+
+/// Rewrite the old version to the new version in every enrolled `version_files`
+/// entry, log the per-file outcome, and return the repo-relative paths that
+/// actually changed (so the caller can stage them into the bump commit).
+///
+/// A file with zero matches is reported via `warn` but is not an error: a stale
+/// enrollment should surface loudly without aborting the tag. When `dry_run` is
+/// set, counts are logged but no file is written and no path is returned for
+/// staging. A no-op (`old == new`) returns immediately.
+fn rewrite_and_stage_version_files(
+    files: &[String],
+    old: &str,
+    new: &str,
+    dry_run: bool,
+    log: &StageLogger,
+) -> Result<Vec<String>> {
+    if files.is_empty() || old == new {
+        return Ok(Vec::new());
+    }
+    let outcomes =
+        anodizer_core::version_files::rewrite_version_in_files(files, old, new, dry_run)?;
+    let mut changed = Vec::new();
+    for outcome in &outcomes {
+        if outcome.replacements > 0 {
+            log.status(&format!(
+                "{}version_files: rewrote {} occurrence(s) of {} → {} in {}",
+                if dry_run { "(dry-run) " } else { "" },
+                outcome.replacements,
+                old,
+                new,
+                outcome.path
+            ));
+            if !dry_run {
+                changed.push(outcome.path.clone());
+            }
+        } else {
+            log.warn(&format!(
+                "version_files: enrolled file {} did not contain version {} (nothing rewritten)",
+                outcome.path, old
+            ));
+        }
+    }
+    Ok(changed)
 }
 
 /// Apply a bump to semver components. Returns (major, minor, patch).

@@ -582,6 +582,17 @@
       "format": "uint32",
       "minimum": 0.0
     },
+    "version_files": {
+      "description": "Repo-committed files that embed the release version outside `Cargo.toml` (e.g. a Helm `Chart.yaml`, an install doc, a README badge), given as repo-root-relative path strings. At `tag` time each listed file has its occurrences of the old version rewritten to the new version — both the bare (`0.1.0`) and `v`-prefixed (`v0.1.0`) forms, word-boundary anchored — and is staged into the same bump commit as `Cargo.toml` / `Cargo.lock`, so these files never drift from the tag.\n\n```yaml version_files: - charts/cfgd/Chart.yaml - docs/installation.md ```",
+      "default": null,
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
     "workspaces": {
       "description": "Independent workspace roots in a monorepo.",
       "default": null,
@@ -4281,6 +4292,17 @@
             "null"
           ]
         },
+        "version_files": {
+          "description": "Repo-committed files that embed this crate's release version outside `Cargo.toml` (repo-root-relative path strings). At `tag` time each file has its occurrences of the old version rewritten to the new version — both bare and `v`-prefixed forms, word-boundary anchored — and is staged into the same bump commit as this crate's `Cargo.toml`. Overrides the workspace-level `defaults.version_files`.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "version_sync": {
           "description": "Automatic version number synchronization configuration for this crate.",
           "default": null,
@@ -4618,6 +4640,17 @@
               "type": "null"
             }
           ]
+        },
+        "version_files": {
+          "description": "Default repo-committed files whose embedded release version is rewritten at `tag` time (repo-root-relative path strings). Hoisted across crates; folded into each crate's `version_files` by `defaults_merge` when the crate does not set its own list. Mirrors `CrateConfig.version_files`.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         },
         "workspaces": {
           "description": "Workspace-axis defaults marker. Only valid when top-level `workspaces:` is set. Reserved for per-workspace overrides keyed by workspace name (future waves).",

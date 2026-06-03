@@ -47,6 +47,7 @@ pub mod tool_detect;
 pub mod url;
 pub mod user_command;
 pub mod util;
+pub mod version_files;
 
 pub use determinism::DeterminismState;
 pub use determinism_report::{
