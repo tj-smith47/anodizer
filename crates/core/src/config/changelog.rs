@@ -516,6 +516,26 @@ root:
     }
 
     #[test]
+    fn deserializes_empty_root_block_forces_root_with_default_chronology() {
+        let yaml = "per_crate: true\nroot: {}\n";
+        let cfg: ChangelogConfig = serde_yaml_ng::from_str(yaml).expect("parse");
+        let dest = cfg.resolved_destination();
+        assert!(dest.root_enabled);
+        assert!(dest.per_crate);
+        assert_eq!(cfg.resolved_chronology(), Chronology::Date);
+    }
+
+    #[test]
+    fn empty_crates_list_is_distinct_from_omitted() {
+        let with_empty: ChangelogConfig =
+            serde_yaml_ng::from_str("root:\n  crates: []\n").expect("parse");
+        assert_eq!(with_empty.root_crates_filter(), Some(&[][..]));
+
+        let omitted: ChangelogConfig = serde_yaml_ng::from_str("root: {}\n").expect("parse");
+        assert_eq!(omitted.root_crates_filter(), None);
+    }
+
+    #[test]
     fn chronology_serde_rename_is_lowercase() {
         assert_eq!(
             serde_yaml_ng::to_string(&Chronology::Date)
