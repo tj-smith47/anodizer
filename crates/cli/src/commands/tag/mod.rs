@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use crate::commands::bump::cargo_edit::{WorkspaceInfo, apply_plan, load_workspace};
 use crate::commands::bump::plan::{BumpLevel, PlanRow};
 use crate::commands::changelog_sync::{
-    ChangelogTarget, render_and_stage_changelogs, resolve_changelog_enabled,
+    ChangelogRouting, ChangelogTarget, render_and_stage_changelogs, resolve_changelog_enabled,
 };
 use crate::commands::version_files_resolve::resolve_version_files;
 
@@ -597,6 +597,8 @@ pub fn run(opts: TagOpts) -> Result<()> {
         let ws_version_files = resolve_version_files(None, loaded_config.as_ref());
         let ws_old = bare_version_from_tag(old_tag_str);
         let ws_from_tag = (!old_tag_str.is_empty()).then_some(old_tag_str);
+        let cl_config = changelog_config_for(loaded_config.as_ref());
+        let cl_routing = ChangelogRouting::from_config(&cl_config);
         bump_commit_created = apply_workspace_bump(
             root,
             ws,
@@ -609,6 +611,8 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 cl: ChangelogBump {
                     enabled: changelog_enabled,
                     from_tag: ws_from_tag,
+                    full_tag: &new_tag,
+                    routing: &cl_routing,
                 },
             },
             opts.dry_run,
@@ -691,10 +695,13 @@ pub fn run(opts: TagOpts) -> Result<()> {
                         crate_dir: ws_root.join(path),
                         from_tag,
                         to_version: new_version.clone(),
+                        full_tag: new_tag.clone(),
                     }]
                 })
                 .unwrap_or_default();
-            render_and_stage_changelogs(ws_root, &targets, opts.dry_run, &log)?
+            let cl_config = changelog_config_for(loaded_config.as_ref());
+            let routing = ChangelogRouting::from_config(&cl_config);
+            render_and_stage_changelogs(ws_root, &targets, &routing, opts.dry_run, &log)?
         } else {
             Vec::new()
         };
@@ -810,10 +817,15 @@ struct VersionFilesBump<'a> {
 
 /// Lockstep changelog-refresh inputs for [`apply_workspace_bump`]. The shared
 /// workspace tag bounds every member's rendered commit range, so a single
-/// `from_tag` applies to all members.
+/// `from_tag` applies to all members, and the single shared `full_tag` keys the
+/// aggregate root section.
 struct ChangelogBump<'a> {
     enabled: bool,
     from_tag: Option<&'a str>,
+    /// The shared workspace tag for this release (e.g. `v1.2.0`).
+    full_tag: &'a str,
+    /// The resolved routing for the lockstep changelog destinations.
+    routing: &'a ChangelogRouting<'a>,
 }
 
 /// The repo-committed edits [`apply_workspace_bump`] folds into the bump commit
@@ -822,6 +834,15 @@ struct ChangelogBump<'a> {
 struct WorkspaceBumpEdits<'a> {
     vf: VersionFilesBump<'a>,
     cl: ChangelogBump<'a>,
+}
+
+/// Resolve the effective `changelog:` block (owned), falling back to the
+/// default (root-only) when no config or no `changelog:` block is present, so
+/// the routing decision is uniform across every tagging mode.
+fn changelog_config_for(
+    config: Option<&anodizer_core::config::Config>,
+) -> anodizer_core::config::ChangelogConfig {
+    config.and_then(|c| c.changelog.clone()).unwrap_or_default()
 }
 
 fn apply_workspace_bump(
@@ -869,9 +890,13 @@ fn apply_workspace_bump(
         return Ok(false);
     }
 
-    // One changelog target per workspace member; the shared workspace tag bounds
-    // every member's commit range. Empty when the refresh is disabled.
-    let changelog_targets: Vec<ChangelogTarget> = if cl.enabled {
+    // Lockstep splits the changelog destinations: per-crate files get one target
+    // per member, but the shared root gets a SINGLE aggregate target. The members
+    // all share the one workspace tag, so promoting per-member into the root would
+    // strand every member after the first (the `## [tag]` heading already exists).
+    // The aggregate target spans the whole workspace (`crate_dir = workspace_root`,
+    // unfiltered) so the root section aggregates the entire release.
+    let per_crate_targets: Vec<ChangelogTarget> = if cl.enabled && cl.routing.per_crate {
         ws.members
             .iter()
             .map(|m| ChangelogTarget {
@@ -883,10 +908,39 @@ fn apply_workspace_bump(
                     .unwrap_or_else(|| workspace_root.to_path_buf()),
                 from_tag: cl.from_tag.map(str::to_string),
                 to_version: new_version.to_string(),
+                full_tag: cl.full_tag.to_string(),
             })
             .collect()
     } else {
         Vec::new()
+    };
+    let per_crate_routing = ChangelogRouting {
+        root_enabled: false,
+        per_crate: true,
+        chronology: cl.routing.chronology,
+        root_crates: cl.routing.root_crates,
+    };
+
+    let root_aggregate_target: Vec<ChangelogTarget> = if cl.enabled && cl.routing.root_enabled {
+        vec![ChangelogTarget {
+            crate_name: ws
+                .members
+                .first()
+                .map(|m| m.name.clone())
+                .unwrap_or_default(),
+            crate_dir: workspace_root.to_path_buf(),
+            from_tag: cl.from_tag.map(str::to_string),
+            to_version: new_version.to_string(),
+            full_tag: cl.full_tag.to_string(),
+        }]
+    } else {
+        Vec::new()
+    };
+    let root_routing = ChangelogRouting {
+        root_enabled: true,
+        per_crate: false,
+        chronology: cl.routing.chronology,
+        root_crates: cl.routing.root_crates,
     };
 
     if dry_run {
@@ -898,7 +952,20 @@ fn apply_workspace_bump(
         if let Some(old) = vf.old {
             rewrite_and_stage_version_files(vf.files, old, new_version, true, log)?;
         }
-        render_and_stage_changelogs(workspace_root, &changelog_targets, true, log)?;
+        render_and_stage_changelogs(
+            workspace_root,
+            &per_crate_targets,
+            &per_crate_routing,
+            true,
+            log,
+        )?;
+        render_and_stage_changelogs(
+            workspace_root,
+            &root_aggregate_target,
+            &root_routing,
+            true,
+            log,
+        )?;
         return Ok(false);
     }
 
@@ -948,9 +1015,23 @@ fn apply_workspace_bump(
         }
     }
 
-    // Refresh each member's CHANGELOG.md and fold the written (repo-relative)
-    // paths into the same bump commit.
-    let cl_changed = render_and_stage_changelogs(workspace_root, &changelog_targets, false, log)?;
+    // Refresh the per-crate files (one section per member) and the single
+    // aggregate root section, folding every written (repo-relative) path into
+    // the same bump commit.
+    let mut cl_changed = render_and_stage_changelogs(
+        workspace_root,
+        &per_crate_targets,
+        &per_crate_routing,
+        false,
+        log,
+    )?;
+    cl_changed.extend(render_and_stage_changelogs(
+        workspace_root,
+        &root_aggregate_target,
+        &root_routing,
+        false,
+        log,
+    )?);
     for f in cl_changed {
         if !staged_rel.contains(&f) {
             staged_rel.push(f);
@@ -1273,6 +1354,10 @@ fn run_per_crate_tag(
     } else {
         Vec::new()
     };
+    // Per-crate(multi-track) targets already carry distinct correct tags, so a
+    // single routed call covers both destinations (no aggregate split needed).
+    let cl_config = changelog_config_for(anodizer_config);
+    let changelog_routing = ChangelogRouting::from_config(&cl_config);
 
     if !opts.dry_run {
         // Apply version bumps across all changed crates in a single commit.
@@ -1357,7 +1442,8 @@ fn run_per_crate_tag(
 
         // Refresh each bumped crate's CHANGELOG.md and fold the written
         // (repo-relative) paths into the same bump commit.
-        let cl_changed = render_and_stage_changelogs(&cwd, &changelog_targets, false, log)?;
+        let cl_changed =
+            render_and_stage_changelogs(&cwd, &changelog_targets, &changelog_routing, false, log)?;
         for f in cl_changed {
             if !files_to_stage.contains(&f) {
                 files_to_stage.push(f);
@@ -1414,7 +1500,7 @@ fn run_per_crate_tag(
                 log,
             )?;
         }
-        render_and_stage_changelogs(&cwd, &changelog_targets, true, log)?;
+        render_and_stage_changelogs(&cwd, &changelog_targets, &changelog_routing, true, log)?;
     }
 
     // Build the structured-output payloads up front, but DON'T print them
@@ -1897,16 +1983,18 @@ fn plan_changelog_targets(
 ) -> Vec<ChangelogTarget> {
     let mut targets = Vec::new();
     for group_result in tag_results {
-        for (crate_name, (crate_path, new_version)) in group_result
+        for ((crate_name, (crate_path, new_version)), (full_tag, _msg)) in group_result
             .crate_names
             .iter()
             .zip(group_result.version_updates.iter())
+            .zip(group_result.new_tags.iter())
         {
             targets.push(ChangelogTarget {
                 crate_name: crate_name.clone(),
                 crate_dir: workspace_root.join(crate_path),
                 from_tag: group_result.prev_tag.clone(),
                 to_version: new_version.clone(),
+                full_tag: full_tag.clone(),
             });
         }
     }

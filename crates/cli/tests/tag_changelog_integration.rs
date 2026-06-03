@@ -115,7 +115,10 @@ crates:
     assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
     assert!(stdout.contains("new_tag=v0.2.0"), "stdout: {stdout}");
 
-    let changelog = read(root, "crates/app/CHANGELOG.md");
+    // A bare `changelog: {}` resolves to the root destination (the deliberate
+    // default), so the single-crate section lands in the workspace-root
+    // CHANGELOG.md rather than a per-crate file.
+    let changelog = read(root, "CHANGELOG.md");
     assert!(
         changelog.contains("## [0.2.0]"),
         "expected a 0.2.0 section: {changelog}"
@@ -125,7 +128,7 @@ crates:
         "expected the feat commit in the section: {changelog}"
     );
     // Refreshed file is in the bump commit, not just the working tree.
-    let head = show_head(root, "crates/app/CHANGELOG.md");
+    let head = show_head(root, "CHANGELOG.md");
     assert!(
         head.contains("## [0.2.0]"),
         "expected the section committed: {head}"
@@ -369,9 +372,11 @@ version = "0.1.0"
         .unwrap();
         fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
     }
+    // `per_crate: true` drives the per-member CHANGELOG.md files this test
+    // asserts; a bare `changelog: {}` would aggregate into the root file.
     fs::write(
         root.join(".anodizer.yaml"),
-        "project_name: lockstep\nchangelog: {}\n",
+        "project_name: lockstep\nchangelog:\n  per_crate: true\n",
     )
     .unwrap();
 
@@ -475,7 +480,8 @@ fn per_crate_refreshes_each_bumped_crate_changelog() {
     fs::write(
         root.join(".anodizer.yaml"),
         r#"project_name: percrate
-changelog: {}
+changelog:
+  per_crate: true
 crates:
   - name: core
     path: crates/core
@@ -641,7 +647,8 @@ crates:
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
 
-    let changelog = read(root, "crates/app/CHANGELOG.md");
+    // Bare `changelog: {}` writes the root CHANGELOG.md (the default destination).
+    let changelog = read(root, "CHANGELOG.md");
     assert!(
         changelog.contains("initial feature"),
         "expected the full-history commit in the first section: {changelog}"
@@ -652,7 +659,7 @@ crates:
     );
     // The section is part of the bump commit.
     assert!(
-        show_head(root, "crates/app/CHANGELOG.md").contains("initial feature"),
+        show_head(root, "CHANGELOG.md").contains("initial feature"),
         "expected the section committed"
     );
 }
@@ -676,9 +683,11 @@ fn existing_changelog_h1_and_history_survive() {
     )
     .unwrap();
     fs::write(root.join("crates/app/src/lib.rs"), "").unwrap();
-    // Seed a hand-written CHANGELOG with an H1 and an existing 0.1.0 section.
+    // Seed a hand-written root CHANGELOG with an H1 and an existing 0.1.0
+    // section. A bare `changelog: {}` resolves to the root destination, so the
+    // merge happens against this file.
     fs::write(
-        root.join("crates/app/CHANGELOG.md"),
+        root.join("CHANGELOG.md"),
         "# Changelog\n\n## [0.1.0] - 2026-01-01\n- old entry from an earlier release\n",
     )
     .unwrap();
@@ -711,7 +720,7 @@ crates:
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
 
-    let changelog = read(root, "crates/app/CHANGELOG.md");
+    let changelog = read(root, "CHANGELOG.md");
     // The existing H1 survives.
     assert!(
         changelog.contains("# Changelog"),
@@ -987,8 +996,8 @@ version = "0.1.0"
         "appVersion: v0.1.1\n",
         "version_files rewrite must be in the bump commit"
     );
-    // ...and the new changelog section.
-    let head_changelog = show_head(root, "crates/a/CHANGELOG.md");
+    // ...and the new changelog section (bare config → root CHANGELOG.md).
+    let head_changelog = show_head(root, "CHANGELOG.md");
     assert!(
         head_changelog.contains("## [0.1.1]"),
         "changelog section must be in the SAME bump commit: {head_changelog}"
@@ -1006,7 +1015,7 @@ version = "0.1.0"
         "HEAD commit must touch Chart.yaml: {names}"
     );
     assert!(
-        names.lines().any(|l| l == "crates/a/CHANGELOG.md"),
-        "HEAD commit must touch crates/a/CHANGELOG.md: {names}"
+        names.lines().any(|l| l == "CHANGELOG.md"),
+        "HEAD commit must touch CHANGELOG.md: {names}"
     );
 }

@@ -1,14 +1,18 @@
-//! Shared render-and-persist of per-crate `CHANGELOG.md` sections.
+//! Shared render-and-persist of `CHANGELOG.md` sections.
 //!
 //! A single source of truth for the changelog loop run at bump time (folded
-//! into the bump commit) and at tag time. Both paths render each crate's
-//! section for its new version via the native changelog engine
-//! (`anodizer_stage_changelog::render_crate_section`) and write it to disk;
-//! keeping one copy prevents the two paths from drifting apart. The helper
-//! writes files and returns the repo-relative paths so the caller can fold
-//! them into its own `git add` set.
+//! into the bump commit) and at tag time. Both paths render each target's
+//! section for its new version via the native changelog engine and write it to
+//! disk; keeping one copy prevents the two paths from drifting apart. The
+//! helper writes files and returns the repo-relative paths so the caller can
+//! fold them into its own `git add` set.
+//!
+//! Each target is routed to a per-crate `crates/<name>/CHANGELOG.md`
+//! (`render_crate_section`) and/or the shared root `<root>/CHANGELOG.md`
+//! (`render_root_section`) per the resolved [`ChangelogRouting`], honoring the
+//! root crates filter and section chronology.
 
-use anodizer_core::config::Config;
+use anodizer_core::config::{ChangelogConfig, Config};
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use std::path::{Path, PathBuf};
@@ -42,75 +46,247 @@ pub(crate) fn resolve_changelog_enabled(config: Option<&Config>, no_changelog: b
 pub(crate) struct ChangelogTarget {
     /// Crate name as it appears in `Cargo.toml` (`package.name`).
     pub crate_name: String,
-    /// Directory containing the crate's manifest (where `CHANGELOG.md` lives).
+    /// Directory containing the crate's manifest (where the per-crate
+    /// `CHANGELOG.md` lives). For a lockstep root-aggregate target this is the
+    /// workspace root so the section aggregates the whole release.
     pub crate_dir: PathBuf,
     /// The previous release tag for the crate, if any, bounding the commit
     /// range the section is rendered from.
     pub from_tag: Option<String>,
     /// The version the new section documents.
     pub to_version: String,
+    /// The full new tag for this release (e.g. `v0.7.0`, `core-v0.5.1`). Used
+    /// by the root renderer to promote / slot the section heading.
+    pub full_tag: String,
+}
+
+/// How each [`ChangelogTarget`] is routed to the per-crate and/or shared root
+/// `CHANGELOG.md`, derived from the resolved `changelog:` config.
+pub(crate) struct ChangelogRouting<'a> {
+    /// Write the shared root `<workspace_root>/CHANGELOG.md`.
+    pub root_enabled: bool,
+    /// Write per-crate `crate_dir/CHANGELOG.md` files.
+    pub per_crate: bool,
+    /// Section ordering for the root changelog.
+    pub chronology: anodizer_core::config::Chronology,
+    /// Crates that contribute a root section: `None` = every crate.
+    pub root_crates: Option<&'a [String]>,
+}
+
+impl<'a> ChangelogRouting<'a> {
+    /// Build a routing descriptor from a resolved `changelog:` config.
+    pub fn from_config(cfg: &'a ChangelogConfig) -> Self {
+        let dest = cfg.resolved_destination();
+        Self {
+            root_enabled: dest.root_enabled,
+            per_crate: dest.per_crate,
+            chronology: cfg.resolved_chronology(),
+            root_crates: cfg.root_crates_filter(),
+        }
+    }
+}
+
+/// Whether a crate contributes a section to the shared root changelog.
+///
+/// `None` (no filter) includes every crate; `Some(list)` includes only the
+/// named crates (an empty list includes none).
+fn crate_in_root(crate_name: &str, filter: Option<&[String]>) -> bool {
+    filter.is_none_or(|names| names.iter().any(|n| n == crate_name))
 }
 
 /// Render and (unless `dry_run`) write each target's `CHANGELOG.md` via the
-/// native changelog engine, returning the repo-relative paths that were written
-/// for the caller to fold into its `git add` set.
+/// native changelog engine, routing per `routing` to the per-crate file and/or
+/// the shared root file. Returns the repo-relative paths that were written for
+/// the caller to fold into its `git add` set.
 ///
-/// In `dry_run` nothing is written and a preview line is logged per target that
-/// would change. Targets whose render yields no update are skipped. Returned
-/// paths are deduplicated.
+/// In `dry_run` nothing is written and a preview line is logged per file that
+/// would change. Targets/destinations whose render yields no update are
+/// skipped. Returned paths are deduplicated.
 pub(crate) fn render_and_stage_changelogs(
     workspace_root: &Path,
     targets: &[ChangelogTarget],
+    routing: &ChangelogRouting<'_>,
     dry_run: bool,
     log: &StageLogger,
 ) -> Result<Vec<String>> {
     let mut written: Vec<String> = Vec::new();
     for t in targets {
-        let update = anodizer_stage_changelog::render_crate_section(
-            workspace_root,
-            &t.crate_name,
-            &t.crate_dir,
-            t.from_tag.as_deref(),
-            &t.to_version,
-        )
-        .with_context(|| format!("failed to render changelog for {}", t.crate_name))?;
-        let Some(update) = update else { continue };
-        match update.insertion_mode {
-            anodizer_stage_changelog::InsertionMode::Replace => {
-                if dry_run {
-                    log.status(&format!(
-                        "(dry-run) changelog: would write section for {} → {} in {}",
-                        t.crate_name,
-                        t.to_version,
-                        update.file_path.display()
-                    ));
-                    continue;
-                }
-                if let Some(parent) = update.file_path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("failed to create {}", parent.display()))?;
-                }
-                std::fs::write(&update.file_path, &update.rendered_text).with_context(|| {
-                    format!(
-                        "failed to write changelog at {}",
-                        update.file_path.display()
-                    )
-                })?;
-            }
+        if routing.per_crate {
+            let update = anodizer_stage_changelog::render_crate_section(
+                workspace_root,
+                &t.crate_name,
+                &t.crate_dir,
+                t.from_tag.as_deref(),
+                &t.to_version,
+            )
+            .with_context(|| format!("failed to render changelog for {}", t.crate_name))?;
+            persist_update(workspace_root, t, update, dry_run, log, &mut written)?;
         }
-        log.verbose(&format!(
-            "bundled changelog section for {} → {}",
-            t.crate_name, t.to_version
-        ));
-        let rel = update
-            .file_path
-            .strip_prefix(workspace_root)
-            .unwrap_or(update.file_path.as_path())
-            .to_string_lossy()
-            .into_owned();
-        if !written.contains(&rel) {
-            written.push(rel);
+        if routing.root_enabled && crate_in_root(&t.crate_name, routing.root_crates) {
+            let update = anodizer_stage_changelog::render_root_section(
+                workspace_root,
+                &t.crate_name,
+                &t.crate_dir,
+                t.from_tag.as_deref(),
+                &t.to_version,
+                &t.full_tag,
+                routing.chronology,
+            )
+            .with_context(|| format!("failed to render root changelog for {}", t.crate_name))?;
+            persist_update(workspace_root, t, update, dry_run, log, &mut written)?;
         }
     }
     Ok(written)
+}
+
+/// Write (or, under `dry_run`, preview) one rendered changelog update and fold
+/// its repo-relative path into `written` (deduplicated).
+fn persist_update(
+    workspace_root: &Path,
+    t: &ChangelogTarget,
+    update: Option<anodizer_stage_changelog::ChangelogUpdate>,
+    dry_run: bool,
+    log: &StageLogger,
+    written: &mut Vec<String>,
+) -> Result<()> {
+    let Some(update) = update else {
+        return Ok(());
+    };
+    match update.insertion_mode {
+        anodizer_stage_changelog::InsertionMode::Replace => {
+            if dry_run {
+                log.status(&format!(
+                    "(dry-run) changelog: would write section for {} → {} in {}",
+                    t.crate_name,
+                    t.to_version,
+                    update.file_path.display()
+                ));
+                return Ok(());
+            }
+            if let Some(parent) = update.file_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create {}", parent.display()))?;
+            }
+            std::fs::write(&update.file_path, &update.rendered_text).with_context(|| {
+                format!(
+                    "failed to write changelog at {}",
+                    update.file_path.display()
+                )
+            })?;
+        }
+    }
+    log.verbose(&format!(
+        "bundled changelog section for {} → {}",
+        t.crate_name, t.to_version
+    ));
+    let rel = update
+        .file_path
+        .strip_prefix(workspace_root)
+        .unwrap_or(update.file_path.as_path())
+        .to_string_lossy()
+        .into_owned();
+    if !written.contains(&rel) {
+        written.push(rel);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::config::{Chronology, RootChangelogConfig};
+
+    #[test]
+    fn crate_in_root_no_filter_includes_all() {
+        assert!(crate_in_root("core", None));
+        assert!(crate_in_root("anything", None));
+    }
+
+    #[test]
+    fn crate_in_root_filter_includes_named() {
+        let filter = vec!["core".to_string(), "cli".to_string()];
+        assert!(crate_in_root("core", Some(&filter)));
+        assert!(crate_in_root("cli", Some(&filter)));
+    }
+
+    #[test]
+    fn crate_in_root_filter_excludes_unnamed() {
+        let filter = vec!["core".to_string()];
+        assert!(!crate_in_root("cli", Some(&filter)));
+    }
+
+    #[test]
+    fn crate_in_root_empty_filter_excludes_all() {
+        let filter: Vec<String> = Vec::new();
+        assert!(!crate_in_root("core", Some(&filter)));
+    }
+
+    #[test]
+    fn routing_bare_config_is_root_only() {
+        let cfg = ChangelogConfig::default();
+        let routing = ChangelogRouting::from_config(&cfg);
+        assert!(
+            routing.root_enabled,
+            "bare changelog routes to the root file"
+        );
+        assert!(!routing.per_crate);
+        assert_eq!(routing.chronology, Chronology::Date);
+        assert!(routing.root_crates.is_none());
+    }
+
+    #[test]
+    fn routing_per_crate_only() {
+        let cfg = ChangelogConfig {
+            per_crate: Some(true),
+            ..Default::default()
+        };
+        let routing = ChangelogRouting::from_config(&cfg);
+        assert!(!routing.root_enabled, "per_crate: true drops the root file");
+        assert!(routing.per_crate);
+    }
+
+    #[test]
+    fn routing_both_with_filter_and_chronology() {
+        let cfg = ChangelogConfig {
+            per_crate: Some(true),
+            root: Some(RootChangelogConfig {
+                chronology: Some(Chronology::Tag),
+                crates: Some(vec!["core".to_string()]),
+            }),
+            ..Default::default()
+        };
+        let routing = ChangelogRouting::from_config(&cfg);
+        assert!(routing.root_enabled);
+        assert!(routing.per_crate);
+        assert_eq!(routing.chronology, Chronology::Tag);
+        assert_eq!(routing.root_crates, Some(["core".to_string()].as_slice()));
+    }
+
+    #[test]
+    fn target_carries_full_tag() {
+        let t = ChangelogTarget {
+            crate_name: "core".to_string(),
+            crate_dir: PathBuf::from("/ws/crates/core"),
+            from_tag: Some("core-v0.1.0".to_string()),
+            to_version: "0.2.0".to_string(),
+            full_tag: "core-v0.2.0".to_string(),
+        };
+        assert_eq!(t.full_tag, "core-v0.2.0");
+    }
+
+    #[test]
+    fn lockstep_aggregate_target_uses_workspace_root_dir() {
+        let ws_root = PathBuf::from("/ws");
+        let t = ChangelogTarget {
+            crate_name: "ws".to_string(),
+            crate_dir: ws_root.clone(),
+            from_tag: Some("v0.1.0".to_string()),
+            to_version: "0.2.0".to_string(),
+            full_tag: "v0.2.0".to_string(),
+        };
+        assert_eq!(
+            t.crate_dir, ws_root,
+            "aggregate target is not path-filtered"
+        );
+    }
 }

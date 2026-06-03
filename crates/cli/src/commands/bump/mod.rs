@@ -166,16 +166,26 @@ fn commit_plan(
         };
         let tag_prefix = format!("{}-v", row.crate_name);
         let from_tag = inference::find_last_tag_for_prefix(workspace_root, &tag_prefix)?;
+        let full_tag = format!("{}{}", tag_prefix, row.next);
         changelog_targets.push(crate::commands::changelog_sync::ChangelogTarget {
             crate_name: row.crate_name.clone(),
             crate_dir,
             from_tag,
             to_version: row.next.clone(),
+            full_tag,
         });
     }
+    let empty_changelog_config = anodizer_core::config::ChangelogConfig::default();
+    let routing = crate::commands::changelog_sync::ChangelogRouting::from_config(
+        changelog_config
+            .as_ref()
+            .and_then(|c| c.changelog.as_ref())
+            .unwrap_or(&empty_changelog_config),
+    );
     let changelog_paths = crate::commands::changelog_sync::render_and_stage_changelogs(
         workspace_root,
         &changelog_targets,
+        &routing,
         false,
         log,
     )?;
