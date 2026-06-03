@@ -68,6 +68,16 @@ pub struct ChangelogConfig {
     /// lets users opt back in here for local preview / draft generation.
     /// Wired in `crates/stage-changelog/src/lib.rs::ChangelogStage::run`.
     pub snapshot: Option<bool>,
+    /// When `true`, write a per-crate `crates/<name>/CHANGELOG.md` for each
+    /// crate instead of (or in addition to) the single root `CHANGELOG.md`.
+    /// Default: `false`. With `per_crate: true` and no `root:` block, only the
+    /// per-crate files are produced; add a `root:` block to keep the aggregate
+    /// root changelog as well.
+    pub per_crate: Option<bool>,
+    /// Controls the single aggregate root `CHANGELOG.md`. Presence of this
+    /// block forces the root changelog on even when `per_crate: true`. When
+    /// omitted, the root changelog is on unless `per_crate: true` turned it off.
+    pub root: Option<RootChangelogConfig>,
 }
 
 impl ChangelogConfig {
@@ -174,6 +184,75 @@ impl ChangelogConfig {
     pub fn resolved_snapshot(&self) -> bool {
         self.snapshot.unwrap_or(false)
     }
+
+    /// Resolve which changelog files this config produces.
+    ///
+    /// The root changelog is enabled when a `root:` block is present, or when
+    /// `per_crate` is not `true` (its default `false` keeps the back-compat
+    /// root-only behaviour). Per-crate files are produced exactly when
+    /// `per_crate: true`. So a bare `changelog:` block stays root-only, while
+    /// `per_crate: true` without `root:` yields per-crate files only.
+    pub fn resolved_destination(&self) -> ChangelogDestination {
+        let per_crate = self.per_crate.unwrap_or(false);
+        ChangelogDestination {
+            root_enabled: self.root.is_some() || !per_crate,
+            per_crate,
+        }
+    }
+
+    /// Resolve the ordering of release sections in the root `CHANGELOG.md`,
+    /// falling back to [`Chronology::Date`] when `root.chronology` is unset.
+    pub fn resolved_chronology(&self) -> Chronology {
+        self.root
+            .as_ref()
+            .map(RootChangelogConfig::resolved_chronology)
+            .unwrap_or_default()
+    }
+
+    /// The optional crate filter for the root changelog: `None` means every
+    /// crate contributes a `### <crate>` subsection.
+    pub fn root_crates_filter(&self) -> Option<&[String]> {
+        self.root.as_ref().and_then(|r| r.crates.as_deref())
+    }
+}
+
+/// Ordering of release sections in the aggregate root `CHANGELOG.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Chronology {
+    /// Order sections by release date (default).
+    #[default]
+    Date,
+    /// Order sections by semantic tag version.
+    Tag,
+}
+
+/// Configuration for the single aggregate root `CHANGELOG.md`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct RootChangelogConfig {
+    /// Ordering of release sections in the root changelog: `date` (default) or
+    /// `tag`.
+    pub chronology: Option<Chronology>,
+    /// Crates that contribute a `### <crate>` subsection to the root changelog.
+    /// When omitted, every crate contributes a subsection.
+    pub crates: Option<Vec<String>>,
+}
+
+impl RootChangelogConfig {
+    /// Resolve the section ordering, falling back to [`Chronology::Date`].
+    pub fn resolved_chronology(&self) -> Chronology {
+        self.chronology.unwrap_or_default()
+    }
+}
+
+/// The resolved changelog destination decision: which files a release writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChangelogDestination {
+    /// Whether the single aggregate root `CHANGELOG.md` is written.
+    pub root_enabled: bool,
+    /// Whether per-crate `crates/<name>/CHANGELOG.md` files are written.
+    pub per_crate: bool,
 }
 
 /// AI-powered changelog enhancement configuration.
@@ -291,4 +370,164 @@ pub struct ChangelogGroup {
     pub order: Option<i32>,
     /// Nested subgroups within this group. Rendered as sub-sections (e.g. `###`).
     pub groups: Option<Vec<ChangelogGroup>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn destination_bare_config_is_root_only() {
+        let cfg = ChangelogConfig::default();
+        let dest = cfg.resolved_destination();
+        assert!(dest.root_enabled, "bare config keeps the root CHANGELOG.md");
+        assert!(!dest.per_crate, "bare config emits no per-crate files");
+    }
+
+    #[test]
+    fn destination_per_crate_true_without_root_is_per_crate_only() {
+        let cfg = ChangelogConfig {
+            per_crate: Some(true),
+            ..Default::default()
+        };
+        let dest = cfg.resolved_destination();
+        assert!(
+            !dest.root_enabled,
+            "per_crate: true without root: drops root"
+        );
+        assert!(dest.per_crate);
+    }
+
+    #[test]
+    fn destination_per_crate_true_with_root_is_both() {
+        let cfg = ChangelogConfig {
+            per_crate: Some(true),
+            root: Some(RootChangelogConfig::default()),
+            ..Default::default()
+        };
+        let dest = cfg.resolved_destination();
+        assert!(dest.root_enabled);
+        assert!(dest.per_crate);
+    }
+
+    #[test]
+    fn destination_per_crate_false_with_root_is_root_only() {
+        let cfg = ChangelogConfig {
+            per_crate: Some(false),
+            root: Some(RootChangelogConfig::default()),
+            ..Default::default()
+        };
+        let dest = cfg.resolved_destination();
+        assert!(dest.root_enabled);
+        assert!(!dest.per_crate);
+    }
+
+    #[test]
+    fn chronology_defaults_to_date_when_root_unset() {
+        let cfg = ChangelogConfig::default();
+        assert_eq!(cfg.resolved_chronology(), Chronology::Date);
+    }
+
+    #[test]
+    fn chronology_defaults_to_date_when_root_set_without_chronology() {
+        let cfg = ChangelogConfig {
+            root: Some(RootChangelogConfig::default()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_chronology(), Chronology::Date);
+    }
+
+    #[test]
+    fn chronology_override_tag() {
+        let cfg = ChangelogConfig {
+            root: Some(RootChangelogConfig {
+                chronology: Some(Chronology::Tag),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_chronology(), Chronology::Tag);
+    }
+
+    #[test]
+    fn resolved_chronology_accessor_on_root_defaults_to_date() {
+        assert_eq!(
+            RootChangelogConfig::default().resolved_chronology(),
+            Chronology::Date
+        );
+    }
+
+    #[test]
+    fn crates_filter_defaults_to_none_meaning_all() {
+        let cfg = ChangelogConfig {
+            root: Some(RootChangelogConfig::default()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.root_crates_filter(), None);
+    }
+
+    #[test]
+    fn crates_filter_passes_through_list() {
+        let cfg = ChangelogConfig {
+            root: Some(RootChangelogConfig {
+                crates: Some(vec!["a".to_string(), "b".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.root_crates_filter(),
+            Some(["a".to_string(), "b".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn deserializes_per_crate_and_root_block() {
+        let yaml = r#"
+per_crate: true
+root:
+  chronology: tag
+  crates: [a, b]
+"#;
+        let cfg: ChangelogConfig = serde_yaml_ng::from_str(yaml).expect("parse changelog block");
+        assert_eq!(cfg.per_crate, Some(true));
+        let root = cfg.root.as_ref().expect("root present");
+        assert_eq!(root.chronology, Some(Chronology::Tag));
+        assert_eq!(
+            root.crates.as_deref(),
+            Some(["a".to_string(), "b".to_string()].as_slice())
+        );
+
+        let dest = cfg.resolved_destination();
+        assert!(dest.root_enabled);
+        assert!(dest.per_crate);
+        assert_eq!(cfg.resolved_chronology(), Chronology::Tag);
+    }
+
+    #[test]
+    fn deserializes_bare_block_to_root_only() {
+        let yaml = "sort: asc";
+        let cfg: ChangelogConfig = serde_yaml_ng::from_str(yaml).expect("parse bare block");
+        assert_eq!(cfg.per_crate, None);
+        assert!(cfg.root.is_none());
+        let dest = cfg.resolved_destination();
+        assert!(dest.root_enabled);
+        assert!(!dest.per_crate);
+    }
+
+    #[test]
+    fn chronology_serde_rename_is_lowercase() {
+        assert_eq!(
+            serde_yaml_ng::to_string(&Chronology::Date)
+                .expect("ser")
+                .trim(),
+            "date"
+        );
+        assert_eq!(
+            serde_yaml_ng::to_string(&Chronology::Tag)
+                .expect("ser")
+                .trim(),
+            "tag"
+        );
+    }
 }

@@ -3202,6 +3202,26 @@
             "type": "string"
           }
         },
+        "per_crate": {
+          "description": "When `true`, write a per-crate `crates/<name>/CHANGELOG.md` for each crate instead of (or in addition to) the single root `CHANGELOG.md`. Default: `false`. With `per_crate: true` and no `root:` block, only the per-crate files are produced; add a `root:` block to keep the aggregate root changelog as well.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "root": {
+          "description": "Controls the single aggregate root `CHANGELOG.md`. Presence of this block forces the root changelog on even when `per_crate: true`. When omitted, the root changelog is on unless `per_crate: true` turned it off.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RootChangelogConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "skip": {
           "description": "Skip changelog generation. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional skip).\n\nAccepts `disable:` as an alias so imported configs (which use `changelog.disable:`) parse cleanly without a rename. Anodizer's broader convention is `skip:` (mirrors `release.skip_upload`, stage-level `skip:` flags), so the canonical key stays `skip:`.",
           "default": null,
@@ -3684,6 +3704,25 @@
           ]
         }
       }
+    },
+    "Chronology": {
+      "description": "Ordering of release sections in the aggregate root `CHANGELOG.md`.",
+      "oneOf": [
+        {
+          "description": "Order sections by release date (default).",
+          "type": "string",
+          "enum": [
+            "date"
+          ]
+        },
+        {
+          "description": "Order sections by semantic tag version.",
+          "type": "string",
+          "enum": [
+            "tag"
+          ]
+        }
+      ]
     },
     "CloudSmithConfig": {
       "description": "CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.",
@@ -11703,6 +11742,35 @@
         }
       },
       "additionalProperties": false
+    },
+    "RootChangelogConfig": {
+      "description": "Configuration for the single aggregate root `CHANGELOG.md`.",
+      "type": "object",
+      "properties": {
+        "chronology": {
+          "description": "Ordering of release sections in the root changelog: `date` (default) or `tag`.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Chronology"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "crates": {
+          "description": "Crates that contribute a `### <crate>` subsection to the root changelog. When omitted, every crate contributes a subsection.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     },
     "RuntimeHarvest": {
       "description": "Runtime-asset harvest hook for an AppImage config. The `command` template runs the freshly-built host-native binary to populate `dir`; the resulting directory is then bundled into the AppDir (and staged at a stable dist path so an archive `extra_files` glob can reuse it).",
