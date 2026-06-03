@@ -263,3 +263,160 @@ fn missing_config_errors() {
         run.stderr
     );
 }
+
+/// (M2a) The enrolled config must be loadable through the SAME loader the
+/// release pipeline uses, with the enrolled paths present under version_files.
+#[test]
+fn enrolled_config_loads_via_check_command() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fixture(root);
+
+    assert!(run_enroll(root, &["-y"]).success);
+
+    // `check version-files` loads the config through the production loader and
+    // resolves each enrolled file; success proves the rewritten YAML is valid
+    // and the enrolled paths are wired into version_files.
+    let out = anodizer()
+        .current_dir(root)
+        .args(["check", "version-files"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "check version-files failed on the enrolled config: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// (M2b) A flow-style `version_files: [...]` is rejected with an actionable
+/// error and the config is left untouched — never corrupted into mixed style.
+#[test]
+fn flow_style_list_is_rejected_without_corrupting() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fixture(root);
+    write(
+        root,
+        ".anodizer.yaml",
+        "project_name: app\nversion_files: [Chart.yaml]\n",
+    );
+    git_add_commit(root, "flow config");
+
+    let before = read(root, ".anodizer.yaml");
+    let run = run_enroll(root, &["-y"]);
+    assert!(!run.success, "expected bail on flow-style list");
+    assert!(
+        run.stderr.contains("inline") && run.stderr.contains("block list"),
+        "stderr: {}",
+        run.stderr
+    );
+    // Untouched.
+    assert_eq!(read(root, ".anodizer.yaml"), before);
+}
+
+/// (M2c) An existing 4-space-indented block gets new items at the SAME indent,
+/// and the result is valid YAML that loads.
+#[test]
+fn four_space_block_indent_is_matched() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fixture(root);
+    write(
+        root,
+        ".anodizer.yaml",
+        "project_name: app\nversion_files:\n    - Chart.yaml\n",
+    );
+    git_add_commit(root, "4-space block");
+
+    let run = run_enroll(root, &["-y"]);
+    assert!(run.success, "stderr: {}", run.stderr);
+
+    let cfg = read(root, ".anodizer.yaml");
+    assert!(
+        cfg.contains("    - docs/install.md"),
+        "indent not matched:\n{cfg}"
+    );
+    // Still loads cleanly through the production loader.
+    let out = anodizer()
+        .current_dir(root)
+        .args(["check", "version-files"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "config invalid after 4-space enroll: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// (M2d) A candidate path containing a space is double-quoted and round-trips:
+/// it is enrolled quoted, and a second run treats it as already-enrolled.
+#[test]
+fn path_with_space_is_quoted_and_round_trips() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"0.1.0\"\n",
+    );
+    write(
+        root,
+        "crates/app/Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write(root, "crates/app/src/lib.rs", "");
+    write(root, "release notes.md", "Ships 0.1.0 today.\n");
+    write(root, ".anodizer.yaml", "project_name: app\n");
+    git_init(root);
+    git_add_commit(root, "initial");
+
+    let run = run_enroll(root, &["-y"]);
+    assert!(run.success, "stderr: {}", run.stderr);
+
+    let cfg = read(root, ".anodizer.yaml");
+    assert!(
+        cfg.contains("- \"release notes.md\""),
+        "spaced path not quoted:\n{cfg}"
+    );
+
+    // Round-trip: a second enroll sees it as already enrolled — no duplicate.
+    let run2 = run_enroll(root, &["-y"]);
+    assert!(run2.success, "stderr: {}", run2.stderr);
+    let cfg2 = read(root, ".anodizer.yaml");
+    assert_eq!(
+        cfg2.matches("release notes.md").count(),
+        1,
+        "duplicate spaced entry:\n{cfg2}"
+    );
+}
+
+/// (M2e) A `version_files:` block that is NOT at EOF (a top-level key follows
+/// it) gets new items inserted within the block, leaving the trailing key in
+/// place — and the document stays valid.
+#[test]
+fn block_not_at_eof_inserts_within_block() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fixture(root);
+    write(
+        root,
+        ".anodizer.yaml",
+        "project_name: app\nversion_files:\n  - Chart.yaml\ndist: ./dist\n",
+    );
+    git_add_commit(root, "block then key");
+
+    let run = run_enroll(root, &["-y"]);
+    assert!(run.success, "stderr: {}", run.stderr);
+
+    let cfg = read(root, ".anodizer.yaml");
+    // New item lands under the block, BEFORE the trailing `dist:` key.
+    let install_pos = cfg.find("- docs/install.md").expect("new item missing");
+    let dist_pos = cfg.find("\ndist: ./dist").expect("trailing key gone");
+    assert!(
+        install_pos < dist_pos,
+        "new item inserted after the trailing key:\n{cfg}"
+    );
+    assert!(cfg.contains("\ndist: ./dist"), "trailing key lost:\n{cfg}");
+}

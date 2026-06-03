@@ -313,12 +313,14 @@ pub enum Commands {
         #[arg(
             long,
             value_delimiter = ',',
+            requires = "version_files",
             help = "Glob(s) to drop from discovered candidates (repeatable or comma-separated); only with --version-files"
         )]
         exclude: Vec<String>,
         #[arg(
             long,
             short = 'y',
+            requires = "version_files",
             help = "Non-interactive: enroll all discovered candidates without prompting"
         )]
         yes: bool,

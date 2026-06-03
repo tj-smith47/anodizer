@@ -1,3 +1,4 @@
+use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -46,6 +47,8 @@ struct CrateInfo {
 // ---------------------------------------------------------------------------
 
 pub fn run() -> Result<()> {
+    let log = StageLogger::new("init", Verbosity::default());
+
     let config_path = ".anodizer.yaml";
     if std::path::Path::new(config_path).exists() {
         anyhow::bail!("config file '{}' already exists", config_path);
@@ -54,7 +57,7 @@ pub fn run() -> Result<()> {
     let yaml = generate_config(".")?;
     std::fs::write(config_path, &yaml)
         .with_context(|| format!("failed to write {}", config_path))?;
-    println!("Created {}", config_path);
+    log.status(&format!("Created {}", config_path));
 
     // Update .gitignore to include dist/
     let gitignore_path = ".gitignore";
@@ -70,7 +73,7 @@ pub fn run() -> Result<()> {
             writeln!(f)?;
         }
         writeln!(f, "dist/")?;
-        println!("Added 'dist/' to {}", gitignore_path);
+        log.status(&format!("Added 'dist/' to {}", gitignore_path));
     }
 
     Ok(())
@@ -336,8 +339,6 @@ fn non_empty_deps(deps: &[String]) -> Option<&[String]> {
 // `init --version-files` — enrollment discovery + write-back
 // ---------------------------------------------------------------------------
 
-use anodizer_core::log::{StageLogger, Verbosity};
-
 /// Repo-relative directory prefixes whose contents anodizer already version-syncs
 /// or treats as build output, so enrolling them under `version_files` would
 /// double-handle or churn on generated files.
@@ -410,11 +411,18 @@ pub fn enroll_version_files(
         return Ok(());
     }
 
-    let (new_text, added) = add_version_files(&config_text, &selected);
+    let (new_text, added) = add_version_files(&config_text, &selected)?;
     if added.is_empty() {
         log.status("all selected files were already enrolled — nothing to do");
         return Ok(());
     }
+
+    // Post-write guard: deserialize the rewritten text through the typed config
+    // before touching disk, and confirm every newly enrolled path is present
+    // under `version_files`. Any line-editor edge case that produced invalid or
+    // wrong YAML fails here as a clean error rather than a corrupted config.
+    validate_enrolled_yaml(&new_text, &added)
+        .context("refusing to write .anodizer.yaml: the enrolled config did not validate")?;
 
     std::fs::write(config_path, &new_text)
         .with_context(|| format!("failed to write {config_path}"))?;
@@ -466,22 +474,30 @@ fn scan_versions(root: &Path) -> Result<Vec<String>> {
     Ok(versions)
 }
 
-/// Extract the paths already listed under a top-level `version_files:` block in
+/// Extract the paths already listed under a top-level `version_files:` key in
 /// the raw config text, so discovery can drop them (idempotency) without a full
-/// serde parse that would discard the user's comments. Recognizes the block
-/// `version_files:` followed by `- <path>` list items at any indent; stops at
-/// the next line that is not a list item or blank.
+/// serde parse that would discard the user's comments. Handles BOTH spellings:
+///   * block style — `version_files:` followed by `- <path>` items at any
+///     indent (stops at the next non-item, non-blank line);
+///   * flow style — `version_files: [a.md, b.md]` inline on one line.
 fn existing_version_files(config_text: &str) -> HashSet<String> {
     let mut out = HashSet::new();
     let mut in_block = false;
     for line in config_text.lines() {
         let trimmed = line.trim_start();
         if !in_block {
-            if line.trim_end() == "version_files:" || trimmed == "version_files:" {
-                // Only a TOP-LEVEL block (no leading indent) is the fallback list
-                // this flow writes to; a crate-scoped `version_files:` is nested.
-                if line.starts_with("version_files:") {
+            // A top-level key only (no leading indent) is the fallback list this
+            // flow writes to; a crate-scoped `version_files:` is nested/indented.
+            if let Some(inline) = line.strip_prefix("version_files:") {
+                let inline = inline.trim();
+                if inline.is_empty() {
+                    // Block style: items follow on subsequent lines.
                     in_block = true;
+                } else {
+                    // Flow style (or a scalar): parse the inline value's members.
+                    for item in parse_flow_members(inline) {
+                        out.insert(item);
+                    }
                 }
             }
             continue;
@@ -497,19 +513,97 @@ fn existing_version_files(config_text: &str) -> HashSet<String> {
     out
 }
 
+/// Whether the top-level `version_files:` value is written FLOW style (an inline
+/// `[...]` sequence) rather than a block list. The format-preserving block
+/// writer can only safely append `- item` lines under a block key, so a flow
+/// list is detected and rejected with an actionable error instead of corrupting
+/// the file. Returns `false` when there is no top-level `version_files:` key, or
+/// it is the empty-value block-style header.
+fn version_files_is_flow_style(config_text: &str) -> bool {
+    config_text.lines().any(|line| {
+        line.strip_prefix("version_files:")
+            .map(|rest| rest.trim().starts_with('['))
+            .unwrap_or(false)
+    })
+}
+
+/// Parse the comma-separated members of an inline YAML flow sequence
+/// (`[a.md, "b c.md"]`), stripping the surrounding brackets and per-item quotes.
+/// A bare inline scalar (no brackets) yields that single unquoted value.
+fn parse_flow_members(inline: &str) -> Vec<String> {
+    let inner = inline
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(inline);
+    inner
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(unquote_scalar)
+        .collect()
+}
+
+/// Strip a single layer of matching surrounding `"` or `'` quotes from a YAML
+/// scalar, returning the inner text; an unquoted scalar is returned as-is.
+fn unquote_scalar(val: &str) -> String {
+    val.strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| val.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .unwrap_or(val)
+        .to_string()
+}
+
 /// Parse a YAML sequence item line (`- value` / `  - "value"`), returning the
 /// unquoted scalar, or `None` if the line is not a list item.
 fn parse_list_item(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
     let rest = trimmed.strip_prefix("- ")?;
-    let val = rest.trim();
-    let unquoted = val
-        .strip_prefix('"')
-        .and_then(|s| s.strip_suffix('"'))
-        .or_else(|| val.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-        .unwrap_or(val);
-    Some(unquoted.to_string())
+    Some(unquote_scalar(rest.trim()))
 }
+
+/// Render a repo-relative path as a YAML scalar, double-quoting (and escaping)
+/// it when it is not a plain scalar. A path with a space, a YAML indicator
+/// (`:`, `#`, `[`, `{`, `*`, `&`, `!`, `|`, `>`, `@`, `` ` ``, `%`, `,`, quotes)
+/// or a leading dash/question-mark would otherwise be mis-parsed or invalidate
+/// the document; quoting keeps the enrolled string byte-identical to the path
+/// the rewrite pass reads back. `parse_list_item` strips the quotes on
+/// re-discovery, so a quoted entry still round-trips for idempotency.
+fn yaml_scalar(path: &str) -> String {
+    if is_plain_yaml_scalar(path) {
+        path.to_string()
+    } else {
+        let escaped = path.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{escaped}\"")
+    }
+}
+
+/// Whether `s` is safe to emit as an unquoted (plain) YAML scalar in flow/block
+/// context. Conservative: any whitespace, leading indicator, or in-line
+/// indicator that YAML treats specially forces quoting.
+fn is_plain_yaml_scalar(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    // Leading indicators that start a non-scalar node or are otherwise unsafe
+    // at the head of a plain scalar.
+    let first = s.chars().next().unwrap_or(' ');
+    if "-?:,[]{}#&*!|>'\"%@`".contains(first) {
+        return false;
+    }
+    // Any whitespace, or a `:`/`#` that YAML would read as a mapping / comment
+    // indicator mid-token, forces quoting.
+    !s.chars()
+        .any(|c| c.is_whitespace() || c == ':' || c == '#' || c == '\t')
+}
+
+/// Match options for `--exclude` globs: `require_literal_separator` scopes a
+/// single `*` to one path segment (so `*.md` does NOT cross `/`, matching
+/// gitignore / shell intuition); `**` remains the cross-`/` wildcard.
+const EXCLUDE_MATCH_OPTIONS: glob::MatchOptions = glob::MatchOptions {
+    case_sensitive: true,
+    require_literal_separator: true,
+    require_literal_leading_dot: false,
+};
 
 /// Compile the user-supplied `--exclude` globs once.
 fn compile_globs(patterns: &[String]) -> Result<Vec<glob::Pattern>> {
@@ -537,7 +631,11 @@ fn discover_candidates(
         .iter()
         .filter(|p| !is_auto_excluded(p))
         .filter(|p| !already_enrolled.contains(*p))
-        .filter(|p| !exclude_globs.iter().any(|g| g.matches(p)))
+        .filter(|p| {
+            !exclude_globs
+                .iter()
+                .any(|g| g.matches_with(p, EXCLUDE_MATCH_OPTIONS))
+        })
         .filter(|p| file_contains_any_version(&root.join(p), versions))
         .cloned()
         .collect();
@@ -595,12 +693,37 @@ fn select_interactive(candidates: &[String]) -> Result<Vec<String>> {
     })
 }
 
+/// Default sequence-item indent for a freshly written `version_files:` block.
+const DEFAULT_BLOCK_INDENT: &str = "  ";
+
+/// Where new items go and at what indent, when a top-level block already exists.
+struct BlockInsertion {
+    /// Line index immediately after the block's last list item.
+    insert_at: usize,
+    /// Leading-whitespace string of the existing items, matched on new items.
+    indent: String,
+}
+
 /// Insert `selected` paths under the top-level `version_files:` block in
-/// `config_text`, preserving all existing content. If the block is absent, a
-/// well-formatted top-level block is appended; if present, only the
-/// not-yet-listed items are inserted under it. Returns the rewritten text and
-/// the paths actually added (empty when every selection was already enrolled).
-fn add_version_files(config_text: &str, selected: &[String]) -> (String, Vec<String>) {
+/// `config_text`, preserving all existing content. If the key is absent, a
+/// well-formatted top-level block is appended; if a block exists, only the
+/// not-yet-listed items are inserted under it at the block's own indent. Items
+/// are emitted as YAML scalars (quoted when special) so a path with a space or
+/// indicator can never invalidate the document.
+///
+/// Returns the rewritten text and the paths actually added (empty when every
+/// selection was already enrolled). Bails when the existing `version_files:`
+/// value is FLOW style (`[...]`), which the block writer cannot extend without
+/// corrupting the document.
+fn add_version_files(config_text: &str, selected: &[String]) -> Result<(String, Vec<String>)> {
+    if version_files_is_flow_style(config_text) {
+        anyhow::bail!(
+            "`version_files` is written as an inline (flow) list in .anodizer.yaml; \
+             rewrite it as a block list (one `- path` per line under `version_files:`) \
+             to enroll automatically"
+        );
+    }
+
     let existing = existing_version_files(config_text);
     let mut to_add: Vec<String> = Vec::new();
     for path in selected {
@@ -609,13 +732,15 @@ fn add_version_files(config_text: &str, selected: &[String]) -> (String, Vec<Str
         }
     }
     if to_add.is_empty() {
-        return (config_text.to_string(), to_add);
+        return Ok((config_text.to_string(), to_add));
     }
 
-    match find_version_files_block(config_text) {
-        Some(insert_at) => {
+    let new_text = match find_version_files_block(config_text) {
+        Some(BlockInsertion { insert_at, indent }) => {
             let mut lines: Vec<String> = config_text.lines().map(str::to_string).collect();
-            let block = to_add.iter().map(|p| format!("  - {p}"));
+            let block = to_add
+                .iter()
+                .map(|p| format!("{indent}- {}", yaml_scalar(p)));
             // Insert directly after the existing list so new items join the block.
             let tail = lines.split_off(insert_at);
             lines.extend(block);
@@ -625,7 +750,7 @@ fn add_version_files(config_text: &str, selected: &[String]) -> (String, Vec<Str
             if trailing_newline {
                 joined.push('\n');
             }
-            (joined, to_add)
+            joined
         }
         None => {
             let mut out = config_text.to_string();
@@ -638,38 +763,71 @@ fn add_version_files(config_text: &str, selected: &[String]) -> (String, Vec<Str
             }
             out.push_str("version_files:\n");
             for path in &to_add {
-                out.push_str(&format!("  - {path}\n"));
+                out.push_str(&format!("{DEFAULT_BLOCK_INDENT}- {}\n", yaml_scalar(path)));
             }
-            (out, to_add)
+            out
         }
-    }
+    };
+
+    Ok((new_text, to_add))
 }
 
-/// Locate the line index immediately AFTER the last list item of an existing
-/// top-level `version_files:` block, where new items should be inserted.
-/// Returns `None` when no top-level block exists.
-fn find_version_files_block(config_text: &str) -> Option<usize> {
+/// Locate the insertion point (and item indent) of an existing top-level
+/// `version_files:` block. Returns `None` when no top-level block exists. The
+/// indent is taken from the block's first list item so new items align with the
+/// existing ones (handling a 4-space block as readily as a 2-space one); it
+/// falls back to the default when the block header has no items yet.
+fn find_version_files_block(config_text: &str) -> Option<BlockInsertion> {
     let lines: Vec<&str> = config_text.lines().collect();
     let mut start: Option<usize> = None;
     for (idx, line) in lines.iter().enumerate() {
-        if line.starts_with("version_files:") {
+        // A top-level (unindented) `version_files:` key with no inline value.
+        if let Some(rest) = line.strip_prefix("version_files:")
+            && rest.trim().is_empty()
+        {
             start = Some(idx);
             break;
         }
     }
     let start = start?;
-    // Walk past the list items belonging to the block.
+    // Walk past the list items belonging to the block, capturing the first
+    // item's indent.
     let mut last_item = start;
+    let mut indent: Option<String> = None;
     for (offset, line) in lines.iter().enumerate().skip(start + 1) {
         if parse_list_item(line).is_some() {
             last_item = offset;
+            if indent.is_none() {
+                let lead: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+                indent = Some(lead);
+            }
         } else if line.trim().is_empty() {
             continue;
         } else {
             break;
         }
     }
-    Some(last_item + 1)
+    Some(BlockInsertion {
+        insert_at: last_item + 1,
+        indent: indent.unwrap_or_else(|| DEFAULT_BLOCK_INDENT.to_string()),
+    })
+}
+
+/// Deserialize `new_text` through the typed [`Config`] and confirm every path in
+/// `added` is present in the top-level `version_files`. This is the safety net
+/// behind the line-based writer: if the edit produced YAML that does not parse
+/// (or parses but dropped an enrolled path), this errors so the caller can bail
+/// WITHOUT writing — an invalid `.anodizer.yaml` can never ship.
+fn validate_enrolled_yaml(new_text: &str, added: &[String]) -> Result<()> {
+    let config: anodizer_core::config::Config = serde_yaml_ng::from_str(new_text)
+        .context("rewritten config is not valid YAML / config schema")?;
+    let enrolled = config.version_files.unwrap_or_default();
+    for path in added {
+        if !enrolled.contains(path) {
+            anyhow::bail!("enrolled path {path:?} is missing from version_files after the edit");
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -841,5 +999,77 @@ path = "src/main.rs"
         assert!(yaml.contains("name: alpha"));
         assert!(yaml.contains("name: beta"));
         assert!(yaml.contains("binary: beta"));
+    }
+
+    // -----------------------------------------------------------------------
+    // version_files enrollment write-back
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn existing_version_files_parses_block_and_flow() {
+        let block = "project_name: app\nversion_files:\n  - a.md\n  - \"b c.md\"\n";
+        let got = existing_version_files(block);
+        assert!(got.contains("a.md"));
+        assert!(got.contains("b c.md"));
+
+        let flow = "project_name: app\nversion_files: [a.md, \"b c.md\"]\n";
+        let got = existing_version_files(flow);
+        assert!(got.contains("a.md"), "flow members not parsed: {got:?}");
+        assert!(got.contains("b c.md"), "flow members not parsed: {got:?}");
+    }
+
+    #[test]
+    fn add_version_files_bails_on_flow_style() {
+        let cfg = "project_name: app\nversion_files: [a.md]\n";
+        let err = add_version_files(cfg, &["b.md".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("inline"), "err: {err}");
+        assert!(err.to_string().contains("block list"), "err: {err}");
+    }
+
+    #[test]
+    fn add_version_files_matches_four_space_indent() {
+        let cfg = "project_name: app\nversion_files:\n    - a.md\n";
+        let (out, added) = add_version_files(cfg, &["b.md".to_string()]).unwrap();
+        assert_eq!(added, vec!["b.md".to_string()]);
+        assert!(out.contains("    - b.md"), "indent not matched:\n{out}");
+        // Parses as valid YAML with both entries.
+        let cfg: anodizer_core::config::Config = serde_yaml_ng::from_str(&out).unwrap();
+        let vf = cfg.version_files.unwrap();
+        assert!(vf.contains(&"a.md".to_string()));
+        assert!(vf.contains(&"b.md".to_string()));
+    }
+
+    #[test]
+    fn add_version_files_appends_block_when_absent() {
+        let cfg = "project_name: app\n";
+        let (out, _) = add_version_files(cfg, &["a.md".to_string()]).unwrap();
+        assert!(out.contains("version_files:\n  - a.md\n"), "out:\n{out}");
+    }
+
+    #[test]
+    fn yaml_scalar_quotes_special_paths() {
+        assert_eq!(yaml_scalar("plain/path.md"), "plain/path.md");
+        assert_eq!(yaml_scalar("with space.md"), "\"with space.md\"");
+        assert_eq!(yaml_scalar("a:b.md"), "\"a:b.md\"");
+        assert_eq!(yaml_scalar("# leading.md"), "\"# leading.md\"");
+        assert_eq!(yaml_scalar("[bracket].md"), "\"[bracket].md\"");
+        // A quoted spaced path round-trips through parse_list_item unquoting.
+        let line = format!("  - {}", yaml_scalar("with space.md"));
+        assert_eq!(parse_list_item(&line).as_deref(), Some("with space.md"));
+    }
+
+    #[test]
+    fn add_version_files_quotes_spaced_path_and_validates() {
+        let cfg = "project_name: app\n";
+        let (out, added) = add_version_files(cfg, &["with space.md".to_string()]).unwrap();
+        assert!(out.contains("- \"with space.md\""), "not quoted:\n{out}");
+        validate_enrolled_yaml(&out, &added).unwrap();
+    }
+
+    #[test]
+    fn validate_enrolled_yaml_rejects_invalid() {
+        // A bogus top-level key under deny_unknown_fields fails to deserialize.
+        let bad = "project_name: app\nnot_a_real_key: true\n";
+        assert!(validate_enrolled_yaml(bad, &[]).is_err());
     }
 }

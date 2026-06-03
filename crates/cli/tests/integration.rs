@@ -66,8 +66,12 @@ fn test_init_generates_config() {
         "init should succeed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Created .anodizer.yaml"));
+    // `init` routes status through StageLogger, which writes to stderr.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Created .anodizer.yaml"),
+        "stderr: {stderr}"
+    );
 
     // Read the generated config file
     let config_content =
