@@ -637,6 +637,25 @@ pub fn run(opts: TagOpts) -> Result<()> {
             vec![]
         };
 
+        // Rewrite enrolled version_files in the same bump commit so a Helm
+        // Chart.yaml / install doc / README badge never drifts from the tag.
+        // Old version comes from the previous tag; absent a previous tag there
+        // is nothing to rewrite from. Runs in BOTH dry-run and real modes — the
+        // helper logs per-file replacement counts (and the zero-match warning)
+        // either way, and under dry-run writes/stages nothing — so the preview
+        // matches the lockstep and per-crate paths.
+        let vf_old = bare_version_from_tag(old_tag_str);
+        let vf_changed = match vf_old {
+            Some(ref old) => rewrite_and_stage_version_files(
+                &crate_version_files,
+                old,
+                &new_version,
+                opts.dry_run,
+                &log,
+            )?,
+            None => Vec::new(),
+        };
+
         if !opts.dry_run {
             // Regenerate Cargo.lock to match the bumped Cargo.toml versions.
             // Without this, the tagged commit has Cargo.toml at the new version
@@ -657,21 +676,6 @@ pub fn run(opts: TagOpts) -> Result<()> {
             for f in &dep_modified {
                 files_to_stage.push(f);
             }
-            // Rewrite enrolled version_files in the same bump commit so a Helm
-            // Chart.yaml / install doc / README badge never drifts from the
-            // tag. Old version comes from the previous tag; absent a previous
-            // tag there is nothing to rewrite from.
-            let vf_old = bare_version_from_tag(old_tag_str);
-            let vf_changed = match vf_old {
-                Some(ref old) => rewrite_and_stage_version_files(
-                    &crate_version_files,
-                    old,
-                    &new_version,
-                    opts.dry_run,
-                    &log,
-                )?,
-                None => Vec::new(),
-            };
             for f in &vf_changed {
                 files_to_stage.push(f);
             }

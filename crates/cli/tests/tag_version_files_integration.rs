@@ -134,6 +134,64 @@ crates:
     );
 }
 
+/// Single-crate `--dry-run` previews the version_files rewrite (logging the
+/// per-file replacement count) but writes nothing — matching the lockstep and
+/// per-crate dry-run behaviour.
+#[test]
+fn single_crate_dry_run_writes_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/app/src")).unwrap();
+    fs::write(
+        root.join("crates/app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/app/src/lib.rs"), "").unwrap();
+    fs::write(root.join("Chart.yaml"), "appVersion: v0.1.0\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: single
+crates:
+  - name: app
+    path: crates/app
+    tag_template: "v{{ .Version }}"
+    version_sync:
+      enabled: true
+    version_files:
+      - Chart.yaml
+"#,
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/app/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: a bug");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--crate", "app", "--dry-run"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+
+    // The rewrite was previewed (count logged) but nothing was written.
+    assert!(
+        stderr.contains("version_files: rewrote 1 occurrence(s) of 0.1.0 → 0.1.1 in Chart.yaml"),
+        "expected a dry-run version_files preview line: {stderr}"
+    );
+    assert_eq!(read(root, "Chart.yaml"), "appVersion: v0.1.0\n");
+}
+
 // ---------------------------------------------------------------------------
 // Mode 2: workspace-lockstep
 // ---------------------------------------------------------------------------
