@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::commands::bump::cargo_edit::{WorkspaceInfo, apply_plan, load_workspace};
 use crate::commands::bump::plan::{BumpLevel, PlanRow};
+use crate::commands::version_files_resolve::resolve_version_files;
 
 pub struct TagOpts {
     pub dry_run: bool,
@@ -1625,22 +1626,6 @@ fn detect_conventional_bump(messages: &[String]) -> Option<BumpKind> {
     } else {
         None
     }
-}
-
-/// Resolve the effective `version_files` enrollment for a crate.
-///
-/// `defaults.version_files` has already been folded into `crate_cfg` by the
-/// defaults merge at config load, so the per-crate list (when set) is the
-/// crate-or-defaults value; the top-level `Config.version_files` is the final
-/// fallback for projects that declare neither a per-crate nor a defaults list.
-fn resolve_version_files(
-    crate_cfg: Option<&CrateConfig>,
-    config: Option<&anodizer_core::config::Config>,
-) -> Vec<String> {
-    crate_cfg
-        .and_then(|c| c.version_files.clone())
-        .or_else(|| config.and_then(|c| c.version_files.clone()))
-        .unwrap_or_default()
 }
 
 /// Bare semver version embedded in a tag string (the tag with its prefix

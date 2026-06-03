@@ -9,7 +9,9 @@
 //! command exits non-zero so CI can fail the build before a release. When no
 //! crate enrolls any `version_files`, the guard exits 0 with a short note.
 
-use crate::commands::bump::cargo_edit::load_workspace;
+use crate::commands::bump::cargo_edit::{MemberInfo, WorkspaceInfo, load_workspace};
+use crate::commands::bump::plan::resolve_member_version;
+use crate::commands::version_files_resolve::resolve_version_files;
 use crate::pipeline;
 use anodizer_core::config::{Config, CrateConfig};
 use anodizer_core::log::{StageLogger, Verbosity};
@@ -37,14 +39,21 @@ fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) -> Result<()>
     let mut findings: Vec<String> = vec![];
     let mut checked = 0usize;
 
+    let units = enrolled_units(config);
+    // Load the workspace graph once (shared with `bump`) so each unit's
+    // reference version routes through `resolve_member_version` rather than a
+    // hand-rolled manifest parse. Defer the error until a unit actually needs
+    // it, so a no-`version_files` repo never trips on an unreadable workspace.
+    let ws = load_workspace(repo_root);
+
     // De-duplicate (path, version) pairs so a file enrolled by several crates
     // that resolve to the same version is reported once. The version is part of
     // the key so the per-crate mode — where one shared file would be a genuine
     // conflict at different versions — still surfaces both expectations.
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
 
-    for unit in enrolled_units(config) {
-        let version = match crate_reference_version(repo_root, &unit.path) {
+    for unit in units {
+        let version = match unit_reference_version(repo_root, &unit, ws.as_ref()) {
             Ok(v) => v,
             Err(e) => {
                 findings.push(format!(
@@ -135,10 +144,7 @@ fn enrolled_units(config: &Config) -> Vec<EnrolledUnit> {
     let mut units: Vec<EnrolledUnit> = all_crates
         .iter()
         .filter_map(|c| {
-            let files = c
-                .version_files
-                .clone()
-                .unwrap_or_else(|| top_level.to_vec());
+            let files = resolve_version_files(Some(c), Some(config));
             (!files.is_empty()).then(|| EnrolledUnit {
                 label: format!("crate '{}'", c.name),
                 path: c.path.clone(),
@@ -160,33 +166,43 @@ fn enrolled_units(config: &Config) -> Vec<EnrolledUnit> {
     units
 }
 
-/// Resolve a crate's current declared version: its literal `[package].version`,
-/// or the inherited `[workspace.package].version` from the repo-root manifest
-/// when the crate uses `version.workspace = true` (lockstep mode).
-fn crate_reference_version(repo_root: &Path, crate_path: &str) -> Result<String> {
-    use toml_edit::{DocumentMut, Item, Value};
+/// Resolve a unit's current declared version through the shared workspace graph.
+///
+/// A unit scoped to a crate directory matches the workspace member rooted there
+/// and resolves via [`resolve_member_version`] (literal own version, or the
+/// inherited `[workspace.package].version`). The lockstep repo-root unit (no
+/// matching member in a virtual workspace) falls back to the workspace package
+/// version directly.
+fn unit_reference_version(
+    repo_root: &Path,
+    unit: &EnrolledUnit,
+    ws: Result<&WorkspaceInfo, &anyhow::Error>,
+) -> Result<String> {
+    let ws = ws.map_err(|e| anyhow::anyhow!("{e:#}"))?;
+    let unit_dir = repo_root.join(&unit.path);
 
-    let manifest = repo_root.join(crate_path).join("Cargo.toml");
-    let text = std::fs::read_to_string(&manifest)
-        .with_context(|| format!("failed to read {}", manifest.display()))?;
-    let doc = text
-        .parse::<DocumentMut>()
-        .with_context(|| format!("failed to parse {}", manifest.display()))?;
-
-    let version_item = doc.get("package").and_then(|p| p.get("version"));
-    if let Some(Item::Value(Value::String(s))) = version_item {
-        return Ok(s.value().to_string());
+    if let Some(member) = ws.members.iter().find(|m| member_matches(m, &unit_dir)) {
+        return resolve_member_version(member, ws);
     }
 
-    // `version.workspace = true` (inline table or dotted table), or no
-    // `[package].version` at all: fall back to the workspace-inherited version.
-    load_workspace(repo_root)
-        .with_context(|| format!("resolving inherited version for {}", manifest.display()))?
-        .workspace_package_version
-        .with_context(|| {
-            format!(
-                "{} inherits the workspace version but the repo root has no [workspace.package].version",
-                manifest.display()
-            )
-        })
+    // No member rooted at this directory — the lockstep repo-root unit in a
+    // virtual workspace. Its version is the shared `[workspace.package].version`.
+    ws.workspace_package_version.clone().with_context(|| {
+        format!(
+            "{} has no matching workspace member and the repo root has no [workspace.package].version",
+            unit_dir.display()
+        )
+    })
+}
+
+/// Whether a workspace member is rooted at `unit_dir`, comparing canonicalized
+/// paths so a `.`-relative unit path and the member's absolute `crate_dir`
+/// resolve to the same location.
+fn member_matches(member: &MemberInfo, unit_dir: &Path) -> bool {
+    match (member.crate_dir.canonicalize(), unit_dir.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        // Fall back to a lexical compare when either side can't be canonicalized
+        // (e.g. a fixture path that doesn't exist on disk).
+        _ => member.crate_dir == unit_dir,
+    }
 }

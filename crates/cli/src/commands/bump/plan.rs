@@ -238,7 +238,10 @@ fn find_crate_in_config<'a>(
         .find(|c| c.name == name)
 }
 
-fn resolve_member_version(
+/// Resolve a member's effective current version: its literal own
+/// `[package].version`, or the inherited `[workspace.package].version` when the
+/// member uses `version.workspace = true`.
+pub(crate) fn resolve_member_version(
     m: &cargo_edit::MemberInfo,
     ws: &cargo_edit::WorkspaceInfo,
 ) -> Result<String> {
