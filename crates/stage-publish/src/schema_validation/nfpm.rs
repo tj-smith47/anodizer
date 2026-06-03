@@ -346,20 +346,33 @@ fn compare_control(
 
 /// A package built with an epoch/release renders its control `Version` with an
 /// epoch prefix (`1:`) or release suffix (`-1`); the config's `version` is the
-/// bare upstream version. Treat the control field as matching when it contains
-/// the expected version as its core component.
+/// bare upstream version. Treat the control field as matching when it reduces to
+/// the expected upstream version under nfpm's packager-grammar rewrites.
 fn version_matches(actual: &str, expected: &str) -> bool {
+    // nfpm rewrites the upstream version into each packager's grammar before it
+    // lands in the control metadata: deb and rpm reserve `-` as the
+    // version/release delimiter, so they substitute a `-` in the version core
+    // with `~` (pre-release sort order) or `_`; deb additionally prepends an
+    // `epoch:` and appends a numeric `-release` revision. Reduce both operands
+    // toward the bare upstream version before comparing, so an
+    // epoch/release/pre-release package is not flagged as a spurious mismatch.
+    let canon = |s: &str| s.replace(['~', '_'], "-");
+    let expected = canon(expected);
+    let actual_full = canon(actual);
+    // Drop a leading deb `epoch:`.
+    let actual = actual_full
+        .split_once(':')
+        .map_or(actual_full.as_str(), |(_, rest)| rest);
     if actual == expected {
         return true;
     }
-    // Strip a leading `epoch:` and a trailing `-release` before comparing the
-    // upstream version core.
-    let core = actual
-        .split_once(':')
-        .map(|(_, rest)| rest)
-        .unwrap_or(actual);
-    let core = core.split('-').next().unwrap_or(core);
-    core == expected
+    // Accept a trailing nfpm `-release` revision (deb embeds it in Version, e.g.
+    // `<upstream>-1`); the revision must be numeric so a genuinely different
+    // upstream (`1.0.0-rc1` vs `1.0.0`) still fails.
+    actual
+        .strip_prefix(expected.as_str())
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|rev| !rev.is_empty() && rev.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Build the finding emitted when an inspection tool exits non-zero — a real
@@ -536,6 +549,38 @@ mod tests {
             metadata: HashMap::from([("amd64_variant".to_string(), variant.to_string())]),
             size: None,
         });
+    }
+
+    /// `version_matches` must equate the bare upstream config version with the
+    /// control `Version` nfpm renders into each packager's grammar: a leading
+    /// deb `epoch:`, a trailing numeric `-release` revision, and the `~`/`_`
+    /// substitutions deb/rpm apply to a `-` in the version core (which they
+    /// reserve as the version/release delimiter). A genuinely different upstream
+    /// version must still fail.
+    #[test]
+    fn version_matches_normalizes_nfpm_grammar() {
+        // Exact, epoch-only, and release-only forms.
+        assert!(version_matches("1.0.0", "1.0.0"));
+        assert!(version_matches("1:1.0.0", "1.0.0"));
+        assert!(version_matches("1.0.0-1", "1.0.0"));
+        assert!(version_matches("1:1.0.0-1", "1.0.0"));
+        // deb pre-release: epoch + `~`-substituted first `-` + multi-`-` core +
+        // numeric release (the cfgd snapshot package that exposed the bug).
+        assert!(version_matches(
+            "1:0.4.0~SNAPSHOT-3d07f6c-1",
+            "0.4.0-SNAPSHOT-3d07f6c"
+        ));
+        // rpm pre-release: `~` then `_` substitution, release carried separately.
+        assert!(version_matches(
+            "0.4.0~SNAPSHOT_3d07f6c",
+            "0.4.0-SNAPSHOT-3d07f6c"
+        ));
+        // A different upstream version must NOT be masked by the normalization.
+        assert!(!version_matches("1:2.0.0-1", "1.0.0"));
+        // A non-numeric trailing token is a different version, not a revision.
+        assert!(!version_matches("1.0.0-rc1", "1.0.0"));
+        // A longer core is not a revision match.
+        assert!(!version_matches("1.0.0.5", "1.0.0"));
     }
 
     /// (a) Single-crate, every option set: every rendered nfpm config must
