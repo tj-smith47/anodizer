@@ -75,6 +75,13 @@ anodizer release --crate my-core
 anodizer release --crate my-cli
 ```
 
+### Per-crate vs root changelogs
+
+Each crate can keep its own `crates/<name>/CHANGELOG.md`, contribute to a shared
+root `CHANGELOG.md`, or both. A multi-track root keeps a `### <crate>`
+subsection per track and promotes only the tagged track's subsection on release.
+See [Changelog destination](@/docs/more/changelog.md#changelog-destination).
+
 ### Dependency ordering
 
 Use `depends_on` to ensure crates are released in the right order. Anodizer performs topological sorting — if `my-cli` depends on `my-core`, `my-core` is always released first.
