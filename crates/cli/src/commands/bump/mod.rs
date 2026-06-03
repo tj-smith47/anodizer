@@ -143,10 +143,10 @@ fn commit_plan(
         }
     }
 
-    // Bundle changelog edits: for each non-skip row, ask stage-changelog to
-    // render and persist the section for the crate's new version. Files are
-    // written to disk here so they land in the same `git add` + `git commit`
-    // as the Cargo.toml edits.
+    // Bundle changelog edits: render + persist each non-skip crate's section
+    // for its new version so the files land in the same `git add` + `git commit`
+    // as the Cargo.toml edits. The previous tag bounds each crate's commit range.
+    let mut changelog_targets: Vec<crate::commands::changelog_sync::ChangelogTarget> = Vec::new();
     for row in rows {
         if row.level == plan::BumpLevel::Skip {
             continue;
@@ -157,36 +157,24 @@ fn commit_plan(
         };
         let tag_prefix = format!("{}-v", row.crate_name);
         let from_tag = inference::find_last_tag_for_prefix(workspace_root, &tag_prefix)?;
-        let update = anodizer_stage_changelog::render_crate_section(
-            workspace_root,
-            &row.crate_name,
-            &crate_dir,
-            from_tag.as_deref(),
-            &row.next,
-        )
-        .with_context(|| format!("failed to render changelog for {}", row.crate_name))?;
-        let Some(update) = update else { continue };
-        match update.insertion_mode {
-            anodizer_stage_changelog::InsertionMode::Replace => {
-                if let Some(parent) = update.file_path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("failed to create {}", parent.display()))?;
-                }
-                std::fs::write(&update.file_path, &update.rendered_text).with_context(|| {
-                    format!(
-                        "failed to write changelog at {}",
-                        update.file_path.display()
-                    )
-                })?;
-            }
+        changelog_targets.push(crate::commands::changelog_sync::ChangelogTarget {
+            crate_name: row.crate_name.clone(),
+            crate_dir,
+            from_tag,
+            to_version: row.next.clone(),
+        });
+    }
+    let changelog_paths = crate::commands::changelog_sync::render_and_stage_changelogs(
+        workspace_root,
+        &changelog_targets,
+        false,
+        log,
+    )?;
+    for rel in changelog_paths {
+        let path = workspace_root.join(&rel);
+        if !staged.contains(&path) {
+            staged.push(path);
         }
-        if !staged.contains(&update.file_path) {
-            staged.push(update.file_path);
-        }
-        log.verbose(&format!(
-            "bundled changelog section for {} → {}",
-            row.crate_name, row.next
-        ));
     }
 
     // Cargo.lock update if present.
