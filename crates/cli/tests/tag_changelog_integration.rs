@@ -1124,3 +1124,329 @@ fn lockstep_root_aggregate_ignores_non_first_member_filter() {
         "aggregate still spans every member regardless of root.crates: {changelog}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Multi-track per-crate root: subsection-promote + chronology + both + filter
+// ---------------------------------------------------------------------------
+
+/// Seed a two-crate per-crate workspace (`core` on the `core-v*` track, `cli` on
+/// `cli-v*`) whose root `CHANGELOG.md` carries a curated `### core` and `### cli`
+/// subsection under `## [Unreleased]`, plus a `[Unreleased]:` compare footer so
+/// the rolled footer base is resolvable without a git remote. `changelog_block`
+/// is written verbatim under `.anodizer.yaml`'s top level (so callers vary the
+/// `changelog:` destination). `extra_root` is spliced into the seeded root file
+/// between the curated `[Unreleased]` block and its footer (used to seed an
+/// existing released section for the `chronology: tag` ordering test); pass `""`
+/// for none. Only `core` is touched with a commit, so a `core` tag promotes the
+/// `### core` subsection and leaves `### cli` untouched.
+fn multitrack_root_fixture(root: &Path, changelog_block: &str, extra_root: &str) {
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for name in ["core", "cli"] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        format!(
+            r#"project_name: percrate
+{changelog_block}crates:
+  - name: core
+    path: crates/core
+    tag_template: "core-v{{{{ .Version }}}}"
+    version_sync:
+      enabled: true
+  - name: cli
+    path: crates/cli
+    tag_template: "cli-v{{{{ .Version }}}}"
+    version_sync:
+      enabled: true
+"#
+        ),
+    )
+    .unwrap();
+
+    // A multi-track root: each crate owns a `### <crate>` subsection under
+    // `## [Unreleased]` with a curated bullet. The seeded `[Unreleased]:` footer
+    // link supplies the compare base for the rolled footer.
+    fs::write(
+        root.join("CHANGELOG.md"),
+        format!(
+            "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### core\n\
+- curated core entry\n\
+\n\
+### cli\n\
+- curated cli entry\n\
+\n\
+{extra_root}\
+[Unreleased]: https://github.com/acme/proj/compare/core-v0.1.0...HEAD\n"
+        ),
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "core-v0.1.0"]);
+    run_git(root, &["tag", "cli-v0.1.0"]);
+}
+
+/// Multi-track per-crate root, `chronology: date`: tagging the `core` track
+/// promotes ONLY its `### core` subsection to `## [core-v0.2.0] - <date>`
+/// (bucketed under `groups:` headings), retains `### cli` verbatim, slots the
+/// section directly under `[Unreleased]`, and rolls the compare footer to this
+/// track's tag. The headline Task-2+3 end-to-end proof.
+#[test]
+fn multitrack_root_date_promotes_only_tagged_track_subsection() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    // Explicit `root: {chronology: date}` (bare would resolve identically).
+    multitrack_root_fixture(root, "changelog:\n  root:\n    chronology: date\n", "");
+
+    // A feat on core only → core bumps 0.1.0 → 0.2.0 (tag core-v0.2.0).
+    fs::write(root.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();
+    git_add_commit(root, "feat: core gains a thing");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+
+    let changelog = show_head(root, "CHANGELOG.md");
+
+    // core's subsection promoted to a released section keyed to ITS full tag.
+    assert!(
+        changelog.contains("## [core-v0.2.0] - "),
+        "expected core's subsection promoted to a dated release heading: {changelog}"
+    );
+    // Curated core bullet survives under a `groups:` heading (default Features).
+    assert!(
+        changelog.contains("curated core entry"),
+        "promoted section must keep the curated core bullet: {changelog}"
+    );
+    // cli's subsection is retained verbatim under the (still-present) Unreleased.
+    assert!(
+        changelog.contains("### cli\n- curated cli entry"),
+        "the untagged cli subsection must be retained verbatim: {changelog}"
+    );
+    // core's subsection is consumed out of Unreleased (no stray `### core` left
+    // under the surviving `## [Unreleased]` block).
+    let unreleased_idx = changelog.find("## [Unreleased]").unwrap();
+    let promoted_idx = changelog.find("## [core-v0.2.0]").unwrap();
+    let unreleased_block = &changelog[unreleased_idx..promoted_idx];
+    assert!(
+        !unreleased_block.contains("### core"),
+        "core's subsection must be removed from Unreleased: {changelog}"
+    );
+    assert!(
+        unreleased_block.contains("### cli"),
+        "cli's subsection must remain under Unreleased: {changelog}"
+    );
+    // The promoted section sits directly under `[Unreleased]` (date → newest top).
+    assert!(
+        promoted_idx > unreleased_idx,
+        "promoted section must follow the fresh Unreleased heading: {changelog}"
+    );
+    // The compare footer rolled to THIS track's tag, preserving the host.
+    assert!(
+        changelog.contains("[Unreleased]: https://github.com/acme/proj/compare/core-v0.2.0...HEAD"),
+        "Unreleased footer must roll to core-v0.2.0...HEAD: {changelog}"
+    );
+    assert!(
+        changelog.contains(
+            "[core-v0.2.0]: https://github.com/acme/proj/compare/core-v0.1.0...core-v0.2.0"
+        ),
+        "a [core-v0.2.0] compare link must point from the prior core tag: {changelog}"
+    );
+}
+
+/// Multi-track per-crate root, `chronology: tag`: with a seeded
+/// newer-dated OTHER-track section present, the newly promoted `core` section
+/// must land in its tag-prefix cluster (semver-desc) rather than on top — the
+/// observable divergence from `date`, which would slot newest-by-date first.
+#[test]
+fn multitrack_root_tag_clusters_by_prefix_not_date() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    // Seed a NEWER-dated cli-track release below the curated Unreleased
+    // block. Under `date`, today's core section would jump above it; under
+    // `tag`, core-v* clusters before cli-v* (lexical prefix ascending), so the
+    // new core section lands ABOVE the existing core release and the cli release
+    // stays in its own cluster.
+    let extra = "## [cli-v0.9.0] - 2099-01-01\n\
+\n\
+### Features\n\
+- a far-future cli release\n\
+\n\
+## [core-v0.1.5] - 2025-01-01\n\
+\n\
+### Features\n\
+- an older core release\n\
+\n";
+    multitrack_root_fixture(root, "changelog:\n  root:\n    chronology: tag\n", extra);
+
+    fs::write(root.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();
+    git_add_commit(root, "feat: core gains a thing");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+
+    let changelog = show_head(root, "CHANGELOG.md");
+    let new_idx = changelog
+        .find("## [core-v0.2.0]")
+        .unwrap_or_else(|| panic!("expected the promoted core-v0.2.0 section: {changelog}"));
+    let old_core_idx = changelog
+        .find("## [core-v0.1.5]")
+        .unwrap_or_else(|| panic!("expected the seeded core-v0.1.5 section: {changelog}"));
+    let cli_idx = changelog
+        .find("## [cli-v0.9.0]")
+        .unwrap_or_else(|| panic!("expected the seeded cli-v0.9.0 section: {changelog}"));
+
+    // Tag clustering: the new core-v0.2.0 sits in the `core-v*` cluster, ABOVE
+    // the older core-v0.1.5 (semver-desc within the cluster) and BEFORE the
+    // `cli-v*` cluster (prefix `cli` < `core`, so cli sorts first).
+    assert!(
+        cli_idx < new_idx,
+        "tag chronology must keep the cli-v* cluster before core-v*: {changelog}"
+    );
+    assert!(
+        new_idx < old_core_idx,
+        "new core-v0.2.0 must cluster above the older core-v0.1.5 (semver-desc): {changelog}"
+    );
+    // Divergence proof vs `date`: under `date`, today's section would precede
+    // the year-2099 cli release; under `tag` it does NOT (cli stays on top).
+    assert!(
+        cli_idx < new_idx,
+        "tag chronology must NOT float today's section above a newer-dated sibling: {changelog}"
+    );
+}
+
+/// The "both" destination (`per_crate: true` + bare `root: {}`): tagging writes
+/// BOTH a per-crate `crates/core/CHANGELOG.md` AND the root `CHANGELOG.md`, and
+/// BOTH ride the same bump commit.
+#[test]
+fn both_destination_writes_per_crate_and_root_in_one_commit() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    multitrack_root_fixture(root, "changelog:\n  per_crate: true\n  root: {}\n", "");
+
+    fs::write(root.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();
+    git_add_commit(root, "feat: core gains a thing");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+
+    // Per-crate file: keyed to the plain version (per-crate sections are flat).
+    let per_crate = show_head(root, "crates/core/CHANGELOG.md");
+    assert!(
+        per_crate.contains("## [0.2.0]"),
+        "both: per-crate file must gain a 0.2.0 section: {per_crate}"
+    );
+    // Root file: the `### core` subsection promoted to its full tag.
+    let root_cl = show_head(root, "CHANGELOG.md");
+    assert!(
+        root_cl.contains("## [core-v0.2.0] - "),
+        "both: root file must gain the promoted core-v0.2.0 section: {root_cl}"
+    );
+
+    // BOTH files are named in HEAD's tree diff — one commit, both destinations.
+    let diff = Command::new("git")
+        .current_dir(root)
+        .args(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])
+        .output()
+        .unwrap();
+    let names = String::from_utf8_lossy(&diff.stdout);
+    assert!(
+        names.lines().any(|l| l == "CHANGELOG.md"),
+        "HEAD commit must touch the root CHANGELOG.md: {names}"
+    );
+    assert!(
+        names.lines().any(|l| l == "crates/core/CHANGELOG.md"),
+        "HEAD commit must touch the per-crate CHANGELOG.md: {names}"
+    );
+}
+
+/// `root.crates` subset filter on a multi-track root: with `crates: ["core"]`,
+/// tagging the INCLUDED `core` track promotes its root section, but tagging the
+/// EXCLUDED `cli` track adds NO new root section (its `### cli` subsection is
+/// left untouched and no `## [cli-v...]` heading appears).
+#[test]
+fn root_crates_subset_filters_excluded_track_from_root() {
+    // First: the INCLUDED crate (core) → its section lands in the root.
+    let tmp_inc = TempDir::new().unwrap();
+    let inc = tmp_inc.path();
+    multitrack_root_fixture(inc, "changelog:\n  root:\n    crates: [\"core\"]\n", "");
+    fs::write(inc.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();
+    git_add_commit(inc, "feat: core gains a thing");
+    let out = anodizer()
+        .current_dir(inc)
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag (included) failed: {}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let inc_cl = show_head(inc, "CHANGELOG.md");
+    assert!(
+        inc_cl.contains("## [core-v0.2.0] - "),
+        "included core track must gain a root section: {inc_cl}"
+    );
+
+    // Second: the EXCLUDED crate (cli) → NO new root section for it.
+    let tmp_exc = TempDir::new().unwrap();
+    let exc = tmp_exc.path();
+    multitrack_root_fixture(exc, "changelog:\n  root:\n    crates: [\"core\"]\n", "");
+    fs::write(exc.join("crates/cli/src/lib.rs"), "// cli touched\n").unwrap();
+    git_add_commit(exc, "feat: cli gains a thing");
+    let out = anodizer()
+        .current_dir(exc)
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag (excluded) failed: {}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let exc_cl = read(exc, "CHANGELOG.md");
+    assert!(
+        !exc_cl.contains("## [cli-v0.2.0]"),
+        "excluded cli track must NOT gain a root section: {exc_cl}"
+    );
+    // The cli subsection is left intact under Unreleased (nothing promoted).
+    assert!(
+        exc_cl.contains("### cli\n- curated cli entry"),
+        "excluded cli subsection must remain under Unreleased: {exc_cl}"
+    );
+}
