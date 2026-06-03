@@ -30,6 +30,7 @@ so neither an orphan tag nor an orphan commit can ever exist on the remote.
 | `--no-push` | Push the tag only; leave the bump commit local (the per-crate path's opt-out, since it pushes branch+tags by default) |
 | `--push-remote <name>` | Push to `<name>` instead of `origin` |
 | `--push-dry-run` | Create the tag + bump commit locally, but only **print** the `git push` commands `--push` would run instead of executing them |
+| `--no-changelog` | Skip refreshing `CHANGELOG.md` on this tag (overrides the `changelog:` config) |
 
 `tag.push: true` in config is the persistent equivalent of `--push`; the CLI
 flags override it per invocation.
@@ -42,6 +43,97 @@ version to the new one, so files that embed the version outside `Cargo.toml`
 are tagged together and never drift from the tag. See
 [Version Files](@/docs/general/version-files.md) for enrollment and the
 `anodizer check version-files` CI guard.
+
+### The bump commit refreshes `CHANGELOG.md`
+
+When a `changelog:` block is configured, the same bump commit also prepends a
+new `## [version] - date` section to your `CHANGELOG.md` — rendered by
+anodizer's native [changelog engine](@/docs/more/changelog.md) (the same one
+`anodizer bump --commit` uses: conventional commits since the last tag, grouped
+and filtered per your `changelog:` config).
+The refreshed `CHANGELOG.md` rides the same `chore(release): bump …` commit as
+the `Cargo.toml` / `Cargo.lock` bump and any enrolled `version_files`, so the
+changelog is tagged atomically with the version and never drifts.
+
+A minimal `changelog:` block is all it takes — no extra flag enables this:
+
+```yaml
+changelog:
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat"
+      order: 0
+    - title: Bug Fixes
+      regexp: "^fix"
+      order: 1
+  filters:
+    exclude:
+      - "^chore"
+      - "^docs"
+```
+
+Given the latest tag `v0.1.0`, a `minor` bump, and an existing `CHANGELOG.md`
+with a `# Changelog` H1 over prior `## [x.y.z]` sections, `anodizer tag`
+prepends the new section in the bump commit and leaves the prior ones intact:
+
+```text
+$ anodizer tag
+...
+bundled changelog section for myapp → 0.2.0
+Created tag v0.2.0
+```
+
+```markdown
+# Changelog — myapp
+
+## [0.2.0] - 2026-06-03
+
+### Features
+
+- a1b2c3d feat: add config validation
+
+### Bug Fixes
+
+- e4f5a6b fix: handle empty target list
+
+## [0.1.0] - 2026-05-12
+...
+```
+
+Pass `--no-changelog` to skip the refresh for a single tag — a hotfix tag you
+don't want to touch the changelog, for example. The tag and the
+`Cargo.toml` / `version_files` bump still happen; only `CHANGELOG.md` is left
+untouched:
+
+```text
+$ anodizer tag --no-changelog
+...
+Created tag v0.2.1   # CHANGELOG.md unchanged
+```
+
+#### When the refresh runs
+
+The refresh is **on by default** whenever a `changelog:` block is present and
+not skipped. `tag` and `bump --commit` share one gate, so the same config
+governs both:
+
+| Setting | Effect on the bump commit's `CHANGELOG.md` refresh |
+|---------|----------------------------------------------------|
+| `changelog:` present, no `skip:` | **Refreshes** (default) |
+| `changelog: { skip: true }` | Disabled — honored by both `tag` and `bump --commit` |
+| `anodizer tag --no-changelog` | Disabled for that invocation only (overrides config) |
+| no `changelog:` block at all | Nothing to render; refresh is a no-op |
+
+#### Config modes
+
+The refresh follows the same per-mode file placement as the bump itself:
+
+- **Single-crate** — one root `CHANGELOG.md` at the repo root.
+- **Workspace lockstep** — each member crate's own `CHANGELOG.md` gets the
+  shared new version's section.
+- **Workspace per-crate** — only the crates this tag actually bumps get their
+  `CHANGELOG.md` refreshed, each against its own version and commit range.
 
 `--push-dry-run` vs `--dry-run`: `--dry-run` previews the whole run, touching
 nothing (no bump commit, no tag, no push). `--push-dry-run` is narrower — it

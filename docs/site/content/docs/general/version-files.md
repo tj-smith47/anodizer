@@ -29,7 +29,9 @@ overrides the shared list; a crate that lists none inherits it.
 When [`anodizer tag`](@/docs/advanced/auto-tagging.md) bumps the version, it
 rewrites each enrolled file's version string from the old release version to the
 new one **in the same commit that bumps `Cargo.toml` / `Cargo.lock`**, so the
-files are tagged together and never drift from the tag.
+files are tagged together and never drift from the tag. That bump commit also
+[refreshes `CHANGELOG.md`](@/docs/advanced/auto-tagging.md#the-bump-commit-refreshes-changelog-md)
+when a `changelog:` block is configured — both ride the same commit.
 
 Given the latest tag `v0.1.0`, a `minor` bump, and this `Chart.yaml`:
 
