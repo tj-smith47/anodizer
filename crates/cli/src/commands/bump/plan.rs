@@ -49,7 +49,8 @@ pub struct PlanRow {
     /// Paths of `Cargo.toml` files that will be edited for this crate.
     #[serde(skip)]
     pub edited_files: Vec<PathBuf>,
-    /// Workspace-relative path of the crate's manifest (for git/diff reporting).
+    /// Absolute path of the crate's manifest, under the workspace root (for
+    /// git/diff reporting).
     #[serde(skip)]
     pub manifest: PathBuf,
     /// Whether this crate inherits `version.workspace = true`.
