@@ -471,6 +471,12 @@ fn main() {
                 cli.quiet,
             ),
             CheckCmd::Determinism(args) => commands::check::determinism::run(args),
+            CheckCmd::VersionFiles => commands::check::version_files::run(
+                cli.config.as_deref(),
+                cli.verbose,
+                cli.debug,
+                cli.quiet,
+            ),
         },
         Commands::Init => commands::init::run(),
         Commands::Changelog {

@@ -8,6 +8,9 @@
 //!   command, now relocated under its own subcommand).
 //! - `determinism` — run the determinism harness (stubbed; harness body
 //!   lands in a follow-up task).
+//! - `version_files` — read-only drift guard for the repo-committed files
+//!   enrolled under `version_files`.
 
 pub mod config;
 pub mod determinism;
+pub mod version_files;

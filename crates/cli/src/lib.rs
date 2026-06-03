@@ -610,6 +610,8 @@ pub enum CheckCmd {
     },
     /// Run the determinism harness (build pipeline twice, diff artifacts).
     Determinism(CheckDeterminismArgs),
+    /// Check that enrolled `version_files` still match each crate's current version.
+    VersionFiles,
 }
 
 #[derive(clap::Args)]

@@ -123,6 +123,11 @@ Run the determinism harness (build pipeline twice, diff artifacts)
 | `--crate` | — | — | When --preserve-dist is set, write the preserved dist tree to <dest>/<name>/ instead of directly into <dest>/. Used by the sharded matrix to produce per-crate subdirectories so a `release --publish-only` job can merge all crates into a single dist/ without context.json collision. |
 
 
+### `anodizer check version-files`
+
+Check that enrolled `version_files` still match each crate's current version
+
+
 ### `anodizer init`
 
 Generate starter config
