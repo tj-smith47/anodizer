@@ -1206,7 +1206,7 @@ fn multitrack_root_fixture(root: &Path, changelog_block: &str, extra_root: &str)
 /// promotes ONLY its `### core` subsection to `## [core-v0.2.0] - <date>`
 /// (bucketed under `groups:` headings), retains `### cli` verbatim, slots the
 /// section directly under `[Unreleased]`, and rolls the compare footer to this
-/// track's tag. The headline Task-2+3 end-to-end proof.
+/// track's tag.
 #[test]
 fn multitrack_root_date_promotes_only_tagged_track_subsection() {
     let tmp = TempDir::new().unwrap();
@@ -1334,11 +1334,14 @@ fn multitrack_root_tag_clusters_by_prefix_not_date() {
         new_idx < old_core_idx,
         "new core-v0.2.0 must cluster above the older core-v0.1.5 (semver-desc): {changelog}"
     );
-    // Divergence proof vs `date`: under `date`, today's section would precede
-    // the year-2099 cli release; under `tag` it does NOT (cli stays on top).
+    // Divergence vs `date`: under `date` today's section would be the file's
+    // newest and sit above the 2099 cli release; under `tag` the cli cluster
+    // stays on top, so core-v0.2.0 lands between the cli cluster and the older
+    // core release rather than at the top.
     assert!(
-        cli_idx < new_idx,
-        "tag chronology must NOT float today's section above a newer-dated sibling: {changelog}"
+        new_idx > cli_idx && new_idx < old_core_idx,
+        "tag chronology must slot core-v0.2.0 between the cli cluster ({cli_idx}) \
+         and the older core release ({old_core_idx}), not at the top: {changelog}"
     );
 }
 
