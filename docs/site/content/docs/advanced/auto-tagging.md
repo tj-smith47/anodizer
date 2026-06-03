@@ -34,6 +34,15 @@ so neither an orphan tag nor an orphan commit can ever exist on the remote.
 `tag.push: true` in config is the persistent equivalent of `--push`; the CLI
 flags override it per invocation.
 
+### Enrolled `version_files` ride the bump commit
+
+The same bump commit also rewrites any files enrolled under `version_files` —
+a Helm `Chart.yaml`, an install doc, a README badge — from the old release
+version to the new one, so files that embed the version outside `Cargo.toml`
+are tagged together and never drift from the tag. See
+[Version Files](@/docs/general/version-files.md) for enrollment and the
+`anodizer check version-files` CI guard.
+
 `--push-dry-run` vs `--dry-run`: `--dry-run` previews the whole run, touching
 nothing (no bump commit, no tag, no push). `--push-dry-run` is narrower — it
 still creates the tag and the version-sync bump commit **locally**, then prints
