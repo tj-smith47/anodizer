@@ -134,9 +134,22 @@ fn missing_enrolled_file_exits_nonzero() {
         "missing enrolled file should fail: {}\n{}",
         run.stdout, run.stderr
     );
+    // The finding must name the path AND carry the unreadable-file wording, so
+    // a missing-file finding stays shaped distinctly from a drift finding (which
+    // also names the path but says "expected <version>, not found").
     assert!(
         run.stderr.contains("Chart.yaml"),
         "expected the missing path named in the finding: {}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("No such file") || run.stderr.contains("os error"),
+        "expected the unreadable-file wording, not a drift message: {}",
+        run.stderr
+    );
+    assert!(
+        !run.stderr.contains("expected 0.1.0, not found"),
+        "a missing file must not be reported as a version drift: {}",
         run.stderr
     );
 }
@@ -343,5 +356,198 @@ crates:
         run.success,
         "all-fresh per-crate should pass: {}\n{}",
         run.stdout, run.stderr
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Non-member crate: a configured crate that is NOT a [workspace].members entry
+// must resolve against ITS OWN literal version, never the workspace version.
+// ---------------------------------------------------------------------------
+
+/// The root workspace lists only `crates/member`; `crates/standalone` is
+/// configured in `.anodizer.yaml` but excluded from the member globs. Its
+/// enrolled file matches its OWN version (0.9.0), distinct from the workspace
+/// package version (2.0.0) — proving the guard does not fall back to the
+/// workspace version for a real, non-member crate.
+fn non_member_fixture(root: &Path, standalone_doc_version: &str) {
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/member\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"2.0.0\"\n",
+    );
+    write(
+        root,
+        "crates/member/Cargo.toml",
+        "[package]\nname = \"member\"\nversion.workspace = true\nedition = \"2024\"\n",
+    );
+    write(root, "crates/member/src/lib.rs", "");
+    // Standalone crate with its own literal version, outside the member globs.
+    write(
+        root,
+        "crates/standalone/Cargo.toml",
+        "[package]\nname = \"standalone\"\nversion = \"0.9.0\"\nedition = \"2024\"\n",
+    );
+    write(root, "crates/standalone/src/lib.rs", "");
+    write(
+        root,
+        "standalone-install.md",
+        &format!("standalone pinned at v{standalone_doc_version}\n"),
+    );
+    write(
+        root,
+        ".anodizer.yaml",
+        r#"project_name: nonmember
+crates:
+  - name: standalone
+    path: crates/standalone
+    tag_template: "standalone-v{{ .Version }}"
+    version_files:
+      - standalone-install.md
+"#,
+    );
+}
+
+#[test]
+fn non_member_crate_resolves_against_own_version_fresh() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    // Doc carries the standalone crate's OWN version (0.9.0), not 2.0.0.
+    non_member_fixture(root, "0.9.0");
+
+    let run = run_check(root);
+    assert!(
+        run.success,
+        "non-member crate fresh at its own version should pass: {}\n{}",
+        run.stdout, run.stderr
+    );
+    // Must NOT have resolved against the workspace version (2.0.0).
+    assert!(
+        !run.stderr.contains("expected 2.0.0"),
+        "non-member crate must not resolve against the workspace version: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn non_member_crate_resolves_against_own_version_stale() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    // Doc says 2.0.0 (the workspace version) — drift from the crate's own 0.9.0.
+    // If the guard wrongly resolved against the workspace version this would
+    // pass; it must instead report STALE expecting 0.9.0.
+    non_member_fixture(root, "2.0.0");
+
+    let run = run_check(root);
+    assert!(
+        !run.success,
+        "non-member crate drifted from its own version should fail: {}\n{}",
+        run.stdout, run.stderr
+    );
+    assert!(
+        run.stderr.contains("STALE: standalone-install.md")
+            && run.stderr.contains("expected 0.9.0"),
+        "expected a STALE finding at the crate's own version (0.9.0): {}",
+        run.stderr
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Rootless layout: a single crate in a subdir with NO root Cargo.toml /
+// [workspace] must still resolve (best-effort workspace load).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rootless_single_crate_fresh_exits_zero() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    // No root Cargo.toml — the crate lives in a subdir and is its own root.
+    write(
+        root,
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"1.4.2\"\nedition = \"2024\"\n",
+    );
+    write(root, "app/src/lib.rs", "");
+    write(root, "app/README.md", "version 1.4.2\n");
+    write(
+        root,
+        ".anodizer.yaml",
+        r#"project_name: rootless
+crates:
+  - name: app
+    path: app
+    tag_template: "v{{ .Version }}"
+    version_files:
+      - app/README.md
+"#,
+    );
+
+    let run = run_check(root);
+    assert!(
+        run.success,
+        "rootless single-crate fresh should pass (best-effort workspace load): {}\n{}",
+        run.stdout, run.stderr
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Lockstep with a crates: block: one shared top-level file enrolled under N
+// crates that all resolve to the same version collapses to a single check via
+// the (path, version) dedup key.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lockstep_shared_file_dedups_across_crates() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"0.5.0\"\n",
+    );
+    for name in ["a", "b"] {
+        write(
+            root,
+            &format!("crates/{name}/Cargo.toml"),
+            &format!(
+                "[package]\nname = \"{name}\"\nversion.workspace = true\nedition = \"2024\"\n"
+            ),
+        );
+        write(root, &format!("crates/{name}/src/lib.rs"), "");
+    }
+    // ONE shared install doc carrying the shared lockstep version.
+    write(root, "INSTALL.md", "install v0.5.0\n");
+    // Both crates enroll the SAME file; both inherit the same 0.5.0 version, so
+    // the (path, version) key collapses the two enrollments into one check.
+    write(
+        root,
+        ".anodizer.yaml",
+        r#"project_name: lockstepcrates
+crates:
+  - name: a
+    path: crates/a
+    tag_template: "v{{ .Version }}"
+    version_files:
+      - INSTALL.md
+  - name: b
+    path: crates/b
+    tag_template: "v{{ .Version }}"
+    version_files:
+      - INSTALL.md
+"#,
+    );
+
+    let run = run_check(root);
+    assert!(
+        run.success,
+        "lockstep shared-file dedup should pass: {}\n{}",
+        run.stdout, run.stderr
+    );
+    // The dedup collapses 2 enrollments of INSTALL.md@0.5.0 to a single check.
+    assert!(
+        run.stderr.contains("all 1 version_files are in sync")
+            || run.stdout.contains("all 1 version_files are in sync"),
+        "expected exactly 1 checked file after dedup: {}\n{}",
+        run.stdout,
+        run.stderr
     );
 }

@@ -16,6 +16,7 @@ use crate::pipeline;
 use anodizer_core::config::{Config, CrateConfig};
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::version_files::check_version_present;
+use anodizer_stage_build::version_sync::read_cargo_version;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -40,11 +41,13 @@ fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) -> Result<()>
     let mut checked = 0usize;
 
     let units = enrolled_units(config);
-    // Load the workspace graph once (shared with `bump`) so each unit's
-    // reference version routes through `resolve_member_version` rather than a
-    // hand-rolled manifest parse. Defer the error until a unit actually needs
-    // it, so a no-`version_files` repo never trips on an unreadable workspace.
-    let ws = load_workspace(repo_root);
+    // Load the workspace graph once (shared with `bump`) so a unit that matches
+    // a member resolves via `resolve_member_version` — correctly handling
+    // inherited `version.workspace = true`. Best-effort: a rootless / non-cargo
+    // layout (no root `Cargo.toml`) has no graph, and a standalone crate that
+    // isn't a `[workspace].members` entry resolves against its own manifest
+    // instead, so the absence of a graph never fails the whole command.
+    let ws = load_workspace(repo_root).ok();
 
     // De-duplicate (path, version) pairs so a file enrolled by several crates
     // that resolve to the same version is reported once. The version is part of
@@ -112,6 +115,10 @@ struct EnrolledUnit {
     label: String,
     path: String,
     files: Vec<String>,
+    /// `true` only for the synthetic repo-root unit a lockstep workspace with no
+    /// `crates:` block contributes. Its reference version is the shared
+    /// `[workspace.package].version` — the only case allowed to fall back to it.
+    is_lockstep_root: bool,
 }
 
 /// Resolve the enrollment units to check across all three config modes.
@@ -149,6 +156,7 @@ fn enrolled_units(config: &Config) -> Vec<EnrolledUnit> {
                 label: format!("crate '{}'", c.name),
                 path: c.path.clone(),
                 files,
+                is_lockstep_root: false,
             })
         })
         .collect();
@@ -160,39 +168,54 @@ fn enrolled_units(config: &Config) -> Vec<EnrolledUnit> {
             label: "workspace".to_string(),
             path: ".".to_string(),
             files: top_level.to_vec(),
+            is_lockstep_root: true,
         });
     }
 
     units
 }
 
-/// Resolve a unit's current declared version through the shared workspace graph.
+/// Resolve a unit's current declared version, dispatching on what the unit is:
 ///
-/// A unit scoped to a crate directory matches the workspace member rooted there
-/// and resolves via [`resolve_member_version`] (literal own version, or the
-/// inherited `[workspace.package].version`). The lockstep repo-root unit (no
-/// matching member in a virtual workspace) falls back to the workspace package
-/// version directly.
+/// 1. **Workspace member** — when the unit's directory matches a
+///    `[workspace].members` entry, resolve via [`resolve_member_version`], which
+///    handles both a literal own version and an inherited
+///    `version.workspace = true`.
+/// 2. **Synthetic lockstep repo-root unit** — falls back to the shared
+///    `[workspace.package].version`. This is the ONLY case allowed to use that
+///    fallback, so a real crate that simply isn't a member never silently
+///    resolves against the workspace version.
+/// 3. **Standalone / non-member crate** — a configured crate excluded from the
+///    member globs, outside them, or in a rootless (no `[workspace]`) layout.
+///    Read its own `[package].version` via the sanctioned single-crate accessor
+///    [`read_cargo_version`].
 fn unit_reference_version(
     repo_root: &Path,
     unit: &EnrolledUnit,
-    ws: Result<&WorkspaceInfo, &anyhow::Error>,
+    ws: Option<&WorkspaceInfo>,
 ) -> Result<String> {
-    let ws = ws.map_err(|e| anyhow::anyhow!("{e:#}"))?;
     let unit_dir = repo_root.join(&unit.path);
 
-    if let Some(member) = ws.members.iter().find(|m| member_matches(m, &unit_dir)) {
+    if let Some(ws) = ws
+        && let Some(member) = ws.members.iter().find(|m| member_matches(m, &unit_dir))
+    {
         return resolve_member_version(member, ws);
     }
 
-    // No member rooted at this directory — the lockstep repo-root unit in a
-    // virtual workspace. Its version is the shared `[workspace.package].version`.
-    ws.workspace_package_version.clone().with_context(|| {
-        format!(
-            "{} has no matching workspace member and the repo root has no [workspace.package].version",
-            unit_dir.display()
-        )
-    })
+    if unit.is_lockstep_root {
+        return ws
+            .and_then(|ws| ws.workspace_package_version.clone())
+            .with_context(|| {
+                format!(
+                    "lockstep workspace at {} has no [workspace.package].version",
+                    unit_dir.display()
+                )
+            });
+    }
+
+    // Standalone / non-member crate: read its own manifest version through the
+    // canonical single-crate accessor the tag path uses.
+    read_cargo_version(&unit_dir.to_string_lossy())
 }
 
 /// Whether a workspace member is rooted at `unit_dir`, comparing canonicalized
