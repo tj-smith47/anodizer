@@ -713,6 +713,71 @@ changelog:
     );
 }
 
+/// `changelog: { skip: true }` suppresses the bundled CHANGELOG.md on
+/// `bump --commit`, matching how `tag` honors the same gate. The bump commit
+/// is still produced (Cargo.toml edit), but no CHANGELOG.md is written or
+/// committed.
+#[test]
+fn commit_skips_changelog_when_skip_true() {
+    let tmp = TempDir::new().unwrap();
+    single_crate_workspace(tmp.path());
+    fs::write(
+        tmp.path().join(".anodizer.yaml"),
+        r#"version: 2
+project_name: demo
+crates:
+  - name: demo
+    path: .
+    tag_template: "v{{ Version }}"
+changelog:
+  skip: true
+"#,
+    )
+    .unwrap();
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "demo-v0.1.0"]);
+    git_commit_empty_on_path(
+        tmp.path(),
+        "src/feature.rs",
+        "pub fn f() {}",
+        "feat: add a sparkly new feature",
+    );
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["bump", "patch", "--commit", "-y"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "bump --commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // No CHANGELOG.md written when the changelog refresh is skipped.
+    assert!(
+        !tmp.path().join("CHANGELOG.md").exists(),
+        "changelog.skip: true must not write a CHANGELOG.md"
+    );
+
+    // The bump commit must NOT reference a CHANGELOG.md.
+    let diff = Command::new("git")
+        .current_dir(tmp.path())
+        .args(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])
+        .output()
+        .unwrap();
+    let names = String::from_utf8_lossy(&diff.stdout);
+    assert!(
+        names.lines().any(|l| l == "Cargo.toml"),
+        "commit must still touch Cargo.toml: {names}"
+    );
+    assert!(
+        !names.lines().any(|l| l == "CHANGELOG.md"),
+        "commit must NOT touch CHANGELOG.md when skipped: {names}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Inference must honor each crate's `tag_template` (cfgd-style monorepos
 // have crates whose tag is bare `v{{ Version }}` — not `<name>-v…`).

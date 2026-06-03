@@ -146,9 +146,18 @@ fn commit_plan(
     // Bundle changelog edits: render + persist each non-skip crate's section
     // for its new version so the files land in the same `git add` + `git commit`
     // as the Cargo.toml edits. The previous tag bounds each crate's commit range.
+    //
+    // Gated by the shared `changelog:`-presence + `skip:` resolution so `bump`
+    // and `tag` honor `changelog: { skip: true }` identically. `bump` has no
+    // `--no-changelog` flag, so the opt-out arg is always `false`.
+    let changelog_config = load_changelog_config(workspace_root, opts);
+    let changelog_enabled = crate::commands::changelog_sync::resolve_changelog_enabled(
+        changelog_config.as_ref(),
+        false,
+    );
     let mut changelog_targets: Vec<crate::commands::changelog_sync::ChangelogTarget> = Vec::new();
     for row in rows {
-        if row.level == plan::BumpLevel::Skip {
+        if !changelog_enabled || row.level == plan::BumpLevel::Skip {
             continue;
         }
         let crate_dir = match row.manifest.parent() {
@@ -210,6 +219,27 @@ fn default_commit_message(rows: &[PlanRow]) -> String {
             .join(", ");
         format!("chore(release): bump {}", summary)
     }
+}
+
+/// Best-effort load of `.anodizer.yaml` for the changelog gate.
+///
+/// Resolves the config path the same way [`enforce_version_pins`] does
+/// (`--config` override, else `<workspace_root>/.anodizer.yaml`). Returns `None`
+/// when no config file exists or it fails to parse — both cases leave the
+/// changelog refresh disabled, which is the correct default for a repo with no
+/// `changelog:` block.
+fn load_changelog_config(
+    workspace_root: &std::path::Path,
+    opts: &BumpOpts,
+) -> Option<anodizer_core::config::Config> {
+    let cfg_path = match opts.config_override.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => workspace_root.join(".anodizer.yaml"),
+    };
+    if !cfg_path.is_file() {
+        return None;
+    }
+    crate::pipeline::load_config(&cfg_path).ok()
 }
 
 /// Validate the plan against `crates[*].version` pins in `.anodizer.yaml`.

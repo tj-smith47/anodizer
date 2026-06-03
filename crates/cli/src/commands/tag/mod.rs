@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 
 use crate::commands::bump::cargo_edit::{WorkspaceInfo, apply_plan, load_workspace};
 use crate::commands::bump::plan::{BumpLevel, PlanRow};
-use crate::commands::changelog_sync::{ChangelogTarget, render_and_stage_changelogs};
+use crate::commands::changelog_sync::{
+    ChangelogTarget, render_and_stage_changelogs, resolve_changelog_enabled,
+};
 use crate::commands::version_files_resolve::resolve_version_files;
 
 pub struct TagOpts {
@@ -69,32 +71,6 @@ fn resolve_tag_push_branch(
         Ok(Some(git::get_current_branch()?))
     } else {
         Ok(None)
-    }
-}
-
-/// Resolve whether `tag` should refresh `CHANGELOG.md` into the version-bump
-/// commit, mirroring how `bump` gates the same render loop.
-///
-/// Enabled when the `changelog:` config block is present and not skipped, and
-/// the user did not pass `--no-changelog`. A plain `skip: true` boolean
-/// disables; a templated `skip:` (e.g. `"{{ if IsSnapshot }}true{{ endif }}"`)
-/// is treated as enabled because `tag` has no release context to render the
-/// template against — the per-pipeline changelog stage evaluates such templates
-/// at release time, so suppressing here on an unrenderable template would be a
-/// false negative.
-fn resolve_changelog_enabled(
-    config: Option<&anodizer_core::config::Config>,
-    no_changelog: bool,
-) -> bool {
-    if no_changelog {
-        return false;
-    }
-    let Some(cl) = config.and_then(|c| c.changelog.as_ref()) else {
-        return false;
-    };
-    match cl.skip.as_ref() {
-        Some(skip) if !skip.is_template() => !skip.as_bool(),
-        _ => true,
     }
 }
 
@@ -747,7 +723,9 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 files_to_stage.push(f);
             }
             for f in &cl_changed {
-                files_to_stage.push(f);
+                if !files_to_stage.contains(&f.as_str()) {
+                    files_to_stage.push(f);
+                }
             }
             // Propagate a commit failure (index lock, hook rejection, …)
             // before any tag is created: tagging a commit whose Cargo.toml is
