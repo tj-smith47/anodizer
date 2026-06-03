@@ -791,3 +791,222 @@ version = "0.1.0"
         );
     }
 }
+
+/// Per-crate `--no-changelog` suppresses the refresh for every bumped crate, yet
+/// the bump commit and tags still happen (proves the opt-out at the per-crate
+/// site, mirroring `lockstep_no_changelog_flag_suppresses`).
+#[test]
+fn per_crate_no_changelog_flag_suppresses() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (name, ver) in [("core", "0.1.0"), ("cli", "0.2.0")] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: percrate
+changelog: {}
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "core-v{{ .Version }}"
+    version_sync:
+      enabled: true
+  - name: cli
+    path: crates/cli
+    tag_template: "cli-v{{ .Version }}"
+    version_sync:
+      enabled: true
+"#,
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "core-v0.1.0"]);
+    run_git(root, &["tag", "cli-v0.2.0"]);
+    fs::write(root.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();
+    fs::write(root.join("crates/cli/src/lib.rs"), "// cli touched\n").unwrap();
+    git_add_commit(root, "feat: both updated");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--no-changelog", "--no-push"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+
+    for name in ["core", "cli"] {
+        assert!(
+            !root.join(format!("crates/{name}/CHANGELOG.md")).exists(),
+            "--no-changelog must not write {name}'s CHANGELOG.md"
+        );
+    }
+
+    // The bump commit + tags still happened: both new per-crate tags exist.
+    for tag in ["core-v0.2.0", "cli-v0.3.0"] {
+        let out = Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "--verify", &format!("refs/tags/{tag}")])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "expected tag {tag} to be created");
+    }
+}
+
+/// Per-crate `--dry-run` writes no CHANGELOG.md anywhere and exits 0 (mirrors
+/// `lockstep_dry_run_writes_nothing`).
+#[test]
+fn per_crate_dry_run_writes_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (name, ver) in [("core", "0.1.0"), ("cli", "0.2.0")] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: percrate
+changelog: {}
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "core-v{{ .Version }}"
+    version_sync:
+      enabled: true
+  - name: cli
+    path: crates/cli
+    tag_template: "cli-v{{ .Version }}"
+    version_sync:
+      enabled: true
+"#,
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "core-v0.1.0"]);
+    run_git(root, &["tag", "cli-v0.2.0"]);
+    fs::write(root.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();
+    fs::write(root.join("crates/cli/src/lib.rs"), "// cli touched\n").unwrap();
+    git_add_commit(root, "feat: both updated");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--dry-run"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+
+    for name in ["core", "cli"] {
+        assert!(
+            !root.join(format!("crates/{name}/CHANGELOG.md")).exists(),
+            "--dry-run must not write {name}'s CHANGELOG.md"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// version_files + changelog cohesion: both sibling features ride ONE commit
+// ---------------------------------------------------------------------------
+
+/// Enrolling BOTH a `version_files` path AND a `changelog:` block at the
+/// lockstep site: a single `anodizer tag` must fold the rewritten version_files
+/// file AND the new `## [<ver>]` changelog section into the SAME bump commit
+/// (proves the two sibling features dedupe into one commit with no clobber).
+#[test]
+fn version_files_and_changelog_share_one_commit() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        r#"[workspace]
+members = ["crates/a"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/a/src")).unwrap();
+    fs::write(
+        root.join("crates/a/Cargo.toml"),
+        "[package]\nname = \"a\"\nversion.workspace = true\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/a/src/lib.rs"), "").unwrap();
+    // Enroll a version_files path AND a changelog block in one config.
+    fs::write(root.join("Chart.yaml"), "appVersion: v0.1.0\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: lockstep\nversion_files:\n  - Chart.yaml\nchangelog: {}\n",
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/a/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: a shared change");
+
+    let out = anodizer().current_dir(root).args(["tag"]).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+    assert!(stdout.contains("new_tag=v0.1.1"), "stdout: {stdout}");
+
+    // The SAME HEAD commit carries both the rewritten version_files file...
+    assert_eq!(
+        show_head(root, "Chart.yaml"),
+        "appVersion: v0.1.1\n",
+        "version_files rewrite must be in the bump commit"
+    );
+    // ...and the new changelog section.
+    let head_changelog = show_head(root, "crates/a/CHANGELOG.md");
+    assert!(
+        head_changelog.contains("## [0.1.1]"),
+        "changelog section must be in the SAME bump commit: {head_changelog}"
+    );
+
+    // Both files are named in HEAD's tree diff — one commit, both features.
+    let diff = Command::new("git")
+        .current_dir(root)
+        .args(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])
+        .output()
+        .unwrap();
+    let names = String::from_utf8_lossy(&diff.stdout);
+    assert!(
+        names.lines().any(|l| l == "Chart.yaml"),
+        "HEAD commit must touch Chart.yaml: {names}"
+    );
+    assert!(
+        names.lines().any(|l| l == "crates/a/CHANGELOG.md"),
+        "HEAD commit must touch crates/a/CHANGELOG.md: {names}"
+    );
+}
