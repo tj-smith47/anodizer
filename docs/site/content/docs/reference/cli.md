@@ -130,7 +130,14 @@ Check that enrolled `version_files` still match each crate's current version
 
 ### `anodizer init`
 
-Generate starter config
+Generate starter config, or enroll version-bearing files
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--version-files` | — | — | Discover repo files that embed the current version and enroll the selection into version_files in .anodizer.yaml |
+| `--exclude` | — | — | Glob(s) to drop from discovered candidates (repeatable or comma-separated); only with --version-files |
+| `--yes` | `-y` | — | Non-interactive: enroll all discovered candidates without prompting |
 
 
 ### `anodizer changelog`

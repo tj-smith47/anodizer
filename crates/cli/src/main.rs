@@ -478,7 +478,23 @@ fn main() {
                 cli.quiet,
             ),
         },
-        Commands::Init => commands::init::run(),
+        Commands::Init {
+            version_files,
+            exclude,
+            yes,
+        } => {
+            if version_files {
+                commands::init::enroll_version_files(
+                    exclude,
+                    yes,
+                    cli.verbose,
+                    cli.debug,
+                    cli.quiet,
+                )
+            } else {
+                commands::init::run()
+            }
+        }
         Commands::Changelog {
             crate_name,
             from,

@@ -45,7 +45,8 @@ pub use snapshot_sde::resolve_snapshot_sde;
 pub use status::{
     check_git_available, git_status_porcelain, git_status_porcelain_in, is_git_dirty,
     is_git_dirty_in, is_git_repo, is_git_repo_in, is_shallow_clone, is_shallow_clone_in,
-    local_git_user_email, local_git_user_email_in, local_git_user_name, local_git_user_name_in,
+    list_tracked_files_in, local_git_user_email, local_git_user_email_in, local_git_user_name,
+    local_git_user_name_in,
 };
 pub use tags::{
     AtomicPushSpec, create_and_push_tag, create_and_push_tag_in, create_tag_local_only,

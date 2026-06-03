@@ -114,6 +114,18 @@ pub fn rewrite_version_in_files(
     Ok(outcomes)
 }
 
+/// Whether `content` contains `version` (bare or `v`-prefixed), word-boundary
+/// anchored — the same matcher [`check_version_present`] and
+/// [`rewrite_version_in_files`] apply, exposed so the enrollment-discovery flow
+/// (`anodizer init --version-files`) can probe a candidate file's text with
+/// one shared regex rather than a second copy of the boundary logic.
+///
+/// Errors only if `version` cannot be compiled into a matcher.
+pub fn contains_version(content: &str, version: &str) -> Result<bool> {
+    let (bare_re, prefixed_re) = version_regexes(version)?;
+    Ok(bare_re.is_match(content) || prefixed_re.is_match(content))
+}
+
 /// Read-only check: for each file, whether it currently contains `version`
 /// (bare or `v`-prefixed), word-boundary anchored. Returns one `(path,
 /// present)` pair per file in input order.
@@ -234,6 +246,18 @@ mod tests {
         let missing = dir.path().join("nope.yaml").to_string_lossy().into_owned();
         let err = rewrite_version_in_files(&[missing], "0.1.0", "0.2.0", false).unwrap_err();
         assert!(err.to_string().contains("failed to read version file"));
+    }
+
+    #[test]
+    fn contains_version_matches_bare_and_v_prefixed() {
+        assert!(contains_version("appVersion: 0.1.0\n", "0.1.0").unwrap());
+        assert!(contains_version("tag v0.1.0 here\n", "0.1.0").unwrap());
+    }
+
+    #[test]
+    fn contains_version_respects_word_boundary() {
+        assert!(!contains_version("pinned 10.1.0\n", "0.1.0").unwrap());
+        assert!(!contains_version("no version here\n", "0.1.0").unwrap());
     }
 
     #[test]

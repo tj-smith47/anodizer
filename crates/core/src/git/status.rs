@@ -88,6 +88,22 @@ pub fn git_status_porcelain_in(cwd: &Path) -> String {
     git_output_in(cwd, &["status", "--porcelain"]).unwrap_or_default()
 }
 
+/// List the repository's tracked files (`git ls-files`) as repo-relative paths.
+///
+/// Drives the `anodizer init --version-files` enrollment discovery: the
+/// candidate set is the tracked, text files that embed the current version, so
+/// untracked build output and ignored scratch never enter the prompt. Returns
+/// an empty list when the repository tracks no files; errors only if `git`
+/// itself fails (not a repository, git unavailable).
+pub fn list_tracked_files_in(cwd: &Path) -> Result<Vec<String>> {
+    let out = git_output_in(cwd, &["ls-files", "-z"])?;
+    Ok(out
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect())
+}
+
 /// Check whether the current repository is a shallow clone.
 ///
 /// Returns `true` if the `.git/shallow` sentinel file exists, which git creates
@@ -203,6 +219,25 @@ mod tests {
             local_git_user_email_in(tmp.path()).as_deref(),
             Some("test@test.com")
         );
+    }
+
+    #[test]
+    fn list_tracked_files_in_returns_committed_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        std::fs::write(tmp.path().join("extra.txt"), "x").unwrap();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap();
+        };
+        run(&["add", "extra.txt"]);
+        run(&["commit", "-m", "add extra"]);
+        let files = list_tracked_files_in(tmp.path()).unwrap();
+        assert!(files.contains(&"README".to_string()), "got: {files:?}");
+        assert!(files.contains(&"extra.txt".to_string()), "got: {files:?}");
     }
 
     #[test]

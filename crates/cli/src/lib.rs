@@ -303,8 +303,26 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: CheckCmd,
     },
-    /// Generate starter config
-    Init,
+    /// Generate starter config, or enroll version-bearing files
+    Init {
+        #[arg(
+            long,
+            help = "Discover repo files that embed the current version and enroll the selection into version_files in .anodizer.yaml"
+        )]
+        version_files: bool,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Glob(s) to drop from discovered candidates (repeatable or comma-separated); only with --version-files"
+        )]
+        exclude: Vec<String>,
+        #[arg(
+            long,
+            short = 'y',
+            help = "Non-interactive: enroll all discovered candidates without prompting"
+        )]
+        yes: bool,
+    },
     /// Generate changelog only
     Changelog {
         #[arg(long = "crate", help = "Generate changelog for a specific crate")]
