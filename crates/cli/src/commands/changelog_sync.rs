@@ -273,20 +273,4 @@ mod tests {
         };
         assert_eq!(t.full_tag, "core-v0.2.0");
     }
-
-    #[test]
-    fn lockstep_aggregate_target_uses_workspace_root_dir() {
-        let ws_root = PathBuf::from("/ws");
-        let t = ChangelogTarget {
-            crate_name: "ws".to_string(),
-            crate_dir: ws_root.clone(),
-            from_tag: Some("v0.1.0".to_string()),
-            to_version: "0.2.0".to_string(),
-            full_tag: "v0.2.0".to_string(),
-        };
-        assert_eq!(
-            t.crate_dir, ws_root,
-            "aggregate target is not path-filtered"
-        );
-    }
 }

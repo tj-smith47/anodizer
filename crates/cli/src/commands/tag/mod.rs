@@ -940,7 +940,11 @@ fn apply_workspace_bump(
         root_enabled: true,
         per_crate: false,
         chronology: cl.routing.chronology,
-        root_crates: cl.routing.root_crates,
+        // The lockstep aggregate is one flat whole-release section (not a
+        // per-crate `### subsection`), so the per-crate `root.crates` filter
+        // must not gate it; filtering on the arbitrary first-member name would
+        // silently drop the entire lockstep root changelog.
+        root_crates: None,
     };
 
     if dry_run {

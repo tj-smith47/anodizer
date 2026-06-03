@@ -1019,3 +1019,108 @@ version = "0.1.0"
         "HEAD commit must touch CHANGELOG.md: {names}"
     );
 }
+
+/// Write a two-member lockstep workspace, tag it, and return the root
+/// `CHANGELOG.md` content at HEAD. `root_block` is spliced under `changelog:`
+/// so callers can vary the `root.crates` filter; both members carry a distinct
+/// commit so the aggregate section must span more than one crate.
+fn lockstep_root_aggregate_fixture(root: &Path, root_block: &str) -> String {
+    fs::write(
+        root.join("Cargo.toml"),
+        r#"[workspace]
+members = ["crates/a", "crates/b"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    for name in ["a", "b"] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion.workspace = true\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        format!("project_name: lockstep\nchangelog:\n{root_block}"),
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    // Distinct commit per member so the aggregate spans both crates.
+    fs::write(root.join("crates/a/src/lib.rs"), "// touched a\n").unwrap();
+    git_add_commit(root, "feat: change in crate a");
+    fs::write(root.join("crates/b/src/lib.rs"), "// touched b\n").unwrap();
+    git_add_commit(root, "fix: change in crate b");
+
+    let out = anodizer().current_dir(root).args(["tag"]).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+    assert!(stdout.contains("new_tag=v0.2.0"), "stdout: {stdout}");
+
+    show_head(root, "CHANGELOG.md")
+}
+
+/// A bare lockstep `changelog: {}` writes ONE aggregate root `CHANGELOG.md`
+/// spanning every member: a single `## [0.2.0]` section carrying both members'
+/// commits (not a per-crate file each).
+#[test]
+fn lockstep_root_aggregate_spans_all_members() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let changelog = lockstep_root_aggregate_fixture(root, "  root: {}\n");
+
+    assert!(
+        changelog.matches("## [0.2.0]").count() == 1,
+        "expected exactly one 0.2.0 section in the aggregate root: {changelog}"
+    );
+    assert!(
+        changelog.contains("change in crate a"),
+        "aggregate must include crate a's commit: {changelog}"
+    );
+    assert!(
+        changelog.contains("change in crate b"),
+        "aggregate must include crate b's commit: {changelog}"
+    );
+    // No per-crate files when the destination is root-only.
+    assert!(
+        !root.join("crates/a/CHANGELOG.md").exists()
+            && !root.join("crates/b/CHANGELOG.md").exists(),
+        "root-only destination must not write per-crate files"
+    );
+}
+
+/// Regression guard: a `root.crates` filter naming a NON-first member must NOT
+/// drop the lockstep aggregate. The aggregate is a flat whole-release section,
+/// so the per-crate filter cannot gate it; before the fix, `root_crates`
+/// excluding `members.first()` (`a`) silently dropped the entire root changelog.
+#[test]
+fn lockstep_root_aggregate_ignores_non_first_member_filter() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    // `b` is provably NOT members.first() (`a`); against the buggy code the
+    // aggregate's synthetic crate_name (`a`) fails the `["b"]` filter and the
+    // root file is never written.
+    let changelog = lockstep_root_aggregate_fixture(root, "  root:\n    crates: [\"b\"]\n");
+
+    assert!(
+        root.join("CHANGELOG.md").is_file(),
+        "filtered-but-non-subsection aggregate must still write the root file"
+    );
+    assert!(
+        changelog.matches("## [0.2.0]").count() == 1,
+        "aggregate section must survive the non-first-member root.crates filter: {changelog}"
+    );
+    assert!(
+        changelog.contains("change in crate a") && changelog.contains("change in crate b"),
+        "aggregate still spans every member regardless of root.crates: {changelog}"
+    );
+}
