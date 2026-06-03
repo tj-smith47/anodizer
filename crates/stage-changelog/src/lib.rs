@@ -19,7 +19,7 @@ mod tests;
 // Public API re-exports
 // ---------------------------------------------------------------------------
 
-pub use render::{ChangelogUpdate, InsertionMode, render_crate_section};
+pub use render::{ChangelogUpdate, InsertionMode, render_crate_section, render_root_section};
 
 // ---------------------------------------------------------------------------
 // ChangelogStage — pipeline entry point

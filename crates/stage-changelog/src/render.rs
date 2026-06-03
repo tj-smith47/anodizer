@@ -393,35 +393,15 @@ pub struct ChangelogUpdate {
     pub insertion_mode: InsertionMode,
 }
 
-/// Render a `## [<to_version>]` section for the given crate's changelog and
-/// merge it into the crate's `CHANGELOG.md`.
+/// Load the `changelog:` block from `<workspace_root>/.anodizer.yaml`.
 ///
-/// Used by `anodizer bump --commit` to produce a single staged file edit that
-/// can be bundled into the bump commit.
-///
-/// Returns `Ok(None)` when:
-///   - `<workspace_root>/.anodizer.yaml` is absent, unreadable, or has no
-///     `changelog:` section
-///   - there are no qualifying commits since `from_tag` (or `HEAD` history,
-///     when `from_tag` is `None`) touching `crate_path`
-///
-/// On success, the returned [`ChangelogUpdate`] always carries the FULL final
-/// file content with [`InsertionMode::Replace`]: the function reads any
-/// existing `CHANGELOG.md`, prepends the new section after the leading H1
-/// header (creating one when missing), and returns the merged text.
-pub fn render_crate_section(
+/// Returns `Ok(None)` when the file is absent or carries no `changelog:`
+/// section. Deliberately skips the include/deprecation machinery in
+/// `cli::pipeline::load_config` so this stays usable from non-CLI contexts
+/// (core is already in the dep graph; pulling cli in would create a cycle).
+fn load_changelog_config(
     workspace_root: &std::path::Path,
-    crate_name: &str,
-    crate_path: &std::path::Path,
-    from_tag: Option<&str>,
-    to_version: &str,
-) -> Result<Option<ChangelogUpdate>> {
-    use anodizer_core::log::{StageLogger, Verbosity};
-
-    // Load just the changelog section from .anodizer.yaml. We deliberately
-    // skip the include/deprecation machinery in `cli::pipeline::load_config`
-    // so this stays usable from non-CLI contexts (it lives in core's dep graph
-    // already; pulling cli in would create a cycle).
+) -> Result<Option<anodizer_core::config::ChangelogConfig>> {
     let cfg_path = workspace_root.join(".anodizer.yaml");
     if !cfg_path.is_file() {
         return Ok(None);
@@ -441,6 +421,31 @@ pub fn render_crate_section(
                 cfg_path.display()
             )
         })?;
+    Ok(Some(cfg))
+}
+
+/// Load the crate's changelog config, fetch path-filtered commits since
+/// `from_tag`, filter/sort/group them, and render the grouped commit body
+/// (`### <GroupTitle>` group headings, no `## <version>` heading).
+///
+/// Single-sources the config-load + commit-fetch + render pipeline shared by
+/// [`render_crate_section`] (per-crate file) and [`render_root_section`]
+/// (shared root file) so the two entry points can never drift.
+///
+/// Returns the resolved [`ChangelogConfig`] alongside the body. Returns
+/// `Ok(None)` under the same conditions both callers treat as "nothing to
+/// release": `.anodizer.yaml` is absent / has no `changelog:` block, or there
+/// are no qualifying commits since `from_tag`.
+fn render_section_body(
+    workspace_root: &std::path::Path,
+    crate_path: &std::path::Path,
+    from_tag: Option<&str>,
+) -> Result<Option<(anodizer_core::config::ChangelogConfig, String)>> {
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    let Some(cfg) = load_changelog_config(workspace_root)? else {
+        return Ok(None);
+    };
 
     let log = StageLogger::new("bump-changelog", Verbosity::default());
 
@@ -515,9 +520,39 @@ pub fn render_crate_section(
     )?;
     // `render_changelog_with_provider` always emits a `## <title>` line; we
     // suppressed it by passing `Some("")`, which produces `## \n\n`. Drop
-    // any empty heading at the start so our `## [<version>]` heading stands
-    // alone.
+    // any empty heading at the start so the caller's `## [<version>]` heading
+    // stands alone.
     let body = body.trim_start_matches("## \n\n").trim_start().to_string();
+
+    Ok(Some((cfg, body)))
+}
+
+/// Render a `## [<to_version>]` section for the given crate's changelog and
+/// merge it into the crate's `CHANGELOG.md`.
+///
+/// Used by `anodizer bump --commit` to produce a single staged file edit that
+/// can be bundled into the bump commit.
+///
+/// Returns `Ok(None)` when:
+///   - `<workspace_root>/.anodizer.yaml` is absent, unreadable, or has no
+///     `changelog:` section
+///   - there are no qualifying commits since `from_tag` (or `HEAD` history,
+///     when `from_tag` is `None`) touching `crate_path`
+///
+/// On success, the returned [`ChangelogUpdate`] always carries the FULL final
+/// file content with [`InsertionMode::Replace`]: the function reads any
+/// existing `CHANGELOG.md`, prepends the new section after the leading H1
+/// header (creating one when missing), and returns the merged text.
+pub fn render_crate_section(
+    workspace_root: &std::path::Path,
+    crate_name: &str,
+    crate_path: &std::path::Path,
+    from_tag: Option<&str>,
+    to_version: &str,
+) -> Result<Option<ChangelogUpdate>> {
+    let Some((_cfg, body)) = render_section_body(workspace_root, crate_path, from_tag)? else {
+        return Ok(None);
+    };
 
     let section_heading = format!(
         "## [{ver}] - {date}",
@@ -542,6 +577,586 @@ pub fn render_crate_section(
         rendered_text: merged,
         insertion_mode: InsertionMode::Replace,
     }))
+}
+
+/// Render a release section for `crate_name` and promote it into the SHARED
+/// root `<workspace_root>/CHANGELOG.md` (NOT the per-crate file).
+///
+/// A multi-track workspace keeps one root `CHANGELOG.md` whose
+/// `## [Unreleased]` holds a `### <crate>` subsection per crate. Tagging a
+/// track promotes ONLY that track's subsection into a released
+/// `## [<tag>] - <date>` section — re-leveled to `### <GroupTitle>` headings
+/// and regrouped per the configured `groups:` — and leaves every other crate's
+/// subsection in place. A single-track root (no `### <crate>` subsections)
+/// falls through to the flat Keep-a-Changelog roll, byte-identical to
+/// [`render_crate_section`]'s behaviour.
+///
+/// `tag` is the FULL new tag for this release (e.g. `v0.7.0` or
+/// `core-v0.5.1`); the promoted heading and the rolled compare-link footer
+/// both derive from it and from this track's own `from_tag`, so multi-track
+/// compare ranges stay correct even when the shared `[Unreleased]:` anchor
+/// belongs to a different track. `chronology` slots the new section among the
+/// existing released sections (`Date`: newest-on-top; `Tag`: clustered by
+/// tag-prefix, semver-descending within a cluster).
+///
+/// Returns `Ok(None)` when there is nothing to release for this track: no
+/// `changelog:` config / no commits AND no curated `### <crate>` subsection.
+pub fn render_root_section(
+    workspace_root: &std::path::Path,
+    crate_name: &str,
+    crate_path: &std::path::Path,
+    from_tag: Option<&str>,
+    to_version: &str,
+    tag: &str,
+    chronology: anodizer_core::config::Chronology,
+) -> Result<Option<ChangelogUpdate>> {
+    let rendered = render_section_body(workspace_root, crate_path, from_tag)?;
+    // Load groups from config directly (not just from `rendered`) so a curated
+    // subsection with no qualifying commits still buckets under the configured
+    // group headings.
+    let groups = load_changelog_config(workspace_root)?
+        .and_then(|c| c.groups)
+        .unwrap_or_default();
+    let group_titles: Vec<String> = groups.iter().map(|g| g.title.clone()).collect();
+    let generated_body = rendered
+        .as_ref()
+        .map(|(_, body)| body.clone())
+        .unwrap_or_default();
+
+    let file_path = workspace_root.join("CHANGELOG.md");
+
+    // Absent root file: synthesize the flat first-write exactly as the
+    // per-crate path does (there is no Unreleased shape to promote into).
+    if !file_path.is_file() {
+        let Some((_cfg, body)) = rendered else {
+            return Ok(None);
+        };
+        let section_heading = format!(
+            "## [{ver}] - {date}",
+            ver = to_version,
+            date = today_yyyy_mm_dd()
+        );
+        let new_section = format!("{}\n\n{}\n", section_heading, body.trim_end());
+        let merged = merge_into_changelog(MergeArgs {
+            file_path: &file_path,
+            crate_name,
+            new_section: &new_section,
+            generated_body: body.trim_end(),
+            from_tag,
+            to_version,
+            workspace_root,
+        })?;
+        return Ok(Some(ChangelogUpdate {
+            file_path,
+            rendered_text: merged,
+            insertion_mode: InsertionMode::Replace,
+        }));
+    }
+
+    let existing = std::fs::read_to_string(&file_path)
+        .with_context(|| format!("failed to read {}", file_path.display()))?;
+
+    // Degenerate root (no `### <crate>` subsections under `[Unreleased]`, or no
+    // `[Unreleased]` at all): delegate to the existing flat roll / splice so a
+    // single-track root behaves exactly as `render_crate_section` would.
+    if !has_crate_subsections(&existing, &group_titles) {
+        let Some((_cfg, body)) = rendered else {
+            return Ok(None);
+        };
+        let section_heading = format!(
+            "## [{ver}] - {date}",
+            ver = to_version,
+            date = today_yyyy_mm_dd()
+        );
+        let new_section = format!("{}\n\n{}\n", section_heading, body.trim_end());
+        let merged = merge_into_changelog(MergeArgs {
+            file_path: &file_path,
+            crate_name,
+            new_section: &new_section,
+            generated_body: body.trim_end(),
+            from_tag,
+            to_version,
+            workspace_root,
+        })?;
+        return Ok(Some(ChangelogUpdate {
+            file_path,
+            rendered_text: merged,
+            insertion_mode: InsertionMode::Replace,
+        }));
+    }
+
+    // Subsection-promote path. Resolve a compare base from an existing footer
+    // link, falling back to the `origin` remote, so the rolled footer keeps the
+    // file's host (self-hosted GitLab/Gitea stays host-correct).
+    let base = resolve_compare_base(&existing, workspace_root);
+
+    let Some(merged) = promote_subsection(PromoteArgs {
+        existing: &existing,
+        crate_name,
+        tag,
+        from_tag,
+        chronology,
+        groups: &groups,
+        generated_body: generated_body.trim_end(),
+        base: base.as_deref(),
+    })?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(ChangelogUpdate {
+        file_path,
+        rendered_text: merged,
+        insertion_mode: InsertionMode::Replace,
+    }))
+}
+
+/// Resolve the `<base>/compare` URL prefix for footer links: prefer the base
+/// embedded in an existing `[Unreleased]:` compare link, else synthesize one
+/// from the `origin` remote. Returns `None` when neither is available (the
+/// footer roll then leaves links absent rather than emitting a 404).
+fn resolve_compare_base(existing: &str, workspace_root: &std::path::Path) -> Option<String> {
+    if let Some(url) = existing.lines().find_map(parse_unreleased_footer)
+        && let Some((base, _anchor)) = parse_compare_url(url)
+    {
+        return Some(base.to_string());
+    }
+    anodizer_core::git::detect_remote_web_base_in(workspace_root).ok()
+}
+
+/// Whether `existing` has at least one `### <crate>` subsection under its
+/// `## [Unreleased]` heading (the marker of a multi-track root).
+///
+/// A single-track flat `[Unreleased]` may itself carry `### <GroupTitle>`
+/// headings (e.g. `### Features`) for its curated body; those are NOT crate
+/// subsections. `group_titles` lists the configured `groups:` titles so a
+/// `### <name>` matching a group title is excluded, disambiguating
+/// `### Features` (a group heading) from `### cfgd` (a crate subsection). A
+/// flat `[Unreleased]` with only group headings — or no `### ` lines, or no
+/// `[Unreleased]` at all — returns `false` so the caller takes the flat roll.
+fn has_crate_subsections(existing: &str, group_titles: &[String]) -> bool {
+    let lines: Vec<&str> = existing.lines().collect();
+    let Some(unreleased_idx) = lines.iter().position(|l| is_unreleased_heading(l)) else {
+        return false;
+    };
+    for line in lines.iter().skip(unreleased_idx + 1) {
+        if is_section_heading(line) || parse_unreleased_footer(line).is_some() {
+            return false;
+        }
+        if let Some(name) = is_subsection_heading(line)
+            && !group_titles.iter().any(|t| t == name)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `line` is an H3 `### <name>` subsection heading, returning the
+/// trimmed `<name>`. Matches exactly three leading hashes (so a deeper `####`
+/// is not mistaken for a crate subsection).
+fn is_subsection_heading(line: &str) -> Option<&str> {
+    let trimmed = line.trim_end();
+    let rest = trimmed.strip_prefix("### ")?;
+    if rest.starts_with('#') {
+        return None;
+    }
+    let name = rest.trim();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// Inputs to [`promote_subsection`], the pure root-CHANGELOG transform.
+struct PromoteArgs<'a> {
+    /// Current root `CHANGELOG.md` contents.
+    existing: &'a str,
+    /// Crate whose `### <crate>` subsection is being promoted.
+    crate_name: &'a str,
+    /// FULL new tag for this release (e.g. `v0.7.0`, `core-v0.5.1`).
+    tag: &'a str,
+    /// This track's previous tag, or `None` for its first release.
+    from_tag: Option<&'a str>,
+    /// Section ordering for slotting the promoted section.
+    chronology: anodizer_core::config::Chronology,
+    /// Configured commit groups, used to bucket curated bullets.
+    groups: &'a [ChangelogGroup],
+    /// Generated grouped body (already `### <GroupTitle>`-grouped), used when
+    /// the crate has commits but no curated subsection.
+    generated_body: &'a str,
+    /// `<base>/compare` URL prefix for footer links, or `None` to omit them.
+    base: Option<&'a str>,
+}
+
+/// Pure transform: promote `crate_name`'s `### <crate>` subsection out of
+/// `## [Unreleased]` into a released `## [<tag>] - <date>` section, regroup its
+/// bullets under `### <GroupTitle>` headings, slot it by `chronology`, and roll
+/// the per-track compare-link footer. Returns `Ok(None)` when the crate has
+/// neither a curated subsection nor generated commits (nothing to release).
+fn promote_subsection(args: PromoteArgs<'_>) -> Result<Option<String>> {
+    let PromoteArgs {
+        existing,
+        crate_name,
+        tag,
+        from_tag,
+        chronology,
+        groups,
+        generated_body,
+        base,
+    } = args;
+
+    let lines: Vec<&str> = existing.lines().collect();
+
+    // Idempotence: a `## [<tag>]` section already present means this track's
+    // roll already happened — return the file unchanged.
+    if lines.iter().any(|l| is_version_heading(l, tag)) {
+        return Ok(Some(existing.to_string()));
+    }
+
+    let Some(unreleased_idx) = lines.iter().position(|l| is_unreleased_heading(l)) else {
+        return Ok(Some(existing.to_string()));
+    };
+
+    // Bound the `[Unreleased]` block: up to the first `## ` section heading or
+    // footer-link line.
+    let mut unreleased_end = lines.len();
+    for (i, line) in lines.iter().enumerate().skip(unreleased_idx + 1) {
+        if is_section_heading(line) || parse_unreleased_footer(line).is_some() {
+            unreleased_end = i;
+            break;
+        }
+    }
+
+    // Locate this crate's `### <crate>` subsection within `[Unreleased]`.
+    let mut sub_start: Option<usize> = None;
+    let mut idx = unreleased_idx + 1;
+    while idx < unreleased_end {
+        if let Some(name) = is_subsection_heading(lines[idx])
+            && name == crate_name
+        {
+            sub_start = Some(idx);
+            break;
+        }
+        idx += 1;
+    }
+
+    // Curated bullets (verbatim) when the subsection exists; the bounds run
+    // from after its heading to the next `### `/`## `/footer line.
+    let curated: Vec<&str> = match sub_start {
+        Some(start) => {
+            let mut end = unreleased_end;
+            for (i, line) in lines.iter().enumerate().skip(start + 1) {
+                if is_subsection_heading(line).is_some()
+                    || is_section_heading(line)
+                    || parse_unreleased_footer(line).is_some()
+                {
+                    end = i;
+                    break;
+                }
+            }
+            lines[start + 1..end]
+                .iter()
+                .copied()
+                .filter(|l| !l.trim().is_empty())
+                .collect()
+        }
+        None => Vec::new(),
+    };
+
+    // Build the promoted section body. Curated bullets are bucketed verbatim;
+    // an absent / empty subsection falls back to the generated grouped body.
+    let body = if !curated.is_empty() {
+        bucket_curated_bullets(&curated, groups)
+    } else if !generated_body.is_empty() {
+        generated_body.to_string()
+    } else {
+        // No curated subsection and no commits: nothing to release.
+        return Ok(None);
+    };
+
+    let promoted_heading = format!("## [{}] - {}", tag, today_yyyy_mm_dd());
+    let mut promoted: Vec<String> = Vec::new();
+    promoted.push(promoted_heading);
+    // The body opens with its own `### <GroupTitle>` (or a bare bullet) right
+    // under the heading — no blank line between, matching the Keep-a-Changelog
+    // shape of the existing released sections.
+    promoted.extend(body.lines().map(|s| s.to_string()));
+    promoted.push(String::new());
+
+    // Rebuild the `[Unreleased]` block with this crate's subsection removed and
+    // every other subsection byte-identical.
+    let unreleased_block = rebuild_unreleased(&lines, unreleased_idx, unreleased_end, sub_start);
+
+    // Split the remainder (existing released sections + footer) at the footer.
+    let tail = &lines[unreleased_end..];
+    let footer_idx = tail
+        .iter()
+        .position(|l| parse_unreleased_footer(l).is_some());
+    let (sections, footer): (&[&str], &[&str]) = match footer_idx {
+        Some(fi) => (&tail[..fi], &tail[fi..]),
+        None => (tail, &[]),
+    };
+
+    // Slot the promoted section among the existing `## [<...>]` sections.
+    let mut out: Vec<String> = Vec::new();
+    out.extend(unreleased_block);
+    let slotted = slot_sections(sections, &promoted, tag, chronology);
+    out.extend(slotted);
+
+    // Roll the footer using THIS track's `from_tag`-derived links.
+    push_root_footer(&mut out, footer, tag, from_tag, base);
+
+    let mut result = out.join("\n");
+    if existing.ends_with('\n') {
+        result.push('\n');
+    }
+    Ok(Some(result))
+}
+
+/// Rebuild the `[Unreleased]` block (heading + remaining subsections) with the
+/// subsection at `sub_start` removed. Every other line — including other
+/// crates' subsections — is preserved byte-identically. A single trailing blank
+/// line is kept after the block.
+fn rebuild_unreleased(
+    lines: &[&str],
+    unreleased_idx: usize,
+    unreleased_end: usize,
+    sub_start: Option<usize>,
+) -> Vec<String> {
+    let mut block: Vec<String> = Vec::new();
+    // Pre-`[Unreleased]` content (H1, prelude) stays verbatim.
+    block.extend(lines[..unreleased_idx].iter().map(|s| s.to_string()));
+    block.push(lines[unreleased_idx].to_string());
+
+    // Bound of the removed subsection (if present).
+    let removed_end = sub_start.map(|start| {
+        let mut end = unreleased_end;
+        for (i, line) in lines.iter().enumerate().skip(start + 1) {
+            if is_subsection_heading(line).is_some()
+                || is_section_heading(line)
+                || parse_unreleased_footer(line).is_some()
+            {
+                end = i;
+                break;
+            }
+        }
+        end
+    });
+
+    let mut i = unreleased_idx + 1;
+    while i < unreleased_end {
+        if let (Some(start), Some(end)) = (sub_start, removed_end)
+            && i >= start
+            && i < end
+        {
+            i = end;
+            continue;
+        }
+        block.push(lines[i].to_string());
+        i += 1;
+    }
+
+    // Normalize to exactly one trailing blank line after the block.
+    while block.last().is_some_and(|l| l.trim().is_empty()) {
+        block.pop();
+    }
+    block.push(String::new());
+    block
+}
+
+/// Bucket curated bullet lines under `### <GroupTitle>` headings, matching each
+/// bullet's leading conventional-commit type against `groups` (first-match-wins,
+/// a group with empty/absent `regexp` is the catch-all). Bullets are kept
+/// VERBATIM — never re-rendered through the commit template. A bullet matching
+/// no group and no catch-all is appended at the end under no heading so curated
+/// content is never silently dropped. With no groups configured, bullets are
+/// emitted flat in their original order.
+fn bucket_curated_bullets(curated: &[&str], groups: &[ChangelogGroup]) -> String {
+    if groups.is_empty() {
+        return curated.join("\n");
+    }
+
+    // Compile group regexes in config order; an empty/absent regexp marks the
+    // catch-all. Mirrors `group_commits`' first-match-wins + catch-all rules.
+    let compiled: Vec<(Option<regex::Regex>, &ChangelogGroup)> = groups
+        .iter()
+        .map(|g| {
+            let re = g
+                .regexp
+                .as_deref()
+                .filter(|p| !p.is_empty())
+                .and_then(|p| regex::Regex::new(p).ok());
+            (re, g)
+        })
+        .collect();
+    let catch_all_idx = compiled.iter().position(|(re, _)| re.is_none());
+
+    let mut buckets: Vec<Vec<&str>> = vec![Vec::new(); compiled.len()];
+    let mut unmatched: Vec<&str> = Vec::new();
+
+    'bullet: for &line in curated {
+        let payload = strip_list_marker(line);
+        // Re-derive the conventional-commit subject so the group regexes match
+        // against the same `raw_message` shape `group_commits` sees.
+        let info = parse_commit_message(payload);
+        let raw = &info.raw_message;
+        for (idx, (re, _)) in compiled.iter().enumerate() {
+            if catch_all_idx == Some(idx) {
+                break;
+            }
+            if let Some(re) = re
+                && re.is_match(raw)
+            {
+                buckets[idx].push(line);
+                continue 'bullet;
+            }
+        }
+        if let Some(ci) = catch_all_idx {
+            buckets[ci].push(line);
+        } else {
+            unmatched.push(line);
+        }
+    }
+
+    // Emit non-empty groups in `order` (config order for equal/absent order).
+    let mut indexed: Vec<usize> = (0..compiled.len()).collect();
+    indexed.sort_by_key(|&i| compiled[i].1.order.unwrap_or(i32::MAX));
+
+    let mut out: Vec<String> = Vec::new();
+    for &i in &indexed {
+        if buckets[i].is_empty() {
+            continue;
+        }
+        out.push(format!("### {}", compiled[i].1.title));
+        out.extend(buckets[i].iter().map(|s| s.to_string()));
+    }
+    // Curated bullets that matched no group and had no catch-all to absorb them
+    // are preserved at the end under no heading rather than dropped.
+    out.extend(unmatched.iter().map(|s| s.to_string()));
+    out.join("\n")
+}
+
+/// Strip a leading Markdown list marker (`- ` or `* `, with optional
+/// indentation) from a bullet line, returning the bare payload.
+fn strip_list_marker(line: &str) -> &str {
+    let t = line.trim_start();
+    t.strip_prefix("- ")
+        .or_else(|| t.strip_prefix("* "))
+        .unwrap_or(t)
+        .trim_start()
+}
+
+/// Insert `promoted` (the new release section) among the existing released
+/// `## [<...>]` sections per `chronology`, returning the full section list.
+/// Existing section bodies are never re-sorted or re-emitted — this is
+/// insert-only.
+fn slot_sections(
+    sections: &[&str],
+    promoted: &[String],
+    tag: &str,
+    chronology: anodizer_core::config::Chronology,
+) -> Vec<String> {
+    use anodizer_core::config::Chronology;
+
+    // Index where each existing `## [<...>]` section heading begins.
+    let heading_idxs: Vec<usize> = sections
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| is_section_heading(l))
+        .map(|(i, _)| i)
+        .collect();
+
+    let insert_at = match chronology {
+        // Date: today's section is newest — insert before the first existing
+        // released section.
+        Chronology::Date => heading_idxs.first().copied().unwrap_or(sections.len()),
+        Chronology::Tag => tag_insert_index(sections, &heading_idxs, tag),
+    };
+
+    let mut out: Vec<String> = Vec::new();
+    out.extend(sections[..insert_at].iter().map(|s| s.to_string()));
+    out.extend(promoted.iter().cloned());
+    out.extend(sections[insert_at..].iter().map(|s| s.to_string()));
+    out
+}
+
+/// Compute the insert index (into `sections`) that keeps the `Tag` ordering
+/// invariant: clusters ascend lexically by tag-prefix, and within the new tag's
+/// prefix cluster versions descend by semver.
+fn tag_insert_index(sections: &[&str], heading_idxs: &[usize], tag: &str) -> usize {
+    let new_prefix = tag_prefix(tag);
+    let new_ver = anodizer_core::git::parse_semver_tag(tag).ok();
+
+    for &hi in heading_idxs {
+        let Some(existing_tag) = section_heading_tag(sections[hi]) else {
+            continue;
+        };
+        let existing_prefix = tag_prefix(existing_tag);
+        match new_prefix.cmp(&existing_prefix) {
+            std::cmp::Ordering::Less => return hi,
+            std::cmp::Ordering::Greater => continue,
+            std::cmp::Ordering::Equal => {
+                // Same cluster: insert before the first same-prefix section whose
+                // semver is strictly less than the new version (semver-descending).
+                let existing_ver = anodizer_core::git::parse_semver_tag(existing_tag).ok();
+                match (&new_ver, &existing_ver) {
+                    (Some(nv), Some(ev)) if nv > ev => return hi,
+                    (Some(_), None) => return hi,
+                    // Non-semver same-prefix tags fall back to lexical descending.
+                    (None, _) if tag > existing_tag => return hi,
+                    _ => continue,
+                }
+            }
+        }
+    }
+    sections.len()
+}
+
+/// Extract the `<tag>` from a `## [<tag>] - <date>` (or `## [<tag>]`) heading.
+fn section_heading_tag(line: &str) -> Option<&str> {
+    let rest = line.trim_end().strip_prefix("##")?.trim_start();
+    let rest = rest.strip_prefix('[')?;
+    let close = rest.find(']')?;
+    Some(&rest[..close])
+}
+
+/// Roll the compare-link footer for the root subsection-promote path. The new
+/// `[<tag>]:` lower bound and the `[Unreleased]:` upper anchor both derive from
+/// THIS track's `tag` / `from_tag` — never from a sibling track's existing
+/// `[Unreleased]:` anchor. All other `[<x>]:` footer links are preserved.
+fn push_root_footer(
+    out: &mut Vec<String>,
+    footer: &[&str],
+    tag: &str,
+    from_tag: Option<&str>,
+    base: Option<&str>,
+) {
+    let Some(base) = base else {
+        // No resolvable base — keep any existing footer verbatim, add nothing.
+        out.extend(footer.iter().map(|s| s.to_string()));
+        return;
+    };
+
+    // Ensure a blank line separates the body from the footer block.
+    while out.last().is_some_and(|l| l.trim().is_empty()) {
+        out.pop();
+    }
+    out.push(String::new());
+
+    // Rolled `[Unreleased]:` anchored at this release's tag.
+    out.push(format!("[Unreleased]: {}/compare/{}...HEAD", base, tag));
+    // New `[<tag>]:` link when this track has a previous tag; first release of a
+    // track points at the release page rather than a 404 compare range.
+    if let Some(from) = from_tag {
+        out.push(format!("[{}]: {}/compare/{}...{}", tag, base, from, tag));
+    } else {
+        out.push(format!("[{}]: {}/releases/tag/{}", tag, base, tag));
+    }
+    // Preserve every prior `[<x>]:` link (skip the old `[Unreleased]:`).
+    for &line in footer {
+        if parse_unreleased_footer(line).is_some() {
+            continue;
+        }
+        out.push(line.to_string());
+    }
 }
 
 fn today_yyyy_mm_dd() -> String {
@@ -918,4 +1533,576 @@ fn synthesize_footer(
         out_lines.push(String::new());
     }
     push_compare_footer(out_lines, &base, old_anchor, &new_tag, to_version);
+}
+
+#[cfg(test)]
+mod root_section_tests {
+    use super::*;
+    use anodizer_core::config::{ChangelogGroup, Chronology};
+
+    /// Features (`^feat`) / Bug Fixes (`^fix`) groups, mirroring a typical
+    /// `groups:` config for the curated-bucketing tests.
+    fn feat_fix_groups() -> Vec<ChangelogGroup> {
+        vec![
+            ChangelogGroup {
+                title: "Features".to_string(),
+                regexp: Some("^feat".to_string()),
+                order: Some(0),
+                groups: None,
+            },
+            ChangelogGroup {
+                title: "Bug Fixes".to_string(),
+                regexp: Some("^fix".to_string()),
+                order: Some(1),
+                groups: None,
+            },
+        ]
+    }
+
+    /// Drive the pure subsection-promote transform with a fixed compare base.
+    fn promote(
+        existing: &str,
+        crate_name: &str,
+        tag: &str,
+        from_tag: Option<&str>,
+        chronology: Chronology,
+        groups: &[ChangelogGroup],
+        generated_body: &str,
+    ) -> Option<String> {
+        promote_subsection(PromoteArgs {
+            existing,
+            crate_name,
+            tag,
+            from_tag,
+            chronology,
+            groups,
+            generated_body,
+            base: Some("https://github.com/tj-smith47/cfgd"),
+        })
+        .expect("promote_subsection succeeds")
+    }
+
+    const TWO_TRACK_FIXTURE: &str = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### cfgd\n\
+- feat: add `cfgd man`\n\
+- fix: env scope\n\
+\n\
+### cfgd-core\n\
+- feat: broaden spec.env\n\
+\n\
+## [v0.6.0] - 2026-05-28\n\
+### Features\n\
+- prior cfgd thing\n\
+\n\
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...HEAD\n\
+[v0.6.0]: https://github.com/tj-smith47/cfgd/compare/v0.5.0...v0.6.0\n";
+
+    #[test]
+    fn single_subsection_promote_curated_regrouped_date() {
+        let groups = feat_fix_groups();
+        let out = promote(
+            TWO_TRACK_FIXTURE,
+            "cfgd",
+            "v0.7.0",
+            Some("v0.6.0"),
+            Chronology::Date,
+            &groups,
+            "",
+        )
+        .expect("some output");
+
+        let date = today_yyyy_mm_dd();
+        let expected = format!(
+            "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### cfgd-core\n\
+- feat: broaden spec.env\n\
+\n\
+## [v0.7.0] - {date}\n\
+### Features\n\
+- feat: add `cfgd man`\n\
+### Bug Fixes\n\
+- fix: env scope\n\
+\n\
+## [v0.6.0] - 2026-05-28\n\
+### Features\n\
+- prior cfgd thing\n\
+\n\
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.7.0...HEAD\n\
+[v0.7.0]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...v0.7.0\n\
+[v0.6.0]: https://github.com/tj-smith47/cfgd/compare/v0.5.0...v0.6.0\n"
+        );
+        assert_eq!(out, expected, "exact root promote output");
+    }
+
+    #[test]
+    fn other_subsections_retained_byte_identical() {
+        let groups = feat_fix_groups();
+        let out = promote(
+            TWO_TRACK_FIXTURE,
+            "cfgd",
+            "v0.7.0",
+            Some("v0.6.0"),
+            Chronology::Date,
+            &groups,
+            "",
+        )
+        .expect("some output");
+
+        // The non-promoted crate's subsection survives verbatim.
+        assert!(
+            out.contains("### cfgd-core\n- feat: broaden spec.env"),
+            "cfgd-core subsection must be retained verbatim: {out}"
+        );
+        // The promoted crate's subsection is gone from Unreleased.
+        let unreleased = out
+            .split("## [v0.7.0]")
+            .next()
+            .expect("text before promoted section");
+        assert!(
+            !unreleased.contains("### cfgd\n"),
+            "promoted ### cfgd subsection must be removed from Unreleased: {unreleased}"
+        );
+    }
+
+    #[test]
+    fn date_slots_new_section_directly_under_unreleased() {
+        let groups = feat_fix_groups();
+        let out = promote(
+            TWO_TRACK_FIXTURE,
+            "cfgd",
+            "v0.7.0",
+            Some("v0.6.0"),
+            Chronology::Date,
+            &groups,
+            "",
+        )
+        .expect("some output");
+
+        let promoted = out.find("## [v0.7.0]").expect("promoted heading");
+        let prior = out.find("## [v0.6.0]").expect("prior heading");
+        assert!(
+            promoted < prior,
+            "date chronology puts today's section above older releases: {out}"
+        );
+    }
+
+    /// Five-release reference timeline shared by the Tag/Date ordering tests.
+    /// Two `### crate` subsections under Unreleased so a promote keeps the
+    /// multi-track shape, plus four prior released sections in mixed order.
+    fn five_release_fixture() -> String {
+        "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### cfgd\n\
+- feat: new cfgd\n\
+\n\
+### cfgd-core\n\
+- feat: new core\n\
+\n\
+## [core-v0.5.0] - 2026-05-20\n\
+### Features\n\
+- core 0.5.0\n\
+\n\
+## [v0.6.0] - 2026-05-10\n\
+### Features\n\
+- cfgd 0.6.0\n\
+\n\
+## [core-v0.4.0] - 2026-05-01\n\
+### Features\n\
+- core 0.4.0\n\
+\n\
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/core-v0.5.0...HEAD\n\
+[core-v0.5.0]: https://github.com/tj-smith47/cfgd/compare/core-v0.4.0...core-v0.5.0\n\
+[v0.6.0]: https://github.com/tj-smith47/cfgd/compare/v0.5.0...v0.6.0\n\
+[core-v0.4.0]: https://github.com/tj-smith47/cfgd/releases/tag/core-v0.4.0\n"
+            .to_string()
+    }
+
+    /// Same release set as [`five_release_fixture`], but with the existing
+    /// released sections already in valid `Tag` order (prefix-clustered,
+    /// semver-descending): `core-v0.5.0, core-v0.4.0, v0.6.0`. A `Tag`-mode
+    /// promote must keep that invariant after inserting the new section.
+    fn five_release_tag_ordered_fixture() -> String {
+        "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### cfgd\n\
+- feat: new cfgd\n\
+\n\
+### cfgd-core\n\
+- feat: new core\n\
+\n\
+## [core-v0.5.0] - 2026-05-20\n\
+### Features\n\
+- core 0.5.0\n\
+\n\
+## [core-v0.4.0] - 2026-05-01\n\
+### Features\n\
+- core 0.4.0\n\
+\n\
+## [v0.6.0] - 2026-05-10\n\
+### Features\n\
+- cfgd 0.6.0\n\
+\n\
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/core-v0.5.0...HEAD\n\
+[core-v0.5.0]: https://github.com/tj-smith47/cfgd/compare/core-v0.4.0...core-v0.5.0\n\
+[core-v0.4.0]: https://github.com/tj-smith47/cfgd/releases/tag/core-v0.4.0\n\
+[v0.6.0]: https://github.com/tj-smith47/cfgd/compare/v0.5.0...v0.6.0\n"
+            .to_string()
+    }
+
+    /// Collect the ordered list of `## [<tag>]` section tags from a rendered
+    /// changelog (excluding `[Unreleased]`).
+    fn section_order(text: &str) -> Vec<String> {
+        text.lines()
+            .filter_map(section_heading_tag)
+            .filter(|t| !t.eq_ignore_ascii_case("unreleased"))
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn tag_clusters_by_prefix_then_semver_desc() {
+        let groups = feat_fix_groups();
+        // Tag v0.7.0 into a Tag-ordered timeline (core-v0.5.0, core-v0.4.0,
+        // v0.6.0). Tag ordering clusters `core-` (asc lexical) before `v`,
+        // semver-desc within each cluster, so v0.7.0 lands at the head of the
+        // `v` cluster (before v0.6.0) and after the whole `core-` cluster.
+        let out = promote(
+            &five_release_tag_ordered_fixture(),
+            "cfgd",
+            "v0.7.0",
+            Some("v0.6.0"),
+            Chronology::Tag,
+            &groups,
+            "",
+        )
+        .expect("some output");
+
+        assert_eq!(
+            section_order(&out),
+            vec!["core-v0.5.0", "core-v0.4.0", "v0.7.0", "v0.6.0"],
+            "tag chronology clusters by prefix then semver-desc: {out}"
+        );
+    }
+
+    #[test]
+    fn date_orders_newest_first_distinct_from_tag() {
+        let groups = feat_fix_groups();
+        let out = promote(
+            &five_release_fixture(),
+            "cfgd",
+            "v0.7.0",
+            Some("v0.6.0"),
+            Chronology::Date,
+            &groups,
+            "",
+        )
+        .expect("some output");
+
+        // Date inserts today's section at the very top of the version list,
+        // leaving all existing sections in their file order.
+        assert_eq!(
+            section_order(&out),
+            vec!["v0.7.0", "core-v0.5.0", "v0.6.0", "core-v0.4.0"],
+            "date chronology keeps today on top, others unchanged: {out}"
+        );
+    }
+
+    #[test]
+    fn multitrack_footer_derives_tag_from_own_from_tag_not_unreleased_anchor() {
+        // The shared `[Unreleased]:` anchor belongs to the `core-` track
+        // (core-v0.5.0), but we tag the `v` track. The new tag and compare
+        // lower-bound MUST come from this track's from_tag (v0.6.0), not the
+        // anchor.
+        let groups = feat_fix_groups();
+        let out = promote(
+            &five_release_fixture(),
+            "cfgd",
+            "v0.7.0",
+            Some("v0.6.0"),
+            Chronology::Date,
+            &groups,
+            "",
+        )
+        .expect("some output");
+
+        assert!(
+            out.contains("[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.7.0...HEAD"),
+            "Unreleased anchor must roll to this track's new tag: {out}"
+        );
+        assert!(
+            out.contains("[v0.7.0]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...v0.7.0"),
+            "new compare link must use this track's from_tag, not the anchor: {out}"
+        );
+        assert!(
+            !out.contains("core-v0.7.0"),
+            "must NOT synthesize a core-prefixed tag from the shared anchor: {out}"
+        );
+        // Pre-existing footer links survive.
+        assert!(
+            out.contains("[v0.6.0]: https://github.com/tj-smith47/cfgd/compare/v0.5.0...v0.6.0"),
+            "prior footer links preserved: {out}"
+        );
+    }
+
+    #[test]
+    fn generated_fill_when_subsection_absent() {
+        // A root with `### other` subsections under Unreleased but NO `### cfgd`
+        // subsection: cfgd still gets a section from the generated body.
+        let existing = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### cfgd-core\n\
+- feat: core work\n\
+\n\
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...HEAD\n";
+        let groups = feat_fix_groups();
+        let generated = "### Features\n- feat: generated cfgd commit";
+        let out = promote(
+            existing,
+            "cfgd",
+            "v0.7.0",
+            Some("v0.6.0"),
+            Chronology::Date,
+            &groups,
+            generated,
+        )
+        .expect("some output");
+
+        assert!(
+            out.contains("## [v0.7.0] - "),
+            "generated section heading present: {out}"
+        );
+        assert!(
+            out.contains("- feat: generated cfgd commit"),
+            "generated body fills the section: {out}"
+        );
+        // The unrelated subsection is untouched.
+        assert!(
+            out.contains("### cfgd-core\n- feat: core work"),
+            "other subsection retained: {out}"
+        );
+    }
+
+    #[test]
+    fn returns_none_when_no_subsection_and_no_commits() {
+        let existing = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### cfgd-core\n\
+- feat: core work\n\
+\n\
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...HEAD\n";
+        let groups = feat_fix_groups();
+        let out = promote(
+            existing,
+            "cfgd",
+            "v0.7.0",
+            Some("v0.6.0"),
+            Chronology::Date,
+            &groups,
+            "",
+        );
+        assert!(
+            out.is_none(),
+            "no curated subsection and no generated commits → nothing to release"
+        );
+    }
+
+    #[test]
+    fn idempotent_second_promote_is_noop() {
+        let groups = feat_fix_groups();
+        let first = promote(
+            TWO_TRACK_FIXTURE,
+            "cfgd",
+            "v0.7.0",
+            Some("v0.6.0"),
+            Chronology::Date,
+            &groups,
+            "",
+        )
+        .expect("first promote");
+
+        // Re-running with the same tag must be a no-op: the `## [v0.7.0]`
+        // section already exists.
+        let second = promote(
+            &first,
+            "cfgd",
+            "v0.7.0",
+            Some("v0.6.0"),
+            Chronology::Date,
+            &groups,
+            "",
+        )
+        .expect("second promote");
+        assert_eq!(first, second, "second promote with same tag is a no-op");
+    }
+
+    #[test]
+    fn curated_bullet_with_no_group_and_no_catchall_is_preserved() {
+        let existing = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### cfgd\n\
+- feat: a feature\n\
+- docs: update readme\n\
+\n\
+### cfgd-core\n\
+- feat: core\n\
+\n\
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...HEAD\n";
+        // Only Features (^feat) configured; no catch-all. The `docs:` bullet
+        // matches no group and must NOT be dropped.
+        let groups = vec![ChangelogGroup {
+            title: "Features".to_string(),
+            regexp: Some("^feat".to_string()),
+            order: Some(0),
+            groups: None,
+        }];
+        let out = promote(
+            existing,
+            "cfgd",
+            "v0.7.0",
+            Some("v0.6.0"),
+            Chronology::Date,
+            &groups,
+            "",
+        )
+        .expect("some output");
+
+        assert!(
+            out.contains("### Features\n- feat: a feature"),
+            "feat bullet bucketed under Features: {out}"
+        );
+        assert!(
+            out.contains("- docs: update readme"),
+            "unmatched curated bullet must be preserved, not dropped: {out}"
+        );
+    }
+
+    #[test]
+    fn no_groups_emits_curated_bullets_flat() {
+        let existing = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### cfgd\n\
+- feat: a feature\n\
+- fix: a fix\n\
+\n\
+### cfgd-core\n\
+- feat: core\n\
+\n\
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...HEAD\n";
+        let out = promote(
+            existing,
+            "cfgd",
+            "v0.7.0",
+            Some("v0.6.0"),
+            Chronology::Date,
+            &[],
+            "",
+        )
+        .expect("some output");
+
+        let date = today_yyyy_mm_dd();
+        // No group headings — bullets stay flat under the version heading.
+        assert!(
+            out.contains(&format!(
+                "## [v0.7.0] - {date}\n- feat: a feature\n- fix: a fix\n"
+            )),
+            "no groups → flat bullets, no ### headings: {out}"
+        );
+    }
+
+    #[test]
+    fn degenerate_flat_root_uses_bare_version_heading() {
+        // A flat `[Unreleased]` with NO `### crate` subsections takes the flat
+        // KaC roll path (bare `## [<version>]` heading, not the full tag).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("CHANGELOG.md");
+        // A genuinely flat single-track `[Unreleased]`: bare bullets, no `###`
+        // group/crate subsections. This is the degenerate N=1 shape.
+        std::fs::write(
+            &path,
+            "# Changelog\n\
+\n\
+## [Unreleased]\n\
+- a feature\n\
+\n\
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...HEAD\n",
+        )
+        .expect("write fixture");
+
+        // No `### crate` subsection → has_crate_subsections == false.
+        let existing = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            !has_crate_subsections(&existing, &[]),
+            "flat Unreleased has no crate subsections"
+        );
+
+        // The flat path emits a bare-version heading. Drive it through the
+        // same merge the degenerate branch of render_root_section uses.
+        let date = today_yyyy_mm_dd();
+        let new_section = format!("## [0.7.0] - {date}\n\n- a feature\n");
+        let merged = merge_into_changelog(MergeArgs {
+            file_path: &path,
+            crate_name: "cfgd",
+            new_section: &new_section,
+            generated_body: "- a feature",
+            from_tag: Some("v0.6.0"),
+            to_version: "0.7.0",
+            workspace_root: dir.path(),
+        })
+        .expect("flat merge");
+
+        assert!(
+            merged.contains(&format!("## [0.7.0] - {date}")),
+            "degenerate flat root uses a bare-version heading: {merged}"
+        );
+        assert!(
+            !merged.contains("## [v0.7.0]"),
+            "flat path must NOT use the full tag in the heading: {merged}"
+        );
+    }
+
+    #[test]
+    fn group_headings_under_flat_unreleased_are_not_crate_subsections() {
+        // A single-track flat `[Unreleased]` whose curated body uses
+        // `### Features` / `### Bug Fixes` group headings must NOT be mistaken
+        // for a multi-track root, given those titles are configured groups.
+        let existing = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+### Features\n\
+- a feature\n\
+### Bug Fixes\n\
+- a fix\n\
+\n\
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...HEAD\n";
+        let titles = vec!["Features".to_string(), "Bug Fixes".to_string()];
+        assert!(
+            !has_crate_subsections(existing, &titles),
+            "group headings are not crate subsections when titles are configured"
+        );
+        // Without the group titles, the same `### Features` heading would be
+        // (mis)read as a crate subsection — proving the disambiguation is what
+        // separates the two shapes.
+        assert!(
+            has_crate_subsections(existing, &[]),
+            "absent group titles, any ### heading reads as a crate subsection"
+        );
+    }
 }
