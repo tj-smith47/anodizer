@@ -2105,4 +2105,293 @@ mod root_section_tests {
             "absent group titles, any ### heading reads as a crate subsection"
         );
     }
+
+    #[test]
+    fn first_release_footer_points_at_release_tag_not_compare() {
+        // First release of a track: `from_tag=None`. The new `[<tag>]:` link
+        // must point at the release page (no 404 compare range), while the
+        // rolled `[Unreleased]:` anchor still advances to this release's tag.
+        let existing = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### cfgd\n\
+- feat: first ever\n\
+\n\
+### cfgd-core\n\
+- feat: core work\n";
+        let groups = feat_fix_groups();
+        let out = promote(
+            existing,
+            "cfgd",
+            "v0.7.0",
+            None,
+            Chronology::Date,
+            &groups,
+            "",
+        )
+        .expect("some output");
+
+        assert!(
+            out.contains("[v0.7.0]: https://github.com/tj-smith47/cfgd/releases/tag/v0.7.0"),
+            "first release must link the release page, not a compare range: {out}"
+        );
+        assert!(
+            !out.contains("compare/...v0.7.0") && !out.contains("/compare/None"),
+            "first release must NOT synthesize a compare lower-bound: {out}"
+        );
+        assert!(
+            out.contains("[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.7.0...HEAD"),
+            "Unreleased anchor must still roll to this release's tag: {out}"
+        );
+    }
+
+    /// Initialize a fresh git repo with `user`/`email` configured and a single
+    /// `feat:` commit, so the commit-driven `render_root_section` branch has
+    /// real history. Mirrors the repo setup the existing stage tests use.
+    fn init_repo_with_commit(dir: &std::path::Path) {
+        use std::process::Command;
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+        ] {
+            let ok = Command::new("git")
+                .args(&args)
+                .current_dir(dir)
+                .status()
+                .expect("git command runs")
+                .success();
+            assert!(ok, "git {args:?} failed");
+        }
+        std::fs::write(dir.join("README.md"), "seed").expect("write seed file");
+        for args in [
+            vec!["add", "."],
+            vec!["commit", "-q", "-m", "feat: initial work"],
+        ] {
+            let ok = Command::new("git")
+                .args(&args)
+                .current_dir(dir)
+                .status()
+                .expect("git command runs")
+                .success();
+            assert!(ok, "git {args:?} failed");
+        }
+    }
+
+    /// Tag the current HEAD with `tag`, then add `file_change` as a fresh
+    /// commit, so `<tag>..HEAD` resolves to a non-empty range.
+    fn tag_and_commit(dir: &std::path::Path, tag: &str, message: &str) {
+        use std::process::Command;
+        let run = |args: &[&str]| {
+            let ok = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .expect("git command runs")
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        run(&["tag", tag]);
+        std::fs::write(dir.join("post.txt"), "post-tag").expect("write post-tag file");
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", message]);
+    }
+
+    /// Write a minimal `.anodizer.yaml` carrying a `changelog:` block with
+    /// Features/Bug Fixes groups so config-load + grouping resolve.
+    fn write_anodizer_yaml(dir: &std::path::Path) {
+        // A raw string keeps the YAML block's leading indentation intact (a
+        // `\`-continued string literal would strip it and break the parse).
+        let yaml = r#"changelog:
+  groups:
+    - title: Features
+      regexp: '^feat'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^fix'
+      order: 1
+"#;
+        std::fs::write(dir.join(".anodizer.yaml"), yaml).expect("write .anodizer.yaml");
+    }
+
+    #[test]
+    fn render_root_section_absent_file_creates_initial_root() {
+        // IO branch (a): no root CHANGELOG.md yet, but the crate has commits →
+        // synthesize the initial root file with a bare `## [<to_version>]`
+        // first-write section.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        init_repo_with_commit(root);
+        write_anodizer_yaml(root);
+
+        let update = render_root_section(
+            root,
+            "cfgd",
+            root,
+            None,
+            "0.7.0",
+            "v0.7.0",
+            Chronology::Date,
+        )
+        .expect("render_root_section succeeds")
+        .expect("commits present → an update is produced");
+
+        assert_eq!(
+            update.file_path,
+            root.join("CHANGELOG.md"),
+            "writes the root file, not a per-crate file"
+        );
+        let text = &update.rendered_text;
+        let date = today_yyyy_mm_dd();
+        assert!(
+            text.contains(&format!("## [0.7.0] - {date}")),
+            "initial root carries a bare-version first-write heading: {text}"
+        );
+        // The `feat: initial work` commit is grouped under Features; the
+        // default git format renders it as `<sha> initial work` (the
+        // conventional-commit prefix is consumed by the group match).
+        assert!(
+            text.contains("### Features"),
+            "the commit is grouped under its configured heading: {text}"
+        );
+        assert!(
+            text.contains("initial work"),
+            "the commit feeds the generated body: {text}"
+        );
+    }
+
+    #[test]
+    fn render_root_section_degenerate_flat_uses_bare_version_heading() {
+        // IO branch (b): a flat `[Unreleased]` with NO `### crate` subsections
+        // (only group headings) → flat roll, bare `## [<to_version>]` heading.
+        // The flat roll is commit-gated (same `render_section_body` gate as
+        // `render_crate_section`), so a real commit must be present for it to
+        // fire; the curated `[Unreleased]` body is then promoted verbatim.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        // Commit, tag v0.6.0, then a NEW commit so `v0.6.0..HEAD` is non-empty
+        // and the commit-gated flat roll fires.
+        init_repo_with_commit(root);
+        tag_and_commit(root, "v0.6.0", "feat: post-tag work");
+        write_anodizer_yaml(root);
+        let existing = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### Features\n\
+- a curated feature\n\
+\n\
+## [v0.6.0] - 2026-05-28\n\
+### Features\n\
+- prior thing\n\
+\n\
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...HEAD\n\
+[v0.6.0]: https://github.com/tj-smith47/cfgd/compare/v0.5.0...v0.6.0\n";
+        std::fs::write(root.join("CHANGELOG.md"), existing).expect("write root");
+
+        let update = render_root_section(
+            root,
+            "cfgd",
+            root,
+            Some("v0.6.0"),
+            "0.7.0",
+            "v0.7.0",
+            Chronology::Date,
+        )
+        .expect("render_root_section succeeds")
+        .expect("curated flat Unreleased → an update is produced");
+
+        let text = &update.rendered_text;
+        let date = today_yyyy_mm_dd();
+        assert!(
+            text.contains(&format!("## [0.7.0] - {date}")),
+            "degenerate flat root uses the bare-version heading: {text}"
+        );
+        assert!(
+            !text.contains("## [v0.7.0]"),
+            "flat path must NOT use the full tag in the heading: {text}"
+        );
+        // Curated content is promoted verbatim by the flat roll.
+        assert!(
+            text.contains("- a curated feature"),
+            "curated body promoted verbatim: {text}"
+        );
+    }
+
+    #[test]
+    fn render_root_section_subsection_promote_uses_full_tag_heading() {
+        // IO branch (c): a real `### cfgd` subsection under `[Unreleased]` →
+        // full subsection promote, `## [<tag>]` heading, footer base parsed
+        // from the existing compare link (resolve_compare_base, not remote).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        write_anodizer_yaml(root);
+        // The locked two-track fixture shape: cfgd + cfgd-core subsections.
+        let existing = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### cfgd\n\
+- feat: add `cfgd man`\n\
+- fix: env scope\n\
+\n\
+### cfgd-core\n\
+- feat: broaden spec.env\n\
+\n\
+## [v0.6.0] - 2026-05-28\n\
+### Features\n\
+- prior cfgd thing\n\
+\n\
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...HEAD\n\
+[v0.6.0]: https://github.com/tj-smith47/cfgd/compare/v0.5.0...v0.6.0\n";
+        std::fs::write(root.join("CHANGELOG.md"), existing).expect("write root");
+
+        let update = render_root_section(
+            root,
+            "cfgd",
+            root,
+            Some("v0.6.0"),
+            "0.7.0",
+            "v0.7.0",
+            Chronology::Date,
+        )
+        .expect("render_root_section succeeds")
+        .expect("curated ### cfgd subsection → an update is produced");
+
+        let text = &update.rendered_text;
+        let date = today_yyyy_mm_dd();
+        assert_eq!(
+            update.file_path,
+            root.join("CHANGELOG.md"),
+            "promotes into the root file"
+        );
+        assert!(
+            text.contains(&format!("## [v0.7.0] - {date}")),
+            "subsection promote uses the FULL tag heading: {text}"
+        );
+        // Curated bullets bucketed under Features/Bug Fixes, verbatim.
+        assert!(
+            text.contains("### Features\n- feat: add `cfgd man`"),
+            "feat bullet bucketed under Features: {text}"
+        );
+        assert!(
+            text.contains("### Bug Fixes\n- fix: env scope"),
+            "fix bullet bucketed under Bug Fixes: {text}"
+        );
+        // The other crate's subsection is retained verbatim under Unreleased.
+        assert!(
+            text.contains("### cfgd-core\n- feat: broaden spec.env"),
+            "sibling subsection retained: {text}"
+        );
+        // resolve_compare_base parsed the existing footer's host (no remote).
+        assert!(
+            text.contains("[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.7.0...HEAD"),
+            "footer base parsed from the existing compare link: {text}"
+        );
+        assert!(
+            text.contains("[v0.7.0]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...v0.7.0"),
+            "new compare link derives from this track's from_tag: {text}"
+        );
+    }
 }
