@@ -1,4 +1,4 @@
-use super::remote::{parse_github_remote, parse_remote_owner_repo};
+use super::remote::{parse_github_remote, parse_remote_owner_repo, parse_remote_web_base};
 use super::semver::{compare_prerelease, parse_semver, parse_semver_tag};
 use super::tags::{
     find_latest_tag_matching, find_latest_tag_matching_with_prefix, find_previous_tag,
@@ -186,6 +186,61 @@ fn test_parse_remote_empty() {
 fn test_parse_remote_http() {
     let result = parse_remote_owner_repo("http://gitlab.local/team/project.git");
     assert_eq!(result, Some(("team".to_string(), "project".to_string())));
+}
+
+// -- parse_remote_web_base (host-preserving) ------------------------------
+
+#[test]
+fn test_web_base_github_https() {
+    assert_eq!(
+        parse_remote_web_base("https://github.com/owner/repo.git").as_deref(),
+        Some("https://github.com/owner/repo")
+    );
+}
+
+#[test]
+fn test_web_base_github_ssh() {
+    assert_eq!(
+        parse_remote_web_base("git@github.com:owner/repo.git").as_deref(),
+        Some("https://github.com/owner/repo")
+    );
+}
+
+#[test]
+fn test_web_base_gitlab_ssh_self_hosted() {
+    assert_eq!(
+        parse_remote_web_base("git@gitlab.example.com:team/widget.git").as_deref(),
+        Some("https://gitlab.example.com/team/widget")
+    );
+}
+
+#[test]
+fn test_web_base_gitea_https_nested_group() {
+    assert_eq!(
+        parse_remote_web_base("https://gitea.example.com/group/subgroup/repo.git").as_deref(),
+        Some("https://gitea.example.com/group/subgroup/repo")
+    );
+}
+
+#[test]
+fn test_web_base_http_normalized_to_https() {
+    assert_eq!(
+        parse_remote_web_base("http://gitlab.local/team/project.git").as_deref(),
+        Some("https://gitlab.local/team/project")
+    );
+}
+
+#[test]
+fn test_web_base_https_strips_userinfo() {
+    assert_eq!(
+        parse_remote_web_base("https://user:token@gitlab.com/owner/repo.git").as_deref(),
+        Some("https://gitlab.com/owner/repo")
+    );
+}
+
+#[test]
+fn test_web_base_empty() {
+    assert_eq!(parse_remote_web_base(""), None);
 }
 
 #[test]

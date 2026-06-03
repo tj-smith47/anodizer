@@ -3507,6 +3507,223 @@ fn kac_no_footer_link_still_rolls_heading() {
 }
 
 #[test]
+fn kac_second_roll_same_version_is_noop() {
+    // After rolling 0.6.0 once, the file already has a `## [0.6.0]` section.
+    // A second roll for the SAME version must NOT promote the freshly-emptied
+    // `## [Unreleased]` into a duplicate `## [0.6.0]` section.
+    let fixture = kac_fixture("v0.5.0", "\n### Fixes\n- curated\n\n");
+    let first = run_merge(&fixture, "### Fixes\n- gen", Some("v0.5.0"), "0.6.0");
+    assert!(
+        first.contains("## [0.6.0] - "),
+        "first roll missing: {first}"
+    );
+
+    // Feed the rolled output back through the merge for the same version.
+    let second = run_merge(&first, "### Fixes\n- gen2", Some("v0.6.0"), "0.6.0");
+    assert_eq!(
+        second, first,
+        "a second roll for the same version must be a no-op: {second}"
+    );
+    // Exactly one `## [0.6.0]` heading — no duplicate promotion.
+    let count = second.matches("## [0.6.0]").count();
+    assert_eq!(
+        count, 1,
+        "expected one [0.6.0] section, found {count}: {second}"
+    );
+}
+
+#[test]
+fn kac_unreleased_only_section_with_footer() {
+    // A KAC file whose ONLY section is `## [Unreleased]` (no prior released
+    // section) but which DOES carry a `[Unreleased]:` footer link.
+    let fixture = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### Features\n\
+- shiny new thing\n\
+\n\
+[Unreleased]: https://github.com/acme/widget/compare/v0.1.0...HEAD\n";
+    let out = run_merge(fixture, "### Features\n- gen", Some("v0.1.0"), "0.2.0");
+
+    // Promotion happened and a fresh empty Unreleased sits above it.
+    assert!(
+        out.contains("## [0.2.0] - "),
+        "promoted heading missing: {out}"
+    );
+    assert!(
+        out.contains("- shiny new thing"),
+        "curated content lost: {out}"
+    );
+    let unreleased_pos = out.find("## [Unreleased]").expect("fresh Unreleased");
+    let promoted_pos = out.find("## [0.2.0]").expect("promoted section");
+    assert!(
+        unreleased_pos < promoted_pos,
+        "fresh Unreleased must precede the promoted release: {out}"
+    );
+    // Footer rolled: new Unreleased compare + new version compare line.
+    assert!(
+        out.contains("[Unreleased]: https://github.com/acme/widget/compare/v0.2.0...HEAD"),
+        "Unreleased footer must roll to v0.2.0...HEAD: {out}"
+    );
+    assert!(
+        out.contains("[0.2.0]: https://github.com/acme/widget/compare/v0.1.0...v0.2.0"),
+        "new [0.2.0] compare link missing: {out}"
+    );
+}
+
+#[test]
+fn kac_unreleased_content_then_footer_no_other_section() {
+    // `## [Unreleased]` with curated content immediately followed by the
+    // footer block — no other `## ` heading between body and footer. The
+    // curated body must be bounded BEFORE the footer (footer not pulled in).
+    let fixture = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### Fixes\n\
+- a real fix\n\
+\n\
+[Unreleased]: https://github.com/acme/widget/compare/v0.1.0...HEAD\n";
+    let out = run_merge(fixture, "### Fixes\n- gen", Some("v0.1.0"), "0.2.0");
+
+    assert!(
+        out.contains("## [0.2.0] - "),
+        "promoted heading missing: {out}"
+    );
+    assert!(out.contains("- a real fix"), "curated content lost: {out}");
+    // The footer link must NOT appear inside the promoted body: there must be
+    // exactly one `[Unreleased]:` line and it sits after the `[0.2.0]:` rolls,
+    // not glued under the promoted heading. Assert the body line precedes the
+    // footer and the footer rolled correctly.
+    let fix_pos = out.find("- a real fix").expect("fix line");
+    let footer_pos = out
+        .find("[Unreleased]: https://github.com/acme/widget/compare/v0.2.0...HEAD")
+        .expect("rolled footer");
+    assert!(
+        fix_pos < footer_pos,
+        "curated body must precede the footer block: {out}"
+    );
+    assert!(
+        out.contains("[0.2.0]: https://github.com/acme/widget/compare/v0.1.0...v0.2.0"),
+        "new [0.2.0] compare link missing: {out}"
+    );
+    // Exactly one rolled `[Unreleased]:` footer line.
+    let count = out
+        .lines()
+        .filter(|l| l.starts_with("[Unreleased]:"))
+        .count();
+    assert_eq!(
+        count, 1,
+        "expected one [Unreleased]: footer, got {count}: {out}"
+    );
+}
+
+/// Initialize a fresh git repo at `dir` with an `origin` remote pointing at
+/// `remote_url`, so the synthesize-footer path can resolve a web base.
+fn init_repo_with_origin(dir: &std::path::Path, remote_url: &str) {
+    use std::process::Command;
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "user.name", "Test"],
+        vec!["remote", "add", "origin", remote_url],
+    ] {
+        let ok = Command::new("git")
+            .args(&args)
+            .current_dir(dir)
+            .status()
+            .expect("git command runs")
+            .success();
+        assert!(ok, "git {args:?} failed");
+    }
+}
+
+#[test]
+fn kac_synthesize_footer_from_github_remote() {
+    // KAC file with a `## [Unreleased]` heading but NO footer link. With a
+    // real `origin` remote configured, a footer is synthesized from it.
+    let dir = tempfile::tempdir().expect("tempdir");
+    init_repo_with_origin(dir.path(), "https://github.com/acme/widget.git");
+    let path = dir.path().join("CHANGELOG.md");
+    let fixture = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### Fixes\n\
+- curated fix\n\
+\n\
+## [0.1.0] - 2026-01-01\n\
+\n\
+- old\n";
+    std::fs::write(&path, fixture).expect("write fixture");
+
+    let out = merge_into_changelog(MergeArgs {
+        file_path: &path,
+        crate_name: "widget",
+        new_section: "## [0.2.0] - 2026-06-03\n\n### Fixes\n- gen\n",
+        generated_body: "### Fixes\n- gen",
+        from_tag: Some("v0.1.0"),
+        to_version: "0.2.0",
+        workspace_root: dir.path(),
+    })
+    .expect("merge succeeds");
+
+    assert!(
+        out.contains("## [0.2.0] - "),
+        "promoted heading missing: {out}"
+    );
+    assert!(
+        out.contains("[Unreleased]: https://github.com/acme/widget/compare/v0.2.0...HEAD"),
+        "synthesized Unreleased footer missing/wrong: {out}"
+    );
+    assert!(
+        out.contains("[0.2.0]: https://github.com/acme/widget/compare/v0.1.0...v0.2.0"),
+        "synthesized [0.2.0] compare link missing/wrong: {out}"
+    );
+}
+
+#[test]
+fn kac_synthesize_footer_from_gitlab_remote_is_host_correct() {
+    // A self-hosted GitLab origin must yield a host-correct compare base —
+    // never a hardcoded github.com URL.
+    let dir = tempfile::tempdir().expect("tempdir");
+    init_repo_with_origin(dir.path(), "git@gitlab.example.com:team/widget.git");
+    let path = dir.path().join("CHANGELOG.md");
+    let fixture = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### Fixes\n\
+- curated fix\n";
+    std::fs::write(&path, fixture).expect("write fixture");
+
+    let out = merge_into_changelog(MergeArgs {
+        file_path: &path,
+        crate_name: "widget",
+        new_section: "## [0.2.0] - 2026-06-03\n\n### Fixes\n- gen\n",
+        generated_body: "### Fixes\n- gen",
+        from_tag: Some("v0.1.0"),
+        to_version: "0.2.0",
+        workspace_root: dir.path(),
+    })
+    .expect("merge succeeds");
+
+    assert!(
+        out.contains("[Unreleased]: https://gitlab.example.com/team/widget/compare/v0.2.0...HEAD"),
+        "synthesized footer must use the GitLab host: {out}"
+    );
+    assert!(
+        out.contains("[0.2.0]: https://gitlab.example.com/team/widget/compare/v0.1.0...v0.2.0"),
+        "synthesized [0.2.0] link must use the GitLab host: {out}"
+    );
+    assert!(
+        !out.contains("github.com"),
+        "must never synthesize a github.com URL for a non-GitHub remote: {out}"
+    );
+}
+
+#[test]
 fn non_kac_file_behavior_unchanged() {
     // A simple non-KAC file (no `## [Unreleased]` heading): the section is
     // spliced after the H1 and nothing else is touched.

@@ -38,7 +38,8 @@ pub use github_api::{
 };
 pub use remote::{
     detect_github_repo, detect_github_repo_in, detect_owner_repo, detect_owner_repo_in,
-    has_remote_in, parse_github_remote, parse_remote_owner_repo,
+    detect_remote_web_base_in, has_remote_in, parse_github_remote, parse_remote_owner_repo,
+    parse_remote_web_base,
 };
 pub use semver::{SemVer, parse_semver, parse_semver_tag};
 pub use snapshot_sde::resolve_snapshot_sde;
