@@ -369,8 +369,8 @@ fn render_commit_line(
     Ok(())
 }
 // ---------------------------------------------------------------------------
-// Public render API — used by `anodizer bump --commit` to bundle a changelog
-// edit alongside the version bump in a single commit.
+// Public render API — produces a single staged changelog edit that can be
+// bundled alongside a version bump in one commit.
 // ---------------------------------------------------------------------------
 
 /// Strategy describing how `ChangelogUpdate.rendered_text` relates to the
@@ -518,8 +518,8 @@ fn render_section_body(
             scm_provider: None,
         },
     )?;
-    // `render_changelog_with_provider` always emits a `## <title>` line; we
-    // suppressed it by passing `Some("")`, which produces `## \n\n`. Drop
+    // `render_changelog_with_provider` always emits a `## <title>` line,
+    // suppressed here by passing `Some("")`, which produces `## \n\n`. Drop
     // any empty heading at the start so the caller's `## [<version>]` heading
     // stands alone.
     let body = body.trim_start_matches("## \n\n").trim_start().to_string();
@@ -530,8 +530,8 @@ fn render_section_body(
 /// Render a `## [<to_version>]` section for the given crate's changelog and
 /// merge it into the crate's `CHANGELOG.md`.
 ///
-/// Used by `anodizer bump --commit` to produce a single staged file edit that
-/// can be bundled into the bump commit.
+/// Produces a single [`ChangelogUpdate`] carrying the full merged file content
+/// so a version bump can bundle the changelog edit into one staged commit.
 ///
 /// Returns `Ok(None)` when:
 ///   - `<workspace_root>/.anodizer.yaml` is absent, unreadable, or has no
@@ -611,12 +611,16 @@ pub fn render_root_section(
     chronology: anodizer_core::config::Chronology,
 ) -> Result<Option<ChangelogUpdate>> {
     let rendered = render_section_body(workspace_root, crate_path, from_tag)?;
-    // Load groups from config directly (not just from `rendered`) so a curated
-    // subsection with no qualifying commits still buckets under the configured
-    // group headings.
-    let groups = load_changelog_config(workspace_root)?
-        .and_then(|c| c.groups)
-        .unwrap_or_default();
+    // Reuse the config already parsed by `render_section_body`. Only re-load on
+    // the `None` arm (no `changelog:` block, or a curated subsection with no
+    // qualifying commits) so a curated promote still buckets under the
+    // configured group headings without a second disk read.
+    let groups = match &rendered {
+        Some((cfg, _)) => cfg.groups.clone().unwrap_or_default(),
+        None => load_changelog_config(workspace_root)?
+            .and_then(|c| c.groups)
+            .unwrap_or_default(),
+    };
     let group_titles: Vec<String> = groups.iter().map(|g| g.title.clone()).collect();
     let generated_body = rendered
         .as_ref()
@@ -991,9 +995,20 @@ fn bucket_curated_bullets(curated: &[&str], groups: &[ChangelogGroup]) -> String
 
     let mut buckets: Vec<Vec<&str>> = vec![Vec::new(); compiled.len()];
     let mut unmatched: Vec<&str> = Vec::new();
+    // Where the previous bullet landed, so a wrapped continuation line (no list
+    // marker) follows its parent bullet instead of being re-classified.
+    let mut last: Option<usize> = None;
 
     'bullet: for &line in curated {
-        let payload = strip_list_marker(line);
+        let Some(payload) = strip_list_marker(line) else {
+            // Continuation of the previous bullet (indented / no `-`/`*`
+            // marker): keep it with the parent's bucket, never re-classify.
+            match last {
+                Some(idx) => buckets[idx].push(line),
+                None => unmatched.push(line),
+            }
+            continue 'bullet;
+        };
         // Re-derive the conventional-commit subject so the group regexes match
         // against the same `raw_message` shape `group_commits` sees.
         let info = parse_commit_message(payload);
@@ -1006,13 +1021,16 @@ fn bucket_curated_bullets(curated: &[&str], groups: &[ChangelogGroup]) -> String
                 && re.is_match(raw)
             {
                 buckets[idx].push(line);
+                last = Some(idx);
                 continue 'bullet;
             }
         }
         if let Some(ci) = catch_all_idx {
             buckets[ci].push(line);
+            last = Some(ci);
         } else {
             unmatched.push(line);
+            last = None;
         }
     }
 
@@ -1036,12 +1054,15 @@ fn bucket_curated_bullets(curated: &[&str], groups: &[ChangelogGroup]) -> String
 
 /// Strip a leading Markdown list marker (`- ` or `* `, with optional
 /// indentation) from a bullet line, returning the bare payload.
-fn strip_list_marker(line: &str) -> &str {
+///
+/// Returns `None` when the line carries no list marker — a wrapped
+/// continuation of the preceding bullet — so the caller can attach it to that
+/// bullet rather than re-classifying it as a fresh entry.
+fn strip_list_marker(line: &str) -> Option<&str> {
     let t = line.trim_start();
     t.strip_prefix("- ")
         .or_else(|| t.strip_prefix("* "))
-        .unwrap_or(t)
-        .trim_start()
+        .map(str::trim_start)
 }
 
 /// Insert `promoted` (the new release section) among the existing released
@@ -1141,13 +1162,18 @@ fn push_root_footer(
     }
     out.push(String::new());
 
-    // Rolled `[Unreleased]:` anchored at this release's tag.
-    out.push(format!("[Unreleased]: {}/compare/{}...HEAD", base, tag));
-    // New `[<tag>]:` link when this track has a previous tag; first release of a
-    // track points at the release page rather than a 404 compare range.
     if let Some(from) = from_tag {
-        out.push(format!("[{}]: {}/compare/{}...{}", tag, base, from, tag));
+        // Same compare-link layout as the flat roll, single-sourced through
+        // `push_compare_footer`: `[Unreleased]: .../compare/<tag>...HEAD` and
+        // `[<tag>]: .../compare/<from>...<tag>`. The `[<tag>]:` label is the
+        // full tag because both the version-label and new-tag arguments are
+        // `tag` for this track.
+        push_compare_footer(out, base, from, tag, tag);
     } else {
+        // First release of a track: roll the `[Unreleased]:` anchor by hand
+        // and point `[<tag>]:` at the release page rather than a 404 compare
+        // range (no prior tag to compare against).
+        out.push(format!("[Unreleased]: {}/compare/{}...HEAD", base, tag));
         out.push(format!("[{}]: {}/releases/tag/{}", tag, base, tag));
     }
     // Preserve every prior `[<x>]:` link (skip the old `[Unreleased]:`).
@@ -1989,6 +2015,56 @@ mod root_section_tests {
         assert!(
             out.contains("- docs: update readme"),
             "unmatched curated bullet must be preserved, not dropped: {out}"
+        );
+    }
+
+    #[test]
+    fn wrapped_curated_bullet_continuation_stays_with_parent() {
+        // A curated bullet wrapped across two lines: the continuation (indented,
+        // no list marker) must follow its `feat:` parent under Features — not be
+        // re-classified to the catch-all / unmatched tail under another heading.
+        // A raw string keeps the 2-space continuation indent intact (a
+        // `\`-continued literal would strip it).
+        let existing = r#"# Changelog
+
+## [Unreleased]
+
+### cfgd
+- feat: add a long thing
+  that wraps to a second line
+- fix: a quick fix
+
+### cfgd-core
+- feat: core
+
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...HEAD
+"#;
+        let groups = feat_fix_groups();
+        let out = promote(
+            existing,
+            "cfgd",
+            "v0.7.0",
+            Some("v0.6.0"),
+            Chronology::Date,
+            &groups,
+            "",
+        )
+        .expect("some output");
+
+        // The continuation sits directly under its parent, both inside Features,
+        // and the `fix:` bullet is not interleaved between them.
+        assert!(
+            out.contains("### Features\n- feat: add a long thing\n  that wraps to a second line\n"),
+            "wrapped continuation must stay with its parent bullet under Features: {out}"
+        );
+        assert!(
+            out.contains("### Bug Fixes\n- fix: a quick fix"),
+            "the fix bullet still buckets under Bug Fixes: {out}"
+        );
+        // The continuation text must NOT leak to the end as an unmatched tail.
+        assert!(
+            !out.ends_with("  that wraps to a second line\n"),
+            "continuation must not be re-classified to the unmatched tail: {out}"
         );
     }
 
