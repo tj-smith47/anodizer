@@ -489,6 +489,62 @@ crates:
     );
 }
 
+/// A non-member crate whose manifest uses `version.workspace = true` has no
+/// literal `[package].version`, so the single-crate accessor yields the
+/// "0.0.0" sentinel. The guard must instead resolve against the workspace
+/// version (declared at the root) — not emit a false `expected 0.0.0`.
+#[test]
+fn non_member_inherited_version_resolves_against_workspace() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/member\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"3.1.0\"\n",
+    );
+    write(
+        root,
+        "crates/member/Cargo.toml",
+        "[package]\nname = \"member\"\nversion.workspace = true\nedition = \"2024\"\n",
+    );
+    write(root, "crates/member/src/lib.rs", "");
+    // Standalone crate OUTSIDE the member globs that ALSO inherits the
+    // workspace version — the Cargo-invalid-but-must-not-crash arrangement.
+    write(
+        root,
+        "crates/standalone/Cargo.toml",
+        "[package]\nname = \"standalone\"\nversion.workspace = true\nedition = \"2024\"\n",
+    );
+    write(root, "crates/standalone/src/lib.rs", "");
+    // Enrolled file carries the workspace version (v3.1.0), NOT 0.0.0.
+    write(root, "standalone-install.md", "pinned at v3.1.0\n");
+    write(
+        root,
+        ".anodizer.yaml",
+        r#"project_name: nonmemberinherit
+crates:
+  - name: standalone
+    path: crates/standalone
+    tag_template: "standalone-v{{ .Version }}"
+    version_files:
+      - standalone-install.md
+"#,
+    );
+
+    let run = run_check(root);
+    assert!(
+        run.success,
+        "non-member inherited-version crate should resolve against the workspace version: {}\n{}",
+        run.stdout, run.stderr
+    );
+    // Must NOT have emitted the sentinel as the expected version.
+    assert!(
+        !run.stderr.contains("expected 0.0.0"),
+        "the 0.0.0 sentinel must never surface as an expected version: {}",
+        run.stderr
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Lockstep with a crates: block: one shared top-level file enrolled under N
 // crates that all resolve to the same version collapses to a single check via
