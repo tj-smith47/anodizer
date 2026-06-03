@@ -225,7 +225,7 @@ pub fn build_plan(workspace_root: &Path, opts: &BumpOpts) -> Result<Vec<PlanRow>
 /// Find a crate's config across both top-level `crates:` and any
 /// `workspaces[*].crates`. cfgd-style monorepos put their crates under
 /// `workspaces:` rather than at the root.
-fn find_crate_in_config<'a>(
+pub(crate) fn find_crate_in_config<'a>(
     cfg: &'a anodizer_core::config::Config,
     name: &str,
 ) -> Option<&'a anodizer_core::config::CrateConfig> {

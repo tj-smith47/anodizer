@@ -164,7 +164,15 @@ fn commit_plan(
             Some(p) => p.to_path_buf(),
             None => continue,
         };
-        let tag_prefix = format!("{}-v", row.crate_name);
+        // Resolve the crate's tag prefix from its configured `tag_template`
+        // (matching the version-inference path), so the previous-tag range and
+        // the promoted heading honor a `v{{ Version }}` / custom scheme. Fall
+        // back to `{crate}-v` only when no template is configured.
+        let tag_prefix = changelog_config
+            .as_ref()
+            .and_then(|cfg| plan::find_crate_in_config(cfg, &row.crate_name))
+            .and_then(|c| anodizer_core::git::extract_tag_prefix(&c.tag_template))
+            .unwrap_or_else(|| format!("{}-v", row.crate_name));
         let from_tag = inference::find_last_tag_for_prefix(workspace_root, &tag_prefix)?;
         let full_tag = format!("{}{}", tag_prefix, row.next);
         changelog_targets.push(crate::commands::changelog_sync::ChangelogTarget {

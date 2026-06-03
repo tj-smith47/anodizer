@@ -640,9 +640,11 @@ changelog:
     )
     .unwrap();
     git_init(tmp.path());
-    git_add_commit(tmp.path(), "initial");
-    // Tag the initial state so the changelog inference range starts there.
-    run_git(tmp.path(), &["tag", "demo-v0.1.0"]);
+    git_add_commit(tmp.path(), "feat: groundwork before the release");
+    // Tag the initial state with the `v` scheme declared by tag_template so the
+    // changelog inference range resolves the prefix from the template (not the
+    // hardcoded `{crate}-v`) and starts at this tag.
+    run_git(tmp.path(), &["tag", "v0.1.0"]);
     // A feat commit since the tag — this is what the rendered section must
     // include.
     git_commit_empty_on_path(
@@ -710,6 +712,79 @@ changelog:
     assert!(
         cl.contains("sparkly new feature"),
         "changelog missing feat description: {cl}"
+    );
+    // The range must START at v0.1.0 (resolved from tag_template), so the
+    // pre-tag `groundwork` commit is EXCLUDED. Against the old hardcoded
+    // `demo-v` prefix, `find_last_tag_for_prefix("demo-v")` returns None →
+    // from_tag spans all history → this commit would leak into the section.
+    assert!(
+        !cl.contains("groundwork before the release"),
+        "section must exclude pre-v0.1.0 history (from_tag resolved wrong): {cl}"
+    );
+}
+
+/// A `v{{ Version }}` (no `{crate}-v`) template: the bump-produced root section
+/// heading is the bare `## [<version>]` and the rendered range starts at the
+/// `v`-prefixed previous tag. Against the old hardcoded `demo-v` prefix the
+/// previous-tag lookup misses `v0.1.0`, the range spans all history, and the
+/// pre-tag commit leaks in. This isolates the `from_tag` prefix-resolution fix.
+#[test]
+fn bump_changelog_v_template_resolves_prefix_and_range() {
+    let tmp = TempDir::new().unwrap();
+    single_crate_workspace(tmp.path());
+    fs::write(
+        tmp.path().join(".anodizer.yaml"),
+        r#"version: 2
+project_name: demo
+crates:
+  - name: demo
+    path: .
+    tag_template: "v{{ Version }}"
+changelog:
+  sort: asc
+"#,
+    )
+    .unwrap();
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "feat: pre-release groundwork");
+    run_git(tmp.path(), &["tag", "v0.1.0"]);
+    git_commit_empty_on_path(
+        tmp.path(),
+        "src/added.rs",
+        "pub fn g() {}",
+        "feat: shiny post-tag addition",
+    );
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["bump", "patch", "--commit", "-y"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "bump --commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let cl = fs::read_to_string(tmp.path().join("CHANGELOG.md")).unwrap();
+    // Heading is the bare version (`## [0.1.1]`), never a `{crate}-v`/`v`-tagged
+    // heading like `## [demo-v0.1.1]`.
+    assert!(
+        cl.contains("## [0.1.1]"),
+        "expected a bare-version heading `## [0.1.1]`: {cl}"
+    );
+    assert!(
+        !cl.contains("## [demo-v"),
+        "heading must not carry the {{crate}}-v prefix: {cl}"
+    );
+    // Range starts at v0.1.0: post-tag commit IN, pre-tag commit OUT.
+    assert!(
+        cl.contains("shiny post-tag addition"),
+        "post-tag feat must be in the section: {cl}"
+    );
+    assert!(
+        !cl.contains("pre-release groundwork"),
+        "pre-v0.1.0 history must be excluded (prefix resolved to `v`): {cl}"
     );
 }
 
