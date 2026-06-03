@@ -81,11 +81,12 @@ prepends the new section in the bump commit and leaves the prior ones intact:
 $ anodizer tag
 ...
 bundled changelog section for myapp → 0.2.0
-Created tag v0.2.0
+new_tag=v0.2.0
+old_tag=v0.1.0
 ```
 
 ```markdown
-# Changelog — myapp
+# Changelog
 
 ## [0.2.0] - 2026-06-03
 
@@ -109,7 +110,8 @@ untouched:
 ```text
 $ anodizer tag --no-changelog
 ...
-Created tag v0.2.1   # CHANGELOG.md unchanged
+new_tag=v0.2.1   # CHANGELOG.md unchanged
+old_tag=v0.2.0
 ```
 
 #### When the refresh runs
