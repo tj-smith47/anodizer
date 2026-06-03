@@ -60,7 +60,7 @@ Matching details:
   ```text
   $ anodizer tag
   ...
-  warning: enrolled file docs/install.md did not contain version 0.1.0 (nothing rewritten)
+  Warning: version_files: enrolled file docs/install.md did not contain version 0.1.0 (nothing rewritten)
   ```
 
 Pass `--dry-run` to preview the rewrite counts without writing any file.
@@ -76,7 +76,7 @@ non-zero, so CI fails before a release goes out:
 ```text
 $ anodizer check version-files
 STALE: charts/myapp/Chart.yaml (expected 0.2.0, not found)
-error: version_files check failed with 1 finding(s)
+Error: version_files check failed with 1 finding(s)
 $ echo $?
 1
 ```
@@ -85,11 +85,12 @@ When everything is in sync the command exits 0:
 
 ```text
 $ anodizer check version-files
-[check] all 3 version_files are in sync
+all 3 version_files are in sync
 ```
 
 When no crate enrolls any `version_files`, the guard is a no-op and exits 0 with
-a short note. Wire it into CI as a pre-release gate:
+a short note (`no version_files configured`). Wire it into CI as a pre-release
+gate:
 
 ```yaml
 - name: Check version files
@@ -106,11 +107,11 @@ multi-select:
 
 ```text
 $ anodizer init --version-files
-Select files to enroll under version_files (space to toggle, enter to confirm):
+Select files to enroll under version_files (space toggles, enter confirms)
   [x] charts/myapp/Chart.yaml
   [x] docs/install.md
   [ ] CONTRIBUTING.md
-[init] enrolled 2 file(s) under version_files in .anodizer.yaml
+enrolled 2 file(s) under version_files in .anodizer.yaml
   + charts/myapp/Chart.yaml
   + docs/install.md
 ```
