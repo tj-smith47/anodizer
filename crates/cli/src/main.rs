@@ -549,6 +549,7 @@ fn main() {
             no_push,
             push_remote,
             push_dry_run,
+            no_changelog,
             sub,
         } => match sub {
             Some(TagSub::Rollback {
@@ -568,6 +569,11 @@ fn main() {
                         anyhow::bail!(
                             "the --push family (--push/--no-push/--push-remote/--push-dry-run) \
                              applies to `anodizer tag`, not `tag rollback`"
+                        );
+                    }
+                    if no_changelog {
+                        anyhow::bail!(
+                            "--no-changelog applies to `anodizer tag`, not `tag rollback`"
                         );
                     }
                     let scope: Scope = scope.parse().map_err(anyhow::Error::msg)?;
@@ -594,6 +600,7 @@ fn main() {
                 no_push,
                 push_remote,
                 push_dry_run,
+                no_changelog,
                 config_override: cli.config.clone(),
                 verbose: cli.verbose,
                 debug: cli.debug,

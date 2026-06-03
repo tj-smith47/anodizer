@@ -216,6 +216,7 @@ Auto-tag based on commit message directives
 | `--no-push` | — | — | Push the tag only, leaving the version-sync bump commit local |
 | `--push-remote` | — | — | Remote to push to (default: origin) |
 | `--push-dry-run` | — | — | Create the tag + bump commit locally but only print (not run) the git push commands --push would use; pass --dry-run to also preview tagging |
+| `--no-changelog` | — | — | Skip refreshing CHANGELOG.md on this tag (overrides the changelog: config) |
 
 
 ### `anodizer tag rollback`

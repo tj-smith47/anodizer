@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::commands::bump::cargo_edit::{WorkspaceInfo, apply_plan, load_workspace};
 use crate::commands::bump::plan::{BumpLevel, PlanRow};
+use crate::commands::changelog_sync::{ChangelogTarget, render_and_stage_changelogs};
 use crate::commands::version_files_resolve::resolve_version_files;
 
 pub struct TagOpts {
@@ -27,6 +28,9 @@ pub struct TagOpts {
     pub push_remote: Option<String>,
     /// Preview the `git push` commands `--push` would run, without executing.
     pub push_dry_run: bool,
+    /// Skip refreshing `CHANGELOG.md` on this tag, overriding the `changelog:`
+    /// config (mirrors `--no-push`).
+    pub no_changelog: bool,
     pub config_override: Option<std::path::PathBuf>,
     pub verbose: bool,
     pub debug: bool,
@@ -65,6 +69,32 @@ fn resolve_tag_push_branch(
         Ok(Some(git::get_current_branch()?))
     } else {
         Ok(None)
+    }
+}
+
+/// Resolve whether `tag` should refresh `CHANGELOG.md` into the version-bump
+/// commit, mirroring how `bump` gates the same render loop.
+///
+/// Enabled when the `changelog:` config block is present and not skipped, and
+/// the user did not pass `--no-changelog`. A plain `skip: true` boolean
+/// disables; a templated `skip:` (e.g. `"{{ if IsSnapshot }}true{{ endif }}"`)
+/// is treated as enabled because `tag` has no release context to render the
+/// template against — the per-pipeline changelog stage evaluates such templates
+/// at release time, so suppressing here on an unrenderable template would be a
+/// false negative.
+fn resolve_changelog_enabled(
+    config: Option<&anodizer_core::config::Config>,
+    no_changelog: bool,
+) -> bool {
+    if no_changelog {
+        return false;
+    }
+    let Some(cl) = config.and_then(|c| c.changelog.as_ref()) else {
+        return false;
+    };
+    match cl.skip.as_ref() {
+        Some(skip) if !skip.is_template() => !skip.as_bool(),
+        _ => true,
     }
 }
 
@@ -167,6 +197,12 @@ pub fn run(opts: TagOpts) -> Result<()> {
     let git_config: Option<anodizer_core::config::GitConfig> =
         loaded_config.as_ref().and_then(|c| c.git.clone());
 
+    // Refresh CHANGELOG.md into the version-bump commit (riding the same
+    // `git add` as the Cargo.toml / version_files edits) when `changelog:` is
+    // configured and not skipped — `tag` is what release CI runs, so without
+    // this the changelogs rot between releases even though `bump` refreshes them.
+    let changelog_enabled = resolve_changelog_enabled(loaded_config.as_ref(), opts.no_changelog);
+
     let mut cfg = ResolvedConfig::from_tag_config(&tag_config, &opts);
 
     // Push controls shared by every tagging path. `remote` defaults to origin;
@@ -238,6 +274,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
                     PushControls {
                         remote: &remote,
                         config_push,
+                        changelog_enabled,
                     },
                     &log,
                 );
@@ -583,13 +620,20 @@ pub fn run(opts: TagOpts) -> Result<()> {
         // is the enrollment, rewritten with the shared old→new.
         let ws_version_files = resolve_version_files(None, loaded_config.as_ref());
         let ws_old = bare_version_from_tag(old_tag_str);
+        let ws_from_tag = (!old_tag_str.is_empty()).then_some(old_tag_str);
         bump_commit_created = apply_workspace_bump(
             root,
             ws,
             &new_version,
-            &VersionFilesBump {
-                old: ws_old.as_deref(),
-                files: &ws_version_files,
+            &WorkspaceBumpEdits {
+                vf: VersionFilesBump {
+                    old: ws_old.as_deref(),
+                    files: &ws_version_files,
+                },
+                cl: ChangelogBump {
+                    enabled: changelog_enabled,
+                    from_tag: ws_from_tag,
+                },
             },
             opts.dry_run,
             cfg.skip_ci_on_bump,
@@ -657,6 +701,28 @@ pub fn run(opts: TagOpts) -> Result<()> {
             None => Vec::new(),
         };
 
+        // Refresh CHANGELOG.md alongside the version_files rewrites, on the same
+        // dry-run-preview / real-write-and-stage split. The previous tag bounds
+        // the rendered commit range (`old_tag_str` is empty on a first tag).
+        let ws_root = Path::new(&workspace_root);
+        let cl_changed = if changelog_enabled {
+            let from_tag = (!old_tag_str.is_empty()).then(|| old_tag_str.to_string());
+            let targets = crate_name
+                .as_ref()
+                .map(|name| {
+                    vec![ChangelogTarget {
+                        crate_name: name.clone(),
+                        crate_dir: ws_root.join(path),
+                        from_tag,
+                        to_version: new_version.clone(),
+                    }]
+                })
+                .unwrap_or_default();
+            render_and_stage_changelogs(ws_root, &targets, opts.dry_run, &log)?
+        } else {
+            Vec::new()
+        };
+
         if !opts.dry_run {
             // Regenerate Cargo.lock to match the bumped Cargo.toml versions.
             // Without this, the tagged commit has Cargo.toml at the new version
@@ -678,6 +744,9 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 files_to_stage.push(f);
             }
             for f in &vf_changed {
+                files_to_stage.push(f);
+            }
+            for f in &cl_changed {
                 files_to_stage.push(f);
             }
             // Propagate a commit failure (index lock, hook rejection, …)
@@ -761,15 +830,32 @@ struct VersionFilesBump<'a> {
     files: &'a [String],
 }
 
+/// Lockstep changelog-refresh inputs for [`apply_workspace_bump`]. The shared
+/// workspace tag bounds every member's rendered commit range, so a single
+/// `from_tag` applies to all members.
+struct ChangelogBump<'a> {
+    enabled: bool,
+    from_tag: Option<&'a str>,
+}
+
+/// The repo-committed edits [`apply_workspace_bump`] folds into the bump commit
+/// beyond the manifests: `version_files` rewrites and the `CHANGELOG.md`
+/// refresh, grouped so the workspace bump takes one edits carrier.
+struct WorkspaceBumpEdits<'a> {
+    vf: VersionFilesBump<'a>,
+    cl: ChangelogBump<'a>,
+}
+
 fn apply_workspace_bump(
     workspace_root: &Path,
     ws: &WorkspaceInfo,
     new_version: &str,
-    vf: &VersionFilesBump<'_>,
+    edits: &WorkspaceBumpEdits<'_>,
     dry_run: bool,
     skip_ci_on_bump: bool,
     log: &StageLogger,
 ) -> Result<bool> {
+    let WorkspaceBumpEdits { vf, cl } = edits;
     let rows: Vec<PlanRow> = ws
         .members
         .iter()
@@ -805,6 +891,26 @@ fn apply_workspace_bump(
         return Ok(false);
     }
 
+    // One changelog target per workspace member; the shared workspace tag bounds
+    // every member's commit range. Empty when the refresh is disabled.
+    let changelog_targets: Vec<ChangelogTarget> = if cl.enabled {
+        ws.members
+            .iter()
+            .map(|m| ChangelogTarget {
+                crate_name: m.name.clone(),
+                crate_dir: m
+                    .manifest_path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| workspace_root.to_path_buf()),
+                from_tag: cl.from_tag.map(str::to_string),
+                to_version: new_version.to_string(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     if dry_run {
         log.status(&format!(
             "(dry-run) workspace version-sync: would bump {} crate(s) → {}",
@@ -814,6 +920,7 @@ fn apply_workspace_bump(
         if let Some(old) = vf.old {
             rewrite_and_stage_version_files(vf.files, old, new_version, true, log)?;
         }
+        render_and_stage_changelogs(workspace_root, &changelog_targets, true, log)?;
         return Ok(false);
     }
 
@@ -860,6 +967,15 @@ fn apply_workspace_bump(
             if !staged_rel.contains(&f) {
                 staged_rel.push(f);
             }
+        }
+    }
+
+    // Refresh each member's CHANGELOG.md and fold the written (repo-relative)
+    // paths into the same bump commit.
+    let cl_changed = render_and_stage_changelogs(workspace_root, &changelog_targets, false, log)?;
+    for f in cl_changed {
+        if !staged_rel.contains(&f) {
+            staged_rel.push(f);
         }
     }
 
@@ -965,6 +1081,9 @@ struct GroupTagResult {
     /// Bare previous version this group bumps FROM, or `None` when the group
     /// has no previous tag (nothing to rewrite version_files from).
     old_version: Option<String>,
+    /// The group's previous tag ref (e.g. `core-v0.1.0`), or `None` on a first
+    /// tag — bounds the rendered changelog commit range per crate.
+    prev_tag: Option<String>,
     /// Effective `version_files` enrollment per crate, parallel to
     /// `version_updates` (same crate order within the group).
     crate_version_files: Vec<Vec<String>>,
@@ -1105,6 +1224,7 @@ fn compute_per_crate_tags(
             new_tags,
             version_updates,
             old_version: bare_version_from_tag(old_tag_str),
+            prev_tag: (!old_tag_str.is_empty()).then(|| old_tag_str.to_string()),
             crate_version_files,
         });
     }
@@ -1118,12 +1238,14 @@ fn compute_per_crate_tags(
 /// Runs change detection → computes new tags for changed groups → writes one
 /// bump commit for all changed crates → creates all tags → pushes commit and
 /// tags atomically → emits `anodizer-output crates=[...]` line.
-/// Push-target controls threaded into the tagging paths: the remote name and
-/// the resolved `tag.push` config value (CLI flags on [`TagOpts`] override it).
+/// Per-run controls threaded into the per-crate tagging path: the push-target
+/// remote + resolved `tag.push` config value (CLI flags on [`TagOpts`] override
+/// it), and whether the `CHANGELOG.md` refresh is enabled for this run.
 #[derive(Debug, Clone, Copy)]
 struct PushControls<'a> {
     remote: &'a str,
     config_push: Option<bool>,
+    changelog_enabled: bool,
 }
 
 fn run_per_crate_tag(
@@ -1132,7 +1254,7 @@ fn run_per_crate_tag(
     cfg: &ResolvedConfig,
     git_config: Option<&GitConfig>,
     anodizer_config: Option<&anodizer_core::config::Config>,
-    push: PushControls<'_>,
+    controls: PushControls<'_>,
     log: &StageLogger,
 ) -> Result<()> {
     let cwd = std::env::current_dir()?;
@@ -1164,6 +1286,15 @@ fn run_per_crate_tag(
     // dry-run/real split so a conflicting config bails identically in both
     // modes (and before any manifest is touched in the real run).
     let vf_plan = plan_version_files_rewrites(&tag_results)?;
+
+    // One changelog target per bumped crate across all groups, each rendered
+    // from its OWN group's previous tag to ITS new version. Empty when the
+    // refresh is disabled.
+    let changelog_targets = if controls.changelog_enabled {
+        plan_changelog_targets(&cwd, &tag_results)
+    } else {
+        Vec::new()
+    };
 
     if !opts.dry_run {
         // Apply version bumps across all changed crates in a single commit.
@@ -1246,6 +1377,15 @@ fn run_per_crate_tag(
             }
         }
 
+        // Refresh each bumped crate's CHANGELOG.md and fold the written
+        // (repo-relative) paths into the same bump commit.
+        let cl_changed = render_and_stage_changelogs(&cwd, &changelog_targets, false, log)?;
+        for f in cl_changed {
+            if !files_to_stage.contains(&f) {
+                files_to_stage.push(f);
+            }
+        }
+
         files_to_stage.push("Cargo.lock".to_string());
         let staged_refs: Vec<&str> = files_to_stage.iter().map(|s| s.as_str()).collect();
 
@@ -1296,6 +1436,7 @@ fn run_per_crate_tag(
                 log,
             )?;
         }
+        render_and_stage_changelogs(&cwd, &changelog_targets, true, log)?;
     }
 
     // Build the structured-output payloads up front, but DON'T print them
@@ -1325,11 +1466,11 @@ fn run_per_crate_tag(
     // atomically (path_default = true). `--no-push` pushes the tags only,
     // leaving the bump commit local; `--push-dry-run` previews the push.
     let push_dry = opts.dry_run || opts.push_dry_run;
-    let push_branch = resolve_tag_push_branch(opts, push.config_push, true)?;
+    let push_branch = resolve_tag_push_branch(opts, controls.config_push, true)?;
     git::push_branch_and_tags_atomic_in(
         &cwd,
         &git::AtomicPushSpec {
-            remote: push.remote,
+            remote: controls.remote,
             branch: push_branch.as_deref(),
             tags: &all_new_tags,
             dry_run: push_dry,
@@ -1766,6 +1907,34 @@ fn plan_version_files_rewrites(tag_results: &[GroupTagResult]) -> Result<Vec<Ver
     Ok(plan)
 }
 
+/// Build one [`ChangelogTarget`] per bumped crate across all groups.
+///
+/// Each crate renders from ITS group's previous tag (`prev_tag`) to ITS new
+/// version, so independently-versioned crates each get a section keyed to their
+/// own bump. `crate_dir` is resolved to an absolute path under `workspace_root`
+/// so the changelog engine reads/writes the correct `CHANGELOG.md`.
+fn plan_changelog_targets(
+    workspace_root: &Path,
+    tag_results: &[GroupTagResult],
+) -> Vec<ChangelogTarget> {
+    let mut targets = Vec::new();
+    for group_result in tag_results {
+        for (crate_name, (crate_path, new_version)) in group_result
+            .crate_names
+            .iter()
+            .zip(group_result.version_updates.iter())
+        {
+            targets.push(ChangelogTarget {
+                crate_name: crate_name.clone(),
+                crate_dir: workspace_root.join(crate_path),
+                from_tag: group_result.prev_tag.clone(),
+                to_version: new_version.clone(),
+            });
+        }
+    }
+    targets
+}
+
 /// Apply a bump to semver components. Returns (major, minor, patch).
 pub(crate) fn apply_bump(major: u64, minor: u64, patch: u64, bump: &BumpKind) -> (u64, u64, u64) {
     match bump {
@@ -1798,6 +1967,7 @@ mod tests {
             no_push,
             push_remote: None,
             push_dry_run: false,
+            no_changelog: false,
             config_override: None,
             verbose: false,
             debug: false,
@@ -2157,6 +2327,7 @@ mod tests {
             no_push: false,
             push_remote: None,
             push_dry_run: false,
+            no_changelog: false,
             config_override: None,
             verbose: false,
             debug: false,
@@ -2194,6 +2365,7 @@ mod tests {
             no_push: false,
             push_remote: None,
             push_dry_run: false,
+            no_changelog: false,
             config_override: None,
             verbose: false,
             debug: false,
@@ -2239,6 +2411,7 @@ mod tests {
             no_push: false,
             push_remote: None,
             push_dry_run: false,
+            no_changelog: false,
             config_override: None,
             verbose: false,
             debug: false,

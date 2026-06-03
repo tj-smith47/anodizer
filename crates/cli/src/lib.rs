@@ -408,6 +408,11 @@ pub enum Commands {
             help = "Create the tag + bump commit locally but only print (not run) the git push commands --push would use; pass --dry-run to also preview tagging"
         )]
         push_dry_run: bool,
+        #[arg(
+            long = "no-changelog",
+            help = "Skip refreshing CHANGELOG.md on this tag (overrides the changelog: config)"
+        )]
+        no_changelog: bool,
         /// `anodize tag rollback [...]` — failure-recovery counterpart.
         ///
         /// Subcommand is optional: bare `anodize tag` keeps its
