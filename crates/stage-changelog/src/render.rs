@@ -301,8 +301,8 @@ fn render_commit_line(
     // own commit-author + co-author list. The release-wide GitHub login
     // list lives under `AllLogins` so `Logins` can carry the per-commit
     // semantic. Co-author entries (parsed from `Co-Authored-By:` trailers)
-    // carry both bare name and "Name <email>" form; we surface their raw
-    // trailer payload as the Authors join target.
+    // carry both bare name and "Name <email>" form; the raw trailer payload
+    // is surfaced as the Authors join target.
     //
     // `Authors` (comma-string, backward-compatible) and `AuthorsList`
     // (structured {Name, Email, Username} records for
@@ -1480,8 +1480,8 @@ fn roll_footer(
         .position(|l| parse_unreleased_footer(l).is_some());
 
     let Some(footer_idx) = footer_idx else {
-        // No footer link. Synthesize one only if we can resolve a remote
-        // compare base cheaply; otherwise pass the tail through unchanged.
+        // No footer link. Synthesize one only when a remote compare base can
+        // be resolved cheaply; otherwise pass the tail through unchanged.
         out_lines.extend(tail.iter().map(|s| s.to_string()));
         synthesize_footer(out_lines, from_tag, to_version, workspace_root);
         return Ok(());
