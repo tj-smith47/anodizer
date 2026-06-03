@@ -7,8 +7,15 @@
 //! bullets at the configured Markdown depth.
 //!
 //! `merge_into_changelog` is the file-level merge helper used by
-//! `render_crate_section` to splice a new `## [<version>]` section into
-//! an existing `CHANGELOG.md` while preserving the leading H1.
+//! `render_crate_section` to fold a new release into an existing
+//! `CHANGELOG.md`. It detects the [Keep a Changelog] shape (a
+//! `## [Unreleased]` heading): in that mode it promotes the
+//! `## [Unreleased]` section to the released version, inserts a fresh
+//! empty `## [Unreleased]`, and rolls the `[Unreleased]` / `[<version>]`
+//! compare-link footer. Otherwise it falls back to splicing a new
+//! `## [<version>]` section directly after the leading H1.
+//!
+//! [Keep a Changelog]: https://keepachangelog.com/
 
 use anodizer_core::config::ChangelogGroup;
 use anodizer_core::template::{self, TemplateVars};
@@ -520,7 +527,15 @@ pub fn render_crate_section(
     let new_section = format!("{}\n\n{}\n", section_heading, body.trim_end());
 
     let file_path = crate_path.join("CHANGELOG.md");
-    let merged = merge_into_changelog(&file_path, crate_name, &new_section)?;
+    let merged = merge_into_changelog(MergeArgs {
+        file_path: &file_path,
+        crate_name,
+        new_section: &new_section,
+        generated_body: body.trim_end(),
+        from_tag,
+        to_version,
+        workspace_root,
+    })?;
 
     Ok(Some(ChangelogUpdate {
         file_path,
@@ -547,19 +562,88 @@ fn today_yyyy_mm_dd() -> String {
     let y = if m <= 2 { y + 1 } else { y };
     format!("{:04}-{:02}-{:02}", y, m, d)
 }
-fn merge_into_changelog(
-    file_path: &std::path::Path,
-    crate_name: &str,
-    new_section: &str,
-) -> Result<String> {
+/// Inputs to [`merge_into_changelog`].
+///
+/// Bundles the file location plus everything the Keep-a-Changelog roll needs
+/// (the previous release ref, the new version, and the generated commit body
+/// used to fill an empty `## [Unreleased]` section).
+pub(crate) struct MergeArgs<'a> {
+    /// Absolute path of the crate's `CHANGELOG.md` (may not yet exist).
+    pub(crate) file_path: &'a std::path::Path,
+    /// Crate name, used only to synthesize an H1 for an absent file.
+    pub(crate) crate_name: &'a str,
+    /// Fully-rendered `## [<version>] - <date>\n\n<body>\n` section used by
+    /// the non-KAC splice path.
+    pub(crate) new_section: &'a str,
+    /// The generated commit body (no heading), used to fill a KAC
+    /// `## [Unreleased]` section that the user left empty.
+    pub(crate) generated_body: &'a str,
+    /// Previous release tag (e.g. `v0.5.0` or `crate-v0.5.0`), or `None` for
+    /// a first release. Used to derive the tag prefix when no footer link
+    /// exists.
+    pub(crate) from_tag: Option<&'a str>,
+    /// Version being released (e.g. `0.6.0`).
+    pub(crate) to_version: &'a str,
+    /// Repository root, used to resolve the `origin` remote when a KAC file
+    /// has a `## [Unreleased]` heading but no `[Unreleased]:` footer link.
+    pub(crate) workspace_root: &'a std::path::Path,
+}
+
+/// Case-insensitive match for a `## [Unreleased]` heading line (allowing
+/// trailing whitespace), the marker for a Keep-a-Changelog-shaped file.
+fn is_unreleased_heading(line: &str) -> bool {
+    let trimmed = line.trim_end();
+    let Some(rest) = trimmed.strip_prefix("##") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    rest.eq_ignore_ascii_case("[unreleased]")
+}
+
+/// Whether a line opens a new top-level changelog section (`## ...`).
+fn is_section_heading(line: &str) -> bool {
+    line.starts_with("## ")
+}
+
+/// Merge a freshly-rendered release into the crate's `CHANGELOG.md`.
+///
+/// Detects the Keep-a-Changelog shape (a `## [Unreleased]` heading) and, in
+/// that mode, performs the standard release roll; otherwise falls back to
+/// splicing `new_section` directly after the leading H1.
+pub(crate) fn merge_into_changelog(args: MergeArgs<'_>) -> Result<String> {
+    let MergeArgs {
+        file_path,
+        crate_name,
+        new_section,
+        generated_body,
+        from_tag,
+        to_version,
+        workspace_root,
+    } = args;
+
     let header = format!("# Changelog — {}\n\n", crate_name);
     if !file_path.is_file() {
         return Ok(format!("{}{}", header, new_section));
     }
     let existing = std::fs::read_to_string(file_path)
         .with_context(|| format!("failed to read {}", file_path.display()))?;
-    // Find the H1 line so we can preserve any prelude (license badge, etc.)
-    // and append our section right after the leading header block.
+
+    if existing.lines().any(is_unreleased_heading) {
+        return roll_keep_a_changelog(KacRollArgs {
+            existing: &existing,
+            generated_body,
+            from_tag,
+            to_version,
+            workspace_root,
+        });
+    }
+
+    splice_after_h1(&existing, new_section, &header)
+}
+
+/// Splice `new_section` after the leading H1, preserving any prelude.
+/// Synthesizes `header` + section when the file has no H1.
+fn splice_after_h1(existing: &str, new_section: &str, header: &str) -> Result<String> {
     let mut head = String::new();
     let mut tail = String::new();
     let mut consumed_h1 = false;
@@ -591,4 +675,200 @@ fn merge_into_changelog(
         return Ok(format!("{}{}\n{}", header, new_section, existing));
     }
     Ok(format!("{}{}\n{}", head, new_section, tail))
+}
+
+/// Inputs to [`roll_keep_a_changelog`].
+struct KacRollArgs<'a> {
+    existing: &'a str,
+    generated_body: &'a str,
+    from_tag: Option<&'a str>,
+    to_version: &'a str,
+    workspace_root: &'a std::path::Path,
+}
+
+/// Non-digit prefix of a tag/anchor (`v0.5.0` → `v`, `anodizer-v0.5.0`
+/// → `anodizer-v`). Stops at the first ASCII digit.
+fn tag_prefix(anchor: &str) -> String {
+    anchor.chars().take_while(|c| !c.is_ascii_digit()).collect()
+}
+
+/// Perform the Keep-a-Changelog release roll on `existing`:
+///   1. promote `## [Unreleased]` to `## [<version>] - <date>`,
+///   2. preserve a curated body verbatim (else fill from generated commits),
+///   3. insert a fresh empty `## [Unreleased]` above it,
+///   4. roll the `[Unreleased]` / `[<version>]` compare-link footer.
+fn roll_keep_a_changelog(args: KacRollArgs<'_>) -> Result<String> {
+    let KacRollArgs {
+        existing,
+        generated_body,
+        from_tag,
+        to_version,
+        workspace_root,
+    } = args;
+
+    let lines: Vec<&str> = existing.lines().collect();
+
+    // Locate the `## [Unreleased]` heading and the start of the next section
+    // (next `## ` heading) which bounds the Unreleased body. The footer link
+    // block (if any) lives at or after the last section and is handled
+    // separately, so the body scan also stops at the first footer-link line.
+    let Some(unreleased_idx) = lines.iter().position(|l| is_unreleased_heading(l)) else {
+        // Caller only invokes this when an Unreleased heading exists.
+        return Ok(existing.to_string());
+    };
+
+    let mut body_end = lines.len();
+    for (i, line) in lines.iter().enumerate().skip(unreleased_idx + 1) {
+        if is_section_heading(line) || parse_unreleased_footer(line).is_some() {
+            body_end = i;
+            break;
+        }
+    }
+
+    let curated_body: Vec<&str> = lines[unreleased_idx + 1..body_end].to_vec();
+    let has_curated = curated_body.iter().any(|l| !l.trim().is_empty());
+
+    let date = today_yyyy_mm_dd();
+    let promoted_heading = format!("## [{}] - {}", to_version, date);
+
+    let mut out_lines: Vec<String> = Vec::new();
+    // Everything before the Unreleased heading stays byte-identical.
+    out_lines.extend(lines[..unreleased_idx].iter().map(|s| s.to_string()));
+
+    // Fresh empty Unreleased section above the promoted release.
+    out_lines.push("## [Unreleased]".to_string());
+    out_lines.push(String::new());
+
+    // Promoted release heading + its body (curated verbatim, else generated).
+    out_lines.push(promoted_heading);
+    out_lines.push(String::new());
+    if has_curated {
+        // Trim leading/trailing blank lines from the curated block but keep
+        // its interior verbatim.
+        let start = curated_body
+            .iter()
+            .position(|l| !l.trim().is_empty())
+            .unwrap_or(0);
+        let end = curated_body
+            .iter()
+            .rposition(|l| !l.trim().is_empty())
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        out_lines.extend(curated_body[start..end].iter().map(|s| s.to_string()));
+    } else {
+        out_lines.extend(generated_body.lines().map(|s| s.to_string()));
+    }
+    out_lines.push(String::new());
+
+    // Everything from the next section onward, with the footer rolled.
+    let tail = &lines[body_end..];
+    roll_footer(&mut out_lines, tail, from_tag, to_version, workspace_root)?;
+
+    let mut result = out_lines.join("\n");
+    if existing.ends_with('\n') {
+        result.push('\n');
+    }
+    Ok(result)
+}
+
+/// Parse `[Unreleased]: <url>` (case-insensitive on the label, allowing
+/// trailing whitespace) and return the URL.
+fn parse_unreleased_footer(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let rest = trimmed.strip_prefix('[')?;
+    let close = rest.find(']')?;
+    let (label, after) = rest.split_at(close);
+    if !label.eq_ignore_ascii_case("unreleased") {
+        return None;
+    }
+    let after = after.strip_prefix("]:")?;
+    Some(after.trim())
+}
+
+/// Split a `<base>/compare/<anchor>...HEAD` compare URL into
+/// `(base_including_compare, old_anchor)`.
+fn parse_compare_url(url: &str) -> Option<(&str, &str)> {
+    let (base, rest) = url.split_once("/compare/")?;
+    let anchor = rest.strip_suffix("...HEAD")?;
+    if anchor.is_empty() {
+        return None;
+    }
+    Some((base, anchor))
+}
+
+/// Append the tail (next section onward) to `out_lines`, rolling the
+/// `[Unreleased]:` compare-link footer when one is present.
+fn roll_footer(
+    out_lines: &mut Vec<String>,
+    tail: &[&str],
+    from_tag: Option<&str>,
+    to_version: &str,
+    workspace_root: &std::path::Path,
+) -> Result<()> {
+    // Locate an existing `[Unreleased]:` footer link in the tail.
+    let footer_idx = tail
+        .iter()
+        .position(|l| parse_unreleased_footer(l).is_some());
+
+    let Some(footer_idx) = footer_idx else {
+        // No footer link. Synthesize one only if we can resolve a remote
+        // compare base cheaply; otherwise pass the tail through unchanged.
+        out_lines.extend(tail.iter().map(|s| s.to_string()));
+        synthesize_footer(out_lines, from_tag, to_version, workspace_root);
+        return Ok(());
+    };
+
+    let url = parse_unreleased_footer(tail[footer_idx]).unwrap_or("");
+    let Some((base, old_anchor)) = parse_compare_url(url) else {
+        // Footer present but not a recognized compare URL — leave as-is.
+        out_lines.extend(tail.iter().map(|s| s.to_string()));
+        return Ok(());
+    };
+
+    let prefix = tag_prefix(old_anchor);
+    let new_tag = format!("{}{}", prefix, to_version);
+
+    // Emit tail lines up to (not including) the footer link unchanged.
+    out_lines.extend(tail[..footer_idx].iter().map(|s| s.to_string()));
+    // Rolled `[Unreleased]:` link + the new `[<version>]:` link.
+    out_lines.push(format!("[Unreleased]: {}/compare/{}...HEAD", base, new_tag));
+    out_lines.push(format!(
+        "[{}]: {}/compare/{}...{}",
+        to_version, base, old_anchor, new_tag
+    ));
+    // Remaining footer lines (prior `[x.y.z]:` links) unchanged.
+    out_lines.extend(tail[footer_idx + 1..].iter().map(|s| s.to_string()));
+
+    Ok(())
+}
+
+/// Synthesize a `[Unreleased]:` / `[<version>]:` footer from the `origin`
+/// remote when the KAC file lacks one. Skips gracefully (no footer appended)
+/// when the previous tag or the remote cannot be resolved — a missing remote
+/// must never fail the render.
+fn synthesize_footer(
+    out_lines: &mut Vec<String>,
+    from_tag: Option<&str>,
+    to_version: &str,
+    workspace_root: &std::path::Path,
+) {
+    let Some(old_anchor) = from_tag else {
+        return;
+    };
+    let Ok((owner, repo)) = anodizer_core::git::detect_github_repo_in(workspace_root) else {
+        return;
+    };
+    let base = format!("https://github.com/{}/{}", owner, repo);
+    let prefix = tag_prefix(old_anchor);
+    let new_tag = format!("{}{}", prefix, to_version);
+
+    // Ensure a blank line separates the body from a freshly-added footer block.
+    if out_lines.last().is_some_and(|l| !l.is_empty()) {
+        out_lines.push(String::new());
+    }
+    out_lines.push(format!("[Unreleased]: {}/compare/{}...HEAD", base, new_tag));
+    out_lines.push(format!(
+        "[{}]: {}/compare/{}...{}",
+        to_version, base, old_anchor, new_tag
+    ));
 }

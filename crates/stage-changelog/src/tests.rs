@@ -3295,3 +3295,244 @@ fn test_render_logins_list_with_english_join_filter() {
         "LoginsList | englishJoin should render the per-entry logins, got: {md}"
     );
 }
+
+// ---- Keep-a-Changelog merge tests ----
+
+use crate::render::{MergeArgs, merge_into_changelog};
+
+/// A fixture mirroring anodizer's real root `CHANGELOG.md` shape: H1 +
+/// KaC preamble + a curated `## [Unreleased]` section + a prior released
+/// section + `[Unreleased]:` / `[0.5.0]:` footer links. `anchor` lets the
+/// per-crate variant use a `crate-v`-prefixed compare ref.
+fn kac_fixture(anchor: &str, curated: &str) -> String {
+    format!(
+        "# Changelog\n\
+\n\
+All notable changes to this project will be documented in this file.\n\
+The format is based on [Keep a Changelog].\n\
+\n\
+## [Unreleased]\n\
+{curated}\
+## [0.5.0] - 2026-01-01\n\
+\n\
+### Features\n\
+- old feature\n\
+\n\
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/{anchor}...HEAD\n\
+[0.5.0]: https://github.com/tj-smith47/anodizer/releases/tag/{anchor}\n"
+    )
+}
+
+/// Write `contents` to a `CHANGELOG.md` in a fresh tempdir and run the
+/// real merge path against it, returning the merged output.
+fn run_merge(
+    contents: &str,
+    generated_body: &str,
+    from_tag: Option<&str>,
+    to_version: &str,
+) -> String {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("CHANGELOG.md");
+    std::fs::write(&path, contents).expect("write fixture");
+    let section_heading = format!("## [{to_version}] - 2026-06-03");
+    let new_section = format!("{section_heading}\n\n{generated_body}\n");
+    merge_into_changelog(MergeArgs {
+        file_path: &path,
+        crate_name: "anodizer",
+        new_section: &new_section,
+        generated_body,
+        from_tag,
+        to_version,
+        workspace_root: dir.path(),
+    })
+    .expect("merge succeeds")
+}
+
+#[test]
+fn kac_unreleased_promoted_with_curated_content_preserved() {
+    let curated =
+        "\n### Features\n- **hand-curated rich prose** with detail\n### Fixes\n- a curated fix\n\n";
+    let fixture = kac_fixture("v0.5.0", curated);
+    let out = run_merge(
+        &fixture,
+        "### Features\n- generated commit",
+        Some("v0.5.0"),
+        "0.6.0",
+    );
+
+    // Curated body preserved verbatim under the promoted heading.
+    assert!(
+        out.contains("## [0.6.0] - "),
+        "promoted heading missing: {out}"
+    );
+    assert!(
+        out.contains("- **hand-curated rich prose** with detail"),
+        "curated content must be preserved verbatim: {out}"
+    );
+    assert!(
+        out.contains("- a curated fix"),
+        "curated fix must be preserved: {out}"
+    );
+    // Generated commit body must NOT overwrite the curated section.
+    assert!(
+        !out.contains("- generated commit"),
+        "generated body must not replace curated content: {out}"
+    );
+    // A fresh empty Unreleased sits above the promoted release.
+    let unreleased_pos = out.find("## [Unreleased]").expect("fresh Unreleased");
+    let promoted_pos = out.find("## [0.6.0]").expect("promoted section");
+    assert!(
+        unreleased_pos < promoted_pos,
+        "fresh Unreleased must precede the promoted release: {out}"
+    );
+    // The prior released section survives.
+    assert!(
+        out.contains("## [0.5.0] - 2026-01-01"),
+        "prior section lost: {out}"
+    );
+    assert!(out.contains("- old feature"), "prior body lost: {out}");
+}
+
+#[test]
+fn kac_link_footer_rolled_unreleased_and_new_version() {
+    let fixture = kac_fixture("v0.5.0", "\n### Fixes\n- curated\n\n");
+    let out = run_merge(&fixture, "### Fixes\n- gen", Some("v0.5.0"), "0.6.0");
+
+    assert!(
+        out.contains("[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.6.0...HEAD"),
+        "Unreleased footer must roll to v0.6.0...HEAD: {out}"
+    );
+    assert!(
+        out.contains("[0.6.0]: https://github.com/tj-smith47/anodizer/compare/v0.5.0...v0.6.0"),
+        "new [0.6.0] compare link missing: {out}"
+    );
+    // Prior release footer line survives untouched.
+    assert!(
+        out.contains("[0.5.0]: https://github.com/tj-smith47/anodizer/releases/tag/v0.5.0"),
+        "prior [0.5.0] footer line must survive: {out}"
+    );
+    // The new [0.6.0]: line sits directly under the [Unreleased]: line.
+    let un_line = out
+        .lines()
+        .position(|l| l.starts_with("[Unreleased]:"))
+        .expect("unreleased footer line");
+    let new_line = out
+        .lines()
+        .position(|l| l.starts_with("[0.6.0]:"))
+        .expect("new version footer line");
+    assert_eq!(
+        new_line,
+        un_line + 1,
+        "[0.6.0]: must sit under [Unreleased]:"
+    );
+}
+
+#[test]
+fn kac_empty_unreleased_filled_from_commits() {
+    // Empty curated body (just blank lines) → generated commits fill it.
+    let fixture = kac_fixture("v0.5.0", "\n");
+    let out = run_merge(
+        &fixture,
+        "### Features\n- generated commit body",
+        Some("v0.5.0"),
+        "0.6.0",
+    );
+    assert!(
+        out.contains("## [0.6.0] - "),
+        "promoted heading missing: {out}"
+    );
+    assert!(
+        out.contains("- generated commit body"),
+        "empty Unreleased must be filled from generated commits: {out}"
+    );
+}
+
+#[test]
+fn kac_per_crate_anchor_prefix() {
+    let fixture = kac_fixture("anodizer-v0.5.0", "\n### Fixes\n- curated\n\n");
+    let out = run_merge(
+        &fixture,
+        "### Fixes\n- gen",
+        Some("anodizer-v0.5.0"),
+        "0.6.0",
+    );
+
+    assert!(
+        out.contains(
+            "[Unreleased]: https://github.com/tj-smith47/anodizer/compare/anodizer-v0.6.0...HEAD"
+        ),
+        "per-crate anchor must yield anodizer-v0.6.0...HEAD: {out}"
+    );
+    assert!(
+        out.contains(
+            "[0.6.0]: https://github.com/tj-smith47/anodizer/compare/anodizer-v0.5.0...anodizer-v0.6.0"
+        ),
+        "per-crate compare link must use anodizer-v prefix: {out}"
+    );
+}
+
+#[test]
+fn kac_no_footer_link_still_rolls_heading() {
+    // A KAC file with NO footer links and no resolvable remote: the heading
+    // roll must still happen and the call must not panic.
+    let fixture = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### Fixes\n\
+- curated fix\n\
+\n\
+## [0.5.0] - 2026-01-01\n\
+\n\
+- old\n";
+    let out = run_merge(fixture, "### Fixes\n- gen", Some("v0.5.0"), "0.6.0");
+
+    assert!(
+        out.contains("## [0.6.0] - "),
+        "promoted heading missing: {out}"
+    );
+    assert!(out.contains("- curated fix"), "curated content lost: {out}");
+    let unreleased_pos = out.find("## [Unreleased]").expect("fresh Unreleased");
+    let promoted_pos = out.find("## [0.6.0]").expect("promoted section");
+    assert!(
+        unreleased_pos < promoted_pos,
+        "fresh Unreleased must precede release: {out}"
+    );
+    // No footer link present and no remote in the throwaway tempdir → no
+    // synthesized footer; prior section survives.
+    assert!(
+        out.contains("## [0.5.0] - 2026-01-01"),
+        "prior section lost: {out}"
+    );
+}
+
+#[test]
+fn non_kac_file_behavior_unchanged() {
+    // A simple non-KAC file (no `## [Unreleased]` heading): the section is
+    // spliced after the H1 and nothing else is touched.
+    let fixture = "# Changelog — anodizer\n\
+\n\
+## [0.1.0] - 2026-01-01\n\
+\n\
+- first\n";
+    let out = run_merge(fixture, "- gen", Some("v0.1.0"), "0.2.0");
+
+    assert!(
+        out.starts_with("# Changelog — anodizer\n"),
+        "H1 must be preserved: {out}"
+    );
+    // New section spliced directly after the H1, above the prior release.
+    let new_pos = out.find("## [0.2.0] - 2026-06-03").expect("new section");
+    let old_pos = out.find("## [0.1.0] - 2026-01-01").expect("old section");
+    assert!(new_pos < old_pos, "new section must precede old: {out}");
+    // No Unreleased heading is introduced for a non-KAC file.
+    assert!(
+        !out.contains("## [Unreleased]"),
+        "non-KAC must not add Unreleased: {out}"
+    );
+    // No compare-link footer synthesized for the non-KAC path.
+    assert!(
+        !out.contains("[Unreleased]:"),
+        "non-KAC must not add footer links: {out}"
+    );
+}
