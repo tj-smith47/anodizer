@@ -1159,6 +1159,11 @@ fn run_per_crate_tag(
         .flat_map(|r| r.new_tags.iter().map(|(t, _)| t.clone()))
         .collect();
 
+    // Conflict-check + dedupe the version_files rewrites BEFORE the
+    // dry-run/real split so a conflicting config bails identically in both
+    // modes (and before any manifest is touched in the real run).
+    let vf_plan = plan_version_files_rewrites(&tag_results)?;
+
     if !opts.dry_run {
         // Apply version bumps across all changed crates in a single commit.
         for (path, new_version) in &all_version_updates {
@@ -1221,63 +1226,21 @@ fn run_per_crate_tag(
                 files_to_stage.push(rel);
             }
         }
-        // Rewrite enrolled version_files per crate using that crate's group
-        // old→new. The same enrolled path bumped to DIFFERENT versions by two
-        // crates in one run is a genuine conflict (the file cannot hold two
-        // versions at once) — bail naming the file and the crates. The same
-        // path bumped to the SAME version is deduped so it is rewritten once.
-        use std::collections::HashMap;
-        let mut vf_targets: HashMap<String, (String, String)> = HashMap::new();
-        for group_result in &tag_results {
-            let Some(ref old) = group_result.old_version else {
-                continue;
-            };
-            for ((_, new_version), files) in group_result
-                .version_updates
-                .iter()
-                .zip(group_result.crate_version_files.iter())
-            {
-                for file in files {
-                    match vf_targets.get(file) {
-                        Some((existing_new, existing_crate)) if existing_new != new_version => {
-                            let this_crate = group_result
-                                .crate_names
-                                .first()
-                                .map(String::as_str)
-                                .unwrap_or("?");
-                            bail!(
-                                "version_files conflict: {} is enrolled by crates bumped to \
-                                 different versions ({} → {} vs {} → {}); a file cannot hold two \
-                                 versions in one tag run",
-                                file,
-                                existing_crate,
-                                existing_new,
-                                this_crate,
-                                new_version
-                            );
-                        }
-                        Some(_) => {}
-                        None => {
-                            let this_crate = group_result
-                                .crate_names
-                                .first()
-                                .cloned()
-                                .unwrap_or_else(|| "?".to_string());
-                            vf_targets.insert(file.clone(), (new_version.clone(), this_crate));
-                            let vf_changed = rewrite_and_stage_version_files(
-                                std::slice::from_ref(file),
-                                old,
-                                new_version,
-                                false,
-                                log,
-                            )?;
-                            for f in vf_changed {
-                                if !files_to_stage.contains(&f) {
-                                    files_to_stage.push(f);
-                                }
-                            }
-                        }
-                    }
+        // Rewrite enrolled version_files using each crate's group old→new.
+        // The plan is conflict-checked (a shared path with non-identical
+        // (old,new) pairs bails) and deduped once, identically to the dry-run
+        // branch, so the preview matches the real run.
+        for rewrite in &vf_plan {
+            let vf_changed = rewrite_and_stage_version_files(
+                std::slice::from_ref(&rewrite.file),
+                &rewrite.old,
+                &rewrite.new,
+                false,
+                log,
+            )?;
+            for f in vf_changed {
+                if !files_to_stage.contains(&f) {
+                    files_to_stage.push(f);
                 }
             }
         }
@@ -1321,18 +1284,16 @@ fn run_per_crate_tag(
             }
         }
     } else {
-        // Dry-run: preview the version_files rewrites without touching disk.
-        for group_result in &tag_results {
-            let Some(ref old) = group_result.old_version else {
-                continue;
-            };
-            for ((_, new_version), files) in group_result
-                .version_updates
-                .iter()
-                .zip(group_result.crate_version_files.iter())
-            {
-                rewrite_and_stage_version_files(files, old, new_version, true, log)?;
-            }
+        // Dry-run: preview the same conflict-checked, deduped rewrite plan
+        // without touching disk.
+        for rewrite in &vf_plan {
+            rewrite_and_stage_version_files(
+                std::slice::from_ref(&rewrite.file),
+                &rewrite.old,
+                &rewrite.new,
+                true,
+                log,
+            )?;
         }
     }
 
@@ -1740,6 +1701,84 @@ fn rewrite_and_stage_version_files(
         }
     }
     Ok(changed)
+}
+
+/// One planned `version_files` rewrite: rewrite `old` → `new` in `file`.
+struct VersionFileRewrite {
+    file: String,
+    old: String,
+    new: String,
+}
+
+/// Build the deduped, conflict-checked set of `version_files` rewrites across
+/// every per-crate group, in first-seen order.
+///
+/// A shared enrolled path is a conflict whenever two crates enrolling it carry
+/// NON-IDENTICAL `(old, new)` pairs — a file cannot simultaneously rewrite
+/// `0.1.0 → 0.2.0` and `0.1.5 → 0.2.0` (the second crate's occurrences would be
+/// left stale), nor hold two different new versions at once. Identical pairs
+/// dedupe to a single rewrite (lockstep crates share one pair, so they never
+/// conflict). On conflict this `bail!`s naming the file and both crates/pairs.
+///
+/// Runs identically for dry-run and real tagging so the preview matches the
+/// outcome — the validated plan is computed once, then either previewed or
+/// applied by the caller.
+fn plan_version_files_rewrites(tag_results: &[GroupTagResult]) -> Result<Vec<VersionFileRewrite>> {
+    use std::collections::HashMap;
+    // file → (old, new, owning-crate) of the first group that enrolled it.
+    let mut seen: HashMap<String, (String, String, String)> = HashMap::new();
+    let mut plan: Vec<VersionFileRewrite> = Vec::new();
+
+    for group_result in tag_results {
+        let Some(ref old) = group_result.old_version else {
+            continue;
+        };
+        let owner = group_result
+            .crate_names
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "?".to_string());
+        for ((_, new_version), files) in group_result
+            .version_updates
+            .iter()
+            .zip(group_result.crate_version_files.iter())
+        {
+            for file in files {
+                match seen.get(file) {
+                    Some((existing_old, existing_new, existing_crate))
+                        if existing_old != old || existing_new != new_version =>
+                    {
+                        bail!(
+                            "version_files conflict: {} is enrolled by crates with different \
+                             version bumps ({} {} → {} vs {} {} → {}); a file cannot hold two \
+                             versions in one tag run",
+                            file,
+                            existing_crate,
+                            existing_old,
+                            existing_new,
+                            owner,
+                            old,
+                            new_version,
+                        );
+                    }
+                    Some(_) => {}
+                    None => {
+                        seen.insert(
+                            file.clone(),
+                            (old.clone(), new_version.clone(), owner.clone()),
+                        );
+                        plan.push(VersionFileRewrite {
+                            file: file.clone(),
+                            old: old.clone(),
+                            new: new_version.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(plan)
 }
 
 /// Apply a bump to semver components. Returns (major, minor, patch).

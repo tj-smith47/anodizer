@@ -205,6 +205,29 @@ mod tests {
         assert_eq!(fs::read_to_string(&f).unwrap(), "tag v0.2.0-beta here\n");
     }
 
+    /// Pin the raw engine behavior at the prerelease boundary: a hyphen is a
+    /// non-word char, so `\b` sits between the trailing digit and the `-`, and
+    /// the bare `old = "0.1.0"` matcher DOES fire inside `0.1.0-rc1`, rewriting
+    /// the release core and leaving the `-rc1` suffix intact (→ `0.2.0-rc1`).
+    ///
+    /// This is an engine-level edge that production never reaches: at tag time
+    /// `old` is reconstructed by `bare_version_from_tag`, which carries the full
+    /// `0.1.0-rc1` prerelease string, so the bare `0.1.0` form is never the
+    /// `old` applied to a prerelease line. The test exists so that boundary
+    /// behavior can't regress silently if the regex anchoring ever changes.
+    #[test]
+    fn bare_old_matches_release_core_of_a_prerelease_line() {
+        let dir = TempDir::new().unwrap();
+        let f = write(&dir, "doc.md", "pinned at 0.1.0-rc1 today\n");
+        let out =
+            rewrite_version_in_files(std::slice::from_ref(&f), "0.1.0", "0.2.0", false).unwrap();
+        assert_eq!(out[0].replacements, 1);
+        assert_eq!(
+            fs::read_to_string(&f).unwrap(),
+            "pinned at 0.2.0-rc1 today\n"
+        );
+    }
+
     #[test]
     fn missing_file_is_an_error() {
         let dir = TempDir::new().unwrap();

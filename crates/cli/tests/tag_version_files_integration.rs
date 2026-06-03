@@ -381,6 +381,150 @@ crates:
     );
 }
 
+/// The conflict check runs under `--dry-run` too: a conflicting config must
+/// bail (non-zero) with the same message in the preview, writing nothing — so
+/// the preview never green-lights a config the real run would reject.
+#[test]
+fn per_crate_conflicting_shared_file_bails_in_dry_run() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (name, ver) in [("core", "0.1.0"), ("cli", "0.2.0")] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(root.join("shared.md"), "core 0.1.0 and cli 0.2.0\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: conflict
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "core-v{{ .Version }}"
+    version_sync:
+      enabled: true
+    version_files:
+      - shared.md
+  - name: cli
+    path: crates/cli
+    tag_template: "cli-v{{ .Version }}"
+    version_sync:
+      enabled: true
+    version_files:
+      - shared.md
+"#,
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "core-v0.1.0"]);
+    run_git(root, &["tag", "cli-v0.2.0"]);
+    fs::write(root.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();
+    fs::write(root.join("crates/cli/src/lib.rs"), "// cli touched\n").unwrap();
+    git_add_commit(root, "feat: both updated");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--dry-run"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "dry-run tag should ALSO fail on the version_files conflict"
+    );
+    assert!(
+        stderr.contains("version_files conflict") && stderr.contains("shared.md"),
+        "expected a conflict error naming shared.md in dry-run: {stderr}"
+    );
+    // Nothing written under dry-run, even up to the bail.
+    assert_eq!(read(root, "shared.md"), "core 0.1.0 and cli 0.2.0\n");
+}
+
+/// Two crates enrolling one shared file, bumped to the SAME new version but
+/// from DIFFERENT old versions (core 0.1.0 → 0.2.0, cli 0.1.5 → 0.2.0), is a
+/// conflict: rewriting with only the first crate's old version would leave the
+/// second crate's occurrences stale. The check keys on the full (old, new)
+/// pair, so this bails.
+#[test]
+fn per_crate_shared_file_different_old_versions_bails() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (name, ver) in [("core", "0.1.0"), ("cli", "0.1.5")] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    // Both crates bump minor → 0.2.0, but from different old versions.
+    fs::write(root.join("shared.md"), "core 0.1.0 and cli 0.1.5\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: conflict
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "core-v{{ .Version }}"
+    version_sync:
+      enabled: true
+    version_files:
+      - shared.md
+  - name: cli
+    path: crates/cli
+    tag_template: "cli-v{{ .Version }}"
+    version_sync:
+      enabled: true
+    version_files:
+      - shared.md
+"#,
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "core-v0.1.0"]);
+    run_git(root, &["tag", "cli-v0.1.5"]);
+    fs::write(root.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();
+    fs::write(root.join("crates/cli/src/lib.rs"), "// cli touched\n").unwrap();
+    git_add_commit(root, "feat: both updated");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--no-push"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Sanity: both crates do bump to the same new version (0.2.0).
+    assert!(
+        !out.status.success(),
+        "tag should fail when a shared file is enrolled with different old \
+         versions: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("version_files conflict") && stderr.contains("shared.md"),
+        "expected a conflict error naming shared.md: {stderr}"
+    );
+}
+
 /// Dry-run previews the rewrite but writes nothing.
 #[test]
 fn lockstep_dry_run_writes_nothing() {
