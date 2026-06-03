@@ -1002,6 +1002,43 @@ stdenvNoCC.mkDerivation {
         }
     }
 
+    /// The gated layer must BITE: a syntactically broken Nix expression fed
+    /// through the real `nix-instantiate --parse` path produces a
+    /// [`SchemaFinding`] (it does not silent-pass every input). Drives
+    /// `validate_nix_syntax` — the same function the live validator calls — so
+    /// the assertion covers the production path, not a canned-stderr unit test.
+    /// Tool-gated like its sibling above: when `nix-instantiate` is absent the
+    /// parse path cannot run, so it SKIPs with a visible marker rather than
+    /// failing.
+    #[test]
+    fn nix_instantiate_layer_bites_on_malformed_input() {
+        let log = StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
+        if !anodizer_core::tool_detect::tool_available("nix-instantiate").unwrap_or(false) {
+            eprintln!(
+                "SKIP: nix-instantiate not on PATH; cannot exercise the parse-error bite path"
+            );
+            return;
+        }
+
+        // A `version = ;` with no value on line 4 is a syntax error
+        // `nix-instantiate --parse` rejects with a `<file>:<line>:<col>:`
+        // position — the exact shape the stderr parser extracts into a finding.
+        let malformed = "{ lib, stdenvNoCC }:\nstdenvNoCC.mkDerivation {\n  pname = \"widget\";\n  version = ;\n}\n";
+        let findings =
+            validate_nix_syntax(NixKind::Derivation, malformed, &log).expect("syntax layer runs");
+        assert!(
+            !findings.is_empty(),
+            "the gated nix-instantiate layer must report a finding for malformed Nix, got none"
+        );
+        // The finding must carry the parse-extracted position (`line 4`), not
+        // merely the `(root)` no-silent-pass fallback: this proves the real
+        // `nix-instantiate --parse` stderr drove the diagnostic.
+        assert!(
+            findings.iter().any(|f| f.field == "line 4"),
+            "the bite must extract the parse position from nix-instantiate stderr, got: {findings:?}"
+        );
+    }
+
     // -----------------------------------------------------------------
     // stderr parser — line number extraction.
     // -----------------------------------------------------------------
