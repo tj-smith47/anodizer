@@ -67,7 +67,7 @@ pub struct ChocolateyConfig {
     /// Push source URL (default: "https://push.chocolatey.org/").
     pub source_repo: Option<String>,
     /// Skip pushing to the Chocolatey community repository. Bool, string, or
-    /// template expression (e.g. `"{{ .IsSnapshot }}"`). Accepts the legacy
+    /// template expression (e.g. `"{{ IsSnapshot }}"`). Accepts the legacy
     /// `skip_publish:` spelling for back-compat with configs;
     /// canonical name is `skip:` to align with every other publisher.
     #[serde(

@@ -129,16 +129,16 @@ pub struct Config {
     /// `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Order is preserved so
     /// chained env applications (sign + sbom + notarize) see entries in
     /// declared order. Values are rendered through the template engine before
-    /// being set, so expressions like `{{ .Tag }}` or `{{ .Date }}` are
+    /// being set, so expressions like `{{ Tag }}` or `{{ Date }}` are
     /// expanded.
     #[serde(default)]
     pub env: Option<Vec<String>>,
-    /// Custom template variables accessible as `{{ .Var.<key> }}` in templates.
+    /// Custom template variables accessible as `{{ Var.<key> }}` in templates.
     /// Provides a way to define reusable values, especially useful with config includes.
     ///
     /// Stored as a `BTreeMap` so rendering iterates in deterministic
     /// (sorted) key order — without this guarantee, a value that references
-    /// another variable (`b: "{{ .Var.a }}_v2"`) could render before its
+    /// another variable (`b: "{{ Var.a }}_v2"`) could render before its
     /// dependency on a different process / host. The current resolver is
     /// single-pass (one render per value), so cross-variable references
     /// only resolve when the referenced key sorts earlier.

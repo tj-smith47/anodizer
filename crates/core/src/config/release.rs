@@ -41,7 +41,7 @@ pub struct ReleaseConfig {
     /// canonicalise them before invoking the release pipeline.
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before upload.
-    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
     /// Conditional-skip gate.
     ///
     /// Same path-traversal caveat as `extra_files`: `..` segments reach
@@ -81,7 +81,7 @@ pub struct ReleaseConfig {
     /// Override the release tag (template string). When set, this tag is used
     /// as the `tag_name` in the GitHub release API instead of the crate's
     /// `tag_template`. Useful in monorepo setups to strip a tag prefix
-    /// (e.g. `"{{ .Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`).
+    /// (e.g. `"{{ Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`).
     /// A cross-platform publishing feature provided for free by anodizer.
     pub tag: Option<String>,
     /// Maximum number of asset-upload requests in flight simultaneously.
@@ -121,7 +121,7 @@ pub struct ReleaseConfig {
 }
 
 impl ReleaseConfig {
-    /// Default release-name template (`"{{.Tag}}"`).
+    /// Default release-name template (`"{{Tag}}"`).
     /// Anodize uses Tera-style `{{ Tag }}` (no dot prefix); the rendered
     /// value is identical for any tag the project produces.
     pub const DEFAULT_NAME_TEMPLATE: &'static str = "{{ Tag }}";

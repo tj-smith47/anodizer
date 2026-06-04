@@ -296,7 +296,7 @@ struct ResolvedSkip {
 /// clear error.
 ///
 /// Bool and literal `"true"`/`"false"` `enabled:` values are inverted right
-/// here. A *templated* `enabled:` (e.g. `{{ .IsSnapshot }}`) cannot be
+/// here. A *templated* `enabled:` (e.g. `{{ IsSnapshot }}`) cannot be
 /// inverted by rewriting the template string — splicing it into a `{% if %}`
 /// head yields malformed Tera. Instead the raw template is kept and the
 /// returned [`ResolvedSkip::inverts_enabled`] flag tells the evaluator to

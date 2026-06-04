@@ -35,7 +35,7 @@ A non-zero exit code from any hook aborts the release before publish runs. Hooks
 | `dockerhub` | list of DockerHubConfig | — | DockerHub description sync configurations. |
 | `env` | list of string | — | Environment variables available to all template expressions.
 
-List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Order is preserved so chained env applications (sign + sbom + notarize) see entries in declared order. Values are rendered through the template engine before being set, so expressions like `{{ .Tag }}` or `{{ .Date }}` are expanded. |
+List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Order is preserved so chained env applications (sign + sbom + notarize) see entries in declared order. Values are rendered through the template engine before being set, so expressions like `{{ Tag }}` or `{{ Date }}` are expanded. |
 | `env_files` | EnvFilesConfig | — | Environment file configuration. Accepts either: - A list of `.env` file paths: `[".env", ".release.env"]` - A struct with token file paths: `{ github_token: "~/.config/goreleaser/github_token" }` |
 | `force_token` | ForceTokenKind | — | Force a specific token type for authentication. When set, overrides automatic token detection from environment variables. |
 | `gemfury` | list of GemFuryConfig | — | GemFury (fury.io) deb/rpm/apk publishing configurations. Mirrors The `gemfury:` block. The legacy spelling `furies:` is accepted via serde alias; a one-time deprecation warning is emitted by [`warn_on_legacy_furies_alias`]. |
@@ -68,9 +68,9 @@ List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Orde
 | `template_files` | list of TemplateFileConfig | — | Template files to render and include as release artifacts. File contents are processed through the template engine. |
 | `uploads` | list of UploadConfig | — | Generic HTTP upload configurations. |
 | `upx` | list of UpxConfig | `[]` | UPX binary compression configurations. |
-| `variables` | map | — | Custom template variables accessible as `{{ .Var.<key> }}` in templates. Provides a way to define reusable values, especially useful with config includes.
+| `variables` | map | — | Custom template variables accessible as `{{ Var.<key> }}` in templates. Provides a way to define reusable values, especially useful with config includes.
 
-Stored as a `BTreeMap` so rendering iterates in deterministic (sorted) key order — without this guarantee, a value that references another variable (`b: "{{ .Var.a }}_v2"`) could render before its dependency on a different process / host. The current resolver is single-pass (one render per value), so cross-variable references only resolve when the referenced key sorts earlier. |
+Stored as a `BTreeMap` so rendering iterates in deterministic (sorted) key order — without this guarantee, a value that references another variable (`b: "{{ Var.a }}_v2"`) could render before its dependency on a different process / host. The current resolver is single-pass (one render per value), so cross-variable references only resolve when the referenced key sorts earlier. |
 | `verify_release` | VerifyReleaseConfig | `{"assert_assets":true,"enabled":false,"install_smoke":null}` | Opt-in post-release verification gate. Runs LAST (after the release is created and every publisher has run) and REPORTS post-publish defects — missing assets, failed install smoke-tests, glibc-ceiling violations. Because it runs after the irreversible publish, a failure exits non-zero to flag CI but never undoes the release. Off unless `verify_release.enabled: true`. |
 | `version` | integer | — | Schema version. Currently supports 1 (implicit default) and 2. |
 | `version_files` | list of string | — | Repo-committed files that embed the release version outside `Cargo.toml` (e.g. a Helm `Chart.yaml`, an install doc, a README badge), given as repo-root-relative path strings. At `tag` time each listed file has its occurrences of the old version rewritten to the new version — both the bare (`0.1.0`) and `v`-prefixed (`v0.1.0`) forms, word-boundary anchored — and is staged into the same bump commit as `Cargo.toml` / `Cargo.lock`, so these files never drift from the tag.
@@ -113,7 +113,7 @@ AppImage packaging configuration.
 
 Drives the [AppImage](https://appimage.org/) stage, which bundles a built Linux binary plus its desktop integration (a `.desktop` entry + icon) into a single self-contained, runnable `.AppImage` file via [`linuxdeploy`](https://github.com/linuxdeploy/linuxdeploy)'s `appimage` output plugin. One `.AppImage` is produced per matching Linux target so a multi-arch build yields distinct, non-colliding outputs.
 
-YAML: ```yaml appimages: - id: helix ids: [helix-bin] desktop: contrib/Helix.desktop icon: contrib/helix.png appdir_extra: - src: runtime/ dst: usr/lib/helix/runtime update_information: "gh-releases-zsync|helix-editor|helix|latest|helix-*.AppImage.zsync" runtime_harvest: command: "{{ .ArtifactPath }} --populate-runtime {{ .HarvestDir }}" dir: runtime/ ```
+YAML: ```yaml appimages: - id: helix ids: [helix-bin] desktop: contrib/Helix.desktop icon: contrib/helix.png appdir_extra: - src: runtime/ dst: usr/lib/helix/runtime update_information: "gh-releases-zsync|helix-editor|helix|latest|helix-*.AppImage.zsync" runtime_harvest: command: "{{ ArtifactPath }} --populate-runtime {{ HarvestDir }}" dir: runtime/ ```
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `appdir_extra` | list of AppImageExtra | — | Extra files / directories copied into the AppDir before linuxdeploy runs (e.g. a harvested `runtime/` tree). Each entry's `dst` is interpreted relative to the AppDir root. |
@@ -242,7 +242,7 @@ The canonical key is `hooks:` for both `before:` and `after:` to the conventiona
 | `id` | string | — | Unique identifier for this sign config. |
 | `ids` | list of string | — | Build IDs filter: only sign artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional: skip this sign config if rendered result is "false" or empty. |
-| `output` | StringOrBool | — | Capture and log stdout/stderr of the signing command. Accepts bool or template string (e.g., "{{ .IsSnapshot }}"). |
+| `output` | StringOrBool | — | Capture and log stdout/stderr of the signing command. Accepts bool or template string (e.g., "{{ IsSnapshot }}"). |
 | `signature` | string | — | Signature output filename template (supports templates). |
 | `stdin` | string | — | Content written to the signing command's stdin. |
 | `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
@@ -391,7 +391,7 @@ GemFury package registry publisher configuration.
 Pushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`. Authenticates via HTTP Basic auth using the push token as the username (empty password) — the conventional Fury push surface.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `account` | string | — | GemFury account name. Required; rendered through the template engine so `account: "{{ .Env.MY_FURY_ACCOUNT }}"` works. |
+| `account` | string | — | GemFury account name. Required; rendered through the template engine so `account: "{{ Env.MY_FURY_ACCOUNT }}"` works. |
 | `api_secret_name` | string | — | Environment variable name carrying the API (delete) token. Default `FURY_API_TOKEN`. |
 | `api_token` | string | — | Optional API token used by rollback to issue `DELETE /<account>/packages/<name>/versions/<version>`. When unset, the env var named by `api_secret_name` (default `FURY_API_TOKEN`) is consulted at rollback time. If both are absent at rollback time, the publisher falls back to a manual-cleanup warn. |
 | `formats` | list of string | — | Package format filter: only push artifacts matching these formats. Defaults to `["apk", "deb", "rpm"]`. |
@@ -461,7 +461,7 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `binary` | string | — | Deprecated singular spelling of [`Self::binaries`]. The upstream replaced `binary: foo` with `binaries: [foo]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::binaries`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
 | `caveats` | string | — | Custom caveats shown after install. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
-| `commit_msg_template` | string | — | Custom commit message template. Default: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}" |
+| `commit_msg_template` | string | — | Custom commit message template. Default: "Brew cask update for {{ ProjectName }} version {{ Tag }}" |
 | `completions` | HomebrewCaskCompletions | — | Shell completion definitions. |
 | `conflicts` | list of HomebrewCaskConflictEntry | — | Conflicting casks or formulae. |
 | `custom_block` | string | — | Arbitrary Ruby code inserted into the cask block. |
@@ -529,26 +529,26 @@ Publishes an `apiv0.ServerJSON` document to the MCP registry (`https://registry.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `skip` | StringOrBool | — | Skip this publisher when the expression evaluates truthy. Accepts a bool or a Tera template that renders to `"true"`/`"false"` (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`). Accepts the legacy `disable:` spelling via serde alias for back-compat with imported imported configs (the MCP config field `MCP.Disable string`). |
-| `title` | string | — | Optional human-readable title shown in registry UIs (max 100 chars). Templated; supports `{{ .ProjectName \| title }}`, `{{ .Version }}`, etc. |
+| `title` | string | — | Optional human-readable title shown in registry UIs (max 100 chars). Templated; supports `{{ ProjectName \| title }}`, `{{ Version }}`, etc. |
 | `transports` | list of McpTransport | `[]` | Top-level transports list. Intentional config-portability shim: `McpConfig` carries `deny_unknown_fields`, so a migrated an imported config containing `transports:` would fail to parse if the field were absent. The list is accepted and discarded — the current MCP server schema derives transports per-package via `packages[].transport`, so the top-level list is never read after deserialization and is intentionally not emitted to the registry. |
 
 ## `metadata`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `commit_author` | CommitAuthorConfig | — | Commit author identity for commit workflows. Reuses the shared `CommitAuthorConfig` (name + email + optional signing). Exposed as `{{ .Metadata.CommitAuthor.Name }}` / `{{ .Metadata.CommitAuthor.Email }}`. |
-| `description` | string | — | Human-readable project description (exposed as `{{ .Metadata.Description }}`). |
-| `full_description` | ContentSource | — | Long-form project description. Supports inline string, `from_file`, or `from_url`. Exposed as `{{ .Metadata.FullDescription }}`. FromUrl is resolved lazily (requires the release stage); FromFile is resolved at context-populate time with template-rendered path. |
-| `homepage` | string | — | Project homepage URL (exposed as `{{ .Metadata.Homepage }}`). |
-| `license` | string | — | Project license identifier, e.g. "MIT" or "Apache-2.0" (exposed as `{{ .Metadata.License }}`). |
-| `maintainers` | list of string | — | List of project maintainers (exposed as `{{ .Metadata.Maintainers }}`). |
-| `mod_timestamp` | string | — | Global modification timestamp for metadata output files (metadata.json and artifacts.json). Template string (e.g. "{{ .CommitTimestamp }}") or unix timestamp. When set, rendered late in the pipeline and applied as file mtime. Exposed as `{{ .Metadata.ModTimestamp }}`. |
+| `commit_author` | CommitAuthorConfig | — | Commit author identity for commit workflows. Reuses the shared `CommitAuthorConfig` (name + email + optional signing). Exposed as `{{ Metadata.CommitAuthor.Name }}` / `{{ Metadata.CommitAuthor.Email }}`. |
+| `description` | string | — | Human-readable project description (exposed as `{{ Metadata.Description }}`). |
+| `full_description` | ContentSource | — | Long-form project description. Supports inline string, `from_file`, or `from_url`. Exposed as `{{ Metadata.FullDescription }}`. FromUrl is resolved lazily (requires the release stage); FromFile is resolved at context-populate time with template-rendered path. |
+| `homepage` | string | — | Project homepage URL (exposed as `{{ Metadata.Homepage }}`). |
+| `license` | string | — | Project license identifier, e.g. "MIT" or "Apache-2.0" (exposed as `{{ Metadata.License }}`). |
+| `maintainers` | list of string | — | List of project maintainers (exposed as `{{ Metadata.Maintainers }}`). |
+| `mod_timestamp` | string | — | Global modification timestamp for metadata output files (metadata.json and artifacts.json). Template string (e.g. "{{ CommitTimestamp }}") or unix timestamp. When set, rendered late in the pipeline and applied as file mtime. Exposed as `{{ Metadata.ModTimestamp }}`. |
 
 ## `milestones`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `close` | bool | — | Close the milestone on release. Default: false. |
 | `fail_on_error` | bool | — | Fail the pipeline if milestone close fails. Default: false. |
-| `name_template` | string | — | Milestone name template (default: "{{ .Tag }}"). |
+| `name_template` | string | — | Milestone name template (default: "{{ Tag }}"). |
 | `repo` | ScmRepoConfig | — | Repository owner/name. Auto-detected from git remote if not set. |
 
 ## `monorepo`
@@ -556,7 +556,7 @@ Monorepo configuration.
 
 When configured, tag discovery filters by `tag_prefix` and the working directory is scoped to `dir`.
 
-This is DIFFERENT from `TagConfig.tag_prefix`: - `MonorepoConfig.tag_prefix`: tags in git already HAVE the prefix (e.g. `subproject1/v1.2.3`). The prefix is STRIPPED for `{{ .Tag }}` while `{{ .PrefixedTag }}` retains the full tag. - `TagConfig.tag_prefix`: a prefix to PREPEND when constructing `{{ .PrefixedTag }}` from a plain tag.
+This is DIFFERENT from `TagConfig.tag_prefix`: - `MonorepoConfig.tag_prefix`: tags in git already HAVE the prefix (e.g. `subproject1/v1.2.3`). The prefix is STRIPPED for `{{ Tag }}` while `{{ PrefixedTag }}` retains the full tag. - `TagConfig.tag_prefix`: a prefix to PREPEND when constructing `{{ PrefixedTag }}` from a plain tag.
 
 When `monorepo` is configured, it takes precedence over `tag.tag_prefix` for `PrefixedTag` / `PrefixedPreviousTag` behavior.
 | Field | Type | Default | Description |
@@ -566,7 +566,7 @@ When `monorepo` is configured, it takes precedence over `tag.tag_prefix` for `Pr
 Used for changelog path filtering (when no explicit `changelog.paths` or `crate.path` is configured) and as the default build `dir`. |
 | `tag_prefix` | string | — | Tag prefix for this subproject (e.g. `"subproject1/"`).
 
-Tags matching this prefix are selected during tag discovery, and the prefix is stripped from `{{ .Tag }}` while `{{ .PrefixedTag }}` retains the full tag. |
+Tags matching this prefix are selected during tag discovery, and the prefix is stripped from `{{ Tag }}` while `{{ PrefixedTag }}` retains the full tag. |
 
 ## `nightly`
 | Field | Type | Default | Description |
@@ -584,7 +584,7 @@ When set, the nightly release create, asset upload, AND retention (`keep_single_
 | `tag_name` | string | — | Tag name used for the nightly release. Default: `"nightly"`. Templates allowed. |
 | `version_template` | string | — | Template for the rendered version string the nightly run sets on `Version` / `RawVersion`. Default: `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"` — produces commit-immutable nightly versions (two same-day commits yield two distinct nightly versions).
 
-The `{{ .NightlyBuild }}` template var (a stateless per-base-version build counter derived from `git rev-list --count <last-tag>..HEAD`) enables nushell-style schemes such as `"{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}"`. |
+The `{{ NightlyBuild }}` template var (a stateless per-base-version build counter derived from `git rev-list --count <last-tag>..HEAD`) enables nushell-style schemes such as `"{{ Base }}-nightly.{{ NightlyBuild }}+{{ ShortCommit }}"`. |
 
 ## `notarize`
 Top-level notarization configuration supporting both cross-platform (`rcodesign`) and native macOS (`codesign` + `xcrun notarytool`) modes.
@@ -651,7 +651,7 @@ Default: `true` — NPM is a Manager-group publisher (one-way 72-hour unpublish 
 | `name` | string | — | Human-readable name for this publisher (used in logs). |
 | `signature` | bool | — | Include signatures in published artifacts. |
 | `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`). |
-| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before publishing. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Conditional-skip gate. |
+| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before publishing. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Conditional-skip gate. |
 
 ## `release`
 | Field | Type | Default | Description |
@@ -684,9 +684,9 @@ Use this for **cross-platform publishing** pattern: source repo on one provider 
 Default: `true` — a failure here aborts the release. Set to `false` to log failures but continue. |
 | `skip` | StringOrBool | — | Skip the release stage. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip). Template strings are supported here. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs (the legacy `disable:` spelling). |
 | `skip_upload` | StringOrBool | — | Skip uploading artifacts: true, false, or "auto" (skip for snapshots). Accepts bool or template string. |
-| `tag` | string | — | Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `"{{ .Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`). A cross-platform publishing feature provided for free by anodizer. |
+| `tag` | string | — | Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `"{{ Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`). A cross-platform publishing feature provided for free by anodizer. |
 | `target_commitish` | string | — | Target branch or SHA for the release tag. |
-| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Conditional-skip gate.
+| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Conditional-skip gate.
 
 Same path-traversal caveat as `extra_files`: `..` segments reach outside the project tree. |
 | `upload_concurrency` | integer | — | Maximum number of asset-upload requests in flight simultaneously.
@@ -727,7 +727,7 @@ All fields are optional in YAML; missing fields fall back to the defaults (10 at
 | `id` | string | — | Unique identifier for this sign config. |
 | `ids` | list of string | — | Build IDs filter: only sign artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional: skip this sign config if rendered result is "false" or empty. |
-| `output` | StringOrBool | — | Capture and log stdout/stderr of the signing command. Accepts bool or template string (e.g., "{{ .IsSnapshot }}"). |
+| `output` | StringOrBool | — | Capture and log stdout/stderr of the signing command. Accepts bool or template string (e.g., "{{ IsSnapshot }}"). |
 | `signature` | string | — | Signature output filename template (supports templates). |
 | `stdin` | string | — | Content written to the signing command's stdin. |
 | `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
@@ -735,7 +735,7 @@ All fields are optional in YAML; missing fields fall back to the defaults (10 at
 ## `snapshot`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `version_template` | string | — | Version string template for snapshot builds (e.g., "{{ .Commit }}-SNAPSHOT"). Accepts the deprecated `name_template:` alias (renamed to `version_template`): a non-empty `name_template` is folded into `version_template`. A deprecation warning is emitted at config-load time when the alias is hit (see `apply_snapshot_legacy_aliases`). |
+| `version_template` | string | — | Version string template for snapshot builds (e.g., "{{ Commit }}-SNAPSHOT"). Accepts the deprecated `name_template:` alias (renamed to `version_template`): a non-empty `name_template` is folded into `version_template`. A deprecation warning is emitted at config-load time when the alias is hit (see `apply_snapshot_legacy_aliases`). |
 
 ## `source`
 | Field | Type | Default | Description |
@@ -800,7 +800,7 @@ All fields are optional in YAML; missing fields fall back to the defaults (10 at
 Off by default. Only enable with a `workflow_run`-triggered release workflow: `[skip ci]` on the bump commit (which becomes the tag target) ALSO suppresses an `on: push: tags:` release trigger, so enabling this with a tag-push-triggered release silently skips the release. Leave off for the tag-push pattern; enable for the `workflow_run` pattern to skip the (already crate-gated, harmless) redundant CI re-run. |
 | `tag_context` | string | — | Source for determining the previous tag: "repo" (default) or "branch". |
 | `tag_post_hooks` | list of HookEntry | — | Commands to run after `anodizer tag` successfully creates and pushes the tag. Env and template vars same as `tag_pre_hooks`. |
-| `tag_pre_hooks` | list of HookEntry | — | Commands to run before `anodizer tag` creates the tag. Useful for updating lockfiles or committing sibling changes that must be part of the tagged commit. Env: `ANODIZER_CURRENT_TAG`, `ANODIZER_PREVIOUS_TAG` are set; template vars `{{ .Tag }}`, `{{ .PreviousTag }}`, `{{ .Version }}`, `{{ .PrefixedTag }}` are available. |
+| `tag_pre_hooks` | list of HookEntry | — | Commands to run before `anodizer tag` creates the tag. Useful for updating lockfiles or committing sibling changes that must be part of the tagged commit. Env: `ANODIZER_CURRENT_TAG`, `ANODIZER_PREVIOUS_TAG` are set; template vars `{{ Tag }}`, `{{ PreviousTag }}`, `{{ Version }}`, `{{ PrefixedTag }}` are available. |
 | `tag_prefix` | string | — | Prefix prepended to version tags (e.g., "v" produces "v1.2.3"). |
 | `verbose` | bool | — | When true, print verbose tag calculation output. |
 
@@ -836,12 +836,12 @@ All rendered template files are uploaded to the release by default. Both `src` a
 | `name` | string | — | Human-readable name for this upload config. |
 | `password` | string | — | Password for HTTP basic auth.
 
-Strongly prefer `{{ .Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will land in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Password-resolution cascade. |
+Strongly prefer `{{ Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will land in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Password-resolution cascade. |
 | `signature` | bool | — | Include signatures in uploaded artifacts. |
 | `skip` | StringOrBool | — | Skip condition template (if rendered to "true", skip this upload). |
-| `target` | string | — | Target URL template (supports template variables like {{ .ProjectName }}, {{ .Version }}). |
+| `target` | string | — | Target URL template (supports template variables like {{ ProjectName }}, {{ Version }}). |
 | `trusted_certificates` | string | — | Path to PEM-encoded trusted CA certificates. |
-| `username` | string | — | Username for HTTP basic auth. Resolution order: rendered `username` template → env `UPLOAD_{NAME}_USERNAME`. Set this to a literal value or a `{{ .Env.X }}` template. |
+| `username` | string | — | Username for HTTP basic auth. Resolution order: rendered `username` template → env `UPLOAD_{NAME}_USERNAME`. Set this to a literal value or a `{{ Env.X }}` template. |
 
 ## `upx`
 | Field | Type | Default | Description |
@@ -893,13 +893,13 @@ Notable surface: - `images` + `tags` (cleaner separation than a single `image_te
 | `annotations` | map | — | OCI annotations to apply via `--annotation key=value` flags. |
 | `build_args` | map | — | Build arguments passed as `--build-arg KEY=VALUE`.
 
-Each value is template-expanded and forwarded verbatim to buildx (one argv token per pair, no shell tokenization). Prefer `{{ .Env.VAR }}` over raw user-config strings for secrets — buildx records build-args in image history by default, so plaintext values here propagate into the image metadata. |
+Each value is template-expanded and forwarded verbatim to buildx (one argv token per pair, no shell tokenization). Prefer `{{ Env.VAR }}` over raw user-config strings for secrets — buildx records build-args in image history by default, so plaintext values here propagate into the image metadata. |
 | `dockerfile` | string | — | Path to the Dockerfile relative to the project root. |
 | `extra_files` | list of string | — | Extra files to copy into the Docker build context. |
 | `flags` | list of string | — | Arbitrary extra flags passed to the docker build command. |
 | `hooks` | BuildHooksConfig | — | Pre/post hooks for this docker_v2 config. Each hook accepts the same `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks run after the staging directory is prepared but before `docker buildx build`; `post` hooks run after the image digest is captured. Hook commands, working directories, and env values are template-expanded; in addition to the standard template surface, hooks see:
 
-- `{{ .Images }}` — list of `image:tag` references for this build. Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror a list exposure of the same field; `{{ .Images \| join(sep=",") }}` reproduces a flat comma-separated string for legacy templates. - `{{ .Dockerfile }}` — path to the rendered Dockerfile - `{{ .ContextDir }}` — path to the buildx context staging directory - `{{ .Digest }}` — image manifest digest (post hooks only) - `{{ .BaseImage }}` / `{{ .BaseImageDigest }}` — final-stage base image (the `BaseImage` / `BaseImageDigest` overlay) |
+- `{{ Images }}` — list of `image:tag` references for this build. Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror a list exposure of the same field; `{{ Images \| join(sep=",") }}` reproduces a flat comma-separated string for legacy templates. - `{{ Dockerfile }}` — path to the rendered Dockerfile - `{{ ContextDir }}` — path to the buildx context staging directory - `{{ Digest }}` — image manifest digest (post hooks only) - `{{ BaseImage }}` / `{{ BaseImageDigest }}` — final-stage base image (the `BaseImage` / `BaseImageDigest` overlay) |
 | `id` | string | — | Unique identifier for this Docker V2 config. |
 | `ids` | list of string | — | Build IDs filter: only include binary artifacts whose metadata `id` is in this list. |
 | `images` | list of string | `[]` | Base image names (e.g., ["ghcr.io/owner/app"]). Combined with `tags` to form full references. |
@@ -908,7 +908,7 @@ Each value is template-expanded and forwarded verbatim to buildx (one argv token
 | `retry` | DockerRetryConfig | — | Retry configuration for docker push operations. |
 | `sbom` | StringOrBool | — | When truthy, adds `--sbom=true` to buildx. Supports templates. |
 | `skip` | StringOrBool | — | When truthy, skip this docker build entirely. Supports templates. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs (the legacy `disable:` spelling). |
-| `tags` | list of string | `[]` | Tag suffixes (e.g., ["latest", "{{ .Version }}"]). Each image is tagged with each tag. |
+| `tags` | list of string | `[]` | Tag suffixes (e.g., ["latest", "{{ Version }}"]). Each image is tagged with each tag. |
 | `use` | string | — | Docker backend for build commands: `"buildx"` (default) or `"podman"`.
 
 The default `"buildx"` invokes `docker buildx build` with the full set of BuildKit features (multi-platform, attestations, `--rewrite-timestamp`, SBOM, OCI exporter). Setting `use: podman` swaps the binary to `podman build` and disables every buildx-only flag — anodizer rejects configs that mix `use: podman` with `sbom: true`, `--rewrite-timestamp`, `--provenance`, `--attest`, `--cache-from`, `--cache-to`, `--output`, or `--sbom` because plain podman does not recognise them.
@@ -924,7 +924,7 @@ The v1 docker / docker manifest pipes deprecated in favour of the v2 buildx flow
 | `create_flags` | list of string | — | Extra flags for `docker manifest create`. |
 | `id` | string | — | Unique identifier for this manifest config. |
 | `image_templates` | list of string | `[]` | Image references to include in the manifest. |
-| `name_template` | string | — | Template for the manifest name, e.g. "ghcr.io/owner/app:{{ .Version }}". |
+| `name_template` | string | — | Template for the manifest name, e.g. "ghcr.io/owner/app:{{ Version }}". |
 | `push_flags` | list of string | — | Extra flags for `docker manifest push`. |
 | `retry` | DockerRetryConfig | — | Retry configuration for manifest push (handles transient registry errors). |
 | `skip_push` | object | — | Skip push: true, false, or "auto" (skip for prereleases). |
@@ -1039,7 +1039,7 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `binary` | string | — | Deprecated singular spelling of [`Self::binaries`]. The upstream replaced `binary: foo` with `binaries: [foo]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::binaries`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
 | `caveats` | string | — | Custom caveats shown after install. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
-| `commit_msg_template` | string | — | Custom commit message template. Default: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}" |
+| `commit_msg_template` | string | — | Custom commit message template. Default: "Brew cask update for {{ ProjectName }} version {{ Tag }}" |
 | `completions` | HomebrewCaskCompletions | — | Shell completion definitions. |
 | `conflicts` | list of HomebrewCaskConflictEntry | — | Conflicting casks or formulae. |
 | `custom_block` | string | — | Arbitrary Ruby code inserted into the cask block. |
@@ -1124,7 +1124,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
-| `skip` | StringOrBool | — | Skip pushing to the Chocolatey community repository. Bool, string, or template expression (e.g. `"{{ .IsSnapshot }}"`). Accepts the legacy `skip_publish:` spelling for back-compat with configs; canonical name is `skip:` to align with every other publisher. |
+| `skip` | StringOrBool | — | Skip pushing to the Chocolatey community repository. Bool, string, or template expression (e.g. `"{{ IsSnapshot }}"`). Accepts the legacy `skip_publish:` spelling for back-compat with configs; canonical name is `skip:` to align with every other publisher. |
 | `source_repo` | string | — | Push source URL (default: "https://push.chocolatey.org/"). |
 | `summary` | string | — | Short summary of the package. |
 | `tags` | list of string | — | Tags for the Chocolatey gallery (joined with single spaces in the emitted nuspec). Always a typed list — the legacy space-separated-string form was dropped now for IDE-completion friendliness and to remove whitespace ambiguity. |
@@ -1284,7 +1284,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Nix publisher is skipped. Render failure hard-errors. The `nix[].if:`. |
 | `install` | string | — | Custom install commands (replaces auto-generated binary install). |
 | `license` | string | — | Nix license identifier (e.g. "mit", "asl20"). Validated against known licenses. |
-| `main_program` | string | — | Value for `meta.mainProgram` in the generated Nix derivation. When set, the rendered derivation includes `mainProgram = "<value>";` inside the `meta` block, telling Nix which binary `nix run` should execute when the derivation contains multiple executables. Templated: supports `{{ .Version }}` etc. Omitted when unset. |
+| `main_program` | string | — | Value for `meta.mainProgram` in the generated Nix derivation. When set, the rendered derivation includes `mainProgram = "<value>";` inside the `meta` block, telling Nix which binary `nix run` should execute when the derivation contains multiple executables. Templated: supports `{{ Version }}` etc. Omitted when unset. |
 | `name` | string | — | Override the derivation name (default: crate name). |
 | `path` | string | — | Path for the .nix file in the repository (default: `pkgs/<name>/default.nix`). |
 | `post_install` | string | — | Post-install commands (postInstall phase). |

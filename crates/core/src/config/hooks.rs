@@ -112,7 +112,7 @@ pub struct StructuredHook {
     /// any templated values folded into `cmd` become part of the shell
     /// command and are subject to word-splitting and metacharacter expansion.
     /// Keep templated user-config values out of `cmd` when possible, or quote
-    /// them defensively (e.g. `'{{ .Env.FOO }}'`). Hooks already run with
+    /// them defensively (e.g. `'{{ Env.FOO }}'`). Hooks already run with
     /// `env_clear()` plus an allow-list, so secrets in `$ENV` are not
     /// inherited unless explicitly listed in `env`.
     pub cmd: String,

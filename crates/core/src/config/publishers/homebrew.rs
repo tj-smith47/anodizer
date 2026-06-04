@@ -162,7 +162,7 @@ pub struct HomebrewCaskConfig {
     /// Commit author with optional signing.
     pub commit_author: Option<CommitAuthorConfig>,
     /// Custom commit message template.
-    /// Default: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}"
+    /// Default: "Brew cask update for {{ ProjectName }} version {{ Tag }}"
     pub commit_msg_template: Option<String>,
     /// Subdirectory in the tap repo for cask placement (default: "Casks").
     pub directory: Option<String>,

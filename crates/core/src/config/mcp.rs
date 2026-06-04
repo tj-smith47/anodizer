@@ -29,7 +29,7 @@ pub struct McpConfig {
     pub name: Option<String>,
 
     /// Optional human-readable title shown in registry UIs (max 100 chars).
-    /// Templated; supports `{{ .ProjectName | title }}`, `{{ .Version }}`, etc.
+    /// Templated; supports `{{ ProjectName | title }}`, `{{ Version }}`, etc.
     pub title: Option<String>,
 
     /// Clear human-readable description of server functionality (max 100 chars).
@@ -250,13 +250,13 @@ pub struct McpTransport {
     /// Required by the registry for those types and forbidden for `stdio`,
     /// so it stays an optional plain string: leave it empty for `stdio`,
     /// and set it for a remote transport. Templated, so
-    /// `url: "https://{{ .Env.MCP_HOST }}/v1"` resolves at publish time.
+    /// `url: "https://{{ Env.MCP_HOST }}/v1"` resolves at publish time.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
 
     /// HTTP headers attached to a remote transport's requests. Each entry is
     /// a `{ name, value }` pair; the `value` is templated, so a header can
-    /// carry a secret such as `value: "Bearer {{ .Env.MCP_TOKEN }}"`. Omitted
+    /// carry a secret such as `value: "Bearer {{ Env.MCP_TOKEN }}"`. Omitted
     /// entirely for `stdio` and for remote transports with no headers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<McpHeader>,
@@ -271,7 +271,7 @@ pub struct McpHeader {
     pub name: String,
 
     /// Header value. Templated, so it can reference an environment variable —
-    /// `value: "Bearer {{ .Env.MCP_TOKEN }}"`.
+    /// `value: "Bearer {{ Env.MCP_TOKEN }}"`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub value: String,
 }

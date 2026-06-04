@@ -166,7 +166,7 @@ pub struct NfpmContent {
     /// Paths are resolved relative to the project root. `..` segments are
     /// NOT stripped, so a templated value resolving to `../../etc/passwd`
     /// will reach outside the project tree — avoid splicing untrusted
-    /// template inputs (e.g. arbitrary `{{ .Env.X }}` values) into `src`.
+    /// template inputs (e.g. arbitrary `{{ Env.X }}` values) into `src`.
     pub src: String,
     /// Destination path inside the package (absolute path, supports templates).
     ///

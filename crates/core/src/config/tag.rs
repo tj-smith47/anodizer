@@ -61,8 +61,8 @@ pub struct TagConfig {
     /// Commands to run before `anodizer tag` creates the tag. Useful for updating
     /// lockfiles or committing sibling changes that must be part of the tagged
     /// commit. Env: `ANODIZER_CURRENT_TAG`, `ANODIZER_PREVIOUS_TAG` are set;
-    /// template vars `{{ .Tag }}`, `{{ .PreviousTag }}`, `{{ .Version }}`,
-    /// `{{ .PrefixedTag }}` are available.
+    /// template vars `{{ Tag }}`, `{{ PreviousTag }}`, `{{ Version }}`,
+    /// `{{ PrefixedTag }}` are available.
     pub tag_pre_hooks: Option<Vec<HookEntry>>,
     /// Commands to run after `anodizer tag` successfully creates and pushes the
     /// tag. Env and template vars same as `tag_pre_hooks`.

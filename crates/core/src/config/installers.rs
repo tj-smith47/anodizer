@@ -21,7 +21,7 @@ pub struct DmgConfig {
     /// Additional files to include in the DMG (glob or {glob, name_template}).
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before inclusion.
-    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
     /// Conditional-skip gate.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Remove source archives from artifacts, keeping only DMG.
@@ -167,7 +167,7 @@ pub struct NsisConfig {
     /// Additional files to include alongside the installer (glob or {glob, name_template}).
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before inclusion.
-    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
     /// Conditional-skip gate.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Skip this NSIS config. Accepts bool or template string.
@@ -216,7 +216,7 @@ pub struct AppBundleConfig {
     /// Additional files to include in the bundle (src/dst/info objects or glob strings).
     pub extra_files: Option<Vec<ArchiveFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before inclusion.
-    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
     /// Conditional-skip gate.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Output timestamp for reproducible builds.

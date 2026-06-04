@@ -30,27 +30,27 @@ use serde::{Deserialize, Serialize};
 /// YAML examples:
 /// ```yaml
 /// completions:
-///   generate: "{{ .ArtifactPath }} completions {{ .Shell }}"   # mode A
+///   generate: "{{ ArtifactPath }} completions {{ Shell }}"   # mode A
 ///   shells: [bash, zsh, fish, powershell, nushell, elvish]
 ///   dst: "completions/"
-/// # mode B: from_build_out: "**/out/{{ .Binary }}.{bash,fish}"
+/// # mode B: from_build_out: "**/out/{{ Binary }}.{bash,fish}"
 /// # mode C: copy: "contrib/completion/*"
 /// ```
 ///
-/// `{{ .Binary }}` resolves to the host-native binary's recorded name; when
+/// `{{ Binary }}` resolves to the host-native binary's recorded name; when
 /// no host artifact exists (modes B/C on a pure cross build) it falls back to
 /// the crate name. If your binary name differs from the crate name, spell it
-/// literally in the glob rather than relying on `{{ .Binary }}` in that case.
+/// literally in the glob rather than relying on `{{ Binary }}` in that case.
 #[derive(Debug, Clone, Serialize, Default, JsonSchema, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct CompletionsConfig {
     /// Mode A: command run once on the host-native binary, per shell. The
-    /// `{{ .Shell }}` template var is bound to each entry in `shells`, and
-    /// `{{ .ArtifactPath }}` / `{{ .Binary }}` reference the built binary.
+    /// `{{ Shell }}` template var is bound to each entry in `shells`, and
+    /// `{{ ArtifactPath }}` / `{{ Binary }}` reference the built binary.
     /// Stdout is captured into one file per shell under `dst`.
     pub generate: Option<String>,
     /// Mode B: per-target glob harvesting files a `build.rs` wrote into the
-    /// crate's `OUT_DIR` (e.g. `"**/out/{{ .Binary }}.{bash,fish}"`).
+    /// crate's `OUT_DIR` (e.g. `"**/out/{{ Binary }}.{bash,fish}"`).
     pub from_build_out: Option<String>,
     /// Mode C: glob/path of committed completion files to copy verbatim.
     pub copy: Option<String>,
@@ -72,9 +72,9 @@ pub struct CompletionsConfig {
 /// YAML examples:
 /// ```yaml
 /// manpages:
-///   generate: "{{ .ArtifactPath }} --man"     # mode A
+///   generate: "{{ ArtifactPath }} --man"     # mode A
 ///   dst: "man/man1/"
-/// # mode B: from_build_out: "**/out/{{ .Binary }}.1"
+/// # mode B: from_build_out: "**/out/{{ Binary }}.1"
 /// # mode C: copy: "man/*.1"
 /// ```
 #[derive(Debug, Clone, Serialize, Default, JsonSchema, PartialEq)]
@@ -84,7 +84,7 @@ pub struct ManpagesConfig {
     /// into a single man file under `dst` named `<binary>.1`.
     pub generate: Option<String>,
     /// Mode B: per-target glob harvesting man files a `build.rs` wrote into
-    /// the crate's `OUT_DIR` (e.g. `"**/out/{{ .Binary }}.1"`).
+    /// the crate's `OUT_DIR` (e.g. `"**/out/{{ Binary }}.1"`).
     pub from_build_out: Option<String>,
     /// Mode C: glob/path of committed man files to copy verbatim.
     pub copy: Option<String>,

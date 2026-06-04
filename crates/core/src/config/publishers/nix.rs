@@ -61,7 +61,7 @@ pub struct NixConfig {
     /// `mainProgram = "<value>";` inside the `meta` block, telling Nix
     /// which binary `nix run` should execute when the derivation
     /// contains multiple executables. Templated: supports
-    /// `{{ .Version }}` etc. Omitted when unset.
+    /// `{{ Version }}` etc. Omitted when unset.
     pub main_program: Option<String>,
     /// Override whether this publisher failing should fail the overall release.
     ///

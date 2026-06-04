@@ -173,7 +173,7 @@
       }
     },
     "env": {
-      "description": "Environment variables available to all template expressions.\n\nList of `KEY=VALUE` strings: `env: [\"MY_VAR=hello\", \"DEPLOY_ENV=staging\"]`. Order is preserved so chained env applications (sign + sbom + notarize) see entries in declared order. Values are rendered through the template engine before being set, so expressions like `{{ .Tag }}` or `{{ .Date }}` are expanded.",
+      "description": "Environment variables available to all template expressions.\n\nList of `KEY=VALUE` strings: `env: [\"MY_VAR=hello\", \"DEPLOY_ENV=staging\"]`. Order is preserved so chained env applications (sign + sbom + notarize) see entries in declared order. Values are rendered through the template engine before being set, so expressions like `{{ Tag }}` or `{{ Date }}` are expanded.",
       "default": null,
       "type": [
         "array",
@@ -549,7 +549,7 @@
       }
     },
     "variables": {
-      "description": "Custom template variables accessible as `{{ .Var.<key> }}` in templates. Provides a way to define reusable values, especially useful with config includes.\n\nStored as a `BTreeMap` so rendering iterates in deterministic (sorted) key order — without this guarantee, a value that references another variable (`b: \"{{ .Var.a }}_v2\"`) could render before its dependency on a different process / host. The current resolver is single-pass (one render per value), so cross-variable references only resolve when the referenced key sorts earlier.",
+      "description": "Custom template variables accessible as `{{ Var.<key> }}` in templates. Provides a way to define reusable values, especially useful with config includes.\n\nStored as a `BTreeMap` so rendering iterates in deterministic (sorted) key order — without this guarantee, a value that references another variable (`b: \"{{ Var.a }}_v2\"`) could render before its dependency on a different process / host. The current resolver is single-pass (one render per value), so cross-variable references only resolve when the referenced key sorts earlier.",
       "default": null,
       "type": [
         "object",
@@ -930,7 +930,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Conditional-skip gate.",
+          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Conditional-skip gate.",
           "default": null,
           "type": [
             "array",
@@ -943,7 +943,7 @@
       }
     },
     "AppImageConfig": {
-      "description": "AppImage packaging configuration.\n\nDrives the [AppImage](https://appimage.org/) stage, which bundles a built Linux binary plus its desktop integration (a `.desktop` entry + icon) into a single self-contained, runnable `.AppImage` file via [`linuxdeploy`](https://github.com/linuxdeploy/linuxdeploy)'s `appimage` output plugin. One `.AppImage` is produced per matching Linux target so a multi-arch build yields distinct, non-colliding outputs.\n\nYAML: ```yaml appimages: - id: helix ids: [helix-bin] desktop: contrib/Helix.desktop icon: contrib/helix.png appdir_extra: - src: runtime/ dst: usr/lib/helix/runtime update_information: \"gh-releases-zsync|helix-editor|helix|latest|helix-*.AppImage.zsync\" runtime_harvest: command: \"{{ .ArtifactPath }} --populate-runtime {{ .HarvestDir }}\" dir: runtime/ ```",
+      "description": "AppImage packaging configuration.\n\nDrives the [AppImage](https://appimage.org/) stage, which bundles a built Linux binary plus its desktop integration (a `.desktop` entry + icon) into a single self-contained, runnable `.AppImage` file via [`linuxdeploy`](https://github.com/linuxdeploy/linuxdeploy)'s `appimage` output plugin. One `.AppImage` is produced per matching Linux target so a multi-arch build yields distinct, non-colliding outputs.\n\nYAML: ```yaml appimages: - id: helix ids: [helix-bin] desktop: contrib/Helix.desktop icon: contrib/helix.png appdir_extra: - src: runtime/ dst: usr/lib/helix/runtime update_information: \"gh-releases-zsync|helix-editor|helix|latest|helix-*.AppImage.zsync\" runtime_harvest: command: \"{{ ArtifactPath }} --populate-runtime {{ HarvestDir }}\" dir: runtime/ ```",
       "type": "object",
       "properties": {
         "appdir_extra": {
@@ -1219,7 +1219,7 @@
           ]
         },
         "name_template": {
-          "description": "Archive filename template (supports templates, e.g., \"{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}\").",
+          "description": "Archive filename template (supports templates, e.g., \"{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}\").",
           "type": [
             "string",
             "null"
@@ -2293,7 +2293,7 @@
           ]
         },
         "pkg_url": {
-          "description": "Custom download URL template for this target triple (supports templates). Lets you point cargo-binstall at a per-target asset name such as `myapp-{{ .Version }}-linux-amd64.tar.gz`.",
+          "description": "Custom download URL template for this target triple (supports templates). Lets you point cargo-binstall at a per-target asset name such as `myapp-{{ Version }}-linux-amd64.tar.gz`.",
           "default": null,
           "type": [
             "string",
@@ -2475,7 +2475,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Conditional-skip gate.",
+          "description": "Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Conditional-skip gate.",
           "default": null,
           "type": [
             "array",
@@ -2503,7 +2503,7 @@
           ]
         },
         "message_template": {
-          "description": "Message template for the post. Default: \"{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}\"",
+          "description": "Message template for the post. Default: \"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}\"",
           "default": null,
           "type": [
             "string",
@@ -2601,7 +2601,7 @@
           }
         },
         "flags": {
-          "description": "Extra flags passed to cargo build, one per list entry (e.g., `[\"--release\", \"--locked\"]`).\n\nEach entry is template-rendered then passed verbatim as a single argv token — there is no `sh -c` step and no shell tokenization, so a rendered value containing spaces stays one argv entry (it is NOT re-split). Use one list entry per flag, including the flag and its value as separate entries (`[\"--target-dir\", \"/tmp/{{ .Version }}\"]`) when the value itself may contain spaces.",
+          "description": "Extra flags passed to cargo build, one per list entry (e.g., `[\"--release\", \"--locked\"]`).\n\nEach entry is template-rendered then passed verbatim as a single argv token — there is no `sh -c` step and no shell tokenization, so a rendered value containing spaces stays one argv entry (it is NOT re-split). Use one list entry per flag, including the flag and its value as separate entries (`[\"--target-dir\", \"/tmp/{{ Version }}\"]`) when the value itself may contain spaces.",
           "default": null,
           "type": [
             "array",
@@ -2643,7 +2643,7 @@
           }
         },
         "mod_timestamp": {
-          "description": "Override the modification timestamp of built binaries for reproducible builds. Template string (e.g. `\"{{ .CommitTimestamp }}\"`) or unix timestamp.",
+          "description": "Override the modification timestamp of built binaries for reproducible builds. Template string (e.g. `\"{{ CommitTimestamp }}\"`) or unix timestamp.",
           "default": null,
           "type": [
             "string",
@@ -3368,7 +3368,7 @@
           }
         },
         "name_template": {
-          "description": "Checksum filename template (default: \"{{ .ProjectName }}_{{ .Version }}_checksums.txt\").",
+          "description": "Checksum filename template (default: \"{{ ProjectName }}_{{ Version }}_checksums.txt\").",
           "default": null,
           "type": [
             "string",
@@ -3396,7 +3396,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Template-rendered extra files.",
+          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Template-rendered extra files.",
           "default": null,
           "type": [
             "array",
@@ -3621,7 +3621,7 @@
           ]
         },
         "skip": {
-          "description": "Skip pushing to the Chocolatey community repository. Bool, string, or template expression (e.g. `\"{{ .IsSnapshot }}\"`). Accepts the legacy `skip_publish:` spelling for back-compat with configs; canonical name is `skip:` to align with every other publisher.",
+          "description": "Skip pushing to the Chocolatey community repository. Bool, string, or template expression (e.g. `\"{{ IsSnapshot }}\"`). Accepts the legacy `skip_publish:` spelling for back-compat with configs; canonical name is `skip:` to align with every other publisher.",
           "default": null,
           "anyOf": [
             {
@@ -3928,7 +3928,7 @@
       }
     },
     "CompletionsConfig": {
-      "description": "Shell-completion generation for an archive entry.\n\nExactly one of `generate` / `from_build_out` / `copy` must be set (validated at deserialize time). Setting none is a no-op; setting more than one is a config error.\n\nYAML examples: ```yaml completions: generate: \"{{ .ArtifactPath }} completions {{ .Shell }}\"   # mode A shells: [bash, zsh, fish, powershell, nushell, elvish] dst: \"completions/\" # mode B: from_build_out: \"**/out/{{ .Binary }}.{bash,fish}\" # mode C: copy: \"contrib/completion/*\" ```\n\n`{{ .Binary }}` resolves to the host-native binary's recorded name; when no host artifact exists (modes B/C on a pure cross build) it falls back to the crate name. If your binary name differs from the crate name, spell it literally in the glob rather than relying on `{{ .Binary }}` in that case.",
+      "description": "Shell-completion generation for an archive entry.\n\nExactly one of `generate` / `from_build_out` / `copy` must be set (validated at deserialize time). Setting none is a no-op; setting more than one is a config error.\n\nYAML examples: ```yaml completions: generate: \"{{ ArtifactPath }} completions {{ Shell }}\"   # mode A shells: [bash, zsh, fish, powershell, nushell, elvish] dst: \"completions/\" # mode B: from_build_out: \"**/out/{{ Binary }}.{bash,fish}\" # mode C: copy: \"contrib/completion/*\" ```\n\n`{{ Binary }}` resolves to the host-native binary's recorded name; when no host artifact exists (modes B/C on a pure cross build) it falls back to the crate name. If your binary name differs from the crate name, spell it literally in the glob rather than relying on `{{ Binary }}` in that case.",
       "type": "object",
       "properties": {
         "copy": {
@@ -3948,7 +3948,7 @@
           ]
         },
         "from_build_out": {
-          "description": "Mode B: per-target glob harvesting files a `build.rs` wrote into the crate's `OUT_DIR` (e.g. `\"**/out/{{ .Binary }}.{bash,fish}\"`).",
+          "description": "Mode B: per-target glob harvesting files a `build.rs` wrote into the crate's `OUT_DIR` (e.g. `\"**/out/{{ Binary }}.{bash,fish}\"`).",
           "default": null,
           "type": [
             "string",
@@ -3956,7 +3956,7 @@
           ]
         },
         "generate": {
-          "description": "Mode A: command run once on the host-native binary, per shell. The `{{ .Shell }}` template var is bound to each entry in `shells`, and `{{ .ArtifactPath }}` / `{{ .Binary }}` reference the built binary. Stdout is captured into one file per shell under `dst`.",
+          "description": "Mode A: command run once on the host-native binary, per shell. The `{{ Shell }}` template var is bound to each entry in `shells`, and `{{ ArtifactPath }}` / `{{ Binary }}` reference the built binary. Stdout is captured into one file per shell under `dst`.",
           "default": null,
           "type": [
             "string",
@@ -4017,7 +4017,7 @@
       }
     },
     "ContentSource": {
-      "description": "A content source that can be an inline string, read from a file, or fetched from a URL. Used for release header/footer values.\n\nYAML examples: header: \"inline text\" header: from_file: ./RELEASE_HEADER.md header: from_url: https://example.com/header.md header: from_url: https://example.com/header.md headers: X-API-Token: \"{{ .Env.API_TOKEN }}\" Accept: \"text/markdown\"\n\nBoth `from_file` path and `from_url` URL are template-rendered before use. Header values are template-rendered.",
+      "description": "A content source that can be an inline string, read from a file, or fetched from a URL. Used for release header/footer values.\n\nYAML examples: header: \"inline text\" header: from_file: ./RELEASE_HEADER.md header: from_url: https://example.com/header.md header: from_url: https://example.com/header.md headers: X-API-Token: \"{{ Env.API_TOKEN }}\" Accept: \"text/markdown\"\n\nBoth `from_file` path and `from_url` URL are template-rendered before use. Header values are template-rendered.",
       "anyOf": [
         {
           "type": "string"
@@ -4755,7 +4755,7 @@
           ]
         },
         "message_template": {
-          "description": "Message template for the Discord embed. Default: \"{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}\"",
+          "description": "Message template for the Discord embed. Default: \"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}\"",
           "default": null,
           "type": [
             "string",
@@ -4763,7 +4763,7 @@
           ]
         },
         "webhook_url": {
-          "description": "Discord webhook URL.\n\nPrefer `{{ .Env.DISCORD_WEBHOOK }}` (or similar) over an in-config literal — plaintext webhook URLs grant full posting access and are NOT redacted from error messages or `dist/config.yaml` after a dry-run / snapshot run.",
+          "description": "Discord webhook URL.\n\nPrefer `{{ Env.DISCORD_WEBHOOK }}` (or similar) over an in-config literal — plaintext webhook URLs grant full posting access and are NOT redacted from error messages or `dist/config.yaml` after a dry-run / snapshot run.",
           "default": null,
           "type": [
             "string",
@@ -4798,7 +4798,7 @@
           ]
         },
         "message_template": {
-          "description": "Message body template for the forum topic. Default: \"{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}\"",
+          "description": "Message body template for the forum topic. Default: \"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}\"",
           "default": null,
           "type": [
             "string",
@@ -4814,7 +4814,7 @@
           ]
         },
         "title_template": {
-          "description": "Title template for the forum topic. Default: \"{{ .ProjectName }} {{ .Tag }} is out!\"",
+          "description": "Title template for the forum topic. Default: \"{{ ProjectName }} {{ Tag }} is out!\"",
           "default": null,
           "type": [
             "string",
@@ -4917,7 +4917,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Conditional-skip gate.",
+          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Conditional-skip gate.",
           "default": null,
           "type": [
             "array",
@@ -5147,7 +5147,7 @@
           }
         },
         "name_template": {
-          "description": "Template for the manifest name, e.g. \"ghcr.io/owner/app:{{ .Version }}\".",
+          "description": "Template for the manifest name, e.g. \"ghcr.io/owner/app:{{ Version }}\".",
           "default": "",
           "type": "string"
         },
@@ -5361,7 +5361,7 @@
           }
         },
         "build_args": {
-          "description": "Build arguments passed as `--build-arg KEY=VALUE`.\n\nEach value is template-expanded and forwarded verbatim to buildx (one argv token per pair, no shell tokenization). Prefer `{{ .Env.VAR }}` over raw user-config strings for secrets — buildx records build-args in image history by default, so plaintext values here propagate into the image metadata.",
+          "description": "Build arguments passed as `--build-arg KEY=VALUE`.\n\nEach value is template-expanded and forwarded verbatim to buildx (one argv token per pair, no shell tokenization). Prefer `{{ Env.VAR }}` over raw user-config strings for secrets — buildx records build-args in image history by default, so plaintext values here propagate into the image metadata.",
           "default": null,
           "type": [
             "object",
@@ -5399,7 +5399,7 @@
           }
         },
         "hooks": {
-          "description": "Pre/post hooks for this docker_v2 config. Each hook accepts the same `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks run after the staging directory is prepared but before `docker buildx build`; `post` hooks run after the image digest is captured. Hook commands, working directories, and env values are template-expanded; in addition to the standard template surface, hooks see:\n\n- `{{ .Images }}` — list of `image:tag` references for this build. Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror a list exposure of the same field; `{{ .Images | join(sep=\",\") }}` reproduces a flat comma-separated string for legacy templates. - `{{ .Dockerfile }}` — path to the rendered Dockerfile - `{{ .ContextDir }}` — path to the buildx context staging directory - `{{ .Digest }}` — image manifest digest (post hooks only) - `{{ .BaseImage }}` / `{{ .BaseImageDigest }}` — final-stage base image (the `BaseImage` / `BaseImageDigest` overlay)",
+          "description": "Pre/post hooks for this docker_v2 config. Each hook accepts the same `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks run after the staging directory is prepared but before `docker buildx build`; `post` hooks run after the image digest is captured. Hook commands, working directories, and env values are template-expanded; in addition to the standard template surface, hooks see:\n\n- `{{ Images }}` — list of `image:tag` references for this build. Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror a list exposure of the same field; `{{ Images | join(sep=\",\") }}` reproduces a flat comma-separated string for legacy templates. - `{{ Dockerfile }}` — path to the rendered Dockerfile - `{{ ContextDir }}` — path to the buildx context staging directory - `{{ Digest }}` — image manifest digest (post hooks only) - `{{ BaseImage }}` / `{{ BaseImageDigest }}` — final-stage base image (the `BaseImage` / `BaseImageDigest` overlay)",
           "default": null,
           "anyOf": [
             {
@@ -5496,7 +5496,7 @@
           ]
         },
         "tags": {
-          "description": "Tag suffixes (e.g., [\"latest\", \"{{ .Version }}\"]). Each image is tagged with each tag.",
+          "description": "Tag suffixes (e.g., [\"latest\", \"{{ Version }}\"]). Each image is tagged with each tag.",
           "default": [],
           "type": "array",
           "items": {
@@ -5603,7 +5603,7 @@
           "minimum": 0.0
         },
         "subject_template": {
-          "description": "Email subject template. Default: \"{{ .ProjectName }} {{ .Tag }} is out!\"",
+          "description": "Email subject template. Default: \"{{ ProjectName }} {{ Tag }} is out!\"",
           "default": null,
           "type": [
             "string",
@@ -5942,7 +5942,7 @@
       "type": "object",
       "properties": {
         "account": {
-          "description": "GemFury account name. Required; rendered through the template engine so `account: \"{{ .Env.MY_FURY_ACCOUNT }}\"` works.",
+          "description": "GemFury account name. Required; rendered through the template engine so `account: \"{{ Env.MY_FURY_ACCOUNT }}\"` works.",
           "default": null,
           "type": [
             "string",
@@ -6354,7 +6354,7 @@
           ]
         },
         "commit_msg_template": {
-          "description": "Custom commit message template. Default: \"Brew cask update for {{ .ProjectName }} version {{ .Tag }}\"",
+          "description": "Custom commit message template. Default: \"Brew cask update for {{ ProjectName }} version {{ Tag }}\"",
           "default": null,
           "type": [
             "string",
@@ -7585,7 +7585,7 @@
           ]
         },
         "message_template": {
-          "description": "Message template for the LinkedIn share post. Default: \"{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}\"",
+          "description": "Message template for the LinkedIn share post. Default: \"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}\"",
           "default": null,
           "type": [
             "string",
@@ -8092,7 +8092,7 @@
       }
     },
     "ManpagesConfig": {
-      "description": "Man-page generation for an archive entry.\n\nSame three mutually-exclusive modes as [`CompletionsConfig`], minus the per-shell `shells` axis (man pages are shell-agnostic).\n\nYAML examples: ```yaml manpages: generate: \"{{ .ArtifactPath }} --man\"     # mode A dst: \"man/man1/\" # mode B: from_build_out: \"**/out/{{ .Binary }}.1\" # mode C: copy: \"man/*.1\" ```",
+      "description": "Man-page generation for an archive entry.\n\nSame three mutually-exclusive modes as [`CompletionsConfig`], minus the per-shell `shells` axis (man pages are shell-agnostic).\n\nYAML examples: ```yaml manpages: generate: \"{{ ArtifactPath }} --man\"     # mode A dst: \"man/man1/\" # mode B: from_build_out: \"**/out/{{ Binary }}.1\" # mode C: copy: \"man/*.1\" ```",
       "type": "object",
       "properties": {
         "copy": {
@@ -8112,7 +8112,7 @@
           ]
         },
         "from_build_out": {
-          "description": "Mode B: per-target glob harvesting man files a `build.rs` wrote into the crate's `OUT_DIR` (e.g. `\"**/out/{{ .Binary }}.1\"`).",
+          "description": "Mode B: per-target glob harvesting man files a `build.rs` wrote into the crate's `OUT_DIR` (e.g. `\"**/out/{{ Binary }}.1\"`).",
           "default": null,
           "type": [
             "string",
@@ -8146,7 +8146,7 @@
           ]
         },
         "message_template": {
-          "description": "Toot message template. Default: \"{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}\"",
+          "description": "Toot message template. Default: \"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}\"",
           "default": null,
           "type": [
             "string",
@@ -8211,7 +8211,7 @@
           ]
         },
         "message_template": {
-          "description": "Message template for the Mattermost post. Default: \"{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}\"",
+          "description": "Message template for the Mattermost post. Default: \"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}\"",
           "default": null,
           "type": [
             "string",
@@ -8387,7 +8387,7 @@
           ]
         },
         "title": {
-          "description": "Optional human-readable title shown in registry UIs (max 100 chars). Templated; supports `{{ .ProjectName | title }}`, `{{ .Version }}`, etc.",
+          "description": "Optional human-readable title shown in registry UIs (max 100 chars). Templated; supports `{{ ProjectName | title }}`, `{{ Version }}`, etc.",
           "default": null,
           "type": [
             "string",
@@ -8417,7 +8417,7 @@
           "type": "string"
         },
         "value": {
-          "description": "Header value. Templated, so it can reference an environment variable — `value: \"Bearer {{ .Env.MCP_TOKEN }}\"`.",
+          "description": "Header value. Templated, so it can reference an environment variable — `value: \"Bearer {{ Env.MCP_TOKEN }}\"`.",
           "type": "string"
         }
       },
@@ -8527,7 +8527,7 @@
       "type": "object",
       "properties": {
         "headers": {
-          "description": "HTTP headers attached to a remote transport's requests. Each entry is a `{ name, value }` pair; the `value` is templated, so a header can carry a secret such as `value: \"Bearer {{ .Env.MCP_TOKEN }}\"`. Omitted entirely for `stdio` and for remote transports with no headers.",
+          "description": "HTTP headers attached to a remote transport's requests. Each entry is a `{ name, value }` pair; the `value` is templated, so a header can carry a secret such as `value: \"Bearer {{ Env.MCP_TOKEN }}\"`. Omitted entirely for `stdio` and for remote transports with no headers.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/McpHeader"
@@ -8543,7 +8543,7 @@
           ]
         },
         "url": {
-          "description": "Endpoint URL for the remote transports (`streamable-http`, `sse`). Required by the registry for those types and forbidden for `stdio`, so it stays an optional plain string: leave it empty for `stdio`, and set it for a remote transport. Templated, so `url: \"https://{{ .Env.MCP_HOST }}/v1\"` resolves at publish time.",
+          "description": "Endpoint URL for the remote transports (`streamable-http`, `sse`). Required by the registry for those types and forbidden for `stdio`, so it stays an optional plain string: leave it empty for `stdio`, and set it for a remote transport. Templated, so `url: \"https://{{ Env.MCP_HOST }}/v1\"` resolves at publish time.",
           "type": "string"
         }
       },
@@ -8579,7 +8579,7 @@
       "type": "object",
       "properties": {
         "commit_author": {
-          "description": "Commit author identity for commit workflows. Reuses the shared `CommitAuthorConfig` (name + email + optional signing). Exposed as `{{ .Metadata.CommitAuthor.Name }}` / `{{ .Metadata.CommitAuthor.Email }}`.",
+          "description": "Commit author identity for commit workflows. Reuses the shared `CommitAuthorConfig` (name + email + optional signing). Exposed as `{{ Metadata.CommitAuthor.Name }}` / `{{ Metadata.CommitAuthor.Email }}`.",
           "default": null,
           "anyOf": [
             {
@@ -8591,7 +8591,7 @@
           ]
         },
         "description": {
-          "description": "Human-readable project description (exposed as `{{ .Metadata.Description }}`).",
+          "description": "Human-readable project description (exposed as `{{ Metadata.Description }}`).",
           "default": null,
           "type": [
             "string",
@@ -8599,7 +8599,7 @@
           ]
         },
         "full_description": {
-          "description": "Long-form project description. Supports inline string, `from_file`, or `from_url`. Exposed as `{{ .Metadata.FullDescription }}`. FromUrl is resolved lazily (requires the release stage); FromFile is resolved at context-populate time with template-rendered path.",
+          "description": "Long-form project description. Supports inline string, `from_file`, or `from_url`. Exposed as `{{ Metadata.FullDescription }}`. FromUrl is resolved lazily (requires the release stage); FromFile is resolved at context-populate time with template-rendered path.",
           "default": null,
           "anyOf": [
             {
@@ -8611,7 +8611,7 @@
           ]
         },
         "homepage": {
-          "description": "Project homepage URL (exposed as `{{ .Metadata.Homepage }}`).",
+          "description": "Project homepage URL (exposed as `{{ Metadata.Homepage }}`).",
           "default": null,
           "type": [
             "string",
@@ -8619,7 +8619,7 @@
           ]
         },
         "license": {
-          "description": "Project license identifier, e.g. \"MIT\" or \"Apache-2.0\" (exposed as `{{ .Metadata.License }}`).",
+          "description": "Project license identifier, e.g. \"MIT\" or \"Apache-2.0\" (exposed as `{{ Metadata.License }}`).",
           "default": null,
           "type": [
             "string",
@@ -8627,7 +8627,7 @@
           ]
         },
         "maintainers": {
-          "description": "List of project maintainers (exposed as `{{ .Metadata.Maintainers }}`).",
+          "description": "List of project maintainers (exposed as `{{ Metadata.Maintainers }}`).",
           "default": null,
           "type": [
             "array",
@@ -8638,7 +8638,7 @@
           }
         },
         "mod_timestamp": {
-          "description": "Global modification timestamp for metadata output files (metadata.json and artifacts.json). Template string (e.g. \"{{ .CommitTimestamp }}\") or unix timestamp. When set, rendered late in the pipeline and applied as file mtime. Exposed as `{{ .Metadata.ModTimestamp }}`.",
+          "description": "Global modification timestamp for metadata output files (metadata.json and artifacts.json). Template string (e.g. \"{{ CommitTimestamp }}\") or unix timestamp. When set, rendered late in the pipeline and applied as file mtime. Exposed as `{{ Metadata.ModTimestamp }}`.",
           "default": null,
           "type": [
             "string",
@@ -8667,7 +8667,7 @@
           ]
         },
         "name_template": {
-          "description": "Milestone name template (default: \"{{ .Tag }}\").",
+          "description": "Milestone name template (default: \"{{ Tag }}\").",
           "default": null,
           "type": [
             "string",
@@ -8689,7 +8689,7 @@
       }
     },
     "MonorepoConfig": {
-      "description": "Monorepo configuration.\n\nWhen configured, tag discovery filters by `tag_prefix` and the working directory is scoped to `dir`.\n\nThis is DIFFERENT from `TagConfig.tag_prefix`: - `MonorepoConfig.tag_prefix`: tags in git already HAVE the prefix (e.g. `subproject1/v1.2.3`). The prefix is STRIPPED for `{{ .Tag }}` while `{{ .PrefixedTag }}` retains the full tag. - `TagConfig.tag_prefix`: a prefix to PREPEND when constructing `{{ .PrefixedTag }}` from a plain tag.\n\nWhen `monorepo` is configured, it takes precedence over `tag.tag_prefix` for `PrefixedTag` / `PrefixedPreviousTag` behavior.",
+      "description": "Monorepo configuration.\n\nWhen configured, tag discovery filters by `tag_prefix` and the working directory is scoped to `dir`.\n\nThis is DIFFERENT from `TagConfig.tag_prefix`: - `MonorepoConfig.tag_prefix`: tags in git already HAVE the prefix (e.g. `subproject1/v1.2.3`). The prefix is STRIPPED for `{{ Tag }}` while `{{ PrefixedTag }}` retains the full tag. - `TagConfig.tag_prefix`: a prefix to PREPEND when constructing `{{ PrefixedTag }}` from a plain tag.\n\nWhen `monorepo` is configured, it takes precedence over `tag.tag_prefix` for `PrefixedTag` / `PrefixedPreviousTag` behavior.",
       "type": "object",
       "properties": {
         "dir": {
@@ -8701,7 +8701,7 @@
           ]
         },
         "tag_prefix": {
-          "description": "Tag prefix for this subproject (e.g. `\"subproject1/\"`).\n\nTags matching this prefix are selected during tag discovery, and the prefix is stripped from `{{ .Tag }}` while `{{ .PrefixedTag }}` retains the full tag.",
+          "description": "Tag prefix for this subproject (e.g. `\"subproject1/\"`).\n\nTags matching this prefix are selected during tag discovery, and the prefix is stripped from `{{ Tag }}` while `{{ PrefixedTag }}` retains the full tag.",
           "default": null,
           "type": [
             "string",
@@ -9383,7 +9383,7 @@
           ]
         },
         "src": {
-          "description": "Source path on the build machine (supports glob patterns and templates).\n\nPaths are resolved relative to the project root. `..` segments are NOT stripped, so a templated value resolving to `../../etc/passwd` will reach outside the project tree — avoid splicing untrusted template inputs (e.g. arbitrary `{{ .Env.X }}` values) into `src`.",
+          "description": "Source path on the build machine (supports glob patterns and templates).\n\nPaths are resolved relative to the project root. `..` segments are NOT stripped, so a templated value resolving to `../../etc/passwd` will reach outside the project tree — avoid splicing untrusted template inputs (e.g. arbitrary `{{ Env.X }}` values) into `src`.",
           "type": "string"
         },
         "type": {
@@ -9981,7 +9981,7 @@
           ]
         },
         "version_template": {
-          "description": "Template for the rendered version string the nightly run sets on `Version` / `RawVersion`. Default: `\"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly\"` — produces commit-immutable nightly versions (two same-day commits yield two distinct nightly versions).\n\nThe `{{ .NightlyBuild }}` template var (a stateless per-base-version build counter derived from `git rev-list --count <last-tag>..HEAD`) enables nushell-style schemes such as `\"{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}\"`.",
+          "description": "Template for the rendered version string the nightly run sets on `Version` / `RawVersion`. Default: `\"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly\"` — produces commit-immutable nightly versions (two same-day commits yield two distinct nightly versions).\n\nThe `{{ NightlyBuild }}` template var (a stateless per-base-version build counter derived from `git rev-list --count <last-tag>..HEAD`) enables nushell-style schemes such as `\"{{ Base }}-nightly.{{ NightlyBuild }}+{{ ShortCommit }}\"`.",
           "default": null,
           "type": [
             "string",
@@ -10100,7 +10100,7 @@
           ]
         },
         "main_program": {
-          "description": "Value for `meta.mainProgram` in the generated Nix derivation. When set, the rendered derivation includes `mainProgram = \"<value>\";` inside the `meta` block, telling Nix which binary `nix run` should execute when the derivation contains multiple executables. Templated: supports `{{ .Version }}` etc. Omitted when unset.",
+          "description": "Value for `meta.mainProgram` in the generated Nix derivation. When set, the rendered derivation includes `mainProgram = \"<value>\";` inside the `meta` block, telling Nix which binary `nix run` should execute when the derivation contains multiple executables. Templated: supports `{{ Version }}` etc. Omitted when unset.",
           "default": null,
           "type": [
             "string",
@@ -10612,7 +10612,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Conditional-skip gate.",
+          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Conditional-skip gate.",
           "default": null,
           "type": [
             "array",
@@ -10657,7 +10657,7 @@
           ]
         },
         "title_template": {
-          "description": "Title template for the update. Default: \"{{ .Tag }}\"",
+          "description": "Title template for the update. Default: \"{{ Tag }}\"",
           "default": null,
           "type": [
             "string",
@@ -10844,7 +10844,7 @@
       "type": "object",
       "properties": {
         "path": {
-          "description": "Template path to the imported binary on disk. Rendered once per target with these template variables available in addition to the project-wide globals (`Version`, `ProjectName`, ...):\n\n- `{{ .Target }}` — the full Rust target triple (e.g. `x86_64-unknown-linux-gnu`). - `{{ .Os }}` — the OS slug (`linux`, `darwin`, `windows`, ...). - `{{ .Arch }}` — the architecture slug (`amd64`, `arm64`, `armv7`, ...). - `{{ .Amd64 }}` — AMD64 micro-architecture variant (`v1` / `v2` / `v3` / `v4`); set for `x86_64-*` triples. - `{{ .Arm64 }}` — ARM64 micro-architecture variant (`v8`); set for `aarch64-*` triples. - `{{ .Arm }}` — ARM micro-architecture variant (`6` / `7`); set for `armv6*` / `armv7*` triples. - `{{ .I386 }}` — i386 micro-architecture variant (`sse2`); set for `i686-*` / `i386-*` / `i586-*` triples. - `{{ .ArtifactExt }}` — `.exe` on Windows targets, empty elsewhere. - `{{ .ArtifactID }}` — the build entry's `id:` (empty when unset).\n\nThe rendered path is `stat()`-ed before the import, unless `--dry-run` is active, in which case the stat is skipped and the path is accepted as given. A missing file, a permission error, or any other I/O failure aborts the build with a message that names both the rendered path and the originating target triple, matching the \"build will fail\" contract.\n\nRecommendation: place the staged binaries OUTSIDE `dist/`. The release pipeline removes `dist/` on every run; pointing `path:` at `dist/...` will resolve against an empty directory.",
+          "description": "Template path to the imported binary on disk. Rendered once per target with these template variables available in addition to the project-wide globals (`Version`, `ProjectName`, ...):\n\n- `{{ Target }}` — the full Rust target triple (e.g. `x86_64-unknown-linux-gnu`). - `{{ Os }}` — the OS slug (`linux`, `darwin`, `windows`, ...). - `{{ Arch }}` — the architecture slug (`amd64`, `arm64`, `armv7`, ...). - `{{ Amd64 }}` — AMD64 micro-architecture variant (`v1` / `v2` / `v3` / `v4`); set for `x86_64-*` triples. - `{{ Arm64 }}` — ARM64 micro-architecture variant (`v8`); set for `aarch64-*` triples. - `{{ Arm }}` — ARM micro-architecture variant (`6` / `7`); set for `armv6*` / `armv7*` triples. - `{{ I386 }}` — i386 micro-architecture variant (`sse2`); set for `i686-*` / `i386-*` / `i586-*` triples. - `{{ ArtifactExt }}` — `.exe` on Windows targets, empty elsewhere. - `{{ ArtifactID }}` — the build entry's `id:` (empty when unset).\n\nThe rendered path is `stat()`-ed before the import, unless `--dry-run` is active, in which case the stat is skipped and the path is accepted as given. A missing file, a permission error, or any other I/O failure aborts the build with a message that names both the rendered path and the originating target triple, matching the \"build will fail\" contract.\n\nRecommendation: place the staged binaries OUTSIDE `dist/`. The release pipeline removes `dist/` on every run; pointing `path:` at `dist/...` will resolve against an empty directory.",
           "default": "",
           "type": "string"
         }
@@ -11227,7 +11227,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before publishing. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Conditional-skip gate.",
+          "description": "Extra files whose contents are rendered through the template engine before publishing. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Conditional-skip gate.",
           "default": null,
           "type": [
             "array",
@@ -11343,7 +11343,7 @@
           ]
         },
         "title_template": {
-          "description": "Title template for the Reddit link post. Default: \"{{ .ProjectName }} {{ .Tag }} is out!\"",
+          "description": "Title template for the Reddit link post. Default: \"{{ ProjectName }} {{ Tag }} is out!\"",
           "default": null,
           "type": [
             "string",
@@ -11351,7 +11351,7 @@
           ]
         },
         "url_template": {
-          "description": "URL template for the Reddit link post. Default: \"{{ .ReleaseURL }}\"",
+          "description": "URL template for the Reddit link post. Default: \"{{ ReleaseURL }}\"",
           "default": null,
           "type": [
             "string",
@@ -11582,7 +11582,7 @@
           ]
         },
         "tag": {
-          "description": "Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `\"{{ .Tag }}\"` to publish `v1.0.0` instead of `myapp/v1.0.0`). A cross-platform publishing feature provided for free by anodizer.",
+          "description": "Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `\"{{ Tag }}\"` to publish `v1.0.0` instead of `myapp/v1.0.0`). A cross-platform publishing feature provided for free by anodizer.",
           "default": null,
           "type": [
             "string",
@@ -11598,7 +11598,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Conditional-skip gate.\n\nSame path-traversal caveat as `extra_files`: `..` segments reach outside the project tree.",
+          "description": "Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Conditional-skip gate.\n\nSame path-traversal caveat as `extra_files`: `..` segments reach outside the project tree.",
           "default": null,
           "type": [
             "array",
@@ -12166,7 +12166,7 @@
           ]
         },
         "output": {
-          "description": "Capture and log stdout/stderr of the signing command. Accepts bool or template string (e.g., \"{{ .IsSnapshot }}\").",
+          "description": "Capture and log stdout/stderr of the signing command. Accepts bool or template string (e.g., \"{{ IsSnapshot }}\").",
           "default": null,
           "anyOf": [
             {
@@ -12265,7 +12265,7 @@
           ]
         },
         "message_template": {
-          "description": "Message template for the Slack post. Default: \"{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}\"",
+          "description": "Message template for the Slack post. Default: \"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}\"",
           "default": null,
           "type": [
             "string",
@@ -12906,7 +12906,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before bundling. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. Template-rendered extra files.",
+          "description": "Extra files whose contents are rendered through the template engine before bundling. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Template-rendered extra files.",
           "default": null,
           "type": [
             "array",
@@ -13006,7 +13006,7 @@
       ],
       "properties": {
         "version_template": {
-          "description": "Version string template for snapshot builds (e.g., \"{{ .Commit }}-SNAPSHOT\"). Accepts the deprecated `name_template:` alias (renamed to `version_template`): a non-empty `name_template` is folded into `version_template`. A deprecation warning is emitted at config-load time when the alias is hit (see `apply_snapshot_legacy_aliases`).",
+          "description": "Version string template for snapshot builds (e.g., \"{{ Commit }}-SNAPSHOT\"). Accepts the deprecated `name_template:` alias (renamed to `version_template`): a non-empty `name_template` is folded into `version_template`. A deprecation warning is emitted at config-load time when the alias is hit (see `apply_snapshot_legacy_aliases`).",
           "type": "string"
         }
       }
@@ -13403,7 +13403,7 @@
           ]
         },
         "cmd": {
-          "description": "Command to run.\n\nThe entire string is interpreted by `sh -c`, so shell metacharacters (`|`, `;`, `&&`, backticks, `$()`, redirects, globs) are honoured — any templated values folded into `cmd` become part of the shell command and are subject to word-splitting and metacharacter expansion. Keep templated user-config values out of `cmd` when possible, or quote them defensively (e.g. `'{{ .Env.FOO }}'`). Hooks already run with `env_clear()` plus an allow-list, so secrets in `$ENV` are not inherited unless explicitly listed in `env`.",
+          "description": "Command to run.\n\nThe entire string is interpreted by `sh -c`, so shell metacharacters (`|`, `;`, `&&`, backticks, `$()`, redirects, globs) are honoured — any templated values folded into `cmd` become part of the shell command and are subject to word-splitting and metacharacter expansion. Keep templated user-config values out of `cmd` when possible, or quote them defensively (e.g. `'{{ Env.FOO }}'`). Hooks already run with `env_clear()` plus an allow-list, so secrets in `$ENV` are not inherited unless explicitly listed in `env`.",
           "default": "",
           "type": "string"
         },
@@ -13610,7 +13610,7 @@
           }
         },
         "tag_pre_hooks": {
-          "description": "Commands to run before `anodizer tag` creates the tag. Useful for updating lockfiles or committing sibling changes that must be part of the tagged commit. Env: `ANODIZER_CURRENT_TAG`, `ANODIZER_PREVIOUS_TAG` are set; template vars `{{ .Tag }}`, `{{ .PreviousTag }}`, `{{ .Version }}`, `{{ .PrefixedTag }}` are available.",
+          "description": "Commands to run before `anodizer tag` creates the tag. Useful for updating lockfiles or committing sibling changes that must be part of the tagged commit. Env: `ANODIZER_CURRENT_TAG`, `ANODIZER_PREVIOUS_TAG` are set; template vars `{{ Tag }}`, `{{ PreviousTag }}`, `{{ Version }}`, `{{ PrefixedTag }}` are available.",
           "default": null,
           "type": [
             "array",
@@ -13670,7 +13670,7 @@
           ]
         },
         "message_template": {
-          "description": "Message template for the Adaptive Card body. Default: \"{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}\"",
+          "description": "Message template for the Adaptive Card body. Default: \"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}\"",
           "default": null,
           "type": [
             "string",
@@ -13699,7 +13699,7 @@
       "type": "object",
       "properties": {
         "bot_token": {
-          "description": "Telegram Bot API token. Get one from @BotFather.\n\nPrefer `{{ .Env.TELEGRAM_BOT_TOKEN }}` over an in-config literal — plaintext tokens grant full bot impersonation and are NOT redacted from error messages or `dist/config.yaml` after a dry-run / snapshot run.",
+          "description": "Telegram Bot API token. Get one from @BotFather.\n\nPrefer `{{ Env.TELEGRAM_BOT_TOKEN }}` over an in-config literal — plaintext tokens grant full bot impersonation and are NOT redacted from error messages or `dist/config.yaml` after a dry-run / snapshot run.",
           "default": null,
           "type": [
             "string",
@@ -13727,7 +13727,7 @@
           ]
         },
         "message_template": {
-          "description": "Message template. Default: \"{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}\"",
+          "description": "Message template. Default: \"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}\"",
           "default": null,
           "type": [
             "string",
@@ -13801,7 +13801,7 @@
       "type": "object",
       "properties": {
         "dst": {
-          "description": "Destination filename for the rendered output. Supports template variables (e.g. `\"{{ .ProjectName }}-NOTES.txt\"`).",
+          "description": "Destination filename for the rendered output. Supports template variables (e.g. `\"{{ ProjectName }}-NOTES.txt\"`).",
           "default": null,
           "type": [
             "string",
@@ -13839,7 +13839,7 @@
           ]
         },
         "message_template": {
-          "description": "Tweet message template. Default: \"{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}\"",
+          "description": "Tweet message template. Default: \"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}\"",
           "default": null,
           "type": [
             "string",
@@ -14045,7 +14045,7 @@
           ]
         },
         "password": {
-          "description": "Password for HTTP basic auth.\n\nStrongly prefer `{{ .Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will land in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Password-resolution cascade.",
+          "description": "Password for HTTP basic auth.\n\nStrongly prefer `{{ Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will land in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Password-resolution cascade.",
           "default": null,
           "type": [
             "string",
@@ -14073,7 +14073,7 @@
           ]
         },
         "target": {
-          "description": "Target URL template (supports template variables like {{ .ProjectName }}, {{ .Version }}).",
+          "description": "Target URL template (supports template variables like {{ ProjectName }}, {{ Version }}).",
           "default": "",
           "type": "string"
         },
@@ -14086,7 +14086,7 @@
           ]
         },
         "username": {
-          "description": "Username for HTTP basic auth. Resolution order: rendered `username` template → env `UPLOAD_{NAME}_USERNAME`. Set this to a literal value or a `{{ .Env.X }}` template.",
+          "description": "Username for HTTP basic auth. Resolution order: rendered `username` template → env `UPLOAD_{NAME}_USERNAME`. Set this to a literal value or a `{{ Env.X }}` template.",
           "default": null,
           "type": [
             "string",
@@ -14304,7 +14304,7 @@
           ]
         },
         "endpoint_url": {
-          "description": "Webhook endpoint URL (supports template variables).\n\nPrefer `{{ .Env.WEBHOOK_URL }}` for any URL containing a secret token in its path / query string — plaintext values are NOT redacted from error messages or `dist/config.yaml` after a dry-run / snapshot run.",
+          "description": "Webhook endpoint URL (supports template variables).\n\nPrefer `{{ Env.WEBHOOK_URL }}` for any URL containing a secret token in its path / query string — plaintext values are NOT redacted from error messages or `dist/config.yaml` after a dry-run / snapshot run.",
           "default": null,
           "type": [
             "string",
@@ -14322,7 +14322,7 @@
           }
         },
         "headers": {
-          "description": "Custom HTTP headers to include in the request.\n\nPrecedence — **anodizer-specific**: - anodizer: a config-supplied `Authorization` header wins over the `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` env var. - The conventional behaviour: env-supplied `Authorization` is appended FIRST; most servers honour the first occurrence, so the env value effectively wins.\n\nMigrating configs that relied on env-overriding the config header must either remove the config entry or be reconfigured. Use templated config (`Authorization: \"Bearer {{ .Env.MY_TOKEN }}\"`) for the cleanest migration.",
+          "description": "Custom HTTP headers to include in the request.\n\nPrecedence — **anodizer-specific**: - anodizer: a config-supplied `Authorization` header wins over the `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` env var. - The conventional behaviour: env-supplied `Authorization` is appended FIRST; most servers honour the first occurrence, so the env value effectively wins.\n\nMigrating configs that relied on env-overriding the config header must either remove the config entry or be reconfigured. Use templated config (`Authorization: \"Bearer {{ Env.MY_TOKEN }}\"`) for the cleanest migration.",
           "default": null,
           "type": [
             "object",
@@ -14333,7 +14333,7 @@
           }
         },
         "message_template": {
-          "description": "Message body template. Default: \"{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}\"",
+          "description": "Message body template. Default: \"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}\"",
           "default": null,
           "type": [
             "string",

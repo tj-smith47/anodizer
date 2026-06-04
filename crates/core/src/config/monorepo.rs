@@ -13,10 +13,10 @@ use std::path::Path;
 ///
 /// This is DIFFERENT from `TagConfig.tag_prefix`:
 /// - `MonorepoConfig.tag_prefix`: tags in git already HAVE the prefix
-///   (e.g. `subproject1/v1.2.3`). The prefix is STRIPPED for `{{ .Tag }}`
-///   while `{{ .PrefixedTag }}` retains the full tag.
+///   (e.g. `subproject1/v1.2.3`). The prefix is STRIPPED for `{{ Tag }}`
+///   while `{{ PrefixedTag }}` retains the full tag.
 /// - `TagConfig.tag_prefix`: a prefix to PREPEND when constructing
-///   `{{ .PrefixedTag }}` from a plain tag.
+///   `{{ PrefixedTag }}` from a plain tag.
 ///
 /// When `monorepo` is configured, it takes precedence over `tag.tag_prefix`
 /// for `PrefixedTag` / `PrefixedPreviousTag` behavior.
@@ -26,7 +26,7 @@ pub struct MonorepoConfig {
     /// Tag prefix for this subproject (e.g. `"subproject1/"`).
     ///
     /// Tags matching this prefix are selected during tag discovery, and the
-    /// prefix is stripped from `{{ .Tag }}` while `{{ .PrefixedTag }}` retains
+    /// prefix is stripped from `{{ Tag }}` while `{{ PrefixedTag }}` retains
     /// the full tag.
     pub tag_prefix: Option<String>,
     /// Working directory for this subproject.

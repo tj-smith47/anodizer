@@ -30,7 +30,7 @@ pub struct GemFuryConfig {
     pub ids: Option<Vec<String>>,
 
     /// GemFury account name. Required; rendered through the template engine
-    /// so `account: "{{ .Env.MY_FURY_ACCOUNT }}"` works.
+    /// so `account: "{{ Env.MY_FURY_ACCOUNT }}"` works.
     pub account: Option<String>,
 
     /// Push token used as the HTTP Basic auth username (empty password).

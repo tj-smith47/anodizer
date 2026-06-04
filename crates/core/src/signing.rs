@@ -104,7 +104,7 @@ pub struct SignConfig {
     /// Certificate file to embed in the signature (Cosign bundle signing).
     pub certificate: Option<String>,
     /// Capture and log stdout/stderr of the signing command.
-    /// Accepts bool or template string (e.g., "{{ .IsSnapshot }}").
+    /// Accepts bool or template string (e.g., "{{ IsSnapshot }}").
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub output: Option<StringOrBool>,
     /// Template-conditional: skip this sign config if rendered result is "false" or empty.

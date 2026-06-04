@@ -62,7 +62,7 @@ pub struct BlobConfig {
     /// Pre-existing files to upload (supports glob patterns).
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before upload.
-    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
     /// Conditional-skip gate.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Upload only extra files (skip artifacts).

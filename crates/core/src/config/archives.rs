@@ -219,7 +219,7 @@ pub struct ArchiveConfig {
     /// Defaults to `"default"` so a parse->serialise->reparse round-trip is
     /// stable (stored verbatim, not as an Option).
     pub id: Option<String>,
-    /// Archive filename template (supports templates, e.g., "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}").
+    /// Archive filename template (supports templates, e.g., "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}").
     pub name_template: Option<String>,
     /// Archive formats: tar.gz, tar.xz, tar.zst, tar, zip, gz, xz, or binary.
     /// `gz` and `xz` are single-file compressors — supplying multiple input
@@ -552,7 +552,7 @@ pub struct TemplatedExtraFile {
     /// Source template file path.
     pub src: String,
     /// Destination filename for the rendered output.
-    /// Supports template variables (e.g. `"{{ .ProjectName }}-NOTES.txt"`).
+    /// Supports template variables (e.g. `"{{ ProjectName }}-NOTES.txt"`).
     pub dst: Option<String>,
     /// File permissions in octal notation as a string, e.g. `"0755"`.
     /// Parsed at runtime via `parse_octal_mode()` to avoid YAML interpreting as decimal.
@@ -562,7 +562,7 @@ pub struct TemplatedExtraFile {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChecksumConfig {
-    /// Checksum filename template (default: "{{ .ProjectName }}_{{ .Version }}_checksums.txt").
+    /// Checksum filename template (default: "{{ ProjectName }}_{{ Version }}_checksums.txt").
     pub name_template: Option<String>,
     /// Hash algorithm: sha256, sha512, sha1, md5, crc32 (default: sha256).
     pub algorithm: Option<String>,
@@ -572,7 +572,7 @@ pub struct ChecksumConfig {
     /// Extra files to include in the checksum file (beyond build artifacts).
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before inclusion.
-    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
     /// Template-rendered extra files.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Build IDs filter: only checksum artifacts from builds whose `id` is in this list.
@@ -633,7 +633,7 @@ impl ChecksumConfig {
 ///   header:
 ///     from_url: https://example.com/header.md
 ///     headers:
-///       X-API-Token: "{{ .Env.API_TOKEN }}"
+///       X-API-Token: "{{ Env.API_TOKEN }}"
 ///       Accept: "text/markdown"
 ///
 /// Both `from_file` path and `from_url` URL are template-rendered before use.

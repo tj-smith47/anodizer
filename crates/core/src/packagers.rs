@@ -165,7 +165,7 @@ pub(crate) fn makeselfs_schema(
 ///         dst: usr/lib/helix/runtime
 ///     update_information: "gh-releases-zsync|helix-editor|helix|latest|helix-*.AppImage.zsync"
 ///     runtime_harvest:
-///       command: "{{ .ArtifactPath }} --populate-runtime {{ .HarvestDir }}"
+///       command: "{{ ArtifactPath }} --populate-runtime {{ HarvestDir }}"
 ///       dir: runtime/
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]

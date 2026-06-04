@@ -90,22 +90,22 @@ pub struct PrebuiltConfig {
     /// target with these template variables available in addition to the
     /// project-wide globals (`Version`, `ProjectName`, ...):
     ///
-    /// - `{{ .Target }}` — the full Rust target triple
+    /// - `{{ Target }}` — the full Rust target triple
     ///   (e.g. `x86_64-unknown-linux-gnu`).
-    /// - `{{ .Os }}` — the OS slug (`linux`, `darwin`,
+    /// - `{{ Os }}` — the OS slug (`linux`, `darwin`,
     ///   `windows`, ...).
-    /// - `{{ .Arch }}` — the architecture slug (`amd64`,
+    /// - `{{ Arch }}` — the architecture slug (`amd64`,
     ///   `arm64`, `armv7`, ...).
-    /// - `{{ .Amd64 }}` — AMD64 micro-architecture variant
+    /// - `{{ Amd64 }}` — AMD64 micro-architecture variant
     ///   (`v1` / `v2` / `v3` / `v4`); set for `x86_64-*` triples.
-    /// - `{{ .Arm64 }}` — ARM64 micro-architecture variant (`v8`); set for
+    /// - `{{ Arm64 }}` — ARM64 micro-architecture variant (`v8`); set for
     ///   `aarch64-*` triples.
-    /// - `{{ .Arm }}` — ARM micro-architecture variant (`6` / `7`); set for
+    /// - `{{ Arm }}` — ARM micro-architecture variant (`6` / `7`); set for
     ///   `armv6*` / `armv7*` triples.
-    /// - `{{ .I386 }}` — i386 micro-architecture variant (`sse2`); set for
+    /// - `{{ I386 }}` — i386 micro-architecture variant (`sse2`); set for
     ///   `i686-*` / `i386-*` / `i586-*` triples.
-    /// - `{{ .ArtifactExt }}` — `.exe` on Windows targets, empty elsewhere.
-    /// - `{{ .ArtifactID }}` — the build entry's `id:` (empty when unset).
+    /// - `{{ ArtifactExt }}` — `.exe` on Windows targets, empty elsewhere.
+    /// - `{{ ArtifactID }}` — the build entry's `id:` (empty when unset).
     ///
     /// The rendered path is `stat()`-ed before the import, unless
     /// `--dry-run` is active, in which case the stat is skipped and the
@@ -312,7 +312,7 @@ pub struct BuildConfig {
     /// token — there is no `sh -c` step and no shell tokenization, so a
     /// rendered value containing spaces stays one argv entry (it is NOT
     /// re-split). Use one list entry per flag, including the flag and its
-    /// value as separate entries (`["--target-dir", "/tmp/{{ .Version }}"]`)
+    /// value as separate entries (`["--target-dir", "/tmp/{{ Version }}"]`)
     /// when the value itself may contain spaces.
     pub flags: Option<Vec<String>>,
     /// When true, enable reproducible builds by stripping timestamps.
@@ -329,7 +329,7 @@ pub struct BuildConfig {
     /// When set, this binary is used instead of cargo/cross/zigbuild.
     pub cross_tool: Option<String>,
     /// Override the modification timestamp of built binaries for reproducible builds.
-    /// Template string (e.g. `"{{ .CommitTimestamp }}"`) or unix timestamp.
+    /// Template string (e.g. `"{{ CommitTimestamp }}"`) or unix timestamp.
     pub mod_timestamp: Option<String>,
     /// Override the cargo subcommand (default: auto-detected "build" or "zigbuild").
     /// Enables e.g. `cargo auditable build` by setting `command: "auditable build"`.

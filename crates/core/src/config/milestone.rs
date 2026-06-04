@@ -16,12 +16,12 @@ pub struct MilestoneConfig {
     pub close: Option<bool>,
     /// Fail the pipeline if milestone close fails. Default: false.
     pub fail_on_error: Option<bool>,
-    /// Milestone name template (default: "{{ .Tag }}").
+    /// Milestone name template (default: "{{ Tag }}").
     pub name_template: Option<String>,
 }
 
 impl MilestoneConfig {
-    /// Default milestone name template (`"{{.Tag}}"`).
+    /// Default milestone name template (`"{{Tag}}"`).
     /// Anodize uses Tera-style `{{ Tag }}`; the rendered value is
     /// identical for any tag the project produces.
     pub const DEFAULT_NAME_TEMPLATE: &'static str = "{{ Tag }}";

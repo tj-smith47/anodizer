@@ -18,15 +18,15 @@ pub struct UploadConfig {
     pub ids: Option<Vec<String>>,
     /// File extension filter: only upload artifacts with these extensions.
     pub exts: Option<Vec<String>>,
-    /// Target URL template (supports template variables like {{ .ProjectName }}, {{ .Version }}).
+    /// Target URL template (supports template variables like {{ ProjectName }}, {{ Version }}).
     pub target: String,
     /// Username for HTTP basic auth.
     /// Resolution order: rendered `username` template → env `UPLOAD_{NAME}_USERNAME`.
-    /// Set this to a literal value or a `{{ .Env.X }}` template.
+    /// Set this to a literal value or a `{{ Env.X }}` template.
     pub username: Option<String>,
     /// Password for HTTP basic auth.
     ///
-    /// Strongly prefer `{{ .Env.UPLOAD_PASSWORD }}` (or any other env-var
+    /// Strongly prefer `{{ Env.UPLOAD_PASSWORD }}` (or any other env-var
     /// template) over an in-config literal — plaintext values here are NOT
     /// redacted from dry-run output and will land in `dist/config.yaml`
     /// when the pipeline runs with `--dry-run` / `--snapshot`. Resolution

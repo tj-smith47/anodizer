@@ -63,7 +63,7 @@ pub struct BinstallConfig {
 pub struct BinstallOverride {
     /// Custom download URL template for this target triple (supports templates).
     /// Lets you point cargo-binstall at a per-target asset name such as
-    /// `myapp-{{ .Version }}-linux-amd64.tar.gz`.
+    /// `myapp-{{ Version }}-linux-amd64.tar.gz`.
     pub pkg_url: Option<String>,
     /// Package format hint for this target triple: tgz, tar.gz, tar.xz, zip, bin, etc.
     pub pkg_fmt: Option<String>,

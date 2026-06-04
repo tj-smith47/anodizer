@@ -64,7 +64,7 @@ pub struct DockerV2Config {
     pub dockerfile: String,
     /// Base image names (e.g., ["ghcr.io/owner/app"]). Combined with `tags` to form full references.
     pub images: Vec<String>,
-    /// Tag suffixes (e.g., ["latest", "{{ .Version }}"]). Each image is tagged with each tag.
+    /// Tag suffixes (e.g., ["latest", "{{ Version }}"]). Each image is tagged with each tag.
     pub tags: Vec<String>,
     /// OCI labels to apply to the image via `--label key=value` flags.
     pub labels: Option<HashMap<String, String>>,
@@ -78,7 +78,7 @@ pub struct DockerV2Config {
     ///
     /// Each value is template-expanded and forwarded verbatim to buildx
     /// (one argv token per pair, no shell tokenization). Prefer
-    /// `{{ .Env.VAR }}` over raw user-config strings for secrets — buildx
+    /// `{{ Env.VAR }}` over raw user-config strings for secrets — buildx
     /// records build-args in image history by default, so plaintext values
     /// here propagate into the image metadata.
     pub build_args: Option<HashMap<String, String>>,
@@ -105,14 +105,14 @@ pub struct DockerV2Config {
     /// commands, working directories, and env values are template-expanded;
     /// in addition to the standard template surface, hooks see:
     ///
-    /// - `{{ .Images }}` — list of `image:tag` references for this build.
+    /// - `{{ Images }}` — list of `image:tag` references for this build.
     ///   Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror
-    ///   a list exposure of the same field; `{{ .Images | join(sep=",") }}`
+    ///   a list exposure of the same field; `{{ Images | join(sep=",") }}`
     ///   reproduces a flat comma-separated string for legacy templates.
-    /// - `{{ .Dockerfile }}` — path to the rendered Dockerfile
-    /// - `{{ .ContextDir }}` — path to the buildx context staging directory
-    /// - `{{ .Digest }}` — image manifest digest (post hooks only)
-    /// - `{{ .BaseImage }}` / `{{ .BaseImageDigest }}` — final-stage base image
+    /// - `{{ Dockerfile }}` — path to the rendered Dockerfile
+    /// - `{{ ContextDir }}` — path to the buildx context staging directory
+    /// - `{{ Digest }}` — image manifest digest (post hooks only)
+    /// - `{{ BaseImage }}` / `{{ BaseImageDigest }}` — final-stage base image
     ///   (the `BaseImage` / `BaseImageDigest` overlay)
     pub hooks: Option<BuildHooksConfig>,
     /// Docker backend for build commands: `"buildx"` (default) or `"podman"`.
@@ -174,7 +174,7 @@ pub struct DockerDigestConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DockerManifestConfig {
-    /// Template for the manifest name, e.g. "ghcr.io/owner/app:{{ .Version }}".
+    /// Template for the manifest name, e.g. "ghcr.io/owner/app:{{ Version }}".
     pub name_template: String,
     /// Image references to include in the manifest.
     pub image_templates: Vec<String>,
