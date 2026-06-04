@@ -30,7 +30,7 @@ so neither an orphan tag nor an orphan commit can ever exist on the remote.
 | `--no-push` | Push the tag only; leave the bump commit local (the per-crate path's opt-out, since it pushes branch+tags by default) |
 | `--push-remote <name>` | Push to `<name>` instead of `origin` |
 | `--push-dry-run` | Create the tag + bump commit locally, but only **print** the `git push` commands `--push` would run instead of executing them |
-| `--no-changelog` | Skip refreshing `CHANGELOG.md` on this tag (overrides the `changelog:` config) |
+| `--changelog` | Refresh `CHANGELOG.md` as part of this tag — opt-in; requires a `changelog:` config block |
 
 `tag.push: true` in config is the persistent equivalent of `--push`; the CLI
 flags override it per invocation.
@@ -44,18 +44,20 @@ are tagged together and never drift from the tag. See
 [Version Files](@/docs/general/version-files.md) for enrollment and the
 `anodizer check version-files` CI guard.
 
-### The bump commit refreshes `CHANGELOG.md`
+### Refreshing `CHANGELOG.md` (`--changelog`)
 
-When a `changelog:` block is configured, the same bump commit also prepends a
-new `## [version] - date` section to your `CHANGELOG.md` — rendered by
-anodizer's native [changelog engine](@/docs/more/changelog.md) (the same one
-`anodizer bump --commit` uses: conventional commits since the last tag, grouped
-and filtered per your `changelog:` config).
+Pass `--changelog` and the same bump commit also prepends a new
+`## [version] - date` section to your `CHANGELOG.md` — rendered by anodizer's
+native [changelog engine](@/docs/more/changelog.md) (the same one
+`anodizer bump --commit --changelog` uses: conventional commits since the last
+tag, grouped and filtered per your `changelog:` config).
 The refreshed `CHANGELOG.md` rides the same `chore(release): bump …` commit as
 the `Cargo.toml` / `Cargo.lock` bump and any enrolled `version_files`, so the
 changelog is tagged atomically with the version and never drifts.
 
-A minimal `changelog:` block is all it takes — no extra flag enables this:
+The refresh is **opt-in**: without `--changelog`, `anodizer tag` never touches
+`CHANGELOG.md`. A `changelog:` block must also be configured for `--changelog`
+to have anything to render:
 
 ```yaml
 changelog:
@@ -74,11 +76,11 @@ changelog:
 ```
 
 Given the latest tag `v0.1.0`, a `minor` bump, and an existing `CHANGELOG.md`
-with a `# Changelog` H1 over prior `## [x.y.z]` sections, `anodizer tag`
+with a `# Changelog` H1 over prior `## [x.y.z]` sections, `anodizer tag --changelog`
 prepends the new section in the bump commit and leaves the prior ones intact:
 
 ```text
-$ anodizer tag
+$ anodizer tag --changelog
 ...
 bundled changelog section for myapp → 0.2.0
 new_tag=v0.2.0
@@ -102,30 +104,33 @@ old_tag=v0.1.0
 ...
 ```
 
-Pass `--no-changelog` to skip the refresh for a single tag — a hotfix tag you
-don't want to touch the changelog, for example. The tag and the
-`Cargo.toml` / `version_files` bump still happen; only `CHANGELOG.md` is left
-untouched:
+Omit `--changelog` for a tag that shouldn't touch the changelog — a hotfix tag,
+for example. The tag and the `Cargo.toml` / `version_files` bump still happen;
+`CHANGELOG.md` is simply left untouched:
 
 ```text
-$ anodizer tag --no-changelog
+$ anodizer tag
 ...
 new_tag=v0.2.1   # CHANGELOG.md unchanged
 old_tag=v0.2.0
 ```
 
+To preview or refresh `CHANGELOG.md` outside of tagging, use the standalone
+[`anodizer changelog`](@/docs/more/changelog.md) command (`anodizer changelog`
+to preview, `--write` to apply).
+
 #### When the refresh runs
 
-The refresh is **on by default** whenever a `changelog:` block is present and
-not skipped. `tag` and `bump --commit` share one gate, so the same config
-governs both:
+The refresh is **opt-in** via `--changelog` and only acts when a `changelog:`
+block is configured. `tag` and `bump --commit` share one gate, so the same
+config governs both:
 
 | Setting | Effect on the bump commit's `CHANGELOG.md` refresh |
 |---------|----------------------------------------------------|
-| `changelog:` present, no `skip:` | **Refreshes** (default) |
-| `changelog: { skip: true }` | Disabled — honored by both `tag` and `bump --commit` |
-| `anodizer tag --no-changelog` | Disabled for that invocation only (overrides config) |
-| no `changelog:` block at all | Nothing to render; refresh is a no-op |
+| no `--changelog` flag | **No refresh** (default) — `CHANGELOG.md` untouched |
+| `anodizer tag --changelog`, `changelog:` present | **Refreshes** |
+| `--changelog` but no `changelog:` block | Nothing to render; refresh is a no-op |
+| `--changelog` but `changelog: { skip: true }` | Suppressed — `skip: true` overrides the flag, for both `tag` and `bump --commit` |
 
 #### Config modes
 

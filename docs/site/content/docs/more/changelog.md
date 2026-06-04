@@ -5,7 +5,140 @@ weight = 50
 template = "docs.html"
 +++
 
-The changelog stage generates release notes from git commits between the previous tag and the current tag.
+The changelog stage generates release notes from git commits between the previous tag and the current tag. The standalone `anodizer changelog` command is the unified front door for that engine: it refreshes the in-repo `CHANGELOG.md`, emits a GitHub-release body, or dumps structured JSON — all from the same grouped-and-filtered commit history the release pipeline uses.
+
+## The `anodizer changelog` command
+
+```text
+anodizer changelog [<tag>|<range>] [--format keep-a-changelog|release-notes|json] [--write] [--crate <name>] [--snapshot]
+```
+
+| Flag / arg | Default | Effect |
+|------------|---------|--------|
+| `[<tag>\|<range>]` | last-tag..HEAD | Commit range to render (see [Selecting a range](#selecting-a-range)) |
+| `--format` | `keep-a-changelog` | Output shape: refresh the `[Unreleased]` section, a GitHub-release body, or JSON |
+| `--write` | off (preview) | Apply the regenerated `[Unreleased]` to the configured `CHANGELOG.md` in place (`keep-a-changelog` only) |
+| `--crate <name>` | all selected crates | Restrict to one crate in a workspace |
+| `--snapshot` | off | Render as a snapshot release (`release-notes` only) |
+
+There is no `--output`/`-o` (redirect stdout instead), no `--from`/`--to` (use the
+positional range), and no `check changelog` subcommand.
+
+### Selecting a range
+
+The positional arg drives every format:
+
+```bash
+anodizer changelog                       # omit → each crate's pending last-tag..HEAD
+anodizer changelog v1.0.0..v1.2.0        # explicit range
+anodizer changelog v1.2.0                # one release's slice: predecessor..v1.2.0
+```
+
+A single `<tag>` resolves the owning crate from its tag prefix
+(`core-v0.2.0` → the `core` crate) and bounds the range at the predecessor tag —
+the tag immediately below it in that crate's semver-sorted list — so you get
+exactly that release's entries.
+
+### `--format keep-a-changelog` (default) — refresh `[Unreleased]`
+
+Regenerates the `## [Unreleased]` section of the configured `CHANGELOG.md` in
+Keep-a-Changelog form. A bare command previews to stdout and writes nothing:
+
+```text
+$ anodizer changelog
+## [Unreleased]
+
+### Features
+
+- a1b2c3d feat: add config validation
+
+### Bug Fixes
+
+- e4f5a6b fix: handle empty target list
+```
+
+`--write` applies that regenerated `[Unreleased]` to the file in place. It
+preserves every released section and the compare-link footer — it rewrites
+**only** `[Unreleased]`, and it does **not** promote/roll `[Unreleased]` to a
+dated `## [x.y.z]` version (that's [`anodizer tag --changelog`](@/docs/advanced/auto-tagging.md)):
+
+```text
+$ anodizer changelog --write
+changelog: refreshed CHANGELOG.md [Unreleased]
+```
+
+`--write` is valid only with `--format keep-a-changelog`; pairing it with
+`release-notes`/`json` errors (those stream to stdout for you to redirect).
+
+### `--format release-notes` — GitHub release body to stdout
+
+Emits the grouped-bullet markdown anodizer posts as the GitHub release body.
+Redirect stdout to capture it:
+
+```text
+$ anodizer changelog --format release-notes
+## Features
+
+- add config validation (a1b2c3d)
+
+## Bug Fixes
+
+- handle empty target list (e4f5a6b)
+```
+
+```bash
+anodizer changelog --format release-notes > NOTES.md   # capture to a file
+anodizer changelog v1.2.0 --format release-notes        # body for one release
+```
+
+### `--format json` — structured array to stdout
+
+Emits a JSON array, one object per selected crate, sorted by crate name. Each
+object is `{ crate, from, to, groups }`, where every group carries `entries`
+(with `summary`, `sha`, `full_sha`, `authors`) and nested `subgroups`:
+
+```text
+$ anodizer changelog v1.2.0 --format json
+[
+  {
+    "crate": "myapp",
+    "from": "v1.1.0",
+    "to": "v1.2.0",
+    "groups": [
+      {
+        "title": "Features",
+        "entries": [
+          {
+            "summary": "add config validation",
+            "sha": "a1b2c3d",
+            "full_sha": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+            "authors": ["Jane Dev"]
+          }
+        ],
+        "subgroups": []
+      }
+    ]
+  }
+]
+```
+
+`from` is `null` for full history; `to` resolves to `HEAD` when the range is
+unbounded.
+
+### End-to-end: preview → write → edit → tag
+
+The standalone command and the tag-time promotion compose into one flow:
+
+```bash
+anodizer changelog              # 1. preview the pending [Unreleased]
+anodizer changelog --write      # 2. refresh CHANGELOG.md's [Unreleased] in place
+# 3. hand-edit the [Unreleased] section, then commit it
+anodizer tag --changelog        # 4. promote [Unreleased] → [x.y.z] - <date>,
+                                #    preserving your committed edits verbatim
+```
+
+Step 4 is opt-in via `--changelog`; see
+[Auto-Tagging](@/docs/advanced/auto-tagging.md) for the tag-time refresh.
 
 ## Minimal config
 
