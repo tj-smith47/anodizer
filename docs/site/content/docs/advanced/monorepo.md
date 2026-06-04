@@ -7,22 +7,48 @@ template = "docs.html"
 
 Anodizer supports Cargo workspaces with independent release cadences per crate. There are two layers: **crates** (always present) and **workspaces** (for larger monorepos that need per-workspace changelogs, skip lists, and release configs).
 
+## Workspace shapes
+
+anodizer classifies a repo into one of four shapes from its config + Cargo
+metadata, and tagging / changelog behavior follows from the shape. You only set
+the config signal:
+
+| Shape | Config signal | Tag behavior | Changelog shape |
+|-------|---------------|--------------|-----------------|
+| **Single** | one crate, or no config | one `v*` tag | one flat section |
+| **Lockstep** | `[workspace.package].version` in root `Cargo.toml` | one shared `v*` tag | one flat section |
+| **Flat-aggregate** | flat `crates:` list, every `tag_template` resolves to the **same** prefix, per-crate `[package].version` | one shared `v*` tag | one flat section |
+| **Multi-track** | flat `crates:` list (or `workspaces:`) with **distinct** tag prefixes (`core-v`, `cli-v`) | per-crate tags | `### <crate>` subsection per track |
+
+Lockstep and flat-aggregate ship the whole workspace under one version; the
+multi-track shape lets each crate release on its own cadence. See
+[Changelog → Workspace shapes](@/docs/more/changelog.md#workspace-shapes-at-a-glance)
+for the changelog side, including the flat-aggregate
+[coherence rule](@/docs/more/changelog.md#coherence-members-must-agree-on-package-version)
+(all members of a shared-prefix list must agree on `[package].version`).
+
 ## Flat crates config
 
-For a single Cargo workspace where every crate shares the same changelog, release config, and publish settings, use the top-level `crates:` list:
+For a single Cargo workspace where the crates release on **distinct** tag
+tracks (multi-track), give each a distinct `tag_template` prefix in the
+top-level `crates:` list:
 
 ```yaml
 crates:
   - name: core-lib
     path: crates/core
-    tag_template: "core-v{{ Version }}"
+    tag_template: "core-v{{ Version }}"   # distinct prefix → its own track
     depends_on: []
 
   - name: cli-tool
     path: crates/cli
-    tag_template: "cli-v{{ Version }}"
+    tag_template: "cli-v{{ Version }}"     # distinct prefix → its own track
     depends_on: [core-lib]
 ```
+
+To release the crates together under **one** shared `v*` tag instead, give every
+member the **same** prefix (`tag_template: "v{{ Version }}"`) — the
+flat-aggregate shape above. All members must then agree on `[package].version`.
 
 ## Workspaces config (multi-root monorepo)
 

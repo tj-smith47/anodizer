@@ -137,10 +137,17 @@ config governs both:
 The refresh follows the same per-mode file placement as the bump itself:
 
 - **Single-crate** — one root `CHANGELOG.md` at the repo root.
-- **Workspace lockstep** — each member crate's own `CHANGELOG.md` gets the
-  shared new version's section.
-- **Workspace per-crate** — only the crates this tag actually bumps get their
-  `CHANGELOG.md` refreshed, each against its own version and commit range.
+- **Lockstep** — `[workspace.package].version` in the root `Cargo.toml`: one
+  shared `v*` tag and one flat section per release.
+- **Flat-aggregate** — a flat `crates:` list whose members all share one
+  `tag_template` prefix: treated exactly like lockstep — one shared `v*` tag,
+  one flat section — even though each crate carries its own `[package].version`.
+  All members must agree on `[package].version` (the
+  [coherence rule](@/docs/more/changelog.md#coherence-members-must-agree-on-package-version));
+  a divergence errors before tagging.
+- **Multi-track (per-crate)** — crates with distinct tag prefixes: only the
+  crates this tag actually bumps get their `CHANGELOG.md` refreshed, each
+  against its own version, tag, and commit range.
 
 `--push-dry-run` vs `--dry-run`: `--dry-run` previews the whole run, touching
 nothing (no bump commit, no tag, no push). `--push-dry-run` is narrower — it
@@ -227,8 +234,15 @@ anodizer tag --crate my-crate
 
 Each crate has its own `tag_template` (e.g., `my-crate-v{{ Version }}`) used
 for both tag discovery (finding the latest `my-crate-v*` tag) and tag
-creation. This keeps workspaces independent — `my-core-v0.5.0` and
-`my-cli-v1.2.0` can coexist without collision.
+creation. Distinct prefixes keep workspaces independent — `my-core-v0.5.0` and
+`my-cli-v1.2.0` can coexist without collision (the multi-track shape).
+
+When every crate in a flat `crates:` list shares the **same** `tag_template`
+prefix (all `v{{ Version }}`), a bare `anodizer tag` (no `--crate`) bumps every
+member and creates **one shared `v*` tag** — the flat-aggregate shape, treated
+like lockstep. All members must agree on `[package].version` first; a divergence
+errors before any tag is created (see the
+[coherence rule](@/docs/more/changelog.md#coherence-members-must-agree-on-package-version)).
 
 When `version_sync.enabled: true` is set per-crate, the tag command also
 updates that crate's `Cargo.toml` version (and any intra-workspace `path +

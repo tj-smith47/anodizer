@@ -261,15 +261,103 @@ changelog:
   root: {}               # crates/<name>/CHANGELOG.md AND root CHANGELOG.md
 ```
 
-Single-crate and lockstep roots are **flat**: one aggregated section per release
-covering the whole workspace. `root.crates` filters which crates contribute a
-section to the root:
+Single-crate, lockstep, and **shared-prefix flat-crate** roots are **flat**: one
+aggregated section per release covering the whole workspace (the
+[flat-aggregate shape](#flat-aggregate-one-shared-tag-one-flat-section) below
+covers the last case). `root.crates` filters which crates contribute a section
+to the root:
 
 ```yaml
 changelog:
   root:
     crates: ["core", "cli"]   # only these crates appear in the root changelog
 ```
+
+### Workspace shapes at a glance
+
+anodizer classifies a repo into one of four shapes from its config + Cargo
+metadata, and the changelog (and tag, and `bump --commit`) follow from the
+shape. The config signal is the only thing you set:
+
+| Shape | Config signal | Tag behavior | Changelog shape |
+|-------|---------------|--------------|-----------------|
+| **Single** | one crate, or no config | one `v*` tag | one flat section |
+| **Lockstep** | `[workspace.package].version` in root `Cargo.toml` | one shared `v*` tag | one flat section |
+| **Flat-aggregate** | flat `crates:` list, every `tag_template` resolves to the **same** prefix, per-crate `[package].version` | one shared `v*` tag | one flat section |
+| **Multi-track** | flat `crates:` list (or `workspaces:`) with **distinct** tag prefixes (`core-v`, `cli-v`) | per-crate tags | `### <crate>` subsection per track |
+
+### Flat-aggregate: one shared tag, one flat section
+
+A flat `crates:` list whose members **all** resolve to the same tag prefix
+(every `tag_template` is `v{{ Version }}`, or all `acme-v{{ Version }}`) releases
+in lockstep: one tag namespace can't hand `v0.2.0` to two crates independently.
+anodizer treats this exactly like a lockstep workspace — **one shared `v*` tag,
+one flat `[Unreleased]`/released section** — even though each crate carries its
+own `[package].version` (rather than a single `[workspace.package].version`):
+
+```yaml
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "v{{ Version }}"   # same prefix
+  - name: cli
+    path: crates/cli
+    tag_template: "v{{ Version }}"   # as every other member
+```
+
+```text
+$ anodizer changelog
+## [Unreleased]
+
+### Features
+
+* a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 add config validation
+```
+
+No `### core` / `### cli` graft appears — the section is flat, identical to a
+lockstep root. `anodizer tag --changelog` and `anodizer bump --commit --changelog`
+promote that one flat section under a single `## [v0.2.0] - <date>` heading. To
+get per-crate `### <crate>` subsections instead, give each crate a **distinct**
+tag prefix (the [multi-track](#multi-track-root-subsections) shape below).
+
+### Coherence: members must agree on `[package].version`
+
+In a flat-aggregate one tag carries one version, so every member's
+`[package].version` must **agree**. If they diverge, `changelog`, `tag`, and
+`bump` all **error before doing anything** — no partial tag, no partial
+changelog write:
+
+```yaml
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "v{{ Version }}"   # crates/core/Cargo.toml → version = "0.2.0"
+  - name: cli
+    path: crates/cli
+    tag_template: "v{{ Version }}"   # crates/cli/Cargo.toml  → version = "0.3.0"
+```
+
+```text
+$ anodizer changelog
+Error: crates 'core' (0.2.0), 'cli' (0.3.0) share tag prefix 'v' but set
+different [package].version values; one tag can't carry two versions. For
+lockstep set [workspace.package].version; for independent releases give each
+crate a distinct tag_template prefix.
+```
+
+Two ways to resolve it, depending on intent:
+
+- **Lockstep** — the crates truly ship together under one version: set
+  `[workspace.package].version` in the root `Cargo.toml` and have each member
+  inherit it (`version.workspace = true`). The repo is then a genuine lockstep
+  workspace.
+- **Independent releases** — the crates ship on their own cadences: give each a
+  distinct `tag_template` prefix (`core-v{{ Version }}`, `cli-v{{ Version }}`),
+  promoting the repo to the [multi-track](#multi-track-root-subsections) shape.
+
+A member with no literal `[package].version` (e.g. `version.workspace = true`,
+or a virtual manifest) is skipped by the check — it has no concrete version to
+disagree with.
 
 ### Multi-track root subsections
 
