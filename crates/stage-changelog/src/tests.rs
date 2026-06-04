@@ -3755,6 +3755,164 @@ fn non_kac_file_behavior_unchanged() {
 }
 
 // ---------------------------------------------------------------------------
+// Bullet de-duplication + Login/AuthorUsername fallback (local-git render path).
+// ---------------------------------------------------------------------------
+
+/// One default-format commit gets exactly one leading `* ` bullet.
+#[test]
+fn default_format_emits_single_bullet() {
+    let grouped = vec![GroupedCommits {
+        title: String::new(),
+        commits: vec![ci("feat: add X", "feat", "add X", "abc1234")],
+        subgroups: Vec::new(),
+    }];
+    let md = render_changelog(&grouped, 7, None, "", "git", None, None);
+    let line = md
+        .lines()
+        .find(|l| l.contains("add X"))
+        .expect("bullet line present");
+    assert_eq!(line, "* abc1234 add X", "exactly one `* ` bullet: {md:?}");
+}
+
+/// A user `format:` already leading with `* ` must NOT be double-bulleted.
+#[test]
+fn leading_star_bullet_not_doubled() {
+    let grouped = vec![GroupedCommits {
+        title: String::new(),
+        commits: vec![ci("feat: add X", "feat", "add X", "abc1234")],
+        subgroups: Vec::new(),
+    }];
+    let md = render_changelog(
+        &grouped,
+        7,
+        Some("* {{ .SHA }} {{ .Message }}"),
+        "",
+        "git",
+        None,
+        None,
+    );
+    let line = md
+        .lines()
+        .find(|l| l.contains("add X"))
+        .expect("bullet line present");
+    assert_eq!(line, "* abc1234 add X", "single bullet, no `* *`: {md:?}");
+    assert!(!md.contains("* *"), "no doubled bullet anywhere: {md:?}");
+}
+
+/// A user `format:` leading with `- ` is preserved verbatim (no `* ` prepend).
+#[test]
+fn leading_dash_bullet_preserved() {
+    let grouped = vec![GroupedCommits {
+        title: String::new(),
+        commits: vec![ci("feat: add X", "feat", "add X", "abc1234")],
+        subgroups: Vec::new(),
+    }];
+    let md = render_changelog(
+        &grouped,
+        7,
+        Some("- {{ .SHA }} {{ .Message }}"),
+        "",
+        "git",
+        None,
+        None,
+    );
+    let line = md
+        .lines()
+        .find(|l| l.contains("add X"))
+        .expect("bullet line present");
+    assert_eq!(line, "- abc1234 add X", "dash bullet preserved: {md:?}");
+}
+
+/// Empty `login` + an `AuthorUsername` reference falls back to the author name.
+#[test]
+fn empty_login_falls_back_to_author_name() {
+    let mut commit = ci("feat: add X", "feat", "add X", "abc1234");
+    commit.author_name = "Jane Roe".into();
+    // login left empty (the local-git changelog path never populates it).
+    let grouped = vec![GroupedCommits {
+        title: String::new(),
+        commits: vec![commit],
+        subgroups: Vec::new(),
+    }];
+    let md = render_changelog(
+        &grouped,
+        7,
+        Some("{{ .SHA }} {{ .Message }} ({{ .AuthorUsername }})"),
+        "",
+        "git",
+        None,
+        None,
+    );
+    assert!(
+        md.contains("(Jane Roe)"),
+        "empty login should render author name, not (): {md:?}"
+    );
+    assert!(!md.contains("()"), "no empty parens: {md:?}");
+}
+
+/// Non-empty `login` still renders the login (fallback only fires when empty).
+#[test]
+fn nonempty_login_renders_login() {
+    let mut commit = ci("feat: add X", "feat", "add X", "abc1234");
+    commit.author_name = "Jane Roe".into();
+    commit.login = "janeroe".into();
+    let grouped = vec![GroupedCommits {
+        title: String::new(),
+        commits: vec![commit],
+        subgroups: Vec::new(),
+    }];
+    let md = render_changelog(
+        &grouped,
+        7,
+        Some("{{ .SHA }} {{ .Message }} ({{ .AuthorUsername }})"),
+        "",
+        "git",
+        None,
+        None,
+    );
+    assert!(
+        md.contains("(janeroe)"),
+        "non-empty login must win over author name: {md:?}"
+    );
+    assert!(
+        !md.contains("Jane Roe"),
+        "author name must not leak when login is present: {md:?}"
+    );
+}
+
+/// The exact anodizer-dogfooding shape: leading `* ` + `(AuthorUsername)` with an
+/// empty login → one bullet and a non-empty author.
+#[test]
+fn anodizer_shaped_format_single_bullet_and_named_author() {
+    let mut commit = ci(
+        "fix: close audit gaps",
+        "fix",
+        "close audit gaps",
+        "ef88059e",
+    );
+    commit.author_name = "TJ Smith".into();
+    let grouped = vec![GroupedCommits {
+        title: String::new(),
+        commits: vec![commit],
+        subgroups: Vec::new(),
+    }];
+    let md = render_changelog(
+        &grouped,
+        8,
+        Some("* {{ .SHA }} {{ .Message }} ({{ .AuthorUsername }})"),
+        "",
+        "git",
+        None,
+        None,
+    );
+    let line = md
+        .lines()
+        .find(|l| l.contains("close audit gaps"))
+        .expect("bullet line present");
+    assert_eq!(line, "* ef88059e close audit gaps (TJ Smith)", "{md:?}");
+}
+
+// ---------------------------------------------------------------------------
 // refresh_*_unreleased + render_changelog_json — generate-only [Unreleased]
 // regeneration and JSON serialization over a real git repo.
 // ---------------------------------------------------------------------------

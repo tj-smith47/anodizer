@@ -220,6 +220,19 @@ fn render_groups(
 
 /// Render a single commit as a bullet line.
 ///
+/// A `* ` Markdown bullet is prepended unless the rendered line already opens
+/// with a list marker (`* ` or `- `, including the tab-separated form), so a
+/// user `format:` that begins with its own bullet renders one marker rather
+/// than a doubled `* *`.
+///
+/// `AuthorUsername` falls back to the commit author name when the per-commit
+/// login is empty — the local-git changelog path leaves it empty since only
+/// the `github` backend resolves SCM usernames, and an empty
+/// `{{ .AuthorUsername }}` would otherwise render a bare `()`. The raw `Login`
+/// is left empty in that case so the default SCM format's
+/// `{% if Login %}…{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %}`
+/// branch still selects the `Name <email>` form.
+///
 /// Template variables available:
 /// - `SHA` — full commit hash
 /// - `ShortSHA` — abbreviated commit hash (controlled by `abbrev`)
@@ -230,7 +243,8 @@ fn render_groups(
 ///   keeps the flat fields for backward compatibility; new templates
 ///   should prefer the `AuthorsList` structured form.
 /// - `AuthorEmail` — commit author email (see `AuthorName` deprecation note).
-/// - `Login` — per-commit GitHub username (populated only with `github` backend)
+/// - `Login` — per-commit GitHub username (populated only with `github`
+///   backend; left empty otherwise so the default SCM format can branch on it)
 /// - `Authors` — comma-separated names for this commit (primary author +
 ///   `Co-Authored-By:` trailers). The per-entry
 ///   Authors template var.
@@ -288,15 +302,29 @@ fn render_commit_line(
     vars.set("Message", &commit.description);
     vars.set("AuthorName", &commit.author_name);
     vars.set("AuthorEmail", &commit.author_email);
+    // `Login` stays the raw backend datum (empty unless the github backend
+    // resolved a username): the default SCM format branches on it
+    // (`{% if Login %}@{{ Login }}{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %}`),
+    // so an empty `Login` is the signal that drives the `Name <email>`
+    // fallback — overwriting it would suppress the email.
     vars.set("Login", &commit.login);
     // Alias: the default format string when
     // `use ∈ {github,gitlab,gitea}` is
     // `"{{ .SHA }}: {{ .Message }} ({{ with .AuthorUsername }}@{{ . }}{{ else }}{{ .AuthorName }} <{{ .AuthorEmail }}>{{ end }})"`
     // populated for
     // `AuthorUsername` template var from the SCM commit author's username;
-    // anodizer surfaces the same datum under `Login`. Bind both keys so
-    // configs copy-paste cleanly without a "missing key" error.
-    vars.set("AuthorUsername", &commit.login);
+    // anodizer surfaces the same datum under `AuthorUsername`. Unlike the
+    // raw `Login` (which the default SCM format branches on), this display
+    // alias falls back to the author name when the per-commit login is empty
+    // — the local-git `anodizer changelog` path never resolves SCM usernames,
+    // so a custom `({{ .AuthorUsername }})` reference would otherwise render a
+    // bare `()`.
+    let author_username = if commit.login.is_empty() {
+        commit.author_name.as_str()
+    } else {
+        commit.login.as_str()
+    };
+    vars.set("AuthorUsername", author_username);
     // Per-entry `Authors` and `Logins` template vars: each entry gets its
     // own commit-author + co-author list. The release-wide GitHub login
     // list lives under `AllLogins` so `Logins` can carry the per-commit
@@ -365,7 +393,22 @@ fn render_commit_line(
             commit.hash
         )
     })?;
-    out.push_str(&format!("* {}{}", rendered, newline));
+    // De-dupe the leading bullet: when the user's `format:` already opens with
+    // a Markdown list marker (`* ` / `- `, or the tab-separated form), emit it
+    // verbatim instead of prepending a second `* ` (which yielded `* *`). The
+    // default format carries no marker and so still gets its `* `.
+    let starts_with_bullet = {
+        let trimmed = rendered.trim_start();
+        trimmed.starts_with("* ")
+            || trimmed.starts_with("- ")
+            || trimmed.starts_with("*\t")
+            || trimmed.starts_with("-\t")
+    };
+    if starts_with_bullet {
+        out.push_str(&format!("{}{}", rendered, newline));
+    } else {
+        out.push_str(&format!("* {}{}", rendered, newline));
+    }
     Ok(())
 }
 // ---------------------------------------------------------------------------
