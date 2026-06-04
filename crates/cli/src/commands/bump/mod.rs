@@ -110,7 +110,14 @@ pub fn run(opts: BumpOpts) -> Result<()> {
     cargo_edit::apply_plan(&workspace_root, &rows, opts.exact, &log)?;
 
     if opts.commit {
-        commit_plan(&workspace_root, &rows, &opts, &log)?;
+        commit_plan(
+            &workspace_root,
+            &rows,
+            &opts,
+            bump_config.as_ref(),
+            bump_workspace.as_ref(),
+            &log,
+        )?;
     }
 
     log.status(&format!("bumped {} crate(s)", rows.len()));
@@ -146,6 +153,8 @@ fn commit_plan(
     workspace_root: &std::path::Path,
     rows: &[PlanRow],
     opts: &BumpOpts,
+    changelog_config: Option<&anodizer_core::config::Config>,
+    workspace: Option<&cargo_edit::WorkspaceInfo>,
     log: &StageLogger,
 ) -> Result<()> {
     let mut staged: Vec<PathBuf> = Vec::new();
@@ -164,9 +173,12 @@ fn commit_plan(
     // Gated by the shared opt-in + `changelog:`-presence + `skip:` resolution so
     // `bump` and `tag` honor `--changelog` and `changelog: { skip: true }`
     // identically. The refresh runs only under `--changelog` (opt-in).
-    let changelog_config = load_changelog_config(workspace_root, opts);
+    //
+    // `changelog_config` / `workspace` are threaded in from `run` (loaded once
+    // there for the coherence guard) so a single `bump` parses the config and
+    // Cargo workspace exactly once, not 2–3×.
     let changelog_enabled = crate::commands::changelog_sync::resolve_changelog_enabled(
-        changelog_config.as_ref(),
+        changelog_config,
         opts.changelog,
     );
     let mut changelog_targets: Vec<crate::commands::changelog_sync::ChangelogTarget> = Vec::new();
@@ -183,7 +195,6 @@ fn commit_plan(
         // the promoted heading honor a `v{{ Version }}` / custom scheme. Fall
         // back to `{crate}-v` only when no template is configured.
         let tag_prefix = changelog_config
-            .as_ref()
             .and_then(|cfg| plan::find_crate_in_config(cfg, &row.crate_name))
             .and_then(|c| anodizer_core::git::extract_tag_prefix(&c.tag_template))
             .unwrap_or_else(|| format!("{}-v", row.crate_name));
@@ -200,7 +211,6 @@ fn commit_plan(
     let empty_changelog_config = anodizer_core::config::ChangelogConfig::default();
     let mut routing = crate::commands::changelog_sync::ChangelogRouting::from_config(
         changelog_config
-            .as_ref()
             .and_then(|c| c.changelog.as_ref())
             .unwrap_or(&empty_changelog_config),
     );
@@ -221,11 +231,10 @@ fn commit_plan(
         && changelog_targets.len() > 1
         && routing.root_enabled
         && !routing.per_crate
-        && let Some(cfg) = changelog_config.as_ref()
+        && let Some(cfg) = changelog_config
     {
-        let workspace = cargo_edit::load_workspace(workspace_root).ok();
         let is_flat_aggregate = matches!(
-            crate::commands::tag::detect_repo_shape(Some(cfg), workspace.as_ref()),
+            crate::commands::tag::detect_repo_shape(Some(cfg), workspace),
             crate::commands::tag::RepoShape::FlatAggregate(_)
         );
         if is_flat_aggregate && let Some(first) = changelog_targets.first().cloned() {

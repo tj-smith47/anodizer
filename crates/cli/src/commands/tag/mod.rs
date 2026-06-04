@@ -1217,14 +1217,15 @@ fn shared_tag_prefix(crates: &[CrateConfig]) -> Option<String> {
 /// shared tag (e.g. `v0.2.0`). If those members carry DIFFERENT
 /// `[package].version` values, that single tag cannot carry two versions — the
 /// config is impossible. Read each member's on-disk `[package].version` and
-/// bail (naming the conflicting crates, the shared prefix, and the differing
-/// versions) when two disagree; steer the user toward lockstep
-/// (`[workspace.package].version`) or independent prefixes.
+/// bail (listing every member's `crate → version` and the shared prefix, so an
+/// N-way divergence is fully visible) when any two disagree; steer the user
+/// toward lockstep (`[workspace.package].version`) or independent prefixes.
 ///
 /// Only `RepoShape::FlatAggregate` can be incoherent this way, so any other
-/// shape is a no-op. A member whose manifest is missing on disk (e.g. a
-/// synthetic test fixture) is skipped: the guard fires only on versions it can
-/// actually read and compare.
+/// shape is a no-op. A member without a readable literal `[package].version`
+/// (absent manifest, or a virtual / `version.workspace = true` manifest) is
+/// skipped: the guard fires only on genuine version strings it can compare, so
+/// a versionless member never trips the check nor masks a real divergence.
 pub(crate) fn guard_flat_aggregate_coherence(
     config: Option<&anodizer_core::config::Config>,
     workspace: Option<&WorkspaceInfo>,
@@ -1234,16 +1235,13 @@ pub(crate) fn guard_flat_aggregate_coherence(
         return Ok(());
     };
     let prefix = shared_tag_prefix(&crates).unwrap_or_else(|| "v".to_string());
-    // Read each member's `[package].version`, keyed by crate name. Skip members
-    // whose manifest is absent (no readable version to compare).
+    // Read each member's literal `[package].version`, keyed by crate name. Skip
+    // members with no readable literal version (no value to compare).
     let mut versions: Vec<(String, String)> = Vec::new();
     for c in &crates {
         let crate_dir = workspace_root.join(&c.path);
-        if !crate_dir.join("Cargo.toml").is_file() {
-            continue;
-        }
-        if let Ok(ver) =
-            anodizer_stage_build::version_sync::read_cargo_version(&crate_dir.to_string_lossy())
+        if let Ok(Some(ver)) =
+            anodizer_stage_build::version_sync::read_cargo_version_opt(&crate_dir.to_string_lossy())
         {
             versions.push((c.name.clone(), ver));
         }
@@ -1251,15 +1249,17 @@ pub(crate) fn guard_flat_aggregate_coherence(
     let Some((_, first_ver)) = versions.first() else {
         return Ok(());
     };
-    if let Some((conflict_name, conflict_ver)) =
-        versions.iter().skip(1).find(|(_, v)| v != first_ver)
-    {
-        let (first_name, first_ver) = &versions[0];
+    if versions.iter().any(|(_, v)| v != first_ver) {
+        let listing = versions
+            .iter()
+            .map(|(name, ver)| format!("'{name}' ({ver})"))
+            .collect::<Vec<_>>()
+            .join(", ");
         bail!(
-            "crates '{first_name}' ({first_ver}) and '{conflict_name}' ({conflict_ver}) share \
-             tag prefix '{prefix}' but set different [package].version values; one tag can't \
-             carry two versions. For lockstep set [workspace.package].version; for independent \
-             releases give each crate a distinct tag_template prefix."
+            "crates {listing} share tag prefix '{prefix}' but set different [package].version \
+             values; one tag can't carry two versions. For lockstep set \
+             [workspace.package].version; for independent releases give each crate a distinct \
+             tag_template prefix."
         );
     }
     Ok(())
@@ -3253,6 +3253,76 @@ tag_post_hooks:
             res.is_ok(),
             "distinct-prefix PerCrate is not guarded: {res:?}"
         );
+    }
+
+    /// A member whose manifest is PRESENT but carries no literal
+    /// `[package].version` (a virtual / workspace-inheriting manifest) must be
+    /// skipped, not compared as a `0.0.0` sentinel: it neither trips the guard
+    /// against a real sibling nor masks a real divergence.
+    #[test]
+    fn coherence_guard_skips_versionless_member() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // `core` carries a real version; `cli` declares no `[package].version`.
+        std::fs::create_dir_all(root.join("crates/core")).unwrap();
+        std::fs::write(
+            root.join("crates/core/Cargo.toml"),
+            "[package]\nname = \"core\"\nversion = \"0.2.0\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("crates/cli")).unwrap();
+        std::fs::write(
+            root.join("crates/cli/Cargo.toml"),
+            "[package]\nname = \"cli\"\nversion.workspace = true\n",
+        )
+        .unwrap();
+        let config = anodizer_core::config::Config {
+            project_name: "agg".to_string(),
+            crates: vec![
+                crate_cfg("core", "crates/core", "v{{ .Version }}"),
+                crate_cfg("cli", "crates/cli", "v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+        let res = guard_flat_aggregate_coherence(Some(&config), Some(&ws_no_lockstep()), root);
+        assert!(
+            res.is_ok(),
+            "versionless member must be skipped, not compared as 0.0.0: {res:?}"
+        );
+    }
+
+    /// A 3-way divergence names EVERY member (not just the first conflicting
+    /// pair), so a `[0.2.0, 0.2.0, 0.5.0]` split is fully visible.
+    #[test]
+    fn coherence_guard_lists_all_members_on_n_way_divergence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for (name, ver) in [("a", "0.2.0"), ("b", "0.2.0"), ("c", "0.5.0")] {
+            let dir = root.join(format!("crates/{name}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\n"),
+            )
+            .unwrap();
+        }
+        let config = anodizer_core::config::Config {
+            project_name: "agg".to_string(),
+            crates: vec![
+                crate_cfg("a", "crates/a", "v{{ .Version }}"),
+                crate_cfg("b", "crates/b", "v{{ .Version }}"),
+                crate_cfg("c", "crates/c", "v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+        let err = guard_flat_aggregate_coherence(Some(&config), Some(&ws_no_lockstep()), root)
+            .unwrap_err()
+            .to_string();
+        // All three members appear with their versions — including the two that
+        // agree (`a`/`b`), which a first-pair-only message would have dropped.
+        assert!(err.contains("'a' (0.2.0)"), "lists member a: {err}");
+        assert!(err.contains("'b' (0.2.0)"), "lists member b: {err}");
+        assert!(err.contains("'c' (0.5.0)"), "lists member c: {err}");
     }
 
     // ---- anodizer-output line format tests ----
