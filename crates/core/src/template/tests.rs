@@ -2543,6 +2543,50 @@ fn test_printf_int_precision_and_width() {
     assert_eq!(result, "   00007");
 }
 
+#[test]
+fn test_printf_int_precision_disables_zero_flag() {
+    let vars = test_vars();
+    // Go: an explicit precision disables the `0` width flag for integer verbs;
+    // width is space-padded after the digits are zero-padded to precision.
+    let result = render("{{ printf \"%08.5d\" 7 }}", &vars).unwrap();
+    assert_eq!(result, "   00007");
+}
+
+#[test]
+fn test_printf_int_precision_disables_zero_flag_negative() {
+    let mut vars = test_vars();
+    // Bare `-7` can't survive Tera's parser; feed via a structured var.
+    vars.set_structured("Neg", Value::Number((-7i64).into()));
+    let result = render("{{ printf \"%08.3d\" Neg }}", &vars).unwrap();
+    assert_eq!(result, "    -007");
+}
+
+#[test]
+fn test_printf_int_precision_zero_of_zero_is_empty() {
+    let mut vars = test_vars();
+    vars.set_structured("Z", Value::Number(0i64.into()));
+    // Go: precision 0 of value 0 prints nothing.
+    let result = render("{{ printf \"%.0d\" Z }}", &vars).unwrap();
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_printf_int_precision_zero_of_zero_width_padded() {
+    let mut vars = test_vars();
+    vars.set_structured("Z", Value::Number(0i64.into()));
+    // Width padding applies to the (empty) result → 5 spaces.
+    let result = render("{{ printf \"%5.0d\" Z }}", &vars).unwrap();
+    assert_eq!(result, "     ");
+}
+
+#[test]
+fn test_printf_float_zero_flag_with_precision_unaffected() {
+    let vars = test_vars();
+    // The precision-disables-zero rule is integer-only; floats still honor `0`.
+    let result = render("{{ printf \"%08.2f\" 3.14 }}", &vars).unwrap();
+    assert_eq!(result, "00003.14");
+}
+
 // --- Go printf field-size ceiling ---
 
 #[test]

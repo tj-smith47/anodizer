@@ -43,6 +43,7 @@ fn printf_default(v: &Value) -> String {
 }
 
 /// A parsed `printf` conversion: optional flags, width, precision, and verb.
+#[derive(Clone, Copy)]
 struct PrintfSpec {
     minus: bool,
     plus: bool,
@@ -83,6 +84,24 @@ fn pad(spec: &PrintfSpec, body: String, numeric_sign_prefix: Option<(&str, &str)
     }
 }
 
+/// Pad an integer conversion to width, honoring Go's rule that an explicit
+/// precision DISABLES the `0` (zero-pad) flag for integer verbs — width is then
+/// space-padded. `%08.5d` of 7 → `   00007`, not `00000007`. Precision already
+/// supplied the zero-padding via [`int_precision`]; the `0` flag would
+/// double-count. Float verbs never call this — they keep honoring `0` with
+/// precision (`%08.2f` of 3.14 → `00003.14`).
+fn pad_int(spec: &PrintfSpec, body: String, sign: &str, prefix: &str) -> String {
+    if spec.precision.is_some() && spec.zero {
+        let no_zero = PrintfSpec {
+            zero: false,
+            ..*spec
+        };
+        pad(&no_zero, body, Some((sign, prefix)))
+    } else {
+        pad(spec, body, Some((sign, prefix)))
+    }
+}
+
 /// Compute the sign string for a signed numeric conversion given the value's
 /// sign and the active `+`/space flags.
 fn numeric_sign(negative: bool, plus: bool, space: bool) -> &'static str {
@@ -101,9 +120,12 @@ fn numeric_sign(negative: bool, plus: bool, space: bool) -> &'static str {
 ///
 /// In Go, precision on `%d`/`%b`/`%o`/`%x`/`%X` sets the MINIMUM digit count,
 /// zero-left-padded (distinct from width, and applied before any sign/prefix or
-/// width padding). `%.5d` of 7 → `00007`.
+/// width padding). `%.5d` of 7 → `00007`. As a special case, precision 0 of the
+/// value 0 prints nothing (`%.0d` of 0 → ``), so width padding then applies to
+/// the empty string.
 fn int_precision(digits: &str, precision: Option<usize>) -> String {
     match precision {
+        Some(0) if digits == "0" => String::new(),
         Some(p) if digits.len() < p => format!("{}{}", "0".repeat(p - digits.len()), digits),
         _ => digits.to_string(),
     }
@@ -249,10 +271,11 @@ fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera:
                 .as_i64()
                 .ok_or_else(|| tera::Error::msg("printf: %d expects an integer argument"))?;
             let sign = numeric_sign(n < 0, spec.plus, spec.space);
-            Ok(pad(
+            Ok(pad_int(
                 spec,
                 int_precision(&n.unsigned_abs().to_string(), spec.precision),
-                Some((sign, "")),
+                sign,
+                "",
             ))
         }
         'b' | 'o' | 'x' | 'X' => {
@@ -283,7 +306,7 @@ fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera:
             } else {
                 ""
             };
-            Ok(pad(spec, body, Some((sign, prefix))))
+            Ok(pad_int(spec, body, sign, prefix))
         }
         'f' | 'e' | 'E' | 'g' | 'G' => {
             let f = val()?.as_f64().ok_or_else(|| {
