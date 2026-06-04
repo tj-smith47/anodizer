@@ -2459,3 +2459,186 @@ fn test_time_positional_renders_date() {
     assert_eq!(result.len(), 10, "got: {}", result);
     assert_eq!(result.matches('-').count(), 2, "got: {}", result);
 }
+
+// --- Go printf %g exponent selection ---
+
+#[test]
+fn test_printf_g_huge_uses_exponent() {
+    let mut vars = test_vars();
+    vars.set_structured(
+        "Huge",
+        Value::Number(serde_json::Number::from_f64(1e300).unwrap()),
+    );
+    let result = render("{{ printf \"%g\" Huge }}", &vars).unwrap();
+    assert_eq!(result, "1e+300");
+}
+
+#[test]
+fn test_printf_g_tiny_uses_exponent() {
+    let mut vars = test_vars();
+    vars.set_structured(
+        "Tiny",
+        Value::Number(serde_json::Number::from_f64(1e-300).unwrap()),
+    );
+    let result = render("{{ printf \"%g\" Tiny }}", &vars).unwrap();
+    assert_eq!(result, "1e-300");
+}
+
+#[test]
+fn test_printf_g_million_uses_exponent() {
+    let vars = test_vars();
+    // exp == 6 >= eprec(6) → exponential per Go.
+    let result = render("{{ printf \"%g\" 1000000.0 }}", &vars).unwrap();
+    assert_eq!(result, "1e+06");
+}
+
+#[test]
+fn test_printf_g_small_int_decimal() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%g\" 3.14 }}", &vars).unwrap();
+    assert_eq!(result, "3.14");
+}
+
+#[test]
+fn test_printf_g_eight_digits_uses_exponent() {
+    let vars = test_vars();
+    // exp == 7 >= eprec(6) → 9.9999999e+07 (Go).
+    let result = render("{{ printf \"%g\" 99999999.0 }}", &vars).unwrap();
+    assert_eq!(result, "9.9999999e+07");
+}
+
+#[test]
+fn test_printf_g_uppercase() {
+    let mut vars = test_vars();
+    vars.set_structured(
+        "Huge",
+        Value::Number(serde_json::Number::from_f64(1e300).unwrap()),
+    );
+    let result = render("{{ printf \"%G\" Huge }}", &vars).unwrap();
+    assert_eq!(result, "1E+300");
+}
+
+// --- Go printf integer precision (minimum digit count) ---
+
+#[test]
+fn test_printf_int_precision() {
+    let vars = test_vars();
+    // Precision is the MINIMUM digit count, zero-left-padded (distinct from width).
+    let result = render("{{ printf \"%.5d\" 7 }}", &vars).unwrap();
+    assert_eq!(result, "00007");
+}
+
+#[test]
+fn test_printf_hex_precision() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%.3x\" 255 }}", &vars).unwrap();
+    assert_eq!(result, "0ff");
+}
+
+#[test]
+fn test_printf_int_precision_and_width() {
+    let vars = test_vars();
+    // Precision (min digits) applies before width (field padding).
+    let result = render("{{ printf \"%8.5d\" 7 }}", &vars).unwrap();
+    assert_eq!(result, "   00007");
+}
+
+// --- Go printf field-size ceiling ---
+
+#[test]
+fn test_printf_width_cap_errors() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%99999999d\" 1 }}", &vars);
+    assert!(result.is_err());
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("printf width") && msg.contains("exceeds maximum"),
+        "got: {}",
+        msg
+    );
+}
+
+#[test]
+fn test_printf_precision_cap_errors() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%.99999999f\" 1.0 }}", &vars);
+    assert!(result.is_err());
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("printf precision") && msg.contains("exceeds maximum"),
+        "got: {}",
+        msg
+    );
+}
+
+// --- slice: native-superset semantics (optional start, negative-from-end) ---
+
+#[test]
+fn test_slice_default_start() {
+    let vars = test_vars();
+    // start defaults to 0 (native Tera behavior).
+    let result = render("{{ \"abcdef\" | slice(end=3) }}", &vars).unwrap();
+    assert_eq!(result, "abc");
+}
+
+#[test]
+fn test_slice_negative_start_string() {
+    let vars = test_vars();
+    // Negative start counts from the end: last 2 chars.
+    let result = render("{{ \"abcdef\" | slice(start=-2) }}", &vars).unwrap();
+    assert_eq!(result, "ef");
+}
+
+#[test]
+fn test_slice_negative_start_array() {
+    let mut vars = test_vars();
+    vars.set_structured("Items", serde_json::json!(["a", "b", "c", "d"]));
+    let result = render("{{ Items | slice(start=-2) | join(sep=\",\") }}", &vars).unwrap();
+    assert_eq!(result, "c,d");
+}
+
+#[test]
+fn test_slice_array_default_start() {
+    let mut vars = test_vars();
+    vars.set_structured("Items", serde_json::json!(["a", "b", "c", "d"]));
+    let result = render("{{ Items | slice(end=2) | join(sep=\",\") }}", &vars).unwrap();
+    assert_eq!(result, "a,b");
+}
+
+// --- print: Go Sprint spacing (space only between two non-strings) ---
+
+#[test]
+fn test_print_two_numbers_spaced() {
+    let mut vars = test_vars();
+    vars.set_structured("A", Value::Number(1i64.into()));
+    vars.set_structured("B", Value::Number(2i64.into()));
+    let result = render("{{ print A B }}", &vars).unwrap();
+    assert_eq!(result, "1 2");
+}
+
+#[test]
+fn test_print_two_strings_no_space() {
+    let vars = test_vars();
+    let result = render("{{ print \"a\" \"b\" }}", &vars).unwrap();
+    assert_eq!(result, "ab");
+}
+
+#[test]
+fn test_print_string_then_number_no_space() {
+    let mut vars = test_vars();
+    vars.set_structured("N", Value::Number(1i64.into()));
+    let result = render("{{ print \"a\" N }}", &vars).unwrap();
+    assert_eq!(result, "a1");
+}
+
+#[test]
+fn test_printf_g_explicit_precision_exponent_trims_zeros() {
+    let mut vars = test_vars();
+    vars.set_structured(
+        "V",
+        Value::Number(serde_json::Number::from_f64(1200000.0).unwrap()),
+    );
+    // %.3g of 1.2e6: exponential branch, trailing mantissa zeros trimmed → 1.2e+06.
+    let result = render("{{ printf \"%.3g\" V }}", &vars).unwrap();
+    assert_eq!(result, "1.2e+06");
+}

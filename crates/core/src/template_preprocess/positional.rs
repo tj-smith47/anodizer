@@ -224,6 +224,14 @@ fn lookup_positional(name: &str) -> Option<&'static PositionalSyntax> {
     POSITIONAL_FUNCTIONS.iter().find(|p| p.name == name)
 }
 
+/// True when the significant tokens already contain a `(` (named-arg syntax) or
+/// a `|` (piped). The standalone-rewrite helpers all bail in that case, so this
+/// shared guard keeps the check in one place.
+fn already_named_or_piped(sig: &[&Token]) -> bool {
+    sig.iter()
+        .any(|t| matches!(t, Token::Other(s) if s == "(") || matches!(t, Token::Pipe))
+}
+
 /// Extract the leading and trailing whitespace tokens of a block so the
 /// rewrite preserves the original spacing (and Tera whitespace-control).
 fn block_whitespace(tokens: &[Token]) -> (&str, &str) {
@@ -254,11 +262,7 @@ fn block_whitespace(tokens: &[Token]) -> (&str, &str) {
 fn try_rewrite_slice(tokens: &[Token]) -> Option<String> {
     let sig = significant_tokens(tokens);
 
-    // Already named-arg syntax or already piped — leave it alone.
-    if sig
-        .iter()
-        .any(|t| matches!(t, Token::Other(s) if s == "(") || matches!(t, Token::Pipe))
-    {
+    if already_named_or_piped(&sig) {
         return None;
     }
 
@@ -296,11 +300,7 @@ fn try_rewrite_slice(tokens: &[Token]) -> Option<String> {
 fn try_rewrite_printf_like(tokens: &[Token]) -> Option<String> {
     let sig = significant_tokens(tokens);
 
-    // Already named-arg syntax or piped — leave it alone.
-    if sig
-        .iter()
-        .any(|t| matches!(t, Token::Other(s) if s == "(") || matches!(t, Token::Pipe))
-    {
+    if already_named_or_piped(&sig) {
         return None;
     }
 
@@ -346,13 +346,8 @@ fn try_rewrite_printf_like(tokens: &[Token]) -> Option<String> {
 pub(super) fn try_rewrite_standalone(tokens: &[Token]) -> Option<String> {
     let sig = significant_tokens(tokens);
 
-    // If there are parentheses anywhere, this is already named-arg syntax.
-    if sig.iter().any(|t| matches!(t, Token::Other(s) if s == "(")) {
-        return None;
-    }
-
-    // If there's a pipe, this isn't standalone form.
-    if sig.iter().any(|t| matches!(t, Token::Pipe)) {
+    // Parens mean already named-arg syntax; a pipe means this isn't standalone.
+    if already_named_or_piped(&sig) {
         return None;
     }
 

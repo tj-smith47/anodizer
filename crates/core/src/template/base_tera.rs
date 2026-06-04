@@ -97,6 +97,18 @@ fn numeric_sign(negative: bool, plus: bool, space: bool) -> &'static str {
     }
 }
 
+/// Apply integer-precision zero-padding to an unsigned digit string.
+///
+/// In Go, precision on `%d`/`%b`/`%o`/`%x`/`%X` sets the MINIMUM digit count,
+/// zero-left-padded (distinct from width, and applied before any sign/prefix or
+/// width padding). `%.5d` of 7 → `00007`.
+fn int_precision(digits: &str, precision: Option<usize>) -> String {
+    match precision {
+        Some(p) if digits.len() < p => format!("{}{}", "0".repeat(p - digits.len()), digits),
+        _ => digits.to_string(),
+    }
+}
+
 /// Normalize a Rust-formatted scientific string to Go's exponent style.
 ///
 /// Rust's `{:e}` emits an unsigned exponent with no leading zeros (`1.23e4`,
@@ -124,6 +136,71 @@ fn go_exponent(s: &str, uppercase: bool) -> String {
     };
     format!("{}{}{}{}", mantissa, letter, sign, padded)
 }
+
+/// Trim trailing fractional zeros (and a now-naked decimal point) from a plain
+/// decimal string, matching Go `%g`'s `%f`-branch zero-trimming.
+fn trim_fraction_zeros(s: &str) -> &str {
+    if !s.contains('.') {
+        return s;
+    }
+    let trimmed = s.trim_end_matches('0');
+    trimmed.strip_suffix('.').unwrap_or(trimmed)
+}
+
+/// Format a non-negative magnitude with Go `%g`/`%G` semantics.
+///
+/// Go selects exponential form when the decimal exponent is `< -4` or `>= eprec`
+/// (where `eprec` is 6 for the default/shortest precision, otherwise the
+/// requested precision), and decimal form otherwise; trailing fractional zeros
+/// are trimmed in both branches. The shortest mantissa comes from Rust's
+/// `{:e}`, which already yields the minimal unique digit count.
+fn format_g(mag: f64, precision: Option<usize>, uppercase: bool) -> String {
+    // Rust's `{:e}` gives the shortest mantissa and the decimal exponent, e.g.
+    // `9.9999999e7` for 99999999.0; parse the exponent to drive the branch.
+    let sci = format!("{:e}", mag);
+    let exp: i32 = sci
+        .split(['e', 'E'])
+        .nth(1)
+        .and_then(|e| e.parse().ok())
+        .unwrap_or(0);
+    let eprec = precision.map(|p| p as i32).unwrap_or(6).max(1);
+
+    if exp < -4 || exp >= eprec {
+        // Exponential branch. Go uses `prec-1` fractional digits for an
+        // explicit precision; for shortest it uses the minimal mantissa.
+        let body = match precision {
+            Some(p) => format!("{:.*e}", p.saturating_sub(1), mag),
+            None => sci.clone(),
+        };
+        let normalized = go_exponent(&body, uppercase);
+        // Trim trailing zeros in the mantissa for explicit precision (Go does).
+        if precision.is_some()
+            && let Some(epos) = normalized.find(['e', 'E'])
+        {
+            let (mantissa, exp_part) = normalized.split_at(epos);
+            return format!("{}{}", trim_fraction_zeros(mantissa), exp_part);
+        }
+        normalized
+    } else {
+        // Decimal branch. For shortest, render the full decimal value and trim;
+        // for explicit precision, Go uses `prec - dp` fractional digits, which
+        // `trim_fraction_zeros` then collapses — emulated by formatting with
+        // enough fractional digits and trimming.
+        let body = match precision {
+            // Significant-digit precision → fractional digits = prec - (exp+1).
+            Some(p) => {
+                let frac = (p as i32 - (exp + 1)).max(0) as usize;
+                format!("{:.*}", frac, mag)
+            }
+            None => format!("{}", mag),
+        };
+        trim_fraction_zeros(&body).to_string()
+    }
+}
+
+/// Ceiling for `printf` width and precision, guarding against an attacker (or a
+/// typo) requesting a huge `" ".repeat(width)` allocation from a template.
+const PRINTF_FIELD_MAX: usize = 100_000;
 
 /// Format one `printf` verb against a value, returning a `tera::Error` for any
 /// verb outside the supported bounded subset.
@@ -172,7 +249,11 @@ fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera:
                 .as_i64()
                 .ok_or_else(|| tera::Error::msg("printf: %d expects an integer argument"))?;
             let sign = numeric_sign(n < 0, spec.plus, spec.space);
-            Ok(pad(spec, n.unsigned_abs().to_string(), Some((sign, ""))))
+            Ok(pad(
+                spec,
+                int_precision(&n.unsigned_abs().to_string(), spec.precision),
+                Some((sign, "")),
+            ))
         }
         'b' | 'o' | 'x' | 'X' => {
             let n = val()?.as_i64().ok_or_else(|| {
@@ -182,13 +263,14 @@ fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera:
                 ))
             })?;
             let mag = n.unsigned_abs();
-            let body = match spec.verb {
+            let digits = match spec.verb {
                 'b' => format!("{:b}", mag),
                 'o' => format!("{:o}", mag),
                 'x' => format!("{:x}", mag),
                 'X' => format!("{:X}", mag),
                 _ => unreachable!(),
             };
+            let body = int_precision(&digits, spec.precision);
             let sign = numeric_sign(n < 0, spec.plus, spec.space);
             let prefix = if spec.hash {
                 match spec.verb {
@@ -215,16 +297,9 @@ fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera:
                 // min two digits). Reformat the exponent to match Go so pasted
                 // GoReleaser templates produce byte-identical output.
                 'e' | 'E' => go_exponent(&format!("{:.*e}", prec, mag), spec.verb == 'E'),
-                // %g/%G use Rust's shortest representation; precision is
-                // advisory. The exponent (when present) is normalized to Go's
-                // signed-two-digit form via go_exponent.
-                'g' | 'G' => {
-                    let raw = match spec.precision {
-                        Some(p) => format!("{:.*}", p, mag),
-                        None => format!("{}", mag),
-                    };
-                    go_exponent(&raw, spec.verb == 'G')
-                }
+                // %g/%G pick exponential vs decimal form per Go's rule
+                // (exp < -4 or >= eprec), trimming trailing zeros.
+                'g' | 'G' => format_g(mag, spec.precision, spec.verb == 'G'),
                 _ => unreachable!(),
             };
             let sign = numeric_sign(f.is_sign_negative() && f != 0.0, spec.plus, spec.space);
@@ -295,7 +370,15 @@ fn sprintf(format: &str, args: &[Value]) -> Result<String, tera::Error> {
             }
         }
         if !width_digits.is_empty() {
-            spec.width = width_digits.parse().ok();
+            // A value that overflows usize is, a fortiori, over the ceiling.
+            let w = width_digits.parse::<usize>().unwrap_or(usize::MAX);
+            if w > PRINTF_FIELD_MAX {
+                return Err(tera::Error::msg(format!(
+                    "printf width {} exceeds maximum {}",
+                    width_digits, PRINTF_FIELD_MAX
+                )));
+            }
+            spec.width = Some(w);
         }
 
         // Precision.
@@ -310,7 +393,19 @@ fn sprintf(format: &str, args: &[Value]) -> Result<String, tera::Error> {
                     break;
                 }
             }
-            spec.precision = Some(prec_digits.parse().unwrap_or(0));
+            // Empty precision (`%.d`) means zero; overflow means over the cap.
+            let p = if prec_digits.is_empty() {
+                0
+            } else {
+                prec_digits.parse::<usize>().unwrap_or(usize::MAX)
+            };
+            if p > PRINTF_FIELD_MAX {
+                return Err(tera::Error::msg(format!(
+                    "printf precision {} exceeds maximum {}",
+                    prec_digits, PRINTF_FIELD_MAX
+                )));
+            }
+            spec.precision = Some(p);
         }
 
         let verb = chars
@@ -1511,35 +1606,36 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     tera.register_filter("in", in_filter);
     tera.register_filter("contains_any", in_filter);
 
-    // --- Go `slice` builtin ---
+    // --- Go `slice` builtin (superset of Tera's native slice) ---
     // slice(start=, end=) — substring of a string (char-boundary safe) or
-    // sub-slice of an array. Go semantics: end-exclusive, so
-    // `slice(s, 0, 7)` yields the first 7 chars. Out-of-range bounds clamp
-    // rather than panic. Tera's native `slice` does not cover the Go 2/3-arg
-    // string form, so this filter overrides it for compat.
+    // sub-slice of an array, end-exclusive (`slice(s, 0, 7)` → first 7 chars).
+    // `start` is OPTIONAL (default 0) and NEGATIVE indices count from the end
+    // (`start=-2` → last 2), matching Tera's native array slice so user
+    // templates relying on it keep working. Go's positional `slice X 0 7` only
+    // ever passes non-negative bounds, so the Go usage is a strict subset.
     tera.register_filter("slice", |value: &Value, args: &HashMap<String, Value>| {
-        // `start` is required; `end` defaults to the collection length.
-        let start = args
-            .get("start")
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| tera::Error::msg("slice requires a `start` argument (integer)"))?;
+        let start = args.get("start").and_then(|v| v.as_i64()).unwrap_or(0);
         let end = args.get("end").and_then(|v| v.as_i64());
+
+        // Resolve a possibly-negative index against `len`, clamping into range.
+        let resolve = |idx: i64, len: i64| -> i64 {
+            let abs = if idx < 0 { len + idx } else { idx };
+            abs.clamp(0, len)
+        };
 
         match value {
             Value::String(s) => {
                 let chars: Vec<char> = s.chars().collect();
                 let len = chars.len() as i64;
-                // Negative indices count from the end (Go disallows this, but
-                // clamping keeps the lib path panic-free for stray input).
-                let lo = start.clamp(0, len) as usize;
-                let hi = end.unwrap_or(len).clamp(lo as i64, len) as usize;
-                Ok(Value::String(chars[lo..hi].iter().collect()))
+                let lo = resolve(start, len);
+                let hi = resolve(end.unwrap_or(len), len).max(lo) as usize;
+                Ok(Value::String(chars[lo as usize..hi].iter().collect()))
             }
             Value::Array(arr) => {
                 let len = arr.len() as i64;
-                let lo = start.clamp(0, len) as usize;
-                let hi = end.unwrap_or(len).clamp(lo as i64, len) as usize;
-                Ok(Value::Array(arr[lo..hi].to_vec()))
+                let lo = resolve(start, len);
+                let hi = resolve(end.unwrap_or(len), len).max(lo) as usize;
+                Ok(Value::Array(arr[lo as usize..hi].to_vec()))
             }
             other => Err(tera::Error::msg(format!(
                 "slice: expected a string or array, got {}",
@@ -1568,10 +1664,10 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // --- Go `print` / `println` builtins ---
-    // print(args=[a, b]) concatenates the args' default string forms.
-    // println(args=[a, b]) joins them with single spaces and appends a newline.
-    // Go's Sprint adds spaces only between non-string operands; a predictable
-    // plain concatenation is used here (documented, tested) for `print`.
+    // print(args=[a, b]) follows Go `Sprint`: a space is added between two
+    // adjacent operands only when NEITHER is a string (`print 1 2` → "1 2";
+    // `print "a" "b"` → "ab"; `print "a" 1` → "a1").
+    // println(args=[a, b]) joins with single spaces and appends a newline.
     tera.register_function(
         "print",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
@@ -1580,8 +1676,18 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
-            let joined: String = fmt_args.iter().map(printf_default).collect();
-            Ok(Value::String(joined))
+            let mut out = String::new();
+            for (i, v) in fmt_args.iter().enumerate() {
+                if i > 0 {
+                    let prev_str = fmt_args[i - 1].is_string();
+                    let cur_str = v.is_string();
+                    if !prev_str && !cur_str {
+                        out.push(' ');
+                    }
+                }
+                out.push_str(&printf_default(v));
+            }
+            Ok(Value::String(out))
         },
     );
     tera.register_function(
