@@ -2651,12 +2651,12 @@ crates:
     );
 }
 
-/// `anodizer changelog --from <ref>` must use `<ref>` as the range START,
-/// overriding the auto-discovered latest matching tag. Regression guard for
-/// the dead `--from` flag: the stage previously recomputed the previous tag
+/// A positional `<from>..<to>` range must use `<from>` as the range START,
+/// overriding the auto-discovered latest matching tag (which the bare command
+/// uses). Regression guard: the stage previously recomputed the previous tag
 /// unconditionally and ignored the supplied range start.
 #[test]
-fn changelog_from_overrides_auto_discovered_previous_tag() {
+fn changelog_range_start_overrides_auto_discovered_previous_tag() {
     let tmp = TempDir::new().unwrap();
 
     create_test_project(tmp.path());
@@ -2701,23 +2701,29 @@ crates:
     git(&["commit", "-m", "feat: between-tags feature"]);
     git(&["tag", "v0.2.0"]);
 
-    // Commit AFTER v0.2.0 — always in range regardless of `--from`.
+    // Commit AFTER v0.2.0 — always in range regardless of the range start.
     fs::write(tmp.path().join("src/main.rs"), "fn main() { /* b */ }").unwrap();
     git(&["add", "-A"]);
     git(&["commit", "-m", "fix: after-latest-tag fix"]);
 
-    // `--to HEAD` pins the range UPPER bound to a ref distinct from any tag,
-    // so the auto-discovered previous tag (v0.2.0) is not filtered out as
-    // "equal to the current tag" — making the with/without `--from` contrast
-    // observable.
-    let run_changelog = |from: Option<&str>| -> String {
-        let mut args = vec!["changelog", "--snapshot", "--to", "HEAD"];
-        if let Some(f) = from {
-            args.push("--from");
-            args.push(f);
-        }
+    // `--format release-notes` streams the grouped-bullet body to stdout so the
+    // commit messages are directly assertable (the pre-rework bare `changelog`
+    // WAS release-notes; the new default is keep-a-changelog, which extracts
+    // only the [Unreleased] heading). Both invocations share the explicit
+    // `..HEAD` upper bound — a ref distinct from any tag, so the auto-discovered
+    // previous tag (v0.2.0) is not filtered out as "equal to the current tag" —
+    // varying only the range START (empty → auto-discover, vs `v0.1.0`), which
+    // is the with/without override contrast under test.
+    let run_changelog = |range: &str| -> String {
+        let args = [
+            "changelog",
+            range,
+            "--snapshot",
+            "--format",
+            "release-notes",
+        ];
         let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-            .args(&args)
+            .args(args)
             .current_dir(tmp.path())
             .output()
             .unwrap();
@@ -2730,35 +2736,43 @@ crates:
         String::from_utf8_lossy(&output.stdout).to_string()
     };
 
-    // Baseline: WITHOUT --from, auto-discovery starts at v0.2.0, so the
-    // between-tags feature is NOT in the changelog.
-    let auto = run_changelog(None);
+    // Baseline: an empty range start (`..HEAD`) auto-discovers the start at the
+    // latest tag (v0.2.0), so the between-tags feature is NOT in the changelog.
+    let auto = run_changelog("..HEAD");
     assert!(
         !auto.contains("between-tags feature"),
-        "auto-discovery should start at v0.2.0 and exclude the between-tags commit, got:\n{auto}"
+        "empty range start should auto-discover the start at v0.2.0 and exclude the between-tags commit, got:\n{auto}"
     );
     assert!(
         auto.contains("after-latest-tag fix"),
-        "auto-discovery should include the post-v0.2.0 commit, got:\n{auto}"
+        "empty range start should include the post-v0.2.0 commit, got:\n{auto}"
     );
 
-    // WITH --from v0.1.0, the range starts at v0.1.0, so BOTH commits appear.
-    let with_from = run_changelog(Some("v0.1.0"));
+    // WITH an explicit `v0.1.0..HEAD` range, the range starts at v0.1.0, so BOTH
+    // commits appear.
+    let with_range = run_changelog("v0.1.0..HEAD");
     assert!(
-        with_from.contains("between-tags feature"),
-        "--from v0.1.0 must include the between-tags commit (range start override), got:\n{with_from}"
+        with_range.contains("between-tags feature"),
+        "v0.1.0..HEAD must include the between-tags commit (range start override), got:\n{with_range}"
     );
     assert!(
-        with_from.contains("after-latest-tag fix"),
-        "--from v0.1.0 must still include the post-v0.2.0 commit, got:\n{with_from}"
+        with_range.contains("after-latest-tag fix"),
+        "v0.1.0..HEAD must still include the post-v0.2.0 commit, got:\n{with_range}"
     );
 }
 
-/// `changelog --from <nonexistent>` must ERROR (naming the bad ref), not
-/// silently degrade to an empty changelog. The git fetch returns Ok(vec![])
-/// on a bad range, so without validation a typo'd ref ships a blank changelog.
+/// A positional range whose start names a nonexistent ref must ERROR (naming
+/// the bad ref), not silently degrade to an empty changelog. `git log` returns
+/// a non-zero exit on a bad range, so without the `is_bad_revision` guard a
+/// typo'd ref would ship a blank changelog.
+///
+/// The default keep-a-changelog format drives `refresh_*_unreleased` →
+/// `fetch_git_commits_in`, whose `is_bad_revision` check bails naming the full
+/// `<from>..<to>` range. (The release-notes path validates only the range START
+/// up-front via `rev_verify_commit_in`; keep-a-changelog is used here because it
+/// surfaces the engine-level bad-ref error for either endpoint.)
 #[test]
-fn changelog_from_nonexistent_ref_errors() {
+fn changelog_nonexistent_range_ref_errors() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
 
@@ -2794,27 +2808,19 @@ crates:
     git(&["commit", "-m", "initial"]);
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["changelog", "--snapshot", "--from", "v9.9.9-does-not-exist"])
+        .args(["changelog", "v9.9.9-does-not-exist..HEAD"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
     assert!(
         !output.status.success(),
-        "changelog --from <nonexistent> must fail, not emit an empty changelog.\nstdout:\n{}",
+        "changelog with a nonexistent range start must fail, not emit an empty changelog.\nstdout:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("v9.9.9-does-not-exist"),
         "error must name the bad ref, got:\n{stderr}"
-    );
-    // The error must come from the up-front `--from` validation (which guards
-    // EVERY fetch path, including the SCM-fallback `fetch_git_commits_in` that
-    // silently returns Ok(vec![]) on a bad range), not from an incidental
-    // downstream git failure that some fetch paths swallow.
-    assert!(
-        stderr.contains("does not resolve to a commit"),
-        "error must be the up-front --from validation message, got:\n{stderr}"
     );
 }
 

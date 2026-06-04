@@ -1474,3 +1474,204 @@ fn root_crates_subset_filters_excluded_track_from_root() {
         "excluded cli subsection must remain under Unreleased: {exc_cl}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Cross-engine end-to-end: `changelog --write` (refresh) → hand-edit → `tag
+// --changelog` (promote). The headline guarantee: an operator can preview /
+// generate the pending section, curate it by hand, commit, then tag WITHOUT
+// the promote step clobbering the hand edit. Two engine functions are spanned
+// through the REAL CLI: `changelog --write` runs `refresh_*_unreleased`
+// (regenerate `[Unreleased]`, no promote); `tag --changelog` runs
+// `render_*_section` (promote `[Unreleased]` → `## [<version>] - <date>`,
+// preserving a curated body verbatim).
+// ---------------------------------------------------------------------------
+
+/// Replace the substring `needle` in the file at `dir/rel` with `replacement`,
+/// asserting `needle` was actually present (so a silent no-op edit can't pass
+/// the test by accident).
+fn sentinel_edit(dir: &Path, rel: &str, needle: &str, replacement: &str) {
+    let before = read(dir, rel);
+    assert!(
+        before.contains(needle),
+        "expected generated text {needle:?} in {rel} before the hand edit, got:\n{before}"
+    );
+    let after = before.replace(needle, replacement);
+    fs::write(dir.join(rel), after).unwrap();
+}
+
+/// Single-crate (flat CHANGELOG.md): `changelog --write` fills `[Unreleased]`
+/// from a `feat:` commit; the operator rewrites that bullet to a SENTINEL,
+/// commits the file; `tag --changelog` promotes `[Unreleased]` to a dated
+/// release heading carrying the SENTINEL verbatim — the generated text does not
+/// reappear (the curated-body-wins branch of the Keep-a-Changelog roll).
+#[test]
+fn e2e_write_then_tag_preserves_hand_edited_single_crate() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/app/src")).unwrap();
+    fs::write(
+        root.join("crates/app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/app/src/lib.rs"), "").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: single
+changelog: {}
+crates:
+  - name: app
+    path: crates/app
+    tag_template: "v{{ .Version }}"
+    version_sync:
+      enabled: true
+"#,
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/app/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "feat: generated bullet text");
+
+    // Engine A (refresh): generate the pending section into CHANGELOG.md.
+    let write = anodizer()
+        .current_dir(root)
+        .args(["changelog", "--write", "-q"])
+        .output()
+        .unwrap();
+    assert!(
+        write.status.success(),
+        "changelog --write failed: {}\n{}",
+        String::from_utf8_lossy(&write.stdout),
+        String::from_utf8_lossy(&write.stderr)
+    );
+    // Bare `changelog: {}` routes the single-crate section to the root file.
+    let generated = read(root, "CHANGELOG.md");
+    assert!(
+        generated.contains("## [Unreleased]") && generated.contains("generated bullet text"),
+        "refresh must seed [Unreleased] with the generated bullet: {generated}"
+    );
+
+    // The hand edit: rewrite the generated bullet to a unique sentinel, then
+    // commit the curated file (the operator's curation lands in git).
+    const SENTINEL: &str = "HAND CURATED SENTINEL 7f3a";
+    sentinel_edit(root, "CHANGELOG.md", "generated bullet text", SENTINEL);
+    git_add_commit(root, "docs: curate changelog");
+
+    // Engine B (promote): tag with the refresh opted in.
+    let tag = anodizer()
+        .current_dir(root)
+        .args(["tag", "--crate", "app", "--no-push", "--changelog"])
+        .output()
+        .unwrap();
+    assert!(
+        tag.status.success(),
+        "tag --changelog failed: {}\n{}",
+        String::from_utf8_lossy(&tag.stdout),
+        String::from_utf8_lossy(&tag.stderr)
+    );
+
+    // The committed result (HEAD) promoted [Unreleased] to a dated heading,
+    // carried the hand edit verbatim, and did NOT resurrect the generated text.
+    let head = show_head(root, "CHANGELOG.md");
+    assert!(
+        head.contains("## [0.2.0] - "),
+        "promote must produce a dated release heading: {head}"
+    );
+    assert!(
+        head.contains(SENTINEL),
+        "the hand-edited sentinel must survive promotion verbatim: {head}"
+    );
+    assert!(
+        !head.contains("generated bullet text"),
+        "the regenerated bullet must NOT reappear over the hand edit: {head}"
+    );
+}
+
+/// Multi-track per-crate root: `changelog --write --crate core` refreshes ONLY
+/// core's `### core` subsection under the shared root `[Unreleased]` from a
+/// `feat:` commit; the operator rewrites that bullet to a SENTINEL, commits;
+/// `tag --crate core --changelog` promotes the `### core` subsection to a dated
+/// `## [core-v0.2.0]` heading carrying the SENTINEL verbatim, leaves `### cli`
+/// untouched, and does not resurrect the generated text (curated-subsection-wins
+/// branch of the multi-track promote).
+#[test]
+fn e2e_write_then_tag_preserves_hand_edited_multitrack_root() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    // `crates: ["core", "cli"]` per-crate config with a root destination; the
+    // seeded root carries `### core`/`### cli` subsections so the refresh engages
+    // the multi-track subsection path (not a flat roll).
+    multitrack_root_fixture(root, "changelog:\n  root: {}\n", "");
+
+    // A feat on core only → core is the bumped track (core-v0.1.0 → core-v0.2.0).
+    fs::write(root.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();
+    git_add_commit(root, "feat: generated core text");
+
+    // Engine A (refresh): regenerate ONLY core's `### core` subsection. The
+    // seeded `- curated core entry` bullet is replaced by the generated bullet.
+    let write = anodizer()
+        .current_dir(root)
+        .args(["changelog", "--write", "--crate", "core", "-q"])
+        .output()
+        .unwrap();
+    assert!(
+        write.status.success(),
+        "changelog --write --crate core failed: {}\n{}",
+        String::from_utf8_lossy(&write.stdout),
+        String::from_utf8_lossy(&write.stderr)
+    );
+    let generated = read(root, "CHANGELOG.md");
+    assert!(
+        generated.contains("### core") && generated.contains("generated core text"),
+        "refresh must regenerate the core subsection from the commit: {generated}"
+    );
+    assert!(
+        generated.contains("### cli\n- curated cli entry"),
+        "refresh of core must leave the cli subsection untouched: {generated}"
+    );
+
+    // The hand edit: rewrite core's generated bullet to a unique sentinel, commit.
+    const SENTINEL: &str = "HAND CURATED CORE SENTINEL 91be";
+    sentinel_edit(root, "CHANGELOG.md", "generated core text", SENTINEL);
+    git_add_commit(root, "docs: curate core changelog");
+
+    // Engine B (promote): tag the core track with the refresh opted in.
+    let tag = anodizer()
+        .current_dir(root)
+        .args(["tag", "--crate", "core", "--no-push", "--changelog"])
+        .output()
+        .unwrap();
+    assert!(
+        tag.status.success(),
+        "tag --crate core --changelog failed: {}\n{}",
+        String::from_utf8_lossy(&tag.stdout),
+        String::from_utf8_lossy(&tag.stderr)
+    );
+
+    let head = show_head(root, "CHANGELOG.md");
+    assert!(
+        head.contains("## [core-v0.2.0] - "),
+        "promote must produce a dated core release heading: {head}"
+    );
+    assert!(
+        head.contains(SENTINEL),
+        "the hand-edited core sentinel must survive promotion verbatim: {head}"
+    );
+    assert!(
+        !head.contains("generated core text"),
+        "the regenerated core bullet must NOT reappear over the hand edit: {head}"
+    );
+    // The untagged cli subsection is preserved verbatim under Unreleased.
+    assert!(
+        head.contains("### cli\n- curated cli entry"),
+        "the untagged cli subsection must survive the core promote: {head}"
+    );
+}
