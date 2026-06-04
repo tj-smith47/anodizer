@@ -65,7 +65,7 @@ workspaces:
     crates:
       - name: my-core
         path: crates/my-core
-        tag_template: "core-v{{ Version }}"
+        tag_template: "core-v{{ .Version }}"
         version_sync:
           enabled: true
           mode: cargo
@@ -77,7 +77,7 @@ workspaces:
     crates:
       - name: my-cli
         path: crates/my-cli
-        tag_template: "v{{ Version }}"
+        tag_template: "v{{ .Version }}"
         depends_on: [my-core]
         version_sync:
           enabled: true
