@@ -145,6 +145,7 @@ pub struct TestContextBuilder {
     env_overrides: Vec<(String, String)>,
     changelog_from: Option<String>,
     changelog_full_history: bool,
+    changelog_preview: bool,
 }
 
 impl Default for TestContextBuilder {
@@ -189,6 +190,7 @@ impl Default for TestContextBuilder {
             env_overrides: Vec::new(),
             changelog_from: None,
             changelog_full_history: false,
+            changelog_preview: false,
         }
     }
 }
@@ -380,6 +382,15 @@ impl TestContextBuilder {
         self
     }
 
+    /// Mark the run as the standalone `changelog --format release-notes`
+    /// local preview: the changelog stage bypasses the snapshot-skip gate and
+    /// the `github-native` branch, and `resolve_git_context` skips the
+    /// tag-at-HEAD / dirty-tree bails.
+    pub fn changelog_preview(mut self, preview: bool) -> Self {
+        self.changelog_preview = preview;
+        self
+    }
+
     /// Add an environment variable override. Calling [`env`](Self::env)
     /// at least once swaps the built context's env source to a
     /// [`MapEnvSource`](crate::MapEnvSource) seeded from the
@@ -442,6 +453,7 @@ impl TestContextBuilder {
             allow_ai_failure: false,
             changelog_from: self.changelog_from,
             changelog_full_history: self.changelog_full_history,
+            changelog_preview: self.changelog_preview,
         };
 
         let mut ctx = Context::new(config, options);

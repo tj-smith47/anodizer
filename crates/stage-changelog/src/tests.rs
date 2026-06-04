@@ -368,12 +368,51 @@ fn test_changelog_snapshot_skipped_when_opt_in_unset() {
         .snapshot(true)
         .build();
     ctx.config.changelog = config.changelog;
+    // The release pipeline never sets `changelog_preview`; assert the default
+    // so the gate-bypass fix can't silently leak into the release path.
+    assert!(
+        !ctx.options.changelog_preview,
+        "release-path context must leave changelog_preview unset"
+    );
     ChangelogStage
         .run(&mut ctx)
         .expect("snapshot skip is graceful");
     assert!(
         ctx.stage_outputs.changelogs.is_empty(),
         "snapshot mode without opt-in must skip changelog generation"
+    );
+}
+
+#[test]
+fn test_changelog_preview_bypasses_snapshot_skip_gate() {
+    // The standalone `changelog` command marks the context `changelog_preview`,
+    // which must bypass the `changelog.snapshot` opt-in gate that the release
+    // pipeline honors (proved by `test_changelog_snapshot_skipped_when_opt_in_unset`).
+    // Use a release-notes content path so the assertion doesn't depend on git
+    // history — the only thing under test is that the snapshot-skip early-return
+    // is NOT taken.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).expect("create dist");
+    let notes = tmp.path().join("notes.md");
+    std::fs::write(&notes, "preview body").expect("write notes");
+
+    let config = changelog_snapshot_test_config(None);
+    let mut ctx = TestContextBuilder::new()
+        .project_name(&config.project_name)
+        .crates(config.crates.clone())
+        .dist(dist.clone())
+        .snapshot(true)
+        .build();
+    ctx.config.changelog = config.changelog;
+    ctx.options.changelog_preview = true;
+    ctx.options.release_notes_path = Some(notes);
+    ChangelogStage
+        .run(&mut ctx)
+        .expect("preview must render even without the snapshot opt-in");
+    assert!(
+        !ctx.stage_outputs.changelogs.is_empty(),
+        "changelog_preview must bypass the snapshot-skip gate"
     );
 }
 

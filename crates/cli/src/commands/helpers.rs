@@ -413,10 +413,14 @@ pub fn resolve_git_context(
 
         // Validate HEAD points at the tag.
         // Skip this check for the synthetic v0.0.0 tag since it doesn't exist in git.
+        // The standalone `changelog` preview also skips it: an inspection tool
+        // must render a tag's window without requiring the operator to check
+        // that tag out (the release pipeline never sets `changelog_preview`).
         let is_synthetic_tag = tag == "v0.0.0" && tag_override.is_none();
         if !is_synthetic_tag
             && let Ok(false) = git::tag_points_at_head(&tag)
             && !ctx.options.snapshot
+            && !ctx.options.changelog_preview
         {
             let head = git::get_short_commit().unwrap_or_else(|_| "unknown".to_string());
             anyhow::bail!(
@@ -429,8 +433,9 @@ pub fn resolve_git_context(
         match git::detect_git_info(&tag, ctx.skip_validate()) {
             Ok(mut git_info) => {
                 // Validate dirty working tree: error in non-snapshot/non-dry-run mode,
-                // a dirty-tree check.
-                if git_info.dirty && !ctx.options.snapshot {
+                // a dirty-tree check. The standalone `changelog` preview skips
+                // it too — a local inspection must not require a clean tree.
+                if git_info.dirty && !ctx.options.snapshot && !ctx.options.changelog_preview {
                     if ctx.options.dry_run {
                         log.warn("git is in a dirty state; run `git status` to see what changed.");
                     } else {

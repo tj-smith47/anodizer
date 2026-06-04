@@ -458,11 +458,14 @@ fn single_tag_resolves_owning_crate_and_predecessor() {
 fn release_notes_format_emits_grouped_bullets() {
     let tmp = single_crate_repo();
     let root = tmp.path();
-    // The release-notes path runs the changelog stage, which requires HEAD to
-    // sit at the upper-bound tag (the release-time invariant). Tag the feat
-    // commit as v0.2.0 and render the v0.1.0..v0.2.0 range via the single-tag
-    // positional.
+    // The standalone `changelog` command is a LOCAL preview: it renders a tag's
+    // window WITHOUT requiring HEAD to sit at that tag (no checkout). Tag the
+    // feat commit as v0.2.0, then add a FURTHER commit so HEAD is BEHIND the
+    // v0.2.0 tag's checkout state, proving the tag-at-HEAD guard is bypassed for
+    // the preview.
     run_git(root, &["tag", "v0.2.0"]);
+    fs::write(root.join("crates/app/src/lib.rs"), "// moved past v0.2.0\n").unwrap();
+    git_add_commit(root, "chore: move HEAD past the tag");
     let r = changelog(root, &["-q", "v0.2.0", "--format", "release-notes"]);
     assert!(
         r.success,
@@ -470,8 +473,74 @@ fn release_notes_format_emits_grouped_bullets() {
         r.stdout, r.stderr
     );
     assert!(
+        !r.stderr.contains("does not point at HEAD"),
+        "the standalone preview must NOT require HEAD at the tag: {}",
+        r.stderr
+    );
+    assert!(
         r.stdout.contains("add a thing"),
         "release notes must list the commit: {}",
+        r.stdout
+    );
+}
+
+/// Bare `changelog --format release-notes` (no positional, no `--snapshot`) with
+/// the last tag BEHIND HEAD must render the pending last-tag..HEAD window — the
+/// same set kac/json show for the identical state — with NO release-time guards:
+/// no tag-at-HEAD error, no `changelog skipped` line.
+#[test]
+fn bare_release_notes_renders_pending_window_no_guards() {
+    let tmp = single_crate_repo();
+    let root = tmp.path();
+    // single_crate_repo leaves v0.1.0 tagged with one post-tag commit ("add a
+    // thing") on HEAD — the pending window.
+    let r = changelog(root, &["-q", "--format", "release-notes"]);
+    assert!(
+        r.success,
+        "bare release-notes failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    assert!(
+        !r.stderr.contains("does not point at HEAD"),
+        "bare preview must NOT require a checkout: {}",
+        r.stderr
+    );
+    assert!(
+        !r.stdout.contains("changelog skipped") && !r.stderr.contains("changelog skipped"),
+        "bare preview must NOT hit the snapshot-skip gate: {}\n{}",
+        r.stdout,
+        r.stderr
+    );
+    assert!(
+        r.stdout.contains("add a thing"),
+        "bare preview must show the pending commit: {}",
+        r.stdout
+    );
+}
+
+/// `changelog --snapshot --format release-notes` against a fixture WITHOUT
+/// `changelog.snapshot: true` must still render — the standalone command bypasses
+/// the snapshot-skip config gate that the release pipeline honors.
+#[test]
+fn snapshot_release_notes_renders_without_config_opt_in() {
+    let tmp = single_crate_repo();
+    let root = tmp.path();
+    // single_crate_repo's config is `changelog: {}` — snapshot opt-in is UNSET.
+    let r = changelog(root, &["-q", "--snapshot", "--format", "release-notes"]);
+    assert!(
+        r.success,
+        "snapshot release-notes failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    assert!(
+        !r.stdout.contains("changelog skipped") && !r.stderr.contains("changelog skipped"),
+        "the standalone command must bypass the `changelog.snapshot` gate: {}\n{}",
+        r.stdout,
+        r.stderr
+    );
+    assert!(
+        r.stdout.contains("add a thing"),
+        "snapshot preview must show the pending commit: {}",
         r.stdout
     );
 }
@@ -1266,6 +1335,147 @@ crates:
     assert!(
         out.contains("dogfood core capability") && out.contains("dogfood cli bug"),
         "regenerated body must reflect since-tag commits: {out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// github-native preview: the standalone command renders from LOCAL git instead
+// of GitHub (whose body is generated at release time), requires no token, and
+// never emits empty.
+// ---------------------------------------------------------------------------
+
+/// A single-crate repo configured `changelog.use: github-native` with a
+/// `release.github` repo. The standalone `changelog --format release-notes`
+/// must render LOCAL scm bullets (the pending window), emit the one-line
+/// "previewing from local git" note, require NO token, and be NON-empty.
+fn github_native_repo() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/app/src")).unwrap();
+    fs::write(
+        root.join("crates/app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/app/src/lib.rs"), "").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: gh-native
+changelog:
+  use: github-native
+crates:
+  - name: app
+    path: crates/app
+    tag_template: "v{{ .Version }}"
+    release:
+      github:
+        owner: octocat
+        name: app
+"#,
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/app/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "feat: github-native local preview");
+    tmp
+}
+
+#[test]
+fn github_native_release_notes_previews_from_local_git() {
+    let tmp = github_native_repo();
+    let root = tmp.path();
+    // No token set in the environment: a real github-native release would
+    // require one, but the local preview must not.
+    let mut cmd = anodizer();
+    cmd.current_dir(root)
+        .arg("changelog")
+        .args(["-q", "--format", "release-notes"])
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN");
+    let out = cmd.output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "github-native preview failed: {stdout}\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("requires a GitHub token"),
+        "github-native preview must NOT require a token: {stderr}"
+    );
+    assert!(
+        stderr.contains("previewing from local git"),
+        "github-native preview must emit the one-line fallback note: {stderr}"
+    );
+    assert!(
+        stdout.contains("github-native local preview"),
+        "github-native preview must render the local commit (non-empty): {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Multi-track (distinct tag prefixes) release-notes preview: each crate's
+// pending window renders without a checkout, bounded at its own tag.
+// ---------------------------------------------------------------------------
+
+/// Multi-track (distinct-prefix `core-v*` / `cli-v*`) repo with each crate's
+/// last tag BEHIND HEAD. `changelog --crate <name> --format release-notes`
+/// (NO `--snapshot`, no checkout) must render that crate's pending window
+/// bounded at its own tag — proving the preview bypass works in the per-crate
+/// mode too.
+#[test]
+fn multitrack_release_notes_preview_bounds_at_each_crate_tag() {
+    let tmp = per_crate_repo();
+    let root = tmp.path();
+    // per_crate_repo: core-v0.1.0 + cli-v0.2.0 tagged, then "feat: core change"
+    // and "fix: cli change" on HEAD (each the pending window for its crate).
+    let core = changelog(
+        root,
+        &["-q", "--crate", "core", "--format", "release-notes"],
+    );
+    assert!(
+        core.success,
+        "core release-notes preview failed: {}\n{}",
+        core.stdout, core.stderr
+    );
+    assert!(
+        !core.stderr.contains("does not point at HEAD"),
+        "multitrack preview must NOT require a checkout: {}",
+        core.stderr
+    );
+    assert!(
+        core.stdout.contains("core change"),
+        "core preview must show its pending commit: {}",
+        core.stdout
+    );
+    assert!(
+        !core.stdout.contains("cli change"),
+        "cli commit leaked into core's preview: {}",
+        core.stdout
+    );
+
+    let cli = changelog(root, &["-q", "--crate", "cli", "--format", "release-notes"]);
+    assert!(
+        cli.success,
+        "cli release-notes preview failed: {}\n{}",
+        cli.stdout, cli.stderr
+    );
+    assert!(
+        cli.stdout.contains("cli change"),
+        "cli preview must show its pending commit: {}",
+        cli.stdout
+    );
+    assert!(
+        !cli.stdout.contains("core change"),
+        "core commit leaked into cli's preview: {}",
+        cli.stdout
     );
 }
 

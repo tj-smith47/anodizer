@@ -528,6 +528,12 @@ fn run_release_notes(
         // template var cannot signal "user asked for this").
         changelog_from: explicit_from.clone(),
         changelog_full_history: matches!(resolved.start, RangeStart::FullHistory),
+        // Standalone-command marker: render the pending window from local git
+        // with no release-time preconditions (no checkout, no clean tree, no
+        // `changelog.snapshot: true`, no token for github-native). The
+        // release/tag pipelines never construct options this way, so their
+        // guards stay intact.
+        changelog_preview: true,
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);

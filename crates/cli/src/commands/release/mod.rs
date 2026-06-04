@@ -1030,6 +1030,11 @@ fn build_context_options(
         // The full release pipeline never spans full history; each crate's
         // notes bound at its previous tag. Only `anodizer changelog ..` opts in.
         changelog_full_history: false,
+        // The release pipeline is NOT a local preview: its tag-at-HEAD,
+        // dirty-tree, snapshot-gate, and github-native guards must all stay
+        // intact. Only the standalone `changelog --format release-notes`
+        // command sets this true.
+        changelog_preview: false,
     }
 }
 

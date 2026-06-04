@@ -239,6 +239,22 @@ pub struct ContextOptions {
     /// to the upper bound — distinguishing the explicit empty-from form from
     /// an omitted range (which still resolves to the last release tag).
     pub changelog_full_history: bool,
+    /// Marks the run as the standalone `changelog --format release-notes`
+    /// LOCAL preview, NOT the `release`/`tag` pipeline. The standalone command
+    /// is an inspection tool: it must render the pending window from local git
+    /// with no release-time preconditions, so this flag relaxes three guards
+    /// that are correct for a real release but wrong for a preview:
+    ///   - the tag-must-point-at-HEAD + dirty-tree bails in
+    ///     `resolve_git_context` (a preview must not require a checkout or a
+    ///     clean tree),
+    ///   - the snapshot-skip config gate in the changelog stage (a preview
+    ///     must render without `changelog.snapshot: true`),
+    ///   - the `use: github-native` branch (a preview renders from local git
+    ///     instead of requiring a token / emitting empty bodies).
+    ///
+    /// ONLY the standalone changelog command sets this; the release/tag
+    /// pipelines leave it `false` so their guards stay fully intact.
+    pub changelog_preview: bool,
 }
 
 impl Default for ContextOptions {
@@ -276,6 +292,7 @@ impl Default for ContextOptions {
             allow_ai_failure: false,
             changelog_from: None,
             changelog_full_history: false,
+            changelog_preview: false,
         }
     }
 }
