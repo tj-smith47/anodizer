@@ -53,7 +53,7 @@ gemfury:
     api_token: "{{ Env.MY_FURY_API }}" # optional; cfg-level templated API token
     skip: false                       # optional; skip this entry (bool/template)
     required: true                    # optional; override required-default
-    if: "{{ ne .Prerelease \"\" }}"   # optional; template-conditional gate
+    if: "{{ Prerelease != \"\" }}"    # optional; template-conditional gate
 ```
 
 ## Authentication

@@ -154,7 +154,7 @@ Use `if` to gate publishing on a templated condition:
 npms:
   - scope: "@anodize"
     metapackage: demo
-    if: "{{ ne .Prerelease \"\" }}"  # only on prereleases
+    if: "{{ Prerelease != \"\" }}"  # only on prereleases
 ```
 
 ## Full example

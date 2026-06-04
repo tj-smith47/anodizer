@@ -110,12 +110,12 @@ You can use cross-platform signing for CI builds and native signing for local bu
 ```yaml
 notarize:
   macos:
-    - enabled: "{{ ne .Env.CI \"\" }}"
+    - enabled: "{{ Env.CI != \"\" }}"
       sign:
         certificate: "{{ Env.P12_CERTIFICATE }}"
         password: "{{ Env.P12_PASSWORD }}"
   macos_native:
-    - enabled: "{{ eq .Env.CI \"\" }}"
+    - enabled: "{{ Env.CI == \"\" }}"
       sign:
         identity: "Developer ID Application: My Org"
 ```

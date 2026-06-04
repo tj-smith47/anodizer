@@ -7,6 +7,21 @@ template = "docs.html"
 
 Anodizer uses the [Tera](https://keats.github.io/tera/) template engine (Jinja2/Django-like syntax). Templates can be used in most string fields throughout the configuration: name templates, tag templates, message templates, signing arguments, and more.
 
+## Two syntaxes, one engine
+
+Anodizer accepts **both** template dialects and renders them on the same Tera engine:
+
+- **Tera-native, no-dot** — the canonical, recommended form. Reference fields by bare name (`{{ Version }}`), use Tera operators (`==`, `!=`, `and`, `or`, `not`), pipe through filters (`{{ Tag | trimprefix(prefix="v") }}`), and write control flow with `{% %}`.
+- **GoReleaser / Go `text/template`** — paste a snippet straight out of a `.goreleaser.yaml` and it runs unchanged. Anodizer auto-translates Go idioms before rendering, so migrating costs nothing.
+
+```yaml
+# Both forms are equivalent — pick either, mix freely:
+name_template: "{{ ProjectName }}-{{ Version }}"     # Tera-native (recommended)
+name_template: "{{ .ProjectName }}-{{ .Version }}"   # GoReleaser/Go (auto-translated)
+```
+
+The docs throughout this site use the Tera-native no-dot form as the canonical idiom; the Go form is documented here for painless migration.
+
 ## Syntax
 
 Templates use `{{ "{{ }}" }}` for variable interpolation and `{{ "{% %}" }}` for control flow:
@@ -17,7 +32,14 @@ name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 
 ## GoReleaser compatibility
 
-For easier migration from GoReleaser, anodizer accepts Go-style templates with a leading dot. These are automatically preprocessed before rendering:
+Anodizer auto-translates Go `text/template` syntax to its Tera equivalent before rendering, so a template copied verbatim from a `.goreleaser.yaml` works without edits. The translation covers:
+
+- **Leading dots** — `{{ "{{ .Field }}" }}` → `{{ "{{ Field }}" }}` (and `{{ "{{ .Env.FOO }}" }}` → `{{ "{{ Env.FOO }}" }}`).
+- **Go statement blocks** — `{{ "{{ if }}" }}` / `{{ "{{ range }}" }}` / `{{ "{{ with }}" }}` / `{{ "{{ end }}" }}` become Tera's `{{ "{% if %}" }}` / `{{ "{% for %}" }}` / `{{ "{% endif %}" }}` / `{{ "{% endfor %}" }}`.
+- **`$` variables** — `$myvar` Go locals are accepted.
+- **Comparison & logic functions** — `eq` `ne` `gt` `lt` `ge` `le` `and` `or` `not` map to Tera operators (`==` `!=` `>` `<` `>=` `<=` `and` `or` `not`).
+- **`len`** — `{{ "{{ len .Tags }}" }}` becomes `{{ "{{ Tags | length }}" }}`.
+- **Positional function calls** — Go-style positional arguments for `replace` `split` `contains` `in` `reReplaceAll` `map` `slice` `time` `printf` `print` `println` are mapped to Tera's named-argument form.
 
 ```yaml
 # Both forms are equivalent:
@@ -142,32 +164,104 @@ Similar to `Var.*` but for pipeline outputs rather than user config values.
 > body_template: "Build: {{ Outputs.build_id | default(value=\"unknown\") }}"
 > ```
 
-## Filters
+## Functions and filters
 
-Tera provides many [built-in filters](https://keats.github.io/tera/docs/#built-in-filters). Common ones:
+Tera provides many [built-in filters](https://keats.github.io/tera/docs/#built-in-filters) (`lower`, `upper`, `title`, `trim`, `length`, `default`, …). On top of those, anodizer registers a full set of release-oriented helpers. Most are available in **both forms** — as a filter (`{{ "{{ X | fn(...) }}" }}`) and as a function (`{{ "{{ fn(s=X, ...) }}" }}`) — so the GoReleaser positional form (`{{ "{{ fn X ... }}" }}`) auto-translates onto them.
 
-| Filter | Example | Result |
-|--------|---------|--------|
-| `lower` | `{{ "HELLO" \| lower }}` | `hello` |
-| `upper` | `{{ "hello" \| upper }}` | `HELLO` |
-| `title` | `{{ "hello world" \| title }}` | `Hello World` |
-| `trim` | `{{ " hello " \| trim }}` | `hello` |
-| `replace` | `{{ Version \| replace(from=".", to="_") }}` | `1_2_3` |
-| `default` | `{{ Branch \| default(value="main") }}` | `main` |
+Examples below use the Tera-native no-dot idiom.
 
-### GoReleaser-compatible aliases
+### String
 
-| Alias | Tera equivalent |
-|-------|----------------|
-| `tolower` | `lower` |
-| `toupper` | `upper` |
+| Helper | Form | Example | Result |
+|--------|------|---------|--------|
+| `lower` / `tolower` | filter | `{{ "{{ Os | lower }}" }}` | `linux` |
+| `upper` / `toupper` | filter | `{{ "{{ Os | upper }}" }}` | `LINUX` |
+| `title` | filter / fn | `{{ "{{ \"hello world\" | title }}" }}` | `Hello World` |
+| `trim` | filter / fn | `{{ "{{ \" x \" | trim }}" }}` | `x` |
+| `trimprefix` | filter | `{{ "{{ Tag | trimprefix(prefix=\"v\") }}" }}` | `1.2.3` |
+| `trimsuffix` | filter | `{{ "{{ File | trimsuffix(suffix=\".tar.gz\") }}" }}` | strips suffix |
+| `replace` | filter / fn | `{{ "{{ Version | replace(from=\".\", to=\"_\") }}" }}` | `1_2_3` |
+| `split` | filter / fn | `{{ "{{ \"a.b.c\" | split(sep=\".\") }}" }}` | `["a","b","c"]` |
+| `contains` | filter / fn | `{{ "{{ Tag | contains(substr=\"rc\") }}" }}` | `true` / `false` |
+| `slice` | filter / fn | `{{ "{{ Tag | slice(start=1, end=4) }}" }}` | `1.2` (end-exclusive, Go semantics) |
+| `reReplaceAll` | fn | `{{ "{{ reReplaceAll(pattern=\"[^0-9]\", input=Tag, replacement=\"\") }}" }}` | digits only |
+| `urlPathEscape` | fn | `{{ "{{ urlPathEscape(s=Branch) }}" }}` | percent-encoded path segment |
+| `mdv2escape` | filter | `{{ "{{ Body | mdv2escape }}" }}` | Telegram MarkdownV2-escaped |
+| `ruby_escape` | filter | `{{ "{{ Desc | ruby_escape }}" }}` | safe in a Ruby `\"…\"` literal |
 
-### Custom filters
+### Formatting
 
-| Filter | Description | Example |
-|--------|-------------|---------|
-| `trimprefix` | Remove prefix | `{{ Tag \| trimprefix(prefix="v") }}` → `1.2.3` |
-| `trimsuffix` | Remove suffix | `{{ File \| trimsuffix(suffix=".tar.gz") }}` |
+| Helper | Form | Example | Result |
+|--------|------|---------|--------|
+| `printf` | fn | `{{ "{{ printf(format=\"%s-%s\", args=[Os, Arch]) }}" }}` | `linux-amd64` |
+| `printf` | fn | `{{ "{{ printf(format=\"%04d\", args=[Patch]) }}" }}` | `0003` |
+| `print` | fn | `{{ "{{ print(args=[Os, Arch]) }}" }}` | `linuxamd64` (Go `Sprint`) |
+| `println` | fn | `{{ "{{ println(args=[Os, Arch]) }}" }}` | `linux amd64\n` (Go `Sprintln`) |
+
+`printf` implements the Go verb subset `%s %d %v %x %X %o %b %c %q %f %e %g %t %%` with flags, width, and precision (Go-style exponents). `print` follows Go's `Sprint` spacing rule (a space is inserted between two adjacent operands only when neither is a string).
+
+### Path
+
+| Helper | Form | Example | Result |
+|--------|------|---------|--------|
+| `dir` | filter | `{{ "{{ ArtifactPath | dir }}" }}` | parent directory |
+| `base` | filter | `{{ "{{ ArtifactPath | base }}" }}` | final path component |
+| `abs` | filter | `{{ "{{ \"./dist\" | abs }}" }}` | absolute path |
+
+### List and map
+
+| Helper | Form | Example | Result |
+|--------|------|---------|--------|
+| `list` | fn | `{{ "{{ list(items=[Os, Arch]) }}" }}` | `["linux","amd64"]` |
+| `map` | fn | `{{ "{{ map(pairs=[\"a\", 1]) }}" }}` | `{\"a\": 1}` |
+| `index` | fn | `{{ "{{ index(collection=Parts, key=0) }}" }}` | element at index |
+| `indexOrDefault` | fn | `{{ "{{ indexOrDefault(map=M, key=\"k\", default=\"-\") }}" }}` | value or default |
+| `in` / `contains_any` | filter / fn | `{{ "{{ in(items=[\"rc\", \"beta\"], value=Prerelease) }}" }}` | `true` / `false` |
+| `filter` | fn | `{{ "{{ filter(items=Lines, regexp=\"^v\") }}" }}` | matching lines |
+| `reverseFilter` | fn | `{{ "{{ reverseFilter(items=Lines, regexp=\"^#\") }}" }}` | non-matching lines |
+| `englishJoin` | fn | `{{ "{{ englishJoin(items=Names) }}" }}` | `a, b, and c` |
+
+### Semver
+
+| Helper | Form | Example | Result |
+|--------|------|---------|--------|
+| `incpatch` | filter | `{{ "{{ Version | incpatch }}" }}` | `1.2.4` |
+| `incminor` | filter | `{{ "{{ Version | incminor }}" }}` | `1.3.0` |
+| `incmajor` | filter | `{{ "{{ Version | incmajor }}" }}` | `2.0.0` |
+
+### Environment
+
+| Helper | Form | Example | Result |
+|--------|------|---------|--------|
+| `Env.NAME` | var | `{{ "{{ Env.GITHUB_TOKEN }}" }}` | env var value |
+| `envOrDefault` | fn | `{{ "{{ envOrDefault(name=\"CI\", default=\"local\") }}" }}` | value or default |
+| `isEnvSet` | fn | `{{ "{{ isEnvSet(name=\"CI\") }}" }}` | `true` / `false` |
+
+### File
+
+| Helper | Form | Example | Result |
+|--------|------|---------|--------|
+| `readFile` | fn | `{{ "{{ readFile(path=\"VERSION\") }}" }}` | file contents (empty on error) |
+| `mustReadFile` | fn | `{{ "{{ mustReadFile(path=\"VERSION\") }}" }}` | file contents (errors if missing) |
+
+### Time
+
+| Helper | Form | Example | Result |
+|--------|------|---------|--------|
+| `time` | fn | `{{ "{{ time(format=\"2006-01-02\") }}" }}` | current date (Go layout accepted) |
+| `now_format` | fn | `{{ "{{ now_format(format=\"%Y-%m-%d\") }}" }}` | current date (chrono format) |
+
+### Hashing
+
+Fourteen hash functions take a file path argument (`s=`) and return the lowercase hex digest of that file's contents:
+
+`md5` · `crc32` · `sha1` · `sha224` · `sha256` · `sha384` · `sha512` · `sha3_224` · `sha3_256` · `sha3_384` · `sha3_512` · `blake2b` · `blake2s` · `blake3`
+
+```yaml
+body_template: "checksum: {{ sha256(s=ArtifactPath) }}"
+```
+
+> **Not supported (intentionally):** Go's `html`, `js`, `urlquery`, and `call` builtins are web-escaping / reflection helpers with no role in release templating, so they are not registered. Everything else from GoReleaser's function set — plus the Go `text/template` builtins that matter — is present.
 
 ## Control flow
 

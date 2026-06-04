@@ -58,7 +58,7 @@ before_publish:
         - "SCAN_PROFILE=release"
         - "SLACK_WEBHOOK={{ Env.SLACK_WEBHOOK }}"
       output: true
-      if: "{{ not .IsSnapshot }}"
+      if: "{{ not IsSnapshot }}"
 ```
 
 ### Structured hook fields
