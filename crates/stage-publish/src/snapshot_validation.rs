@@ -231,6 +231,13 @@ fn validate_binstall(
     // platform: it can only ever fetch one stem, so it would 404 on every other
     // produced target. Require it to match ALL produced targets, not just one,
     // so a hardcoded single-platform stem (`…-linux-amd64.tar.gz`) is rejected.
+    // The crate/package name and resolved artifact version cargo-binstall's
+    // `{ name }` / `{ version }` tokens resolve to; substituting them lets a
+    // fully-tokened `pkg_url` match exactly rather than falling through to the
+    // looser literal-segment check.
+    let name = crate_cfg.name.as_str();
+    let version = ctx.version();
+
     if let Some(ref pkg_url) = bs.pkg_url {
         let rendered = ctx
             .render_template(pkg_url)
@@ -240,7 +247,7 @@ fn validate_binstall(
             let tokened = asset.contains('{');
             let matched: Vec<&ProducedAsset> = produced
                 .iter()
-                .filter(|p| binstall_asset_matches(&asset, &p.name, &p.target))
+                .filter(|p| binstall_asset_matches(&asset, &p.name, &p.target, name, &version))
                 .collect();
             let ok = if tokened {
                 !matched.is_empty()
@@ -309,7 +316,7 @@ fn validate_binstall(
             }
             if !for_triple
                 .iter()
-                .any(|p| binstall_asset_matches(&asset, &p.name, &p.target))
+                .any(|p| binstall_asset_matches(&asset, &p.name, &p.target, name, &version))
             {
                 bail!(
                     "binstall: crate '{}' override '{}' pkg_url resolves to asset '{}' \
@@ -400,19 +407,36 @@ fn asset_filename(url: &str) -> String {
 /// the field that distinguishes the 404 class (a `pkg_url` baking
 /// `linux-amd64` while the release produces `x86_64-unknown-linux-gnu`).
 ///
-/// When all cargo-binstall tokens resolve, an exact filename match is
-/// required. When an unmodeled token survives, fall back to requiring every
-/// literal (non-token) segment of the candidate to appear in the produced
-/// name — this still catches a wrong asset stem while tolerating tokens
-/// anodize does not enumerate.
+/// `{ name }` (the crate/package name) and `{ version }` (the resolved
+/// artifact version) are substituted from the values anodize already knows, so
+/// an exact filename match fires for a fully-tokened `pkg_url` and the loose
+/// literal-segment fallback is reached less often. `{ target-arch }` (and the
+/// soft `{ arch }` alias) is deliberately NOT substituted: cargo-binstall
+/// derives it from `target_lexicon::Architecture` with its own mapping, so a
+/// hand-rolled substitution would risk the exact false mismatch this check
+/// guards — it stays on the literal-segment fallback below.
+///
+/// When all substituted tokens resolve, an exact filename match is required.
+/// When an unmodeled token survives, fall back to requiring every literal
+/// (non-token) segment of the candidate to appear in the produced name — this
+/// still catches a wrong asset stem while tolerating tokens anodize does not
+/// enumerate.
 fn binstall_asset_matches(
     candidate: &str,
     produced_name: &str,
     produced_target: &Option<String>,
+    name: &str,
+    version: &str,
 ) -> bool {
     let mut resolved = candidate.to_string();
     if let Some(t) = produced_target {
         resolved = substitute_binstall_token(&resolved, "target", t);
+    }
+    if !name.is_empty() {
+        resolved = substitute_binstall_token(&resolved, "name", name);
+    }
+    if !version.is_empty() {
+        resolved = substitute_binstall_token(&resolved, "version", version);
     }
     if resolved == produced_name {
         return true;
@@ -803,6 +827,8 @@ mod tests {
                 "cfgd-1.0.0-linux-amd64.tar.gz",
                 "cfgd-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
                 &Some("x86_64-unknown-linux-gnu".to_string()),
+                "cfgd",
+                "1.0.0",
             ),
             "matcher must reject a GoReleaser-style stem against a triple-named asset"
         );
@@ -812,9 +838,145 @@ mod tests {
                 "cfgd-1.0.0-{ target }.tar.gz",
                 "cfgd-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
                 &Some("x86_64-unknown-linux-gnu".to_string()),
+                "cfgd",
+                "1.0.0",
             ),
             "matcher must accept the {{ target }}-templated asset"
         );
+    }
+
+    /// Token-substitution stress: a fully cargo-binstall-tokened stem
+    /// (`{ name }-{ version }-{ target }`) is resolved to an EXACT filename
+    /// match from the name/version/triple anodize knows — not left to the loose
+    /// literal-segment fallback. The same stem must REJECT a wrong-version and a
+    /// wrong-name produced asset.
+    #[test]
+    fn binstall_matcher_substitutes_name_and_version_tokens() {
+        let candidate = "{ name }-{ version }-{ target }.tar.gz";
+        let target = Some("x86_64-unknown-linux-gnu".to_string());
+        // Exact: name/version/target all resolve, equalling the produced name.
+        assert!(
+            binstall_asset_matches(
+                candidate,
+                "cfgd-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
+                &target,
+                "cfgd",
+                "1.0.0",
+            ),
+            "a fully-tokened stem must match the produced asset exactly"
+        );
+        // Wrong version: the produced asset carries 1.0.1, the resolved name is
+        // 1.0.0 — no token survives, so the exact compare fails (no fallback).
+        assert!(
+            !binstall_asset_matches(
+                candidate,
+                "cfgd-1.0.1-x86_64-unknown-linux-gnu.tar.gz",
+                &target,
+                "cfgd",
+                "1.0.0",
+            ),
+            "a wrong-version produced asset must not match once {{ version }} is substituted"
+        );
+        // Wrong name: produced asset is for a different crate.
+        assert!(
+            !binstall_asset_matches(
+                candidate,
+                "other-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
+                &target,
+                "cfgd",
+                "1.0.0",
+            ),
+            "a wrong-name produced asset must not match once {{ name }} is substituted"
+        );
+    }
+
+    /// False-MATCH guard: a candidate whose literal segments are a subset of a
+    /// WRONG asset must not sneak through the loose fallback once `{ name }` and
+    /// `{ version }` are substituted into concrete literals. Here the candidate
+    /// names crate `cfgd`@`1.0.0`, but the only produced asset is a different
+    /// crate (`cfgd-extras`) — its name contains the `cfgd` chunk, which the
+    /// pre-substitution literal fallback would have accepted.
+    #[test]
+    fn binstall_matcher_rejects_literal_subset_false_match() {
+        // After substitution the only surviving token is `{ target }`, which
+        // resolves; the result is a concrete filename that must equal the
+        // produced name — and `cfgd-1.0.0-…` != `cfgd-extras-1.0.0-…`.
+        assert!(
+            !binstall_asset_matches(
+                "{ name }-{ version }-{ target }.tar.gz",
+                "cfgd-extras-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
+                &Some("x86_64-unknown-linux-gnu".to_string()),
+                "cfgd",
+                "1.0.0",
+            ),
+            "substituting name/version must reject a wrong asset whose stem merely \
+             contains the literal chunks"
+        );
+    }
+
+    /// `{ target-arch }` (cargo-binstall derives it from
+    /// `target_lexicon::Architecture`; anodize does NOT hand-roll that mapping)
+    /// stays on the literal-segment fallback: an unsubstituted-arch stem must
+    /// still ACCEPT the right produced asset and REJECT a wrong-arch one (the
+    /// 404 class), proving the fallback remains the safety net for the token
+    /// anodize deliberately leaves alone.
+    #[test]
+    fn binstall_matcher_arch_token_falls_back_correctly() {
+        let candidate = "{ name }-{ version }-{ target-arch }-unknown-linux-gnu.tar.gz";
+        // Right arch stem: every literal chunk (cfgd, 1.0.0, -unknown-linux-gnu)
+        // appears in the produced name → fallback accepts.
+        assert!(
+            binstall_asset_matches(
+                candidate,
+                "cfgd-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
+                &Some("x86_64-unknown-linux-gnu".to_string()),
+                "cfgd",
+                "1.0.0",
+            ),
+            "the literal-segment fallback must accept the right-arch asset"
+        );
+        // Wrong stem: the produced asset is a windows triple; the literal
+        // `-unknown-linux-gnu` chunk is absent → fallback rejects.
+        assert!(
+            !binstall_asset_matches(
+                candidate,
+                "cfgd-1.0.0-x86_64-pc-windows-msvc.tar.gz",
+                &Some("x86_64-pc-windows-msvc".to_string()),
+                "cfgd",
+                "1.0.0",
+            ),
+            "the literal-segment fallback must reject a wrong-os/arch stem"
+        );
+    }
+
+    /// An untokened multi-`-` version stem still works through the full
+    /// `validate_binstall` entry point: a `{{ .Version }}`-rendered snapshot
+    /// version (`0.4.0-SNAPSHOT-3d07f6c`) carries multiple `-` and must still
+    /// match the produced asset that embeds the same stem.
+    #[test]
+    fn binstall_untokened_multi_dash_version_stem_matches() {
+        let cfg = binstall_crate(BinstallConfig {
+            enabled: Some(true),
+            pkg_url: Some(
+                "https://github.com/o/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-{ target }.tar.gz"
+                    .to_string(),
+            ),
+            ..Default::default()
+        });
+        let mut ctx = scoped_ctx(cfg.clone());
+        ctx.template_vars_mut()
+            .set("Version", "0.4.0-SNAPSHOT-3d07f6c");
+        ctx.template_vars_mut()
+            .set("RawVersion", "0.4.0-SNAPSHOT-3d07f6c");
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-unknown-linux-gnu",
+            "cfgd-0.4.0-SNAPSHOT-3d07f6c-x86_64-unknown-linux-gnu.tar.gz",
+        );
+        let bs = cfg.binstall.clone().unwrap();
+        validate_binstall(&ctx, &cfg, &bs, &log())
+            .expect("a multi-dash snapshot version stem must still match its produced asset");
     }
 
     /// A per-target override pointing at a missing asset must fail, naming the

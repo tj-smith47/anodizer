@@ -575,10 +575,22 @@ mod tests {
             "0.4.0~SNAPSHOT_3d07f6c",
             "0.4.0-SNAPSHOT-3d07f6c"
         ));
+        // Bare-version mismatch: a different patch level must not match.
+        assert!(!version_matches("0.4.0", "0.5.0"));
         // A different upstream version must NOT be masked by the normalization.
         assert!(!version_matches("1:2.0.0-1", "1.0.0"));
         // A non-numeric trailing token is a different version, not a revision.
         assert!(!version_matches("1.0.0-rc1", "1.0.0"));
+        // Distinct pre-release labels must not collapse together: `~SNAPSHOT`
+        // (deb-rendered) is not `~RELEASE`.
+        assert!(!version_matches("0.4.0~SNAPSHOT", "0.4.0-RELEASE"));
+        // The af44f7ab truncation guard: the naive `split('-').next()` the bug
+        // used would reduce both stems to `0.4.0` and FALSELY match; a different
+        // multi-`-` upstream must still fail under the real normalization.
+        assert!(!version_matches(
+            "1:0.4.0~SNAPSHOT-aaaaaaa-1",
+            "0.4.0-SNAPSHOT-bbbbbbb"
+        ));
         // A longer core is not a revision match.
         assert!(!version_matches("1.0.0.5", "1.0.0"));
     }

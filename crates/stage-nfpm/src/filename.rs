@@ -794,4 +794,71 @@ mod tests {
             assert_eq!(apk_arch(a), apk_arch(n), "apk {a}/{n}");
         }
     }
+
+    /// `control_arch` is the surface the post-build cross-check uses to compare
+    /// a built package's `Architecture` control field against the resolved arch.
+    /// A built `.deb` keeps the generic `amd64`/`arm64` names, while the same
+    /// generic arch renders as `x86_64`/`aarch64` in a `.rpm` header — so the
+    /// expected value MUST be derived per-format, never compared cross-format.
+    /// This locks the deb-vs-rpm nomenclature matrix and the FALSE-match guards
+    /// that prove a deb expectation cannot validate an rpm-resolved package (or
+    /// the reverse) for the same logical arch.
+    #[test]
+    fn control_arch_matrix_deb_vs_rpm_nomenclature() {
+        // Generic nfpm arch -> (deb control name, rpm control name).
+        let matrix = [
+            ("amd64", "amd64", "x86_64"),
+            ("arm64", "arm64", "aarch64"),
+            ("386", "i386", "i386"),
+        ];
+        for (generic, deb, rpm) in matrix {
+            assert_eq!(control_arch("deb", generic), deb, "deb {generic}");
+            assert_eq!(control_arch("rpm", generic), rpm, "rpm {generic}");
+        }
+
+        // FALSE-match guards: the two 64-bit arches differ across formats, so a
+        // deb `amd64` control field must NOT equal the rpm-resolved expectation
+        // for the SAME logical arch — comparing raw, without per-format
+        // derivation, would mislabel one as the other.
+        assert_ne!(
+            control_arch("deb", "amd64"),
+            control_arch("rpm", "amd64"),
+            "deb amd64 must not equal rpm x86_64 for the same logical arch"
+        );
+        assert_ne!(
+            control_arch("deb", "arm64"),
+            control_arch("rpm", "arm64"),
+            "deb arm64 must not equal rpm aarch64 for the same logical arch"
+        );
+        // And a deb amd64 expectation must reject an arm64-resolved package.
+        assert_ne!(
+            control_arch("deb", "amd64"),
+            control_arch("deb", "arm64"),
+            "deb amd64 must not equal deb arm64"
+        );
+        assert_ne!(
+            control_arch("rpm", "amd64"),
+            control_arch("rpm", "arm64"),
+            "rpm x86_64 must not equal rpm aarch64"
+        );
+
+        // Unmapped passthrough is documented, not a silent surprise: an arch no
+        // per-format table maps (and an unknown FORMAT) returns the generic
+        // string unchanged, so the cross-check compares it literally.
+        assert_eq!(
+            control_arch("deb", "riscv64"),
+            "riscv64",
+            "an unmapped deb arch passes through unchanged"
+        );
+        assert_eq!(
+            control_arch("rpm", "riscv64"),
+            "riscv64",
+            "an unmapped rpm arch passes through unchanged"
+        );
+        assert_eq!(
+            control_arch("snap", "amd64"),
+            "amd64",
+            "an unknown format passes the generic arch through unchanged"
+        );
+    }
 }
