@@ -50,12 +50,17 @@ $ anodizer changelog
 
 ### Features
 
-- a1b2c3d feat: add config validation
+* a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 add config validation
 
 ### Bug Fixes
 
-- e4f5a6b fix: handle empty target list
+* e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3 handle empty target list
 ```
+
+By default each line is `* {{ SHA }} {{ Message }}` with the full hash — the
+conventional-commit `feat:` / `fix:` prefix is stripped into the group heading.
+Set `abbrev` to truncate the hash and `format` to reshape the line (see the
+[config fields](#changelog-config-fields) below).
 
 `--write` applies that regenerated `[Unreleased]` to the file in place. It
 preserves every released section and the compare-link footer — it rewrites
@@ -77,13 +82,15 @@ Redirect stdout to capture it:
 
 ```text
 $ anodizer changelog --format release-notes
-## Features
+## Changelog
 
-- add config validation (a1b2c3d)
+### Features
 
-## Bug Fixes
+* a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 add config validation
 
-- handle empty target list (e4f5a6b)
+### Bug Fixes
+
+* e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3 handle empty target list
 ```
 
 ```bash
@@ -150,8 +157,8 @@ Changelog generation works with no config — it collects all commits since the 
 |-------|------|---------|-------------|
 | `sort` | string | `asc` | Sort order: `asc` or `desc` |
 | `use` | string | `git` | Source: `git` (commit parsing), `github` (fetch commits via GitHub API), or `github-native` (GitHub's generated notes) |
-| `abbrev` | int | none | Truncate commit hashes to this length |
-| `disable` | bool | `false` | Disable changelog generation |
+| `abbrev` | int | `0` | Hash length: `0` = full SHA, `N` = truncate to N chars, `-1` = omit the hash |
+| `skip` | bool/template | `false` | Skip changelog generation (alias: `disable`) |
 | `header` | string | none | Text prepended to changelog |
 | `footer` | string | none | Text appended to changelog |
 | `filters.exclude` | list | none | Regex patterns to exclude commits |

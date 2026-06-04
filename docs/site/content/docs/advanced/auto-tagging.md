@@ -94,11 +94,11 @@ old_tag=v0.1.0
 
 ### Features
 
-- a1b2c3d feat: add config validation
+* a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 add config validation
 
 ### Bug Fixes
 
-- e4f5a6b fix: handle empty target list
+* e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3 handle empty target list
 
 ## [0.1.0] - 2026-05-12
 ...
