@@ -34,6 +34,263 @@ fn value_to_string(v: &Value) -> Cow<'_, str> {
     }
 }
 
+/// Render a single Go/C-style `printf` value in its default (`%v`) form.
+///
+/// Strings render verbatim, numbers/bools render via their JSON scalar form,
+/// null renders empty, and arrays/objects fall back to their JSON text.
+fn printf_default(v: &Value) -> String {
+    value_to_string(v).into_owned()
+}
+
+/// A parsed `printf` conversion: optional flags, width, precision, and verb.
+struct PrintfSpec {
+    minus: bool,
+    plus: bool,
+    space: bool,
+    zero: bool,
+    hash: bool,
+    width: Option<usize>,
+    precision: Option<usize>,
+    verb: char,
+}
+
+/// Apply width padding (respecting the `-` left-align and `0` zero-pad flags)
+/// to an already-formatted body. Zero-padding is skipped for left-aligned
+/// output (matching C/Go) and when a sign/prefix must stay leftmost.
+fn pad(spec: &PrintfSpec, body: String, numeric_sign_prefix: Option<(&str, &str)>) -> String {
+    let (sign, prefix, core) = match numeric_sign_prefix {
+        Some((sign, prefix)) => (sign, prefix, body.as_str()),
+        None => ("", "", body.as_str()),
+    };
+    let assembled = format!("{}{}{}", sign, prefix, core);
+    let Some(width) = spec.width else {
+        return assembled;
+    };
+    let len = assembled.chars().count();
+    if len >= width {
+        return assembled;
+    }
+    let padding = width - len;
+    if spec.minus {
+        format!("{}{}", assembled, " ".repeat(padding))
+    } else if spec.zero && numeric_sign_prefix.is_some() {
+        // Zero-pad after the sign/prefix so `%+04d` of 7 → `+007`.
+        format!("{}{}{}{}", sign, prefix, "0".repeat(padding), core)
+    } else if spec.zero {
+        format!("{}{}", "0".repeat(padding), assembled)
+    } else {
+        format!("{}{}", " ".repeat(padding), assembled)
+    }
+}
+
+/// Compute the sign string for a signed numeric conversion given the value's
+/// sign and the active `+`/space flags.
+fn numeric_sign(negative: bool, plus: bool, space: bool) -> &'static str {
+    if negative {
+        "-"
+    } else if plus {
+        "+"
+    } else if space {
+        " "
+    } else {
+        ""
+    }
+}
+
+/// Format one `printf` verb against a value, returning a `tera::Error` for any
+/// verb outside the supported bounded subset.
+///
+/// Supported verbs: `%s %d %v %x %X %o %b %c %q %f %e %g %t %%`, with flags
+/// `- + 0 (space) #`, width, and precision.
+fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera::Error> {
+    let val = || -> Result<&Value, tera::Error> {
+        value
+            .ok_or_else(|| tera::Error::msg(format!("printf: missing argument for %{}", spec.verb)))
+    };
+    match spec.verb {
+        's' => {
+            let mut s = printf_default(val()?);
+            if let Some(prec) = spec.precision {
+                s = s.chars().take(prec).collect();
+            }
+            Ok(pad(spec, s, None))
+        }
+        'v' => Ok(pad(spec, printf_default(val()?), None)),
+        't' => {
+            let b = val()?
+                .as_bool()
+                .ok_or_else(|| tera::Error::msg("printf: %t expects a boolean argument"))?;
+            Ok(pad(spec, b.to_string(), None))
+        }
+        'q' => {
+            let s = printf_default(val()?);
+            Ok(pad(spec, format!("{:?}", s), None))
+        }
+        'c' => {
+            let v = val()?;
+            let code = v
+                .as_u64()
+                .ok_or_else(|| tera::Error::msg("printf: %c expects a non-negative integer"))?;
+            let ch = u32::try_from(code)
+                .ok()
+                .and_then(char::from_u32)
+                .ok_or_else(|| {
+                    tera::Error::msg(format!("printf: %c: {} is not a valid code point", code))
+                })?;
+            Ok(pad(spec, ch.to_string(), None))
+        }
+        'd' => {
+            let n = val()?
+                .as_i64()
+                .ok_or_else(|| tera::Error::msg("printf: %d expects an integer argument"))?;
+            let sign = numeric_sign(n < 0, spec.plus, spec.space);
+            Ok(pad(spec, n.unsigned_abs().to_string(), Some((sign, ""))))
+        }
+        'b' | 'o' | 'x' | 'X' => {
+            let n = val()?.as_i64().ok_or_else(|| {
+                tera::Error::msg(format!(
+                    "printf: %{} expects an integer argument",
+                    spec.verb
+                ))
+            })?;
+            let mag = n.unsigned_abs();
+            let body = match spec.verb {
+                'b' => format!("{:b}", mag),
+                'o' => format!("{:o}", mag),
+                'x' => format!("{:x}", mag),
+                'X' => format!("{:X}", mag),
+                _ => unreachable!(),
+            };
+            let sign = numeric_sign(n < 0, spec.plus, spec.space);
+            let prefix = if spec.hash {
+                match spec.verb {
+                    'b' => "0b",
+                    'o' => "0",
+                    'x' => "0x",
+                    'X' => "0X",
+                    _ => "",
+                }
+            } else {
+                ""
+            };
+            Ok(pad(spec, body, Some((sign, prefix))))
+        }
+        'f' | 'e' | 'g' => {
+            let f = val()?.as_f64().ok_or_else(|| {
+                tera::Error::msg(format!("printf: %{} expects a numeric argument", spec.verb))
+            })?;
+            let prec = spec.precision.unwrap_or(6);
+            let mag = f.abs();
+            let body = match spec.verb {
+                'f' => format!("{:.*}", prec, mag),
+                'e' => format!("{:.*e}", prec, mag),
+                // %g uses Rust's shortest representation; precision is advisory.
+                'g' => match spec.precision {
+                    Some(p) => format!("{:.*}", p, mag),
+                    None => format!("{}", mag),
+                },
+                _ => unreachable!(),
+            };
+            let sign = numeric_sign(f.is_sign_negative() && f != 0.0, spec.plus, spec.space);
+            Ok(pad(spec, body, Some((sign, ""))))
+        }
+        other => Err(tera::Error::msg(format!(
+            "printf: unsupported verb %{} (supported: s d v x X o b c q f e g t %%)",
+            other
+        ))),
+    }
+}
+
+/// Render a Go/C-style `printf` format string against its argument list.
+///
+/// Implements a bounded verb subset (`%s %d %v %x %X %o %b %c %q %f %e %g %t
+/// %%`) with the `- + 0 (space) #` flags plus width and precision. Returns a
+/// `tera::Error` on an unsupported verb or a malformed conversion rather than
+/// panicking or emitting silently-wrong output.
+fn sprintf(format: &str, args: &[Value]) -> Result<String, tera::Error> {
+    let mut out = String::new();
+    let mut arg_idx = 0usize;
+    let mut chars = format.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        // Literal `%%`.
+        if chars.peek() == Some(&'%') {
+            chars.next();
+            out.push('%');
+            continue;
+        }
+
+        let mut spec = PrintfSpec {
+            minus: false,
+            plus: false,
+            space: false,
+            zero: false,
+            hash: false,
+            width: None,
+            precision: None,
+            verb: ' ',
+        };
+
+        // Flags.
+        while let Some(&f) = chars.peek() {
+            match f {
+                '-' => spec.minus = true,
+                '+' => spec.plus = true,
+                ' ' => spec.space = true,
+                '0' => spec.zero = true,
+                '#' => spec.hash = true,
+                _ => break,
+            }
+            chars.next();
+        }
+
+        // Width.
+        let mut width_digits = String::new();
+        while let Some(&d) = chars.peek() {
+            if d.is_ascii_digit() {
+                width_digits.push(d);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if !width_digits.is_empty() {
+            spec.width = width_digits.parse().ok();
+        }
+
+        // Precision.
+        if chars.peek() == Some(&'.') {
+            chars.next();
+            let mut prec_digits = String::new();
+            while let Some(&d) = chars.peek() {
+                if d.is_ascii_digit() {
+                    prec_digits.push(d);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            spec.precision = Some(prec_digits.parse().unwrap_or(0));
+        }
+
+        let verb = chars
+            .next()
+            .ok_or_else(|| tera::Error::msg("printf: format string ends with a dangling '%'"))?;
+        spec.verb = verb;
+
+        let value = args.get(arg_idx);
+        out.push_str(&format_verb(&spec, value)?);
+        // `%%` is the only verb that consumes no argument; it returned early above.
+        arg_idx += 1;
+    }
+
+    Ok(out)
+}
+
 /// Translate a Go time format layout string to a chrono strftime format string.
 ///
 /// Go uses a reference date (Mon Jan 2 15:04:05 MST 2006) as the layout template.
@@ -1217,6 +1474,97 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     };
     tera.register_filter("in", in_filter);
     tera.register_filter("contains_any", in_filter);
+
+    // --- Go `slice` builtin ---
+    // slice(start=, end=) — substring of a string (char-boundary safe) or
+    // sub-slice of an array. Go semantics: end-exclusive, so
+    // `slice(s, 0, 7)` yields the first 7 chars. Out-of-range bounds clamp
+    // rather than panic. Tera's native `slice` does not cover the Go 2/3-arg
+    // string form, so this filter overrides it for compat.
+    tera.register_filter("slice", |value: &Value, args: &HashMap<String, Value>| {
+        // `start` is required; `end` defaults to the collection length.
+        let start = args
+            .get("start")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| tera::Error::msg("slice requires a `start` argument (integer)"))?;
+        let end = args.get("end").and_then(|v| v.as_i64());
+
+        match value {
+            Value::String(s) => {
+                let chars: Vec<char> = s.chars().collect();
+                let len = chars.len() as i64;
+                // Negative indices count from the end (Go disallows this, but
+                // clamping keeps the lib path panic-free for stray input).
+                let lo = start.clamp(0, len) as usize;
+                let hi = end.unwrap_or(len).clamp(lo as i64, len) as usize;
+                Ok(Value::String(chars[lo..hi].iter().collect()))
+            }
+            Value::Array(arr) => {
+                let len = arr.len() as i64;
+                let lo = start.clamp(0, len) as usize;
+                let hi = end.unwrap_or(len).clamp(lo as i64, len) as usize;
+                Ok(Value::Array(arr[lo..hi].to_vec()))
+            }
+            other => Err(tera::Error::msg(format!(
+                "slice: expected a string or array, got {}",
+                other
+            ))),
+        }
+    });
+
+    // --- Go `printf` builtin ---
+    // printf(format="%04d", args=[Patch]) — formats args per a bounded Go/C
+    // verb subset. Unsupported verbs return a clear error (never silent-wrong).
+    tera.register_function(
+        "printf",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let format = args
+                .get("format")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("printf requires a `format` argument"))?;
+            let fmt_args: Vec<Value> = args
+                .get("args")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            Ok(Value::String(sprintf(format, &fmt_args)?))
+        },
+    );
+
+    // --- Go `print` / `println` builtins ---
+    // print(args=[a, b]) concatenates the args' default string forms.
+    // println(args=[a, b]) joins them with single spaces and appends a newline.
+    // Go's Sprint adds spaces only between non-string operands; a predictable
+    // plain concatenation is used here (documented, tested) for `print`.
+    tera.register_function(
+        "print",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let fmt_args: Vec<Value> = args
+                .get("args")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let joined: String = fmt_args.iter().map(printf_default).collect();
+            Ok(Value::String(joined))
+        },
+    );
+    tera.register_function(
+        "println",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let fmt_args: Vec<Value> = args
+                .get("args")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut joined = fmt_args
+                .iter()
+                .map(printf_default)
+                .collect::<Vec<_>>()
+                .join(" ");
+            joined.push('\n');
+            Ok(Value::String(joined))
+        },
+    );
 
     tera
 });

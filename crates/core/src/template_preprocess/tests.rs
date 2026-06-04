@@ -815,3 +815,80 @@ fn test_go_style_full_pipeline_eq_and_map() {
         "{% set m = map(pairs=[\"a\", \"1\"]) %}{% if (index m \"a\") == \"1\" %}yes{% endif %}"
     );
 }
+
+#[test]
+fn test_preprocess_positional_time() {
+    let input = "{{ time \"2006-01-02\" }}";
+    let result = preprocess(input);
+    assert_eq!(result, "{{ time(format=\"2006-01-02\") }}");
+}
+
+#[test]
+fn test_preprocess_slice_three_args() {
+    let input = "{{ slice Commit 0 7 }}";
+    let result = preprocess(input);
+    assert_eq!(result, "{{ Commit | slice(start=0, end=7) }}");
+}
+
+#[test]
+fn test_preprocess_slice_two_args() {
+    let input = "{{ slice Commit 0 }}";
+    let result = preprocess(input);
+    assert_eq!(result, "{{ Commit | slice(start=0) }}");
+}
+
+#[test]
+fn test_preprocess_slice_string_literal() {
+    let input = "{{ slice \"abcdefghij\" 0 7 }}";
+    let result = preprocess(input);
+    assert_eq!(result, "{{ \"abcdefghij\" | slice(start=0, end=7) }}");
+}
+
+#[test]
+fn test_preprocess_slice_named_unchanged() {
+    let input = "{{ Commit | slice(start=0, end=7) }}";
+    let result = preprocess(input);
+    assert_eq!(result, input);
+}
+
+#[test]
+fn test_preprocess_printf_variadic() {
+    let input = "{{ printf \"%04d\" Patch }}";
+    let result = preprocess(input);
+    assert_eq!(result, "{{ printf(format=\"%04d\", args=[Patch]) }}");
+}
+
+#[test]
+fn test_preprocess_printf_multiple_args() {
+    let input = "{{ printf \"%s-%d\" Os Patch }}";
+    let result = preprocess(input);
+    assert_eq!(result, "{{ printf(format=\"%s-%d\", args=[Os, Patch]) }}");
+}
+
+#[test]
+fn test_preprocess_printf_no_args() {
+    let input = "{{ printf \"literal\" }}";
+    let result = preprocess(input);
+    assert_eq!(result, "{{ printf(format=\"literal\", args=[]) }}");
+}
+
+#[test]
+fn test_preprocess_print() {
+    let input = "{{ print \"a\" \"b\" }}";
+    let result = preprocess(input);
+    assert_eq!(result, "{{ print(args=[\"a\", \"b\"]) }}");
+}
+
+#[test]
+fn test_preprocess_println() {
+    let input = "{{ println \"x\" }}";
+    let result = preprocess(input);
+    assert_eq!(result, "{{ println(args=[\"x\"]) }}");
+}
+
+#[test]
+fn test_preprocess_printf_named_unchanged() {
+    let input = "{{ printf(format=\"%d\", args=[Patch]) }}";
+    let result = preprocess(input);
+    assert_eq!(result, input);
+}

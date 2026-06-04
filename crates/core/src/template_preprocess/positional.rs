@@ -105,6 +105,19 @@ pub(super) fn preprocess_positional_syntax(template: &str) -> String {
                 return block.to_string();
             }
 
+            // `slice item start [end]` rewrites to the piped filter form
+            // `item | slice(start=…[, end=…])` because Go's `slice` operates
+            // on the first arg (the item), which maps onto Tera's filter input.
+            if let Some(rewritten) = try_rewrite_slice(&tokens) {
+                return format!("{}{}{}", open, rewritten, close);
+            }
+
+            // `printf "fmt" a b …`, `print a b …`, `println a b …` collect
+            // their trailing positional args into an `args=[…]` array.
+            if let Some(rewritten) = try_rewrite_printf_like(&tokens) {
+                return format!("{}{}{}", open, rewritten, close);
+            }
+
             // Try standalone form: `funcname arg1 arg2 [arg3]`
             if let Some(rewritten) = try_rewrite_standalone(&tokens) {
                 return format!("{}{}{}", open, rewritten, close);
@@ -196,11 +209,132 @@ static POSITIONAL_FUNCTIONS: &[PositionalSyntax] = &[
         standalone_params: &["collection", "key"],
         piped_params: &["key"],
     },
+    // Pasted GoReleaser `{{ time "2006-01-02" }}` is positional; the `time`
+    // function takes a named `format=` arg, so rewrite arity-1 to that.
+    PositionalSyntax {
+        name: "time",
+        arity: 1,
+        standalone_params: &["format"],
+        piped_params: &[],
+    },
 ];
 
 /// Look up a function name in the positional syntax table.
 fn lookup_positional(name: &str) -> Option<&'static PositionalSyntax> {
     POSITIONAL_FUNCTIONS.iter().find(|p| p.name == name)
+}
+
+/// Extract the leading and trailing whitespace tokens of a block so the
+/// rewrite preserves the original spacing (and Tera whitespace-control).
+fn block_whitespace(tokens: &[Token]) -> (&str, &str) {
+    let leading = tokens
+        .first()
+        .and_then(|t| match t {
+            Token::Space(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .unwrap_or("");
+    let trailing = tokens
+        .last()
+        .and_then(|t| match t {
+            Token::Space(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .unwrap_or("");
+    (leading, trailing)
+}
+
+/// Rewrite Go `slice item start [end]` to the Tera filter form
+/// `item | slice(start=…[, end=…])`.
+///
+/// Unlike the table-driven rewrites, `slice`'s first positional arg is the
+/// item being sliced, which maps onto Tera's pipe input — so the standalone
+/// Go call becomes a piped filter rather than a function call. Accepts 2 or 3
+/// positional args (`slice X 0` = start only; `slice X 0 7` = start + end).
+fn try_rewrite_slice(tokens: &[Token]) -> Option<String> {
+    let sig = significant_tokens(tokens);
+
+    // Already named-arg syntax or already piped — leave it alone.
+    if sig
+        .iter()
+        .any(|t| matches!(t, Token::Other(s) if s == "(") || matches!(t, Token::Pipe))
+    {
+        return None;
+    }
+
+    if !matches!(sig.first(), Some(Token::Ident(name)) if name == "slice") {
+        return None;
+    }
+
+    // sig is `[slice, item, start]` (arity 2) or `[slice, item, start, end]` (arity 3).
+    if sig.len() != 3 && sig.len() != 4 {
+        return None;
+    }
+
+    let item = format_arg_value(sig[1])?;
+    let start = format_arg_value(sig[2])?;
+    let params = if sig.len() == 4 {
+        let end = format_arg_value(sig[3])?;
+        format!("start={}, end={}", start, end)
+    } else {
+        format!("start={}", start)
+    };
+
+    let (leading, trailing) = block_whitespace(tokens);
+    Some(format!(
+        "{}{} | slice({}){}",
+        leading, item, params, trailing
+    ))
+}
+
+/// Rewrite Go `printf "fmt" a b …`, `print a b …`, and `println a b …` to the
+/// named-arg forms `printf(format="fmt", args=[a, b, …])` /
+/// `print(args=[a, b, …])` / `println(args=[a, b, …])`.
+///
+/// These builtins are variadic, so trailing positional args collect into an
+/// `args` array (mirroring the `map(pairs=[…])` rewrite).
+fn try_rewrite_printf_like(tokens: &[Token]) -> Option<String> {
+    let sig = significant_tokens(tokens);
+
+    // Already named-arg syntax or piped — leave it alone.
+    if sig
+        .iter()
+        .any(|t| matches!(t, Token::Other(s) if s == "(") || matches!(t, Token::Pipe))
+    {
+        return None;
+    }
+
+    let func_name = match sig.first() {
+        Some(Token::Ident(name)) => name.as_str(),
+        _ => return None,
+    };
+    if !matches!(func_name, "printf" | "print" | "println") {
+        return None;
+    }
+
+    // `printf` consumes its first arg as the format string; `print`/`println`
+    // treat every arg as a value to concatenate.
+    let rest = &sig[1..];
+    let (format_part, value_tokens) = if func_name == "printf" {
+        let fmt = rest.first()?;
+        (Some(format_arg_value(fmt)?), &rest[1..])
+    } else {
+        (None, rest)
+    };
+
+    let values: Vec<String> = value_tokens
+        .iter()
+        .map(|t| format_arg_value(t))
+        .collect::<Option<Vec<_>>>()?;
+    let args_literal = format!("args=[{}]", values.join(", "));
+
+    let params = match format_part {
+        Some(fmt) => format!("format={}, {}", fmt, args_literal),
+        None => args_literal,
+    };
+
+    let (leading, trailing) = block_whitespace(tokens);
+    Some(format!("{}{}({}){}", leading, func_name, params, trailing))
 }
 
 /// Try to rewrite standalone positional form:

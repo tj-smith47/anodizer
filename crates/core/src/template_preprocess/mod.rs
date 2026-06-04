@@ -5,11 +5,15 @@
 //   `(list "a" "b" "c")` → `["a", "b", "c"]`
 //   `(list .Os "windows")` → (after dot-strip) `[Os, "windows"]`
 // Pass 3 (`preprocess_positional_syntax`): converts positional function calls to named-arg syntax
-//   for `replace`, `split`, `contains`, `in`, and `reReplaceAll`:
+//   for `replace`, `split`, `contains`, `in`, `reReplaceAll`, `time`, `slice`,
+//   `printf`, `print`, and `println`:
 //   `{{ replace Version "v" "" }}` → `{{ replace(s=Version, old="v", new="") }}`
 //   `{{ Version | replace "v" "" }}` → `{{ Version | replace(from="v", to="") }}`
 //   `{{ in (list "a" "b") "a" }}` → `{{ in(items=["a", "b"], value="a") }}`
 //   `{{ reReplaceAll "v" Tag "" }}` → `{{ reReplaceAll(pattern="v", input=Tag, replacement="") }}`
+//   `{{ time "2006-01-02" }}` → `{{ time(format="2006-01-02") }}`
+//   `{{ slice Commit 0 7 }}` → `{{ Commit | slice(start=0, end=7) }}`
+//   `{{ printf "%04d" Patch }}` → `{{ printf(format="%04d", args=[Patch]) }}`
 
 use regex::Regex;
 use std::sync::LazyLock;

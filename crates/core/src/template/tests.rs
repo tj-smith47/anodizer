@@ -2228,3 +2228,237 @@ fn test_render_ppc64_and_riscv64_empty_after_clear() {
     let out = render("[{{ .Ppc64 }}|{{ .Riscv64 }}]", &vars).unwrap();
     assert_eq!(out, "[|]");
 }
+
+#[test]
+fn throwaway_doc_example_evidence() {
+    let mut vars = test_vars();
+    vars.set("IsSnapshot", "false");
+    vars.set("Prerelease", "rc.1");
+    vars.set_env("CI", "true");
+
+    // New Tera-native forms.
+    println!(
+        "not IsSnapshot => {:?}",
+        render("{{ not IsSnapshot }}", &vars)
+    );
+    println!(
+        "Prerelease != \"\" => {:?}",
+        render("{{ .Prerelease != \"\" }}", &vars)
+    );
+    println!(
+        "Env.CI != \"\" => {:?}",
+        render("{{ .Env.CI != \"\" }}", &vars)
+    );
+    println!(
+        "Env.CI == \"\" => {:?}",
+        render("{{ .Env.CI == \"\" }}", &vars)
+    );
+
+    // Old Go-style function forms (should error).
+    println!(
+        "OLD ne .Prerelease => {:?}",
+        render("{{ ne .Prerelease \"\" }}", &vars)
+    );
+    println!(
+        "OLD eq .Env.CI => {:?}",
+        render("{{ eq .Env.CI \"\" }}", &vars)
+    );
+    println!(
+        "OLD ne .Env.CI => {:?}",
+        render("{{ ne .Env.CI \"\" }}", &vars)
+    );
+}
+
+// --- Go `slice` / `printf` / `print` / `println` builtins ---
+
+#[test]
+fn test_slice_string_end_exclusive() {
+    let vars = test_vars();
+    // Go slice(s, 0, 7) is end-exclusive → first 7 chars "abcdefg".
+    let result = render("{{ slice \"abcdefghij\" 0 7 }}", &vars).unwrap();
+    assert_eq!(result, "abcdefg");
+}
+
+#[test]
+fn test_slice_start_only() {
+    let vars = test_vars();
+    let result = render("{{ slice \"abcdefghij\" 3 }}", &vars).unwrap();
+    assert_eq!(result, "defghij");
+}
+
+#[test]
+fn test_slice_short_commit() {
+    let vars = test_vars();
+    // ShortCommit = "abc1234" (7 chars); slice 0 4 → "abc1".
+    let result = render("{{ slice .ShortCommit 0 4 }}", &vars).unwrap();
+    assert_eq!(result, "abc1");
+}
+
+#[test]
+fn test_slice_out_of_range_clamps() {
+    let vars = test_vars();
+    // end beyond length clamps to the full string (no panic).
+    let result = render("{{ slice \"hi\" 0 100 }}", &vars).unwrap();
+    assert_eq!(result, "hi");
+}
+
+#[test]
+fn test_slice_char_boundary_safe() {
+    let mut vars = test_vars();
+    // `é` (U+00E9) is two UTF-8 bytes; slicing 0..2 must yield two *chars*
+    // ("hé"), not split a byte. Feed via a structured var to keep the source
+    // file ASCII-only.
+    let word = format!("h{}llo", '\u{00E9}');
+    vars.set_structured("Word", Value::String(word));
+    let result = render("{{ slice Word 0 2 }}", &vars).unwrap();
+    assert_eq!(result, format!("h{}", '\u{00E9}'));
+}
+
+#[test]
+fn test_slice_piped_form() {
+    let vars = test_vars();
+    let result = render("{{ \"abcdef\" | slice(start=1, end=4) }}", &vars).unwrap();
+    assert_eq!(result, "bcd");
+}
+
+#[test]
+fn test_printf_zero_pad() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%04d\" 7 }}", &vars).unwrap();
+    assert_eq!(result, "0007");
+}
+
+#[test]
+fn test_printf_left_align_string() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%-5s|\" \"hi\" }}", &vars).unwrap();
+    assert_eq!(result, "hi   |");
+}
+
+#[test]
+fn test_printf_float_precision() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%.2f\" 3.14159 }}", &vars).unwrap();
+    assert_eq!(result, "3.14");
+}
+
+#[test]
+fn test_printf_plus_sign() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%+d\" 7 }}", &vars).unwrap();
+    assert_eq!(result, "+7");
+}
+
+#[test]
+fn test_printf_negative_int() {
+    let mut vars = test_vars();
+    // A bare `-7` literal can't survive Tera's expression parser (it parses as
+    // subtraction), so feed the negative value through a structured var.
+    vars.set_structured("Neg", Value::Number((-7i64).into()));
+    let result = render("{{ printf \"%05d\" Neg }}", &vars).unwrap();
+    assert_eq!(result, "-0007");
+}
+
+#[test]
+fn test_printf_hex() {
+    let vars = test_vars();
+    assert_eq!(render("{{ printf \"%x\" 255 }}", &vars).unwrap(), "ff");
+    assert_eq!(render("{{ printf \"%X\" 255 }}", &vars).unwrap(), "FF");
+    assert_eq!(render("{{ printf \"%#x\" 255 }}", &vars).unwrap(), "0xff");
+}
+
+#[test]
+fn test_printf_octal_binary() {
+    let vars = test_vars();
+    assert_eq!(render("{{ printf \"%o\" 8 }}", &vars).unwrap(), "10");
+    assert_eq!(render("{{ printf \"%b\" 5 }}", &vars).unwrap(), "101");
+}
+
+#[test]
+fn test_printf_string_and_v() {
+    let vars = test_vars();
+    assert_eq!(render("{{ printf \"%s\" \"hi\" }}", &vars).unwrap(), "hi");
+    assert_eq!(render("{{ printf \"%v\" 42 }}", &vars).unwrap(), "42");
+}
+
+#[test]
+fn test_printf_quote_verb() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%q\" \"hi\" }}", &vars).unwrap();
+    assert_eq!(result, "\"hi\"");
+}
+
+#[test]
+fn test_printf_bool_verb() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%t\" true }}", &vars).unwrap();
+    assert_eq!(result, "true");
+}
+
+#[test]
+fn test_printf_char_verb() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%c\" 65 }}", &vars).unwrap();
+    assert_eq!(result, "A");
+}
+
+#[test]
+fn test_printf_exp_verb() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%.2e\" 12345.678 }}", &vars).unwrap();
+    assert_eq!(result, "1.23e4");
+}
+
+#[test]
+fn test_printf_percent_literal() {
+    let vars = test_vars();
+    let result = render("{{ printf \"100%%\" }}", &vars).unwrap();
+    assert_eq!(result, "100%");
+}
+
+#[test]
+fn test_printf_multiple_args() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%s-%04d\" \"v\" 7 }}", &vars).unwrap();
+    assert_eq!(result, "v-0007");
+}
+
+#[test]
+fn test_printf_unsupported_verb_errors() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%y\" 1 }}", &vars);
+    assert!(result.is_err());
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(msg.contains("unsupported verb"), "got: {}", msg);
+}
+
+#[test]
+fn test_print_concatenates() {
+    let vars = test_vars();
+    let result = render("{{ print \"a\" \"b\" }}", &vars).unwrap();
+    assert_eq!(result, "ab");
+}
+
+#[test]
+fn test_println_joins_with_space_and_newline() {
+    let vars = test_vars();
+    let result = render("{{ println \"x\" \"y\" }}", &vars).unwrap();
+    assert_eq!(result, "x y\n");
+}
+
+#[test]
+fn test_println_single_arg() {
+    let vars = test_vars();
+    let result = render("{{ println \"x\" }}", &vars).unwrap();
+    assert_eq!(result, "x\n");
+}
+
+#[test]
+fn test_time_positional_renders_date() {
+    let vars = test_vars();
+    // Pasted GoReleaser positional form must parse and render a date.
+    let result = render("{{ time \"2006-01-02\" }}", &vars).unwrap();
+    // Format yields YYYY-MM-DD; assert the shape rather than a fixed value.
+    assert_eq!(result.len(), 10, "got: {}", result);
+    assert_eq!(result.matches('-').count(), 2, "got: {}", result);
+}
