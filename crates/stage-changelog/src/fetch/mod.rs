@@ -68,7 +68,7 @@ pub(crate) fn fetch_git_commits_in(
         "log.showSignature=false".into(),
         "log".into(),
         "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".into(),
-        range,
+        range.clone(),
     ];
     if let Some(p) = path_filter {
         args.push("--".into());
@@ -79,12 +79,31 @@ pub(crate) fn fetch_git_commits_in(
         .output()
         .with_context(|| "failed to invoke git log".to_string())?;
     if !out.status.success() {
-        // A missing tag or empty range yields a non-zero exit on some git
-        // versions. Treat as "no commits" rather than propagating an error.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // A typo'd or nonexistent `from`/`to` ref must surface as an error
+        // rather than a silently-empty changelog: git names it an
+        // unknown/ambiguous revision. Any other non-zero exit (e.g. an empty
+        // range on git versions that exit non-zero for that) is still treated
+        // as "no commits".
+        if is_bad_revision(&stderr) {
+            anyhow::bail!("git log failed for range {:?}: {}", range, stderr.trim());
+        }
         return Ok(Vec::new());
     }
     let text = String::from_utf8_lossy(&out.stdout);
     Ok(parse_git_log_records(&text))
+}
+
+/// Whether git's stderr names an unknown/ambiguous revision — the signature of
+/// a typo'd or nonexistent `from`/`to` ref, as opposed to a genuinely empty
+/// commit range. Matched case-insensitively against the phrases git emits
+/// across versions.
+fn is_bad_revision(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("unknown revision")
+        || lower.contains("ambiguous argument")
+        || lower.contains("bad revision")
+        || lower.contains("fatal: ambiguous")
 }
 
 pub(crate) fn parse_git_log_records(text: &str) -> Vec<anodizer_core::git::Commit> {

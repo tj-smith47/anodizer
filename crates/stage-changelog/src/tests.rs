@@ -3889,6 +3889,45 @@ mod refresh_unreleased_tests {
     }
 
     #[test]
+    fn refresh_preserves_fenced_code_block_double_blank_verbatim() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: brand new");
+
+        // A released section whose body holds a fenced code block with an
+        // intentional double-blank line inside the fence. The fence interior
+        // must survive a refresh byte-for-byte (blank-collapsing is
+        // fence-aware).
+        let fenced = "## [v0.1.0] - 2026-01-01\n\
+### Notes\n\
+- example usage:\n\n\
+```text\n\
+line one\n\
+\n\
+\n\
+line two\n\
+```\n";
+        let existing = format!(
+            "# Changelog\n\n## [Unreleased]\n\n{fenced}\n\
+[Unreleased]: https://github.com/o/r/compare/v0.1.0...HEAD\n"
+        );
+        std::fs::write(root.join("CHANGELOG.md"), &existing).unwrap();
+
+        let update = refresh_crate_unreleased(root, "mylib", root, None, None)
+            .expect("ok")
+            .expect("some update");
+        let out = &update.rendered_text;
+        assert!(
+            out.contains("line one\n\n\nline two"),
+            "double-blank inside the fence must be preserved verbatim, got:\n{out}"
+        );
+        // The whole fenced section survives intact.
+        assert!(out.contains(fenced.trim_end()));
+    }
+
+    #[test]
     fn refresh_multitrack_root_updates_only_target_subsection() {
         let tmp = init_repo();
         let root = tmp.path();
@@ -4072,6 +4111,25 @@ mod refresh_unreleased_tests {
         assert!(
             !out.contains("excluded after bound"),
             "commits after to_ref must be excluded, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn nonexistent_to_ref_yields_err_not_silent_empty() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: a real commit");
+
+        // A typo'd upper bound must surface as an error rather than a
+        // silently-empty changelog.
+        let result = refresh_crate_unreleased(root, "mylib", root, None, Some("nope-not-a-ref"));
+        let err = result.expect_err("nonexistent to_ref must be an error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("nope-not-a-ref") || msg.to_lowercase().contains("revision"),
+            "error should name the offending ref / revision, got: {msg}"
         );
     }
 

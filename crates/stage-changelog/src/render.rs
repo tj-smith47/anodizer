@@ -943,8 +943,10 @@ fn replace_crate_subsection_body(existing: &str, crate_name: &str, body: &str) -
                     break;
                 }
             }
-            // Head through the subsection heading.
+            // Head through the subsection heading, then a blank line before the
+            // body — matching the flat path and the append branch.
             out.extend(lines[..=start].iter().map(|s| s.to_string()));
+            out.push(String::new());
             if !body.is_empty() {
                 out.extend(body.lines().map(|s| s.to_string()));
             }
@@ -972,27 +974,56 @@ fn replace_crate_subsection_body(existing: &str, crate_name: &str, body: &str) -
     finish(out, trailing_newline)
 }
 
-/// Join rebuilt lines, collapsing 3+ consecutive blank lines to a single blank
-/// and restoring the file's original trailing-newline state. Keeps refresh
-/// output idempotent regardless of how many blank lines the splice produced.
+/// Whether `line` toggles a fenced code block: a ```` ``` ```` or `~~~` fence
+/// (allowing indentation and a trailing info string). Used to keep blank-line
+/// collapsing from touching the interior of a preserved code fence.
+fn is_code_fence(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("```") || t.starts_with("~~~")
+}
+
+/// Join rebuilt lines, collapsing runs of 2+ consecutive blank lines to a
+/// single blank and restoring the file's original trailing-newline state.
+/// Keeps refresh output idempotent regardless of how many blank lines the
+/// splice produced.
+///
+/// Blank-collapsing is FENCE-AWARE: blank lines inside a fenced code block
+/// (```` ``` ````/`~~~`) are passed through untouched, so intentional spacing
+/// inside a preserved released section's code fence survives a refresh
+/// byte-for-byte.
 fn finish(lines: Vec<String>, trailing_newline: bool) -> String {
     let mut collapsed: Vec<String> = Vec::with_capacity(lines.len());
     let mut blanks = 0usize;
+    let mut in_fence = false;
     for line in lines {
-        if line.trim().is_empty() {
+        if is_code_fence(&line) {
+            in_fence = !in_fence;
+            blanks = 0;
+            collapsed.push(line);
+            continue;
+        }
+        if !in_fence && line.trim().is_empty() {
             blanks += 1;
             if blanks >= 2 {
                 continue;
             }
             collapsed.push(String::new());
         } else {
-            blanks = 0;
+            // Interior fence content (including blank lines) is preserved
+            // verbatim; only out-of-fence blanks reset/advance the run counter.
+            if !line.trim().is_empty() {
+                blanks = 0;
+            }
             collapsed.push(line);
         }
     }
-    // Drop any trailing blank lines; the newline state is applied below.
-    while collapsed.last().is_some_and(|l| l.trim().is_empty()) {
-        collapsed.pop();
+    // Drop any trailing blank lines; the newline state is applied below. A
+    // trailing blank inside an unterminated fence is preserved (the fence
+    // interior is verbatim), so only collapse when not mid-fence.
+    if !in_fence {
+        while collapsed.last().is_some_and(|l| l.trim().is_empty()) {
+            collapsed.pop();
+        }
     }
     let mut result = collapsed.join("\n");
     if trailing_newline {
