@@ -113,9 +113,16 @@ $ anodizer changelog --format release-notes
 ```
 
 ```bash
-anodizer changelog --format release-notes > NOTES.md   # capture to a file
-anodizer changelog v1.2.0 --format release-notes        # body for one release
+anodizer changelog --format release-notes > NOTES.md            # capture to a file
+anodizer changelog v1.2.0 --format release-notes                # body for one release
+anodizer changelog --snapshot --format release-notes            # preview the pending window pre-tag
 ```
+
+To preview the pending window *before* the release is tagged — when HEAD is
+ahead of the last release tag — pass `--snapshot`. Without it, release-notes
+requires HEAD to point at a tag and errors otherwise. The snapshot preview is
+bounded at the last release tag (the same since-last-release window as
+`keep-a-changelog` and `json`), not full history.
 
 ### `--format json` — structured array to stdout
 
