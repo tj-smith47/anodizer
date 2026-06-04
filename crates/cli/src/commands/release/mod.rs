@@ -656,8 +656,10 @@ fn resolve_selected_crates(
         } else {
             // The release command does not discover a workspace root; its change
             // detection has always run with crate paths resolved against the cwd.
-            // Pass the cwd explicitly so this stays byte-identical (root-aware
-            // release discovery is out of scope here).
+            // Pass the cwd explicitly so behavior is preserved in the normal case
+            // (root-aware release discovery is out of scope here). A failed
+            // current_dir now propagates rather than silently resolving pathspecs
+            // against `.` — strictly more correct than the prior cwd_or_dot fallback.
             let cwd = std::env::current_dir()?;
             detect_changed_crates(
                 &cwd,

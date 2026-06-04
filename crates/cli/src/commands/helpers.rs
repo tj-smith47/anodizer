@@ -1333,7 +1333,7 @@ pub(crate) fn discover_workspace_root(config_override: Option<&Path>) -> Result<
     }
     for ancestor in cwd.ancestors() {
         if ancestor.join("Cargo.toml").is_file() {
-            return Ok(ancestor.to_path_buf());
+            return Ok(absolutize(ancestor));
         }
     }
     anyhow::bail!("no Cargo.toml found from {}", cwd.display());
