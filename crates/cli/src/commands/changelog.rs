@@ -203,7 +203,9 @@ fn predecessor_tag(workspace_root: &Path, prefix: &str, tag: &str) -> Result<Opt
 /// honoring `--crate` and a single-tag crate pin.
 ///
 /// Each entry is `(crate_name, crate_dir, tag_prefix)`. For lockstep the sole
-/// entry is the workspace root aggregate (prefix `v`).
+/// entry is the workspace root aggregate, prefixed by the resolved
+/// `tag.tag_prefix` (default `v`) — identical to how `tag`/`bump` bound the
+/// lockstep range.
 fn select_crates(
     workspace_root: &Path,
     config: &Config,
@@ -213,10 +215,22 @@ fn select_crates(
     let prefix_for = |c: &anodizer_core::config::CrateConfig| -> String {
         git::extract_tag_prefix(&c.tag_template).unwrap_or_else(|| format!("{}-v", c.name))
     };
+    // The global tag prefix that `tag`/`bump` apply to the lockstep / single
+    // unit: the configured `tag.tag_prefix`, defaulting to `v`. Resolving it
+    // here keeps the lockstep refresh range aligned with the tags `tag`
+    // actually creates (e.g. `release-v0.1.0`); a hardcoded `v` would miss them
+    // and silently degrade the range to full history.
+    let global_prefix = config
+        .tag
+        .as_ref()
+        .and_then(|t| t.tag_prefix.clone())
+        .unwrap_or_else(|| "v".to_string());
     let entries: Vec<(String, PathBuf, String)> = match detect_repo_shape(Some(config), workspace) {
         RepoShape::Single => {
-            // The sole crate (or a config-less single crate): one root-prefixed
-            // target at its directory (workspace root when no crate is defined).
+            // The sole crate (or a config-less single crate): one
+            // global-prefixed target at its directory (workspace root when no
+            // crate is defined). A crate's own `tag_template` still wins when
+            // it sets one; otherwise it inherits the global prefix.
             let c = config.crates.first().or_else(|| {
                 config
                     .workspaces
@@ -230,21 +244,23 @@ fn select_crates(
                 Some(c) => vec![(
                     c.name.clone(),
                     workspace_root.join(&c.path),
-                    git::extract_tag_prefix(&c.tag_template).unwrap_or_else(|| "v".to_string()),
+                    git::extract_tag_prefix(&c.tag_template)
+                        .unwrap_or_else(|| global_prefix.clone()),
                 )],
                 None => vec![(
                     config.project_name.clone(),
                     workspace_root.to_path_buf(),
-                    "v".to_string(),
+                    global_prefix.clone(),
                 )],
             }
         }
         RepoShape::Lockstep => {
-            // One aggregate target at the workspace root, shared `v` prefix.
+            // One aggregate target at the workspace root, using the resolved
+            // global `tag.tag_prefix`.
             vec![(
                 config.project_name.clone(),
                 workspace_root.to_path_buf(),
-                "v".to_string(),
+                global_prefix.clone(),
             )]
         }
         RepoShape::PerCrate(groups) => groups

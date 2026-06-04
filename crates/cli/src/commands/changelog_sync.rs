@@ -328,9 +328,18 @@ pub(crate) fn extract_unreleased_section(rendered: &str) -> String {
     if !found {
         return rendered.trim_end().to_string();
     }
-    // Collect until the next `## ` heading or the compare-link footer.
+    // Collect until the next `## ` heading or a footer reference-definition
+    // (`[label]: url`). Match the link-definition shape — `[` + a
+    // space-free, non-empty label + `]:` — rather than any `[`-leading line,
+    // so a body bullet that renders to a markdown link (`- [#42](...) fix`) or
+    // a bracketed commit subject (`* [ci] bump`) is NOT mistaken for the
+    // footer and silently truncated.
     for line in lines {
-        if line.starts_with("## ") || line.starts_with("[Unreleased]:") || line.starts_with("[") {
+        let is_ref_def = line.starts_with('[')
+            && line
+                .split_once("]:")
+                .is_some_and(|(label, _)| !label.is_empty() && !label.contains(' '));
+        if line.starts_with("## ") || is_ref_def {
             break;
         }
         section.push(line);
@@ -363,6 +372,25 @@ mod tests {
         let file = "# Changelog\n\nsome free text\n";
         let section = extract_unreleased_section(file);
         assert_eq!(section, "# Changelog\n\nsome free text");
+    }
+
+    /// A body bullet whose rendered text starts with `[` (a markdown-link
+    /// bullet) must NOT be mistaken for the compare-link footer and truncate
+    /// the preview early. Only a `[label]: url` reference-definition (or the
+    /// next `## ` heading) ends the section.
+    #[test]
+    fn extract_unreleased_keeps_bracketed_bullets() {
+        let file = "# Changelog\n\n## [Unreleased]\n\n### Fixes\n\n- [#42](https://x/42) fix the thing\n- later bullet\n\n[Unreleased]: http://x/compare\n";
+        let section = extract_unreleased_section(file);
+        assert!(
+            section.contains("#42"),
+            "bracketed-link bullet dropped: {section}"
+        );
+        assert!(
+            section.contains("later bullet"),
+            "entries after the bracketed bullet dropped: {section}"
+        );
+        assert!(!section.contains("compare"), "footer leaked: {section}");
     }
 
     #[test]

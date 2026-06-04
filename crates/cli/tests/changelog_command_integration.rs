@@ -224,6 +224,57 @@ fn lockstep_write_refreshes_root_changelog() {
     );
 }
 
+/// A lockstep repo whose `tag.tag_prefix` is `release-v` tags releases
+/// `release-v0.1.0`. The refresh must bound the range from THAT tag — not a
+/// hardcoded `v*` that misses it and degrades to full history (the recurring
+/// 3-mode prefix-drift bug). Asserts only the post-tag commit appears.
+#[test]
+fn lockstep_honors_custom_tag_prefix_for_range() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/core/src")).unwrap();
+    fs::write(
+        root.join("crates/core/Cargo.toml"),
+        "[package]\nname = \"core\"\nversion.workspace = true\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/core/src/lib.rs"), "").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: lockstep\nchangelog: {}\ntag:\n  tag_prefix: \"release-v\"\n",
+    )
+    .unwrap();
+    git_init(root);
+    // A commit + the custom-prefixed tag, then a post-tag commit. Only the
+    // post-tag commit may appear in the refreshed [Unreleased] range.
+    fs::write(root.join("crates/core/src/lib.rs"), "// pre-tag\n").unwrap();
+    git_add_commit(root, "feat: before the release tag");
+    run_git(root, &["tag", "release-v0.1.0"]);
+    fs::write(root.join("crates/core/src/lib.rs"), "// post-tag\n").unwrap();
+    git_add_commit(root, "feat: after the release tag");
+
+    let r = changelog(root, &["-q", "--write"]);
+    assert!(
+        r.success,
+        "lockstep custom-prefix write failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    let cl = read(root, "CHANGELOG.md");
+    assert!(
+        cl.contains("after the release tag"),
+        "post-tag commit missing: {cl}"
+    );
+    assert!(
+        !cl.contains("before the release tag"),
+        "range degraded to full history — pre-tag commit leaked (prefix \"release-v\" was ignored): {cl}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Mode 3: workspace per-crate
 // ---------------------------------------------------------------------------
