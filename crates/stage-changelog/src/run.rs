@@ -643,6 +643,7 @@ fn fetch_crate_commits(
     prev_tag: &Option<String>,
     scope: &anodizer_core::changelog_scope::ChangelogScope,
     crate_name: &str,
+    workspace_root: &std::path::Path,
 ) -> Result<(Vec<CommitInfo>, String)> {
     let paths = scope.pathspecs();
     let use_github = use_source == "github";
@@ -669,7 +670,7 @@ fn fetch_crate_commits(
 
     if scm_no_prev_tag {
         return Ok((
-            fetch_git_commits_scoped(prev_tag, scope, crate_name, log)?,
+            fetch_git_commits_scoped(workspace_root, prev_tag, scope, crate_name, log)?,
             String::new(),
         ));
     }
@@ -685,7 +686,7 @@ fn fetch_crate_commits(
                     ),
                 )?;
                 return Ok((
-                    fetch_git_commits_scoped(prev_tag, scope, crate_name, log)?,
+                    fetch_git_commits_scoped(workspace_root, prev_tag, scope, crate_name, log)?,
                     String::new(),
                 ));
             }
@@ -703,7 +704,7 @@ fn fetch_crate_commits(
                     ),
                 )?;
                 return Ok((
-                    fetch_git_commits_scoped(prev_tag, scope, crate_name, log)?,
+                    fetch_git_commits_scoped(workspace_root, prev_tag, scope, crate_name, log)?,
                     String::new(),
                 ));
             }
@@ -721,14 +722,14 @@ fn fetch_crate_commits(
                     ),
                 )?;
                 return Ok((
-                    fetch_git_commits_scoped(prev_tag, scope, crate_name, log)?,
+                    fetch_git_commits_scoped(workspace_root, prev_tag, scope, crate_name, log)?,
                     String::new(),
                 ));
             }
         }
     }
     Ok((
-        fetch_git_commits_scoped(prev_tag, scope, crate_name, log)?,
+        fetch_git_commits_scoped(workspace_root, prev_tag, scope, crate_name, log)?,
         String::new(),
     ))
 }
@@ -742,6 +743,7 @@ fn fetch_crate_commits(
 /// fall outside `changelog.paths` — the exact intersection of the derived
 /// directory scope with the configured globs.
 fn fetch_git_commits_scoped(
+    workspace_root: &std::path::Path,
     prev_tag: &Option<String>,
     scope: &anodizer_core::changelog_scope::ChangelogScope,
     crate_name: &str,
@@ -751,7 +753,7 @@ fn fetch_git_commits_scoped(
     if scope.narrow.is_none() {
         return fetch_git_commits(prev_tag, paths, crate_name, log);
     }
-    crate::fetch::fetch_git_commits_narrowed(prev_tag, scope, crate_name, log)
+    crate::fetch::fetch_git_commits_narrowed(workspace_root, prev_tag, scope, crate_name, log)
 }
 
 /// Run the per-crate fetch → filter → sort → group → render pipeline
@@ -831,8 +833,15 @@ fn render_crate_changelog(
         );
     }
 
-    let (all_commit_infos, logins_str) =
-        fetch_crate_commits(ctx, log, use_source, &prev_tag, &scope, &crate_name)?;
+    let (all_commit_infos, logins_str) = fetch_crate_commits(
+        ctx,
+        log,
+        use_source,
+        &prev_tag,
+        &scope,
+        &crate_name,
+        &scope_root,
+    )?;
 
     // include and exclude are mutually exclusive:
     // if include patterns are configured, exclude is completely ignored.

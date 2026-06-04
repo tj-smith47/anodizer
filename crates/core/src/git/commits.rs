@@ -21,7 +21,12 @@ pub struct Commit {
 ///
 /// Uses ASCII record separator (0x1e) between commits and unit separator (0x1f)
 /// between fields, so multi-line body text doesn't break parsing.
-fn parse_commit_output(output: &str) -> Vec<Commit> {
+///
+/// The single record decoder for this wire format: every changelog path
+/// (`parse_commit_output_with_files` here, and the changelog stage's git
+/// fetch) decodes through this function so the body / author fields can never
+/// drift between call sites.
+pub fn parse_commit_output(output: &str) -> Vec<Commit> {
     if output.is_empty() {
         return vec![];
     }
@@ -173,7 +178,8 @@ pub struct CommitWithFiles {
 /// newlines, so the record runs from the first `\x1f`-bearing line through the
 /// end of the segment — NOT just the first matching line. Truncating to one
 /// line would drop body trailers (e.g. `Co-Authored-By:`) for every commit
-/// after the first, diverging from [`parse_git_log_records`]'s full-body parse.
+/// after the first, diverging from the full-body parse the changelog stage's
+/// `parse_git_log_records` performs.
 pub fn parse_commit_output_with_files(output: &str) -> Vec<CommitWithFiles> {
     if output.is_empty() {
         return vec![];

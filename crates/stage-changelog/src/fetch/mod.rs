@@ -154,29 +154,12 @@ fn is_bad_revision(stderr: &str) -> bool {
         || lower.contains("fatal: ambiguous")
 }
 
+/// Decode the `%H%x1f...%b%x1e` git-log wire format into [`Commit`]s by
+/// delegating to the single core record decoder
+/// (`anodizer_core::git::parse_commit_output`), so the body / author handling
+/// can never drift from the rest of the changelog pipeline.
 pub(crate) fn parse_git_log_records(text: &str) -> Vec<anodizer_core::git::Commit> {
-    use anodizer_core::git::Commit;
-    text.split('\x1e')
-        .map(|s| s.trim_matches(['\n', '\r']))
-        .filter(|s| !s.is_empty())
-        .filter_map(|record| {
-            let mut fields = record.split('\x1f');
-            let hash = fields.next()?.to_string();
-            let short_hash = fields.next()?.to_string();
-            let message = fields.next()?.to_string();
-            let author_name = fields.next()?.to_string();
-            let author_email = fields.next()?.to_string();
-            let body = fields.next().unwrap_or("").to_string();
-            Some(Commit {
-                hash,
-                short_hash,
-                message,
-                author_name,
-                author_email,
-                body,
-            })
-        })
-        .collect()
+    anodizer_core::git::parse_commit_output(text)
 }
 // ---------------------------------------------------------------------------
 // Helper: SCM pre-empt decision
@@ -211,17 +194,20 @@ pub(crate) fn should_preempt_scm_to_git(
 /// metadata-only path uses) and drops commits whose every touched file falls
 /// outside the configured `changelog.paths` globs. The result is the exact
 /// intersection of the derived directory scope with the glob filter.
+///
+/// `workspace_root` is the explicit repo root the fetch runs against — passed
+/// in rather than read from the process cwd so the narrowed path matches the
+/// engine-backed fetch and does not depend on implicit cwd.
 pub(crate) fn fetch_git_commits_narrowed(
+    workspace_root: &std::path::Path,
     prev_tag: &Option<String>,
     scope: &anodizer_core::changelog_scope::ChangelogScope,
     crate_name: &str,
     log: &StageLogger,
 ) -> Result<Vec<CommitInfo>> {
-    let cwd = std::env::current_dir()
-        .with_context(|| "changelog: resolve current dir for narrowed commit fetch".to_string())?;
     let paths = scope.pathspecs();
     let pairs = match prev_tag {
-        Some(tag) => get_commits_between_paths_with_files_in(&cwd, tag, "HEAD", paths)
+        Some(tag) => get_commits_between_paths_with_files_in(workspace_root, tag, "HEAD", paths)
             .with_context(|| {
                 format!(
                     "changelog: read git commits between {}..HEAD for crate '{}'",
@@ -233,7 +219,7 @@ pub(crate) fn fetch_git_commits_narrowed(
                 "no previous tag found for crate '{}', using all commits",
                 crate_name
             ));
-            get_all_commits_paths_with_files_in(&cwd, paths).with_context(|| {
+            get_all_commits_paths_with_files_in(workspace_root, paths).with_context(|| {
                 format!("changelog: read all git commits for crate '{}'", crate_name)
             })?
         }

@@ -2788,7 +2788,7 @@ fn run_changelog_release_notes(dir: &std::path::Path, range: &str) -> String {
 /// typo'd ref would ship a blank changelog.
 ///
 /// The default keep-a-changelog format drives `refresh_*_unreleased` →
-/// `fetch_git_commits_in`, whose `is_bad_revision` check bails naming the full
+/// `fetch_git_commits_in_paths`, whose `is_bad_revision` check bails naming the full
 /// `<from>..<to>` range. (The release-notes path validates only the range START
 /// up-front via `rev_verify_commit_in`; keep-a-changelog is used here because it
 /// surfaces the engine-level bad-ref error for either endpoint.)
