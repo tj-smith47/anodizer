@@ -894,3 +894,306 @@ fn release_notes_for_crate(root: &Path, crate_name: &str) -> String {
     );
     r.stdout
 }
+
+// ---------------------------------------------------------------------------
+// Same-prefix shared-root collapse: N crates all on `v{{ Version }}` routing to
+// one shared root CHANGELOG.md are a SINGLE flat lockstep aggregate, not N
+// multi-track `### <crate>` subsections.
+// ---------------------------------------------------------------------------
+
+/// A flat `crates:` workspace whose members ALL share `tag_template:
+/// "v{{ Version }}"` and route to one shared root (no `per_crate`/`root`
+/// config), with a curated flat `## [Unreleased]`, a `v0.1.0` tag, and post-tag
+/// commits. The curated `### <Heading>` titles deliberately do NOT match the
+/// configured `groups:` — the exact shape that tripped the multi-track
+/// heuristic and grafted a spurious `### <crate>` subsection.
+fn same_prefix_shared_root_repo() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (name, ver) in [("core", "0.1.0"), ("cli", "0.1.0")] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: aggregate
+changelog:
+  groups:
+    - title: Features
+      regexp: "^feat"
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "v{{ .Version }}"
+  - name: cli
+    path: crates/cli
+    tag_template: "v{{ .Version }}"
+"#,
+    )
+    .unwrap();
+    // Curated flat [Unreleased] whose H3 titles (`### Docs`, `### Fixes`) are NOT
+    // configured group titles — the multi-track-misread trap.
+    fs::write(
+        root.join("CHANGELOG.md"),
+        "# Changelog\n\n## [Unreleased]\n\n### Docs\n\n- hand-written prose\n\n### Fixes\n\n- curated fix note\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/core/src/lib.rs"), "// core\n").unwrap();
+    git_add_commit(root, "feat: aggregate change in core");
+    fs::write(root.join("crates/cli/src/lib.rs"), "// cli\n").unwrap();
+    git_add_commit(root, "feat: aggregate change in cli");
+    tmp
+}
+
+#[test]
+fn same_prefix_shared_root_collapses_to_one_flat_unreleased() {
+    let tmp = same_prefix_shared_root_repo();
+    let root = tmp.path();
+    let r = changelog(root, &["-q"]);
+    assert!(r.success, "preview failed: {}\n{}", r.stdout, r.stderr);
+
+    // ONE flat [Unreleased] section, no `--- <path> ---` per-crate separators.
+    assert_eq!(
+        r.stdout.matches("## [Unreleased]").count(),
+        1,
+        "expected exactly one [Unreleased] section: {}",
+        r.stdout
+    );
+    assert!(
+        !r.stdout.contains("---"),
+        "flat aggregate must not emit per-crate separators: {}",
+        r.stdout
+    );
+    // No `### <crate>` graft for either member.
+    assert!(
+        !r.stdout.contains("### core") && !r.stdout.contains("### cli"),
+        "flat aggregate must not graft a `### <crate>` subsection: {}",
+        r.stdout
+    );
+    // The regenerated body reflects BOTH members' post-tag commits (whole-repo).
+    assert!(
+        r.stdout.contains("aggregate change in core")
+            && r.stdout.contains("aggregate change in cli"),
+        "regenerated flat body must aggregate every member's commits: {}",
+        r.stdout
+    );
+}
+
+#[test]
+fn same_prefix_shared_root_write_is_flat() {
+    let tmp = same_prefix_shared_root_repo();
+    let root = tmp.path();
+    let r = changelog(root, &["-q", "--write"]);
+    assert!(r.success, "write failed: {}\n{}", r.stdout, r.stderr);
+    let cl = read(root, "CHANGELOG.md");
+    assert_eq!(
+        cl.matches("## [Unreleased]").count(),
+        1,
+        "written file must keep a single [Unreleased]: {cl}"
+    );
+    assert!(
+        !cl.contains("### core") && !cl.contains("### cli"),
+        "written file must not graft a `### <crate>` subsection: {cl}"
+    );
+    assert!(
+        cl.contains("aggregate change in core") && cl.contains("aggregate change in cli"),
+        "written flat body must aggregate every member's commits: {cl}"
+    );
+    // No per-crate files for a shared-root aggregate.
+    assert!(
+        !root.join("crates/core/CHANGELOG.md").exists()
+            && !root.join("crates/cli/CHANGELOG.md").exists(),
+        "flat aggregate must not write per-crate files"
+    );
+}
+
+/// Contrast: a workspace with DISTINCT tag prefixes (`core-v*` + `cli-v*`)
+/// curating a multi-track root must STILL refresh each crate's own
+/// `### <crate>` subsection — the collapse must not regress genuine multi-track.
+#[test]
+fn distinct_prefix_multitrack_keeps_crate_subsections() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (name, ver) in [("core", "0.1.0"), ("cli", "0.2.0")] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: multitrack
+changelog:
+  groups:
+    - title: Features
+      regexp: "^feat"
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "core-v{{ .Version }}"
+  - name: cli
+    path: crates/cli
+    tag_template: "cli-v{{ .Version }}"
+"#,
+    )
+    .unwrap();
+    // Curated multi-track root: a `### core` + `### cli` subsection each.
+    fs::write(
+        root.join("CHANGELOG.md"),
+        "# Changelog\n\n## [Unreleased]\n\n### core\n\n- old core note\n\n### cli\n\n- old cli note\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "core-v0.1.0"]);
+    run_git(root, &["tag", "cli-v0.2.0"]);
+    fs::write(root.join("crates/core/src/lib.rs"), "// core\n").unwrap();
+    git_add_commit(root, "feat: distinct core change");
+    fs::write(root.join("crates/cli/src/lib.rs"), "// cli\n").unwrap();
+    git_add_commit(root, "feat: distinct cli change");
+
+    let r = changelog(root, &["-q", "--write"]);
+    assert!(
+        r.success,
+        "multitrack write failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    let cl = read(root, "CHANGELOG.md");
+    // Both crate subsections survive; each regenerated from its own track.
+    assert!(
+        cl.contains("### core") && cl.contains("### cli"),
+        "genuine multi-track must keep both `### <crate>` subsections: {cl}"
+    );
+    assert!(
+        cl.contains("distinct core change"),
+        "core subsection must regenerate from core's commits: {cl}"
+    );
+    assert!(
+        cl.contains("distinct cli change"),
+        "cli subsection must regenerate from cli's commits: {cl}"
+    );
+}
+
+/// The comprehensive dogfood regression mirroring anodizer's own
+/// `.anodizer.yaml`: N crates all on `v{{ Version }}`, a `changelog:` block with
+/// a commit `format` carrying `{{ .SHA }}` / `{{ .Message }}` /
+/// `{{ .AuthorUsername }}` + groups, a shared root, a curated flat
+/// `## [Unreleased]` whose H3 titles diverge from the configured groups, a `v*`
+/// tag, and post-tag commits. The combined output must be CLEAN:
+///   (a) ONE flat [Unreleased], no `### <crate>` graft;
+///   (b) single `* ` bullets, no `* *`;
+///   (c) authors render as NAMES, no empty `()`;
+///   (d) generated bullets reflect the since-tag commits.
+#[test]
+fn dogfood_flat_aggregate_render_is_clean() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\", \"crates/api\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for name in ["core", "cli", "api"] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.5.0\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: dogfood
+changelog:
+  use: github-native
+  format: "* {{ .SHA }} {{ .Message }} ({{ .AuthorUsername }})"
+  abbrev: 12
+  groups:
+    - title: Features
+      regexp: "^feat"
+      order: 0
+    - title: Bug Fixes
+      regexp: "^fix"
+      order: 1
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "v{{ .Version }}"
+  - name: cli
+    path: crates/cli
+    tag_template: "v{{ .Version }}"
+  - name: api
+    path: crates/api
+    tag_template: "v{{ .Version }}"
+"#,
+    )
+    .unwrap();
+    // Curated flat [Unreleased] whose H3 titles diverge from the groups.
+    fs::write(
+        root.join("CHANGELOG.md"),
+        "# Changelog\n\n## [Unreleased]\n\n### CI / Workflows\n\n- curated CI note\n\n### Docs\n\n- curated docs note\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.5.0"]);
+    fs::write(root.join("crates/core/src/lib.rs"), "// core\n").unwrap();
+    git_add_commit(root, "feat: dogfood core capability");
+    fs::write(root.join("crates/cli/src/lib.rs"), "// cli\n").unwrap();
+    git_add_commit(root, "fix: dogfood cli bug");
+
+    // Default format (keep-a-changelog). github-native falls back to `git`
+    // locally (no GitHub login), so author names come from the local commits.
+    let r = changelog(root, &["-q"]);
+    assert!(
+        r.success,
+        "dogfood preview failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    let out = &r.stdout;
+
+    // (a) one flat [Unreleased], no `### <crate>` graft.
+    assert_eq!(
+        out.matches("## [Unreleased]").count(),
+        1,
+        "expected one flat [Unreleased]: {out}"
+    );
+    for c in ["### core", "### cli", "### api"] {
+        assert!(!out.contains(c), "spurious `{c}` graft: {out}");
+    }
+    // (b) no `* *` double bullets.
+    assert!(!out.contains("* *"), "double bullet emitted: {out}");
+    // (c) author renders as a NAME, no empty `()`.
+    assert!(
+        out.contains("(Test)"),
+        "author must render as the committer name: {out}"
+    );
+    assert!(!out.contains("()"), "empty author parens emitted: {out}");
+    // (d) generated bullets reflect the since-tag commits.
+    assert!(
+        out.contains("dogfood core capability") && out.contains("dogfood cli bug"),
+        "regenerated body must reflect since-tag commits: {out}"
+    );
+}

@@ -773,8 +773,25 @@ pub fn refresh_crate_unreleased(
 /// - FLAT root (no crate subsections): behave exactly like
 ///   [`refresh_crate_unreleased`].
 ///
+/// `single_track` forces the FLAT path regardless of the existing file's shape:
+/// when the caller has resolved that N crates share one tag prefix and route to
+/// one shared root (a lockstep aggregate), the whole `[Unreleased]` is one flat
+/// body. Without this, a curated body whose `### <Heading>` titles don't match
+/// the configured `groups:` would be misread as multi-track and grafted with a
+/// spurious `### <crate>` subsection.
+///
+/// `existing_override` supplies the current file text instead of reading disk.
+/// Multiple crates whose `### <crate>` subsections live in ONE shared root must
+/// refresh sequentially: each reads the PREVIOUS crate's result, not the stale
+/// on-disk copy, so every subsection is updated rather than only the first.
+/// `None` reads `<workspace_root>/CHANGELOG.md` as before.
+///
 /// Returns `Ok(None)` under the same "nothing to do" conditions as
 /// [`refresh_crate_unreleased`]. Idempotent for a fixed commit set.
+// The render/refresh contract pairs a long but flat parameter list (root paths,
+// commit range, ordering, the two routing booleans, the override) with no
+// natural grouping; a params struct here would only relocate the breadth.
+#[allow(clippy::too_many_arguments)]
 pub fn refresh_root_unreleased(
     workspace_root: &std::path::Path,
     crate_name: &str,
@@ -782,6 +799,8 @@ pub fn refresh_root_unreleased(
     from_tag: Option<&str>,
     to_ref: Option<&str>,
     chronology: anodizer_core::config::Chronology,
+    single_track: bool,
+    existing_override: Option<&str>,
 ) -> Result<Option<ChangelogUpdate>> {
     // `chronology` is accepted for signature symmetry with
     // `render_root_section`; refreshing the `[Unreleased]` block never slots a
@@ -794,7 +813,10 @@ pub fn refresh_root_unreleased(
     }
 
     let file_path = workspace_root.join("CHANGELOG.md");
-    let existing = read_existing(&file_path)?;
+    let existing = match existing_override {
+        Some(text) => Some(text.to_string()),
+        None => read_existing(&file_path)?,
+    };
 
     let group_titles: Vec<String> = load_changelog_config(workspace_root)?
         .and_then(|c| c.groups)
@@ -803,9 +825,10 @@ pub fn refresh_root_unreleased(
         .map(|g| g.title.clone())
         .collect();
 
-    let multitrack = existing
-        .as_deref()
-        .is_some_and(|e| has_crate_subsections(e, &group_titles));
+    let multitrack = !single_track
+        && existing
+            .as_deref()
+            .is_some_and(|e| has_crate_subsections(e, &group_titles));
 
     let merged = if multitrack {
         // `existing` is `Some` here: `has_crate_subsections` returned true.
@@ -1148,8 +1171,20 @@ pub fn render_crate_section(
 /// existing released sections (`Date`: newest-on-top; `Tag`: clustered by
 /// tag-prefix, semver-descending within a cluster).
 ///
+/// `single_track` forces the flat roll regardless of the existing file's shape:
+/// when the caller has resolved that the selected crates share one tag prefix
+/// and route to one shared root (a lockstep aggregate), the section is one flat
+/// whole-release block. Without this, a curated `[Unreleased]` whose
+/// `### <Heading>` titles don't match the configured `groups:` would be misread
+/// as multi-track and the release would strand under a spurious subsection
+/// promote instead of a clean flat `## [<tag>]` section.
+///
 /// Returns `Ok(None)` when there is nothing to release for this track: no
 /// `changelog:` config / no commits AND no curated `### <crate>` subsection.
+// Flat parameter list (root paths, range, version + tag, ordering, the
+// single-track routing flag) with no natural grouping; a params struct would
+// only relocate the breadth.
+#[allow(clippy::too_many_arguments)]
 pub fn render_root_section(
     workspace_root: &std::path::Path,
     crate_name: &str,
@@ -1158,6 +1193,7 @@ pub fn render_root_section(
     to_version: &str,
     tag: &str,
     chronology: anodizer_core::config::Chronology,
+    single_track: bool,
 ) -> Result<Option<ChangelogUpdate>> {
     let rendered = render_section_body(workspace_root, crate_path, from_tag, None)?;
     // Reuse the config already parsed by `render_section_body`. Only re-load on
@@ -1210,9 +1246,10 @@ pub fn render_root_section(
         .with_context(|| format!("failed to read {}", file_path.display()))?;
 
     // Degenerate root (no `### <crate>` subsections under `[Unreleased]`, or no
-    // `[Unreleased]` at all): delegate to the existing flat roll / splice so a
-    // single-track root behaves exactly as `render_crate_section` would.
-    if !has_crate_subsections(&existing, &group_titles) {
+    // `[Unreleased]` at all), or a caller-asserted single-track aggregate:
+    // delegate to the existing flat roll / splice so a single-track root behaves
+    // exactly as `render_crate_section` would.
+    if single_track || !has_crate_subsections(&existing, &group_titles) {
         let Some((_cfg, body)) = rendered else {
             return Ok(None);
         };
@@ -2858,6 +2895,7 @@ mod root_section_tests {
             "0.7.0",
             "v0.7.0",
             Chronology::Date,
+            false,
         )
         .expect("render_root_section succeeds")
         .expect("commits present → an update is produced");
@@ -2923,6 +2961,7 @@ mod root_section_tests {
             "0.7.0",
             "v0.7.0",
             Chronology::Date,
+            false,
         )
         .expect("render_root_section succeeds")
         .expect("curated flat Unreleased → an update is produced");
@@ -2980,6 +3019,7 @@ mod root_section_tests {
             "0.7.0",
             "v0.7.0",
             Chronology::Date,
+            false,
         )
         .expect("render_root_section succeeds")
         .expect("curated ### cfgd subsection → an update is produced");

@@ -4107,10 +4107,18 @@ line two\n\
 [Unreleased]: https://github.com/o/r/compare/v0.2.0...HEAD\n";
         std::fs::write(root.join("CHANGELOG.md"), existing).unwrap();
 
-        let update =
-            refresh_root_unreleased(root, "cfgd", &crate_dir, None, None, Chronology::Date)
-                .expect("ok")
-                .expect("some update");
+        let update = refresh_root_unreleased(
+            root,
+            "cfgd",
+            &crate_dir,
+            None,
+            None,
+            Chronology::Date,
+            false,
+            None,
+        )
+        .expect("ok")
+        .expect("some update");
         let out = &update.rendered_text;
         assert!(
             !out.contains("old cfgd entry"),
@@ -4140,10 +4148,18 @@ line two\n\
         )
         .unwrap();
 
-        let root_update =
-            refresh_root_unreleased(root, "mylib", root, None, None, Chronology::Date)
-                .expect("ok")
-                .expect("some update");
+        let root_update = refresh_root_unreleased(
+            root,
+            "mylib",
+            root,
+            None,
+            None,
+            Chronology::Date,
+            true,
+            None,
+        )
+        .expect("ok")
+        .expect("some update");
         let crate_update = refresh_crate_unreleased(root, "mylib", root, None, None)
             .expect("ok")
             .expect("some update");

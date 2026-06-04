@@ -919,6 +919,7 @@ fn apply_workspace_bump(
         per_crate: true,
         chronology: cl.routing.chronology,
         root_crates: cl.routing.root_crates,
+        single_track: false,
     };
 
     let root_aggregate_target: Vec<ChangelogTarget> = if cl.enabled && cl.routing.root_enabled {
@@ -945,6 +946,11 @@ fn apply_workspace_bump(
         // must not gate it; filtering on the arbitrary first-member name would
         // silently drop the entire lockstep root changelog.
         root_crates: None,
+        // One shared workspace tag over all members: the root holds one flat
+        // whole-release block. Force the flat roll so a curated `[Unreleased]`
+        // whose `### <Heading>` titles diverge from the configured `groups:`
+        // is not misread as multi-track and grafted with a `### <crate>`.
+        single_track: true,
     };
 
     if dry_run {
@@ -1353,7 +1359,7 @@ fn run_per_crate_tag(
     // One changelog target per bumped crate across all groups, each rendered
     // from its OWN group's previous tag to ITS new version. Empty when the
     // refresh is disabled.
-    let changelog_targets = if controls.changelog_enabled {
+    let mut changelog_targets = if controls.changelog_enabled {
         plan_changelog_targets(&cwd, &tag_results)
     } else {
         Vec::new()
@@ -1361,7 +1367,25 @@ fn run_per_crate_tag(
     // Per-crate(multi-track) targets already carry distinct correct tags, so a
     // single routed call covers both destinations (no aggregate split needed).
     let cl_config = changelog_config_for(anodizer_config);
-    let changelog_routing = ChangelogRouting::from_config(&cl_config);
+    let mut changelog_routing = ChangelogRouting::from_config(&cl_config);
+
+    // Collapse same-prefix shared-root targets to ONE flat aggregate. A flat
+    // `crates:` list whose members all share one tag track (e.g.
+    // `tag_template: "v{{ .Version }}"`) bumps to N identically-prefixed tags;
+    // routed to one shared root they are a single lockstep release, not N
+    // multi-track subsections. Promoting each member's section under the same
+    // `## [v<X.Y.Z>]` heading would strand every member after the first and
+    // graft spurious `### <crate>` subsections — the same bug the `changelog`
+    // command collapses. Distinct prefixes or per-crate files are left as-is.
+    if collapse_targets_to_flat_aggregate(
+        &mut changelog_targets,
+        &cwd,
+        anodizer_config,
+        changelog_routing.root_enabled,
+        changelog_routing.per_crate,
+    ) {
+        changelog_routing.single_track = true;
+    }
 
     if !opts.dry_run {
         // Apply version bumps across all changed crates in a single commit.
@@ -2003,6 +2027,70 @@ fn plan_changelog_targets(
         }
     }
     targets
+}
+
+/// Collapse `targets` in place to ONE flat whole-workspace aggregate when the
+/// per-crate targets are actually a single lockstep track: shared-root-only
+/// routing (`root_enabled && !per_crate`) AND every target's tag shares one
+/// prefix. Returns `true` when collapsed (the caller then sets the routing's
+/// `single_track`), `false` otherwise (genuine multi-track / per-crate files /
+/// nothing to collapse — `targets` left untouched).
+///
+/// The aggregate spans the workspace (`crate_dir = workspace_root`), keyed by
+/// `project_name`, with the shared `from_tag` / `full_tag` every member already
+/// carries (identical across a lockstep set).
+fn collapse_targets_to_flat_aggregate(
+    targets: &mut Vec<ChangelogTarget>,
+    workspace_root: &Path,
+    config: Option<&anodizer_core::config::Config>,
+    root_enabled: bool,
+    per_crate: bool,
+) -> bool {
+    if targets.len() <= 1 {
+        return false;
+    }
+    let Some(config) = config else {
+        return false;
+    };
+    // Resolve each configured crate's tag prefix from its `tag_template` (the
+    // same source `changelog`'s `select_crates` uses). Concrete `full_tag`s
+    // (e.g. `v0.6.0`) carry no template, so the template is the reliable prefix
+    // source. The bumped `targets` are a subset of these crates, so a uniform
+    // configured prefix implies a uniform target prefix.
+    let prefixes: Vec<String> = config
+        .crates
+        .iter()
+        .chain(
+            config
+                .workspaces
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .flat_map(|w| &w.crates),
+        )
+        .map(|c| {
+            git::extract_tag_prefix(&c.tag_template).unwrap_or_else(|| format!("{}-v", c.name))
+        })
+        .collect();
+    if !crate::commands::changelog_sync::is_flat_aggregate(&prefixes, root_enabled, per_crate) {
+        return false;
+    }
+    let project_name = config.project_name.clone();
+    // Every member shares one tag in a lockstep set; take the first's range
+    // bounds for the whole-release aggregate.
+    let first = match targets.first() {
+        Some(t) => t,
+        None => return false,
+    };
+    let aggregate = ChangelogTarget {
+        crate_name: project_name,
+        crate_dir: workspace_root.to_path_buf(),
+        from_tag: first.from_tag.clone(),
+        to_version: first.to_version.clone(),
+        full_tag: first.full_tag.clone(),
+    };
+    *targets = vec![aggregate];
+    true
 }
 
 /// Apply a bump to semver components. Returns (major, minor, patch).

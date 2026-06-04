@@ -187,12 +187,52 @@ fn commit_plan(
         });
     }
     let empty_changelog_config = anodizer_core::config::ChangelogConfig::default();
-    let routing = crate::commands::changelog_sync::ChangelogRouting::from_config(
+    let mut routing = crate::commands::changelog_sync::ChangelogRouting::from_config(
         changelog_config
             .as_ref()
             .and_then(|c| c.changelog.as_ref())
             .unwrap_or(&empty_changelog_config),
     );
+
+    // Collapse same-prefix shared-root targets to ONE flat aggregate (mirroring
+    // `tag --changelog` and the `changelog` command): a flat `crates:` list
+    // sharing one tag track and routing to one shared root is a single lockstep
+    // release, not N multi-track subsections. Promoting each member under the
+    // same `## [v<X.Y.Z>]` heading would strand every member after the first and
+    // graft spurious `### <crate>` subsections.
+    if changelog_enabled
+        && changelog_targets.len() > 1
+        && let Some(cfg) = changelog_config.as_ref()
+    {
+        // Each `full_tag` is `<prefix><version>`; stripping the known version
+        // suffix yields the prefix to compare across members (the concrete tag
+        // carries no template for `extract_tag_prefix`).
+        let prefixes: Vec<String> = changelog_targets
+            .iter()
+            .map(|t| {
+                t.full_tag
+                    .strip_suffix(&t.to_version)
+                    .unwrap_or(&t.full_tag)
+                    .to_string()
+            })
+            .collect();
+        if crate::commands::changelog_sync::is_flat_aggregate(
+            &prefixes,
+            routing.root_enabled,
+            routing.per_crate,
+        ) && let Some(first) = changelog_targets.first().cloned()
+        {
+            changelog_targets = vec![crate::commands::changelog_sync::ChangelogTarget {
+                crate_name: cfg.project_name.clone(),
+                crate_dir: workspace_root.to_path_buf(),
+                from_tag: first.from_tag,
+                to_version: first.to_version,
+                full_tag: first.full_tag,
+            }];
+            routing.single_track = true;
+        }
+    }
+
     let changelog_paths = crate::commands::changelog_sync::render_and_stage_changelogs(
         workspace_root,
         &changelog_targets,

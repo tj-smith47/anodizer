@@ -44,6 +44,7 @@ pub(crate) fn resolve_changelog_enabled(config: Option<&Config>, opt_in: bool) -
 }
 
 /// One crate whose `CHANGELOG.md` should be rendered for `to_version`.
+#[derive(Clone)]
 pub(crate) struct ChangelogTarget {
     /// Crate name as it appears in `Cargo.toml` (`package.name`).
     pub crate_name: String,
@@ -72,10 +73,19 @@ pub(crate) struct ChangelogRouting<'a> {
     pub chronology: anodizer_core::config::Chronology,
     /// Crates that contribute a root section: `None` = every crate.
     pub root_crates: Option<&'a [String]>,
+    /// The shared root holds one flat whole-release `[Unreleased]` block rather
+    /// than N `### <crate>` subsections. Set when the selected crates all share
+    /// one tag prefix and route to one root file (a lockstep aggregate), so the
+    /// root renderer takes the flat path regardless of the existing file's
+    /// `### <Heading>` shape.
+    pub single_track: bool,
 }
 
 impl<'a> ChangelogRouting<'a> {
     /// Build a routing descriptor from a resolved `changelog:` config.
+    ///
+    /// `single_track` defaults to `false`; callers that have resolved a
+    /// same-prefix shared-root aggregate set it via [`Self::single_track`].
     pub fn from_config(cfg: &'a ChangelogConfig) -> Self {
         let dest = cfg.resolved_destination();
         Self {
@@ -83,8 +93,29 @@ impl<'a> ChangelogRouting<'a> {
             per_crate: dest.per_crate,
             chronology: cfg.resolved_chronology(),
             root_crates: cfg.root_crates_filter(),
+            single_track: false,
         }
     }
+}
+
+/// Whether N crates routed to one shared root form a single flat changelog
+/// track (a lockstep aggregate) rather than N multi-track `### <crate>`
+/// subsections.
+///
+/// True only when the routing is shared-root-only (`root_enabled && !per_crate`
+/// — no per-crate files) AND every selected crate resolves to the SAME tag
+/// prefix. Distinct prefixes (genuine multi-track, e.g. `core-v*` + `v*`) or a
+/// `per_crate: true` routing keep the per-crate / multi-track behaviour.
+///
+/// An empty or single-prefix set is trivially same-prefix; the routing gate is
+/// what actually distinguishes a flat aggregate from per-crate output.
+pub(crate) fn is_flat_aggregate(prefixes: &[String], root_enabled: bool, per_crate: bool) -> bool {
+    if !root_enabled || per_crate {
+        return false;
+    }
+    prefixes
+        .first()
+        .is_none_or(|first| prefixes.iter().all(|p| p == first))
 }
 
 /// Whether a crate contributes a section to the shared root changelog.
@@ -132,6 +163,7 @@ pub(crate) fn render_and_stage_changelogs(
                 &t.to_version,
                 &t.full_tag,
                 routing.chronology,
+                routing.single_track,
             )
             .with_context(|| format!("failed to render root changelog for {}", t.crate_name))?;
             persist_update(workspace_root, t, update, dry_run, log, &mut written)?;
@@ -230,8 +262,15 @@ pub(crate) struct RefreshOutput {
 /// (parent dirs created) and the repo-relative path is logged. When `write` is
 /// `false` nothing touches disk; the caller renders the returned
 /// [`RefreshOutput`]s as a preview. Targets/destinations whose render yields no
-/// change are skipped. Outputs are deduplicated by file path so a crate routed
-/// to both per-crate and root files never double-emits the same file.
+/// change are skipped.
+///
+/// Multiple crates routed to ONE shared root (genuine multi-track) refresh
+/// sequentially against the accumulated text — each updates its own
+/// `### <crate>` subsection, the running result feeding the next — so the final
+/// output carries every crate's refreshed subsection, not only the first. A
+/// single crate routed to both its per-crate file and the root still emits two
+/// distinct files (different paths); a degenerate per-crate==root path (the
+/// crate dir IS the workspace root) collapses to one output.
 pub(crate) fn refresh_changelogs(
     workspace_root: &Path,
     targets: &[RefreshTarget],
@@ -240,6 +279,10 @@ pub(crate) fn refresh_changelogs(
     log: &StageLogger,
 ) -> Result<Vec<RefreshOutput>> {
     let mut outputs: Vec<RefreshOutput> = Vec::new();
+    let root_file = workspace_root.join("CHANGELOG.md");
+    // The running root-file text so successive same-root targets refresh against
+    // the prior result rather than the stale on-disk copy.
+    let mut root_working: Option<String> = None;
     for t in targets {
         if routing.per_crate {
             let update = anodizer_stage_changelog::refresh_crate_unreleased(
@@ -260,16 +303,25 @@ pub(crate) fn refresh_changelogs(
                 t.from_tag.as_deref(),
                 t.to_ref.as_deref(),
                 routing.chronology,
+                routing.single_track,
+                root_working.as_deref(),
             )
             .with_context(|| format!("failed to refresh root changelog for {}", t.crate_name))?;
+            if let Some(ref u) = update
+                && u.file_path == root_file
+            {
+                root_working = Some(u.rendered_text.clone());
+            }
             collect_refresh(workspace_root, update, write, log, &mut outputs)?;
         }
     }
     Ok(outputs)
 }
 
-/// Write (when `write`) and/or record one regenerated section, deduplicating by
-/// file path so the same file is never emitted twice.
+/// Write (when `write`) and/or record one regenerated section. When a later
+/// target updates a file already recorded (successive crates sharing one root),
+/// the existing output's text is replaced in place so the final output reflects
+/// every crate's refresh rather than only the first.
 fn collect_refresh(
     workspace_root: &Path,
     update: Option<anodizer_stage_changelog::ChangelogUpdate>,
@@ -280,9 +332,6 @@ fn collect_refresh(
     let Some(update) = update else {
         return Ok(());
     };
-    if outputs.iter().any(|o| o.file_path == update.file_path) {
-        return Ok(());
-    }
     let rel = update
         .file_path
         .strip_prefix(workspace_root)
@@ -301,6 +350,10 @@ fn collect_refresh(
             )
         })?;
         log.status(&format!("refreshed {}", rel));
+    }
+    if let Some(existing) = outputs.iter_mut().find(|o| o.file_path == update.file_path) {
+        existing.rendered_text = update.rendered_text;
+        return Ok(());
     }
     outputs.push(RefreshOutput {
         file_path: update.file_path,
@@ -392,6 +445,30 @@ mod tests {
             "entries after the bracketed bullet dropped: {section}"
         );
         assert!(!section.contains("compare"), "footer leaked: {section}");
+    }
+
+    #[test]
+    fn is_flat_aggregate_same_prefix_shared_root() {
+        assert!(is_flat_aggregate(&["v".into(), "v".into()], true, false));
+    }
+
+    #[test]
+    fn is_flat_aggregate_distinct_prefixes_false() {
+        assert!(!is_flat_aggregate(
+            &["core-v".into(), "cli-v".into()],
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn is_flat_aggregate_per_crate_files_false() {
+        assert!(!is_flat_aggregate(&["v".into(), "v".into()], true, true));
+    }
+
+    #[test]
+    fn is_flat_aggregate_root_disabled_false() {
+        assert!(!is_flat_aggregate(&["v".into()], false, false));
     }
 
     #[test]

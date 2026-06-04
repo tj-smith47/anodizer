@@ -322,6 +322,55 @@ fn select_crates(
     }
 }
 
+/// Resolve whether the selected crates form a single flat changelog aggregate,
+/// collapsing them to ONE whole-workspace target when so.
+///
+/// `detect_repo_shape` keys on VERSION independence, so it reports `Lockstep`
+/// (a `[workspace.package].version` workspace) or `PerCrate` (a flat `crates:`
+/// list with >1 entry) even when every crate shares one tag track
+/// (`tag_template: "v{{ Version }}"`) and routes to one shared root
+/// `CHANGELOG.md`. For changelog ROUTING the right axis is tag-track + file
+/// destination: crates on one prefix writing one root file are a single flat
+/// aggregate, not N multi-track `### <crate>` subsections.
+///
+/// Returns `(collapsed, single_track)`:
+/// - `crate_filtered` (an explicit `--crate`/single-tag pin already narrowed
+///   `selected`): leave it as-is with `single_track = false` so a genuine
+///   multi-track repo refreshes only THAT crate's `### <crate>` subsection.
+/// - Otherwise, when the routing is shared-root-only
+///   (`root_enabled && !per_crate`) AND every entry shares one tag prefix:
+///   collapse to one aggregate `(project_name, workspace_root, <shared_prefix>)`
+///   and set `single_track = true`, forcing the flat roll. This unifies
+///   `Single`, `Lockstep`, and same-prefix `PerCrate` — all single-track roots.
+/// - Distinct prefixes (genuine multi-track) or per-crate files leave `selected`
+///   untouched with `single_track = false`.
+fn collapse_flat_aggregate(
+    selected: Vec<(String, PathBuf, String)>,
+    project_name: &str,
+    workspace_root: &Path,
+    root_enabled: bool,
+    per_crate: bool,
+    crate_filtered: bool,
+) -> (Vec<(String, PathBuf, String)>, bool) {
+    if crate_filtered || selected.is_empty() {
+        return (selected, false);
+    }
+    let prefixes: Vec<String> = selected.iter().map(|(_, _, p)| p.clone()).collect();
+    if !crate::commands::changelog_sync::is_flat_aggregate(&prefixes, root_enabled, per_crate) {
+        return (selected, false);
+    }
+    // Safe: `is_flat_aggregate` confirmed a non-empty same-prefix set.
+    let prefix = prefixes.into_iter().next().unwrap_or_default();
+    (
+        vec![(
+            project_name.to_string(),
+            workspace_root.to_path_buf(),
+            prefix,
+        )],
+        true,
+    )
+}
+
 /// keep-a-changelog: refresh each selected crate's pending `[Unreleased]`
 /// section. Previews to stdout unless `write` writes the file(s) in place.
 fn run_refresh(
@@ -341,6 +390,18 @@ fn run_refresh(
         return Ok(());
     }
 
+    let empty = anodizer_core::config::ChangelogConfig::default();
+    let mut routing = ChangelogRouting::from_config(config.changelog.as_ref().unwrap_or(&empty));
+    let (selected, single_track) = collapse_flat_aggregate(
+        selected,
+        &config.project_name,
+        workspace_root,
+        routing.root_enabled,
+        routing.per_crate,
+        effective_filter.is_some(),
+    );
+    routing.single_track = single_track;
+
     let targets: Vec<RefreshTarget> = selected
         .into_iter()
         .map(|(name, dir, prefix)| {
@@ -354,8 +415,6 @@ fn run_refresh(
         })
         .collect::<Result<_>>()?;
 
-    let empty = anodizer_core::config::ChangelogConfig::default();
-    let routing = ChangelogRouting::from_config(config.changelog.as_ref().unwrap_or(&empty));
     let outputs = refresh_changelogs(workspace_root, &targets, &routing, write, log)?;
 
     if outputs.is_empty() {
@@ -403,6 +462,33 @@ fn run_release_notes(
     let effective_filter = resolved.pinned_crate.clone().or(crate_filter);
 
     log.status("generating release notes");
+
+    // Collapse same-prefix shared-root crates to ONE whole-workspace aggregate
+    // (mirroring kac/json): without an explicit `--crate`, a flat `crates:` list
+    // sharing one tag track and one root file is a single lockstep aggregate, so
+    // the stage renders one whole-repo body instead of N path-filtered
+    // duplicates joined by `---` separators. The first crate's name keys the
+    // aggregate; its path filter is cleared so the body spans the workspace.
+    if effective_filter.is_none() && config.crates.len() > 1 {
+        let empty = anodizer_core::config::ChangelogConfig::default();
+        let routing = ChangelogRouting::from_config(config.changelog.as_ref().unwrap_or(&empty));
+        let prefixes: Vec<String> = config
+            .crates
+            .iter()
+            .map(|c| {
+                git::extract_tag_prefix(&c.tag_template).unwrap_or_else(|| format!("{}-v", c.name))
+            })
+            .collect();
+        if crate::commands::changelog_sync::is_flat_aggregate(
+            &prefixes,
+            routing.root_enabled,
+            routing.per_crate,
+        ) && let Some(mut first) = config.crates.first().cloned()
+        {
+            first.path = String::new();
+            config.crates = vec![first];
+        }
+    }
 
     let selected_crates: Vec<String> = match effective_filter.as_ref() {
         Some(name) => vec![name.clone()],
@@ -520,6 +606,19 @@ fn run_json(
     let effective_filter = resolved.pinned_crate.as_deref().or(crate_filter);
     let workspace = load_workspace(workspace_root).ok();
     let selected = select_crates(workspace_root, config, workspace.as_ref(), effective_filter);
+    // Same collapse as the refresh path: same-prefix crates routing to one
+    // shared root are one flat aggregate, so the JSON array holds a single
+    // whole-release entry rather than N identical per-crate duplicates.
+    let empty = anodizer_core::config::ChangelogConfig::default();
+    let routing = ChangelogRouting::from_config(config.changelog.as_ref().unwrap_or(&empty));
+    let (selected, _single_track) = collapse_flat_aggregate(
+        selected,
+        &config.project_name,
+        workspace_root,
+        routing.root_enabled,
+        routing.per_crate,
+        effective_filter.is_some(),
+    );
     if selected.is_empty() {
         log.warn("no crates selected for changelog json");
     }
@@ -732,5 +831,81 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].0, "core");
         assert_eq!(filtered[0].2, "core-v");
+    }
+
+    /// Same-prefix shared-root entries collapse to ONE aggregate keyed by the
+    /// project name at the workspace root, with `single_track = true`.
+    #[test]
+    fn collapse_same_prefix_shared_root_is_one_flat_aggregate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let selected = vec![
+            ("core".into(), tmp.path().join("crates/core"), "v".into()),
+            ("cli".into(), tmp.path().join("crates/cli"), "v".into()),
+        ];
+        let (out, single_track) =
+            collapse_flat_aggregate(selected, "proj", tmp.path(), true, false, false);
+        assert!(single_track);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "proj");
+        assert_eq!(out[0].1, tmp.path());
+        assert_eq!(out[0].2, "v");
+    }
+
+    /// A single Lockstep/Single entry on shared-root routing is its own flat
+    /// aggregate and must still be marked `single_track`.
+    #[test]
+    fn collapse_single_shared_root_entry_marks_single_track() {
+        let tmp = tempfile::tempdir().unwrap();
+        let selected = vec![("proj".into(), tmp.path().to_path_buf(), "v".into())];
+        let (out, single_track) =
+            collapse_flat_aggregate(selected, "proj", tmp.path(), true, false, false);
+        assert!(single_track);
+        assert_eq!(out.len(), 1);
+    }
+
+    /// Distinct prefixes (genuine multi-track) are left intact, single_track off.
+    #[test]
+    fn collapse_distinct_prefixes_stays_per_crate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let selected = vec![
+            (
+                "core".into(),
+                tmp.path().join("crates/core"),
+                "core-v".into(),
+            ),
+            ("cli".into(), tmp.path().join("crates/cli"), "cli-v".into()),
+        ];
+        let (out, single_track) =
+            collapse_flat_aggregate(selected, "proj", tmp.path(), true, false, false);
+        assert!(!single_track);
+        assert_eq!(out.len(), 2);
+    }
+
+    /// An explicit `--crate` filter (crate_filtered) never forces single_track:
+    /// a genuine multi-track repo must refresh only that crate's subsection.
+    #[test]
+    fn collapse_respects_explicit_crate_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let selected = vec![("core".into(), tmp.path().join("crates/core"), "v".into())];
+        let (out, single_track) =
+            collapse_flat_aggregate(selected, "proj", tmp.path(), true, false, true);
+        assert!(!single_track);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "core");
+    }
+
+    /// Per-crate files configured (`per_crate: true`) keep per-crate behaviour
+    /// even when prefixes match.
+    #[test]
+    fn collapse_per_crate_files_stays_per_crate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let selected = vec![
+            ("core".into(), tmp.path().join("crates/core"), "v".into()),
+            ("cli".into(), tmp.path().join("crates/cli"), "v".into()),
+        ];
+        let (out, single_track) =
+            collapse_flat_aggregate(selected, "proj", tmp.path(), true, true, false);
+        assert!(!single_track);
+        assert_eq!(out.len(), 2);
     }
 }
