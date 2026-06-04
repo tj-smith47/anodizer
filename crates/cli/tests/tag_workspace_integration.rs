@@ -285,3 +285,140 @@ fn workspace_mode_skips_when_already_at_target() {
     );
     assert!(git_tag_exists(tmp.path(), "v0.1.1"));
 }
+
+// ---------------------------------------------------------------------------
+// Subdirectory invocation: `tag --dry-run` must resolve the workspace root
+// from the config (not the cwd), so a run from `crates/<x>` previews the same
+// tag as a run from the repo root — across single, lockstep, and per-crate
+// modes. Regression guard for the cwd-as-root bug (known-bugs #4): before the
+// fix, `discover_workspace_root` fell back to the cwd ancestor, so from a
+// member directory it resolved the member's own `Cargo.toml` as the root and
+// mis-detected the repo shape.
+// ---------------------------------------------------------------------------
+
+struct DryRunResult {
+    stdout: String,
+    success: bool,
+}
+
+/// Run `tag --dry-run -q` against an explicit `--config` (the root
+/// `.anodizer.yaml`) from `run_dir`. The explicit config isolates the
+/// workspace-root concern: the fix walks up from the config's parent to the
+/// root, so the same config resolves the same root from any subdirectory.
+fn tag_dry_run_from(run_dir: &Path, config: &Path) -> DryRunResult {
+    let out = anodizer()
+        .current_dir(run_dir)
+        .args([
+            "tag",
+            "--dry-run",
+            "-q",
+            "--config",
+            config.to_str().expect("utf8 config path"),
+        ])
+        .output()
+        .unwrap();
+    DryRunResult {
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned()
+            + &String::from_utf8_lossy(&out.stderr),
+        success: out.status.success(),
+    }
+}
+
+fn assert_tag_subdir_matches_root(root: &Path, subdir: &str) {
+    let config = root.join(".anodizer.yaml");
+    let from_root = tag_dry_run_from(root, &config);
+    assert!(
+        from_root.success,
+        "root tag --dry-run failed: {}",
+        from_root.stdout
+    );
+    let from_subdir = tag_dry_run_from(&root.join(subdir), &config);
+    assert!(
+        from_subdir.success,
+        "subdir tag --dry-run failed: {}",
+        from_subdir.stdout
+    );
+    assert_eq!(
+        from_subdir.stdout, from_root.stdout,
+        "tag --dry-run from {subdir} must match the repo-root preview \
+         (workspace root resolved against cwd instead of the config)"
+    );
+}
+
+#[test]
+fn lockstep_tag_dry_run_from_subdir_matches_root() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    inheriting_workspace_with_deps(root);
+    fs::write(root.join(".anodizer.yaml"), "project_name: ws\n").unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/a/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: a deref issue");
+
+    assert_tag_subdir_matches_root(root, "crates/a");
+}
+
+#[test]
+fn single_crate_tag_dry_run_from_subdir_matches_root() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/app/src")).unwrap();
+    fs::write(
+        root.join("crates/app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/app/src/lib.rs"), "").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: single\ncrates:\n  - name: app\n    path: crates/app\n    tag_template: \"v{{ .Version }}\"\n    version_sync:\n      enabled: true\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/app/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "feat: add a thing");
+
+    assert_tag_subdir_matches_root(root, "crates/app");
+}
+
+#[test]
+fn per_crate_tag_dry_run_from_subdir_matches_root() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (name, ver) in [("core", "0.1.0"), ("cli", "0.2.0")] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: percrate\ncrates:\n  - name: core\n    path: crates/core\n    tag_template: \"core-v{{ .Version }}\"\n  - name: cli\n    path: crates/cli\n    tag_template: \"cli-v{{ .Version }}\"\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "feat: initial release");
+    // No per-crate tags: both crates read as "changed" without a per-crate
+    // `git log -- <path>` pathspec, so the preview's selected-crate set is
+    // independent of the change-detection cwd axis (a separate concern) and
+    // isolates the workspace-root resolution this guard targets.
+
+    assert_tag_subdir_matches_root(root, "crates/cli");
+}

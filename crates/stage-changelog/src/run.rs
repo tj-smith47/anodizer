@@ -574,6 +574,8 @@ fn resolve_prev_tag(
     let candidate = match ctx.options.changelog_from.as_deref() {
         Some(from) if !from.trim().is_empty() => {
             let from = from.trim();
+            // Any directory inside the repo works: git resolves a ref repo-wide,
+            // so this validation is independent of the workspace root.
             let cwd = std::env::current_dir()
                 .context("changelog: resolve current dir to validate --from ref")?;
             anodizer_core::git::rev_verify_commit_in(&cwd, from).with_context(|| {

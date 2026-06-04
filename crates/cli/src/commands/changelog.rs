@@ -94,7 +94,8 @@ pub fn run(opts: ChangelogOpts) -> Result<()> {
     let path = pipeline::find_config_with_logger(config_override.as_deref(), Some(&log))?;
     let config = pipeline::load_config(&path)?;
 
-    let workspace_root = std::env::current_dir()?;
+    let workspace_root =
+        crate::commands::helpers::discover_workspace_root(config_override.as_deref())?;
 
     // Reject an incoherent flat-aggregate config (members sharing one tag prefix
     // but disagreeing on `[package].version`) before any work, identically to
@@ -287,52 +288,53 @@ fn select_crates(
         git::extract_tag_prefix(&c.tag_template).unwrap_or_else(|| format!("{}-v", c.name))
     };
     let global_prefix = global_tag_prefix(config);
-    let entries: Vec<(String, PathBuf, String)> = match detect_repo_shape(Some(config), workspace) {
-        RepoShape::Single => {
-            // The sole crate (or a config-less single crate): one
-            // global-prefixed target at its directory (workspace root when no
-            // crate is defined). A crate's own `tag_template` still wins when
-            // it sets one; otherwise it inherits the global prefix.
-            let c = config.crates.first().or_else(|| {
-                config
-                    .workspaces
-                    .as_deref()
-                    .unwrap_or_default()
-                    .iter()
-                    .flat_map(|w| &w.crates)
-                    .next()
-            });
-            match c {
-                Some(c) => vec![(
-                    c.name.clone(),
-                    workspace_root.join(&c.path),
-                    git::extract_tag_prefix(&c.tag_template)
-                        .unwrap_or_else(|| global_prefix.clone()),
-                )],
-                None => vec![(
+    let entries: Vec<(String, PathBuf, String)> =
+        match detect_repo_shape(workspace_root, Some(config), workspace) {
+            RepoShape::Single => {
+                // The sole crate (or a config-less single crate): one
+                // global-prefixed target at its directory (workspace root when no
+                // crate is defined). A crate's own `tag_template` still wins when
+                // it sets one; otherwise it inherits the global prefix.
+                let c = config.crates.first().or_else(|| {
+                    config
+                        .workspaces
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .flat_map(|w| &w.crates)
+                        .next()
+                });
+                match c {
+                    Some(c) => vec![(
+                        c.name.clone(),
+                        workspace_root.join(&c.path),
+                        git::extract_tag_prefix(&c.tag_template)
+                            .unwrap_or_else(|| global_prefix.clone()),
+                    )],
+                    None => vec![(
+                        config.project_name.clone(),
+                        workspace_root.to_path_buf(),
+                        global_prefix.clone(),
+                    )],
+                }
+            }
+            RepoShape::Lockstep | RepoShape::FlatAggregate(_) => {
+                // One aggregate target at the workspace root, using the resolved
+                // global `tag.tag_prefix`. Genuine lockstep and a flat-aggregate
+                // (shared-prefix flat `crates:` list) both render one flat
+                // whole-release section, so both collapse to a single entry here.
+                vec![(
                     config.project_name.clone(),
                     workspace_root.to_path_buf(),
                     global_prefix.clone(),
-                )],
+                )]
             }
-        }
-        RepoShape::Lockstep | RepoShape::FlatAggregate(_) => {
-            // One aggregate target at the workspace root, using the resolved
-            // global `tag.tag_prefix`. Genuine lockstep and a flat-aggregate
-            // (shared-prefix flat `crates:` list) both render one flat
-            // whole-release section, so both collapse to a single entry here.
-            vec![(
-                config.project_name.clone(),
-                workspace_root.to_path_buf(),
-                global_prefix.clone(),
-            )]
-        }
-        RepoShape::PerCrate(groups) => groups
-            .iter()
-            .flatten()
-            .map(|c| (c.name.clone(), workspace_root.join(&c.path), prefix_for(c)))
-            .collect(),
-    };
+            RepoShape::PerCrate(groups) => groups
+                .iter()
+                .flatten()
+                .map(|c| (c.name.clone(), workspace_root.join(&c.path), prefix_for(c)))
+                .collect(),
+        };
 
     match crate_filter {
         Some(name) => entries.into_iter().filter(|(n, _, _)| n == name).collect(),

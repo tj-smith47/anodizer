@@ -55,8 +55,9 @@ pub fn run(opts: BumpOpts) -> Result<()> {
         bail!("working tree has uncommitted changes — commit them or pass --allow-dirty");
     }
 
-    let workspace_root = discover_workspace_root(opts.config_override.as_deref())
-        .context("could not locate workspace root (no Cargo.toml found)")?;
+    let workspace_root =
+        crate::commands::helpers::discover_workspace_root(opts.config_override.as_deref())
+            .context("could not locate workspace root (no Cargo.toml found)")?;
 
     // Reject an incoherent flat-aggregate config (members sharing one tag prefix
     // but disagreeing on `[package].version`) before any work, identically to
@@ -122,26 +123,6 @@ pub fn run(opts: BumpOpts) -> Result<()> {
 
     log.status(&format!("bumped {} crate(s)", rows.len()));
     Ok(())
-}
-
-fn discover_workspace_root(config_override: Option<&std::path::Path>) -> Result<PathBuf> {
-    if let Some(p) = config_override {
-        // Config override points at .anodizer.yaml; walk up until we find Cargo.toml.
-        if let Some(dir) = p.parent() {
-            for ancestor in dir.ancestors() {
-                if ancestor.join("Cargo.toml").is_file() {
-                    return Ok(ancestor.to_path_buf());
-                }
-            }
-        }
-    }
-    let cwd = std::env::current_dir().context("failed to read current directory")?;
-    for ancestor in cwd.ancestors() {
-        if ancestor.join("Cargo.toml").is_file() {
-            return Ok(ancestor.to_path_buf());
-        }
-    }
-    bail!("no Cargo.toml found from {}", cwd.display());
 }
 
 fn is_interactive_stdout() -> bool {
@@ -234,7 +215,7 @@ fn commit_plan(
         && let Some(cfg) = changelog_config
     {
         let is_flat_aggregate = matches!(
-            crate::commands::tag::detect_repo_shape(Some(cfg), workspace),
+            crate::commands::tag::detect_repo_shape(workspace_root, Some(cfg), workspace),
             crate::commands::tag::RepoShape::FlatAggregate(_)
         );
         if is_flat_aggregate && let Some(first) = changelog_targets.first().cloned() {

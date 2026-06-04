@@ -1292,6 +1292,39 @@ pub fn load_artifacts_from_manifest(
     Ok(())
 }
 
+/// Locate the Cargo workspace root for version-aware commands (`bump`, `tag`,
+/// `changelog`).
+///
+/// When a `--config` override is supplied, walk UP from the config file's
+/// directory to the first ancestor containing a `Cargo.toml`; this lets a
+/// config living beside (or below) the manifest resolve the same root. With no
+/// override, walk up from the current directory instead. Bails when no
+/// `Cargo.toml` is found in either chain.
+///
+/// Unifying all three commands on this discovery means they behave identically
+/// whether invoked from the workspace root or a subdirectory — the standalone
+/// fallback of "cwd is the root" silently loaded the wrong manifests from a
+/// subdir.
+pub(crate) fn discover_workspace_root(config_override: Option<&Path>) -> Result<PathBuf> {
+    if let Some(p) = config_override {
+        // Config override points at .anodizer.yaml; walk up until we find Cargo.toml.
+        if let Some(dir) = p.parent() {
+            for ancestor in dir.ancestors() {
+                if ancestor.join("Cargo.toml").is_file() {
+                    return Ok(ancestor.to_path_buf());
+                }
+            }
+        }
+    }
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    for ancestor in cwd.ancestors() {
+        if ancestor.join("Cargo.toml").is_file() {
+            return Ok(ancestor.to_path_buf());
+        }
+    }
+    anyhow::bail!("no Cargo.toml found from {}", cwd.display());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

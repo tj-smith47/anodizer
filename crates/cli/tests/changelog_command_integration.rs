@@ -1658,3 +1658,88 @@ fn bump_rejects_divergent_flat_aggregate_versions() {
     );
     assert_coherence_error(&String::from_utf8_lossy(&out.stderr));
 }
+
+// ---------------------------------------------------------------------------
+// Subdirectory invocation: `changelog` must resolve the workspace root from
+// the config (not the cwd), so a run from `crates/<x>` produces the same
+// `[Unreleased]` preview as a run from the repo root — across all three modes.
+// Regression guard for the cwd-as-root bug (known-bugs #4).
+// ---------------------------------------------------------------------------
+
+/// Run `changelog -q` against an explicit `--config` (the root `.anodizer.yaml`)
+/// from `run_dir`. The explicit config isolates the workspace-root concern: the
+/// fix derives the root by walking up from the config's parent, so the same
+/// config resolves the same root whether `run_dir` is the repo root or a
+/// subdirectory beneath it.
+fn changelog_preview_from(run_dir: &Path, config: &Path) -> RunResult {
+    changelog(
+        run_dir,
+        &["-q", "--config", config.to_str().expect("utf8 config path")],
+    )
+}
+
+fn assert_subdir_matches_root(fixture: &TempDir, subdir: &str) {
+    let root = fixture.path();
+    let config = root.join(".anodizer.yaml");
+    let from_root = changelog_preview_from(root, &config);
+    assert!(
+        from_root.success,
+        "root invocation failed: {}\n{}",
+        from_root.stdout, from_root.stderr
+    );
+    let from_subdir = changelog_preview_from(&root.join(subdir), &config);
+    assert!(
+        from_subdir.success,
+        "subdir invocation failed: {}\n{}",
+        from_subdir.stdout, from_subdir.stderr
+    );
+    assert_eq!(
+        from_subdir.stdout, from_root.stdout,
+        "changelog preview from {subdir} must match the repo-root preview \
+         (workspace root resolved against cwd instead of the config)"
+    );
+}
+
+#[test]
+fn single_crate_changelog_from_subdir_matches_root() {
+    let tmp = single_crate_repo();
+    assert_subdir_matches_root(&tmp, "crates/app");
+}
+
+#[test]
+fn lockstep_changelog_from_subdir_matches_root() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    for name in ["core", "cli"] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion.workspace = true\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: lockstep\nchangelog: {}\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/core/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "feat: lockstep change");
+
+    assert_subdir_matches_root(&tmp, "crates/core");
+}
+
+#[test]
+fn per_crate_changelog_from_subdir_matches_root() {
+    let tmp = per_crate_repo();
+    assert_subdir_matches_root(&tmp, "crates/cli");
+}

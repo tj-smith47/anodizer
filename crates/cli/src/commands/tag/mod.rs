@@ -161,10 +161,13 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // read on lockstep repos).
     let loaded_config: Option<anodizer_core::config::Config> =
         resolve_config_path(&opts).and_then(|p| crate::pipeline::load_config(&p).ok());
-    let workspace_root_path = std::env::current_dir().ok();
-    let loaded_workspace: Option<WorkspaceInfo> = workspace_root_path
-        .as_ref()
-        .and_then(|root| load_workspace(root).ok());
+    // Discover the workspace root once, config-derived, so `tag` resolves the
+    // same root whether invoked from the repo root or a subdirectory (matching
+    // `bump` and `changelog`); every workspace-load / git-working-dir site below
+    // threads this one value instead of re-reading the cwd.
+    let workspace_root_path =
+        crate::commands::helpers::discover_workspace_root(resolve_config_path(&opts).as_deref())?;
+    let loaded_workspace: Option<WorkspaceInfo> = load_workspace(&workspace_root_path).ok();
 
     let tag_config = loaded_config
         .as_ref()
@@ -182,9 +185,11 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // Reject an incoherent flat-aggregate config (members sharing one tag prefix
     // but disagreeing on `[package].version`) before any work, identically to
     // `changelog` and `bump`.
-    if let Some(ref root) = workspace_root_path {
-        guard_flat_aggregate_coherence(loaded_config.as_ref(), loaded_workspace.as_ref(), root)?;
-    }
+    guard_flat_aggregate_coherence(
+        loaded_config.as_ref(),
+        loaded_workspace.as_ref(),
+        &workspace_root_path,
+    )?;
 
     let mut cfg = ResolvedConfig::from_tag_config(&tag_config, &opts);
 
@@ -224,7 +229,11 @@ pub fn run(opts: TagOpts) -> Result<()> {
         // Peek at the repo shape without consuming it, so we can give a useful
         // error rather than silently discarding the custom_tag value.
         if matches!(
-            detect_repo_shape(loaded_config.as_ref(), loaded_workspace.as_ref()),
+            detect_repo_shape(
+                &workspace_root_path,
+                loaded_config.as_ref(),
+                loaded_workspace.as_ref()
+            ),
             RepoShape::PerCrate(_)
         ) {
             anyhow::bail!(
@@ -245,7 +254,11 @@ pub fn run(opts: TagOpts) -> Result<()> {
         // `custom_tag`), so a `FlatAggregate` WITH a custom tag stays out of the
         // group dispatch.
         let mut is_flat_aggregate = false;
-        let groups = match detect_repo_shape(loaded_config.as_ref(), loaded_workspace.as_ref()) {
+        let groups = match detect_repo_shape(
+            &workspace_root_path,
+            loaded_config.as_ref(),
+            loaded_workspace.as_ref(),
+        ) {
             RepoShape::PerCrate(groups) => Some(groups),
             RepoShape::FlatAggregate(crates) if cfg.custom_tag.is_none() => {
                 is_flat_aggregate = true;
@@ -273,6 +286,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 PerCrateDispatch {
                     groups,
                     is_flat_aggregate,
+                    workspace_root: workspace_root_path.clone(),
                 },
                 &opts,
                 &cfg,
@@ -339,8 +353,10 @@ pub fn run(opts: TagOpts) -> Result<()> {
         None
     };
 
-    // cwd is invariant for the command — bind once and reuse across every tag.
-    let cwd = std::env::current_dir()?;
+    // The git working dir is the discovered workspace root — bind once and
+    // reuse across every tag so git ops run from the repo root even when the
+    // command was invoked from a subdirectory.
+    let cwd = workspace_root_path.clone();
 
     let create_tag = |tag: &str, message: &str, dry_run: bool, prev: Option<&str>| -> Result<()> {
         let mut tv = TemplateVars::new();
@@ -616,9 +632,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // must leave it off or the release silently never fires.
     let mut bump_commit_created = false;
     if let Some(ws) = workspace_info {
-        let root = workspace_root_path
-            .as_deref()
-            .unwrap_or_else(|| Path::new("."));
+        let root = workspace_root_path.as_path();
         // Lockstep shares one version across the whole workspace, so the
         // top-level `Config.version_files` list (no single crate to scope to)
         // is the enrollment, rewritten with the shared old→new.
@@ -652,10 +666,8 @@ pub fn run(opts: TagOpts) -> Result<()> {
     {
         anodizer_stage_build::version_sync::sync_version(path, &new_version, opts.dry_run, &log)?;
 
-        // Determine workspace root for cross-crate dep updates.
-        let workspace_root = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".to_string());
+        // Cross-crate dep updates scan from the discovered workspace root.
+        let workspace_root = workspace_root_path.to_string_lossy().to_string();
 
         // Read the crate name from its Cargo.toml for dep scanning.
         let crate_cargo = std::path::Path::new(path).join("Cargo.toml");
@@ -1137,14 +1149,10 @@ pub(crate) enum RepoShape {
 ///    - otherwise → `PerCrate` (flat multi-crate, distinct tracks).
 /// 4. Otherwise → `Single`.
 pub(crate) fn detect_repo_shape(
+    workspace_root: &Path,
     preloaded_config: Option<&anodizer_core::config::Config>,
     preloaded_workspace: Option<&WorkspaceInfo>,
 ) -> RepoShape {
-    let workspace_root = match std::env::current_dir().ok() {
-        Some(p) => p,
-        None => return RepoShape::Single,
-    };
-
     // `.anodizer.yaml`'s `workspaces:` block is an explicit operator
     // declaration of per-crate-with-grouping intent and takes precedence
     // over `[workspace.package].version`, which is often default cruft
@@ -1162,7 +1170,7 @@ pub(crate) fn detect_repo_shape(
     let lockstep = if let Some(ws) = preloaded_workspace {
         ws.workspace_package_version.is_some()
     } else {
-        load_workspace(&workspace_root)
+        load_workspace(workspace_root)
             .ok()
             .is_some_and(|ws| ws.workspace_package_version.is_some())
     };
@@ -1231,7 +1239,8 @@ pub(crate) fn guard_flat_aggregate_coherence(
     workspace: Option<&WorkspaceInfo>,
     workspace_root: &Path,
 ) -> Result<()> {
-    let RepoShape::FlatAggregate(crates) = detect_repo_shape(config, workspace) else {
+    let RepoShape::FlatAggregate(crates) = detect_repo_shape(workspace_root, config, workspace)
+    else {
         return Ok(());
     };
     let prefix = shared_tag_prefix(&crates).unwrap_or_else(|| "v".to_string());
@@ -1451,6 +1460,10 @@ struct PushControls<'a> {
 struct PerCrateDispatch {
     groups: Vec<Vec<CrateConfig>>,
     is_flat_aggregate: bool,
+    /// The config-derived workspace root threaded from `run` so the per-crate
+    /// engine's git ops and cross-crate scans resolve the same root from a
+    /// subdirectory as from the repo root.
+    workspace_root: PathBuf,
 }
 
 fn run_per_crate_tag(
@@ -1465,8 +1478,9 @@ fn run_per_crate_tag(
     let PerCrateDispatch {
         groups,
         is_flat_aggregate,
+        workspace_root,
     } = dispatch;
-    let cwd = std::env::current_dir()?;
+    let cwd = workspace_root.clone();
     let tag_results = compute_per_crate_tags(&groups, opts, cfg, git_config, anodizer_config, log)?;
 
     if tag_results.is_empty() {
@@ -1549,7 +1563,6 @@ fn run_per_crate_tag(
         // Each propagation is scoped to the Cargo workspace that owns the
         // bumped crate, so a bump in one release group never rewrites a pin in
         // an independent group whose crates live in a separate Cargo workspace.
-        let workspace_root = std::env::current_dir()?;
         let workspace_root_str = workspace_root.to_string_lossy().into_owned();
         let mut intra_ws_modified: Vec<String> = Vec::new();
         for group_result in &tag_results {
@@ -2886,10 +2899,20 @@ tag_post_hooks:
         }
     }
 
+    /// A workspace root with no `Cargo.toml`, so `load_workspace` returns `Err`
+    /// and the Cargo lockstep signal stays absent. Pinning the root explicitly
+    /// (instead of `detect_repo_shape` reading the runner's cwd) keeps each
+    /// shape assertion hermetic — run from the anodizer workspace root it would
+    /// otherwise flip to `Lockstep` off the real `[workspace.package].version`.
+    fn empty_root() -> tempfile::TempDir {
+        tempfile::tempdir().expect("create temp workspace root")
+    }
+
     #[test]
     fn detect_repo_shape_no_config_no_workspace_returns_single() {
         // Bare repo: no anodizer config, no Cargo workspace info → Single.
-        let shape = detect_repo_shape(None, None);
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), None, None);
         assert!(matches!(shape, RepoShape::Single));
     }
 
@@ -2900,7 +2923,8 @@ tag_post_hooks:
             crates: vec![crate_cfg("app", ".", "v{{ .Version }}")],
             ..Default::default()
         };
-        let shape = detect_repo_shape(Some(&config), None);
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), None);
         assert!(matches!(shape, RepoShape::Single));
     }
 
@@ -2921,7 +2945,8 @@ tag_post_hooks:
             workspace_package_version: Some("0.1.0".to_string()),
             members: vec![],
         };
-        let shape = detect_repo_shape(Some(&config), Some(&ws));
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), Some(&ws));
         assert!(matches!(shape, RepoShape::Lockstep));
     }
 
@@ -2935,7 +2960,8 @@ tag_post_hooks:
             ],
             ..Default::default()
         };
-        let shape = detect_repo_shape(Some(&config), None);
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), None);
         match shape {
             RepoShape::PerCrate(groups) => {
                 assert_eq!(groups.len(), 2);
@@ -2972,7 +2998,8 @@ tag_post_hooks:
             workspaces: Some(vec![ws1, ws2]),
             ..Default::default()
         };
-        let shape = detect_repo_shape(Some(&config), None);
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), None);
         match shape {
             RepoShape::PerCrate(groups) => {
                 assert_eq!(groups.len(), 2);
@@ -3008,7 +3035,8 @@ tag_post_hooks:
             workspace_package_version: Some("0.2.0".to_string()),
             members: vec![],
         };
-        let shape = detect_repo_shape(Some(&config), Some(&ws));
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), Some(&ws));
         match shape {
             RepoShape::PerCrate(groups) => {
                 assert_eq!(groups.len(), 1);
@@ -3030,7 +3058,8 @@ tag_post_hooks:
             crates: vec![crate_cfg("solo", ".", "v{{ .Version }}")],
             ..Default::default()
         };
-        let shape = detect_repo_shape(Some(&config), None);
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), None);
         assert!(matches!(shape, RepoShape::Single));
     }
 
@@ -3059,7 +3088,8 @@ tag_post_hooks:
             ],
             ..Default::default()
         };
-        let shape = detect_repo_shape(Some(&config), Some(&ws_no_lockstep()));
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), Some(&ws_no_lockstep()));
         match shape {
             RepoShape::FlatAggregate(crates) => {
                 assert_eq!(crates.len(), 2, "carries the flat crate list");
@@ -3084,7 +3114,8 @@ tag_post_hooks:
             ],
             ..Default::default()
         };
-        let shape = detect_repo_shape(Some(&config), Some(&ws_no_lockstep()));
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), Some(&ws_no_lockstep()));
         match shape {
             RepoShape::PerCrate(groups) => assert_eq!(groups.len(), 2),
             other => panic!(
@@ -3106,7 +3137,8 @@ tag_post_hooks:
             ],
             ..Default::default()
         };
-        let shape = detect_repo_shape(Some(&config), Some(&ws_no_lockstep()));
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), Some(&ws_no_lockstep()));
         match shape {
             RepoShape::PerCrate(groups) => assert_eq!(groups.len(), 2),
             other => panic!(
@@ -3137,7 +3169,8 @@ tag_post_hooks:
             workspaces: Some(vec![ws1, ws2]),
             ..Default::default()
         };
-        let shape = detect_repo_shape(Some(&config), Some(&ws_no_lockstep()));
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), Some(&ws_no_lockstep()));
         match shape {
             RepoShape::PerCrate(groups) => assert_eq!(groups.len(), 2),
             other => panic!(
