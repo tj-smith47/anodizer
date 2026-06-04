@@ -255,6 +255,21 @@ fn predecessor_tag(workspace_root: &Path, prefix: &str, tag: &str) -> Result<Opt
     Ok(None)
 }
 
+/// The global tag prefix that `tag`/`bump` apply to the lockstep / single
+/// unit: the configured `tag.tag_prefix`, defaulting to `v`.
+///
+/// Shared by [`select_crates`] (lockstep range bounding) and the
+/// `run_release_notes` bare-lockstep synthesis so the default-`v` lives in one
+/// place; a hardcoded `v` at either site would miss a custom prefix (e.g.
+/// `release-v`) and silently degrade the range to full history.
+fn global_tag_prefix(config: &Config) -> String {
+    config
+        .tag
+        .as_ref()
+        .and_then(|t| t.tag_prefix.clone())
+        .unwrap_or_else(|| "v".to_string())
+}
+
 /// Enumerate the crates selected for rendering across all three config modes,
 /// honoring `--crate` and a single-tag crate pin.
 ///
@@ -271,16 +286,7 @@ fn select_crates(
     let prefix_for = |c: &anodizer_core::config::CrateConfig| -> String {
         git::extract_tag_prefix(&c.tag_template).unwrap_or_else(|| format!("{}-v", c.name))
     };
-    // The global tag prefix that `tag`/`bump` apply to the lockstep / single
-    // unit: the configured `tag.tag_prefix`, defaulting to `v`. Resolving it
-    // here keeps the lockstep refresh range aligned with the tags `tag`
-    // actually creates (e.g. `release-v0.1.0`); a hardcoded `v` would miss them
-    // and silently degrade the range to full history.
-    let global_prefix = config
-        .tag
-        .as_ref()
-        .and_then(|t| t.tag_prefix.clone())
-        .unwrap_or_else(|| "v".to_string());
+    let global_prefix = global_tag_prefix(config);
     let entries: Vec<(String, PathBuf, String)> = match detect_repo_shape(Some(config), workspace) {
         RepoShape::Single => {
             // The sole crate (or a config-less single crate): one
@@ -485,15 +491,11 @@ fn run_release_notes(
         && config.crates.is_empty()
         && config.workspaces.as_deref().unwrap_or_default().is_empty()
     {
-        let global_prefix = config
-            .tag
-            .as_ref()
-            .and_then(|t| t.tag_prefix.clone())
-            .unwrap_or_else(|| "v".to_string());
+        let global_prefix = global_tag_prefix(&config);
         config.crates = vec![anodizer_core::config::CrateConfig {
             name: config.project_name.clone(),
             path: String::new(),
-            tag_template: format!("{}{{{{ .Version }}}}", global_prefix),
+            tag_template: format!("{}{{{{ Version }}}}", global_prefix),
             ..Default::default()
         }];
     }
