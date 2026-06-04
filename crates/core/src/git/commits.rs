@@ -168,6 +168,12 @@ pub struct CommitWithFiles {
 /// on `\x1e` yields `[metadata_0, "\n<files_0>\n\n<metadata_1>", ...]`: the
 /// file block trailing each record up to the next metadata belongs to THAT
 /// record's commit.
+///
+/// The metadata record is multi-line because `%b` (the commit body) carries
+/// newlines, so the record runs from the first `\x1f`-bearing line through the
+/// end of the segment — NOT just the first matching line. Truncating to one
+/// line would drop body trailers (e.g. `Co-Authored-By:`) for every commit
+/// after the first, diverging from [`parse_git_log_records`]'s full-body parse.
 pub fn parse_commit_output_with_files(output: &str) -> Vec<CommitWithFiles> {
     if output.is_empty() {
         return vec![];
@@ -182,20 +188,24 @@ pub fn parse_commit_output_with_files(output: &str) -> Vec<CommitWithFiles> {
     for (idx, seg) in segments.iter().enumerate() {
         // The metadata of commit `idx` is the part of `seg` AFTER the leading
         // file block (file block present only for idx>0). For idx==0 the whole
-        // segment up to the unit separators is metadata.
+        // segment is metadata. For idx>0 the metadata record begins at the
+        // first `\x1f`-bearing line and continues to the segment end (a
+        // multi-line `%b` body keeps emitting newline-separated lines after the
+        // unit-separator fields), so the remainder is kept verbatim — joined
+        // from that line onward — rather than just the first matching line.
         let metadata = if idx == 0 {
-            seg.trim_start_matches(['\n', '\r'])
+            seg.trim_start_matches(['\n', '\r']).to_string()
         } else {
-            // Strip the leading file-block lines: everything up to the first
-            // line containing a unit separator (the metadata record).
-            seg.split('\n')
-                .find(|line| line.contains('\x1f'))
-                .unwrap_or("")
+            let lines: Vec<&str> = seg.split('\n').collect();
+            match lines.iter().position(|line| line.contains('\x1f')) {
+                Some(start) => lines[start..].join("\n"),
+                None => String::new(),
+            }
         };
         if metadata.trim().is_empty() {
             continue;
         }
-        let commits = parse_commit_output(metadata);
+        let commits = parse_commit_output(&metadata);
         let Some(commit) = commits.into_iter().next() else {
             continue;
         };
@@ -1792,6 +1802,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_commit_output_with_files_preserves_multiline_body_at_idx_gt_0() {
+        // A multi-line `%b` body for the SECOND commit (idx>0): the body spans
+        // several newline-separated lines, and the parser must keep the full
+        // record — not just its first line — so trailers like `Co-Authored-By:`
+        // survive, matching the metadata-only `parse_git_log_records` path.
+        let body0 = "detail line one\ndetail line two\n\nCo-Authored-By: Bob <bob@b.com>";
+        let raw = format!(
+            "h1\x1fs1\x1ffix: B\x1ft\x1ft@t\x1f\x1e\ncrates/cli/main.rs\n\n\
+             h0\x1fs0\x1ffeat: A\x1ft\x1ft@t\x1f{body0}\x1e\ncrates/core/lib.rs\n"
+        );
+        let parsed = parse_commit_output_with_files(&raw);
+        assert_eq!(parsed.len(), 2);
+        // The idx>0 commit retains its FULL multi-line body and trailer.
+        assert_eq!(parsed[1].commit.message, "feat: A");
+        assert_eq!(parsed[1].commit.body, body0);
+        assert!(
+            parsed[1]
+                .commit
+                .body
+                .contains("Co-Authored-By: Bob <bob@b.com>"),
+            "multi-line body trailer dropped: {:?}",
+            parsed[1].commit.body
+        );
+        assert_eq!(parsed[1].files, vec!["crates/core/lib.rs".to_string()]);
+    }
+
+    #[test]
     fn get_commits_between_paths_with_files_in_reports_touched_files() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
@@ -1826,5 +1863,65 @@ mod tests {
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].commit.message, "feat: core");
         assert_eq!(pairs[0].files, vec!["crates/core/lib.rs".to_string()]);
+    }
+
+    #[test]
+    fn get_commits_between_paths_with_files_in_preserves_multiline_body_for_later_commits() {
+        // Real `git log --name-only` over TWO post-base commits, the OLDER one
+        // (idx>0 in the newest-first output) carrying a multi-line body with a
+        // `Co-Authored-By:` trailer. The full body must survive — proving the
+        // narrowed fetch path agrees with the metadata-only path on body
+        // content, not just the subject.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(dir)
+                    .env("GIT_AUTHOR_NAME", "t")
+                    .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                    .env("GIT_COMMITTER_NAME", "t")
+                    .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        };
+        run(&["init"]);
+        run(&["config", "user.email", "t@t.com"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("base"), "0").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "initial"]);
+        let base = get_head_commit_in(dir).unwrap();
+
+        // Older of the two reported commits — multi-line body + trailer.
+        std::fs::write(dir.join("a.rs"), "1").unwrap();
+        run(&["add", "."]);
+        run(&[
+            "commit",
+            "-m",
+            "feat: with body\n\nfirst body line\nsecond body line\n\nCo-Authored-By: Bob <bob@b.com>",
+        ]);
+        // Newer commit (idx 0 in newest-first output), single-line.
+        std::fs::write(dir.join("b.rs"), "2").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "fix: later"]);
+
+        let pairs = get_commits_between_paths_with_files_in(dir, &base, "HEAD", &[]).unwrap();
+        assert_eq!(pairs.len(), 2);
+        // Newest-first: [0] = "fix: later", [1] = "feat: with body" (idx>0).
+        assert_eq!(pairs[0].commit.message, "fix: later");
+        let body = &pairs[1].commit.body;
+        assert!(
+            body.contains("first body line") && body.contains("second body line"),
+            "multi-line body truncated for idx>0 commit: {body:?}"
+        );
+        assert!(
+            body.contains("Co-Authored-By: Bob <bob@b.com>"),
+            "Co-Authored-By trailer dropped for idx>0 commit: {body:?}"
+        );
     }
 }

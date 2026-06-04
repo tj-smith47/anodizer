@@ -2233,3 +2233,114 @@ fn narrowing_paths_drop_an_excluded_crates_commits_from_aggregate() {
         core.stdout
     );
 }
+
+/// Build a flat-aggregate (shared `v*` prefix → ONE aggregate track scoping to
+/// the crate-dir union + manifests) with a `crates/core/**` narrowing filter.
+/// The surviving core commit carries a MULTI-LINE body + `Co-Authored-By:`
+/// trailer so the narrowed `--name-only` git path can be proven to preserve the
+/// full body, not just the subject. cli's commit + the manifest-only commit are
+/// outside `crates/core/**` and must drop.
+fn build_narrowing_body_repo() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (dir, name) in [("crates/core", "core"), ("crates/cli", "cli")] {
+        fs::create_dir_all(root.join(dir).join("src")).unwrap();
+        fs::write(
+            root.join(dir).join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(dir).join("src/lib.rs"), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: aggregate\nchangelog:\n  paths:\n    - \"crates/core/**\"\ncrates:\n  \
+         - name: core\n    path: crates/core\n    tag_template: \"v{{ Version }}\"\n  \
+         - name: cli\n    path: crates/cli\n    tag_template: \"v{{ Version }}\"\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+
+    // Surviving core commit: multi-line body + co-author trailer.
+    fs::write(root.join("crates/core/src/lib.rs"), "// c\n").unwrap();
+    run_git(root, &["add", "-A"]);
+    run_git(
+        root,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "feat: core narrowed change\n\nbody line one\nbody line two\n\nCo-Authored-By: Charlie <charlie@c.com>",
+        ],
+    );
+    // Dropped: cli commit (outside crates/core/**).
+    fs::write(root.join("crates/cli/src/lib.rs"), "// c\n").unwrap();
+    git_add_commit(root, "fix: cli narrowed-out change");
+    // Dropped: manifest-only commit.
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n# bump\n",
+    )
+    .unwrap();
+    git_add_commit(root, "chore: manifest narrowed-out change");
+
+    tmp
+}
+
+#[test]
+fn narrowed_aggregate_preserves_full_body_and_coauthor_and_drops_excluded() {
+    // The narrowed `--name-only` git path must agree with the metadata-only
+    // path on BODY content, not just the subject: the surviving core commit's
+    // co-author (parsed from its multi-line body trailer) must appear, while
+    // commits outside `crates/core/**` drop.
+    let tmp = build_narrowing_body_repo();
+    let root = tmp.path();
+
+    let js = changelog(root, &["-q", "--format", "json"]);
+    assert!(js.success, "json failed: {}\n{}", js.stdout, js.stderr);
+    let v: serde_json::Value = serde_json::from_str(&js.stdout)
+        .unwrap_or_else(|e| panic!("json parse failed: {e}\n{}", js.stdout));
+    let blob = v.to_string();
+
+    assert!(
+        blob.contains("core narrowed change"),
+        "surviving core commit subject missing:\n{}",
+        js.stdout
+    );
+    // The co-author is extracted from the commit BODY; its presence proves the
+    // narrowed `--name-only` parse preserved the full multi-line body.
+    assert!(
+        blob.contains("Charlie"),
+        "narrowed render dropped the co-author from the multi-line body \
+         (body truncation regression):\n{}",
+        js.stdout
+    );
+    // Excluded commits must not appear.
+    assert!(
+        !blob.contains("cli narrowed-out change"),
+        "cli commit outside crates/core/** must drop:\n{}",
+        js.stdout
+    );
+    assert!(
+        !blob.contains("manifest narrowed-out change"),
+        "manifest-only commit outside crates/core/** must drop:\n{}",
+        js.stdout
+    );
+
+    // release-notes (same narrowed path) agrees on the surviving subject.
+    let rn = changelog(root, &["-q", "--format", "release-notes"]);
+    assert!(rn.success, "rn failed: {}\n{}", rn.stdout, rn.stderr);
+    assert!(
+        rn.stdout.contains("core narrowed change")
+            && !rn.stdout.contains("cli narrowed-out change"),
+        "release-notes narrowed render disagrees with json:\n{}",
+        rn.stdout
+    );
+}
