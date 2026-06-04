@@ -504,3 +504,211 @@ fn explicit_range_overrides_auto_discovery() {
     assert_eq!(arr[0]["from"], "v0.1.0");
     assert_eq!(arr[0]["to"], "HEAD");
 }
+
+// ---------------------------------------------------------------------------
+// Range consistency: empty-from = full history, uniformly across formats
+// ---------------------------------------------------------------------------
+
+/// A single-crate repo with two tagged releases and a commit AFTER the latest
+/// tag, so "since the last release" (v0.2.0..HEAD) is a strict subset of full
+/// history. The pre-v0.2.0 `feat:` commit ("early feature") is the discriminator:
+/// it appears under full history but not under the pending window.
+fn two_release_repo() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/app/src")).unwrap();
+    fs::write(
+        root.join("crates/app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.2.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/app/src/lib.rs"), "").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: two-release
+changelog:
+  snapshot: true
+crates:
+  - name: app
+    path: crates/app
+    tag_template: "v{{ .Version }}"
+    version_sync:
+      enabled: true
+"#,
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/app/src/lib.rs"), "// early\n").unwrap();
+    git_add_commit(root, "feat: early feature");
+    run_git(root, &["tag", "v0.2.0"]);
+    fs::write(root.join("crates/app/src/lib.rs"), "// late\n").unwrap();
+    git_add_commit(root, "fix: late fix");
+    tmp
+}
+
+/// Collect every commit `summary` across all groups + nested subgroups of one
+/// json changelog element.
+fn json_summaries(elem: &serde_json::Value) -> Vec<String> {
+    fn walk(group: &serde_json::Value, out: &mut Vec<String>) {
+        if let Some(entries) = group.get("entries").and_then(|e| e.as_array()) {
+            for e in entries {
+                if let Some(s) = e.get("summary").and_then(|s| s.as_str()) {
+                    out.push(s.to_string());
+                }
+            }
+        }
+        if let Some(subs) = group.get("subgroups").and_then(|g| g.as_array()) {
+            for sub in subs {
+                walk(sub, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(groups) = elem.get("groups").and_then(|g| g.as_array()) {
+        for g in groups {
+            walk(g, &mut out);
+        }
+    }
+    out
+}
+
+fn json_summaries_for_range(root: &Path, range: Option<&str>) -> Vec<String> {
+    let mut args = vec!["-q"];
+    if let Some(r) = range {
+        args.push(r);
+    }
+    args.extend(["--format", "json"]);
+    let r = changelog(root, &args);
+    assert!(
+        r.success,
+        "json {range:?} failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    let v: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "single-crate repo yields one element");
+    json_summaries(&arr[0])
+}
+
+fn release_notes_for_range(root: &Path, range: Option<&str>) -> String {
+    let mut args = vec!["-q"];
+    if let Some(r) = range {
+        args.push(r);
+    }
+    args.extend(["--snapshot", "--format", "release-notes"]);
+    let r = changelog(root, &args);
+    assert!(
+        r.success,
+        "release-notes {range:?} failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    r.stdout
+}
+
+/// `changelog ..` and `changelog ..HEAD` must converge: both are full history
+/// and both include the pre-v0.2.0 commit, for json AND release-notes.
+#[test]
+fn full_history_dotdot_and_dotdot_head_converge() {
+    let tmp = two_release_repo();
+    let root = tmp.path();
+
+    // json: identical commit sets, and both include the early (pre-latest-tag)
+    // commit — proving empty-from = full history, not last-tag.
+    let mut a = json_summaries_for_range(root, Some(".."));
+    let mut b = json_summaries_for_range(root, Some("..HEAD"));
+    a.sort();
+    b.sort();
+    assert_eq!(
+        a, b,
+        "`..` and `..HEAD` json must be identical: {a:?} vs {b:?}"
+    );
+    assert!(
+        a.iter().any(|s| s.contains("early feature")),
+        "full history must include the pre-v0.2.0 commit: {a:?}"
+    );
+    assert!(
+        a.iter().any(|s| s.contains("late fix")),
+        "full history must include the post-v0.2.0 commit: {a:?}"
+    );
+
+    // release-notes: both include the early commit (same full-history bound).
+    for range in [Some(".."), Some("..HEAD")] {
+        let notes = release_notes_for_range(root, range);
+        assert!(
+            notes.contains("early feature"),
+            "release-notes {range:?} (full history) must include the early commit:\n{notes}"
+        );
+        assert!(
+            notes.contains("late fix"),
+            "release-notes {range:?} (full history) must include the late commit:\n{notes}"
+        );
+    }
+}
+
+/// The omitted form (pending / since-last-release) must NOT equal `..`: it
+/// covers only commits since v0.2.0, excluding the early one.
+#[test]
+fn omitted_range_is_pending_not_full_history() {
+    let tmp = two_release_repo();
+    let root = tmp.path();
+
+    let omitted = json_summaries_for_range(root, None);
+    assert!(
+        omitted.iter().all(|s| !s.contains("early feature")),
+        "omitted (pending) range must exclude the pre-v0.2.0 commit: {omitted:?}"
+    );
+    assert!(
+        omitted.iter().any(|s| s.contains("late fix")),
+        "omitted (pending) range must include the post-v0.2.0 commit: {omitted:?}"
+    );
+
+    let full = json_summaries_for_range(root, Some(".."));
+    assert!(
+        full.len() > omitted.len(),
+        "full history must cover strictly more than the pending window: full={full:?} pending={omitted:?}"
+    );
+}
+
+/// For the SAME range arg, json and release-notes must surface the SAME commit
+/// set — both for full history (`..HEAD`) and an explicit `v0.1.0..HEAD`.
+#[test]
+fn cross_format_commit_set_is_consistent() {
+    let tmp = two_release_repo();
+    let root = tmp.path();
+
+    // Full history: early + late appear in BOTH formats.
+    let full_json = json_summaries_for_range(root, Some("..HEAD"));
+    let full_notes = release_notes_for_range(root, Some("..HEAD"));
+    for needle in ["early feature", "late fix"] {
+        assert!(
+            full_json.iter().any(|s| s.contains(needle)),
+            "json full history missing {needle:?}: {full_json:?}"
+        );
+        assert!(
+            full_notes.contains(needle),
+            "release-notes full history missing {needle:?}:\n{full_notes}"
+        );
+    }
+
+    // Explicit `v0.1.0..HEAD`: starts at v0.1.0, so early + late both appear in
+    // BOTH formats (the v0.1.0 "initial" commit is the lower bound, excluded).
+    let exp_json = json_summaries_for_range(root, Some("v0.1.0..HEAD"));
+    let exp_notes = release_notes_for_range(root, Some("v0.1.0..HEAD"));
+    for needle in ["early feature", "late fix"] {
+        assert!(
+            exp_json.iter().any(|s| s.contains(needle)),
+            "json v0.1.0..HEAD missing {needle:?}: {exp_json:?}"
+        );
+        assert!(
+            exp_notes.contains(needle),
+            "release-notes v0.1.0..HEAD missing {needle:?}:\n{exp_notes}"
+        );
+    }
+}

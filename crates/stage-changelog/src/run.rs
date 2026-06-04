@@ -527,12 +527,21 @@ fn render_group_titles(
 /// `git log` non-zero, so an unchecked typo would emit a blank changelog with
 /// no error. Auto-discovered tags are always valid, so the check is gated on
 /// the explicit-`--from` arm only.
+///
+/// An explicit empty lower bound (`changelog ..` / `..<ref>`, carried as
+/// `ctx.options.changelog_full_history`) short-circuits to `None` before any
+/// auto-discovery: full history means no previous tag, so the range covers
+/// every reachable commit up to the upper bound — identical to the
+/// engine-backed `keep-a-changelog` / `json` formats' empty-from semantics.
 fn resolve_prev_tag(
     ctx: &Context,
     crate_cfg: &anodizer_core::config::CrateConfig,
     monorepo_prefix: Option<&str>,
     current_tag: Option<&str>,
 ) -> Result<Option<String>> {
+    if ctx.options.changelog_full_history {
+        return Ok(None);
+    }
     let candidate = match ctx.options.changelog_from.as_deref() {
         Some(from) if !from.trim().is_empty() => {
             let from = from.trim();

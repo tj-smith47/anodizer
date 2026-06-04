@@ -2706,51 +2706,29 @@ crates:
     git(&["add", "-A"]);
     git(&["commit", "-m", "fix: after-latest-tag fix"]);
 
-    // `--format release-notes` streams the grouped-bullet body to stdout so the
-    // commit messages are directly assertable (the pre-rework bare `changelog`
-    // WAS release-notes; the new default is keep-a-changelog, which extracts
-    // only the [Unreleased] heading). Both invocations share the explicit
-    // `..HEAD` upper bound — a ref distinct from any tag, so the auto-discovered
-    // previous tag (v0.2.0) is not filtered out as "equal to the current tag" —
-    // varying only the range START (empty → auto-discover, vs `v0.1.0`), which
-    // is the with/without override contrast under test.
-    let run_changelog = |range: &str| -> String {
-        let args = [
-            "changelog",
-            range,
-            "--snapshot",
-            "--format",
-            "release-notes",
-        ];
-        let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-            .args(args)
-            .current_dir(tmp.path())
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "changelog {:?} should succeed.\nstderr:\n{}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).to_string()
-    };
-
-    // Baseline: an empty range start (`..HEAD`) auto-discovers the start at the
-    // latest tag (v0.2.0), so the between-tags feature is NOT in the changelog.
-    let auto = run_changelog("..HEAD");
+    // The auto-discovered range start (the latest tag, v0.2.0) is asserted via
+    // `--format json`: json's pending lower bound is `find_last_tag` (v0.2.0)
+    // with HEAD as the upper bound, so v0.2.0..HEAD excludes the between-tags
+    // commit. (Release-notes under `--snapshot` cannot demonstrate the same
+    // baseline: snapshot resolves the current `Tag` to the latest tag itself,
+    // and `resolve_prev_tag` drops a previous-tag equal to the current tag, so
+    // the auto baseline degrades to full history there — a property of snapshot
+    // tag resolution, independent of the range model.)
+    let omitted_json = run_changelog_json(tmp.path(), None);
     assert!(
-        !auto.contains("between-tags feature"),
-        "empty range start should auto-discover the start at v0.2.0 and exclude the between-tags commit, got:\n{auto}"
+        !omitted_json.contains("between-tags feature"),
+        "omitted range (pending) must auto-discover the start at v0.2.0 and exclude the between-tags commit, got:\n{omitted_json}"
     );
     assert!(
-        auto.contains("after-latest-tag fix"),
-        "empty range start should include the post-v0.2.0 commit, got:\n{auto}"
+        omitted_json.contains("after-latest-tag fix"),
+        "omitted range (pending) must include the post-v0.2.0 commit, got:\n{omitted_json}"
     );
 
-    // WITH an explicit `v0.1.0..HEAD` range, the range starts at v0.1.0, so BOTH
-    // commits appear.
-    let with_range = run_changelog("v0.1.0..HEAD");
+    // The START override is exercised through `--format release-notes` (the
+    // grouped-bullet body is directly assertable). `v0.1.0..HEAD` starts at
+    // v0.1.0, so BOTH commits appear — overriding the auto-discovered v0.2.0
+    // start that the pending baseline above used.
+    let with_range = run_changelog_release_notes(tmp.path(), "v0.1.0..HEAD");
     assert!(
         with_range.contains("between-tags feature"),
         "v0.1.0..HEAD must include the between-tags commit (range start override), got:\n{with_range}"
@@ -2759,6 +2737,49 @@ crates:
         with_range.contains("after-latest-tag fix"),
         "v0.1.0..HEAD must still include the post-v0.2.0 commit, got:\n{with_range}"
     );
+}
+
+/// Run `anodizer changelog [<range>] --format json` and return stdout.
+fn run_changelog_json(dir: &std::path::Path, range: Option<&str>) -> String {
+    let mut args = vec!["changelog"];
+    if let Some(r) = range {
+        args.push(r);
+    }
+    args.extend(["--format", "json"]);
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(&args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "changelog {:?} should succeed.\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+/// Run `anodizer changelog <range> --snapshot --format release-notes` and
+/// return stdout.
+fn run_changelog_release_notes(dir: &std::path::Path, range: &str) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "changelog",
+            range,
+            "--snapshot",
+            "--format",
+            "release-notes",
+        ])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "changelog {range:?} should succeed.\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).to_string()
 }
 
 /// A positional range whose start names a nonexistent ref must ERROR (naming

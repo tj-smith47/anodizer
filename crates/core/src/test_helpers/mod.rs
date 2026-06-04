@@ -144,6 +144,7 @@ pub struct TestContextBuilder {
     project_root: Option<PathBuf>,
     env_overrides: Vec<(String, String)>,
     changelog_from: Option<String>,
+    changelog_full_history: bool,
 }
 
 impl Default for TestContextBuilder {
@@ -187,6 +188,7 @@ impl Default for TestContextBuilder {
             project_root: None,
             env_overrides: Vec::new(),
             changelog_from: None,
+            changelog_full_history: false,
         }
     }
 }
@@ -371,6 +373,13 @@ impl TestContextBuilder {
         self
     }
 
+    /// Opt into the full-history changelog range (`changelog ..`): the
+    /// changelog stage skips previous-tag auto-discovery.
+    pub fn changelog_full_history(mut self, full: bool) -> Self {
+        self.changelog_full_history = full;
+        self
+    }
+
     /// Add an environment variable override. Calling [`env`](Self::env)
     /// at least once swaps the built context's env source to a
     /// [`MapEnvSource`](crate::MapEnvSource) seeded from the
@@ -432,6 +441,7 @@ impl TestContextBuilder {
             summary_json_path: None,
             allow_ai_failure: false,
             changelog_from: self.changelog_from,
+            changelog_full_history: self.changelog_full_history,
         };
 
         let mut ctx = Context::new(config, options);

@@ -1027,6 +1027,9 @@ fn build_context_options(
         // are auto-discovered per crate. Only `anodizer changelog --from`
         // sets this.
         changelog_from: None,
+        // The full release pipeline never spans full history; each crate's
+        // notes bound at its previous tag. Only `anodizer changelog ..` opts in.
+        changelog_full_history: false,
     }
 }
 

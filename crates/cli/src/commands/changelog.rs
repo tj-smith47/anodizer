@@ -41,9 +41,27 @@ pub struct ChangelogOpts {
     pub quiet: bool,
 }
 
+/// The lower bound of a changelog range.
+///
+/// Three states because an omitted arg and an explicit empty lower bound must
+/// mean different things: omitting the positional refreshes each target's
+/// pending window (since its last release), while writing `..` (an explicit
+/// empty left side) asks for full history. Collapsing both to "no lower
+/// bound" would make `..` indistinguishable from omission — the trap this
+/// enum exists to remove.
+enum RangeStart {
+    /// Arg omitted: each target resolves its own last release tag (the pending
+    /// `[Unreleased]` window).
+    Pending,
+    /// Explicit empty lower bound (`..`, `..<ref>`): no lower bound — full history.
+    FullHistory,
+    /// Explicit ref (`<ref>..`, `<ref>..<ref>`, or a single tag's predecessor).
+    Ref(String),
+}
+
 /// The resolved commit range driving a changelog render.
 struct ResolvedRange {
-    from: Option<String>,
+    start: RangeStart,
     to: Option<String>,
     /// When set, the positional was a single tag that resolved to exactly one
     /// crate; narrows the selection to that crate regardless of `--crate`.
@@ -107,15 +125,18 @@ pub fn run(opts: ChangelogOpts) -> Result<()> {
     }
 }
 
-/// Resolve the positional `[<tag>|<range>]` into a concrete `(from, to)` plus an
-/// optional crate pin.
+/// Resolve the positional `[<tag>|<range>]` into a [`RangeStart`] + upper
+/// bound plus an optional crate pin.
 ///
-/// - `None` → unbounded `(None, None)`; each target resolves its own last tag.
-/// - `a..b` → explicit `(Some(a), Some(b))`, no pin (applies to all targets).
+/// - `None` → `start: Pending`; each target resolves its own last tag (the
+///   pending window since its last release).
+/// - `..` / `..<ref>` → empty left side ⇒ `start: FullHistory` (no lower
+///   bound); `<ref>..` / `<ref>..<ref>` ⇒ `start: Ref(<ref>)`. No pin (applies
+///   to all targets).
 /// - `<tag>` → resolve the owning crate from its tag prefix, pin to it, and set
-///   `from` to the predecessor tag (the tag immediately below `<tag>` in that
-///   crate's semver-sorted list; `None` when `<tag>` is the earliest) and `to`
-///   to `<tag>`.
+///   `start` to `Ref(predecessor)` (the tag immediately below `<tag>` in that
+///   crate's semver-sorted list) or `FullHistory` when `<tag>` is the earliest
+///   (full history up to it), with `to = <tag>`.
 fn resolve_range(
     workspace_root: &Path,
     config: &Config,
@@ -123,26 +144,51 @@ fn resolve_range(
 ) -> Result<ResolvedRange> {
     let Some(spec) = range else {
         return Ok(ResolvedRange {
-            from: None,
+            start: RangeStart::Pending,
             to: None,
             pinned_crate: None,
         });
     };
     if let Some((from, to)) = spec.split_once("..") {
+        let start = if from.is_empty() {
+            RangeStart::FullHistory
+        } else {
+            RangeStart::Ref(from.to_string())
+        };
         return Ok(ResolvedRange {
-            from: (!from.is_empty()).then(|| from.to_string()),
+            start,
             to: (!to.is_empty()).then(|| to.to_string()),
             pinned_crate: None,
         });
     }
-    // Single tag: resolve the owning crate + predecessor.
+    // Single tag: resolve the owning crate + predecessor. No predecessor means
+    // `<tag>` is the earliest tag, so the range is full history up to it.
     let (owning_crate, prefix) = resolve_tag_owner(config, spec)?;
     let predecessor = predecessor_tag(workspace_root, &prefix, spec)?;
     Ok(ResolvedRange {
-        from: predecessor,
+        start: predecessor.map_or(RangeStart::FullHistory, RangeStart::Ref),
         to: Some(spec.to_string()),
         pinned_crate: Some(owning_crate),
     })
+}
+
+/// Map a [`RangeStart`] to the concrete lower-bound ref the engine-backed
+/// formats (`keep-a-changelog`, `json`) pass to the changelog engine.
+///
+/// - `Pending` → the last tag matching `prefix` (`None` when no tags exist yet,
+///   which is naturally full history).
+/// - `FullHistory` → `None` (no lower bound).
+/// - `Ref(r)` → `Some(r)`.
+fn resolve_start_bound(
+    start: &RangeStart,
+    workspace_root: &Path,
+    prefix: &str,
+) -> Result<Option<String>> {
+    match start {
+        RangeStart::Pending => find_last_tag_for_prefix(workspace_root, prefix),
+        RangeStart::FullHistory => Ok(None),
+        RangeStart::Ref(r) => Ok(Some(r.clone())),
+    }
 }
 
 /// Resolve which crate a single tag belongs to from its tag-template prefix,
@@ -298,13 +344,7 @@ fn run_refresh(
     let targets: Vec<RefreshTarget> = selected
         .into_iter()
         .map(|(name, dir, prefix)| {
-            // An explicit range drives every target; otherwise each target
-            // resolves its own last matching tag as the lower bound.
-            let from_tag = match resolved.from.clone() {
-                Some(f) => Some(f),
-                None if resolved.to.is_none() => find_last_tag_for_prefix(workspace_root, &prefix)?,
-                None => None,
-            };
+            let from_tag = resolve_start_bound(&resolved.start, workspace_root, &prefix)?;
             Ok(RefreshTarget {
                 crate_name: name,
                 crate_dir: dir,
@@ -393,6 +433,18 @@ fn run_release_notes(
         }
     }
 
+    // Map the resolved start onto the stage's two signals so release-notes
+    // covers the SAME commits the engine-backed formats do for an identical
+    // range arg:
+    //   - `Ref(r)` → explicit lower bound (`changelog_from`).
+    //   - `Pending` → no signal; the stage auto-discovers the latest tag,
+    //     matching kac/json's `find_last_tag` ("since last release").
+    //   - `FullHistory` → `changelog_full_history` short-circuits the stage's
+    //     auto-discovery so the range spans all history.
+    let explicit_from = match &resolved.start {
+        RangeStart::Ref(r) => Some(r.clone()),
+        RangeStart::Pending | RangeStart::FullHistory => None,
+    };
     let ctx_opts = ContextOptions {
         verbose,
         debug,
@@ -400,9 +452,10 @@ fn run_release_notes(
         snapshot,
         // The range start, carried as a dedicated option so the changelog stage
         // overrides its auto-discovered previous tag only when the user supplied
-        // a range (the always-auto-populated `PreviousTag` template var cannot
-        // signal "user asked for this").
-        changelog_from: resolved.from.clone(),
+        // an explicit lower bound (the always-auto-populated `PreviousTag`
+        // template var cannot signal "user asked for this").
+        changelog_from: explicit_from.clone(),
+        changelog_full_history: matches!(resolved.start, RangeStart::FullHistory),
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
@@ -419,7 +472,7 @@ fn run_release_notes(
     if let Some(ref t) = resolved.to {
         ctx.template_vars_mut().set("Tag", t);
     }
-    if let Some(ref f) = resolved.from {
+    if let Some(ref f) = explicit_from {
         ctx.template_vars_mut().set("PreviousTag", f);
     }
 
@@ -470,11 +523,7 @@ fn run_json(
 
     let mut elems: Vec<serde_json::Value> = Vec::new();
     for (name, dir, prefix) in &selected {
-        let from_tag = match resolved.from.clone() {
-            Some(f) => Some(f),
-            None if resolved.to.is_none() => find_last_tag_for_prefix(workspace_root, prefix)?,
-            None => None,
-        };
+        let from_tag = resolve_start_bound(&resolved.start, workspace_root, prefix)?;
         let json = anodizer_stage_changelog::render_changelog_json(
             workspace_root,
             dir,
@@ -604,11 +653,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_range_none_is_unbounded() {
+    fn resolve_range_none_is_pending() {
         let cfg = Config::default();
         let tmp = tempfile::tempdir().unwrap();
         let r = resolve_range(tmp.path(), &cfg, None).unwrap();
-        assert!(r.from.is_none());
+        assert!(matches!(r.start, RangeStart::Pending));
         assert!(r.to.is_none());
         assert!(r.pinned_crate.is_none());
     }
@@ -618,18 +667,30 @@ mod tests {
         let cfg = Config::default();
         let tmp = tempfile::tempdir().unwrap();
         let r = resolve_range(tmp.path(), &cfg, Some("v0.1.0..v0.2.0")).unwrap();
-        assert_eq!(r.from.as_deref(), Some("v0.1.0"));
+        assert!(matches!(r.start, RangeStart::Ref(ref f) if f == "v0.1.0"));
         assert_eq!(r.to.as_deref(), Some("v0.2.0"));
         assert!(r.pinned_crate.is_none());
     }
 
+    /// An explicit empty left side (`..<ref>`) means full history, distinct
+    /// from an omitted arg (which is `Pending` / since-last-release).
     #[test]
-    fn resolve_range_open_ended_range_left() {
+    fn resolve_range_open_ended_left_is_full_history() {
         let cfg = Config::default();
         let tmp = tempfile::tempdir().unwrap();
         let r = resolve_range(tmp.path(), &cfg, Some("..v0.2.0")).unwrap();
-        assert!(r.from.is_none());
+        assert!(matches!(r.start, RangeStart::FullHistory));
         assert_eq!(r.to.as_deref(), Some("v0.2.0"));
+    }
+
+    /// Bare `..` (empty both sides) is full history to HEAD.
+    #[test]
+    fn resolve_range_bare_dotdot_is_full_history() {
+        let cfg = Config::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let r = resolve_range(tmp.path(), &cfg, Some("..")).unwrap();
+        assert!(matches!(r.start, RangeStart::FullHistory));
+        assert!(r.to.is_none());
     }
 
     #[test]

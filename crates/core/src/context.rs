@@ -232,6 +232,13 @@ pub struct ContextOptions {
     /// `PreviousTag` template var) so a full release run's per-crate
     /// auto-discovery is never overridden — only an explicit `--from` is.
     pub changelog_from: Option<String>,
+    /// `changelog ..` / `changelog ..<ref>`: an explicit empty lower bound,
+    /// meaning "from the beginning of history" with no auto-discovered
+    /// previous tag. When `true`, the changelog stage skips tag
+    /// auto-discovery entirely so the range covers all reachable commits up
+    /// to the upper bound — distinguishing the explicit empty-from form from
+    /// an omitted range (which still resolves to the last release tag).
+    pub changelog_full_history: bool,
 }
 
 impl Default for ContextOptions {
@@ -268,6 +275,7 @@ impl Default for ContextOptions {
             summary_json_path: None,
             allow_ai_failure: false,
             changelog_from: None,
+            changelog_full_history: false,
         }
     }
 }

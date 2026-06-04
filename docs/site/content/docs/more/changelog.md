@@ -26,18 +26,37 @@ positional range), and no `check changelog` subcommand.
 
 ### Selecting a range
 
-The positional arg drives every format:
+The positional arg drives every format identically — the same arg surfaces the
+same commits whether you render `keep-a-changelog`, `release-notes`, or `json`.
+
+| Arg | Lower bound | Renders |
+|-----|-------------|---------|
+| _(omitted)_ | each crate's last release tag | the pending `[Unreleased]` window (since the last release) |
+| `..` | none — start of history | full history → HEAD |
+| `..<ref>` | none — start of history | full history → `<ref>` |
+| `<from>..` | `<from>` | `<from>` → HEAD |
+| `<from>..<to>` | `<from>` | `<from>` → `<to>` |
+| `<tag>` | the tag's predecessor | exactly that release's entries |
 
 ```bash
-anodizer changelog                       # omit → each crate's pending last-tag..HEAD
+anodizer changelog                       # omit → each crate's pending window (since last release)
+anodizer changelog ..                    # full history → HEAD
+anodizer changelog ..v1.2.0              # full history → v1.2.0
 anodizer changelog v1.0.0..v1.2.0        # explicit range
 anodizer changelog v1.2.0                # one release's slice: predecessor..v1.2.0
 ```
 
+An **empty lower bound** (a leading `..`) always means "from the beginning of
+history." Omitting the arg entirely is different: it is the *pending* window,
+bounded at each crate's last release tag. So `anodizer changelog ..` (full
+history) and `anodizer changelog` (since last release) are distinct — and `..`
+and `..HEAD` are the same (both full history to HEAD).
+
 A single `<tag>` resolves the owning crate from its tag prefix
 (`core-v0.2.0` → the `core` crate) and bounds the range at the predecessor tag —
 the tag immediately below it in that crate's semver-sorted list — so you get
-exactly that release's entries.
+exactly that release's entries. A tag that is the earliest in its series has no
+predecessor, so it falls back to full history up to that tag.
 
 ### `--format keep-a-changelog` (default) — refresh `[Unreleased]`
 
