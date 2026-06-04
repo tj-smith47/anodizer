@@ -198,7 +198,7 @@ Examples below use the Tera-native no-dot idiom.
 | `print` | fn | `{{ "{{ print(args=[Os, Arch]) }}" }}` | `linuxamd64` (Go `Sprint`) |
 | `println` | fn | `{{ "{{ println(args=[Os, Arch]) }}" }}` | `linux amd64\n` (Go `Sprintln`) |
 
-`printf` implements the Go verb subset `%s %d %v %x %X %o %b %c %q %f %e %g %t %%` with flags, width, and precision (Go-style exponents). `print` follows Go's `Sprint` spacing rule (a space is inserted between two adjacent operands only when neither is a string).
+`printf` implements the Go verb subset `%s %d %v %x %X %o %b %c %q %f %e %E %g %G %t %%` with flags, width, and precision (Go-style exponents). `print` follows Go's `Sprint` spacing rule (a space is inserted between two adjacent operands only when neither is a string).
 
 ### Path
 
@@ -212,8 +212,8 @@ Examples below use the Tera-native no-dot idiom.
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `list` | fn | `{{ "{{ list(items=[Os, Arch]) }}" }}` | `["linux","amd64"]` |
-| `map` | fn | `{{ "{{ map(pairs=[\"a\", 1]) }}" }}` | `{\"a\": 1}` |
+| `list` | fn | `{{ "{{ list(items=[Os, Arch]) | join(sep=\"-\") }}" }}` | `linux-amd64` |
+| `map` | fn | `{{ "{% set M = map(pairs=[\"a\", 1]) %}{{ M.a }}" }}` | `1` |
 | `index` | fn | `{{ "{{ index(collection=Parts, key=0) }}" }}` | element at index |
 | `indexOrDefault` | fn | `{{ "{{ indexOrDefault(map=M, key=\"k\", default=\"-\") }}" }}` | value or default |
 | `in` / `contains_any` | filter / fn | `{{ "{{ in(items=[\"rc\", \"beta\"], value=Prerelease) }}" }}` | `true` / `false` |
@@ -249,7 +249,7 @@ Examples below use the Tera-native no-dot idiom.
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
 | `time` | fn | `{{ "{{ time(format=\"2006-01-02\") }}" }}` | current date (Go layout accepted) |
-| `now_format` | fn | `{{ "{{ now_format(format=\"%Y-%m-%d\") }}" }}` | current date (chrono format) |
+| `now_format` | filter | `{{ "{{ Now | now_format(format=\"%Y-%m-%d\") }}" }}` | current date (chrono format) |
 
 ### Hashing
 
