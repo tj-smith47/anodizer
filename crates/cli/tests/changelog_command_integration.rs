@@ -1743,3 +1743,286 @@ fn per_crate_changelog_from_subdir_matches_root() {
     let tmp = per_crate_repo();
     assert_subdir_matches_root(&tmp, "crates/cli");
 }
+
+// ---------------------------------------------------------------------------
+// Config-shape × format matrix: the changelog command must render correctly
+// across the FINITE set of config-shape encodings, in every format, leaving no
+// preview `dist/` artifact. This is the exhaustive guard against a shape that
+// is only tested under one encoding (the class of bug that left
+// `workspaces:`-multi-track release-notes empty).
+// ---------------------------------------------------------------------------
+
+/// One config-shape encoding the changelog command must support.
+struct ShapeCase {
+    /// Diagnostic label.
+    name: &'static str,
+    /// `.anodizer.yaml` body.
+    yaml: &'static str,
+    /// `Cargo.toml` workspace members.
+    members: &'static [&'static str],
+    /// `(crate_dir, package_name, version)` per member.
+    crates: &'static [(&'static str, &'static str, &'static str)],
+    /// `(tag, on_commit_index)` to create after the listed commits — the seed
+    /// commit is index 0. A post-tag commit per track makes the pending window
+    /// non-empty.
+    tags: &'static [&'static str],
+    /// Post-seed commits (subject lines); each touches the crate dir named in
+    /// `.0`. Applied in order AFTER `tags` are placed on the seed commit.
+    post_tag_commits: &'static [(&'static str, &'static str)],
+    /// Substrings every release-notes / json render must contain (one per
+    /// track's post-tag commit), proving all tracks rendered non-empty.
+    must_contain: &'static [&'static str],
+    /// Expected element count for `--format json` (one per rendered track).
+    json_len: usize,
+}
+
+/// Build a fixture repo for a [`ShapeCase`]: write the workspace + crates +
+/// config, seed-commit + tag, then apply each post-tag commit.
+fn build_shape_repo(case: &ShapeCase) -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let members = case
+        .members
+        .iter()
+        .map(|m| format!("\"{m}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    // Lockstep shapes declare `[workspace.package].version`; the YAML body
+    // signals this by leaving every crate at `version.workspace = true`.
+    let ws_pkg = if case.crates.iter().any(|(_, _, v)| *v == "workspace") {
+        "\n[workspace.package]\nversion = \"0.1.0\"\n"
+    } else {
+        ""
+    };
+    fs::write(
+        root.join("Cargo.toml"),
+        format!("[workspace]\nmembers = [{members}]\nresolver = \"2\"\n{ws_pkg}"),
+    )
+    .unwrap();
+    for (dir, name, ver) in case.crates {
+        fs::create_dir_all(root.join(dir).join("src")).unwrap();
+        let ver_line = if *ver == "workspace" {
+            "version.workspace = true".to_string()
+        } else {
+            format!("version = \"{ver}\"")
+        };
+        fs::write(
+            root.join(dir).join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\n{ver_line}\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(dir).join("src/lib.rs"), "").unwrap();
+    }
+    fs::write(root.join(".anodizer.yaml"), case.yaml).unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    for tag in case.tags {
+        run_git(root, &["tag", tag]);
+    }
+    for (dir, subject) in case.post_tag_commits {
+        fs::write(root.join(dir).join("src/lib.rs"), format!("// {subject}\n")).unwrap();
+        git_add_commit(root, subject);
+    }
+    tmp
+}
+
+/// The finite set of config-shape encodings. Each must render every format.
+fn shape_matrix() -> Vec<ShapeCase> {
+    vec![
+        // 1. Single crate (explicit one-entry `crates:`), pending = post-tag.
+        ShapeCase {
+            name: "single",
+            yaml: "project_name: single\nchangelog: {}\ncrates:\n  - name: app\n    path: crates/app\n    tag_template: \"v{{ Version }}\"\n",
+            members: &["crates/app"],
+            crates: &[("crates/app", "app", "0.1.0")],
+            tags: &["v0.1.0"],
+            post_tag_commits: &[("crates/app", "feat: single change")],
+            must_contain: &["single change"],
+            json_len: 1,
+        },
+        // 2. Lockstep: `[workspace.package].version`, no `crates:`/`workspaces:`.
+        ShapeCase {
+            name: "lockstep",
+            yaml: "project_name: lockstep\nchangelog: {}\n",
+            members: &["crates/core", "crates/cli"],
+            crates: &[
+                ("crates/core", "core", "workspace"),
+                ("crates/cli", "cli", "workspace"),
+            ],
+            tags: &["v0.1.0"],
+            post_tag_commits: &[("crates/core", "feat: lockstep change")],
+            must_contain: &["lockstep change"],
+            json_len: 1,
+        },
+        // 3. Flat-aggregate: flat `crates:`, ALL sharing one `v*` prefix.
+        ShapeCase {
+            name: "flat-aggregate",
+            yaml: "project_name: aggregate\nchangelog: {}\ncrates:\n  - name: core\n    path: crates/core\n    tag_template: \"v{{ Version }}\"\n  - name: cli\n    path: crates/cli\n    tag_template: \"v{{ Version }}\"\n",
+            members: &["crates/core", "crates/cli"],
+            crates: &[
+                ("crates/core", "core", "0.1.0"),
+                ("crates/cli", "cli", "0.1.0"),
+            ],
+            tags: &["v0.1.0"],
+            post_tag_commits: &[
+                ("crates/core", "feat: aggregate core change"),
+                ("crates/cli", "feat: aggregate cli change"),
+            ],
+            // Flat aggregate collapses to ONE whole-repo body spanning both.
+            must_contain: &["aggregate core change", "aggregate cli change"],
+            json_len: 1,
+        },
+        // 4. PerCrate via flat `crates:` with DISTINCT prefixes (populates
+        //    config.crates).
+        ShapeCase {
+            name: "percrate-flat",
+            yaml: "project_name: percrate\nchangelog:\n  per_crate: true\ncrates:\n  - name: core\n    path: crates/core\n    tag_template: \"core-v{{ Version }}\"\n  - name: cli\n    path: crates/cli\n    tag_template: \"cli-v{{ Version }}\"\n",
+            members: &["crates/core", "crates/cli"],
+            crates: &[
+                ("crates/core", "core", "0.1.0"),
+                ("crates/cli", "cli", "0.2.0"),
+            ],
+            tags: &["core-v0.1.0", "cli-v0.2.0"],
+            post_tag_commits: &[
+                ("crates/core", "feat: flat core change"),
+                ("crates/cli", "fix: flat cli change"),
+            ],
+            must_contain: &["flat core change", "flat cli change"],
+            json_len: 2,
+        },
+        // 5. PerCrate via top-level `workspaces:` (leaves config.crates EMPTY —
+        //    the cfgd shape that broke release-notes). github-native to also
+        //    prove the local-git preview fallback in this shape.
+        ShapeCase {
+            name: "percrate-workspaces-ghnative",
+            yaml: "project_name: cfgd\nchangelog:\n  use: github-native\nworkspaces:\n  - name: core\n    crates:\n      - name: cfgd-core\n        path: crates/core\n        tag_template: \"core-v{{ Version }}\"\n  - name: cli\n    crates:\n      - name: cfgd\n        path: crates/cli\n        tag_template: \"v{{ Version }}\"\n",
+            members: &["crates/core", "crates/cli"],
+            crates: &[
+                ("crates/core", "cfgd-core", "0.1.0"),
+                ("crates/cli", "cfgd", "0.1.0"),
+            ],
+            tags: &["core-v0.1.0", "v0.1.0"],
+            post_tag_commits: &[
+                ("crates/core", "feat: ws core change"),
+                ("crates/cli", "fix: ws cli change"),
+            ],
+            must_contain: &["ws core change", "ws cli change"],
+            json_len: 2,
+        },
+    ]
+}
+
+/// Assert NO `dist/CHANGELOG.md` exists under `root` (a preview must never
+/// persist a dist artifact).
+fn assert_no_dist_changelog(root: &Path, label: &str) {
+    assert!(
+        !root.join("dist/CHANGELOG.md").exists(),
+        "[{label}] preview must not write dist/CHANGELOG.md"
+    );
+}
+
+#[test]
+fn config_shape_matrix_renders_all_formats() {
+    for case in shape_matrix() {
+        let tmp = build_shape_repo(&case);
+        let root = tmp.path();
+        let label = case.name;
+        let is_ghnative = case.yaml.contains("use: github-native");
+
+        // --- kac (default) preview: renders [Unreleased], no dist artifact. ---
+        let kac = changelog(root, &["-q"]);
+        assert!(
+            kac.success,
+            "[{label}] kac failed: {}\n{}",
+            kac.stdout, kac.stderr
+        );
+        assert!(
+            kac.stdout.contains("Unreleased"),
+            "[{label}] kac must render [Unreleased]: {}",
+            kac.stdout
+        );
+        assert_no_dist_changelog(root, label);
+
+        // --- release-notes (no --crate): every track non-empty. ---
+        let rn = changelog(root, &["-q", "--format", "release-notes"]);
+        assert!(
+            rn.success,
+            "[{label}] release-notes failed: {}\n{}",
+            rn.stdout, rn.stderr
+        );
+        assert!(
+            !rn.stdout.trim().is_empty(),
+            "[{label}] release-notes body must be non-empty"
+        );
+        for needle in case.must_contain {
+            assert!(
+                rn.stdout.contains(needle),
+                "[{label}] release-notes missing {needle:?}:\n{}",
+                rn.stdout
+            );
+        }
+        assert!(
+            !rn.stdout.contains("changelog skipped") && !rn.stderr.contains("changelog skipped"),
+            "[{label}] release-notes must not hit the snapshot-skip gate: {}\n{}",
+            rn.stdout,
+            rn.stderr
+        );
+        if is_ghnative {
+            assert!(
+                rn.stderr.contains("previewing from local git"),
+                "[{label}] github-native release-notes must emit the local-git note: {}",
+                rn.stderr
+            );
+            assert!(
+                !rn.stderr.contains("requires a GitHub token"),
+                "[{label}] github-native preview must not require a token: {}",
+                rn.stderr
+            );
+        }
+        assert_no_dist_changelog(root, label);
+
+        // --- json: valid array, one element per rendered track. ---
+        let js = changelog(root, &["-q", "--format", "json"]);
+        assert!(
+            js.success,
+            "[{label}] json failed: {}\n{}",
+            js.stdout, js.stderr
+        );
+        let v: serde_json::Value = serde_json::from_str(&js.stdout)
+            .unwrap_or_else(|e| panic!("[{label}] json parse failed: {e}\n{}", js.stdout));
+        let arr = v
+            .as_array()
+            .unwrap_or_else(|| panic!("[{label}] json must be an array"));
+        assert_eq!(
+            arr.len(),
+            case.json_len,
+            "[{label}] json element count: {}",
+            js.stdout
+        );
+        assert_no_dist_changelog(root, label);
+
+        // --- snapshot release-notes: renders without `changelog.snapshot:
+        //     true` (the standalone command bypasses the config gate). ---
+        let snap = changelog(root, &["-q", "--snapshot", "--format", "release-notes"]);
+        assert!(
+            snap.success,
+            "[{label}] snapshot release-notes failed: {}\n{}",
+            snap.stdout, snap.stderr
+        );
+        assert!(
+            !snap.stdout.contains("changelog skipped")
+                && !snap.stderr.contains("changelog skipped"),
+            "[{label}] snapshot release-notes must bypass the config gate: {}\n{}",
+            snap.stdout,
+            snap.stderr
+        );
+        for needle in case.must_contain {
+            assert!(
+                snap.stdout.contains(needle),
+                "[{label}] snapshot release-notes missing {needle:?}:\n{}",
+                snap.stdout
+            );
+        }
+        assert_no_dist_changelog(root, label);
+    }
+}

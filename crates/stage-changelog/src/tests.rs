@@ -1405,6 +1405,100 @@ fn test_integration_changelog_stage_with_real_git_repo() {
     );
 }
 
+/// The dist `CHANGELOG.md` write is gated on `!changelog_preview`: the release
+/// pipeline (preview unset) MUST persist the dist artifact downstream stages
+/// consume; the standalone `changelog` preview (preview set) MUST NOT, so it
+/// never dirties the working tree. Both halves are asserted against the SAME
+/// real git repo so the only variable is the flag.
+#[test]
+#[serial]
+fn test_changelog_dist_write_gated_on_preview_flag() {
+    use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
+    use std::process::Command;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init"]);
+    std::fs::write(repo.join("file.txt"), b"v1").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "feat: add initial feature"]);
+
+    let config = Config {
+        project_name: "test-project".to_string(),
+        dist: repo.join("dist"),
+        changelog: Some(ChangelogConfig::default()),
+        crates: vec![CrateConfig {
+            name: "test-project".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let dist_changelog = config.dist.join("CHANGELOG.md");
+
+    // Release path (changelog_preview unset): dist artifact IS written.
+    {
+        let mut ctx = TestContextBuilder::new()
+            .project_name(&config.project_name)
+            .crates(config.crates.clone())
+            .dist(config.dist.clone())
+            .build();
+        ctx.config.changelog = config.changelog.clone();
+        let _cwd = CwdGuard::new(repo).unwrap();
+        ChangelogStage.run(&mut ctx).unwrap();
+        assert!(
+            !ctx.stage_outputs.changelogs.is_empty(),
+            "release path must still populate changelog content"
+        );
+        assert!(
+            dist_changelog.exists(),
+            "release path (preview unset) must write dist/CHANGELOG.md"
+        );
+    }
+
+    std::fs::remove_file(&dist_changelog).unwrap();
+
+    // Preview path (changelog_preview set): content is still produced for
+    // streaming, but NO dist artifact is written.
+    {
+        let mut ctx = TestContextBuilder::new()
+            .project_name(&config.project_name)
+            .crates(config.crates.clone())
+            .dist(config.dist.clone())
+            .changelog_preview(true)
+            .build();
+        ctx.config.changelog = config.changelog.clone();
+        let _cwd = CwdGuard::new(repo).unwrap();
+        ChangelogStage.run(&mut ctx).unwrap();
+        assert!(
+            !ctx.stage_outputs.changelogs.is_empty(),
+            "preview must still populate stage_outputs.changelogs for streaming"
+        );
+        assert!(
+            !dist_changelog.exists(),
+            "preview (changelog_preview set) must NOT write dist/CHANGELOG.md"
+        );
+    }
+}
+
 // -----------------------------------------------------------------------
 // Additional behavior tests — config fields actually do things
 // -----------------------------------------------------------------------

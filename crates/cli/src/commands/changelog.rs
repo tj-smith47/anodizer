@@ -481,25 +481,40 @@ fn run_release_notes(
         }
     }
 
-    // Bare-lockstep / config-less single crate (no `crates:` list, version from
-    // `[workspace.package]`): the changelog stage iterates `config.crates`, which
-    // is empty here, so it would render nothing. kac/json avoid this because
-    // `select_crates` synthesizes ONE project-name aggregate at the workspace
-    // root for this shape; mirror that here so release-notes renders the same
-    // lockstep aggregate body. Skipped when an explicit `--crate` filter targets
-    // a `workspaces:` member (handled by the overlay below) so the synthetic
+    // Both bare-lockstep and `workspaces:`-multi-track configs leave
+    // `config.crates` empty, so the changelog stage (which iterates
+    // `config.crates`) would render nothing. kac/json avoid this because
+    // `select_crates`/`detect_repo_shape` materialize the render set for these
+    // shapes; mirror that here. Skipped when an explicit `--crate` filter
+    // targets a member (handled by the overlay below) so a synthetic/flattened
     // entry never shadows the real per-crate context.
-    if effective_filter.is_none()
-        && config.crates.is_empty()
-        && config.workspaces.as_deref().unwrap_or_default().is_empty()
-    {
-        let global_prefix = global_tag_prefix(&config);
-        config.crates = vec![anodizer_core::config::CrateConfig {
-            name: config.project_name.clone(),
-            path: String::new(),
-            tag_template: format!("{}{{{{ Version }}}}", global_prefix),
-            ..Default::default()
-        }];
+    if effective_filter.is_none() && config.crates.is_empty() {
+        let workspace_crates: Vec<anodizer_core::config::CrateConfig> = config
+            .workspaces
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|w| w.crates.iter().cloned())
+            .collect();
+        if workspace_crates.is_empty() {
+            // No `workspaces:` either: bare-lockstep / config-less single crate
+            // (version from `[workspace.package]`). Synthesize ONE project-name
+            // aggregate at the workspace root, matching `select_crates`'s
+            // lockstep/single arm.
+            let global_prefix = global_tag_prefix(&config);
+            config.crates = vec![anodizer_core::config::CrateConfig {
+                name: config.project_name.clone(),
+                path: String::new(),
+                tag_template: format!("{}{{{{ Version }}}}", global_prefix),
+                ..Default::default()
+            }];
+        } else {
+            // `workspaces:`-multi-track: flatten every workspace's crates into
+            // the render set so each track's release-notes body is generated and
+            // joined by the multi-crate separator below — matching the kac/json
+            // `detect_repo_shape::PerCrate` output for this shape.
+            config.crates = workspace_crates;
+        }
     }
 
     let selected_crates: Vec<String> = match effective_filter.as_ref() {

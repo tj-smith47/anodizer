@@ -173,7 +173,14 @@ impl Stage for super::ChangelogStage {
             opts.footer.as_deref(),
         )?;
 
-        write_changelog_dist(&log, &dist, &final_markdown)?;
+        // The standalone `changelog --format release-notes` preview streams
+        // from `stage_outputs.changelogs` (populated above) to stdout; it must
+        // NOT persist a `dist/CHANGELOG.md` artifact that would dirty the
+        // working tree. The release pipeline leaves `changelog_preview` unset,
+        // so it still writes dist normally.
+        if !ctx.options.changelog_preview {
+            write_changelog_dist(&log, &dist, &final_markdown)?;
+        }
         Ok(())
     }
 }
