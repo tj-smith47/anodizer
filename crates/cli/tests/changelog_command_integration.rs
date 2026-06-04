@@ -518,6 +518,66 @@ fn bare_release_notes_renders_pending_window_no_guards() {
     );
 }
 
+/// Workspace-LOCKSTEP shape: `[workspace.package].version` set, members
+/// inheriting it, one shared `v*` tag track, the last tag BEHIND HEAD. Bare
+/// `changelog --format release-notes` (no checkout, NO `--snapshot`) must render
+/// the pending aggregate body and exit success — proving the tag-at-HEAD guard
+/// is bypassed in lockstep mode too (the mandatory third config-mode axis).
+#[test]
+fn lockstep_release_notes_renders_pending_window_no_guards() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    for name in ["core", "cli"] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion.workspace = true\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: lockstep\nchangelog: {}\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    // Post-tag commit leaves the shared `v0.1.0` tag BEHIND HEAD: the pending
+    // aggregate window is v0.1.0..HEAD.
+    fs::write(root.join("crates/core/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "feat: lockstep pending change");
+
+    let r = changelog(root, &["-q", "--format", "release-notes"]);
+    assert!(
+        r.success,
+        "lockstep release-notes failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    assert!(
+        !r.stderr.contains("does not point at HEAD"),
+        "lockstep preview must NOT require a checkout: {}",
+        r.stderr
+    );
+    assert!(
+        !r.stdout.contains("changelog skipped") && !r.stderr.contains("changelog skipped"),
+        "lockstep preview must NOT hit the snapshot-skip gate: {}\n{}",
+        r.stdout,
+        r.stderr
+    );
+    assert!(
+        r.stdout.contains("lockstep pending change"),
+        "lockstep preview must show the pending aggregate commit: {}",
+        r.stdout
+    );
+}
+
 /// `changelog --snapshot --format release-notes` against a fixture WITHOUT
 /// `changelog.snapshot: true` must still render — the standalone command bypasses
 /// the snapshot-skip config gate that the release pipeline honors.

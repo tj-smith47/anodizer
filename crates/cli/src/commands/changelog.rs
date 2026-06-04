@@ -473,6 +473,31 @@ fn run_release_notes(
         }
     }
 
+    // Bare-lockstep / config-less single crate (no `crates:` list, version from
+    // `[workspace.package]`): the changelog stage iterates `config.crates`, which
+    // is empty here, so it would render nothing. kac/json avoid this because
+    // `select_crates` synthesizes ONE project-name aggregate at the workspace
+    // root for this shape; mirror that here so release-notes renders the same
+    // lockstep aggregate body. Skipped when an explicit `--crate` filter targets
+    // a `workspaces:` member (handled by the overlay below) so the synthetic
+    // entry never shadows the real per-crate context.
+    if effective_filter.is_none()
+        && config.crates.is_empty()
+        && config.workspaces.as_deref().unwrap_or_default().is_empty()
+    {
+        let global_prefix = config
+            .tag
+            .as_ref()
+            .and_then(|t| t.tag_prefix.clone())
+            .unwrap_or_else(|| "v".to_string());
+        config.crates = vec![anodizer_core::config::CrateConfig {
+            name: config.project_name.clone(),
+            path: String::new(),
+            tag_template: format!("{}{{{{ .Version }}}}", global_prefix),
+            ..Default::default()
+        }];
+    }
+
     let selected_crates: Vec<String> = match effective_filter.as_ref() {
         Some(name) => vec![name.clone()],
         None => Vec::new(),
