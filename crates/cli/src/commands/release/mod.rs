@@ -14,7 +14,7 @@ use anodizer_core::hooks::HookRunContext;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::template;
 use anyhow::{Context as _, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct ReleaseOpts {
     pub crate_names: Vec<String>,
@@ -654,7 +654,13 @@ fn resolve_selected_crates(
         if opts.force {
             all_known_crates.iter().map(|c| c.name.clone()).collect()
         } else {
+            // The release command does not discover a workspace root; its change
+            // detection has always run with crate paths resolved against the cwd.
+            // Pass the cwd explicitly so this stays byte-identical (root-aware
+            // release discovery is out of scope here).
+            let cwd = std::env::current_dir()?;
             detect_changed_crates(
+                &cwd,
                 all_known_crates,
                 config.git.as_ref(),
                 config.monorepo_tag_prefix(),
@@ -1475,15 +1481,17 @@ pub(super) fn run_post_pipeline_after_hooks_only(
 
 /// Detect which crates have changes since their last tag.
 pub(crate) fn detect_changed_crates_pub(
+    workspace_root: &Path,
     crates: &[CrateConfig],
     git_config: Option<&anodizer_core::config::GitConfig>,
     monorepo_prefix: Option<&str>,
     log: &StageLogger,
 ) -> Result<Vec<String>> {
-    detect_changed_crates(crates, git_config, monorepo_prefix, log)
+    detect_changed_crates(workspace_root, crates, git_config, monorepo_prefix, log)
 }
 
 fn detect_changed_crates(
+    workspace_root: &Path,
     crates: &[CrateConfig],
     git_config: Option<&anodizer_core::config::GitConfig>,
     monorepo_prefix: Option<&str>,
@@ -1524,7 +1532,7 @@ fn detect_changed_crates(
                 changed.push(c.name.clone());
             }
             Some(tag) => {
-                if git::has_changes_since(tag, &c.path)? {
+                if git::has_changes_since_in(workspace_root, tag, &c.path)? {
                     changed.push(c.name.clone());
                 }
                 // Track the earliest tag for workspace-level check

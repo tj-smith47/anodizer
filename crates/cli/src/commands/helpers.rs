@@ -1306,17 +1306,31 @@ pub fn load_artifacts_from_manifest(
 /// fallback of "cwd is the root" silently loaded the wrong manifests from a
 /// subdir.
 pub(crate) fn discover_workspace_root(config_override: Option<&Path>) -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    // Always return an ABSOLUTE root: callers thread it into `git -C <root>`,
+    // which fails on an empty/relative path. A config resolved cwd-relative
+    // (e.g. the bare `.anodizer.yaml` auto-discovery returns) has an empty
+    // parent whose ancestor walk yields `""`, so absolutize every candidate
+    // against the cwd before returning.
+    let absolutize = |p: &Path| -> PathBuf {
+        if p.as_os_str().is_empty() {
+            cwd.clone()
+        } else if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            cwd.join(p)
+        }
+    };
     if let Some(p) = config_override {
         // Config override points at .anodizer.yaml; walk up until we find Cargo.toml.
         if let Some(dir) = p.parent() {
             for ancestor in dir.ancestors() {
-                if ancestor.join("Cargo.toml").is_file() {
-                    return Ok(ancestor.to_path_buf());
+                if absolutize(ancestor).join("Cargo.toml").is_file() {
+                    return Ok(absolutize(ancestor));
                 }
             }
         }
     }
-    let cwd = std::env::current_dir().context("failed to read current directory")?;
     for ancestor in cwd.ancestors() {
         if ancestor.join("Cargo.toml").is_file() {
             return Ok(ancestor.to_path_buf());

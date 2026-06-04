@@ -497,7 +497,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // to that directory so unrelated commits don't trigger a spurious bump.
     if let Some(ref tag) = prev_tag {
         let has_changes = if let Some(ref path) = crate_path {
-            git::has_changes_since(tag, path)?
+            git::has_changes_since_in(&workspace_root_path, tag, path)?
         } else {
             git::has_commits_since_tag(tag)?
         };
@@ -523,7 +523,12 @@ pub fn run(opts: TagOpts) -> Result<()> {
 
     // Scan commit messages to determine bump.  When a crate path is set,
     // only consider commits that actually touched that directory.
-    let messages = get_messages_for_bump(&cfg, prev_tag.as_deref(), crate_path.as_deref())?;
+    let messages = get_messages_for_bump(
+        &workspace_root_path,
+        &cfg,
+        prev_tag.as_deref(),
+        crate_path.as_deref(),
+    )?;
     log.verbose(&format!("scanned {} commit message(s)", messages.len()));
 
     // Detect bump
@@ -1298,6 +1303,7 @@ struct GroupTagResult {
 /// Returns the list of groups that need tagging, skipping groups with no
 /// changes.
 fn compute_per_crate_tags(
+    workspace_root: &Path,
     groups: &[Vec<CrateConfig>],
     opts: &TagOpts,
     cfg: &ResolvedConfig,
@@ -1323,6 +1329,7 @@ fn compute_per_crate_tags(
     // Run change detection across ALL crates so depends_on propagation works.
     let all_known = flatten_known_crates(anodizer_config);
     let changed_names = detect_changed_crates_pub(
+        workspace_root,
         &all_known,
         anodizer_config.git.as_ref(),
         anodizer_config.monorepo_tag_prefix(),
@@ -1363,8 +1370,13 @@ fn compute_per_crate_tags(
         // Scan commits across all paths in the group.
         let mut all_messages: Vec<String> = Vec::new();
         for crate_cfg in group {
-            let msgs = get_messages_for_bump(cfg, prev_tag.as_deref(), Some(&crate_cfg.path))
-                .unwrap_or_default();
+            let msgs = get_messages_for_bump(
+                workspace_root,
+                cfg,
+                prev_tag.as_deref(),
+                Some(&crate_cfg.path),
+            )
+            .unwrap_or_default();
             all_messages.extend(msgs);
         }
         let bump = detect_bump(&all_messages, &group_cfg);
@@ -1481,7 +1493,15 @@ fn run_per_crate_tag(
         workspace_root,
     } = dispatch;
     let cwd = workspace_root.clone();
-    let tag_results = compute_per_crate_tags(&groups, opts, cfg, git_config, anodizer_config, log)?;
+    let tag_results = compute_per_crate_tags(
+        &workspace_root,
+        &groups,
+        opts,
+        cfg,
+        git_config,
+        anodizer_config,
+        log,
+    )?;
 
     if tag_results.is_empty() {
         log.verbose("no changed crates — nothing to tag");
@@ -1840,20 +1860,23 @@ fn branch_matches(branch: &str, patterns: &[String]) -> bool {
 }
 
 fn get_messages_for_bump(
+    workspace_root: &Path,
     cfg: &ResolvedConfig,
     prev_tag: Option<&str>,
     path: Option<&str>,
 ) -> Result<Vec<String>> {
     match cfg.branch_history.as_str() {
         "last" => match path {
-            Some(p) => git::get_last_commit_messages_path(1, p),
-            None => git::get_last_commit_messages(1),
+            Some(p) => git::get_last_commit_messages_path_in(workspace_root, 1, p),
+            None => git::get_last_commit_messages_in(workspace_root, 1),
         },
         "full" | "compare" => match (prev_tag, path) {
-            (Some(tag), Some(p)) => git::get_commit_messages_between_path(tag, "HEAD", p),
-            (Some(tag), None) => git::get_commit_messages_between(tag, "HEAD"),
-            (None, Some(p)) => git::get_last_commit_messages_path(500, p),
-            (None, None) => git::get_last_commit_messages(500),
+            (Some(tag), Some(p)) => {
+                git::get_commit_messages_between_path_in(workspace_root, tag, "HEAD", p)
+            }
+            (Some(tag), None) => git::get_commit_messages_between_in(workspace_root, tag, "HEAD"),
+            (None, Some(p)) => git::get_last_commit_messages_path_in(workspace_root, 500, p),
+            (None, None) => git::get_last_commit_messages_in(workspace_root, 500),
         },
         other => {
             bail!("unknown branch_history mode: {}", other);

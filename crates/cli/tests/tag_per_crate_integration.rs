@@ -605,3 +605,54 @@ fn per_crate_no_output_when_push_fails() {
          (would advertise tags that never landed): stdout={stdout}"
     );
 }
+
+/// Per-crate change detection must scope each crate's `git diff -- <path>`
+/// against the workspace root, not the cwd. Invoked from a member directory
+/// with the root config, a commit touching `crates/core` must still be
+/// detected as a `core` change (and `cli` left untouched) — before the
+/// root-aware fix, the `crates/core` pathspec was resolved relative to the
+/// `crates/cli` cwd, found nothing, and reported zero changed crates.
+#[test]
+fn per_crate_change_detection_from_subdir_scopes_to_workspace_root() {
+    let tmp = TempDir::new().unwrap();
+    flat_two_crate_workspace(tmp.path());
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "core-v0.1.0"]);
+    run_git(tmp.path(), &["tag", "cli-v0.1.0"]);
+    // Touch only crates/core.
+    fs::write(tmp.path().join("crates/core/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(tmp.path(), "fix: core bug");
+
+    let config = tmp.path().join(".anodizer.yaml");
+    let out = anodizer()
+        .current_dir(tmp.path().join("crates/cli"))
+        .args([
+            "tag",
+            "--dry-run",
+            "--config",
+            config.to_str().expect("utf8 config path"),
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "tag --dry-run from subdir failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("anodizer-output crates=[\"core\"]"),
+        "from a subdir, the core change must still be detected \
+         (pathspec scoped to the workspace root): stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("anodizer-output versions={\"core\":\"0.1.1\"}"),
+        "expected versions={{\"core\":\"0.1.1\"}} from subdir: {stdout}"
+    );
+    // Dry-run must not create tags.
+    assert!(
+        !git_tag_exists(tmp.path(), "core-v0.1.1"),
+        "dry-run must not create core-v0.1.1"
+    );
+}

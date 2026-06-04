@@ -324,6 +324,27 @@ fn tag_dry_run_from(run_dir: &Path, config: &Path) -> DryRunResult {
     }
 }
 
+/// Normalize the `anodizer-output versions={...}` line so two runs compare
+/// equal regardless of the map's hash-iteration order: sort the comma-separated
+/// entries inside the braces. (The `crates=[...]` list is order-stable.)
+fn normalize_versions(out: &str) -> String {
+    out.lines()
+        .map(
+            |line| match line.strip_prefix("anodizer-output versions={") {
+                Some(rest) => {
+                    let body = rest.strip_suffix('}').unwrap_or(rest);
+                    let mut entries: Vec<&str> =
+                        body.split(',').filter(|s| !s.is_empty()).collect();
+                    entries.sort_unstable();
+                    format!("anodizer-output versions={{{}}}", entries.join(","))
+                }
+                None => line.to_string(),
+            },
+        )
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn assert_tag_subdir_matches_root(root: &Path, subdir: &str) {
     let config = root.join(".anodizer.yaml");
     let from_root = tag_dry_run_from(root, &config);
@@ -339,7 +360,8 @@ fn assert_tag_subdir_matches_root(root: &Path, subdir: &str) {
         from_subdir.stdout
     );
     assert_eq!(
-        from_subdir.stdout, from_root.stdout,
+        normalize_versions(&from_subdir.stdout),
+        normalize_versions(&from_root.stdout),
         "tag --dry-run from {subdir} must match the repo-root preview \
          (workspace root resolved against cwd instead of the config)"
     );
