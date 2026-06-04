@@ -745,7 +745,17 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 })
                 .unwrap_or_default();
             let cl_config = changelog_config_for(loaded_config.as_ref());
-            let routing = ChangelogRouting::from_config(&cl_config);
+            let mut routing = ChangelogRouting::from_config(&cl_config);
+            // `--crate <name>` single-target on a PerCrate workspace: topology
+            // count is 1, so the renderer relies on the crate-name-aware
+            // fallback. Supply the FULL root-routed crate set so an existing
+            // `### <crate>` subsection is detected and a foreign heading is not.
+            if let Some(cfg) = loaded_config.as_ref() {
+                routing.root_crate_names = crate::commands::changelog_sync::config_root_crate_names(
+                    cfg,
+                    routing.root_crates,
+                );
+            }
             render_and_stage_changelogs(ws_root, &targets, &routing, opts.dry_run, &log)?
         } else {
             Vec::new()
@@ -965,6 +975,10 @@ fn apply_workspace_bump(
         chronology: cl.routing.chronology,
         root_crates: cl.routing.root_crates,
         single_track: false,
+        // Per-crate files are flat and independent; the root is handled by the
+        // separate aggregate routing below.
+        multitrack: false,
+        root_crate_names: Vec::new(),
     };
 
     let root_aggregate_target: Vec<ChangelogTarget> = if cl.enabled && cl.routing.root_enabled {
@@ -996,6 +1010,9 @@ fn apply_workspace_bump(
         // whose `### <Heading>` titles diverge from the configured `groups:`
         // is not misread as multi-track and grafted with a `### <crate>`.
         single_track: true,
+        // A lockstep aggregate is flat, never multitrack.
+        multitrack: false,
+        root_crate_names: Vec::new(),
     };
 
     if dry_run {
@@ -1565,6 +1582,33 @@ fn run_per_crate_tag(
     ) {
         changelog_routing.single_track = true;
     }
+
+    // Genuine multi-track root: each target owns a `### <crate>` subsection.
+    // Derive the topology signal + the full root-routed crate-name set so the
+    // root renderer bootstraps every crate's subsection (no last-writer-wins on
+    // a fresh root) and classifies subsections by crate name. The crate-name set
+    // is the FULL configured set (one shared `config_root_crate_names` source) so
+    // the classification fallback never sees a changed-crates-only subset; the
+    // multitrack COUNT is the number of bumped tracks routed to the root.
+    let bumped_root_tracks = changelog_targets
+        .iter()
+        .filter(|t| {
+            crate::commands::changelog_sync::crate_in_root(
+                &t.crate_name,
+                changelog_routing.root_crates,
+            )
+        })
+        .count();
+    changelog_routing.root_crate_names = anodizer_config
+        .map(|cfg| {
+            crate::commands::changelog_sync::config_root_crate_names(
+                cfg,
+                changelog_routing.root_crates,
+            )
+        })
+        .unwrap_or_default();
+    changelog_routing.multitrack =
+        changelog_routing.root_enabled && !changelog_routing.single_track && bumped_root_tracks > 1;
 
     if !opts.dry_run {
         // Apply version bumps across all changed crates in a single commit.

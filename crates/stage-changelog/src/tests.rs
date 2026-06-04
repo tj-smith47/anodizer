@@ -4247,7 +4247,10 @@ line two\n\
             None,
             None,
             Chronology::Date,
+            // Topology count is 1 (single target); the crate-name-aware fallback
+            // over the known crate set routes to the `### cfgd` subsection.
             false,
+            &["cfgd".to_string(), "cfgd-core".to_string()],
             None,
         )
         .expect("ok")
@@ -4288,7 +4291,10 @@ line two\n\
             None,
             None,
             Chronology::Date,
-            true,
+            // Single-track topology: flat root, byte-identical to the per-crate
+            // path.
+            false,
+            &[],
             None,
         )
         .expect("ok")
@@ -4555,5 +4561,343 @@ line two\n\
             !summaries.iter().any(|s| s == "base commit"),
             "base commit is the lower bound and must be excluded"
         );
+    }
+
+    // -- Multitrack root aggregate (PerCrate) -------------------------------
+    //
+    // These exercise the topology-driven root aggregate: a fresh/empty/foreign
+    // root must NOT lose any crate's commits (R3), must omit empty crates (R4),
+    // nest groups as `#### Group` under `### <crate>` (R5), classify by crate
+    // name (R2), and be idempotent (R6). The caller's sequential threading
+    // (`existing_override`) is mirrored by `refresh_root_multitrack`.
+
+    /// Commit `subject` after writing a file under `crates/<crate>/`, so the
+    /// path-scoped changelog fetch attributes it to that crate.
+    fn commit_in_crate(root: &Path, crate_name: &str, file: &str, subject: &str) {
+        let dir = root.join("crates").join(crate_name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(file), subject).unwrap();
+        commit(root, subject);
+    }
+
+    /// Drive the multitrack root refresh loop the way the CLI caller does:
+    /// each crate refreshes against the running result of the previous one
+    /// (`existing_override`), so every `### <crate>` subsection accumulates.
+    /// Returns the final root text (or the seed when nothing changed).
+    fn refresh_root_multitrack(root: &Path, crate_names: &[String], seed: Option<&str>) -> String {
+        let mut working: Option<String> = seed.map(str::to_string);
+        for name in crate_names {
+            let crate_dir = root.join("crates").join(name);
+            let update = refresh_root_unreleased(
+                root,
+                name,
+                &crate_dir,
+                None,
+                None,
+                Chronology::Date,
+                true,
+                crate_names,
+                working.as_deref(),
+            )
+            .expect("refresh ok");
+            if let Some(u) = update {
+                working = Some(u.rendered_text);
+            }
+        }
+        working.unwrap_or_default()
+    }
+
+    /// R3 + R4 + R5: a FRESH (absent) root must bootstrap one `### <crate>`
+    /// subsection per non-empty crate with NO data loss, omit the empty crate,
+    /// and nest group headings as `#### <Group>`.
+    #[test]
+    fn multitrack_fresh_root_bootstraps_all_crates_no_loss() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        commit_in_crate(root, "cfgd-core", "a.rs", "feat: core feature");
+        commit_in_crate(root, "cfgd-core", "b.rs", "fix: core bug");
+        commit_in_crate(root, "cfgd", "c.rs", "feat: cfgd feature");
+        commit_in_crate(root, "cfgd-csi", "d.rs", "fix: csi repair");
+        // cfgd-operator: NO commit → must be omitted (R4).
+
+        let crate_names = vec![
+            "cfgd-core".to_string(),
+            "cfgd".to_string(),
+            "cfgd-csi".to_string(),
+            "cfgd-operator".to_string(),
+        ];
+        let out = refresh_root_multitrack(root, &crate_names, None);
+
+        // R3: every non-empty crate present, NONE lost.
+        assert!(out.contains("### cfgd-core"), "cfgd-core lost:\n{out}");
+        assert!(out.contains("### cfgd"), "cfgd lost:\n{out}");
+        assert!(out.contains("### cfgd-csi"), "cfgd-csi lost:\n{out}");
+        assert!(out.contains("core feature"), "core commit lost:\n{out}");
+        assert!(out.contains("core bug"), "core fix lost:\n{out}");
+        assert!(out.contains("cfgd feature"), "cfgd commit lost:\n{out}");
+        assert!(out.contains("csi repair"), "csi commit lost:\n{out}");
+        // R4: empty crate omitted.
+        assert!(
+            !out.contains("### cfgd-operator"),
+            "empty crate must be omitted:\n{out}"
+        );
+        // R5: groups nest one level deeper under the crate subsection.
+        assert!(
+            out.contains("#### Features"),
+            "group headings must be `#### Group` under a crate subsection:\n{out}"
+        );
+        assert!(
+            !out.contains("\n### Features"),
+            "no `### Group` heading should appear in multitrack mode:\n{out}"
+        );
+    }
+
+    /// R3: a FRESH-EMPTY `## [Unreleased]` (the exact last-writer-wins trigger)
+    /// must accumulate every crate's subsection rather than the flat path
+    /// replacing the whole body each iteration.
+    #[test]
+    fn multitrack_fresh_empty_unreleased_accumulates_subsections() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        commit_in_crate(root, "cfgd-core", "a.rs", "feat: core thing");
+        commit_in_crate(root, "cfgd", "c.rs", "feat: cfgd thing");
+
+        std::fs::write(
+            root.join("CHANGELOG.md"),
+            "# Changelog\n\n## [Unreleased]\n",
+        )
+        .unwrap();
+
+        let crate_names = vec!["cfgd-core".to_string(), "cfgd".to_string()];
+        let out = refresh_root_multitrack(root, &crate_names, None);
+        assert!(out.contains("### cfgd-core"), "first crate lost:\n{out}");
+        assert!(
+            out.contains("### cfgd\n") || out.contains("### cfgd\n\n"),
+            "second crate lost (last-writer-wins regression):\n{out}"
+        );
+        assert!(out.contains("core thing"));
+        assert!(out.contains("cfgd thing"));
+    }
+
+    /// R2: a FOREIGN (git-cliff-style) flat `[Unreleased]` leading with
+    /// `### Added` must NOT be misclassified as a crate subsection. In
+    /// multitrack mode the crate's `### <crate>` subsection is appended; the
+    /// foreign content is preserved (not duplicated under a spurious crate).
+    #[test]
+    fn multitrack_foreign_flat_root_is_not_misclassified() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        commit_in_crate(root, "cfgd-core", "a.rs", "feat: real core");
+
+        let existing = "# Changelog\n\n## [Unreleased]\n\n### Added\n- git-cliff entry\n\n[Unreleased]: https://github.com/o/r/compare/v0.1.0...HEAD\n";
+        std::fs::write(root.join("CHANGELOG.md"), existing).unwrap();
+
+        let crate_names = vec!["cfgd-core".to_string(), "cfgd".to_string()];
+        // Single iteration for cfgd-core (multitrack topology forces subsection).
+        let crate_dir = root.join("crates").join("cfgd-core");
+        let out = refresh_root_unreleased(
+            root,
+            "cfgd-core",
+            &crate_dir,
+            None,
+            None,
+            Chronology::Date,
+            true,
+            &crate_names,
+            None,
+        )
+        .expect("ok")
+        .expect("update");
+        let text = &out.rendered_text;
+        assert!(
+            text.contains("### Added") && text.contains("git-cliff entry"),
+            "foreign content must be preserved:\n{text}"
+        );
+        assert!(
+            text.contains("### cfgd-core") && text.contains("real core"),
+            "crate subsection appended alongside foreign content:\n{text}"
+        );
+        // Foreign `### Added` must appear exactly once (not duplicated).
+        assert_eq!(
+            text.matches("### Added").count(),
+            1,
+            "foreign heading duplicated:\n{text}"
+        );
+    }
+
+    /// R6: re-running the multitrack refresh with no new commits is
+    /// byte-identical (idempotent).
+    #[test]
+    fn multitrack_refresh_is_idempotent() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        commit_in_crate(root, "cfgd-core", "a.rs", "feat: core thing");
+        commit_in_crate(root, "cfgd", "c.rs", "feat: cfgd thing");
+
+        let crate_names = vec!["cfgd-core".to_string(), "cfgd".to_string()];
+        let first = refresh_root_multitrack(root, &crate_names, None);
+        std::fs::write(root.join("CHANGELOG.md"), &first).unwrap();
+        let second = refresh_root_multitrack(root, &crate_names, Some(&first));
+        assert_eq!(first, second, "second pass must be byte-identical");
+    }
+
+    /// R4 (data-loss guard): an EXISTING `### <crate>` subsection with content,
+    /// refreshed over a range that yields NO new commits, must be left untouched
+    /// — not blanked. The whole file is byte-identical and the sibling
+    /// subsection survives verbatim.
+    #[test]
+    fn multitrack_existing_subsection_with_empty_body_is_untouched() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        // A real commit for `cfgd`, then a tag bounding it out so the
+        // `tag..HEAD` range is empty and the generated body is empty.
+        commit_in_crate(root, "cfgd", "c.rs", "feat: cfgd thing");
+        git(root, &["tag", "cfgd-v0.1.0"]);
+
+        // The existing root already carries a populated `### cfgd` subsection
+        // plus a sibling. Hand-curated content that the empty refresh must keep.
+        let existing = "# Changelog\n\n## [Unreleased]\n\n### cfgd\n\n#### Features\n\n- curated: keep me\n\n### cfgd-core\n\n#### Features\n\n- sibling: keep me too\n\n[Unreleased]: https://github.com/o/r/compare/cfgd-v0.1.0...HEAD\n";
+        std::fs::write(root.join("CHANGELOG.md"), existing).unwrap();
+
+        let crate_dir = root.join("crates").join("cfgd");
+        let update = refresh_root_unreleased(
+            root,
+            "cfgd",
+            &crate_dir,
+            Some("cfgd-v0.1.0"),
+            None,
+            Chronology::Date,
+            true,
+            &["cfgd".to_string(), "cfgd-core".to_string()],
+            None,
+        )
+        .expect("ok");
+        // Empty body over an existing subsection is a no-op: either `None`
+        // (nothing to do) or a byte-identical rewrite.
+        if let Some(u) = update {
+            assert_eq!(
+                u.rendered_text, existing,
+                "existing subsection must be left byte-identical, not blanked"
+            );
+        }
+    }
+
+    /// Single / Lockstep / FlatAggregate stay FLAT: with `multitrack=false`
+    /// the root is byte-identical to the per-crate flat path, regardless of an
+    /// existing curated `### Group` body.
+    #[test]
+    fn single_track_root_stays_flat() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: flat feature");
+
+        std::fs::write(
+            root.join("CHANGELOG.md"),
+            "# Changelog\n\n## [Unreleased]\n",
+        )
+        .unwrap();
+        let root_update = refresh_root_unreleased(
+            root,
+            "mylib",
+            root,
+            None,
+            None,
+            Chronology::Date,
+            false,
+            &[],
+            None,
+        )
+        .expect("ok")
+        .expect("update");
+        let crate_update = refresh_crate_unreleased(root, "mylib", root, None, None)
+            .expect("ok")
+            .expect("update");
+        assert_eq!(
+            root_update.rendered_text, crate_update.rendered_text,
+            "single-track root must match the flat per-crate path byte-for-byte"
+        );
+        // Flat path keeps `### Group` (not `#### Group`).
+        assert!(root_update.rendered_text.contains("### Features"));
+    }
+
+    /// `--crate`-filtered single target on a PerCrate repo (topology count == 1,
+    /// so `multitrack=false`): the crate-name-aware fallback still routes the
+    /// refresh to the crate's `### <crate>` subsection, leaving siblings intact.
+    #[test]
+    fn crate_filtered_single_target_uses_subsection_fallback() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        commit_in_crate(root, "cfgd", "c.rs", "feat: cfgd new");
+
+        let existing = "# Changelog\n\n## [Unreleased]\n\n### cfgd\n- stale: old\n\n### cfgd-core\n- keep: sibling\n\n[Unreleased]: https://github.com/o/r/compare/v0.2.0...HEAD\n";
+        std::fs::write(root.join("CHANGELOG.md"), existing).unwrap();
+
+        let crate_dir = root.join("crates").join("cfgd");
+        let out = refresh_root_unreleased(
+            root,
+            "cfgd",
+            &crate_dir,
+            None,
+            None,
+            Chronology::Date,
+            // Single target → topology says false; crate-name fallback rescues.
+            false,
+            &["cfgd".to_string(), "cfgd-core".to_string()],
+            None,
+        )
+        .expect("ok")
+        .expect("update");
+        let text = &out.rendered_text;
+        assert!(!text.contains("stale: old"), "target regenerated:\n{text}");
+        assert!(text.contains("cfgd new"), "new commit present:\n{text}");
+        assert!(
+            text.contains("- keep: sibling"),
+            "sibling subsection preserved:\n{text}"
+        );
+    }
+
+    /// Released history + footer + sibling subsections survive a multitrack
+    /// refresh that only touches one crate's subsection.
+    #[test]
+    fn multitrack_preserves_released_history_and_footer() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        commit_in_crate(root, "cfgd", "c.rs", "feat: cfgd new");
+
+        let existing = "# Changelog\n\n## [Unreleased]\n\n### cfgd\n- stale\n\n### cfgd-core\n- sibling kept\n\n## [v0.2.0] - 2026-02-02\n### Features\n- released thing\n\n[Unreleased]: https://github.com/o/r/compare/v0.2.0...HEAD\n[v0.2.0]: https://github.com/o/r/releases/tag/v0.2.0\n";
+        std::fs::write(root.join("CHANGELOG.md"), existing).unwrap();
+
+        let crate_dir = root.join("crates").join("cfgd");
+        let out = refresh_root_unreleased(
+            root,
+            "cfgd",
+            &crate_dir,
+            None,
+            None,
+            Chronology::Date,
+            true,
+            &["cfgd".to_string(), "cfgd-core".to_string()],
+            None,
+        )
+        .expect("ok")
+        .expect("update");
+        let text = &out.rendered_text;
+        assert!(
+            text.contains("## [v0.2.0] - 2026-02-02"),
+            "history lost:\n{text}"
+        );
+        assert!(text.contains("- released thing"));
+        assert!(text.contains("- sibling kept"), "sibling lost:\n{text}");
+        assert!(text.contains("[Unreleased]: https://github.com/o/r/compare/v0.2.0...HEAD"));
+        assert!(text.contains("[v0.2.0]: https://github.com/o/r/releases/tag/v0.2.0"));
     }
 }

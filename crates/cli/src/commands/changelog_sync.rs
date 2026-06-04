@@ -79,6 +79,17 @@ pub(crate) struct ChangelogRouting<'a> {
     /// root renderer takes the flat path regardless of the existing file's
     /// `### <Heading>` shape.
     pub single_track: bool,
+    /// The shared root aggregates more than one independent crate track (a
+    /// PerCrate workspace), so each crate owns a `### <crate>` subsection under
+    /// `## [Unreleased]`. The TOPOLOGY signal threaded to the root renderer,
+    /// replacing text inference for the flat-vs-subsection decision; derived from
+    /// the routed-crate count, not from the existing file's shape.
+    pub multitrack: bool,
+    /// Every crate name routed to the shared root (regardless of an active
+    /// `--crate` filter). Drives crate-name-aware subsection classification so a
+    /// foreign `### Added` is never mistaken for a crate subsection, and rescues
+    /// the `--crate`-filtered single-target case (topology count == 1).
+    pub root_crate_names: Vec<String>,
 }
 
 impl<'a> ChangelogRouting<'a> {
@@ -94,6 +105,8 @@ impl<'a> ChangelogRouting<'a> {
             chronology: cfg.resolved_chronology(),
             root_crates: cfg.root_crates_filter(),
             single_track: false,
+            multitrack: false,
+            root_crate_names: Vec::new(),
         }
     }
 }
@@ -102,8 +115,27 @@ impl<'a> ChangelogRouting<'a> {
 ///
 /// `None` (no filter) includes every crate; `Some(list)` includes only the
 /// named crates (an empty list includes none).
-fn crate_in_root(crate_name: &str, filter: Option<&[String]>) -> bool {
+pub(crate) fn crate_in_root(crate_name: &str, filter: Option<&[String]>) -> bool {
     filter.is_none_or(|names| names.iter().any(|n| n == crate_name))
+}
+
+/// Every crate name declared in `config` (flat `crates:` and every
+/// `workspaces[].crates`), narrowed to the `root_crates` allow-list. Drives the
+/// root renderer's crate-name-aware subsection classification on a `--crate`-
+/// filtered single-target run, where the target list alone can't supply the full
+/// set. Returns an empty list for a config-less / single-crate-at-root project.
+pub(crate) fn config_root_crate_names(
+    config: &Config,
+    root_crates: Option<&[String]>,
+) -> Vec<String> {
+    let mut names: Vec<String> = config.crates.iter().map(|c| c.name.clone()).collect();
+    if let Some(workspaces) = config.workspaces.as_deref() {
+        for ws in workspaces {
+            names.extend(ws.crates.iter().map(|c| c.name.clone()));
+        }
+    }
+    names.retain(|n| crate_in_root(n, root_crates));
+    names
 }
 
 /// Render and (unless `dry_run`) write each target's `CHANGELOG.md` via the
@@ -143,7 +175,8 @@ pub(crate) fn render_and_stage_changelogs(
                 &t.to_version,
                 &t.full_tag,
                 routing.chronology,
-                routing.single_track,
+                routing.multitrack,
+                &routing.root_crate_names,
             )
             .with_context(|| format!("failed to render root changelog for {}", t.crate_name))?;
             persist_update(workspace_root, t, update, dry_run, log, &mut written)?;
@@ -283,7 +316,8 @@ pub(crate) fn refresh_changelogs(
                 t.from_tag.as_deref(),
                 t.to_ref.as_deref(),
                 routing.chronology,
-                routing.single_track,
+                routing.multitrack,
+                &routing.root_crate_names,
                 root_working.as_deref(),
             )
             .with_context(|| format!("failed to refresh root changelog for {}", t.crate_name))?;

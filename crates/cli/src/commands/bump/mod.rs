@@ -230,6 +230,25 @@ fn commit_plan(
         }
     }
 
+    // Genuine multi-track root: thread the topology signal + the full
+    // root-routed crate-name set so the root renderer bootstraps every crate's
+    // subsection (no last-writer-wins on a fresh root). The crate-name set is the
+    // FULL configured set (one shared `config_root_crate_names` source) so the
+    // classification fallback never sees a changed-crates-only subset; the
+    // multitrack COUNT is the number of bumped tracks routed to the root.
+    let bumped_root_tracks = changelog_targets
+        .iter()
+        .filter(|t| {
+            crate::commands::changelog_sync::crate_in_root(&t.crate_name, routing.root_crates)
+        })
+        .count();
+    routing.root_crate_names = changelog_config
+        .map(|cfg| {
+            crate::commands::changelog_sync::config_root_crate_names(cfg, routing.root_crates)
+        })
+        .unwrap_or_default();
+    routing.multitrack = routing.root_enabled && !routing.single_track && bumped_root_tracks > 1;
+
     let changelog_paths = crate::commands::changelog_sync::render_and_stage_changelogs(
         workspace_root,
         &changelog_targets,

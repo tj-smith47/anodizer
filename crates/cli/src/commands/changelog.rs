@@ -396,6 +396,16 @@ fn run_refresh(
         routing.per_crate,
         effective_filter.is_some(),
     );
+    // Derive the root multitrack signal + the full root-routed crate-name set
+    // from TOPOLOGY (every configured crate ∩ the root crates filter), so a
+    // `--crate`-filtered run still classifies subsections by crate name and a
+    // fresh root bootstraps every crate's subsection. One shared full-set source
+    // (`config_root_crate_names`) across the refresh / bump / tag callers.
+    let root_crate_names =
+        crate::commands::changelog_sync::config_root_crate_names(config, routing.root_crates);
+    routing.multitrack =
+        routing.root_enabled && !routing.single_track && root_crate_names.len() > 1;
+    routing.root_crate_names = root_crate_names;
 
     let targets: Vec<RefreshTarget> = selected
         .into_iter()

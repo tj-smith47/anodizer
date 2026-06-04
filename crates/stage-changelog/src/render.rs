@@ -839,6 +839,10 @@ pub fn refresh_crate_unreleased(
     from_tag: Option<&str>,
     to_ref: Option<&str>,
 ) -> Result<Option<ChangelogUpdate>> {
+    // Kept for API symmetry with `render_crate_section` and to identify the
+    // crate at the call site; the flat per-crate body needs no `### <crate>`
+    // wrapper, so the value is not consumed here.
+    let _ = crate_name;
     let (cfg_present, body) = refresh_body(workspace_root, crate_path, from_tag, to_ref)?;
     if !cfg_present {
         return Ok(None);
@@ -846,7 +850,7 @@ pub fn refresh_crate_unreleased(
 
     let file_path = crate_path.join("CHANGELOG.md");
     let existing = read_existing(&file_path)?;
-    let merged = replace_unreleased_body(existing.as_deref(), crate_name, &body);
+    let merged = replace_unreleased_body(existing.as_deref(), &body);
 
     if existing.as_deref() == Some(merged.as_str()) {
         return Ok(None);
@@ -878,6 +882,20 @@ pub fn refresh_crate_unreleased(
 /// the configured `groups:` would be misread as multi-track and grafted with a
 /// spurious `### <crate>` subsection.
 ///
+/// `multitrack` is the caller's TOPOLOGY signal: the root aggregates more than
+/// one independent crate track (a PerCrate workspace), so each crate owns a
+/// `### <crate>` subsection rather than sharing one flat `[Unreleased]` body.
+/// It REPLACES text inference for the decision — a fresh/empty root no longer
+/// silently collapses to the flat last-writer-wins path. When `multitrack` is
+/// `false` but the existing file already carries a known-crate subsection (a
+/// `--crate`-filtered single-target run on a PerCrate repo, where the topology
+/// count is 1), the function still targets that subsection via crate-name-aware
+/// detection over `crate_names`.
+///
+/// `crate_names` is the set of known crate names routed to the root; it drives
+/// crate-name-aware subsection classification (foreign `### Added` is never
+/// mistaken for a crate subsection).
+///
 /// `existing_override` supplies the current file text instead of reading disk.
 /// Multiple crates whose `### <crate>` subsections live in ONE shared root must
 /// refresh sequentially: each reads the PREVIOUS crate's result, not the stale
@@ -887,8 +905,9 @@ pub fn refresh_crate_unreleased(
 /// Returns `Ok(None)` under the same "nothing to do" conditions as
 /// [`refresh_crate_unreleased`]. Idempotent for a fixed commit set.
 // The render/refresh contract pairs a long but flat parameter list (root paths,
-// commit range, ordering, the two routing booleans, the override) with no
-// natural grouping; a params struct here would only relocate the breadth.
+// commit range, ordering, the multitrack signal, the crate-name set, the
+// override) with no natural grouping; a params struct here would only relocate
+// the breadth.
 #[allow(clippy::too_many_arguments)]
 pub fn refresh_root_unreleased(
     workspace_root: &std::path::Path,
@@ -897,7 +916,8 @@ pub fn refresh_root_unreleased(
     from_tag: Option<&str>,
     to_ref: Option<&str>,
     chronology: anodizer_core::config::Chronology,
-    single_track: bool,
+    multitrack: bool,
+    crate_names: &[String],
     existing_override: Option<&str>,
 ) -> Result<Option<ChangelogUpdate>> {
     // `chronology` is accepted for signature symmetry with
@@ -916,23 +936,17 @@ pub fn refresh_root_unreleased(
         None => read_existing(&file_path)?,
     };
 
-    let group_titles: Vec<String> = load_changelog_config(workspace_root)?
-        .and_then(|c| c.groups)
-        .unwrap_or_default()
-        .iter()
-        .map(|g| g.title.clone())
-        .collect();
-
-    let multitrack = !single_track
-        && existing
+    // Topology drives the decision; the existing-subsection fallback only rescues
+    // the `--crate`-filtered single-target case where the count can't say "multi".
+    let use_multitrack = multitrack
+        || existing
             .as_deref()
-            .is_some_and(|e| has_crate_subsections(e, &group_titles));
+            .is_some_and(|e| has_crate_subsections(e, crate_names));
 
-    let merged = if multitrack {
-        // `existing` is `Some` here: `has_crate_subsections` returned true.
-        replace_crate_subsection_body(existing.as_deref().unwrap_or(""), crate_name, &body)
+    let merged = if use_multitrack {
+        replace_crate_subsection_body(existing.as_deref(), crate_name, &body)
     } else {
-        replace_unreleased_body(existing.as_deref(), crate_name, &body)
+        replace_unreleased_body(existing.as_deref(), &body)
     };
 
     if existing.as_deref() == Some(merged.as_str()) {
@@ -957,13 +971,25 @@ fn read_existing(file_path: &std::path::Path) -> Result<Option<String>> {
 }
 
 /// Build a fresh Keep-a-Changelog skeleton holding only an `## [Unreleased]`
-/// section with `body` (empty body collapses to a blank section).
-fn kac_skeleton(crate_name: &str, body: &str) -> String {
-    let _ = crate_name;
+/// section with `body` (empty body collapses to a blank section). The single
+/// owner of the bare skeleton string.
+fn kac_skeleton(body: &str) -> String {
     if body.is_empty() {
         "# Changelog\n\n## [Unreleased]\n".to_string()
     } else {
         format!("# Changelog\n\n## [Unreleased]\n\n{}\n", body)
+    }
+}
+
+/// Wrap an already-demoted (`#### <Group>`) crate body under its `### <crate>`
+/// heading, or return the empty string for an empty body (no heading is emitted
+/// for a crate with no commits). The single source of the multi-track
+/// subsection shape (`### <crate>` + blank + body).
+fn wrap_subsection(crate_name: &str, body: &str) -> String {
+    if body.is_empty() {
+        String::new()
+    } else {
+        format!("### {}\n\n{}", crate_name, body)
     }
 }
 
@@ -973,16 +999,16 @@ fn kac_skeleton(crate_name: &str, body: &str) -> String {
 /// `existing == None` (absent file) yields a fresh KAC skeleton. An existing
 /// file with an H1 but no `## [Unreleased]` heading gets the section inserted
 /// directly after the H1, preserving the rest.
-fn replace_unreleased_body(existing: Option<&str>, crate_name: &str, body: &str) -> String {
+fn replace_unreleased_body(existing: Option<&str>, body: &str) -> String {
     let Some(existing) = existing else {
-        return kac_skeleton(crate_name, body);
+        return kac_skeleton(body);
     };
 
     let lines: Vec<&str> = existing.lines().collect();
     let trailing_newline = existing.ends_with('\n');
 
     let Some(unreleased_idx) = lines.iter().position(|l| is_unreleased_heading(l)) else {
-        return insert_unreleased_after_h1(&lines, crate_name, body, trailing_newline);
+        return insert_unreleased_after_h1(&lines, body, trailing_newline);
     };
 
     // Bound the existing `[Unreleased]` body: from after the heading to the
@@ -1010,19 +1036,18 @@ fn replace_unreleased_body(existing: Option<&str>, crate_name: &str, body: &str)
     finish(out, trailing_newline)
 }
 
-/// Insert a `## [Unreleased]` section (carrying `body`) immediately after the
-/// leading H1 of a non-KAC file, preserving the rest. Synthesizes a skeleton
-/// when no H1 is present.
-fn insert_unreleased_after_h1(
-    lines: &[&str],
-    crate_name: &str,
-    body: &str,
-    trailing_newline: bool,
-) -> String {
+/// Insert a `## [Unreleased]` section (carrying the already-shaped `body`)
+/// immediately after the leading H1 of a non-KAC file, preserving the rest.
+/// Synthesizes a skeleton when no H1 is present.
+///
+/// `body` is inserted verbatim under the `## [Unreleased]` heading, so callers
+/// pass either a flat group body (`### <Group>` …) or a wrapped crate
+/// subsection (`### <crate>` …) — the spine is identical either way.
+fn insert_unreleased_after_h1(lines: &[&str], body: &str, trailing_newline: bool) -> String {
     let Some(h1_idx) = lines.iter().position(|l| l.starts_with("# ")) else {
         // No H1 to anchor to: fall back to a fresh skeleton, then append the
         // prior content so nothing is lost.
-        let skeleton = kac_skeleton(crate_name, body);
+        let skeleton = kac_skeleton(body);
         if lines.is_empty() {
             return skeleton;
         }
@@ -1056,17 +1081,63 @@ fn insert_unreleased_after_h1(
     finish(out, trailing_newline)
 }
 
+/// Demote a generated grouped body's `### <Group>` headings one level deeper to
+/// `#### <Group>` so they nest correctly UNDER a `### <crate>` subsection
+/// (`### <crate>` is the crate heading; its groups must sit at `####`). Only
+/// lines that are exactly an H3 heading are re-leveled; bullets, blank lines,
+/// and any already-deeper heading are passed through verbatim.
+fn demote_group_headings(body: &str) -> String {
+    body.lines()
+        .map(|line| match line.strip_prefix("### ") {
+            Some(rest) if !rest.starts_with('#') => format!("#### {}", rest),
+            _ => line.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Replace only `crate_name`'s `### <crate>` subsection body under
 /// `## [Unreleased]` in a multi-track root, preserving sibling subsections,
-/// released sections, and the footer verbatim. Creates the subsection at the
-/// end of the `[Unreleased]` block when absent.
-fn replace_crate_subsection_body(existing: &str, crate_name: &str, body: &str) -> String {
+/// released sections, and the footer verbatim.
+///
+/// The crate body's group headings are demoted to `#### <Group>` so they nest
+/// under the `### <crate>` heading. Creation is data-loss-safe and omits empty
+/// crates:
+/// - `existing == None` (absent file) → a fresh KAC skeleton carrying this
+///   crate's subsection (only when `body` is non-empty).
+/// - `[Unreleased]` present without this crate's subsection → APPEND the
+///   subsection at the end of the block (only when `body` is non-empty),
+///   preserving every sibling subsection, released history, and the footer.
+/// - File with an H1 but no `[Unreleased]` → insert an `[Unreleased]` after the
+///   H1 carrying the subsection.
+///
+/// A crate with an empty `body` emits NO heading: when its subsection is absent
+/// nothing is added, and when it already exists the prior content is left
+/// untouched (R4 — an empty range never blanks a curated subsection). A
+/// non-empty `body` regenerates an existing subsection in place (idempotent for
+/// a fixed commit set).
+fn replace_crate_subsection_body(existing: Option<&str>, crate_name: &str, body: &str) -> String {
+    // `nested_body`: the demoted (`#### <Group>`) crate body, unwrapped — spliced
+    // under an EXISTING `### <crate>` heading. `subsection`: the same body WRAPPED
+    // under a fresh `### <crate>` heading (empty body → empty, so a crate with no
+    // commits is omitted) — used when a subsection must be CREATED.
+    let nested_body = demote_group_headings(body);
+    let subsection = wrap_subsection(crate_name, &nested_body);
+
+    let Some(existing) = existing else {
+        // Absent file: bootstrap a skeleton carrying this crate's subsection (or
+        // a bare `[Unreleased]` when the crate has no commits, so a later crate's
+        // refresh has an anchor to append to).
+        return kac_skeleton(&subsection);
+    };
+
     let lines: Vec<&str> = existing.lines().collect();
     let trailing_newline = existing.ends_with('\n');
 
-    // `has_crate_subsections` already confirmed an `[Unreleased]` heading.
     let Some(unreleased_idx) = lines.iter().position(|l| is_unreleased_heading(l)) else {
-        return existing.to_string();
+        // No `[Unreleased]` heading: insert one after the H1 carrying the
+        // subsection, preserving the rest of the file.
+        return insert_unreleased_after_h1(&lines, &subsection, trailing_newline);
     };
 
     // Bound the `[Unreleased]` block: up to the first `## ` heading or footer.
@@ -1095,6 +1166,12 @@ fn replace_crate_subsection_body(existing: &str, crate_name: &str, body: &str) -
     let mut out: Vec<String> = Vec::new();
 
     match sub_start {
+        Some(_) if nested_body.is_empty() => {
+            // Existing subsection, no new commits in range: leave it untouched
+            // (R4). Returning the input unchanged makes the no-op detectable
+            // (merged == existing).
+            return existing.to_string();
+        }
         Some(start) => {
             // Bound the existing subsection body: to the next `### `/`## `/footer.
             let mut sub_end = unreleased_end;
@@ -1108,15 +1185,20 @@ fn replace_crate_subsection_body(existing: &str, crate_name: &str, body: &str) -
                 }
             }
             // Head through the subsection heading, then a blank line before the
-            // body — matching the flat path and the append branch.
+            // body — matching the flat path and the append branch. `nested_body`
+            // is non-empty here (the empty case returned above).
             out.extend(lines[..=start].iter().map(|s| s.to_string()));
             out.push(String::new());
-            if !body.is_empty() {
-                out.extend(body.lines().map(|s| s.to_string()));
-            }
+            out.extend(nested_body.lines().map(|s| s.to_string()));
             out.push(String::new());
             // Tail from the next subsection / section / footer.
             out.extend(lines[sub_end..].iter().map(|s| s.to_string()));
+        }
+        None if nested_body.is_empty() => {
+            // No subsection and no commits: emit nothing for this crate.
+            // Returning the input unchanged makes the no-op detectable
+            // (merged == existing).
+            return existing.to_string();
         }
         None => {
             // Append a fresh subsection at the end of the `[Unreleased]` block.
@@ -1126,10 +1208,7 @@ fn replace_crate_subsection_body(existing: &str, crate_name: &str, body: &str) -
             }
             out.extend(lines[..block_end].iter().map(|s| s.to_string()));
             out.push(String::new());
-            out.push(format!("### {}", crate_name));
-            if !body.is_empty() {
-                out.extend(body.lines().map(|s| s.to_string()));
-            }
+            out.extend(subsection.lines().map(|s| s.to_string()));
             out.push(String::new());
             out.extend(lines[unreleased_end..].iter().map(|s| s.to_string()));
         }
@@ -1269,19 +1348,24 @@ pub fn render_crate_section(
 /// existing released sections (`Date`: newest-on-top; `Tag`: clustered by
 /// tag-prefix, semver-descending within a cluster).
 ///
-/// `single_track` forces the flat roll regardless of the existing file's shape:
-/// when the caller has resolved that the selected crates share one tag prefix
-/// and route to one shared root (a lockstep aggregate), the section is one flat
-/// whole-release block. Without this, a curated `[Unreleased]` whose
-/// `### <Heading>` titles don't match the configured `groups:` would be misread
-/// as multi-track and the release would strand under a spurious subsection
-/// promote instead of a clean flat `## [<tag>]` section.
+/// `multitrack` is the caller's TOPOLOGY signal (the root aggregates more than
+/// one independent crate track). It REPLACES text inference for the flat-vs-
+/// subsection decision: a `false` value forces the flat roll regardless of the
+/// existing file's shape (Single / Lockstep / FlatAggregate), and a `true` value
+/// drives the subsection-promote path even on a fresh root. When `multitrack` is
+/// `false` but the existing file already carries a known-crate subsection (a
+/// `--crate`-filtered single-target run on a PerCrate repo), crate-name-aware
+/// detection over `crate_names` still routes to the subsection-promote path.
+///
+/// `crate_names` is the set of known crate names routed to the root; it drives
+/// crate-name-aware subsection classification so a curated/foreign `### Added`
+/// is never mistaken for a crate subsection.
 ///
 /// Returns `Ok(None)` when there is nothing to release for this track: no
 /// `changelog:` config / no commits AND no curated `### <crate>` subsection.
 // Flat parameter list (root paths, range, version + tag, ordering, the
-// single-track routing flag) with no natural grouping; a params struct would
-// only relocate the breadth.
+// multitrack signal, the crate-name set) with no natural grouping; a params
+// struct would only relocate the breadth.
 #[allow(clippy::too_many_arguments)]
 pub fn render_root_section(
     workspace_root: &std::path::Path,
@@ -1291,7 +1375,8 @@ pub fn render_root_section(
     to_version: &str,
     tag: &str,
     chronology: anodizer_core::config::Chronology,
-    single_track: bool,
+    multitrack: bool,
+    crate_names: &[String],
 ) -> Result<Option<ChangelogUpdate>> {
     let rendered = render_section_body(workspace_root, crate_path, from_tag, None)?;
     // Reuse the config already parsed by `render_section_body`. Only re-load on
@@ -1304,7 +1389,6 @@ pub fn render_root_section(
             .and_then(|c| c.groups)
             .unwrap_or_default(),
     };
-    let group_titles: Vec<String> = groups.iter().map(|g| g.title.clone()).collect();
     let generated_body = rendered
         .as_ref()
         .map(|(_, body)| body.clone())
@@ -1343,11 +1427,13 @@ pub fn render_root_section(
     let existing = std::fs::read_to_string(&file_path)
         .with_context(|| format!("failed to read {}", file_path.display()))?;
 
-    // Degenerate root (no `### <crate>` subsections under `[Unreleased]`, or no
-    // `[Unreleased]` at all), or a caller-asserted single-track aggregate:
-    // delegate to the existing flat roll / splice so a single-track root behaves
-    // exactly as `render_crate_section` would.
-    if single_track || !has_crate_subsections(&existing, &group_titles) {
+    // Flat root (caller's topology says single-track and no existing crate
+    // subsection rescues it): delegate to the flat roll / splice so a
+    // single-track root behaves exactly as `render_crate_section` would. The
+    // existing-subsection fallback covers a `--crate`-filtered single-target run
+    // on a PerCrate repo (topology count can't say "multi").
+    let use_multitrack = multitrack || has_crate_subsections(&existing, crate_names);
+    if !use_multitrack {
         let Some((_cfg, body)) = rendered else {
             return Ok(None);
         };
@@ -1415,14 +1501,13 @@ fn resolve_compare_base(existing: &str, workspace_root: &std::path::Path) -> Opt
 /// Whether `existing` has at least one `### <crate>` subsection under its
 /// `## [Unreleased]` heading (the marker of a multi-track root).
 ///
-/// A single-track flat `[Unreleased]` may itself carry `### <GroupTitle>`
-/// headings (e.g. `### Features`) for its curated body; those are NOT crate
-/// subsections. `group_titles` lists the configured `groups:` titles so a
-/// `### <name>` matching a group title is excluded, disambiguating
-/// `### Features` (a group heading) from `### cfgd` (a crate subsection). A
-/// flat `[Unreleased]` with only group headings — or no `### ` lines, or no
-/// `[Unreleased]` at all — returns `false` so the caller takes the flat roll.
-fn has_crate_subsections(existing: &str, group_titles: &[String]) -> bool {
+/// Classification is crate-name-aware: a `### <name>` is a crate subsection IFF
+/// `name` is a known crate name in `crate_names`. Foreign curated headings
+/// (`### Added`, `### CI/CD`) — and the configured `### <GroupTitle>` headings of
+/// a flat curated body — are therefore NEVER mistaken for a crate subsection. A
+/// flat `[Unreleased]` with only foreign/group headings, no `### ` lines, or no
+/// `[Unreleased]` at all returns `false` so the caller takes the flat roll.
+fn has_crate_subsections(existing: &str, crate_names: &[String]) -> bool {
     let lines: Vec<&str> = existing.lines().collect();
     let Some(unreleased_idx) = lines.iter().position(|l| is_unreleased_heading(l)) else {
         return false;
@@ -1432,7 +1517,7 @@ fn has_crate_subsections(existing: &str, group_titles: &[String]) -> bool {
             return false;
         }
         if let Some(name) = is_subsection_heading(line)
-            && !group_titles.iter().any(|t| t == name)
+            && crate_names.iter().any(|c| c == name)
         {
             return true;
         }
@@ -2840,9 +2925,10 @@ mod root_section_tests {
 
     #[test]
     fn group_headings_under_flat_unreleased_are_not_crate_subsections() {
-        // A single-track flat `[Unreleased]` whose curated body uses
-        // `### Features` / `### Bug Fixes` group headings must NOT be mistaken
-        // for a multi-track root, given those titles are configured groups.
+        // Crate-name-aware classification: a `### X` is a crate subsection IFF
+        // `X` is a KNOWN crate name. A flat curated body's `### Features` /
+        // `### Bug Fixes` group headings — and any foreign heading — must NEVER
+        // be mistaken for a crate subsection.
         let existing = "# Changelog\n\
 \n\
 ## [Unreleased]\n\
@@ -2852,17 +2938,52 @@ mod root_section_tests {
 - a fix\n\
 \n\
 [Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...HEAD\n";
-        let titles = vec!["Features".to_string(), "Bug Fixes".to_string()];
+        let crate_names = vec!["cfgd".to_string(), "cfgd-core".to_string()];
         assert!(
-            !has_crate_subsections(existing, &titles),
-            "group headings are not crate subsections when titles are configured"
+            !has_crate_subsections(existing, &crate_names),
+            "group headings are not crate subsections (no group title is a crate name)"
         );
-        // Without the group titles, the same `### Features` heading would be
-        // (mis)read as a crate subsection — proving the disambiguation is what
-        // separates the two shapes.
+        // An empty crate-name set can never see a crate subsection.
         assert!(
-            has_crate_subsections(existing, &[]),
-            "absent group titles, any ### heading reads as a crate subsection"
+            !has_crate_subsections(existing, &[]),
+            "no known crate names → no crate subsection"
+        );
+
+        // A `### cfgd` heading IS a crate subsection when `cfgd` is a known crate.
+        let multi = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### cfgd\n\
+- a thing\n\
+\n\
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...HEAD\n";
+        assert!(
+            has_crate_subsections(multi, &crate_names),
+            "a heading matching a known crate name is a crate subsection"
+        );
+    }
+
+    /// R2: a foreign git-cliff/towncrier `### Added` heading under
+    /// `[Unreleased]` must NEVER be misclassified as a crate subsection — only a
+    /// KNOWN crate name qualifies.
+    #[test]
+    fn foreign_added_heading_is_not_a_crate_subsection() {
+        let existing = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### Added\n\
+- some git-cliff entry\n\
+\n\
+### CI/CD\n\
+- a pipeline change\n\
+\n\
+[Unreleased]: https://github.com/o/r/compare/v0.1.0...HEAD\n";
+        let crate_names = vec!["cfgd".to_string(), "cfgd-core".to_string()];
+        assert!(
+            !has_crate_subsections(existing, &crate_names),
+            "foreign `### Added`/`### CI/CD` must not read as crate subsections"
         );
     }
 
@@ -2994,6 +3115,7 @@ mod root_section_tests {
             "v0.7.0",
             Chronology::Date,
             false,
+            &[],
         )
         .expect("render_root_section succeeds")
         .expect("commits present → an update is produced");
@@ -3060,6 +3182,7 @@ mod root_section_tests {
             "v0.7.0",
             Chronology::Date,
             false,
+            &[],
         )
         .expect("render_root_section succeeds")
         .expect("curated flat Unreleased → an update is produced");
@@ -3117,7 +3240,11 @@ mod root_section_tests {
             "0.7.0",
             "v0.7.0",
             Chronology::Date,
+            // Topology count is 1 here (single promote target); the
+            // crate-name-aware fallback over the known crate set still routes to
+            // the `### cfgd` subsection promote.
             false,
+            &["cfgd".to_string(), "cfgd-core".to_string()],
         )
         .expect("render_root_section succeeds")
         .expect("curated ### cfgd subsection → an update is produced");
@@ -3155,6 +3282,65 @@ mod root_section_tests {
         assert!(
             text.contains("[v0.7.0]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...v0.7.0"),
             "new compare link derives from this track's from_tag: {text}"
+        );
+    }
+
+    /// R1 + R5: the TOPOLOGY `multitrack=true` flag (not text inference) drives
+    /// the subsection-promote path even with an EMPTY crate-name list, and the
+    /// promoted dated section is flat (`### <Group>`, not `#### <Group>`).
+    #[test]
+    fn render_root_section_multitrack_flag_promotes_to_flat_dated_section() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        write_anodizer_yaml(root);
+        let existing = "# Changelog\n\
+\n\
+## [Unreleased]\n\
+\n\
+### cfgd\n\
+- feat: add thing\n\
+\n\
+### cfgd-core\n\
+- feat: sibling thing\n\
+\n\
+[Unreleased]: https://github.com/o/r/compare/v0.6.0...HEAD\n";
+        std::fs::write(root.join("CHANGELOG.md"), existing).expect("write root");
+
+        let update = render_root_section(
+            root,
+            "cfgd",
+            root,
+            Some("v0.6.0"),
+            "0.7.0",
+            "v0.7.0",
+            Chronology::Date,
+            // Topology says multitrack; crate-name list intentionally empty to
+            // prove the FLAG (not text inference) drives the decision.
+            true,
+            &[],
+        )
+        .expect("render_root_section succeeds")
+        .expect("multitrack flag → subsection promote");
+
+        let text = &update.rendered_text;
+        let date = today_yyyy_mm_dd();
+        assert!(
+            text.contains(&format!("## [v0.7.0] - {date}")),
+            "multitrack flag promotes to the full-tag dated heading: {text}"
+        );
+        // Promoted dated section is FLAT `### Features` (re-leveled), not `####`.
+        assert!(
+            text.contains("### Features\n- feat: add thing"),
+            "promoted section is flat `### Group`: {text}"
+        );
+        assert!(
+            !text.contains("#### Features"),
+            "promoted dated section must not carry `#### Group`: {text}"
+        );
+        // The sibling subsection is retained under `[Unreleased]`.
+        assert!(
+            text.contains("### cfgd-core\n- feat: sibling thing"),
+            "sibling subsection retained: {text}"
         );
     }
 }
