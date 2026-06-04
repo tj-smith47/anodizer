@@ -106,7 +106,11 @@ anodizer release --crate my-cli
 Each crate can keep its own `crates/<name>/CHANGELOG.md`, contribute to a shared
 root `CHANGELOG.md`, or both. A multi-track root keeps a `### <crate>`
 subsection per track and promotes only the tagged track's subsection on release.
-See [Changelog destination](@/docs/more/changelog.md#changelog-destination).
+Commit scoping is derived: a per-crate changelog covers its own crate directory
+automatically, and the root aggregate spans all crate directories plus the
+workspace manifests — you do not set `paths:`. See
+[Changelog destination](@/docs/more/changelog.md#changelog-destination) and
+[Commit scoping](@/docs/more/changelog.md#commit-scoping).
 
 ### Dependency ordering
 

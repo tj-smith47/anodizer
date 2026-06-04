@@ -231,14 +231,14 @@ fields drive it:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `per_crate` | bool | `false` | Write each crate's section to `crates/<name>/CHANGELOG.md` |
-| `root` | block | on unless `per_crate: true` | Write the shared root `CHANGELOG.md`; presence forces it on |
-| `root.chronology` | string | `date` | Section ordering in a multi-track root: `date` or `tag` |
-| `root.crates` | list | all | Which crates contribute a section to the root |
+| `files.per_crate` | bool | `false` | Write each crate's section to `crates/<name>/CHANGELOG.md` |
+| `files.root` | block | on unless `files.per_crate: true` | Write the shared root `CHANGELOG.md`; presence forces it on |
+| `files.root.chronology` | string | `date` | Section ordering in a multi-track root: `date` or `tag` |
+| `files.root.crates` | list | all | Which crates contribute a section to the root |
 
-The resolved destination follows one rule: the root is on when a `root:` block
-is present **or** `per_crate` is not `true`. That yields three outcomes, each
-shown below.
+The resolved destination follows one rule: the root is on when a `files.root:`
+block is present **or** `files.per_crate` is not `true`. That yields three
+outcomes, each shown below.
 
 **Root only** (the default — a bare block aggregates into the workspace root):
 
@@ -250,28 +250,43 @@ changelog: {}            # root CHANGELOG.md
 
 ```yaml
 changelog:
-  per_crate: true        # crates/<name>/CHANGELOG.md, one per crate
+  files:
+    per_crate: true      # crates/<name>/CHANGELOG.md, one per crate
 ```
 
 **Both** (per-crate files *and* the shared root):
 
 ```yaml
 changelog:
-  per_crate: true
-  root: {}               # crates/<name>/CHANGELOG.md AND root CHANGELOG.md
+  files:
+    per_crate: true
+    root: {}             # crates/<name>/CHANGELOG.md AND root CHANGELOG.md
 ```
 
 Single-crate, lockstep, and **shared-prefix flat-crate** roots are **flat**: one
 aggregated section per release covering the whole workspace (the
 [flat-aggregate shape](#flat-aggregate-one-shared-tag-one-flat-section) below
-covers the last case). `root.crates` filters which crates contribute a section
-to the root:
+covers the last case). `files.root.crates` filters which crates contribute a
+section to the root:
 
 ```yaml
 changelog:
-  root:
-    crates: ["core", "cli"]   # only these crates appear in the root changelog
+  files:
+    root:
+      crates: ["core", "cli"]   # only these crates appear in the root changelog
 ```
+
+### Commit scoping
+
+Commit scoping is **derived** — no config required. A per-crate track collects
+commits that touch its own crate directory; the root aggregate spans every
+crate directory plus the workspace manifests (`Cargo.toml`, `Cargo.lock`). Each
+crate's changelog stays focused on its own history automatically.
+
+`changelog.paths` is an optional advanced **intersect** filter that narrows the
+derived scope further — list extra path globs to additionally restrict which
+commits a track considers. It only subtracts from the automatic per-directory
+scope; you never need it to get correct per-crate or aggregate scoping.
 
 ### Workspace shapes at a glance
 
@@ -401,7 +416,7 @@ stays untouched, and the compare footer rolls to the `core` tag:
 
 ### Chronology: `date` vs `tag`
 
-`root.chronology` orders the released sections in a multi-track root. Given two
+`files.root.chronology` orders the released sections in a multi-track root. Given two
 tracks `core-v*` and `cli-v*`, the same set of releases renders differently:
 
 | `chronology: date` (default) | `chronology: tag` |
