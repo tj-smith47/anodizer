@@ -289,7 +289,7 @@ shape. The config signal is the only thing you set:
 ### Flat-aggregate: one shared tag, one flat section
 
 A flat `crates:` list whose members **all** resolve to the same tag prefix
-(every `tag_template` is `v{{ Version }}`, or all `acme-v{{ Version }}`) releases
+(every `tag_template` is `v{{ .Version }}`, or all `acme-v{{ .Version }}`) releases
 in lockstep: one tag namespace can't hand `v0.2.0` to two crates independently.
 anodizer treats this exactly like a lockstep workspace — **one shared `v*` tag,
 one flat `[Unreleased]`/released section** — even though each crate carries its
@@ -299,10 +299,10 @@ own `[package].version` (rather than a single `[workspace.package].version`):
 crates:
   - name: core
     path: crates/core
-    tag_template: "v{{ Version }}"   # same prefix
+    tag_template: "v{{ .Version }}"   # same prefix
   - name: cli
     path: crates/cli
-    tag_template: "v{{ Version }}"   # as every other member
+    tag_template: "v{{ .Version }}"   # as every other member
 ```
 
 ```text
@@ -331,10 +331,10 @@ changelog write:
 crates:
   - name: core
     path: crates/core
-    tag_template: "v{{ Version }}"   # crates/core/Cargo.toml → version = "0.2.0"
+    tag_template: "v{{ .Version }}"   # crates/core/Cargo.toml → version = "0.2.0"
   - name: cli
     path: crates/cli
-    tag_template: "v{{ Version }}"   # crates/cli/Cargo.toml  → version = "0.3.0"
+    tag_template: "v{{ .Version }}"   # crates/cli/Cargo.toml  → version = "0.3.0"
 ```
 
 ```text
@@ -352,7 +352,7 @@ Two ways to resolve it, depending on intent:
   inherit it (`version.workspace = true`). The repo is then a genuine lockstep
   workspace.
 - **Independent releases** — the crates ship on their own cadences: give each a
-  distinct `tag_template` prefix (`core-v{{ Version }}`, `cli-v{{ Version }}`),
+  distinct `tag_template` prefix (`core-v{{ .Version }}`, `cli-v{{ .Version }}`),
   promoting the repo to the [multi-track](#multi-track-root-subsections) shape.
 
 A member with no literal `[package].version` (e.g. `version.workspace = true`,

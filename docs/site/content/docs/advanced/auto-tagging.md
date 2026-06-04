@@ -232,13 +232,13 @@ Tag individual crates in a workspace:
 anodizer tag --crate my-crate
 ```
 
-Each crate has its own `tag_template` (e.g., `my-crate-v{{ Version }}`) used
+Each crate has its own `tag_template` (e.g., `my-crate-v{{ .Version }}`) used
 for both tag discovery (finding the latest `my-crate-v*` tag) and tag
 creation. Distinct prefixes keep workspaces independent — `my-core-v0.5.0` and
 `my-cli-v1.2.0` can coexist without collision (the multi-track shape).
 
 When every crate in a flat `crates:` list shares the **same** `tag_template`
-prefix (all `v{{ Version }}`), a bare `anodizer tag` (no `--crate`) bumps every
+prefix (all `v{{ .Version }}`), a bare `anodizer tag` (no `--crate`) bumps every
 member and creates **one shared `v*` tag** — the flat-aggregate shape, treated
 like lockstep. All members must agree on `[package].version` first; a divergence
 errors before any tag is created (see the
