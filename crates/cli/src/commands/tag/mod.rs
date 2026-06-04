@@ -228,35 +228,58 @@ pub fn run(opts: TagOpts) -> Result<()> {
         }
     }
     if opts.crate_name.is_none() {
-        match detect_repo_shape(loaded_config.as_ref(), loaded_workspace.as_ref()) {
-            RepoShape::PerCrate(groups) => {
-                // Build log early so status messages are consistent.
-                let config_verbose = tag_config.verbose.unwrap_or(false);
-                let effective_verbose = opts.verbose || (config_verbose && !opts.quiet);
-                let log = StageLogger::new(
-                    "tag",
-                    Verbosity::from_flags(opts.quiet, effective_verbose, opts.debug),
-                );
-                log.status(&format!(
-                    "running auto-tag (per-crate){}",
-                    if opts.dry_run { " (dry-run)" } else { "" }
-                ));
-                return run_per_crate_tag(
-                    groups,
-                    &opts,
-                    &cfg,
-                    git_config.as_ref(),
-                    loaded_config.as_ref(),
-                    PushControls {
-                        remote: &remote,
-                        config_push,
-                        changelog_enabled,
-                    },
-                    &log,
-                );
+        // A shared-prefix flat `crates:` list classifies as `Lockstep` but has
+        // NO `[workspace.package].version` to drive the lockstep fall-through
+        // path's single-manifest bump. Its versions live in N per-crate
+        // `[package].version` manifests, so it is bumped by the per-crate engine
+        // applied as ONE lockstep group: that creates the single shared tag
+        // (its built-in dedup) and the one collapsed root changelog section.
+        // A custom tag names ONE explicit tag for the shared unit; it is honored
+        // by the lockstep custom-tag fall-through below, not the per-crate engine
+        // (which ignores `custom_tag`), so it stays out of the group dispatch.
+        let groups = match detect_repo_shape(loaded_config.as_ref(), loaded_workspace.as_ref()) {
+            RepoShape::PerCrate(groups) => Some(groups),
+            RepoShape::Lockstep
+                if cfg.custom_tag.is_none()
+                    && loaded_workspace
+                        .as_ref()
+                        .is_none_or(|ws| ws.workspace_package_version.is_none()) =>
+            {
+                loaded_config
+                    .as_ref()
+                    .filter(|c| c.crates.len() > 1)
+                    .map(|c| vec![c.crates.clone()])
             }
-            // Single or Lockstep fall through to existing paths below.
-            RepoShape::Single | RepoShape::Lockstep => {}
+            // Cargo-workspace lockstep (a real `[workspace.package].version`) and
+            // single-crate repos keep the existing fall-through paths below.
+            RepoShape::Single | RepoShape::Lockstep => None,
+        };
+
+        if let Some(groups) = groups {
+            // Build log early so status messages are consistent.
+            let config_verbose = tag_config.verbose.unwrap_or(false);
+            let effective_verbose = opts.verbose || (config_verbose && !opts.quiet);
+            let log = StageLogger::new(
+                "tag",
+                Verbosity::from_flags(opts.quiet, effective_verbose, opts.debug),
+            );
+            log.status(&format!(
+                "running auto-tag (per-crate){}",
+                if opts.dry_run { " (dry-run)" } else { "" }
+            ));
+            return run_per_crate_tag(
+                groups,
+                &opts,
+                &cfg,
+                git_config.as_ref(),
+                loaded_config.as_ref(),
+                PushControls {
+                    remote: &remote,
+                    config_push,
+                    changelog_enabled,
+                },
+                &log,
+            );
         }
     }
 
@@ -1088,9 +1111,14 @@ pub(crate) enum RepoShape {
 /// Detect the repository shape for default (no `--crate`) tag behaviour.
 ///
 /// Reads the Cargo workspace and anodizer config. Precedence:
-/// 1. If lockstep workspace → `Lockstep`.
-/// 2. If anodizer config has `workspaces:` with multiple groups → `PerCrate` (hybrid).
-/// 3. If anodizer config has `crates:` with >1 entry → `PerCrate` (flat multi-crate).
+/// 1. If anodizer config has `workspaces:` with groups → `PerCrate` (hybrid;
+///    explicit operator intent, wins over a lockstep `[workspace.package].version`).
+/// 2. If `[workspace.package].version` is set → `Lockstep`.
+/// 3. If anodizer config has `crates:` with >1 entry:
+///    - all sharing ONE explicit tag prefix → `Lockstep` (one prefix = one
+///      shared tag namespace, so the crates release in lockstep — `v0.2.0`
+///      cannot independently belong to two crates);
+///    - otherwise → `PerCrate` (flat multi-crate, distinct tracks).
 /// 4. Otherwise → `Single`.
 pub(crate) fn detect_repo_shape(
     preloaded_config: Option<&anodizer_core::config::Config>,
@@ -1132,11 +1160,39 @@ pub(crate) fn detect_repo_shape(
     };
 
     if config.crates.len() > 1 {
+        // A flat `crates:` list that ALL share one explicit tag prefix lives in
+        // one tag namespace: `v0.2.0` cannot simultaneously be two crates'
+        // independent tag, so the crates necessarily release in lockstep. Only
+        // an EXPLICIT shared prefix collapses — a crate with no extractable
+        // `tag_template` prefix (the per-crate `{crate}-v` fallback) is treated
+        // as distinct, keeping genuinely independent crates per-crate.
+        if shared_tag_prefix(&config.crates).is_some() {
+            return RepoShape::Lockstep;
+        }
         let groups: Vec<Vec<CrateConfig>> = config.crates.iter().map(|c| vec![c.clone()]).collect();
         return RepoShape::PerCrate(groups);
     }
 
     RepoShape::Single
+}
+
+/// The single tag prefix shared by EVERY crate in a flat `crates:` list, or
+/// `None` when they do not all share one extractable prefix.
+///
+/// Returns `Some(prefix)` only when every crate's `tag_template` yields a
+/// concrete prefix via [`git::extract_tag_prefix`] AND all those prefixes are
+/// equal. A crate whose template has no extractable prefix (so tagging would
+/// fall back to a per-crate `{crate}-v`) makes the set non-shared → `None`,
+/// since two crates without an explicit common prefix are independent tracks.
+fn shared_tag_prefix(crates: &[CrateConfig]) -> Option<String> {
+    let mut iter = crates.iter();
+    let first = git::extract_tag_prefix(&iter.next()?.tag_template)?;
+    for c in iter {
+        if git::extract_tag_prefix(&c.tag_template)? != first {
+            return None;
+        }
+    }
+    Some(first)
 }
 
 /// Result of per-crate tag computation for one group.
@@ -2915,6 +2971,109 @@ tag_post_hooks:
         };
         let shape = detect_repo_shape(Some(&config), None);
         assert!(matches!(shape, RepoShape::Single));
+    }
+
+    /// A `WorkspaceInfo` with no `[workspace.package].version`, so the Cargo
+    /// signal does NOT force `Lockstep` — the prefix axis decides. Passed
+    /// explicitly so the result is hermetic regardless of the test's cwd.
+    fn ws_no_lockstep() -> WorkspaceInfo {
+        WorkspaceInfo {
+            workspace_package_version: None,
+            members: vec![],
+        }
+    }
+
+    #[test]
+    fn detect_repo_shape_same_prefix_flat_crates_returns_lockstep() {
+        // ≥2 flat crates all on `v{{ Version }}` with no workspace version:
+        // one shared tag prefix is one shared tag namespace, so they release in
+        // lockstep — `v0.2.0` cannot be two crates' independent tag.
+        let config = anodizer_core::config::Config {
+            project_name: "ws".to_string(),
+            crates: vec![
+                crate_cfg("core", "crates/core", "v{{ .Version }}"),
+                crate_cfg("cli", "crates/cli", "v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+        let shape = detect_repo_shape(Some(&config), Some(&ws_no_lockstep()));
+        assert!(
+            matches!(shape, RepoShape::Lockstep),
+            "same-prefix flat crates must classify as Lockstep"
+        );
+    }
+
+    #[test]
+    fn detect_repo_shape_distinct_prefix_flat_crates_returns_per_crate() {
+        // Distinct prefixes (`core-v*` + `v*`) are independent tracks → PerCrate.
+        let config = anodizer_core::config::Config {
+            project_name: "ws".to_string(),
+            crates: vec![
+                crate_cfg("core", "crates/core", "core-v{{ .Version }}"),
+                crate_cfg("cli", "crates/cli", "v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+        let shape = detect_repo_shape(Some(&config), Some(&ws_no_lockstep()));
+        match shape {
+            RepoShape::PerCrate(groups) => assert_eq!(groups.len(), 2),
+            other => panic!(
+                "expected PerCrate for distinct prefixes, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn detect_repo_shape_no_tag_template_flat_crates_returns_per_crate() {
+        // No `tag_template` → no extractable shared prefix (each would fall back
+        // to a per-crate `{crate}-v`), so the crates stay distinct → PerCrate.
+        let config = anodizer_core::config::Config {
+            project_name: "ws".to_string(),
+            crates: vec![
+                crate_cfg("core", "crates/core", ""),
+                crate_cfg("cli", "crates/cli", ""),
+            ],
+            ..Default::default()
+        };
+        let shape = detect_repo_shape(Some(&config), Some(&ws_no_lockstep()));
+        match shape {
+            RepoShape::PerCrate(groups) => assert_eq!(groups.len(), 2),
+            other => panic!(
+                "expected PerCrate when no tag_template yields a shared prefix, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn detect_repo_shape_explicit_workspaces_shared_prefix_still_per_crate() {
+        // An explicit `workspaces:` block is operator intent and wins at step 1,
+        // even when its crates coincidentally share one tag prefix — the
+        // same-prefix → Lockstep collapse applies ONLY to inferred flat `crates:`.
+        let ws1 = anodizer_core::config::WorkspaceConfig {
+            name: "group-a".to_string(),
+            crates: vec![crate_cfg("a", "crates/a", "v{{ .Version }}")],
+            ..Default::default()
+        };
+        let ws2 = anodizer_core::config::WorkspaceConfig {
+            name: "group-b".to_string(),
+            crates: vec![crate_cfg("b", "crates/b", "v{{ .Version }}")],
+            ..Default::default()
+        };
+        let config = anodizer_core::config::Config {
+            project_name: "p".to_string(),
+            workspaces: Some(vec![ws1, ws2]),
+            ..Default::default()
+        };
+        let shape = detect_repo_shape(Some(&config), Some(&ws_no_lockstep()));
+        match shape {
+            RepoShape::PerCrate(groups) => assert_eq!(groups.len(), 2),
+            other => panic!(
+                "explicit workspaces: must stay PerCrate despite a shared prefix, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
     }
 
     // ---- anodizer-output line format tests ----
