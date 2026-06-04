@@ -517,9 +517,18 @@ fn render_group_titles(
 /// An explicit `--from <ref>` (carried as `ctx.options.changelog_from`)
 /// overrides the auto-discovered tag, letting the operator pin the lower
 /// bound. Otherwise the latest tag matching the crate's `tag_template` is
-/// used. In both cases the result is filtered against `current_tag` so a
+/// used. In a real release the result is filtered against `current_tag` so a
 /// range start equal to the upper bound (which would collapse the range to
 /// zero commits) is dropped.
+///
+/// In snapshot mode that drop is suppressed: `current_tag` is a *preview*
+/// boundary (`resolve_git_context` resolves it to the latest EXISTING tag when
+/// HEAD is ahead of the last release), not a freshly-created release tag, so
+/// the auto-discovered previous tag legitimately equals it. Dropping it there
+/// would erase the lower bound and leak full history — diverging from the
+/// engine-backed `keep-a-changelog` / `json` formats, which bound the pending
+/// window at `find_last_tag..HEAD` directly. The snapshot pending window must
+/// always start at the last release tag, never collapse to full history.
 ///
 /// An explicit `--from` is validated against git: a ref that doesn't resolve
 /// to a commit `bail!`s (naming the bad ref) rather than silently degrading
@@ -564,6 +573,9 @@ fn resolve_prev_tag(
         )
         .unwrap_or(None),
     };
+    if ctx.is_snapshot() {
+        return Ok(candidate);
+    }
     Ok(candidate.filter(|t| current_tag != Some(t.as_str())))
 }
 

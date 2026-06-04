@@ -437,8 +437,11 @@ fn run_release_notes(
     // covers the SAME commits the engine-backed formats do for an identical
     // range arg:
     //   - `Ref(r)` → explicit lower bound (`changelog_from`).
-    //   - `Pending` → no signal; the stage auto-discovers the latest tag,
-    //     matching kac/json's `find_last_tag` ("since last release").
+    //   - `Pending` → no signal; the stage auto-discovers the last release tag.
+    //     `resolve_prev_tag` keeps that tag in snapshot mode (where the current
+    //     `Tag` resolves to the latest existing tag and would otherwise be
+    //     dropped as "equal to current"), so the pending window stays
+    //     "since last release" — matching kac/json's `find_last_tag`.
     //   - `FullHistory` → `changelog_full_history` short-circuits the stage's
     //     auto-discovery so the range spans all history.
     let explicit_from = match &resolved.start {

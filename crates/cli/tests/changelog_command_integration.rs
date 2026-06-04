@@ -677,11 +677,37 @@ fn omitted_range_is_pending_not_full_history() {
 }
 
 /// For the SAME range arg, json and release-notes must surface the SAME commit
-/// set — both for full history (`..HEAD`) and an explicit `v0.1.0..HEAD`.
+/// set — for the OMITTED (pending) range, full history (`..HEAD`), and an
+/// explicit `v0.1.0..HEAD`.
 #[test]
 fn cross_format_commit_set_is_consistent() {
     let tmp = two_release_repo();
     let root = tmp.path();
+
+    // OMITTED (pending): HEAD is one commit ahead of the latest tag (v0.2.0).
+    // Both formats must bound at v0.2.0 — including the post-tag "late fix" and
+    // EXCLUDING the pre-tag "early feature". This is the regression guard: a
+    // prior build leaked full history through `--snapshot --format
+    // release-notes` because `resolve_prev_tag` dropped the auto-discovered
+    // previous tag when it equalled the snapshot's current `Tag`.
+    let pending_json = json_summaries_for_range(root, None);
+    let pending_notes = release_notes_for_range(root, None);
+    assert!(
+        pending_json.iter().any(|s| s.contains("late fix")),
+        "json pending must include the post-tag commit: {pending_json:?}"
+    );
+    assert!(
+        pending_json.iter().all(|s| !s.contains("early feature")),
+        "json pending must EXCLUDE the pre-tag commit: {pending_json:?}"
+    );
+    assert!(
+        pending_notes.contains("late fix"),
+        "release-notes pending must include the post-tag commit:\n{pending_notes}"
+    );
+    assert!(
+        !pending_notes.contains("early feature"),
+        "release-notes pending must EXCLUDE the pre-tag commit (full-history leak):\n{pending_notes}"
+    );
 
     // Full history: early + late appear in BOTH formats.
     let full_json = json_summaries_for_range(root, Some("..HEAD"));
@@ -711,4 +737,160 @@ fn cross_format_commit_set_is_consistent() {
             "release-notes v0.1.0..HEAD missing {needle:?}:\n{exp_notes}"
         );
     }
+}
+
+/// Single-crate, HEAD one commit ahead of the latest tag: the OMITTED pending
+/// range through `--snapshot --format release-notes` must show exactly the
+/// since-last-release set (the post-tag "late fix"), never the pre-tag "early
+/// feature" — matching the json and keep-a-changelog pending output. The
+/// snapshot `Tag` resolves to the latest existing tag (v0.2.0) here, the exact
+/// condition under which release-notes previously leaked full history.
+#[test]
+fn snapshot_release_notes_pending_matches_engine_formats() {
+    let tmp = two_release_repo();
+    let root = tmp.path();
+
+    let notes = release_notes_for_range(root, None);
+    assert!(
+        notes.contains("late fix"),
+        "release-notes pending must include the post-tag commit:\n{notes}"
+    );
+    assert!(
+        !notes.contains("early feature"),
+        "release-notes pending leaked the pre-tag commit (full-history bug):\n{notes}"
+    );
+
+    // The same pending set must come out of json and keep-a-changelog.
+    let json = json_summaries_for_range(root, None);
+    assert!(json.iter().any(|s| s.contains("late fix")), "{json:?}");
+    assert!(
+        json.iter().all(|s| !s.contains("early feature")),
+        "{json:?}"
+    );
+
+    let kac = changelog(root, &["-q"]);
+    assert!(kac.success, "kac failed: {}\n{}", kac.stdout, kac.stderr);
+    assert!(
+        kac.stdout.contains("late fix") && !kac.stdout.contains("early feature"),
+        "kac pending mismatch:\n{}",
+        kac.stdout
+    );
+}
+
+/// Workspace per-crate: each crate's pending release-notes window is bounded at
+/// ITS OWN last tag, never full history and never the other crate's commits.
+/// Both crates have HEAD ahead of their latest tag, so this exercises the
+/// snapshot previous-tag resolution per crate (mode-agnostic regression).
+fn per_crate_snapshot_repo() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (name, ver) in [("core", "0.2.0"), ("cli", "0.3.0")] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: percrate-snap
+changelog:
+  snapshot: true
+  per_crate: true
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "core-v{{ .Version }}"
+    version_sync:
+      enabled: true
+  - name: cli
+    path: crates/cli
+    tag_template: "cli-v{{ .Version }}"
+    version_sync:
+      enabled: true
+"#,
+    )
+    .unwrap();
+    git_init(root);
+    // Each crate gets a pre-tag commit, then a tag, then a post-tag commit, so
+    // "since last release" is a strict subset of full history for both.
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "core-v0.1.0"]);
+    run_git(root, &["tag", "cli-v0.1.0"]);
+    fs::write(root.join("crates/core/src/lib.rs"), "// core early\n").unwrap();
+    git_add_commit(root, "feat: core early");
+    run_git(root, &["tag", "core-v0.2.0"]);
+    fs::write(root.join("crates/cli/src/lib.rs"), "// cli early\n").unwrap();
+    git_add_commit(root, "feat: cli early");
+    run_git(root, &["tag", "cli-v0.3.0"]);
+    fs::write(root.join("crates/core/src/lib.rs"), "// core late\n").unwrap();
+    git_add_commit(root, "fix: core late");
+    fs::write(root.join("crates/cli/src/lib.rs"), "// cli late\n").unwrap();
+    git_add_commit(root, "fix: cli late");
+    tmp
+}
+
+#[test]
+fn per_crate_snapshot_release_notes_bounds_at_each_crate_tag() {
+    let tmp = per_crate_snapshot_repo();
+    let root = tmp.path();
+
+    // core's pending window is core-v0.2.0..HEAD: "core late", not "core early".
+    let core = release_notes_for_crate(root, "core");
+    assert!(
+        core.contains("core late"),
+        "core pending must include its post-tag commit:\n{core}"
+    );
+    assert!(
+        !core.contains("core early"),
+        "core pending leaked its pre-tag commit (full-history bug):\n{core}"
+    );
+    assert!(
+        !core.contains("cli late") && !core.contains("cli early"),
+        "cli commits leaked into core's notes:\n{core}"
+    );
+
+    // cli's pending window is cli-v0.3.0..HEAD: "cli late", not "cli early".
+    let cli = release_notes_for_crate(root, "cli");
+    assert!(
+        cli.contains("cli late"),
+        "cli pending must include its post-tag commit:\n{cli}"
+    );
+    assert!(
+        !cli.contains("cli early"),
+        "cli pending leaked its pre-tag commit (full-history bug):\n{cli}"
+    );
+    assert!(
+        !cli.contains("core late") && !cli.contains("core early"),
+        "core commits leaked into cli's notes:\n{cli}"
+    );
+}
+
+/// Run `anodizer changelog --crate <name> --snapshot --format release-notes`
+/// (omitted range = pending) and return stdout.
+fn release_notes_for_crate(root: &Path, crate_name: &str) -> String {
+    let r = changelog(
+        root,
+        &[
+            "-q",
+            "--crate",
+            crate_name,
+            "--snapshot",
+            "--format",
+            "release-notes",
+        ],
+    );
+    assert!(
+        r.success,
+        "release-notes --crate {crate_name} failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    r.stdout
 }
