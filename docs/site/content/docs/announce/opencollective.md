@@ -12,16 +12,16 @@ announce:
   opencollective:
     enabled: true
     slug: "my-project"
-    title_template: "{{ .Tag }}"
-    message_template: "{{ .ProjectName }} {{ .Tag }} is out!<br/>Check it out at <a href=\"{{ .ReleaseURL }}\">{{ .ReleaseURL }}</a>"
+    title_template: "{{ Tag }}"
+    message_template: "{{ ProjectName }} {{ Tag }} is out!<br/>Check it out at <a href=\"{{ ReleaseURL }}\">{{ ReleaseURL }}</a>"
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | bool | Enable OpenCollective announcements |
 | `slug` | string | The collective slug from your OpenCollective URL (e.g. `my-project` from `opencollective.com/my-project`) |
-| `title_template` | string | Update title (templates supported). Default: `{{ .Tag }}` |
-| `message_template` | string | Update body as HTML (templates supported). Default: `{{ .ProjectName }} {{ .Tag }} is out!<br/>Check it out at <a href="{{ .ReleaseURL }}">{{ .ReleaseURL }}</a>` |
+| `title_template` | string | Update title (templates supported). Default: `{{ Tag }}` |
+| `message_template` | string | Update body as HTML (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out!<br/>Check it out at <a href="{{ ReleaseURL }}">{{ ReleaseURL }}</a>` |
 
 ## Environment variables
 
@@ -67,10 +67,10 @@ announce:
   opencollective:
     enabled: true
     slug: "my-rust-project"
-    title_template: "{{ .ProjectName }} {{ .Tag }} released"
+    title_template: "{{ ProjectName }} {{ Tag }} released"
     message_template: |
-      <p>{{ .ProjectName }} {{ .Tag }} is now available.</p>
-      <p>See the full release notes at <a href="{{ .ReleaseURL }}">{{ .ReleaseURL }}</a>.</p>
+      <p>{{ ProjectName }} {{ Tag }} is now available.</p>
+      <p>See the full release notes at <a href="{{ ReleaseURL }}">{{ ReleaseURL }}</a>.</p>
 ```
 
 ```

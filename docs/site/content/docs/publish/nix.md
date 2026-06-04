@@ -83,7 +83,7 @@ crates:
           owner: my-org                      # optional; inferred if omitted
           name: nixpkgs                      # optional
           branch: main                       # optional
-          token: "{{ .Env.GITHUB_TOKEN }}"   # optional
+          token: "{{ Env.GITHUB_TOKEN }}"   # optional
           pull_request:
             enabled: false                   # optional; open PR instead of direct push
             base: master                     # optional
@@ -136,7 +136,7 @@ repository:
   owner: my-org
   name: nixpkgs
   branch: main           # target branch
-  token: "{{ .Env.GITHUB_TOKEN }}"
+  token: "{{ Env.GITHUB_TOKEN }}"
   pull_request:
     enabled: true        # open a PR instead of pushing directly
     base: master
@@ -326,7 +326,7 @@ crates:
           owner: my-org
           name: nixpkgs
           branch: main
-          token: "{{ .Env.GITHUB_TOKEN }}"
+          token: "{{ Env.GITHUB_TOKEN }}"
         dependencies:
           - name: openssl
           - name: libiconv

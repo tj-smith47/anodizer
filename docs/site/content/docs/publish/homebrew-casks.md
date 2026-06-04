@@ -50,7 +50,7 @@ homebrew_casks:
     repository:
       owner: myorg                   # required
       name: homebrew-tap             # required
-      token: "{{ .Env.GITHUB_TOKEN }}"  # optional; falls back to GITHUB_TOKEN env
+      token: "{{ Env.GITHUB_TOKEN }}"  # optional; falls back to GITHUB_TOKEN env
       branch: main                   # optional; target branch
       pull_request:
         enabled: false               # optional; open PR instead of direct push
@@ -215,7 +215,7 @@ conflicts:
 - Looks for macOS artifacts (`disk_image` or `archive` kind)
 - Requires SHA256 checksum metadata on the artifact
 - Clones the tap repository, writes the cask file, commits, and pushes
-- Default commit message: `"Brew cask update for {{ .ProjectName }} version {{ .Tag }}"`
+- Default commit message: `"Brew cask update for {{ ProjectName }} version {{ Tag }}"`
 
 ## Full example
 

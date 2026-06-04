@@ -94,7 +94,7 @@ aur_sources:
 |---|---|---|
 | `private_key` | — | Path to SSH private key file |
 | `git_ssh_command` | — | Override the full SSH invocation |
-| — | `AUR_SSH_KEY` | SSH key content (used via `private_key: "{{ .Env.AUR_SSH_KEY }}"`) |
+| — | `AUR_SSH_KEY` | SSH key content (used via `private_key: "{{ Env.AUR_SSH_KEY }}"`) |
 
 ## Common gotchas
 

@@ -57,7 +57,7 @@ dockerhub:
       # from_url:
       #   url: "https://..."
       #   headers:
-      #     Authorization: "token {{ .Env.GITHUB_TOKEN }}"
+      #     Authorization: "token {{ Env.GITHUB_TOKEN }}"
     disable: false                   # optional; skip this entry
 ```
 
@@ -99,7 +99,7 @@ full_description:
   from_url:
     url: "https://raw.githubusercontent.com/myorg/myapp/main/README.md"
     headers:
-      Authorization: "token {{ .Env.GITHUB_TOKEN }}"
+      Authorization: "token {{ Env.GITHUB_TOKEN }}"
 ```
 
 | Source | Fields |

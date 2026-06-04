@@ -12,14 +12,14 @@ announce:
   bluesky:
     enabled: true
     username: "yourhandle.bsky.social"
-    message_template: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
+    message_template: "{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}"
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | bool | Enable Bluesky announcements |
 | `username` | string | Bluesky handle (e.g. `yourhandle.bsky.social`) |
-| `message_template` | string | Post text (templates supported). Default: `{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}` |
+| `message_template` | string | Post text (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |
 
 ## Environment variables
 
@@ -40,7 +40,7 @@ performs a two-step flow against `https://bsky.social`:
 
 ## Automatic link facets
 
-If `{{ .ReleaseURL }}` is present in the rendered message, anodizer
+If `{{ ReleaseURL }}` is present in the rendered message, anodizer
 automatically adds a rich-text facet marking the URL as a clickable link.
 Bluesky requires explicit facet annotations for links to be rendered as
 hyperlinks rather than plain text, so this happens without any extra
@@ -62,7 +62,7 @@ announce:
   bluesky:
     enabled: true
     username: "myrustproject.bsky.social"
-    message_template: "{{ .ProjectName }} {{ .Tag }} released! {{ .ReleaseURL }}"
+    message_template: "{{ ProjectName }} {{ Tag }} released! {{ ReleaseURL }}"
 ```
 
 ```

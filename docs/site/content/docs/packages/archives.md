@@ -96,15 +96,15 @@ archives:
   - id: default
     completions:
       # Mode A — run the host-native binary once per shell, reuse for all targets.
-      generate: "{{ .ArtifactPath }} completions {{ .Shell }}"
+      generate: "{{ ArtifactPath }} completions {{ Shell }}"
       shells: [bash, zsh, fish, powershell, nushell, elvish]   # arbitrary list
       dst: "completions/"
       # Mode B — harvest a build.rs OUT_DIR (clap_complete) via a per-target glob:
-      #   from_build_out: "**/out/{{ .Binary }}.{bash,fish,zsh}"
+      #   from_build_out: "**/out/{{ Binary }}.{bash,fish,zsh}"
       # Mode C — copy committed files:
       #   copy: "contrib/completion/*"
     manpages:
-      generate: "{{ .ArtifactPath }} --man"     # or from_build_out / copy
+      generate: "{{ ArtifactPath }} --man"     # or from_build_out / copy
       dst: "man/man1/"
 ```
 
@@ -118,10 +118,10 @@ into the shell's lookup path: bash `<bin>`, zsh `_<bin>`, fish `<bin>.fish`,
 powershell `_<bin>.ps1`, elvish `<bin>.elv`, nushell `<bin>.nu`. Man pages are
 written as `<bin>.1`.
 
-In `from_build_out` / `copy` globs, `{{ .Binary }}` resolves to the
+In `from_build_out` / `copy` globs, `{{ Binary }}` resolves to the
 host-native binary's name — but on a pure cross build (no host artifact) it
 falls back to the **crate name**. If your binary name differs from the crate
-name, spell it literally in the glob instead of relying on `{{ .Binary }}`.
+name, spell it literally in the glob instead of relying on `{{ Binary }}`.
 
 ### Single source of truth for nfpm
 

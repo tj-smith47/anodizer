@@ -91,7 +91,7 @@ release:
   gitlab:
     owner: mygroup
     name: myproject
-  name_template: "{{ .ProjectName }} {{ .Version }}"
+  name_template: "{{ ProjectName }} {{ Version }}"
   header:
     from_file: RELEASE_HEADER.md
   mode: replace

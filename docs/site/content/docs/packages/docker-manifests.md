@@ -17,10 +17,10 @@ Packager + publisher — creates and pushes Docker manifest lists combining mult
 crates:
   - name: myapp
     docker_manifests:
-      - name_template: "ghcr.io/myorg/myapp:{{ .Version }}"
+      - name_template: "ghcr.io/myorg/myapp:{{ Version }}"
         image_templates:
-          - "ghcr.io/myorg/myapp:{{ .Version }}-amd64"
-          - "ghcr.io/myorg/myapp:{{ .Version }}-arm64"
+          - "ghcr.io/myorg/myapp:{{ Version }}-amd64"
+          - "ghcr.io/myorg/myapp:{{ Version }}-arm64"
 ```
 
 ## Full config reference
@@ -96,10 +96,10 @@ Control when manifests are pushed:
 
 ```yaml
 docker_manifests:
-  - name_template: "ghcr.io/myorg/myapp:{{ .Version }}"
+  - name_template: "ghcr.io/myorg/myapp:{{ Version }}"
     image_templates:
-      - "ghcr.io/myorg/myapp:{{ .Version }}-amd64"
-      - "ghcr.io/myorg/myapp:{{ .Version }}-arm64"
+      - "ghcr.io/myorg/myapp:{{ Version }}-amd64"
+      - "ghcr.io/myorg/myapp:{{ Version }}-arm64"
     skip_push: auto  # skip push for pre-release versions
 ```
 
@@ -109,16 +109,16 @@ docker_manifests:
 crates:
   - name: myapp
     docker_manifests:
-      - name_template: "ghcr.io/myorg/myapp:{{ .Version }}"
+      - name_template: "ghcr.io/myorg/myapp:{{ Version }}"
         image_templates:
-          - "ghcr.io/myorg/myapp:{{ .Version }}-amd64"
-          - "ghcr.io/myorg/myapp:{{ .Version }}-arm64"
+          - "ghcr.io/myorg/myapp:{{ Version }}-amd64"
+          - "ghcr.io/myorg/myapp:{{ Version }}-arm64"
         retry:
           attempts: 5
           delay: "5s"
           max_delay: "2m"
       - name_template: "ghcr.io/myorg/myapp:latest"
         image_templates:
-          - "ghcr.io/myorg/myapp:{{ .Version }}-amd64"
-          - "ghcr.io/myorg/myapp:{{ .Version }}-arm64"
+          - "ghcr.io/myorg/myapp:{{ Version }}-amd64"
+          - "ghcr.io/myorg/myapp:{{ Version }}-arm64"
 ```

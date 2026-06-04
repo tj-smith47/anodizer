@@ -19,7 +19,7 @@ Digest creation is enabled by default. To customize:
 crates:
   - name: myapp
     docker_digest:
-      name_template: "{{ .ProjectName }}_{{ .Version }}_digest.txt"
+      name_template: "{{ ProjectName }}_{{ Version }}_digest.txt"
 ```
 
 ## Docker digest config fields

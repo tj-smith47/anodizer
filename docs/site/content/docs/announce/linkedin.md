@@ -11,13 +11,13 @@ template = "docs.html"
 announce:
   linkedin:
     enabled: true
-    message_template: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
+    message_template: "{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}"
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | bool | Enable LinkedIn announcements |
-| `message_template` | string | Share post text (templates supported). Default: `{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}` |
+| `message_template` | string | Share post text (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |
 
 ## Environment variables
 
@@ -59,9 +59,9 @@ announce:
   linkedin:
     enabled: true
     message_template: |
-      {{ .ProjectName }} {{ .Tag }} is out!
+      {{ ProjectName }} {{ Tag }} is out!
 
-      Release notes: {{ .ReleaseURL }}
+      Release notes: {{ ReleaseURL }}
 ```
 
 ```

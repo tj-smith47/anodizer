@@ -31,7 +31,7 @@ crates:
 | `replace` | bool | `false` | When `true`, remove the individual per-architecture binaries from the artifact registry. Downstream stages (archives, release, publishers) will only see the universal binary. |
 | `ids` | list of strings | all binaries | Filter which binaries to combine. Only artifacts whose binary name matches an entry in this list are considered. Useful when a crate produces multiple binaries and you only want universal builds for some of them. |
 | `hooks` | object | none | Pre/post hooks to run around universal binary creation. Uses the same `pre`/`post` hook format as build hooks. |
-| `mod_timestamp` | string | none | Override the output file's modification timestamp for reproducible builds. Supports templates (e.g., `{{ .CommitDate }}`). |
+| `mod_timestamp` | string | none | Override the output file's modification timestamp for reproducible builds. Supports templates (e.g., `{{ CommitDate }}`). |
 
 ## Examples
 
@@ -73,7 +73,7 @@ crates:
       - x86_64-apple-darwin
       - aarch64-apple-darwin
     universal_binaries:
-      - name_template: "{{ .ProjectName }}-{{ .Version }}-darwin-universal"
+      - name_template: "{{ ProjectName }}-{{ Version }}-darwin-universal"
         replace: true
 ```
 

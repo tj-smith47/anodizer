@@ -40,8 +40,8 @@ Use any template variable in both the file paths and file contents:
 ```yaml
 template_files:
   - id: install-script
-    src: "scripts/{{ .ProjectName }}-install.sh.tpl"
-    dst: "{{ .ProjectName }}-{{ .Version }}-install.sh"
+    src: "scripts/{{ ProjectName }}-install.sh.tpl"
+    dst: "{{ ProjectName }}-{{ Version }}-install.sh"
     mode: "0755"
 ```
 
@@ -49,8 +49,8 @@ Given a source file `scripts/myapp-install.sh.tpl`:
 
 ```bash
 #!/bin/sh
-# Install {{ .ProjectName }} {{ .Version }}
-curl -L https://github.com/myorg/{{ .ProjectName }}/releases/download/{{ .Tag }}/{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}.tar.gz | tar xz
+# Install {{ ProjectName }} {{ Version }}
+curl -L https://github.com/myorg/{{ ProjectName }}/releases/download/{{ Tag }}/{{ ProjectName }}-{{ Os }}-{{ Arch }}.tar.gz | tar xz
 ```
 
 ## Setting file permissions
@@ -79,7 +79,7 @@ template_files:
     dst: config.example.yaml
   - id: completion
     src: completions/bash.tpl
-    dst: "{{ .ProjectName }}.bash"
+    dst: "{{ ProjectName }}.bash"
 ```
 
 Each entry gets its own artifact ID, so you can reference them individually in publisher configs.

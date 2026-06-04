@@ -239,7 +239,7 @@ crates:
         description: "A kubectl plugin that provides advanced resource management with filtering, bulk operations, and dry-run support."
         homepage: "https://github.com/myorg/mytool"
         caveats: "Run 'kubectl mytool init' after installation to configure defaults."
-        commit_msg_template: "Update {{ .Name }} plugin to {{ .Version }}"
+        commit_msg_template: "Update {{ Name }} plugin to {{ Version }}"
         commit_author:
           name: "Release Bot"
           email: "bot@example.com"

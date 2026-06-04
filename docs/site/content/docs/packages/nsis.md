@@ -73,7 +73,7 @@ The `makensis` command must be installed and available on PATH.
 
 Anodizer ships a built-in NSIS script so a minimal `nsis: [ {} ]` config produces a working installer out of the box. GoReleaser Pro requires `script:` to be set explicitly. Set `script:` yourself for behaviour identical to an upstream GoReleaser config.
 
-The `name` default also differs: anodizer matches GoReleaser's `'{{.ProjectName}}_{{.Arch}}_setup'` and does **not** auto-append `.exe`. The built-in default script writes `OutFile "{{ Name }}.exe"`, so the resulting installer is `.exe`-suffixed even though the `name` template is not. Custom scripts must include `.exe` in their `OutFile` directive themselves.
+The `name` default also differs: anodizer matches GoReleaser's `'{{ProjectName}}_{{Arch}}_setup'` and does **not** auto-append `.exe`. The built-in default script writes `OutFile "{{ Name }}.exe"`, so the resulting installer is `.exe`-suffixed even though the `name` template is not. Custom scripts must include `.exe` in their `OutFile` directive themselves.
 
 ## Template engine
 
@@ -147,7 +147,7 @@ hooks:
   after:
     - cmd: signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f cert.pfx /p $CERT_PASSWORD dist/windows/*.exe
       env:
-        - CERT_PASSWORD={{ .Env.WINDOWS_CERT_PASSWORD }}
+        - CERT_PASSWORD={{ Env.WINDOWS_CERT_PASSWORD }}
 ```
 
 On Linux/macOS hosts, [`osslsigncode`](https://github.com/mtrojnar/osslsigncode) is the standard `signtool` replacement.
@@ -170,5 +170,5 @@ crates:
         extra_files:
           - LICENSE
           - README.md
-        mod_timestamp: "{{ .CommitTimestamp }}"
+        mod_timestamp: "{{ CommitTimestamp }}"
 ```

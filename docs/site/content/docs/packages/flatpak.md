@@ -122,5 +122,5 @@ crates:
           - "--share=network"
         extra_files:
           - LICENSE
-        mod_timestamp: "{{ .CommitTimestamp }}"
+        mod_timestamp: "{{ CommitTimestamp }}"
 ```

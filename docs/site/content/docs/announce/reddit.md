@@ -14,8 +14,8 @@ announce:
     application_id: "your_app_id"
     username: "your_reddit_username"
     sub: "rust"
-    title_template: "{{ .ProjectName }} {{ .Tag }} is out!"
-    url_template: "{{ .ReleaseURL }}"
+    title_template: "{{ ProjectName }} {{ Tag }} is out!"
+    url_template: "{{ ReleaseURL }}"
 ```
 
 | Field | Type | Description |
@@ -24,8 +24,8 @@ announce:
 | `application_id` | string | Reddit OAuth application (client) ID |
 | `username` | string | Reddit account username for posting |
 | `sub` | string | Subreddit name to post to (without the `/r/` prefix) |
-| `title_template` | string | Title of the link post (templates supported). Default: `{{ .ProjectName }} {{ .Tag }} is out!` |
-| `url_template` | string | URL the link post points to (templates supported). Default: `{{ .ReleaseURL }}` |
+| `title_template` | string | Title of the link post (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out!` |
+| `url_template` | string | URL the link post points to (templates supported). Default: `{{ ReleaseURL }}` |
 
 ## Environment variables
 
@@ -68,8 +68,8 @@ announce:
     application_id: "{{ Env.REDDIT_APP_ID }}"
     username: "{{ Env.REDDIT_USERNAME }}"
     sub: "myproject"
-    title_template: "{{ .ProjectName }} {{ .Tag }} released"
-    url_template: "{{ .ReleaseURL }}"
+    title_template: "{{ ProjectName }} {{ Tag }} released"
+    url_template: "{{ ReleaseURL }}"
 ```
 
 ```

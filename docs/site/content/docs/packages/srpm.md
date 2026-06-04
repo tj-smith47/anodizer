@@ -121,15 +121,15 @@ The spec file is rendered through the template engine with additional variables:
 
 | Variable | Description |
 |----------|-------------|
-| `{{ .PackageName }}` | RPM package name |
-| `{{ .Source }}` | Source archive filename (reconciled with the RPM `Version:`; always matches the file in `SOURCES/`) |
-| `{{ .SourcePrefix }}` | Source archive top-level directory (empty for a flat archive) |
-| `{{ .Summary }}` | Package summary |
-| `{{ .License }}` | License identifier |
-| `{{ .URL }}` | Homepage URL |
-| `{{ .Description }}` | Package description |
+| `{{ PackageName }}` | RPM package name |
+| `{{ Source }}` | Source archive filename (reconciled with the RPM `Version:`; always matches the file in `SOURCES/`) |
+| `{{ SourcePrefix }}` | Source archive top-level directory (empty for a flat archive) |
+| `{{ Summary }}` | Package summary |
+| `{{ License }}` | License identifier |
+| `{{ URL }}` | Homepage URL |
+| `{{ Description }}` | Package description |
 
-Use `%autosetup -n {{ .SourcePrefix }}` only when the source archive has a
+Use `%autosetup -n {{ SourcePrefix }}` only when the source archive has a
 directory prefix (a `source.prefix_template` ending in `/`). For a flat
 archive (`SourcePrefix` empty), use `%autosetup -c` instead, which creates
 the build directory and extracts the flat sources into it.

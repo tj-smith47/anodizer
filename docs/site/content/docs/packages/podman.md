@@ -27,16 +27,16 @@ crates:
     docker_v2:
       - id: app-podman
         images: ["ghcr.io/myorg/myapp"]
-        tags: ["{{ .Version }}", "latest"]
+        tags: ["{{ Version }}", "latest"]
         dockerfile: Dockerfile
         platforms: ["linux/amd64", "linux/arm64"]
         use: podman           # opt in (Linux-only)
         sbom: false           # MUST be false under podman
     docker_manifests:
-      - name_template: "ghcr.io/myorg/myapp:{{ .Version }}"
+      - name_template: "ghcr.io/myorg/myapp:{{ Version }}"
         image_templates:
-          - "ghcr.io/myorg/myapp:{{ .Version }}-amd64"
-          - "ghcr.io/myorg/myapp:{{ .Version }}-arm64"
+          - "ghcr.io/myorg/myapp:{{ Version }}-amd64"
+          - "ghcr.io/myorg/myapp:{{ Version }}-arm64"
         use: podman
 ```
 

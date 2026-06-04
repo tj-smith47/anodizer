@@ -124,8 +124,8 @@ changelog:
   ai:
     use: anthropic
     prompt: |
-      Project: {{ .ProjectName }}
-      Tag: {{ .Tag }}
+      Project: {{ ProjectName }}
+      Tag: {{ Tag }}
 
       Polish these notes:
 
@@ -153,7 +153,7 @@ changelog:
   ai:
     use: anthropic
     prompt: |
-      You are writing the release notes for {{ .ProjectName }} {{ .Tag }}.
+      You are writing the release notes for {{ ProjectName }} {{ Tag }}.
       Start with a one-paragraph intro mentioning the project name.
       Then polish the changelog below.
 

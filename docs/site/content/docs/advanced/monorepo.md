@@ -37,17 +37,17 @@ top-level `crates:` list:
 crates:
   - name: core-lib
     path: crates/core
-    tag_template: "core-v{{ .Version }}"   # distinct prefix → its own track
+    tag_template: "core-v{{ Version }}"   # distinct prefix → its own track
     depends_on: []
 
   - name: cli-tool
     path: crates/cli
-    tag_template: "cli-v{{ .Version }}"     # distinct prefix → its own track
+    tag_template: "cli-v{{ Version }}"     # distinct prefix → its own track
     depends_on: [core-lib]
 ```
 
 To release the crates together under **one** shared `v*` tag instead, give every
-member the **same** prefix (`tag_template: "v{{ .Version }}"`) — the
+member the **same** prefix (`tag_template: "v{{ Version }}"`) — the
 flat-aggregate shape above. All members must then agree on `[package].version`.
 
 ## Workspaces config (multi-root monorepo)
@@ -65,7 +65,7 @@ workspaces:
     crates:
       - name: my-core
         path: crates/my-core
-        tag_template: "core-v{{ .Version }}"
+        tag_template: "core-v{{ Version }}"
         version_sync:
           enabled: true
           mode: cargo
@@ -77,7 +77,7 @@ workspaces:
     crates:
       - name: my-cli
         path: crates/my-cli
-        tag_template: "v{{ .Version }}"
+        tag_template: "v{{ Version }}"
         depends_on: [my-core]
         version_sync:
           enabled: true

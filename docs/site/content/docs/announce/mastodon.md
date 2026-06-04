@@ -12,14 +12,14 @@ announce:
   mastodon:
     enabled: true
     server: "https://mastodon.social"
-    message_template: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
+    message_template: "{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}"
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | bool | Enable Mastodon announcements |
 | `server` | string | Full URL of your Mastodon instance (e.g. `https://mastodon.social`) |
-| `message_template` | string | Toot text (templates supported). Default: `{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}` |
+| `message_template` | string | Toot text (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |
 
 ## Environment variables
 
@@ -51,7 +51,7 @@ announce:
   mastodon:
     enabled: true
     server: "https://fosstodon.org"
-    message_template: "{{ .ProjectName }} {{ .Tag }} is out! {{ .ReleaseURL }} #rustlang"
+    message_template: "{{ ProjectName }} {{ Tag }} is out! {{ ReleaseURL }} #rustlang"
 ```
 
 ```

@@ -14,8 +14,8 @@ announce:
     server: "https://forum.example.com"
     category_id: 5
     username: "release-bot"
-    title_template: "{{ .ProjectName }} {{ .Tag }} is out!"
-    message_template: "{{ .ProjectName }} {{ .Tag }} has been released. See the full release notes at {{ .ReleaseURL }}"
+    title_template: "{{ ProjectName }} {{ Tag }} is out!"
+    message_template: "{{ ProjectName }} {{ Tag }} has been released. See the full release notes at {{ ReleaseURL }}"
 ```
 
 | Field | Type | Description |
@@ -24,8 +24,8 @@ announce:
 | `server` | string | Full URL of your Discourse instance (e.g. `https://forum.example.com`) |
 | `category_id` | integer | Category ID to create the topic in (required, must be non-zero) |
 | `username` | string | API username for the request. Default: `system` |
-| `title_template` | string | Topic title (templates supported). Default: `{{ .ProjectName }} {{ .Tag }} is out!` |
-| `message_template` | string | Topic body in Markdown (templates supported). Default: `{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}` |
+| `title_template` | string | Topic title (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out!` |
+| `message_template` | string | Topic body in Markdown (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |
 
 ## Environment variables
 
@@ -67,11 +67,11 @@ announce:
     server: "https://forum.myproject.io"
     category_id: 12
     username: "bot"
-    title_template: "{{ .ProjectName }} {{ .Tag }} released"
+    title_template: "{{ ProjectName }} {{ Tag }} released"
     message_template: |
-      ## {{ .ProjectName }} {{ .Tag }}
+      ## {{ ProjectName }} {{ Tag }}
 
-      A new release is available. See full release notes at {{ .ReleaseURL }}.
+      A new release is available. See full release notes at {{ ReleaseURL }}.
 ```
 
 ```

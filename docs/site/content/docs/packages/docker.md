@@ -29,7 +29,7 @@ crates:
         images:
           - ghcr.io/myorg/myapp
         tags:
-          - "{{ .Version }}"
+          - "{{ Version }}"
           - latest
         platforms:
           - linux/amd64
@@ -50,7 +50,7 @@ crates:
   - name: myapp
     docker_v2:
       - dockerfile: Dockerfile
-        tags: ["{{ .Version }}", "latest"]
+        tags: ["{{ Version }}", "latest"]
 ```
 
 Set `images` explicitly to publish under a different registry/name (e.g.
@@ -64,7 +64,7 @@ crates:
     docker_v2:
       - dockerfile: Dockerfile
         images: ["docker.io/myorg/myapp"]   # override the ghcr.io default
-        tags: ["{{ .Version }}", "latest"]
+        tags: ["{{ Version }}", "latest"]
 ```
 
 ## Full config reference
@@ -79,8 +79,8 @@ crates:
         images:                         # optional; default ghcr.io/<owner>/<crate>
           - ghcr.io/myorg/myapp
         tags:                           # required; one image:tag per (image × tag)
-          - "{{ .Version }}"
-          - "v{{ .Version }}"
+          - "{{ Version }}"
+          - "v{{ Version }}"
           - latest
         labels:                         # optional; --label key=value
           org.opencontainers.image.source: "https://github.com/myorg/myapp"
@@ -93,7 +93,7 @@ crates:
           - linux/amd64
           - linux/arm64
         build_args:                     # optional; --build-arg KEY=VALUE
-          VERSION: "{{ .Version }}"
+          VERSION: "{{ Version }}"
           BIN: anodizer
         retry:                          # optional; per-pipe retry
           attempts: 10
@@ -108,7 +108,7 @@ crates:
             - cmd: ./scripts/prepare-build-context.sh
               dir: .
           post:
-            - cmd: echo "built {{ .Images | join(sep=',') }}"
+            - cmd: echo "built {{ Images | join(sep=',') }}"
         use: buildx                     # optional; "buildx" (default) | "podman" (Linux-only)
 ```
 
@@ -134,7 +134,7 @@ before the release step. In `anodizer-action`, set `docker-registry` /
 - **Platform strings**: use Docker platform notation (`linux/amd64`,
   `linux/arm64`), not Rust target triples.
 - **Build-args leak**: buildx records `build_args` in image history by
-  default. Prefer `{{ .Env.VAR }}` over raw user-config strings for secrets.
+  default. Prefer `{{ Env.VAR }}` over raw user-config strings for secrets.
 - **`use: podman` is Linux-only**: configs setting `use: podman` on macOS or
   Windows fail at config-validation time. The podman backend disables
   buildx-only flags (`--rewrite-timestamp`, `--provenance`, `--attest`,
@@ -175,7 +175,7 @@ crates:
     docker_v2:
       - dockerfile: Dockerfile
         images: ["ghcr.io/myorg/myapp"]
-        tags: ["{{ .Version }}"]
+        tags: ["{{ Version }}"]
         platforms:
           - linux/amd64
           - linux/arm64
@@ -196,11 +196,11 @@ addition to the standard template surface, hooks see:
 
 | Variable | Available in | Description |
 |----------|--------------|-------------|
-| `{{ .Images }}` | pre + post | List of `image:tag` references for this build |
-| `{{ .Dockerfile }}` | pre + post | Path to the rendered Dockerfile |
-| `{{ .ContextDir }}` | pre + post | Path to the buildx context staging directory |
-| `{{ .Digest }}` | post only | Image manifest digest |
-| `{{ .BaseImage }}` / `{{ .BaseImageDigest }}` | post only | Final-stage base image (mirrors GoReleaser's overlay) |
+| `{{ Images }}` | pre + post | List of `image:tag` references for this build |
+| `{{ Dockerfile }}` | pre + post | Path to the rendered Dockerfile |
+| `{{ ContextDir }}` | pre + post | Path to the buildx context staging directory |
+| `{{ Digest }}` | post only | Image manifest digest |
+| `{{ BaseImage }}` / `{{ BaseImageDigest }}` | post only | Final-stage base image (mirrors GoReleaser's overlay) |
 
 ## Dockerfile pattern (distroless + dist-tree binary)
 
@@ -240,10 +240,10 @@ Pass additional flags to `docker buildx build`:
 docker_v2:
   - dockerfile: Dockerfile
     images: ["ghcr.io/myorg/myapp"]
-    tags: ["{{ .Version }}"]
+    tags: ["{{ Version }}"]
     flags:
       - --provenance=false
-      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.version={{ Version }}"
 ```
 
 Prefer the `labels:` / `annotations:` / `build_args:` maps over inline
@@ -261,18 +261,18 @@ crates:
         images:
           - ghcr.io/myorg/myapp
         tags:
-          - "{{ .Version }}"
-          - "v{{ .Version }}"
+          - "{{ Version }}"
+          - "v{{ Version }}"
           - latest
         platforms:
           - linux/amd64
           - linux/arm64
         build_args:
           BIN: myapp
-          VERSION: "{{ .Version }}"
+          VERSION: "{{ Version }}"
         labels:
           org.opencontainers.image.source: "https://github.com/myorg/myapp"
-          org.opencontainers.image.version: "{{ .Version }}"
+          org.opencontainers.image.version: "{{ Version }}"
         annotations:
           org.opencontainers.image.licenses: "MIT"
         extra_files:

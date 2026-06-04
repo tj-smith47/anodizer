@@ -11,13 +11,13 @@ template = "docs.html"
 announce:
   twitter:
     enabled: true
-    message_template: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
+    message_template: "{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}"
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | bool | Enable Twitter/X announcements |
-| `message_template` | string | Tweet text (templates supported). Default: `{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}` |
+| `message_template` | string | Tweet text (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |
 
 ## Environment variables
 
@@ -56,7 +56,7 @@ templates concise or use a short release URL.
 announce:
   twitter:
     enabled: true
-    message_template: "{{ .ProjectName }} {{ .Tag }} released — {{ .ReleaseURL }}"
+    message_template: "{{ ProjectName }} {{ Tag }} released — {{ ReleaseURL }}"
 ```
 
 ```

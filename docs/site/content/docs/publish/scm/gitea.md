@@ -68,7 +68,7 @@ release:
   gitea:
     owner: myorg
     name: myrepo
-  name_template: "{{ .ProjectName }} {{ .Version }}"
+  name_template: "{{ ProjectName }} {{ Version }}"
   draft: true
   prerelease: auto
   header:

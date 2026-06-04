@@ -26,12 +26,12 @@ Reasons to use this builder:
 crates:
   - name: myapp
     path: "."
-    tag_template: "v{{ .Version }}"
+    tag_template: "v{{ Version }}"
     builds:
       - binary: myapp
         builder: prebuilt
         prebuilt:
-          path: "output/myapp_{{ .Target }}"
+          path: "output/myapp_{{ Target }}"
         targets:
           - x86_64-unknown-linux-gnu
           - aarch64-unknown-linux-gnu
@@ -63,34 +63,34 @@ pipeline (archive, sbom, sign, checksum, publish) run unchanged.
 
 `prebuilt.path` is rendered through anodizer's Tera template engine once per
 target with the following variables (in addition to the project-wide
-globals like `{{ .Version }}` and `{{ .ProjectName }}`):
+globals like `{{ Version }}` and `{{ ProjectName }}`):
 
 | Variable | Example | Notes |
 |---|---|---|
-| `{{ .Target }}` | `x86_64-unknown-linux-gnu` | Full Rust target triple. |
-| `{{ .Os }}` | `linux` | GoReleaser-style OS slug (`linux`, `darwin`, `windows`, …). |
-| `{{ .Arch }}` | `amd64` | GoReleaser-style arch slug (`amd64`, `arm64`, `armv7`, …). |
-| `{{ .Amd64 }}` | `v1` | AMD64 micro-arch variant; set for `x86_64-*` triples. |
-| `{{ .Arm64 }}` | `v8` | ARM64 micro-arch variant; set for `aarch64-*` triples. |
-| `{{ .Arm }}` | `7` | ARM micro-arch variant; set for `armv6*` / `armv7*` triples. |
-| `{{ .I386 }}` | `sse2` | i386 micro-arch variant; set for `i686-*` / `i386-*` / `i586-*` triples. |
-| `{{ .ArtifactExt }}` | `.exe` | `.exe` on Windows targets, empty elsewhere. |
-| `{{ .ArtifactID }}` | `mybuild` | The build entry's `id:` value (empty when unset). |
+| `{{ Target }}` | `x86_64-unknown-linux-gnu` | Full Rust target triple. |
+| `{{ Os }}` | `linux` | GoReleaser-style OS slug (`linux`, `darwin`, `windows`, …). |
+| `{{ Arch }}` | `amd64` | GoReleaser-style arch slug (`amd64`, `arm64`, `armv7`, …). |
+| `{{ Amd64 }}` | `v1` | AMD64 micro-arch variant; set for `x86_64-*` triples. |
+| `{{ Arm64 }}` | `v8` | ARM64 micro-arch variant; set for `aarch64-*` triples. |
+| `{{ Arm }}` | `7` | ARM micro-arch variant; set for `armv6*` / `armv7*` triples. |
+| `{{ I386 }}` | `sse2` | i386 micro-arch variant; set for `i686-*` / `i386-*` / `i586-*` triples. |
+| `{{ ArtifactExt }}` | `.exe` | `.exe` on Windows targets, empty elsewhere. |
+| `{{ ArtifactID }}` | `mybuild` | The build entry's `id:` value (empty when unset). |
 
 Examples:
 
 ```yaml
 # Mirror cargo's per-target directory layout
 prebuilt:
-  path: "target/{{ .Target }}/release/myapp"
+  path: "target/{{ Target }}/release/myapp"
 
 # Match GoReleaser's documented (Os, Arch) shape
 prebuilt:
-  path: "output/myapp_{{ .Os }}_{{ .Arch }}"
+  path: "output/myapp_{{ Os }}_{{ Arch }}"
 
 # Per-architecture amd64 variant suffix
 prebuilt:
-  path: "output/myapp_{{ .Os }}_{{ .Arch }}{{ if .Amd64 }}_{{ .Amd64 }}{{ endif }}"
+  path: "output/myapp_{{ Os }}_{{ Arch }}{{ if Amd64 }}_{{ Amd64 }}{{ endif }}"
 ```
 
 The rendered path is `stat()`-ed before the import. A missing file, a
@@ -110,7 +110,7 @@ builds:
   - binary: myapp
     builder: prebuilt
     prebuilt:
-      path: "output/myapp_{{ .Target }}"
+      path: "output/myapp_{{ Target }}"
     targets:
       - x86_64-unknown-linux-gnu
 
@@ -121,7 +121,7 @@ builds:
   - binary: myapp
     builder: prebuilt
     prebuilt:
-      path: "output/myapp_{{ .Target }}"
+      path: "output/myapp_{{ Target }}"
     # targets: missing — `defaults.targets` does not propagate to prebuilt builds
 ```
 
@@ -191,12 +191,12 @@ a release config that imports them via `builder: prebuilt`:
 crates:
   - name: myapp
     path: "."
-    tag_template: "v{{ .Version }}"
+    tag_template: "v{{ Version }}"
     builds:
       - binary: myapp
         builder: prebuilt
         prebuilt:
-          path: "output/myapp_{{ .Target }}"
+          path: "output/myapp_{{ Target }}"
         targets:
           - x86_64-unknown-linux-gnu
           - aarch64-unknown-linux-gnu
@@ -258,7 +258,7 @@ crates:
     builds:
       - binary: myapp
         builder: prebuilt
-        prebuilt: { path: "output/myapp_{{ .Target }}" }
+        prebuilt: { path: "output/myapp_{{ Target }}" }
         targets: [x86_64-unknown-linux-gnu]
     binstall:
       enabled: false  # cargo-binstall is incompatible with prebuilt imports
@@ -304,7 +304,7 @@ the archive template can't express — supplying a top-level `pkg_url` **or** an
 target triple to a specific asset name, map it under `binstall.overrides`.
 Each entry overrides `pkg_url`/`pkg_fmt`/`bin_dir` for that triple and is
 emitted as a `[package.metadata.binstall.overrides.<triple>]` sub-table.
-anodize templates (`{{ .Version }}`) are rendered; cargo-binstall's own
+anodize templates (`{{ Version }}`) are rendered; cargo-binstall's own
 `{ ... }` tokens are left intact.
 
 ```yaml
@@ -315,22 +315,22 @@ crates:
       enabled: true
       overrides:
         x86_64-unknown-linux-gnu:
-          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-linux-amd64.tar.gz"
+          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ Version }}/cfgd-{{ Version }}-linux-amd64.tar.gz"
           pkg_fmt: tgz
         aarch64-unknown-linux-gnu:
-          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-linux-arm64.tar.gz"
+          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ Version }}/cfgd-{{ Version }}-linux-arm64.tar.gz"
           pkg_fmt: tgz
         x86_64-apple-darwin:
-          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-darwin-amd64.tar.gz"
+          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ Version }}/cfgd-{{ Version }}-darwin-amd64.tar.gz"
           pkg_fmt: tgz
         aarch64-apple-darwin:
-          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-darwin-arm64.tar.gz"
+          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ Version }}/cfgd-{{ Version }}-darwin-arm64.tar.gz"
           pkg_fmt: tgz
         x86_64-pc-windows-msvc:
-          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-windows-amd64.zip"
+          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ Version }}/cfgd-{{ Version }}-windows-amd64.zip"
           pkg_fmt: zip
         aarch64-pc-windows-msvc:
-          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-windows-arm64.zip"
+          pkg_url: "https://github.com/myorg/cfgd/releases/download/v{{ Version }}/cfgd-{{ Version }}-windows-arm64.zip"
           pkg_fmt: zip
 ```
 

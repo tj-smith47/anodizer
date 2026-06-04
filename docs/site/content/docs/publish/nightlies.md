@@ -23,7 +23,7 @@ No YAML changes required for the default behavior.
 
 ```yaml
 nightly:
-  name_template: "{{ .ProjectName }}-nightly"  # optional; release-name template
+  name_template: "{{ ProjectName }}-nightly"  # optional; release-name template
   tag_name: nightly                            # optional; the rolling tag to replace each night
   publish_release: true       # default true — create a GitHub Release for each nightly run
   keep_single_release: false  # default false — set true to delete prior release before recreating

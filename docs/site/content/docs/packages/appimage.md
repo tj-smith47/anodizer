@@ -39,7 +39,7 @@ appimages:
         dst: usr/lib/helix/runtime   #   dst relative to the AppDir root
     update_information: "gh-releases-zsync|helix-editor|helix|latest|helix-*.AppImage.zsync"
     runtime_harvest:                 # optional; run the built binary to populate a dir
-      command: "{{ .ArtifactPath }} --populate-runtime {{ .HarvestDir }}"
+      command: "{{ ArtifactPath }} --populate-runtime {{ HarvestDir }}"
       dir: usr/lib/helix/runtime     #   AppDir-relative bundle destination
     extra_args: []                   # optional; extra linuxdeploy CLI arguments
     os: ["linux"]                    # optional; target OS filter (AppImage is Linux-only)
@@ -59,7 +59,7 @@ with the env it reads set on the process:
 
 | Env var | Source |
 |---------|--------|
-| `VERSION` | the release version (`{{ .Version }}`) |
+| `VERSION` | the release version (`{{ Version }}`) |
 | `ARCH` | AppImage arch token (`x86_64`, `aarch64`, `armhf`, `i686`) |
 | `APP` | `name` (defaults to project name) |
 | `OUTPUT` | always `appimage` |
@@ -77,12 +77,12 @@ The `runtime_harvest` hook models this:
 
 ```yaml
 runtime_harvest:
-  command: "{{ .ArtifactPath }} --populate-runtime {{ .HarvestDir }}"
+  command: "{{ ArtifactPath }} --populate-runtime {{ HarvestDir }}"
   dir: usr/lib/helix/runtime
 ```
 
-- `{{ .ArtifactPath }}` resolves to the **host-native** binary's path and
-  `{{ .HarvestDir }}` to the absolute harvest output dir. The command is run
+- `{{ ArtifactPath }}` resolves to the **host-native** binary's path and
+  `{{ HarvestDir }}` to the absolute harvest output dir. The command is run
   once via `sh -c`.
 - The harvested data is architecture-independent, so it is produced **once on
   the host-native binary** and reused for every target's AppImage — no QEMU.
@@ -126,7 +126,7 @@ runtime_harvest:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `command` | string | Command template run once on the host (`{{ .ArtifactPath }}`, `{{ .HarvestDir }}`) |
+| `command` | string | Command template run once on the host (`{{ ArtifactPath }}`, `{{ HarvestDir }}`) |
 | `dir` | string | AppDir-relative directory the harvested assets are bundled into |
 
 ## Authentication

@@ -66,7 +66,7 @@ git:
   ignore_tags:
     - "nightly*"
     - "legacy-*"
-    - "{{ .Env.IGNORE_PATTERN }}"
+    - "{{ Env.IGNORE_PATTERN }}"
   ignore_tag_prefixes:
     - "internal/"
     - "test-"
@@ -91,28 +91,28 @@ Anodizer detects the following information from git, all available as template v
 
 | Variable | Description |
 |----------|-------------|
-| `{{ .Tag }}` | Current git tag |
-| `{{ .Commit }}` | Full commit SHA |
-| `{{ .ShortCommit }}` | Short commit SHA |
-| `{{ .Branch }}` | Current branch name |
-| `{{ .CommitDate }}` | Commit date (ISO 8601) |
-| `{{ .CommitTimestamp }}` | Commit timestamp (Unix) |
-| `{{ .PreviousTag }}` | Previous git tag |
-| `{{ .Summary }}` | `git describe` output |
-| `{{ .TagSubject }}` | Tag annotation subject |
-| `{{ .TagBody }}` | Tag annotation body |
-| `{{ .TagContents }}` | Full tag annotation |
-| `{{ .IsSnapshot }}` | Whether this is a snapshot build |
-| `{{ .IsGitDirty }}` | Whether the working tree has uncommitted changes |
-| `{{ .IsGitClean }}` | Inverse of `IsGitDirty` |
-| `{{ .GitTreeState }}` | `"clean"` or `"dirty"` |
-| `{{ .GitURL }}` | Git remote URL (credentials stripped) |
-| `{{ .Version }}` | Semver version (tag without `v` prefix) |
-| `{{ .RawVersion }}` | Raw version string before normalization |
-| `{{ .Major }}` | Semver major version number |
-| `{{ .Minor }}` | Semver minor version number |
-| `{{ .Patch }}` | Semver patch version number |
-| `{{ .Prerelease }}` | Semver pre-release suffix (e.g., `rc1`) |
+| `{{ Tag }}` | Current git tag |
+| `{{ Commit }}` | Full commit SHA |
+| `{{ ShortCommit }}` | Short commit SHA |
+| `{{ Branch }}` | Current branch name |
+| `{{ CommitDate }}` | Commit date (ISO 8601) |
+| `{{ CommitTimestamp }}` | Commit timestamp (Unix) |
+| `{{ PreviousTag }}` | Previous git tag |
+| `{{ Summary }}` | `git describe` output |
+| `{{ TagSubject }}` | Tag annotation subject |
+| `{{ TagBody }}` | Tag annotation body |
+| `{{ TagContents }}` | Full tag annotation |
+| `{{ IsSnapshot }}` | Whether this is a snapshot build |
+| `{{ IsGitDirty }}` | Whether the working tree has uncommitted changes |
+| `{{ IsGitClean }}` | Inverse of `IsGitDirty` |
+| `{{ GitTreeState }}` | `"clean"` or `"dirty"` |
+| `{{ GitURL }}` | Git remote URL (credentials stripped) |
+| `{{ Version }}` | Semver version (tag without `v` prefix) |
+| `{{ RawVersion }}` | Raw version string before normalization |
+| `{{ Major }}` | Semver major version number |
+| `{{ Minor }}` | Semver minor version number |
+| `{{ Patch }}` | Semver patch version number |
+| `{{ Prerelease }}` | Semver pre-release suffix (e.g., `rc1`) |
 
 ## Full example
 

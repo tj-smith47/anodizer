@@ -73,9 +73,9 @@ notarize:
     notarize:
       apple_id: "you@example.com"
       team_id: "TEAMID"
-      key: "{{ .Env.AC_API_KEY }}"
-      key_id: "{{ .Env.AC_API_KEY_ID }}"
-      issuer: "{{ .Env.AC_API_ISSUER }}"
+      key: "{{ Env.AC_API_KEY }}"
+      key_id: "{{ Env.AC_API_KEY_ID }}"
+      issuer: "{{ Env.AC_API_ISSUER }}"
 ```
 
 `entitlements` and `options: [runtime]` (hardened runtime) are not knobs on
@@ -110,7 +110,7 @@ extra_files:
     dst: "Contents/SharedSupport"
   - src: "assets/manual.pdf"         # per-file mtime for reproducibility
     info:
-      mtime: "{{ .CommitDate }}"
+      mtime: "{{ CommitDate }}"
 ```
 
 The `info` block supports `mtime` (RFC3339 or `SOURCE_DATE_EPOCH` integer
@@ -186,13 +186,13 @@ If you need a key not in this list, supply your own `Info.plist` via the
 
 | Knob | GoReleaser Pro | Anodizer |
 |------|----------------|----------|
-| `name` default | `{{ .ProjectName }}` | `{{ ProjectName }}_{{ Arch }}.app` |
+| `name` default | `{{ ProjectName }}` | `{{ ProjectName }}_{{ Arch }}.app` |
 | `bundle` default | none (user-supplied) | none (hard error if unset) |
 | `replace` on `app_bundles:` | not exposed | exposed (anodizer-additive) |
 | `min_os_version` | not exposed | exposed (anodizer-additive) |
 
 The `_{{ Arch }}` suffix on the default `name` is deliberate: a multi-arch
-build (`arm64` + `amd64`) under GoReleaser's bare `{{ .ProjectName }}` would
+build (`arm64` + `amd64`) under GoReleaser's bare `{{ ProjectName }}` would
 produce two `MyApp.app` directories whose second write overwrites the first.
 Anodizer's default keeps both artifacts addressable. If you are importing a
 GoReleaser config and want the original behavior, set `name` explicitly.
@@ -224,7 +224,7 @@ crates:
             dst: Contents/Info.plist
           - src: assets/manual.pdf
             info:
-              mtime: "{{ .CommitDate }}"
-        mod_timestamp: "{{ .CommitTimestamp }}"
+              mtime: "{{ CommitDate }}"
+        mod_timestamp: "{{ CommitTimestamp }}"
         replace: true
 ```

@@ -63,7 +63,7 @@ crates:
     docker_v2:
       - dockerfile: Dockerfile
         images: ["ghcr.io/myorg/myapp"]
-        tags: ["{{ .Version }}", "latest"]
+        tags: ["{{ Version }}", "latest"]
         platforms: [linux/amd64, linux/arm64]
         labels:
           io.modelcontextprotocol.server.name: io.github.myorg/myapp   # REQUIRED — must equal mcp.name
@@ -123,7 +123,7 @@ mcp:
   auth:
     type: none                       # none | bearer | github-oidc
     # For bearer:
-    # token: "{{ .Env.MCP_TOKEN }}"
+    # token: "{{ Env.MCP_TOKEN }}"
     # For github-oidc: no extra fields needed; token is auto-obtained from Actions
 ```
 
@@ -154,7 +154,7 @@ mcp:
   registry: https://mcp-mirror.internal.example.com
   auth:
     type: none
-    token: "{{ .Env.INTERNAL_MCP_BEARER }}"
+    token: "{{ Env.INTERNAL_MCP_BEARER }}"
 ```
 
 ### `auth.type: github` (PAT)
@@ -164,7 +164,7 @@ mcp:
   name: io.github.myorg/myapp
   auth:
     type: github
-    token: "{{ .Env.GITHUB_TOKEN }}"
+    token: "{{ Env.GITHUB_TOKEN }}"
 ```
 
 The PAT only needs `read:user` scope. Anodizer calls the registry's GitHub-token exchange endpoint and receives a short-lived bearer it uses for `POST /v0/publish`.
@@ -280,7 +280,7 @@ Optional. The `transports:` list is accepted for GoReleaser config-portability (
 ```yaml
 mcp:
   # ...
-  skip: "{{ if .Prerelease }}true{{ endif }}"
+  skip: "{{ if Prerelease }}true{{ endif }}"
 ```
 
 Common patterns:
@@ -288,8 +288,8 @@ Common patterns:
 | Goal | Value |
 |------|-------|
 | Always skip | `skip: true` or `skip: "{{ true }}"` |
-| Skip pre-releases | `skip: "{{ if .Prerelease }}true{{ endif }}"` |
-| Skip snapshot builds | `skip: "{{ if .IsSnapshot }}true{{ endif }}"` |
+| Skip pre-releases | `skip: "{{ if Prerelease }}true{{ endif }}"` |
+| Skip snapshot builds | `skip: "{{ if IsSnapshot }}true{{ endif }}"` |
 
 ## Full example
 
@@ -315,7 +315,7 @@ mcp:
     - type: stdio
   auth:
     type: github-oidc
-  skip: "{{ if .Prerelease }}true{{ endif }}"
+  skip: "{{ if Prerelease }}true{{ endif }}"
 ```
 
 ## Templating

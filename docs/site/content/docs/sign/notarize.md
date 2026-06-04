@@ -18,12 +18,12 @@ notarize:
   macos:
     - enabled: true
       sign:
-        certificate: "{{ .Env.P12_CERTIFICATE }}"
-        password: "{{ .Env.P12_PASSWORD }}"
+        certificate: "{{ Env.P12_CERTIFICATE }}"
+        password: "{{ Env.P12_PASSWORD }}"
       notarize:
-        issuer_id: "{{ .Env.NOTARIZE_ISSUER_ID }}"
-        key: "{{ .Env.NOTARIZE_KEY }}"
-        key_id: "{{ .Env.NOTARIZE_KEY_ID }}"
+        issuer_id: "{{ Env.NOTARIZE_ISSUER_ID }}"
+        key: "{{ Env.NOTARIZE_KEY }}"
+        key_id: "{{ Env.NOTARIZE_KEY_ID }}"
 ```
 
 ### Cross-platform config fields
@@ -112,8 +112,8 @@ notarize:
   macos:
     - enabled: "{{ ne .Env.CI \"\" }}"
       sign:
-        certificate: "{{ .Env.P12_CERTIFICATE }}"
-        password: "{{ .Env.P12_PASSWORD }}"
+        certificate: "{{ Env.P12_CERTIFICATE }}"
+        password: "{{ Env.P12_PASSWORD }}"
   macos_native:
     - enabled: "{{ eq .Env.CI \"\" }}"
       sign:

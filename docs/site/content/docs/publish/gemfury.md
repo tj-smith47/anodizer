@@ -49,8 +49,8 @@ gemfury:
     formats: [deb, rpm, apk]          # optional; default ["apk","deb","rpm"]
     secret_name: FURY_TOKEN           # optional; env var for the push token
     api_secret_name: FURY_API_TOKEN   # optional; env var for the delete token
-    token: "{{ .Env.MY_FURY_PUSH }}"  # optional; cfg-level templated push token
-    api_token: "{{ .Env.MY_FURY_API }}" # optional; cfg-level templated API token
+    token: "{{ Env.MY_FURY_PUSH }}"  # optional; cfg-level templated push token
+    api_token: "{{ Env.MY_FURY_API }}" # optional; cfg-level templated API token
     skip: false                       # optional; skip this entry (bool/template)
     required: true                    # optional; override required-default
     if: "{{ ne .Prerelease \"\" }}"   # optional; template-conditional gate

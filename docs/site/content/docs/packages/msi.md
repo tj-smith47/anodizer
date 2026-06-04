@@ -89,7 +89,7 @@ The WiX version is determined in this order:
 | `name` | string | `{{ ProjectName }}_{{ MsiArch }}` | Output filename template. `.msi` is appended automatically when absent. |
 | `version` | string | auto | WiX schema version: `v3` or `v4`. Auto-detected if omitted. |
 | `replace` | bool | `false` | Remove matching archive artifacts, keeping only the MSI. |
-| `mod_timestamp` | string | | Fixed timestamp for reproducible builds. Templates allowed (e.g. `{{ .CommitTimestamp }}`). |
+| `mod_timestamp` | string | | Fixed timestamp for reproducible builds. Templates allowed (e.g. `{{ CommitTimestamp }}`). |
 | `amd64_variant` | string | | amd64 microarchitecture variant filter (`v1`/`v2`/`v3`/`v4`). |
 | `extra_files` | list | | Additional files copied into the WiX build context alongside the rendered `.wxs`. |
 | `extensions` | list | | WiX extensions to enable (e.g. `WixUIExtension`). Each entry is a template. |
@@ -217,7 +217,7 @@ crates:
         name: "{{ ProjectName }}_{{ MsiArch }}"
         version: v4
         replace: true
-        mod_timestamp: "{{ .CommitTimestamp }}"
+        mod_timestamp: "{{ CommitTimestamp }}"
         extensions:
           - WixUIExtension
         hooks:

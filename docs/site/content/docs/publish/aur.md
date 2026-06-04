@@ -134,7 +134,7 @@ AUR publishing requires SSH access to the AUR git server. See [SSH key setup](#s
 |---|---|---|
 | `private_key` | — | Path to SSH private key file |
 | `git_ssh_command` | — | Override the full SSH invocation |
-| — | `AUR_SSH_KEY` | SSH key content (used via `private_key: "{{ .Env.AUR_SSH_KEY }}"`) |
+| — | `AUR_SSH_KEY` | SSH key content (used via `private_key: "{{ Env.AUR_SSH_KEY }}"`) |
 
 ## Common gotchas
 
@@ -207,7 +207,7 @@ crates:
           - "bash-completion: shell completions"
         maintainers:
           - "Jane Doe <jane@example.com>"
-        private_key: "{{ .Env.AUR_SSH_KEY }}"
+        private_key: "{{ Env.AUR_SSH_KEY }}"
         skip_upload: auto
 ```
 
@@ -295,7 +295,7 @@ crates:
           - cargo
         maintainers:
           - "Jane Doe <jane@example.com>"
-        private_key: "{{ .Env.AUR_SSH_KEY }}"
+        private_key: "{{ Env.AUR_SSH_KEY }}"
         skip_upload: auto
 ```
 
@@ -360,7 +360,7 @@ AUR publishing requires SSH access. To configure this:
    publish:
      aur:
        git_url: "ssh://aur@aur.archlinux.org/myapp-bin.git"
-       private_key: "{{ .Env.AUR_SSH_KEY }}"
+       private_key: "{{ Env.AUR_SSH_KEY }}"
    ```
 
 4. **In CI**, store the private key as a secret and expose it as an environment variable:

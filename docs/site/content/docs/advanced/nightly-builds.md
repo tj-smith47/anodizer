@@ -24,7 +24,7 @@ anodizer release --nightly
 
 ```yaml
 nightly:
-  version_template: "{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}"
+  version_template: "{{ Base }}-nightly.{{ NightlyBuild }}+{{ ShortCommit }}"
   name_template: "{{ Version }}-nightly.{{ Now | date(format='%Y%m%d') }}"
   tag_name: nightly
   publish_release: true       # default true — create a GitHub Release for each nightly run
@@ -36,7 +36,7 @@ nightly:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `nightly.version_template` | `string` | `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"` | Template for the rendered nightly version. May reference `{{ .NightlyBuild }}` and `{{ .Base }}` (see below). |
+| `nightly.version_template` | `string` | `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"` | Template for the rendered nightly version. May reference `{{ NightlyBuild }}` and `{{ Base }}` (see below). |
 | `nightly.publish_release` | `bool` | `true` | Whether to create a GitHub Release at all. Set `false` to build and publish packages without creating a release entry. |
 | `nightly.publish_repo` | `string` | (source repo) | Publish the nightly release to a different `"owner/repo"` than the one resolved from `release.github` (e.g. a dedicated `org/nightly` repo). The release create, asset upload, and retention deletes all target this repo. The active token must have write access to it. GitHub-only. |
 | `nightly.retention.keep_last` | `int` | (none) | Keep the N newest nightly releases (matched by the rendered nightly release name) and delete the older ones, including the git tags anodizer created for them. Operates on `publish_repo` when set. |
@@ -50,13 +50,13 @@ Two template vars support nushell-style nightly versioning
 
 | Var | Source | Resets when |
 |---|---|---|
-| `{{ .Base }}` | The numeric base semver (no prerelease / build metadata), captured before nightly templating overwrites `Version`. | Never within a tag; reflects the current tag's `MAJOR.MINOR.PATCH`. |
-| `{{ .NightlyBuild }}` | Stateless per-base build counter — `git rev-list --count <last-tag>..HEAD`. | A new version tag lands (the count returns to a small number automatically — no state anodizer persists). |
+| `{{ Base }}` | The numeric base semver (no prerelease / build metadata), captured before nightly templating overwrites `Version`. | Never within a tag; reflects the current tag's `MAJOR.MINOR.PATCH`. |
+| `{{ NightlyBuild }}` | Stateless per-base build counter — `git rev-list --count <last-tag>..HEAD`. | A new version tag lands (the count returns to a small number automatically — no state anodizer persists). |
 
 ```yaml
 # nushell-style: 0.103.0-nightly.42+a1b2c3
 nightly:
-  version_template: "{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}"
+  version_template: "{{ Base }}-nightly.{{ NightlyBuild }}+{{ ShortCommit }}"
   publish_repo: myorg/nightly
   retention:
     keep_last: 10
@@ -64,7 +64,7 @@ nightly:
 
 `nightly.publish_repo` and `nightly.retention` are configured at the top
 level (`nightly:`); they apply across all crates in a workspace. The
-`{{ .NightlyBuild }}` counter is global (derived from the repo's git
+`{{ NightlyBuild }}` counter is global (derived from the repo's git
 history), so it is identical for every crate in a lockstep or per-crate
 workspace release.
 

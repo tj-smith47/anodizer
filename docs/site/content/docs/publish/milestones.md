@@ -23,7 +23,7 @@ milestones:
 ```yaml
 milestones:
   - close: false                       # optional; only acts when true
-    name_template: "{{ .Tag }}"        # optional; milestone name to match (template)
+    name_template: "{{ Tag }}"        # optional; milestone name to match (template)
     repo:                              # optional; override the repository
       owner: ""
       name: ""
@@ -55,7 +55,7 @@ Match a milestone with a name different from the tag:
 ```yaml
 milestones:
   - close: true
-    name_template: "v{{ .Version }}"
+    name_template: "v{{ Version }}"
 ```
 
 ## Full example
@@ -63,6 +63,6 @@ milestones:
 ```yaml
 milestones:
   - close: true
-    name_template: "{{ .Tag }}"
+    name_template: "{{ Tag }}"
     fail_on_error: true
 ```

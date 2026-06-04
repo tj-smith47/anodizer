@@ -68,7 +68,7 @@ artifactories:
 ```yaml
 artifactories:
   - name: production          # required; sets ARTIFACTORY_{NAME}_SECRET env lookup
-    target: "https://artifactory.example.com/repo/{{ .Version }}/{{ .ArtifactName }}"
+    target: "https://artifactory.example.com/repo/{{ Version }}/{{ ArtifactName }}"
     mode: archive             # archive | binary
     method: PUT               # PUT | POST
     username: ""              # falls back to ARTIFACTORY_{NAME}_USERNAME
@@ -112,21 +112,21 @@ The `target` URL and `custom_headers` values support artifact-specific template 
 
 | Variable | Description |
 |----------|-------------|
-| `{{ .ArtifactName }}` | Artifact filename |
-| `{{ .ArtifactExt }}` | File extension |
-| `{{ .Os }}` | Target OS |
-| `{{ .Arch }}` | Target architecture |
-| `{{ .Target }}` | Rust target triple |
+| `{{ ArtifactName }}` | Artifact filename |
+| `{{ ArtifactExt }}` | File extension |
+| `{{ Os }}` | Target OS |
+| `{{ Arch }}` | Target architecture |
+| `{{ Target }}` | Rust target triple |
 
 ## Full example
 
 ```yaml
 artifactories:
   - name: production
-    target: "https://artifactory.example.com/myapp/{{ .Version }}/{{ .ArtifactName }}"
+    target: "https://artifactory.example.com/myapp/{{ Version }}/{{ ArtifactName }}"
     mode: archive
     custom_headers:
-      X-Build-Number: "{{ .Env.BUILD_NUMBER }}"
+      X-Build-Number: "{{ Env.BUILD_NUMBER }}"
     checksum: true
     signature: true
 ```

@@ -15,9 +15,9 @@ Single crates and multi-crate workspaces use the same config. Each crate can rel
 workspaces:
   - crates:
       - name: my-core
-        tag_template: "my-core-v{{ .Version }}"
+        tag_template: "my-core-v{{ Version }}"
       - name: my-cli
-        tag_template: "my-cli-v{{ .Version }}"
+        tag_template: "my-cli-v{{ Version }}"
 ```
 
 See [Monorepo / workspaces](@/docs/advanced/monorepo.md).

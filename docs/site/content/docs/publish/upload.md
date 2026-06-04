@@ -20,7 +20,7 @@ See [Release resilience](../advanced/release-resilience.md) for the full classif
 ```yaml
 uploads:
   - name: myserver
-    target: "https://files.example.com/releases/{{ .Version }}/"
+    target: "https://files.example.com/releases/{{ Version }}/"
 ```
 
 ## Full config reference
@@ -28,7 +28,7 @@ uploads:
 ```yaml
 uploads:
   - name: upload                       # optional; identifier used for env-var lookup
-    target: "https://files.example.com/releases/{{ .Version }}/"  # required (template)
+    target: "https://files.example.com/releases/{{ Version }}/"  # required (template)
     mode: archive                      # optional; archive | binary
     method: PUT                        # optional; PUT | POST
     username: ""                       # optional; falls back to UPLOAD_{NAME}_USERNAME
@@ -95,11 +95,11 @@ The `target` URL supports artifact-specific template variables:
 
 | Variable | Description |
 |----------|-------------|
-| `{{ .ArtifactName }}` | Artifact filename |
-| `{{ .ArtifactExt }}` | File extension |
-| `{{ .Os }}` | Target OS |
-| `{{ .Arch }}` | Target architecture |
-| `{{ .Target }}` | Rust target triple |
+| `{{ ArtifactName }}` | Artifact filename |
+| `{{ ArtifactExt }}` | File extension |
+| `{{ Os }}` | Target OS |
+| `{{ Arch }}` | Target architecture |
+| `{{ Target }}` | Rust target triple |
 
 When `custom_artifact_name` is `false` (default), the artifact filename is automatically appended to the target URL.
 
@@ -108,9 +108,9 @@ When `custom_artifact_name` is `false` (default), the artifact filename is autom
 ```yaml
 uploads:
   - name: releases
-    target: "https://releases.example.com/{{ .ProjectName }}/{{ .Version }}/"
+    target: "https://releases.example.com/{{ ProjectName }}/{{ Version }}/"
     mode: archive
     checksum: true
     custom_headers:
-      X-Deploy-Token: "{{ .Env.DEPLOY_TOKEN }}"
+      X-Deploy-Token: "{{ Env.DEPLOY_TOKEN }}"
 ```

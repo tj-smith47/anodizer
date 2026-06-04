@@ -52,11 +52,11 @@ before_publish:
     - "./scripts/smoke-test.sh"
 
     # Structured form with all fields.
-    - cmd: "./scripts/scan-artifacts.sh {{ .Tag }}"
+    - cmd: "./scripts/scan-artifacts.sh {{ Tag }}"
       dir: "./scripts"
       env:
         - "SCAN_PROFILE=release"
-        - "SLACK_WEBHOOK={{ .Env.SLACK_WEBHOOK }}"
+        - "SLACK_WEBHOOK={{ Env.SLACK_WEBHOOK }}"
       output: true
       if: "{{ not .IsSnapshot }}"
 ```
@@ -96,7 +96,7 @@ is logged but the subprocess is not spawned.
   published one. If your validator depends on download URLs, use `before:`
   (pre-build) or `after:` (post-publish) instead.
 - `env:` values are **rendered** through the template engine before
-  injection, so `{{ .Tag }}` and `{{ .Env.VAR }}` expand inside per-hook
+  injection, so `{{ Tag }}` and `{{ Env.VAR }}` expand inside per-hook
   env strings.
 - Hooks inherit the host environment by default. Secret values are
   automatically redacted from any captured stdout/stderr by anodizer's

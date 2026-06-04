@@ -32,7 +32,7 @@ crates:
     docker_v2:
       - dockerfile: Dockerfile
         images: ["ghcr.io/owner/myapp"]
-        tags: ["{{ .Version }}"]
+        tags: ["{{ Version }}"]
         retry:
           attempts: 10
           delay: "10s"

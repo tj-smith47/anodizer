@@ -96,7 +96,7 @@ crates:
         tags: []                            # optional; array or space-separated string
         release_notes: ""                   # optional (template)
         url_template: ""                    # optional; override download URL
-        api_key: "{{ .Env.CHOCOLATEY_API_KEY }}"  # optional; defaults to env var
+        api_key: "{{ Env.CHOCOLATEY_API_KEY }}"  # optional; defaults to env var
         source_repo: "https://push.chocolatey.org/"  # optional
         skip_publish: false                 # optional; skip push without disabling
         use: archive                        # optional; archive | msi | nsis

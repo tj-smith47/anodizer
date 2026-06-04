@@ -32,11 +32,11 @@ All metadata fields are available as template variables:
 
 | Variable | Description |
 |----------|-------------|
-| `{{ .Metadata.Description }}` | Project description |
-| `{{ .Metadata.Homepage }}` | Homepage URL |
-| `{{ .Metadata.License }}` | SPDX license identifier |
-| `{{ .Metadata.Maintainers }}` | Maintainer list |
-| `{{ .Metadata.ModTimestamp }}` | Rendered mod_timestamp value |
+| `{{ Metadata.Description }}` | Project description |
+| `{{ Metadata.Homepage }}` | Homepage URL |
+| `{{ Metadata.License }}` | SPDX license identifier |
+| `{{ Metadata.Maintainers }}` | Maintainer list |
+| `{{ Metadata.ModTimestamp }}` | Rendered mod_timestamp value |
 
 ## Reproducible timestamps
 
@@ -44,7 +44,7 @@ Use `mod_timestamp` to set a deterministic modification time on the generated me
 
 ```yaml
 metadata:
-  mod_timestamp: "{{ .CommitTimestamp }}"
+  mod_timestamp: "{{ CommitTimestamp }}"
 ```
 
 This renders the template at the end of the pipeline and applies the resulting Unix timestamp as the file mtime to both `metadata.json` and `artifacts.json`.
@@ -75,5 +75,5 @@ metadata:
   maintainers:
     - "Alice <alice@example.com>"
     - "Bob <bob@example.com>"
-  mod_timestamp: "{{ .CommitTimestamp }}"
+  mod_timestamp: "{{ CommitTimestamp }}"
 ```

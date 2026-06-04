@@ -23,7 +23,7 @@ No YAML changes required for the default behavior.
 
 ```yaml
 snapshot:
-  version_template: "{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}"  # optional; version suffix (alias: name_template)
+  version_template: "{{ Version }}-SNAPSHOT-{{ ShortCommit }}"  # optional; version suffix (alias: name_template)
 ```
 
 ## Authentication

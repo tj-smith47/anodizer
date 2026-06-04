@@ -25,7 +25,7 @@ If you've used [GoReleaser](https://goreleaser.com/) for Go projects, anodizer i
 
 **Cargo-native.** Anodizer understands Cargo workspaces, target triples, and cross-compilation strategies. It integrates with `cargo-zigbuild` and `cross` for seamless cross-platform builds.
 
-**Familiar to GoReleaser users.** If you're migrating from Go, the config structure and template syntax will feel immediately familiar. Anodizer even accepts GoReleaser's `{{ .Field }}` template syntax alongside native Tera `{{ Field }}` syntax.
+**Familiar to GoReleaser users.** If you're migrating from Go, the config structure and template syntax will feel immediately familiar. Anodizer even accepts GoReleaser's `{{ Field }}` template syntax alongside native Tera `{{ Field }}` syntax.
 
 **AI-enhanced release notes.** The changelog stage can summarize commits using an LLM — Anthropic Claude, OpenAI, or a local Ollama model. Configure the provider in `changelog.ai` and get release notes that read like prose instead of a raw commit list.
 

@@ -96,7 +96,7 @@ Not applicable — once a snap revision is uploaded to the Snap Store, it cannot
 | `publish` | bool | `false` | Upload to the Snap Store after building. |
 | `channel_templates` | list | | Store channels to release to (e.g. `edge`, `beta`, `stable`). |
 | `replace` | bool | `false` | Remove matching archive artifacts, keeping only the snap. |
-| `mod_timestamp` | string | | Fixed timestamp for reproducible builds (e.g. `{{ .CommitTimestamp }}`). |
+| `mod_timestamp` | string | | Fixed timestamp for reproducible builds (e.g. `{{ CommitTimestamp }}`). |
 | `disable` | bool | `false` | Skip this snapcraft config. |
 
 ### Confinement values
