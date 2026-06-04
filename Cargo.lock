@@ -250,6 +250,7 @@ dependencies = [
  "anyhow",
  "regex",
  "reqwest 0.12.28",
+ "serde",
  "serde_json",
  "serde_yaml_ng",
  "serial_test",

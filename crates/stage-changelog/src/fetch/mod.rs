@@ -38,15 +38,28 @@ pub(crate) fn relative_filter(
     }
 }
 
+/// Fetch path-filtered commits in the range `from..to` via `git log`.
+///
+/// The range follows git's `<from>..<to>` two-dot semantics:
+/// - `from = Some, to = Some` → `<from>..<to>`
+/// - `from = Some, to = None` → `<from>..HEAD`
+/// - `from = None, to = Some` → `<to>` (all ancestors of `to`)
+/// - `from = None, to = None` → `HEAD`
+///
+/// A non-zero git exit (e.g. an unknown tag, an empty range) is treated as
+/// "no commits" rather than an error, matching the changelog stage's
+/// best-effort history walk.
 pub(crate) fn fetch_git_commits_in(
     workspace_root: &std::path::Path,
     from: Option<&str>,
+    to: Option<&str>,
     path_filter: Option<&str>,
 ) -> Result<Vec<anodizer_core::git::Commit>> {
     use std::process::Command;
+    let upper = to.unwrap_or("HEAD");
     let range = match from {
-        Some(t) => format!("{}..HEAD", t),
-        None => "HEAD".to_string(),
+        Some(t) => format!("{}..{}", t, upper),
+        None => upper.to_string(),
     };
     let mut args: Vec<String> = vec![
         "-C".into(),

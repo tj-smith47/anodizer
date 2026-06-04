@@ -3753,3 +3753,442 @@ fn non_kac_file_behavior_unchanged() {
         "non-KAC must not add footer links: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// refresh_*_unreleased + render_changelog_json — generate-only [Unreleased]
+// regeneration and JSON serialization over a real git repo.
+// ---------------------------------------------------------------------------
+
+mod refresh_unreleased_tests {
+    use std::path::Path;
+    use std::process::Command;
+
+    use anodizer_core::config::Chronology;
+
+    use crate::{
+        InsertionMode, refresh_crate_unreleased, refresh_root_unreleased, render_changelog_json,
+    };
+
+    /// Run `git <args>` inside `dir`, asserting success.
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("spawn git")
+            .success();
+        assert!(ok, "git {:?} failed in {}", args, dir.display());
+    }
+
+    /// Fresh git repo with deterministic identity; returns the repo root.
+    fn init_repo() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        git(root, &["init", "-q"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["config", "user.name", "Test User"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        tmp
+    }
+
+    /// Stage all and commit with `subject` inside `dir`.
+    fn commit(dir: &Path, subject: &str) {
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-q", "-m", subject]);
+    }
+
+    /// Write `.anodizer.yaml` with a feat/fix `groups:` config at `root`.
+    fn write_config(root: &Path) {
+        std::fs::write(
+            root.join(".anodizer.yaml"),
+            "changelog:\n  groups:\n    - title: Features\n      regexp: '^feat'\n      order: 0\n    - title: Bug Fixes\n      regexp: '^fix'\n      order: 1\n",
+        )
+        .expect("write config");
+    }
+
+    #[test]
+    fn refresh_fills_empty_unreleased_from_commits() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: add a thing");
+
+        std::fs::write(
+            root.join("CHANGELOG.md"),
+            "# Changelog\n\n## [Unreleased]\n",
+        )
+        .unwrap();
+
+        let update = refresh_crate_unreleased(root, "mylib", root, None, None)
+            .expect("ok")
+            .expect("some update");
+        assert_eq!(update.insertion_mode, InsertionMode::Replace);
+        assert!(
+            update.rendered_text.contains("### Features"),
+            "expected Features heading, got:\n{}",
+            update.rendered_text
+        );
+        assert!(update.rendered_text.contains("add a thing"));
+        // H1 preserved.
+        assert!(update.rendered_text.starts_with("# Changelog\n"));
+    }
+
+    #[test]
+    fn refresh_replaces_stale_unreleased_body() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "fix: real bug");
+
+        std::fs::write(
+            root.join("CHANGELOG.md"),
+            "# Changelog\n\n## [Unreleased]\n\n### Features\n- stale: leftover entry\n",
+        )
+        .unwrap();
+
+        let update = refresh_crate_unreleased(root, "mylib", root, None, None)
+            .expect("ok")
+            .expect("some update");
+        assert!(
+            !update.rendered_text.contains("leftover entry"),
+            "stale body must be replaced, got:\n{}",
+            update.rendered_text
+        );
+        assert!(update.rendered_text.contains("real bug"));
+        assert!(update.rendered_text.contains("### Bug Fixes"));
+    }
+
+    #[test]
+    fn refresh_preserves_released_sections_and_footer() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: brand new");
+
+        let existing = "# Changelog\n\n\
+## [Unreleased]\n\n\
+## [v0.1.0] - 2026-01-01\n\
+### Features\n\
+- earlier: shipped feature\n\n\
+[Unreleased]: https://github.com/o/r/compare/v0.1.0...HEAD\n\
+[v0.1.0]: https://github.com/o/r/releases/tag/v0.1.0\n";
+        std::fs::write(root.join("CHANGELOG.md"), existing).unwrap();
+
+        let update = refresh_crate_unreleased(root, "mylib", root, None, None)
+            .expect("ok")
+            .expect("some update");
+        let out = &update.rendered_text;
+        assert!(out.contains("## [v0.1.0] - 2026-01-01"));
+        assert!(out.contains("- earlier: shipped feature"));
+        assert!(out.contains("[Unreleased]: https://github.com/o/r/compare/v0.1.0...HEAD"));
+        assert!(out.contains("[v0.1.0]: https://github.com/o/r/releases/tag/v0.1.0"));
+        assert!(out.contains("brand new"));
+    }
+
+    #[test]
+    fn refresh_multitrack_root_updates_only_target_subsection() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        let crate_dir = root.join("crates").join("cfgd");
+        std::fs::create_dir_all(&crate_dir).unwrap();
+        std::fs::write(crate_dir.join("lib.rs"), "x").unwrap();
+        commit(root, "feat: cfgd new capability");
+
+        let existing = "# Changelog\n\n\
+## [Unreleased]\n\n\
+### cfgd\n\
+- stale: old cfgd entry\n\n\
+### cfgd-core\n\
+- keep: sibling untouched\n\n\
+## [v0.2.0] - 2026-02-02\n\
+### Features\n\
+- released: thing\n\n\
+[Unreleased]: https://github.com/o/r/compare/v0.2.0...HEAD\n";
+        std::fs::write(root.join("CHANGELOG.md"), existing).unwrap();
+
+        let update =
+            refresh_root_unreleased(root, "cfgd", &crate_dir, None, None, Chronology::Date)
+                .expect("ok")
+                .expect("some update");
+        let out = &update.rendered_text;
+        assert!(
+            !out.contains("old cfgd entry"),
+            "target subsection should be regenerated, got:\n{out}"
+        );
+        assert!(out.contains("cfgd new capability"));
+        assert!(
+            out.contains("- keep: sibling untouched"),
+            "sibling subsection must be preserved, got:\n{out}"
+        );
+        assert!(out.contains("### cfgd-core"));
+        assert!(out.contains("## [v0.2.0] - 2026-02-02"));
+        assert!(out.contains("[Unreleased]: https://github.com/o/r/compare/v0.2.0...HEAD"));
+    }
+
+    #[test]
+    fn refresh_flat_root_behaves_like_crate_path() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: flat root feature");
+
+        std::fs::write(
+            root.join("CHANGELOG.md"),
+            "# Changelog\n\n## [Unreleased]\n",
+        )
+        .unwrap();
+
+        let root_update =
+            refresh_root_unreleased(root, "mylib", root, None, None, Chronology::Date)
+                .expect("ok")
+                .expect("some update");
+        let crate_update = refresh_crate_unreleased(root, "mylib", root, None, None)
+            .expect("ok")
+            .expect("some update");
+        assert_eq!(
+            root_update.rendered_text, crate_update.rendered_text,
+            "flat root must match the per-crate path byte-for-byte"
+        );
+    }
+
+    #[test]
+    fn refresh_creates_skeleton_when_file_absent() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: first ever");
+
+        let update = refresh_crate_unreleased(root, "mylib", root, None, None)
+            .expect("ok")
+            .expect("some update");
+        let out = &update.rendered_text;
+        assert!(out.starts_with("# Changelog\n"));
+        assert!(out.contains("## [Unreleased]"));
+        assert!(out.contains("first ever"));
+        assert!(
+            !out.contains("[Unreleased]:"),
+            "first creation synthesizes no footer, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn refresh_inserts_unreleased_after_h1_for_non_kac_file() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: insert me");
+
+        std::fs::write(
+            root.join("CHANGELOG.md"),
+            "# My Project Changes\n\nSome prose preamble.\n\n## [v0.1.0]\n- old: thing\n",
+        )
+        .unwrap();
+
+        let update = refresh_crate_unreleased(root, "mylib", root, None, None)
+            .expect("ok")
+            .expect("some update");
+        let out = &update.rendered_text;
+        let h1_pos = out.find("# My Project Changes").expect("h1");
+        let unreleased_pos = out.find("## [Unreleased]").expect("unreleased");
+        let old_pos = out.find("## [v0.1.0]").expect("old section");
+        assert!(h1_pos < unreleased_pos, "Unreleased must follow H1");
+        assert!(
+            unreleased_pos < old_pos,
+            "Unreleased must precede the existing released section"
+        );
+        assert!(out.contains("Some prose preamble."));
+        assert!(out.contains("- old: thing"));
+        assert!(out.contains("insert me"));
+    }
+
+    #[test]
+    fn refresh_is_idempotent() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: idempotent thing");
+        std::fs::write(
+            root.join("CHANGELOG.md"),
+            "# Changelog\n\n## [Unreleased]\n",
+        )
+        .unwrap();
+
+        let first = refresh_crate_unreleased(root, "mylib", root, None, None)
+            .expect("ok")
+            .expect("some update");
+        // Apply the update, then refresh again — second run is a no-op.
+        std::fs::write(root.join("CHANGELOG.md"), &first.rendered_text).unwrap();
+        let second = refresh_crate_unreleased(root, "mylib", root, None, None).expect("ok");
+        assert!(
+            second.is_none(),
+            "second refresh must be a no-op, got:\n{:?}",
+            second.map(|u| u.rendered_text)
+        );
+    }
+
+    #[test]
+    fn refresh_returns_none_without_config() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        // No .anodizer.yaml written.
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: no config here");
+        std::fs::write(
+            root.join("CHANGELOG.md"),
+            "# Changelog\n\n## [Unreleased]\n",
+        )
+        .unwrap();
+
+        let update = refresh_crate_unreleased(root, "mylib", root, None, None).expect("ok");
+        assert!(update.is_none(), "no changelog: config ⇒ Ok(None)");
+    }
+
+    #[test]
+    fn to_ref_bounds_the_commit_range() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: included before bound");
+        git(root, &["tag", "bound"]);
+        std::fs::write(root.join("b.txt"), "y").unwrap();
+        commit(root, "feat: excluded after bound");
+
+        // to_ref = "bound" ⇒ only the first commit is in range.
+        let update = refresh_crate_unreleased(root, "mylib", root, None, Some("bound"))
+            .expect("ok")
+            .expect("some update");
+        let out = &update.rendered_text;
+        assert!(out.contains("included before bound"));
+        assert!(
+            !out.contains("excluded after bound"),
+            "commits after to_ref must be excluded, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn json_empty_range_returns_none() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: only commit");
+        git(root, &["tag", "v1.0.0"]);
+
+        // from..to with no commits between ⇒ Ok(None).
+        let json = render_changelog_json(root, root, Some("v1.0.0"), None).expect("ok");
+        assert!(json.is_none(), "empty range ⇒ Ok(None), got: {json:?}");
+    }
+
+    #[test]
+    fn json_grouped_commits_produce_documented_shape() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: shiny feature");
+        std::fs::write(root.join("b.txt"), "y").unwrap();
+        commit(root, "fix: nasty bug");
+
+        let json = render_changelog_json(root, root, None, None)
+            .expect("ok")
+            .expect("some json");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+
+        assert_eq!(v["from"], serde_json::Value::Null);
+        assert_eq!(v["to"], "HEAD");
+        let groups = v["groups"].as_array().expect("groups array");
+        let titles: Vec<&str> = groups.iter().filter_map(|g| g["title"].as_str()).collect();
+        assert!(titles.contains(&"Features"), "got groups: {titles:?}");
+        assert!(titles.contains(&"Bug Fixes"), "got groups: {titles:?}");
+
+        let features = groups
+            .iter()
+            .find(|g| g["title"] == "Features")
+            .expect("Features group");
+        let entry = &features["entries"][0];
+        assert_eq!(entry["summary"], "shiny feature");
+        assert!(entry["sha"].as_str().expect("sha").len() >= 4);
+        assert!(entry["full_sha"].as_str().expect("full_sha").len() >= 7);
+        let authors = entry["authors"].as_array().expect("authors");
+        assert_eq!(authors[0], "Test User");
+        assert!(
+            features["subgroups"]
+                .as_array()
+                .expect("subgroups")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn json_subgroups_nest() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        // A Features group with a nested "Scoped" subgroup matching `feat(.*)`.
+        std::fs::write(
+            root.join(".anodizer.yaml"),
+            "changelog:\n  groups:\n    - title: Features\n      regexp: '^feat'\n      order: 0\n      groups:\n        - title: Scoped\n          regexp: '^feat\\('\n          order: 0\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat(api): scoped feature");
+
+        let json = render_changelog_json(root, root, None, None)
+            .expect("ok")
+            .expect("some json");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let features = v["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["title"] == "Features")
+            .expect("Features group");
+        let subgroups = features["subgroups"].as_array().expect("subgroups");
+        let scoped = subgroups
+            .iter()
+            .find(|s| s["title"] == "Scoped")
+            .expect("Scoped subgroup nested under Features");
+        assert_eq!(scoped["entries"][0]["summary"], "scoped feature");
+    }
+
+    #[test]
+    fn json_from_and_to_populated_with_bounds() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: base commit");
+        git(root, &["tag", "v0.1.0"]);
+        std::fs::write(root.join("b.txt"), "y").unwrap();
+        commit(root, "feat: next commit");
+        git(root, &["tag", "v0.2.0"]);
+
+        let json = render_changelog_json(root, root, Some("v0.1.0"), Some("v0.2.0"))
+            .expect("ok")
+            .expect("some json");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(v["from"], "v0.1.0");
+        assert_eq!(v["to"], "v0.2.0");
+        let summaries: Vec<String> = v["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["entries"].as_array().cloned().unwrap_or_default())
+            .filter_map(|e| e["summary"].as_str().map(str::to_string))
+            .collect();
+        assert!(summaries.iter().any(|s| s == "next commit"));
+        assert!(
+            !summaries.iter().any(|s| s == "base commit"),
+            "base commit is the lower bound and must be excluded"
+        );
+    }
+}

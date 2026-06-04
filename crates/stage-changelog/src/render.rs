@@ -424,23 +424,26 @@ fn load_changelog_config(
     Ok(Some(cfg))
 }
 
-/// Load the crate's changelog config, fetch path-filtered commits since
-/// `from_tag`, filter/sort/group them, and render the grouped commit body
-/// (`### <GroupTitle>` group headings, no `## <version>` heading).
+/// Load the crate's changelog config, fetch path-filtered commits in the
+/// range `from_tag..to_ref`, then filter/sort/group them into a
+/// [`GroupedCommits`] tree (no Markdown rendering).
 ///
-/// Single-sources the config-load + commit-fetch + render pipeline shared by
-/// [`render_crate_section`] (per-crate file) and [`render_root_section`]
-/// (shared root file) so the two entry points can never drift.
+/// Single-sources the config-load + commit-fetch + group pipeline shared by
+/// every public entry point (the Markdown promote/refresh paths and the JSON
+/// renderer) so they can never drift on which commits they see.
 ///
-/// Returns the resolved [`ChangelogConfig`] alongside the body. Returns
-/// `Ok(None)` under the same conditions both callers treat as "nothing to
+/// `to_ref` bounds the upper end of the commit range (`None` ⇒ `HEAD`).
+///
+/// Returns the resolved [`ChangelogConfig`] alongside the grouped tree.
+/// Returns `Ok(None)` under the conditions every caller treats as "nothing to
 /// release": `.anodizer.yaml` is absent / has no `changelog:` block, or there
-/// are no qualifying commits since `from_tag`.
-fn render_section_body(
+/// are no qualifying commits in range (after filtering/grouping).
+fn group_section_commits(
     workspace_root: &std::path::Path,
     crate_path: &std::path::Path,
     from_tag: Option<&str>,
-) -> Result<Option<(anodizer_core::config::ChangelogConfig, String)>> {
+    to_ref: Option<&str>,
+) -> Result<Option<(anodizer_core::config::ChangelogConfig, Vec<GroupedCommits>)>> {
     use anodizer_core::log::{StageLogger, Verbosity};
 
     let Some(cfg) = load_changelog_config(workspace_root)? else {
@@ -450,7 +453,8 @@ fn render_section_body(
     let log = StageLogger::new("bump-changelog", Verbosity::default());
 
     let path_filter = relative_filter(workspace_root, crate_path);
-    let raw_commits = fetch_git_commits_in(workspace_root, from_tag, path_filter.as_deref())?;
+    let raw_commits =
+        fetch_git_commits_in(workspace_root, from_tag, to_ref, path_filter.as_deref())?;
     if raw_commits.is_empty() {
         return Ok(None);
     }
@@ -505,6 +509,27 @@ fn render_section_body(
         return Ok(None);
     }
 
+    Ok(Some((cfg, grouped)))
+}
+
+/// Load config, fetch+group commits for `from_tag..to_ref`, and render the
+/// grouped commit body (`### <GroupTitle>` group headings, no `## <version>`
+/// heading).
+///
+/// Thin Markdown wrapper over [`group_section_commits`]; returns the resolved
+/// [`ChangelogConfig`] alongside the rendered body. `Ok(None)` propagates the
+/// same "nothing to release" conditions.
+fn render_section_body(
+    workspace_root: &std::path::Path,
+    crate_path: &std::path::Path,
+    from_tag: Option<&str>,
+    to_ref: Option<&str>,
+) -> Result<Option<(anodizer_core::config::ChangelogConfig, String)>> {
+    let Some((cfg, grouped)) = group_section_commits(workspace_root, crate_path, from_tag, to_ref)?
+    else {
+        return Ok(None);
+    };
+
     let abbrev = cfg.resolved_abbrev();
     let body = render_changelog_with_provider(
         &grouped,
@@ -525,6 +550,455 @@ fn render_section_body(
     let body = body.trim_start_matches("## \n\n").trim_start().to_string();
 
     Ok(Some((cfg, body)))
+}
+
+/// One commit in the JSON changelog DTO.
+#[derive(serde::Serialize)]
+struct JsonEntry {
+    /// Commit subject / description (the conventional-commit body when parsed).
+    summary: String,
+    /// Abbreviated commit hash.
+    sha: String,
+    /// Full 40-char commit hash.
+    full_sha: String,
+    /// Primary author plus any `Co-Authored-By:` trailer names.
+    authors: Vec<String>,
+}
+
+/// One commit group (and its nested subgroups) in the JSON changelog DTO.
+#[derive(serde::Serialize)]
+struct JsonGroup {
+    /// Group heading (empty when no `groups:` are configured).
+    title: String,
+    /// Commits bucketed directly under this group.
+    entries: Vec<JsonEntry>,
+    /// Nested subgroups, mirroring the configured `groups[].groups`.
+    subgroups: Vec<JsonGroup>,
+}
+
+/// Top-level JSON changelog DTO for a single commit range.
+#[derive(serde::Serialize)]
+struct JsonChangelog {
+    /// Lower bound of the range (the `from_tag`), or `null` for full history.
+    from: Option<String>,
+    /// Resolved upper bound of the range (`HEAD` when unbounded).
+    to: String,
+    /// Grouped commits in render order.
+    groups: Vec<JsonGroup>,
+}
+
+/// Map an internal [`GroupedCommits`] node to its public JSON DTO, recursing
+/// into subgroups. Deliberately projects only the stable public fields so the
+/// internal commit/group shapes can evolve without breaking the JSON contract.
+fn group_to_json(group: &GroupedCommits) -> JsonGroup {
+    let entries = group
+        .commits
+        .iter()
+        .map(|c| {
+            let mut authors: Vec<String> = Vec::new();
+            if !c.author_name.is_empty() {
+                authors.push(c.author_name.clone());
+            }
+            authors.extend(c.co_authors.iter().filter(|a| !a.is_empty()).cloned());
+            JsonEntry {
+                summary: c.description.clone(),
+                sha: c.hash.clone(),
+                full_sha: c.full_hash.clone(),
+                authors,
+            }
+        })
+        .collect();
+    JsonGroup {
+        title: group.title.clone(),
+        entries,
+        subgroups: group.subgroups.iter().map(group_to_json).collect(),
+    }
+}
+
+/// Serialize the grouped commits for `from_tag..to_ref` to pretty-printed JSON.
+///
+/// Reuses the shared fetch + filter + group pipeline, then projects the tree
+/// onto a stable public DTO (`{ from, to, groups: [{ title, entries: [{
+/// summary, sha, full_sha, authors }], subgroups }] }`). `from` is the
+/// `from_tag` or `null`; `to` is the resolved upper bound (`HEAD` when
+/// `to_ref` is `None`).
+///
+/// Returns `Ok(None)` when there is no `changelog:` config or no qualifying
+/// commits in range (matching the Markdown entry points' "nothing to render"
+/// signal).
+pub fn render_changelog_json(
+    workspace_root: &std::path::Path,
+    crate_path: &std::path::Path,
+    from_tag: Option<&str>,
+    to_ref: Option<&str>,
+) -> Result<Option<String>> {
+    let Some((_cfg, grouped)) =
+        group_section_commits(workspace_root, crate_path, from_tag, to_ref)?
+    else {
+        return Ok(None);
+    };
+
+    let dto = JsonChangelog {
+        from: from_tag.map(str::to_string),
+        to: to_ref.unwrap_or("HEAD").to_string(),
+        groups: grouped.iter().map(group_to_json).collect(),
+    };
+
+    let json = serde_json::to_string_pretty(&dto)
+        .with_context(|| "changelog: serialize JSON changelog DTO".to_string())?;
+    Ok(Some(json))
+}
+
+/// Render the grouped commit body for `from_tag..to_ref` as a flat Markdown
+/// block (no `## <version>` heading), independent of any existing file.
+///
+/// Returns `(cfg_present, body)`: `cfg_present` is `false` only when there is
+/// no `changelog:` config at all (the sole "do nothing" signal the refresh
+/// path honors); `body` is the rendered grouped block, empty when no commits
+/// qualify in range.
+fn refresh_body(
+    workspace_root: &std::path::Path,
+    crate_path: &std::path::Path,
+    from_tag: Option<&str>,
+    to_ref: Option<&str>,
+) -> Result<(bool, String)> {
+    if load_changelog_config(workspace_root)?.is_none() {
+        return Ok((false, String::new()));
+    }
+    let body = match render_section_body(workspace_root, crate_path, from_tag, to_ref)? {
+        Some((_cfg, body)) => body.trim_end().to_string(),
+        // No qualifying commits in range: the regenerated body is empty.
+        None => String::new(),
+    };
+    Ok((true, body))
+}
+
+/// Regenerate the `## [Unreleased]` body of a crate's `CHANGELOG.md` (or a flat
+/// root) in place from the commits in `from_tag..to_ref`, WITHOUT promoting to
+/// a dated release section.
+///
+/// Replaces everything between the `## [Unreleased]` heading and the next
+/// `## ` section (or the compare-link footer), exclusive, with the freshly
+/// grouped body. The H1, every released `## [x.y.z]` section, and the entire
+/// compare-link footer are preserved verbatim. When the file is absent or has
+/// no `## [Unreleased]` heading, a minimal Keep-a-Changelog skeleton is
+/// created (or the section is inserted directly after the H1 of a non-KAC
+/// file).
+///
+/// Returns `Ok(None)` when there is no `changelog:` config, or when the
+/// regenerated content would be byte-identical to the existing file (an empty
+/// range whose `[Unreleased]` body is already empty). Otherwise returns a
+/// [`ChangelogUpdate`] with [`InsertionMode::Replace`] carrying the full file.
+///
+/// Running twice with the same commits yields byte-identical output.
+pub fn refresh_crate_unreleased(
+    workspace_root: &std::path::Path,
+    crate_name: &str,
+    crate_path: &std::path::Path,
+    from_tag: Option<&str>,
+    to_ref: Option<&str>,
+) -> Result<Option<ChangelogUpdate>> {
+    let (cfg_present, body) = refresh_body(workspace_root, crate_path, from_tag, to_ref)?;
+    if !cfg_present {
+        return Ok(None);
+    }
+
+    let file_path = crate_path.join("CHANGELOG.md");
+    let existing = read_existing(&file_path)?;
+    let merged = replace_unreleased_body(existing.as_deref(), crate_name, &body);
+
+    if existing.as_deref() == Some(merged.as_str()) {
+        return Ok(None);
+    }
+
+    Ok(Some(ChangelogUpdate {
+        file_path,
+        rendered_text: merged,
+        insertion_mode: InsertionMode::Replace,
+    }))
+}
+
+/// Regenerate the `## [Unreleased]` content for `crate_name` in the SHARED root
+/// `<workspace_root>/CHANGELOG.md` from `from_tag..to_ref`, WITHOUT promoting
+/// to a dated release section.
+///
+/// Mirrors [`render_root_section`]'s flat-vs-multitrack branching:
+/// - MULTI-TRACK root (a `### <crate>` subsection lives under
+///   `## [Unreleased]`): regenerate only THIS crate's `### <crate>`
+///   subsection, leaving every other crate's subsection, all released
+///   sections, and the footer verbatim.
+/// - FLAT root (no crate subsections): behave exactly like
+///   [`refresh_crate_unreleased`].
+///
+/// Returns `Ok(None)` under the same "nothing to do" conditions as
+/// [`refresh_crate_unreleased`]. Idempotent for a fixed commit set.
+pub fn refresh_root_unreleased(
+    workspace_root: &std::path::Path,
+    crate_name: &str,
+    crate_path: &std::path::Path,
+    from_tag: Option<&str>,
+    to_ref: Option<&str>,
+    chronology: anodizer_core::config::Chronology,
+) -> Result<Option<ChangelogUpdate>> {
+    // `chronology` is accepted for signature symmetry with
+    // `render_root_section`; refreshing the `[Unreleased]` block never slots a
+    // dated section, so it has no ordering effect here.
+    let _ = chronology;
+
+    let (cfg_present, body) = refresh_body(workspace_root, crate_path, from_tag, to_ref)?;
+    if !cfg_present {
+        return Ok(None);
+    }
+
+    let file_path = workspace_root.join("CHANGELOG.md");
+    let existing = read_existing(&file_path)?;
+
+    let group_titles: Vec<String> = load_changelog_config(workspace_root)?
+        .and_then(|c| c.groups)
+        .unwrap_or_default()
+        .iter()
+        .map(|g| g.title.clone())
+        .collect();
+
+    let multitrack = existing
+        .as_deref()
+        .is_some_and(|e| has_crate_subsections(e, &group_titles));
+
+    let merged = if multitrack {
+        // `existing` is `Some` here: `has_crate_subsections` returned true.
+        replace_crate_subsection_body(existing.as_deref().unwrap_or(""), crate_name, &body)
+    } else {
+        replace_unreleased_body(existing.as_deref(), crate_name, &body)
+    };
+
+    if existing.as_deref() == Some(merged.as_str()) {
+        return Ok(None);
+    }
+
+    Ok(Some(ChangelogUpdate {
+        file_path,
+        rendered_text: merged,
+        insertion_mode: InsertionMode::Replace,
+    }))
+}
+
+/// Read `file_path` to a string, returning `Ok(None)` when it does not exist.
+fn read_existing(file_path: &std::path::Path) -> Result<Option<String>> {
+    if !file_path.is_file() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(file_path)
+        .with_context(|| format!("failed to read {}", file_path.display()))?;
+    Ok(Some(text))
+}
+
+/// Build a fresh Keep-a-Changelog skeleton holding only an `## [Unreleased]`
+/// section with `body` (empty body collapses to a blank section).
+fn kac_skeleton(crate_name: &str, body: &str) -> String {
+    let _ = crate_name;
+    if body.is_empty() {
+        "# Changelog\n\n## [Unreleased]\n".to_string()
+    } else {
+        format!("# Changelog\n\n## [Unreleased]\n\n{}\n", body)
+    }
+}
+
+/// Replace the `## [Unreleased]` body of a flat changelog with `body`,
+/// preserving the H1, every released section, and the footer verbatim.
+///
+/// `existing == None` (absent file) yields a fresh KAC skeleton. An existing
+/// file with an H1 but no `## [Unreleased]` heading gets the section inserted
+/// directly after the H1, preserving the rest.
+fn replace_unreleased_body(existing: Option<&str>, crate_name: &str, body: &str) -> String {
+    let Some(existing) = existing else {
+        return kac_skeleton(crate_name, body);
+    };
+
+    let lines: Vec<&str> = existing.lines().collect();
+    let trailing_newline = existing.ends_with('\n');
+
+    let Some(unreleased_idx) = lines.iter().position(|l| is_unreleased_heading(l)) else {
+        return insert_unreleased_after_h1(&lines, crate_name, body, trailing_newline);
+    };
+
+    // Bound the existing `[Unreleased]` body: from after the heading to the
+    // first following `## ` section heading or compare-link footer line.
+    let mut body_end = lines.len();
+    for (i, line) in lines.iter().enumerate().skip(unreleased_idx + 1) {
+        if is_section_heading(line) || parse_unreleased_footer(line).is_some() {
+            body_end = i;
+            break;
+        }
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    // Head: everything up to and including the `## [Unreleased]` heading.
+    out.extend(lines[..=unreleased_idx].iter().map(|s| s.to_string()));
+    // Fresh body, fenced by single blank lines, only when non-empty.
+    out.push(String::new());
+    if !body.is_empty() {
+        out.extend(body.lines().map(|s| s.to_string()));
+        out.push(String::new());
+    }
+    // Tail: the next section / footer onward, verbatim.
+    out.extend(lines[body_end..].iter().map(|s| s.to_string()));
+
+    finish(out, trailing_newline)
+}
+
+/// Insert a `## [Unreleased]` section (carrying `body`) immediately after the
+/// leading H1 of a non-KAC file, preserving the rest. Synthesizes a skeleton
+/// when no H1 is present.
+fn insert_unreleased_after_h1(
+    lines: &[&str],
+    crate_name: &str,
+    body: &str,
+    trailing_newline: bool,
+) -> String {
+    let Some(h1_idx) = lines.iter().position(|l| l.starts_with("# ")) else {
+        // No H1 to anchor to: fall back to a fresh skeleton, then append the
+        // prior content so nothing is lost.
+        let skeleton = kac_skeleton(crate_name, body);
+        if lines.is_empty() {
+            return skeleton;
+        }
+        let rest = lines.join("\n");
+        return finish(
+            vec![skeleton.trim_end().to_string(), String::new(), rest],
+            trailing_newline,
+        );
+    };
+
+    let mut out: Vec<String> = Vec::new();
+    out.extend(lines[..=h1_idx].iter().map(|s| s.to_string()));
+    out.push(String::new());
+    out.push("## [Unreleased]".to_string());
+    if !body.is_empty() {
+        out.push(String::new());
+        out.extend(body.lines().map(|s| s.to_string()));
+    }
+
+    // Re-attach the post-H1 remainder (skipping a single blank line right after
+    // the H1 so we don't double it).
+    let mut tail_start = h1_idx + 1;
+    if lines.get(tail_start).is_some_and(|l| l.trim().is_empty()) {
+        tail_start += 1;
+    }
+    if tail_start < lines.len() {
+        out.push(String::new());
+        out.extend(lines[tail_start..].iter().map(|s| s.to_string()));
+    }
+
+    finish(out, trailing_newline)
+}
+
+/// Replace only `crate_name`'s `### <crate>` subsection body under
+/// `## [Unreleased]` in a multi-track root, preserving sibling subsections,
+/// released sections, and the footer verbatim. Creates the subsection at the
+/// end of the `[Unreleased]` block when absent.
+fn replace_crate_subsection_body(existing: &str, crate_name: &str, body: &str) -> String {
+    let lines: Vec<&str> = existing.lines().collect();
+    let trailing_newline = existing.ends_with('\n');
+
+    // `has_crate_subsections` already confirmed an `[Unreleased]` heading.
+    let Some(unreleased_idx) = lines.iter().position(|l| is_unreleased_heading(l)) else {
+        return existing.to_string();
+    };
+
+    // Bound the `[Unreleased]` block: up to the first `## ` heading or footer.
+    let mut unreleased_end = lines.len();
+    for (i, line) in lines.iter().enumerate().skip(unreleased_idx + 1) {
+        if is_section_heading(line) || parse_unreleased_footer(line).is_some() {
+            unreleased_end = i;
+            break;
+        }
+    }
+
+    // Locate this crate's `### <crate>` subsection within the block.
+    let mut sub_start: Option<usize> = None;
+    for (i, line) in lines
+        .iter()
+        .enumerate()
+        .take(unreleased_end)
+        .skip(unreleased_idx + 1)
+    {
+        if is_subsection_heading(line).is_some_and(|name| name == crate_name) {
+            sub_start = Some(i);
+            break;
+        }
+    }
+
+    let mut out: Vec<String> = Vec::new();
+
+    match sub_start {
+        Some(start) => {
+            // Bound the existing subsection body: to the next `### `/`## `/footer.
+            let mut sub_end = unreleased_end;
+            for (i, line) in lines.iter().enumerate().skip(start + 1) {
+                if is_subsection_heading(line).is_some()
+                    || is_section_heading(line)
+                    || parse_unreleased_footer(line).is_some()
+                {
+                    sub_end = i;
+                    break;
+                }
+            }
+            // Head through the subsection heading.
+            out.extend(lines[..=start].iter().map(|s| s.to_string()));
+            if !body.is_empty() {
+                out.extend(body.lines().map(|s| s.to_string()));
+            }
+            out.push(String::new());
+            // Tail from the next subsection / section / footer.
+            out.extend(lines[sub_end..].iter().map(|s| s.to_string()));
+        }
+        None => {
+            // Append a fresh subsection at the end of the `[Unreleased]` block.
+            let mut block_end = unreleased_end;
+            while block_end > unreleased_idx + 1 && lines[block_end - 1].trim().is_empty() {
+                block_end -= 1;
+            }
+            out.extend(lines[..block_end].iter().map(|s| s.to_string()));
+            out.push(String::new());
+            out.push(format!("### {}", crate_name));
+            if !body.is_empty() {
+                out.extend(body.lines().map(|s| s.to_string()));
+            }
+            out.push(String::new());
+            out.extend(lines[unreleased_end..].iter().map(|s| s.to_string()));
+        }
+    }
+
+    finish(out, trailing_newline)
+}
+
+/// Join rebuilt lines, collapsing 3+ consecutive blank lines to a single blank
+/// and restoring the file's original trailing-newline state. Keeps refresh
+/// output idempotent regardless of how many blank lines the splice produced.
+fn finish(lines: Vec<String>, trailing_newline: bool) -> String {
+    let mut collapsed: Vec<String> = Vec::with_capacity(lines.len());
+    let mut blanks = 0usize;
+    for line in lines {
+        if line.trim().is_empty() {
+            blanks += 1;
+            if blanks >= 2 {
+                continue;
+            }
+            collapsed.push(String::new());
+        } else {
+            blanks = 0;
+            collapsed.push(line);
+        }
+    }
+    // Drop any trailing blank lines; the newline state is applied below.
+    while collapsed.last().is_some_and(|l| l.trim().is_empty()) {
+        collapsed.pop();
+    }
+    let mut result = collapsed.join("\n");
+    if trailing_newline {
+        result.push('\n');
+    }
+    result
 }
 
 /// Render a `## [<to_version>]` section for the given crate's changelog and
@@ -550,7 +1024,8 @@ pub fn render_crate_section(
     from_tag: Option<&str>,
     to_version: &str,
 ) -> Result<Option<ChangelogUpdate>> {
-    let Some((_cfg, body)) = render_section_body(workspace_root, crate_path, from_tag)? else {
+    let Some((_cfg, body)) = render_section_body(workspace_root, crate_path, from_tag, None)?
+    else {
         return Ok(None);
     };
 
@@ -610,7 +1085,7 @@ pub fn render_root_section(
     tag: &str,
     chronology: anodizer_core::config::Chronology,
 ) -> Result<Option<ChangelogUpdate>> {
-    let rendered = render_section_body(workspace_root, crate_path, from_tag)?;
+    let rendered = render_section_body(workspace_root, crate_path, from_tag, None)?;
     // Reuse the config already parsed by `render_section_body`. Only re-load on
     // the `None` arm (no `changelog:` block, or a curated subsection with no
     // qualifying commits) so a curated promote still buckets under the
