@@ -70,6 +70,31 @@ fn changelog(dir: &Path, args: &[&str]) -> RunResult {
     }
 }
 
+/// Assert that the `## [Unreleased]` section of `text` contains NO `### `
+/// heading other than the supplied `allowed_group_titles`. A flat aggregate
+/// must never graft a `### <crate>` OR `### <project_name>` subsection — the
+/// aggregate is keyed by `project_name`, so a brittle "no `### <crate>` name"
+/// check misses a regressed render guard that grafts `### <project_name>`.
+/// Restricting the scan to the `[Unreleased]` block keeps curated H3s in older
+/// released sections from tripping the assertion.
+fn assert_no_subsection_graft(text: &str, allowed_group_titles: &[&str]) {
+    let mut in_unreleased = false;
+    for line in text.lines() {
+        if line.starts_with("## ") {
+            in_unreleased = line.contains("Unreleased");
+            continue;
+        }
+        if in_unreleased && line.starts_with("### ") {
+            let title = line.trim_start_matches("### ").trim();
+            assert!(
+                allowed_group_titles.contains(&title),
+                "unexpected `### {title}` subsection grafted into [Unreleased] \
+                 (allowed group titles: {allowed_group_titles:?}):\n{text}"
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Mode 1: single-crate refresh + write
 // ---------------------------------------------------------------------------
@@ -977,12 +1002,14 @@ fn same_prefix_shared_root_collapses_to_one_flat_unreleased() {
         "flat aggregate must not emit per-crate separators: {}",
         r.stdout
     );
-    // No `### <crate>` graft for either member.
+    // No `### <crate>` NOR `### <project_name>` graft (the aggregate is keyed by
+    // `aggregate`): reject any [Unreleased] H3 that isn't the configured group.
     assert!(
         !r.stdout.contains("### core") && !r.stdout.contains("### cli"),
         "flat aggregate must not graft a `### <crate>` subsection: {}",
         r.stdout
     );
+    assert_no_subsection_graft(&r.stdout, &["Features"]);
     // The regenerated body reflects BOTH members' post-tag commits (whole-repo).
     assert!(
         r.stdout.contains("aggregate change in core")
@@ -1008,6 +1035,7 @@ fn same_prefix_shared_root_write_is_flat() {
         !cl.contains("### core") && !cl.contains("### cli"),
         "written file must not graft a `### <crate>` subsection: {cl}"
     );
+    assert_no_subsection_graft(&cl, &["Features"]);
     assert!(
         cl.contains("aggregate change in core") && cl.contains("aggregate change in cli"),
         "written flat body must aggregate every member's commits: {cl}"
@@ -1017,6 +1045,44 @@ fn same_prefix_shared_root_write_is_flat() {
         !root.join("crates/core/CHANGELOG.md").exists()
             && !root.join("crates/cli/CHANGELOG.md").exists(),
         "flat aggregate must not write per-crate files"
+    );
+}
+
+/// release-notes on a same-prefix shared-root repo collapses to ONE aggregate
+/// body — no `### <crate>`/`### <project_name>` graft, no `--- <crate> ---`
+/// per-crate separators, both members' commits in one block. HEAD is tagged
+/// `v0.2.0` and the EXPLICIT `v0.1.0..v0.2.0` range drives a non-empty body
+/// (the changelog stage requires HEAD at the upper tag). An explicit range
+/// (unlike a single-tag positional, which pins to the tag's owning crate)
+/// applies to every target, exercising the no-filter aggregate collapse.
+#[test]
+fn same_prefix_shared_root_release_notes_is_one_aggregate() {
+    let tmp = same_prefix_shared_root_repo();
+    let root = tmp.path();
+    run_git(root, &["tag", "v0.2.0"]);
+    let r = changelog(root, &["-q", "v0.1.0..v0.2.0", "--format", "release-notes"]);
+    assert!(
+        r.success,
+        "release-notes failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    let out = &r.stdout;
+    // ONE aggregate body: no per-crate `--- <crate> ---` separators.
+    assert!(
+        !out.contains("---\ncore\n---") && !out.contains("---\ncli\n---"),
+        "release-notes flat aggregate must not emit per-crate separators: {out}"
+    );
+    // No `### <crate>` NOR `### <project_name>` graft.
+    for c in ["### core", "### cli", "### aggregate"] {
+        assert!(
+            !out.contains(c),
+            "spurious `{c}` graft in release-notes: {out}"
+        );
+    }
+    // Both members' commits land in the single aggregate body (whole-repo).
+    assert!(
+        out.contains("aggregate change in core") && out.contains("aggregate change in cli"),
+        "release-notes aggregate body must span every member's commits: {out}"
     );
 }
 
@@ -1174,15 +1240,20 @@ crates:
     );
     let out = &r.stdout;
 
-    // (a) one flat [Unreleased], no `### <crate>` graft.
+    // (a) one flat [Unreleased], no `### <crate>` NOR `### <project_name>`
+    // graft. The aggregate is keyed by project_name (`dogfood`), so a regressed
+    // render-side `single_track` guard would graft `### dogfood`, not
+    // `### core`; assert against both, and robustly reject ANY `### ` heading in
+    // the [Unreleased] block that isn't a configured group title.
     assert_eq!(
         out.matches("## [Unreleased]").count(),
         1,
         "expected one flat [Unreleased]: {out}"
     );
-    for c in ["### core", "### cli", "### api"] {
+    for c in ["### core", "### cli", "### api", "### dogfood"] {
         assert!(!out.contains(c), "spurious `{c}` graft: {out}");
     }
+    assert_no_subsection_graft(out, &["Features", "Bug Fixes"]);
     // (b) no `* *` double bullets.
     assert!(!out.contains("* *"), "double bullet emitted: {out}");
     // (c) author renders as a NAME, no empty `()`.

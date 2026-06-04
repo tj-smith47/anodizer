@@ -467,24 +467,26 @@ fn run_release_notes(
     // (mirroring kac/json): without an explicit `--crate`, a flat `crates:` list
     // sharing one tag track and one root file is a single lockstep aggregate, so
     // the stage renders one whole-repo body instead of N path-filtered
-    // duplicates joined by `---` separators. The first crate's name keys the
-    // aggregate; its path filter is cleared so the body spans the workspace.
+    // duplicates joined by `---` separators. The collapse DECISION is the shared
+    // `collapse_flat_aggregate` the kac/json paths use, so the predicate can't
+    // drift; release-notes only differs in how it APPLIES the result — the
+    // changelog stage iterates `config.crates` (not a tuple list), so the
+    // aggregate is realized by retaining one path-cleared crate whose body then
+    // spans the workspace.
     if effective_filter.is_none() && config.crates.len() > 1 {
         let empty = anodizer_core::config::ChangelogConfig::default();
         let routing = ChangelogRouting::from_config(config.changelog.as_ref().unwrap_or(&empty));
-        let prefixes: Vec<String> = config
-            .crates
-            .iter()
-            .map(|c| {
-                git::extract_tag_prefix(&c.tag_template).unwrap_or_else(|| format!("{}-v", c.name))
-            })
-            .collect();
-        if crate::commands::changelog_sync::is_flat_aggregate(
-            &prefixes,
+        let workspace = load_workspace(workspace_root).ok();
+        let selected = select_crates(workspace_root, &config, workspace.as_ref(), None);
+        let (_collapsed, single_track) = collapse_flat_aggregate(
+            selected,
+            &config.project_name,
+            workspace_root,
             routing.root_enabled,
             routing.per_crate,
-        ) && let Some(mut first) = config.crates.first().cloned()
-        {
+            false,
+        );
+        if single_track && let Some(mut first) = config.crates.first().cloned() {
             first.path = String::new();
             config.crates = vec![first];
         }

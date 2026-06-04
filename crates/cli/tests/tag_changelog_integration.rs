@@ -1675,3 +1675,155 @@ fn e2e_write_then_tag_preserves_hand_edited_multitrack_root() {
         "the untagged cli subsection must survive the core promote: {head}"
     );
 }
+
+/// Build a flat `crates:` workspace whose members ALL share `tag_template:
+/// "v{{ .Version }}"` and route to one shared root (no `per_crate`), with a
+/// curated flat `## [Unreleased]` whose H3 (`### Docs`) is NOT a configured
+/// group — the multi-track-misread trap. Both members start at `0.1.0` with a
+/// shared `v0.1.0` tag, then both get a post-tag `feat:` commit.
+fn same_prefix_flat_repo() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for name in ["core", "cli"] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: aggregate
+changelog:
+  groups:
+    - title: Features
+      regexp: "^feat"
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "v{{ .Version }}"
+    version_sync:
+      enabled: true
+  - name: cli
+    path: crates/cli
+    tag_template: "v{{ .Version }}"
+    version_sync:
+      enabled: true
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("CHANGELOG.md"),
+        "# Changelog\n\n## [Unreleased]\n\n### Docs\n\n- curated docs note\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/core/src/lib.rs"), "// core\n").unwrap();
+    git_add_commit(root, "feat: change in core");
+    fs::write(root.join("crates/cli/src/lib.rs"), "// cli\n").unwrap();
+    git_add_commit(root, "feat: change in cli");
+    tmp
+}
+
+/// Assert that the `## [...]` section headed by `heading_substr` in `text`
+/// carries NO `### ` subsection other than the supplied `allowed`. A flat
+/// aggregate keyed by `project_name` must never graft `### <crate>` OR
+/// `### <project_name>`; restricting the scan to the section keeps curated H3s
+/// in OTHER sections from tripping the check.
+fn assert_section_no_graft(text: &str, heading_substr: &str, allowed: &[&str]) {
+    let mut in_section = false;
+    for line in text.lines() {
+        if line.starts_with("## ") {
+            in_section = line.contains(heading_substr);
+            continue;
+        }
+        if in_section && line.starts_with("### ") {
+            let title = line.trim_start_matches("### ").trim();
+            assert!(
+                allowed.contains(&title),
+                "unexpected `### {title}` grafted into `{heading_substr}` section \
+                 (allowed: {allowed:?}):\n{text}"
+            );
+        }
+    }
+}
+
+/// `tag --changelog` on a same-prefix flat-`crates:` repo (every member on
+/// `v{{ Version }}`, shared root) is a single lockstep aggregate: both members
+/// bump to one shared `v0.2.0` tag (created once), and the root gets ONE flat
+/// `## [0.2.0]` section with NO `### <crate>`/`### <project_name>` graft.
+#[test]
+fn same_prefix_flat_tag_collapses_to_one_section() {
+    let tmp = same_prefix_flat_repo();
+    let root = tmp.path();
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--no-push", "--changelog"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+
+    // Exactly one shared tag created for both crates (no duplicate-tag failure).
+    let tags = Command::new("git")
+        .current_dir(root)
+        .args(["tag"])
+        .output()
+        .unwrap();
+    let tag_list = String::from_utf8_lossy(&tags.stdout);
+    assert_eq!(
+        tag_list.matches("v0.2.0").count(),
+        1,
+        "same-prefix crates must resolve to ONE shared v0.2.0 tag: {tag_list}"
+    );
+
+    let head = show_head(root, "CHANGELOG.md");
+    // ONE flat released section; no `### <crate>`/`### <project_name>` graft.
+    assert_eq!(
+        head.matches("## [0.2.0]").count(),
+        1,
+        "expected one flat [0.2.0] section: {head}"
+    );
+    for c in ["### core", "### cli", "### aggregate"] {
+        assert!(!head.contains(c), "spurious `{c}` graft: {head}");
+    }
+    assert_section_no_graft(&head, "[0.2.0]", &["Docs", "Features"]);
+}
+
+/// `bump --commit --changelog --workspace` on the same same-prefix flat repo
+/// collapses identically: ONE flat `## [0.2.0]` section, no graft. (bump never
+/// creates tags, so this covers the collapse without the shared-tag path.)
+#[test]
+fn same_prefix_flat_bump_collapses_to_one_section() {
+    let tmp = same_prefix_flat_repo();
+    let root = tmp.path();
+    let out = anodizer()
+        .current_dir(root)
+        .args(["bump", "--commit", "--changelog", "--workspace", "minor"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "bump failed: {stdout}\n{stderr}");
+
+    let head = show_head(root, "CHANGELOG.md");
+    assert_eq!(
+        head.matches("## [0.2.0]").count(),
+        1,
+        "expected one flat [0.2.0] section: {head}"
+    );
+    for c in ["### core", "### cli", "### aggregate"] {
+        assert!(!head.contains(c), "spurious `{c}` graft: {head}");
+    }
+    assert_section_no_graft(&head, "[0.2.0]", &["Docs", "Features"]);
+}

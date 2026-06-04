@@ -1346,10 +1346,16 @@ fn run_per_crate_tag(
         .flat_map(|r| r.version_updates.iter().cloned())
         .collect();
 
-    let all_new_tags: Vec<String> = tag_results
-        .iter()
-        .flat_map(|r| r.new_tags.iter().map(|(t, _)| t.clone()))
-        .collect();
+    // Dedupe across groups: same-prefix crates bumping to the same version
+    // resolve to ONE shared tag, which must be created and pushed exactly once.
+    let mut all_new_tags: Vec<String> = Vec::new();
+    for r in &tag_results {
+        for (t, _) in &r.new_tags {
+            if !all_new_tags.contains(t) {
+                all_new_tags.push(t.clone());
+            }
+        }
+    }
 
     // Conflict-check + dedupe the version_files rewrites BEFORE the
     // dry-run/real split so a conflicting config bails identically in both
@@ -1510,10 +1516,19 @@ fn run_per_crate_tag(
             ),
         )?;
 
-        // Create all tags locally; push happens atomically below.
+        // Create all tags locally; push happens atomically below. Crates that
+        // share one tag prefix AND bump to the same version resolve to the SAME
+        // tag (a lockstep aggregate expressed as a flat `crates:` list); creating
+        // it once per crate would fail the second with "tag already exists", so
+        // dedupe to one creation per distinct tag.
+        let mut created: Vec<&str> = Vec::new();
         for group_result in &tag_results {
             for (tag, message) in &group_result.new_tags {
+                if created.contains(&tag.as_str()) {
+                    continue;
+                }
                 git::create_tag_local_only(&cwd, tag, message, false, log)?;
+                created.push(tag.as_str());
             }
         }
     } else {
