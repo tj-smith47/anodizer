@@ -1268,3 +1268,123 @@ crates:
         "regenerated body must reflect since-tag commits: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Flat-aggregate coherence guard: members sharing one tag prefix must agree on
+// `[package].version` (one tag can't carry two versions). The guard fires
+// identically for changelog / tag / bump.
+// ---------------------------------------------------------------------------
+
+/// A flat `crates:` workspace whose members share `tag_template:
+/// "v{{ Version }}"` but carry the supplied (possibly divergent) versions.
+fn flat_aggregate_versions_repo(core_ver: &str, cli_ver: &str) -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (name, ver) in [("core", core_ver), ("cli", cli_ver)] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: agg
+changelog: {}
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "v{{ .Version }}"
+  - name: cli
+    path: crates/cli
+    tag_template: "v{{ .Version }}"
+"#,
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    tmp
+}
+
+fn assert_coherence_error(stderr: &str) {
+    assert!(
+        stderr.contains("core") && stderr.contains("cli"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("0.5.0") && stderr.contains("0.1.0"),
+        "names differing versions: {stderr}"
+    );
+    assert!(
+        stderr.contains("prefix 'v'"),
+        "names shared prefix: {stderr}"
+    );
+    assert!(
+        stderr.contains("[workspace.package].version"),
+        "steers toward lockstep: {stderr}"
+    );
+    assert!(
+        stderr.contains("distinct tag_template prefix"),
+        "steers toward independent prefixes: {stderr}"
+    );
+}
+
+#[test]
+fn changelog_rejects_divergent_flat_aggregate_versions() {
+    let tmp = flat_aggregate_versions_repo("0.5.0", "0.1.0");
+    let r = changelog(tmp.path(), &["-q"]);
+    assert!(
+        !r.success,
+        "divergent flat aggregate must error: {}",
+        r.stdout
+    );
+    assert_coherence_error(&r.stderr);
+}
+
+#[test]
+fn changelog_accepts_agreeing_flat_aggregate_versions() {
+    let tmp = flat_aggregate_versions_repo("0.2.0", "0.2.0");
+    let r = changelog(tmp.path(), &["-q"]);
+    assert!(
+        r.success,
+        "all-agree flat aggregate must work: {}\n{}",
+        r.stdout, r.stderr
+    );
+}
+
+#[test]
+fn tag_rejects_divergent_flat_aggregate_versions() {
+    let tmp = flat_aggregate_versions_repo("0.5.0", "0.1.0");
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["tag", "--dry-run", "-q"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "tag must error on divergent versions"
+    );
+    assert_coherence_error(&String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn bump_rejects_divergent_flat_aggregate_versions() {
+    let tmp = flat_aggregate_versions_repo("0.5.0", "0.1.0");
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["bump", "patch", "--workspace", "--dry-run", "-q"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "bump must error on divergent versions"
+    );
+    assert_coherence_error(&String::from_utf8_lossy(&out.stderr));
+}

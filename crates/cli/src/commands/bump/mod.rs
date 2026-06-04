@@ -58,6 +58,17 @@ pub fn run(opts: BumpOpts) -> Result<()> {
     let workspace_root = discover_workspace_root(opts.config_override.as_deref())
         .context("could not locate workspace root (no Cargo.toml found)")?;
 
+    // Reject an incoherent flat-aggregate config (members sharing one tag prefix
+    // but disagreeing on `[package].version`) before any work, identically to
+    // `tag` and `changelog`.
+    let bump_config = load_changelog_config(&workspace_root, &opts);
+    let bump_workspace = cargo_edit::load_workspace(&workspace_root).ok();
+    crate::commands::tag::guard_flat_aggregate_coherence(
+        bump_config.as_ref(),
+        bump_workspace.as_ref(),
+        &workspace_root,
+    )?;
+
     let rows = plan::build_plan(&workspace_root, &opts).context("failed to build bump plan")?;
 
     if rows.is_empty() {
@@ -200,28 +211,24 @@ fn commit_plan(
     // release, not N multi-track subsections. Promoting each member under the
     // same `## [v<X.Y.Z>]` heading would strand every member after the first and
     // graft spurious `### <crate>` subsections.
+    //
+    // The flat-aggregate DECISION is the shared shape classification
+    // (`detect_repo_shape` → `FlatAggregate`), not a local prefix re-derivation,
+    // so it can't drift from `tag`/`changelog`. The routing gate
+    // (`root_enabled && !per_crate`) still applies: per-crate files keep their
+    // per-crate sections.
     if changelog_enabled
         && changelog_targets.len() > 1
+        && routing.root_enabled
+        && !routing.per_crate
         && let Some(cfg) = changelog_config.as_ref()
     {
-        // Each `full_tag` is `<prefix><version>`; stripping the known version
-        // suffix yields the prefix to compare across members (the concrete tag
-        // carries no template for `extract_tag_prefix`).
-        let prefixes: Vec<String> = changelog_targets
-            .iter()
-            .map(|t| {
-                t.full_tag
-                    .strip_suffix(&t.to_version)
-                    .unwrap_or(&t.full_tag)
-                    .to_string()
-            })
-            .collect();
-        if crate::commands::changelog_sync::is_flat_aggregate(
-            &prefixes,
-            routing.root_enabled,
-            routing.per_crate,
-        ) && let Some(first) = changelog_targets.first().cloned()
-        {
+        let workspace = cargo_edit::load_workspace(workspace_root).ok();
+        let is_flat_aggregate = matches!(
+            crate::commands::tag::detect_repo_shape(Some(cfg), workspace.as_ref()),
+            crate::commands::tag::RepoShape::FlatAggregate(_)
+        );
+        if is_flat_aggregate && let Some(first) = changelog_targets.first().cloned() {
             changelog_targets = vec![crate::commands::changelog_sync::ChangelogTarget {
                 crate_name: cfg.project_name.clone(),
                 crate_dir: workspace_root.to_path_buf(),

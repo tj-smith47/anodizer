@@ -98,26 +98,6 @@ impl<'a> ChangelogRouting<'a> {
     }
 }
 
-/// Whether N crates routed to one shared root form a single flat changelog
-/// track (a lockstep aggregate) rather than N multi-track `### <crate>`
-/// subsections.
-///
-/// True only when the routing is shared-root-only (`root_enabled && !per_crate`
-/// — no per-crate files) AND every selected crate resolves to the SAME tag
-/// prefix. Distinct prefixes (genuine multi-track, e.g. `core-v*` + `v*`) or a
-/// `per_crate: true` routing keep the per-crate / multi-track behaviour.
-///
-/// An empty or single-prefix set is trivially same-prefix; the routing gate is
-/// what actually distinguishes a flat aggregate from per-crate output.
-pub(crate) fn is_flat_aggregate(prefixes: &[String], root_enabled: bool, per_crate: bool) -> bool {
-    if !root_enabled || per_crate {
-        return false;
-    }
-    prefixes
-        .first()
-        .is_none_or(|first| prefixes.iter().all(|p| p == first))
-}
-
 /// Whether a crate contributes a section to the shared root changelog.
 ///
 /// `None` (no filter) includes every crate; `Some(list)` includes only the
@@ -445,30 +425,6 @@ mod tests {
             "entries after the bracketed bullet dropped: {section}"
         );
         assert!(!section.contains("compare"), "footer leaked: {section}");
-    }
-
-    #[test]
-    fn is_flat_aggregate_same_prefix_shared_root() {
-        assert!(is_flat_aggregate(&["v".into(), "v".into()], true, false));
-    }
-
-    #[test]
-    fn is_flat_aggregate_distinct_prefixes_false() {
-        assert!(!is_flat_aggregate(
-            &["core-v".into(), "cli-v".into()],
-            true,
-            false
-        ));
-    }
-
-    #[test]
-    fn is_flat_aggregate_per_crate_files_false() {
-        assert!(!is_flat_aggregate(&["v".into(), "v".into()], true, true));
-    }
-
-    #[test]
-    fn is_flat_aggregate_root_disabled_false() {
-        assert!(!is_flat_aggregate(&["v".into()], false, false));
     }
 
     #[test]

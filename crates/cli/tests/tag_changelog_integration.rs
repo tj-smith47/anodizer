@@ -1787,6 +1787,15 @@ fn same_prefix_flat_tag_collapses_to_one_section() {
         "same-prefix crates must resolve to ONE shared v0.2.0 tag: {tag_list}"
     );
 
+    // Both members version-synced to the SAME shared version in the tagged commit.
+    for name in ["core", "cli"] {
+        let manifest = show_head(root, &format!("crates/{name}/Cargo.toml"));
+        assert!(
+            manifest.contains("version = \"0.2.0\""),
+            "{name} must be at the shared 0.2.0 in the tagged commit: {manifest}"
+        );
+    }
+
     let head = show_head(root, "CHANGELOG.md");
     // ONE flat released section; no `### <crate>`/`### <project_name>` graft.
     assert_eq!(
@@ -1815,6 +1824,15 @@ fn same_prefix_flat_bump_collapses_to_one_section() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "bump failed: {stdout}\n{stderr}");
+
+    // Both members bumped to the SAME version (one shared release).
+    for name in ["core", "cli"] {
+        let manifest = fs::read_to_string(root.join(format!("crates/{name}/Cargo.toml"))).unwrap();
+        assert!(
+            manifest.contains("version = \"0.2.0\""),
+            "{name} must bump to the shared 0.2.0: {manifest}"
+        );
+    }
 
     let head = show_head(root, "CHANGELOG.md");
     assert_eq!(

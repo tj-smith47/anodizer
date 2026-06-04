@@ -179,6 +179,13 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // this the changelogs rot between releases even though `bump` refreshes them.
     let changelog_enabled = resolve_changelog_enabled(loaded_config.as_ref(), opts.changelog);
 
+    // Reject an incoherent flat-aggregate config (members sharing one tag prefix
+    // but disagreeing on `[package].version`) before any work, identically to
+    // `changelog` and `bump`.
+    if let Some(ref root) = workspace_root_path {
+        guard_flat_aggregate_coherence(loaded_config.as_ref(), loaded_workspace.as_ref(), root)?;
+    }
+
     let mut cfg = ResolvedConfig::from_tag_config(&tag_config, &opts);
 
     // Push controls shared by every tagging path. `remote` defaults to origin;
@@ -228,31 +235,26 @@ pub fn run(opts: TagOpts) -> Result<()> {
         }
     }
     if opts.crate_name.is_none() {
-        // A shared-prefix flat `crates:` list classifies as `Lockstep` but has
-        // NO `[workspace.package].version` to drive the lockstep fall-through
-        // path's single-manifest bump. Its versions live in N per-crate
+        // A `FlatAggregate` (shared-prefix flat `crates:` list, no
+        // `[workspace.package].version`) has its versions in N per-crate
         // `[package].version` manifests, so it is bumped by the per-crate engine
-        // applied as ONE lockstep group: that creates the single shared tag
-        // (its built-in dedup) and the one collapsed root changelog section.
-        // A custom tag names ONE explicit tag for the shared unit; it is honored
-        // by the lockstep custom-tag fall-through below, not the per-crate engine
-        // (which ignores `custom_tag`), so it stays out of the group dispatch.
+        // applied as ONE group: that creates the single shared tag (its built-in
+        // dedup) and the one collapsed root changelog section. A custom tag names
+        // ONE explicit tag for the shared unit; it is honored by the lockstep
+        // custom-tag fall-through below, not the per-crate engine (which ignores
+        // `custom_tag`), so a `FlatAggregate` WITH a custom tag stays out of the
+        // group dispatch.
+        let mut is_flat_aggregate = false;
         let groups = match detect_repo_shape(loaded_config.as_ref(), loaded_workspace.as_ref()) {
             RepoShape::PerCrate(groups) => Some(groups),
-            RepoShape::Lockstep
-                if cfg.custom_tag.is_none()
-                    && loaded_workspace
-                        .as_ref()
-                        .is_none_or(|ws| ws.workspace_package_version.is_none()) =>
-            {
-                loaded_config
-                    .as_ref()
-                    .filter(|c| c.crates.len() > 1)
-                    .map(|c| vec![c.crates.clone()])
+            RepoShape::FlatAggregate(crates) if cfg.custom_tag.is_none() => {
+                is_flat_aggregate = true;
+                Some(vec![crates])
             }
-            // Cargo-workspace lockstep (a real `[workspace.package].version`) and
-            // single-crate repos keep the existing fall-through paths below.
-            RepoShape::Single | RepoShape::Lockstep => None,
+            // Genuine Cargo-workspace lockstep, single-crate repos, and a
+            // `FlatAggregate` carrying a custom tag keep the existing
+            // fall-through paths below.
+            RepoShape::Single | RepoShape::Lockstep | RepoShape::FlatAggregate(_) => None,
         };
 
         if let Some(groups) = groups {
@@ -268,7 +270,10 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 if opts.dry_run { " (dry-run)" } else { "" }
             ));
             return run_per_crate_tag(
-                groups,
+                PerCrateDispatch {
+                    groups,
+                    is_flat_aggregate,
+                },
                 &opts,
                 &cfg,
                 git_config.as_ref(),
@@ -1099,8 +1104,18 @@ fn resolve_config_path(opts: &TagOpts) -> Option<std::path::PathBuf> {
 pub(crate) enum RepoShape {
     /// Single crate or no config — use single-crate path unchanged.
     Single,
-    /// `[workspace.package].version` is set — lockstep workspace, existing path.
+    /// `[workspace.package].version` is set — genuine lockstep workspace. One
+    /// shared version drives one tag and one changelog, bumped by rewriting the
+    /// single root manifest field.
     Lockstep,
+    /// A flat `crates:` list of >1 crate whose `tag_template`s ALL yield the
+    /// same extractable prefix (one shared `v*` tag namespace) but with per-crate
+    /// `[package].version` and no `[workspace.package].version`. Semantically a
+    /// lockstep release (one shared tag, one flat changelog), but bumped by
+    /// writing N per-crate manifest version fields — so it routes through the
+    /// per-crate engine as ONE group rather than the single-manifest lockstep
+    /// bump. Carries the flat crate list.
+    FlatAggregate(Vec<CrateConfig>),
     /// Each member has its own `[package].version` (no `[workspace.package].version`)
     /// AND the anodizer config has a per-crate/workspace definition.
     /// Carries the groups to iterate: each `Vec<CrateConfig>` is one lockstep
@@ -1115,9 +1130,10 @@ pub(crate) enum RepoShape {
 ///    explicit operator intent, wins over a lockstep `[workspace.package].version`).
 /// 2. If `[workspace.package].version` is set → `Lockstep`.
 /// 3. If anodizer config has `crates:` with >1 entry:
-///    - all sharing ONE explicit tag prefix → `Lockstep` (one prefix = one
+///    - all sharing ONE explicit tag prefix → `FlatAggregate` (one prefix = one
 ///      shared tag namespace, so the crates release in lockstep — `v0.2.0`
-///      cannot independently belong to two crates);
+///      cannot independently belong to two crates — but each carries its own
+///      `[package].version`, so it bumps N manifests under one shared tag);
 ///    - otherwise → `PerCrate` (flat multi-crate, distinct tracks).
 /// 4. Otherwise → `Single`.
 pub(crate) fn detect_repo_shape(
@@ -1167,7 +1183,7 @@ pub(crate) fn detect_repo_shape(
         // `tag_template` prefix (the per-crate `{crate}-v` fallback) is treated
         // as distinct, keeping genuinely independent crates per-crate.
         if shared_tag_prefix(&config.crates).is_some() {
-            return RepoShape::Lockstep;
+            return RepoShape::FlatAggregate(config.crates.clone());
         }
         let groups: Vec<Vec<CrateConfig>> = config.crates.iter().map(|c| vec![c.clone()]).collect();
         return RepoShape::PerCrate(groups);
@@ -1193,6 +1209,60 @@ fn shared_tag_prefix(crates: &[CrateConfig]) -> Option<String> {
         }
     }
     Some(first)
+}
+
+/// Reject an incoherent flat-aggregate config before any tag/changelog work.
+///
+/// A flat `crates:` list whose members share one tag prefix releases under ONE
+/// shared tag (e.g. `v0.2.0`). If those members carry DIFFERENT
+/// `[package].version` values, that single tag cannot carry two versions — the
+/// config is impossible. Read each member's on-disk `[package].version` and
+/// bail (naming the conflicting crates, the shared prefix, and the differing
+/// versions) when two disagree; steer the user toward lockstep
+/// (`[workspace.package].version`) or independent prefixes.
+///
+/// Only `RepoShape::FlatAggregate` can be incoherent this way, so any other
+/// shape is a no-op. A member whose manifest is missing on disk (e.g. a
+/// synthetic test fixture) is skipped: the guard fires only on versions it can
+/// actually read and compare.
+pub(crate) fn guard_flat_aggregate_coherence(
+    config: Option<&anodizer_core::config::Config>,
+    workspace: Option<&WorkspaceInfo>,
+    workspace_root: &Path,
+) -> Result<()> {
+    let RepoShape::FlatAggregate(crates) = detect_repo_shape(config, workspace) else {
+        return Ok(());
+    };
+    let prefix = shared_tag_prefix(&crates).unwrap_or_else(|| "v".to_string());
+    // Read each member's `[package].version`, keyed by crate name. Skip members
+    // whose manifest is absent (no readable version to compare).
+    let mut versions: Vec<(String, String)> = Vec::new();
+    for c in &crates {
+        let crate_dir = workspace_root.join(&c.path);
+        if !crate_dir.join("Cargo.toml").is_file() {
+            continue;
+        }
+        if let Ok(ver) =
+            anodizer_stage_build::version_sync::read_cargo_version(&crate_dir.to_string_lossy())
+        {
+            versions.push((c.name.clone(), ver));
+        }
+    }
+    let Some((_, first_ver)) = versions.first() else {
+        return Ok(());
+    };
+    if let Some((conflict_name, conflict_ver)) =
+        versions.iter().skip(1).find(|(_, v)| v != first_ver)
+    {
+        let (first_name, first_ver) = &versions[0];
+        bail!(
+            "crates '{first_name}' ({first_ver}) and '{conflict_name}' ({conflict_ver}) share \
+             tag prefix '{prefix}' but set different [package].version values; one tag can't \
+             carry two versions. For lockstep set [workspace.package].version; for independent \
+             releases give each crate a distinct tag_template prefix."
+        );
+    }
+    Ok(())
 }
 
 /// Result of per-crate tag computation for one group.
@@ -1373,8 +1443,18 @@ struct PushControls<'a> {
     changelog_enabled: bool,
 }
 
-fn run_per_crate_tag(
+/// The per-crate engine's dispatched unit: the lockstep groups to tag plus
+/// whether they are a single `FlatAggregate` (shared-prefix flat `crates:`
+/// list). The flag drives the one-flat-section changelog collapse; it is
+/// resolved once by [`detect_repo_shape`] so the collapse decision is never
+/// re-derived from prefixes here.
+struct PerCrateDispatch {
     groups: Vec<Vec<CrateConfig>>,
+    is_flat_aggregate: bool,
+}
+
+fn run_per_crate_tag(
+    dispatch: PerCrateDispatch,
     opts: &TagOpts,
     cfg: &ResolvedConfig,
     git_config: Option<&GitConfig>,
@@ -1382,6 +1462,10 @@ fn run_per_crate_tag(
     controls: PushControls<'_>,
     log: &StageLogger,
 ) -> Result<()> {
+    let PerCrateDispatch {
+        groups,
+        is_flat_aggregate,
+    } = dispatch;
     let cwd = std::env::current_dir()?;
     let tag_results = compute_per_crate_tags(&groups, opts, cfg, git_config, anodizer_config, log)?;
 
@@ -1431,20 +1515,19 @@ fn run_per_crate_tag(
     let cl_config = changelog_config_for(anodizer_config);
     let mut changelog_routing = ChangelogRouting::from_config(&cl_config);
 
-    // Collapse same-prefix shared-root targets to ONE flat aggregate. A flat
-    // `crates:` list whose members all share one tag track (e.g.
-    // `tag_template: "v{{ .Version }}"`) bumps to N identically-prefixed tags;
-    // routed to one shared root they are a single lockstep release, not N
-    // multi-track subsections. Promoting each member's section under the same
-    // `## [v<X.Y.Z>]` heading would strand every member after the first and
-    // graft spurious `### <crate>` subsections — the same bug the `changelog`
-    // command collapses. Distinct prefixes or per-crate files are left as-is.
+    // Collapse the per-crate targets to ONE flat aggregate when this group is a
+    // `FlatAggregate` (a flat `crates:` list whose members share one tag track,
+    // bumped to N identically-prefixed tags) routed to one shared root: it is a
+    // single lockstep release, not N multi-track subsections. Promoting each
+    // member's section under the same `## [v<X.Y.Z>]` heading would strand every
+    // member after the first and graft spurious `### <crate>` subsections — the
+    // same bug the `changelog` command collapses. Genuine multi-track
+    // (`PerCrate`) or per-crate files keep their per-crate targets.
     if collapse_targets_to_flat_aggregate(
         &mut changelog_targets,
         &cwd,
         anodizer_config,
-        changelog_routing.root_enabled,
-        changelog_routing.per_crate,
+        is_flat_aggregate && changelog_routing.root_enabled && !changelog_routing.per_crate,
     ) {
         changelog_routing.single_track = true;
     }
@@ -2100,12 +2183,14 @@ fn plan_changelog_targets(
     targets
 }
 
-/// Collapse `targets` in place to ONE flat whole-workspace aggregate when the
-/// per-crate targets are actually a single lockstep track: shared-root-only
-/// routing (`root_enabled && !per_crate`) AND every target's tag shares one
-/// prefix. Returns `true` when collapsed (the caller then sets the routing's
-/// `single_track`), `false` otherwise (genuine multi-track / per-crate files /
-/// nothing to collapse — `targets` left untouched).
+/// Collapse `targets` in place to ONE flat whole-workspace aggregate when
+/// `collapse` is set (the caller has resolved a `FlatAggregate` shape routed to
+/// one shared root). Returns `true` when collapsed (the caller then sets the
+/// routing's `single_track`), `false` otherwise (`targets` left untouched).
+///
+/// The flat-aggregate DECISION lives in [`detect_repo_shape`] (via
+/// [`shared_tag_prefix`]); this helper only applies it, so the prefix-equality
+/// comparison is not re-derived here.
 ///
 /// The aggregate spans the workspace (`crate_dir = workspace_root`), keyed by
 /// `project_name`, with the shared `from_tag` / `full_tag` every member already
@@ -2114,38 +2199,14 @@ fn collapse_targets_to_flat_aggregate(
     targets: &mut Vec<ChangelogTarget>,
     workspace_root: &Path,
     config: Option<&anodizer_core::config::Config>,
-    root_enabled: bool,
-    per_crate: bool,
+    collapse: bool,
 ) -> bool {
-    if targets.len() <= 1 {
+    if !collapse || targets.len() <= 1 {
         return false;
     }
     let Some(config) = config else {
         return false;
     };
-    // Resolve each configured crate's tag prefix from its `tag_template` (the
-    // same source `changelog`'s `select_crates` uses). Concrete `full_tag`s
-    // (e.g. `v0.6.0`) carry no template, so the template is the reliable prefix
-    // source. The bumped `targets` are a subset of these crates, so a uniform
-    // configured prefix implies a uniform target prefix.
-    let prefixes: Vec<String> = config
-        .crates
-        .iter()
-        .chain(
-            config
-                .workspaces
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .flat_map(|w| &w.crates),
-        )
-        .map(|c| {
-            git::extract_tag_prefix(&c.tag_template).unwrap_or_else(|| format!("{}-v", c.name))
-        })
-        .collect();
-    if !crate::commands::changelog_sync::is_flat_aggregate(&prefixes, root_enabled, per_crate) {
-        return false;
-    }
     let project_name = config.project_name.clone();
     // Every member shares one tag in a lockstep set; take the first's range
     // bounds for the whole-release aggregate.
@@ -2984,10 +3045,12 @@ tag_post_hooks:
     }
 
     #[test]
-    fn detect_repo_shape_same_prefix_flat_crates_returns_lockstep() {
+    fn detect_repo_shape_same_prefix_flat_crates_returns_flat_aggregate() {
         // ≥2 flat crates all on `v{{ Version }}` with no workspace version:
         // one shared tag prefix is one shared tag namespace, so they release in
-        // lockstep — `v0.2.0` cannot be two crates' independent tag.
+        // lockstep — `v0.2.0` cannot be two crates' independent tag — but each
+        // carries its own `[package].version`, so the shape is `FlatAggregate`
+        // (bumped by N per-crate manifests), not genuine `Lockstep`.
         let config = anodizer_core::config::Config {
             project_name: "ws".to_string(),
             crates: vec![
@@ -2997,10 +3060,17 @@ tag_post_hooks:
             ..Default::default()
         };
         let shape = detect_repo_shape(Some(&config), Some(&ws_no_lockstep()));
-        assert!(
-            matches!(shape, RepoShape::Lockstep),
-            "same-prefix flat crates must classify as Lockstep"
-        );
+        match shape {
+            RepoShape::FlatAggregate(crates) => {
+                assert_eq!(crates.len(), 2, "carries the flat crate list");
+                assert_eq!(crates[0].name, "core");
+                assert_eq!(crates[1].name, "cli");
+            }
+            other => panic!(
+                "same-prefix flat crates must classify as FlatAggregate, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
     }
 
     #[test]
@@ -3050,7 +3120,8 @@ tag_post_hooks:
     fn detect_repo_shape_explicit_workspaces_shared_prefix_still_per_crate() {
         // An explicit `workspaces:` block is operator intent and wins at step 1,
         // even when its crates coincidentally share one tag prefix — the
-        // same-prefix → Lockstep collapse applies ONLY to inferred flat `crates:`.
+        // same-prefix → FlatAggregate collapse applies ONLY to inferred flat
+        // `crates:`.
         let ws1 = anodizer_core::config::WorkspaceConfig {
             name: "group-a".to_string(),
             crates: vec![crate_cfg("a", "crates/a", "v{{ .Version }}")],
@@ -3074,6 +3145,114 @@ tag_post_hooks:
                 std::mem::discriminant(&other)
             ),
         }
+    }
+
+    // ---- flat-aggregate coherence guard tests ----
+
+    /// Write a two-crate flat workspace whose members share `v{{ Version }}` but
+    /// carry the supplied `[package].version` values, returning the root dir.
+    fn flat_aggregate_versions_fixture(
+        core_ver: &str,
+        cli_ver: &str,
+    ) -> (tempfile::TempDir, anodizer_core::config::Config) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for (name, ver) in [("core", core_ver), ("cli", cli_ver)] {
+            let dir = root.join(format!("crates/{name}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\n"),
+            )
+            .unwrap();
+        }
+        let config = anodizer_core::config::Config {
+            project_name: "agg".to_string(),
+            crates: vec![
+                crate_cfg("core", "crates/core", "v{{ .Version }}"),
+                crate_cfg("cli", "crates/cli", "v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+        (tmp, config)
+    }
+
+    #[test]
+    fn coherence_guard_passes_when_versions_agree() {
+        let (tmp, config) = flat_aggregate_versions_fixture("0.2.0", "0.2.0");
+        let res =
+            guard_flat_aggregate_coherence(Some(&config), Some(&ws_no_lockstep()), tmp.path());
+        assert!(res.is_ok(), "all-agree flat aggregate must pass: {res:?}");
+    }
+
+    #[test]
+    fn coherence_guard_rejects_divergent_versions() {
+        let (tmp, config) = flat_aggregate_versions_fixture("0.5.0", "0.1.0");
+        let err =
+            guard_flat_aggregate_coherence(Some(&config), Some(&ws_no_lockstep()), tmp.path())
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("core"), "names conflicting crate core: {err}");
+        assert!(err.contains("cli"), "names conflicting crate cli: {err}");
+        assert!(err.contains("0.5.0") && err.contains("0.1.0"), "{err}");
+        assert!(err.contains("prefix 'v'"), "names the shared prefix: {err}");
+        assert!(
+            err.contains("[workspace.package].version"),
+            "steers toward lockstep: {err}"
+        );
+        assert!(
+            err.contains("distinct tag_template prefix"),
+            "steers toward independent prefixes: {err}"
+        );
+    }
+
+    /// A missing member manifest is skipped, not errored: the guard fires only
+    /// on versions it can actually read.
+    #[test]
+    fn coherence_guard_skips_missing_manifests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = anodizer_core::config::Config {
+            project_name: "agg".to_string(),
+            crates: vec![
+                crate_cfg("core", "crates/core", "v{{ .Version }}"),
+                crate_cfg("cli", "crates/cli", "v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+        // No Cargo.toml on disk → every member skipped → no versions to compare.
+        let res =
+            guard_flat_aggregate_coherence(Some(&config), Some(&ws_no_lockstep()), tmp.path());
+        assert!(res.is_ok(), "missing manifests must be skipped: {res:?}");
+    }
+
+    /// Non-flat-aggregate shapes (here a distinct-prefix `PerCrate`) are a no-op
+    /// even with divergent versions — one tag never spans both crates.
+    #[test]
+    fn coherence_guard_noop_for_non_flat_aggregate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for (name, ver) in [("core", "0.5.0"), ("cli", "0.1.0")] {
+            let dir = root.join(format!("crates/{name}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\n"),
+            )
+            .unwrap();
+        }
+        let config = anodizer_core::config::Config {
+            project_name: "p".to_string(),
+            crates: vec![
+                crate_cfg("core", "crates/core", "core-v{{ .Version }}"),
+                crate_cfg("cli", "crates/cli", "cli-v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+        let res = guard_flat_aggregate_coherence(Some(&config), Some(&ws_no_lockstep()), root);
+        assert!(
+            res.is_ok(),
+            "distinct-prefix PerCrate is not guarded: {res:?}"
+        );
     }
 
     // ---- anodizer-output line format tests ----
