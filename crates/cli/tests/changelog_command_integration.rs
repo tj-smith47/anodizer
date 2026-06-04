@@ -325,7 +325,8 @@ fn per_crate_repo() -> TempDir {
         root.join(".anodizer.yaml"),
         r#"project_name: percrate
 changelog:
-  per_crate: true
+  files:
+    per_crate: true
 crates:
   - name: core
     path: crates/core
@@ -957,7 +958,8 @@ fn per_crate_snapshot_repo() -> TempDir {
         r#"project_name: percrate-snap
 changelog:
   snapshot: true
-  per_crate: true
+  files:
+    per_crate: true
 crates:
   - name: core
     path: crates/core
@@ -1876,7 +1878,7 @@ fn shape_matrix() -> Vec<ShapeCase> {
         //    config.crates).
         ShapeCase {
             name: "percrate-flat",
-            yaml: "project_name: percrate\nchangelog:\n  per_crate: true\ncrates:\n  - name: core\n    path: crates/core\n    tag_template: \"core-v{{ Version }}\"\n  - name: cli\n    path: crates/cli\n    tag_template: \"cli-v{{ Version }}\"\n",
+            yaml: "project_name: percrate\nchangelog:\n  files:\n    per_crate: true\ncrates:\n  - name: core\n    path: crates/core\n    tag_template: \"core-v{{ Version }}\"\n  - name: cli\n    path: crates/cli\n    tag_template: \"cli-v{{ Version }}\"\n",
             members: &["crates/core", "crates/cli"],
             crates: &[
                 ("crates/core", "core", "0.1.0"),

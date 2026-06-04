@@ -82,6 +82,22 @@ pub struct ChangelogConfig {
     /// lets users opt back in here for local preview / draft generation.
     /// Wired in `crates/stage-changelog/src/lib.rs::ChangelogStage::run`.
     pub snapshot: Option<bool>,
+    /// Changelog file-layout controls: which `CHANGELOG.md` files a release
+    /// writes (per-crate vs the aggregate root). Separate from the
+    /// content-generation keys above (`use`, `format`, `groups`, `filters`,
+    /// `paths`, `sort`, ...) so file management and content concerns stay
+    /// orthogonal. See [`ChangelogFilesConfig`].
+    pub files: Option<ChangelogFilesConfig>,
+}
+
+/// Changelog file-layout controls: which `CHANGELOG.md` files a release writes.
+///
+/// Nested under `changelog.files` to keep file-management keys distinct from
+/// the content-generation keys on [`ChangelogConfig`] (`use`, `format`,
+/// `groups`, `filters`, `paths`, `sort`, ...).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct ChangelogFilesConfig {
     /// When `true`, write a per-crate `crates/<name>/CHANGELOG.md` for each
     /// crate instead of (or in addition to) the single root `CHANGELOG.md`.
     /// Default: `false`. With `per_crate: true` and no `root:` block, only the
@@ -199,6 +215,22 @@ impl ChangelogConfig {
         self.snapshot.unwrap_or(false)
     }
 
+    /// Whether per-crate `crates/<name>/CHANGELOG.md` files are requested
+    /// (`files.per_crate: true`). Defaults to `false`. The single place that
+    /// knows `per_crate` lives under `files`.
+    pub fn per_crate(&self) -> bool {
+        self.files
+            .as_ref()
+            .and_then(|f| f.per_crate)
+            .unwrap_or(false)
+    }
+
+    /// The aggregate root `CHANGELOG.md` config block (`files.root`), if set.
+    /// The single place that knows `root` lives under `files`.
+    pub fn root(&self) -> Option<&RootChangelogConfig> {
+        self.files.as_ref().and_then(|f| f.root.as_ref())
+    }
+
     /// Resolve which changelog files this config produces.
     ///
     /// The root changelog is enabled when a `root:` block is present, or when
@@ -207,9 +239,9 @@ impl ChangelogConfig {
     /// `per_crate: true`. So a bare `changelog:` block stays root-only, while
     /// `per_crate: true` without `root:` yields per-crate files only.
     pub fn resolved_destination(&self) -> ChangelogDestination {
-        let per_crate = self.per_crate.unwrap_or(false);
+        let per_crate = self.per_crate();
         ChangelogDestination {
-            root_enabled: self.root.is_some() || !per_crate,
+            root_enabled: self.root().is_some() || !per_crate,
             per_crate,
         }
     }
@@ -217,8 +249,7 @@ impl ChangelogConfig {
     /// Resolve the ordering of release sections in the root `CHANGELOG.md`,
     /// falling back to [`Chronology::Date`] when `root.chronology` is unset.
     pub fn resolved_chronology(&self) -> Chronology {
-        self.root
-            .as_ref()
+        self.root()
             .map(RootChangelogConfig::resolved_chronology)
             .unwrap_or_default()
     }
@@ -226,7 +257,7 @@ impl ChangelogConfig {
     /// The optional crate filter for the root changelog: `None` means every
     /// crate contributes a `### <crate>` subsection.
     pub fn root_crates_filter(&self) -> Option<&[String]> {
-        self.root.as_ref().and_then(|r| r.crates.as_deref())
+        self.root().and_then(|r| r.crates.as_deref())
     }
 }
 
@@ -401,7 +432,10 @@ mod tests {
     #[test]
     fn destination_per_crate_true_without_root_is_per_crate_only() {
         let cfg = ChangelogConfig {
-            per_crate: Some(true),
+            files: Some(ChangelogFilesConfig {
+                per_crate: Some(true),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let dest = cfg.resolved_destination();
@@ -415,8 +449,10 @@ mod tests {
     #[test]
     fn destination_per_crate_true_with_root_is_both() {
         let cfg = ChangelogConfig {
-            per_crate: Some(true),
-            root: Some(RootChangelogConfig::default()),
+            files: Some(ChangelogFilesConfig {
+                per_crate: Some(true),
+                root: Some(RootChangelogConfig::default()),
+            }),
             ..Default::default()
         };
         let dest = cfg.resolved_destination();
@@ -427,8 +463,10 @@ mod tests {
     #[test]
     fn destination_per_crate_false_with_root_is_root_only() {
         let cfg = ChangelogConfig {
-            per_crate: Some(false),
-            root: Some(RootChangelogConfig::default()),
+            files: Some(ChangelogFilesConfig {
+                per_crate: Some(false),
+                root: Some(RootChangelogConfig::default()),
+            }),
             ..Default::default()
         };
         let dest = cfg.resolved_destination();
@@ -445,7 +483,10 @@ mod tests {
     #[test]
     fn chronology_defaults_to_date_when_root_set_without_chronology() {
         let cfg = ChangelogConfig {
-            root: Some(RootChangelogConfig::default()),
+            files: Some(ChangelogFilesConfig {
+                root: Some(RootChangelogConfig::default()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         assert_eq!(cfg.resolved_chronology(), Chronology::Date);
@@ -454,8 +495,11 @@ mod tests {
     #[test]
     fn chronology_override_tag() {
         let cfg = ChangelogConfig {
-            root: Some(RootChangelogConfig {
-                chronology: Some(Chronology::Tag),
+            files: Some(ChangelogFilesConfig {
+                root: Some(RootChangelogConfig {
+                    chronology: Some(Chronology::Tag),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             ..Default::default()
@@ -474,7 +518,10 @@ mod tests {
     #[test]
     fn crates_filter_defaults_to_none_meaning_all() {
         let cfg = ChangelogConfig {
-            root: Some(RootChangelogConfig::default()),
+            files: Some(ChangelogFilesConfig {
+                root: Some(RootChangelogConfig::default()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         assert_eq!(cfg.root_crates_filter(), None);
@@ -483,8 +530,11 @@ mod tests {
     #[test]
     fn crates_filter_passes_through_list() {
         let cfg = ChangelogConfig {
-            root: Some(RootChangelogConfig {
-                crates: Some(vec!["a".to_string(), "b".to_string()]),
+            files: Some(ChangelogFilesConfig {
+                root: Some(RootChangelogConfig {
+                    crates: Some(vec!["a".to_string(), "b".to_string()]),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             ..Default::default()
@@ -498,14 +548,15 @@ mod tests {
     #[test]
     fn deserializes_per_crate_and_root_block() {
         let yaml = r#"
-per_crate: true
-root:
-  chronology: tag
-  crates: [a, b]
+files:
+  per_crate: true
+  root:
+    chronology: tag
+    crates: [a, b]
 "#;
         let cfg: ChangelogConfig = serde_yaml_ng::from_str(yaml).expect("parse changelog block");
-        assert_eq!(cfg.per_crate, Some(true));
-        let root = cfg.root.as_ref().expect("root present");
+        assert!(cfg.per_crate());
+        let root = cfg.root().expect("root present");
         assert_eq!(root.chronology, Some(Chronology::Tag));
         assert_eq!(
             root.crates.as_deref(),
@@ -522,8 +573,8 @@ root:
     fn deserializes_bare_block_to_root_only() {
         let yaml = "sort: asc";
         let cfg: ChangelogConfig = serde_yaml_ng::from_str(yaml).expect("parse bare block");
-        assert_eq!(cfg.per_crate, None);
-        assert!(cfg.root.is_none());
+        assert!(!cfg.per_crate());
+        assert!(cfg.root().is_none());
         let dest = cfg.resolved_destination();
         assert!(dest.root_enabled);
         assert!(!dest.per_crate);
@@ -531,7 +582,7 @@ root:
 
     #[test]
     fn deserializes_empty_root_block_forces_root_with_default_chronology() {
-        let yaml = "per_crate: true\nroot: {}\n";
+        let yaml = "files:\n  per_crate: true\n  root: {}\n";
         let cfg: ChangelogConfig = serde_yaml_ng::from_str(yaml).expect("parse");
         let dest = cfg.resolved_destination();
         assert!(dest.root_enabled);
@@ -542,10 +593,11 @@ root:
     #[test]
     fn empty_crates_list_is_distinct_from_omitted() {
         let with_empty: ChangelogConfig =
-            serde_yaml_ng::from_str("root:\n  crates: []\n").expect("parse");
+            serde_yaml_ng::from_str("files:\n  root:\n    crates: []\n").expect("parse");
         assert_eq!(with_empty.root_crates_filter(), Some(&[][..]));
 
-        let omitted: ChangelogConfig = serde_yaml_ng::from_str("root: {}\n").expect("parse");
+        let omitted: ChangelogConfig =
+            serde_yaml_ng::from_str("files:\n  root: {}\n").expect("parse");
         assert_eq!(omitted.root_crates_filter(), None);
     }
 

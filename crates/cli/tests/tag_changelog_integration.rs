@@ -385,7 +385,7 @@ version = "0.1.0"
     // asserts; a bare `changelog: {}` would aggregate into the root file.
     fs::write(
         root.join(".anodizer.yaml"),
-        "project_name: lockstep\nchangelog:\n  per_crate: true\n",
+        "project_name: lockstep\nchangelog:\n  files:\n    per_crate: true\n",
     )
     .unwrap();
 
@@ -494,7 +494,8 @@ fn per_crate_refreshes_each_bumped_crate_changelog() {
         root.join(".anodizer.yaml"),
         r#"project_name: percrate
 changelog:
-  per_crate: true
+  files:
+    per_crate: true
 crates:
   - name: core
     path: crates/core
@@ -1064,7 +1065,7 @@ version = "0.1.0"
     }
     fs::write(
         root.join(".anodizer.yaml"),
-        format!("project_name: lockstep\nchangelog:\n{root_block}"),
+        format!("project_name: lockstep\nchangelog:\n  files:\n{root_block}"),
     )
     .unwrap();
 
@@ -1097,7 +1098,7 @@ version = "0.1.0"
 fn lockstep_root_aggregate_spans_all_members() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
-    let changelog = lockstep_root_aggregate_fixture(root, "  root: {}\n");
+    let changelog = lockstep_root_aggregate_fixture(root, "    root: {}\n");
 
     assert!(
         changelog.matches("## [0.2.0]").count() == 1,
@@ -1130,7 +1131,7 @@ fn lockstep_root_aggregate_ignores_non_first_member_filter() {
     // `b` is provably NOT members.first() (`a`); against the buggy code the
     // aggregate's synthetic crate_name (`a`) fails the `["b"]` filter and the
     // root file is never written.
-    let changelog = lockstep_root_aggregate_fixture(root, "  root:\n    crates: [\"b\"]\n");
+    let changelog = lockstep_root_aggregate_fixture(root, "    root:\n      crates: [\"b\"]\n");
 
     assert!(
         root.join("CHANGELOG.md").is_file(),
@@ -1233,7 +1234,11 @@ fn multitrack_root_date_promotes_only_tagged_track_subsection() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     // Explicit `root: {chronology: date}` (bare would resolve identically).
-    multitrack_root_fixture(root, "changelog:\n  root:\n    chronology: date\n", "");
+    multitrack_root_fixture(
+        root,
+        "changelog:\n  files:\n    root:\n      chronology: date\n",
+        "",
+    );
 
     // A feat on core only → core bumps 0.1.0 → 0.2.0 (tag core-v0.2.0).
     fs::write(root.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();
@@ -1319,7 +1324,11 @@ fn multitrack_root_tag_clusters_by_prefix_not_date() {
 ### Features\n\
 - an older core release\n\
 \n";
-    multitrack_root_fixture(root, "changelog:\n  root:\n    chronology: tag\n", extra);
+    multitrack_root_fixture(
+        root,
+        "changelog:\n  files:\n    root:\n      chronology: tag\n",
+        extra,
+    );
 
     fs::write(root.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();
     git_add_commit(root, "feat: core gains a thing");
@@ -1373,7 +1382,11 @@ fn multitrack_root_tag_clusters_by_prefix_not_date() {
 fn both_destination_writes_per_crate_and_root_in_one_commit() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
-    multitrack_root_fixture(root, "changelog:\n  per_crate: true\n  root: {}\n", "");
+    multitrack_root_fixture(
+        root,
+        "changelog:\n  files:\n    per_crate: true\n    root: {}\n",
+        "",
+    );
 
     fs::write(root.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();
     git_add_commit(root, "feat: core gains a thing");
@@ -1426,7 +1439,11 @@ fn root_crates_subset_filters_excluded_track_from_root() {
     // First: the INCLUDED crate (core) → its section lands in the root.
     let tmp_inc = TempDir::new().unwrap();
     let inc = tmp_inc.path();
-    multitrack_root_fixture(inc, "changelog:\n  root:\n    crates: [\"core\"]\n", "");
+    multitrack_root_fixture(
+        inc,
+        "changelog:\n  files:\n    root:\n      crates: [\"core\"]\n",
+        "",
+    );
     fs::write(inc.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();
     git_add_commit(inc, "feat: core gains a thing");
     let out = anodizer()
@@ -1449,7 +1466,11 @@ fn root_crates_subset_filters_excluded_track_from_root() {
     // Second: the EXCLUDED crate (cli) → NO new root section for it.
     let tmp_exc = TempDir::new().unwrap();
     let exc = tmp_exc.path();
-    multitrack_root_fixture(exc, "changelog:\n  root:\n    crates: [\"core\"]\n", "");
+    multitrack_root_fixture(
+        exc,
+        "changelog:\n  files:\n    root:\n      crates: [\"core\"]\n",
+        "",
+    );
     fs::write(exc.join("crates/cli/src/lib.rs"), "// cli touched\n").unwrap();
     git_add_commit(exc, "feat: cli gains a thing");
     let out = anodizer()
@@ -1609,7 +1630,7 @@ fn e2e_write_then_tag_preserves_hand_edited_multitrack_root() {
     // `crates: ["core", "cli"]` per-crate config with a root destination; the
     // seeded root carries `### core`/`### cli` subsections so the refresh engages
     // the multi-track subsection path (not a flat roll).
-    multitrack_root_fixture(root, "changelog:\n  root: {}\n", "");
+    multitrack_root_fixture(root, "changelog:\n  files:\n    root: {}\n", "");
 
     // A feat on core only → core is the bumped track (core-v0.1.0 → core-v0.2.0).
     fs::write(root.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();

@@ -386,7 +386,7 @@ pub(crate) fn extract_unreleased_section(rendered: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodizer_core::config::{Chronology, RootChangelogConfig};
+    use anodizer_core::config::{ChangelogFilesConfig, Chronology, RootChangelogConfig};
 
     #[test]
     fn extract_unreleased_grabs_only_the_section() {
@@ -468,7 +468,10 @@ mod tests {
     #[test]
     fn routing_per_crate_only() {
         let cfg = ChangelogConfig {
-            per_crate: Some(true),
+            files: Some(ChangelogFilesConfig {
+                per_crate: Some(true),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let routing = ChangelogRouting::from_config(&cfg);
@@ -479,10 +482,12 @@ mod tests {
     #[test]
     fn routing_both_with_filter_and_chronology() {
         let cfg = ChangelogConfig {
-            per_crate: Some(true),
-            root: Some(RootChangelogConfig {
-                chronology: Some(Chronology::Tag),
-                crates: Some(vec!["core".to_string()]),
+            files: Some(ChangelogFilesConfig {
+                per_crate: Some(true),
+                root: Some(RootChangelogConfig {
+                    chronology: Some(Chronology::Tag),
+                    crates: Some(vec!["core".to_string()]),
+                }),
             }),
             ..Default::default()
         };
