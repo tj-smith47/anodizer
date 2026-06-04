@@ -1,7 +1,7 @@
 //! `anodizer bump` — bump crate versions with Conventional-Commit inference.
 
 pub(crate) mod cargo_edit;
-mod inference;
+pub(crate) mod inference;
 pub(crate) mod plan;
 
 use anodizer_core::log::{StageLogger, Verbosity};

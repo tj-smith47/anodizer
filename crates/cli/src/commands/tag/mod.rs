@@ -1086,7 +1086,7 @@ pub(crate) enum RepoShape {
 /// 2. If anodizer config has `workspaces:` with multiple groups → `PerCrate` (hybrid).
 /// 3. If anodizer config has `crates:` with >1 entry → `PerCrate` (flat multi-crate).
 /// 4. Otherwise → `Single`.
-fn detect_repo_shape(
+pub(crate) fn detect_repo_shape(
     preloaded_config: Option<&anodizer_core::config::Config>,
     preloaded_workspace: Option<&WorkspaceInfo>,
 ) -> RepoShape {

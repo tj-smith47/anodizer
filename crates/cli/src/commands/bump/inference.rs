@@ -184,7 +184,7 @@ fn format_reason(level: BumpLevel, c: &LevelCounts, last_tag: Option<&str>) -> S
 
 /// Find the latest tag whose name starts with `prefix` and whose suffix parses
 /// as a semver version. Returns `None` if no such tag exists.
-pub(super) fn find_last_tag_for_prefix(
+pub(crate) fn find_last_tag_for_prefix(
     workspace_root: &std::path::Path,
     prefix: &str,
 ) -> Result<Option<String>> {

@@ -496,16 +496,16 @@ fn main() {
             }
         }
         Commands::Changelog {
+            range,
+            format,
+            write,
             crate_name,
-            from,
-            to,
-            output,
             snapshot,
         } => commands::changelog::run(commands::changelog::ChangelogOpts {
             crate_name,
-            from,
-            to,
-            output,
+            range,
+            format,
+            write,
             snapshot,
             config_override: cli.config.clone(),
             verbose: cli.verbose,

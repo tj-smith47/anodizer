@@ -142,16 +142,16 @@ Generate starter config, or enroll version-bearing files
 
 ### `anodizer changelog`
 
-Generate changelog only
+Manage CHANGELOG.md: refresh the pending section, or render notes/JSON
 
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--crate` | — | — | Generate changelog for a specific crate |
-| `--from` | — | — | Start tag/ref for the commit range (default: latest matching tag) |
-| `--to` | — | — | End ref for the commit range (default: HEAD) |
-| `--output` | — | — | Write the rendered changelog to this file (parent dirs auto-created); still echoes to stdout |
-| `--snapshot` | — | — | Preview as a snapshot release (overrides changelog.snapshot) |
+| `<range>` | — | — | Commit range to render: a single tag (predecessor-resolved against its crate), an explicit `from..to` range, or omitted to refresh each crate's pending section against its last tag |
+| `--format` | — | `keep-a-changelog` | Output format: keep-a-changelog (refresh the [Unreleased] section), release-notes (grouped-bullet GitHub body to stdout), or json |
+| `--write` | — | — | Apply the regenerated [Unreleased] section to the configured CHANGELOG.md file(s) in place (keep-a-changelog only) |
+| `--crate` | — | — | Restrict to a specific crate in a workspace |
+| `--snapshot` | — | — | Preview as a snapshot release (release-notes format only) |
 
 
 ### `anodizer completion`

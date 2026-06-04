@@ -325,25 +325,30 @@ pub enum Commands {
         )]
         yes: bool,
     },
-    /// Generate changelog only
+    /// Manage CHANGELOG.md: refresh the pending section, or render notes/JSON
     Changelog {
-        #[arg(long = "crate", help = "Generate changelog for a specific crate")]
+        #[arg(
+            value_name = "tag|range",
+            help = "Commit range to render: a single tag (predecessor-resolved against its crate), an explicit `from..to` range, or omitted to refresh each crate's pending section against its last tag"
+        )]
+        range: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            default_value = "keep-a-changelog",
+            help = "Output format: keep-a-changelog (refresh the [Unreleased] section), release-notes (grouped-bullet GitHub body to stdout), or json"
+        )]
+        format: ChangelogFormat,
+        #[arg(
+            long,
+            help = "Apply the regenerated [Unreleased] section to the configured CHANGELOG.md file(s) in place (keep-a-changelog only)"
+        )]
+        write: bool,
+        #[arg(long = "crate", help = "Restrict to a specific crate in a workspace")]
         crate_name: Option<String>,
         #[arg(
             long,
-            help = "Start tag/ref for the commit range (default: latest matching tag)"
-        )]
-        from: Option<String>,
-        #[arg(long, help = "End ref for the commit range (default: HEAD)")]
-        to: Option<String>,
-        #[arg(
-            long,
-            help = "Write the rendered changelog to this file (parent dirs auto-created); still echoes to stdout"
-        )]
-        output: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Preview as a snapshot release (overrides changelog.snapshot)"
+            help = "Preview as a snapshot release (release-notes format only)"
         )]
         snapshot: bool,
     },
@@ -575,6 +580,23 @@ pub enum Commands {
         )]
         merge: bool,
     },
+}
+
+/// Output format for `anodizer changelog`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum ChangelogFormat {
+    /// Regenerate the `## [Unreleased]` section(s) of the configured
+    /// `CHANGELOG.md` file(s) (the default). Previews to stdout; writes in
+    /// place with `--write`.
+    #[default]
+    #[value(name = "keep-a-changelog", alias = "kac")]
+    KeepAChangelog,
+    /// GitHub-release-body markdown (grouped bullets) for the resolved range,
+    /// to stdout. The historical `anodizer changelog` behavior.
+    ReleaseNotes,
+    /// Machine-readable JSON array of `{ crate, from, to, groups }` objects,
+    /// one per selected crate, sorted by crate name.
+    Json,
 }
 
 /// `anodize tag` parent subcommand.
