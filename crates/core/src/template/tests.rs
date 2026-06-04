@@ -2229,46 +2229,6 @@ fn test_render_ppc64_and_riscv64_empty_after_clear() {
     assert_eq!(out, "[|]");
 }
 
-#[test]
-fn throwaway_doc_example_evidence() {
-    let mut vars = test_vars();
-    vars.set("IsSnapshot", "false");
-    vars.set("Prerelease", "rc.1");
-    vars.set_env("CI", "true");
-
-    // New Tera-native forms.
-    println!(
-        "not IsSnapshot => {:?}",
-        render("{{ not IsSnapshot }}", &vars)
-    );
-    println!(
-        "Prerelease != \"\" => {:?}",
-        render("{{ .Prerelease != \"\" }}", &vars)
-    );
-    println!(
-        "Env.CI != \"\" => {:?}",
-        render("{{ .Env.CI != \"\" }}", &vars)
-    );
-    println!(
-        "Env.CI == \"\" => {:?}",
-        render("{{ .Env.CI == \"\" }}", &vars)
-    );
-
-    // Old Go-style function forms (should error).
-    println!(
-        "OLD ne .Prerelease => {:?}",
-        render("{{ ne .Prerelease \"\" }}", &vars)
-    );
-    println!(
-        "OLD eq .Env.CI => {:?}",
-        render("{{ eq .Env.CI \"\" }}", &vars)
-    );
-    println!(
-        "OLD ne .Env.CI => {:?}",
-        render("{{ ne .Env.CI \"\" }}", &vars)
-    );
-}
-
 // --- Go `slice` / `printf` / `print` / `println` builtins ---
 
 #[test]
@@ -2403,10 +2363,47 @@ fn test_printf_char_verb() {
 }
 
 #[test]
-fn test_printf_exp_verb() {
+fn test_printf_exp_verb_go_style() {
     let vars = test_vars();
+    // Go renders a signed, min-two-digit exponent: 1.23e+04 (not Rust's 1.23e4).
     let result = render("{{ printf \"%.2e\" 12345.678 }}", &vars).unwrap();
-    assert_eq!(result, "1.23e4");
+    assert_eq!(result, "1.23e+04");
+}
+
+#[test]
+fn test_printf_exp_verb_negative_exponent() {
+    let vars = test_vars();
+    // A small magnitude → negative exponent, zero-padded to two digits.
+    let result = render("{{ printf \"%.2e\" 0.0000123 }}", &vars).unwrap();
+    assert_eq!(result, "1.23e-05");
+}
+
+#[test]
+fn test_printf_exp_verb_three_digit_exponent() {
+    let mut vars = test_vars();
+    // A 3-digit exponent keeps all digits (Go: e+100), fed via a structured
+    // var since `1e100` is not a parseable bare Tera literal.
+    vars.set_structured(
+        "Huge",
+        Value::Number(serde_json::Number::from_f64(1e100).unwrap()),
+    );
+    let result = render("{{ printf \"%.2e\" Huge }}", &vars).unwrap();
+    assert_eq!(result, "1.00e+100");
+}
+
+#[test]
+fn test_printf_exp_uppercase() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%.2E\" 12345.678 }}", &vars).unwrap();
+    assert_eq!(result, "1.23E+04");
+}
+
+#[test]
+fn test_printf_g_verb_plain_decimal() {
+    let vars = test_vars();
+    // %g of a value that renders in plain-decimal form has no exponent.
+    let result = render("{{ printf \"%g\" 3.14 }}", &vars).unwrap();
+    assert_eq!(result, "3.14");
 }
 
 #[test]

@@ -97,11 +97,39 @@ fn numeric_sign(negative: bool, plus: bool, space: bool) -> &'static str {
     }
 }
 
+/// Normalize a Rust-formatted scientific string to Go's exponent style.
+///
+/// Rust's `{:e}` emits an unsigned exponent with no leading zeros (`1.23e4`,
+/// `1e-7`); Go always writes a sign and a minimum of two exponent digits
+/// (`1.23e+04`, `1e-07`, `1e+100`). When the input has no `e`/`E` (e.g. a `%g`
+/// value rendered in plain-decimal form), it is returned unchanged except for
+/// the requested exponent letter case.
+fn go_exponent(s: &str, uppercase: bool) -> String {
+    let letter = if uppercase { 'E' } else { 'e' };
+    let Some(pos) = s.find(['e', 'E']) else {
+        return s.to_string();
+    };
+    let (mantissa, exp_part) = s.split_at(pos);
+    // exp_part starts with the exponent letter; skip it to read the value.
+    let exp_str = &exp_part[1..];
+    let (sign, digits) = match exp_str.strip_prefix('-') {
+        Some(rest) => ('-', rest),
+        None => ('+', exp_str.strip_prefix('+').unwrap_or(exp_str)),
+    };
+    // Pad to a minimum of two digits, preserving 3+ digit exponents.
+    let padded = if digits.len() < 2 {
+        format!("{:0>2}", digits)
+    } else {
+        digits.to_string()
+    };
+    format!("{}{}{}{}", mantissa, letter, sign, padded)
+}
+
 /// Format one `printf` verb against a value, returning a `tera::Error` for any
 /// verb outside the supported bounded subset.
 ///
-/// Supported verbs: `%s %d %v %x %X %o %b %c %q %f %e %g %t %%`, with flags
-/// `- + 0 (space) #`, width, and precision.
+/// Supported verbs: `%s %d %v %x %X %o %b %c %q %f %e %E %g %G %t %%`, with
+/// flags `- + 0 (space) #`, width, and precision.
 fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera::Error> {
     let val = || -> Result<&Value, tera::Error> {
         value
@@ -175,7 +203,7 @@ fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera:
             };
             Ok(pad(spec, body, Some((sign, prefix))))
         }
-        'f' | 'e' | 'g' => {
+        'f' | 'e' | 'E' | 'g' | 'G' => {
             let f = val()?.as_f64().ok_or_else(|| {
                 tera::Error::msg(format!("printf: %{} expects a numeric argument", spec.verb))
             })?;
@@ -183,19 +211,27 @@ fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera:
             let mag = f.abs();
             let body = match spec.verb {
                 'f' => format!("{:.*}", prec, mag),
-                'e' => format!("{:.*e}", prec, mag),
-                // %g uses Rust's shortest representation; precision is advisory.
-                'g' => match spec.precision {
-                    Some(p) => format!("{:.*}", p, mag),
-                    None => format!("{}", mag),
-                },
+                // Rust prints `1.23e4`; Go prints `1.23e+04` (signed exponent,
+                // min two digits). Reformat the exponent to match Go so pasted
+                // GoReleaser templates produce byte-identical output.
+                'e' | 'E' => go_exponent(&format!("{:.*e}", prec, mag), spec.verb == 'E'),
+                // %g/%G use Rust's shortest representation; precision is
+                // advisory. The exponent (when present) is normalized to Go's
+                // signed-two-digit form via go_exponent.
+                'g' | 'G' => {
+                    let raw = match spec.precision {
+                        Some(p) => format!("{:.*}", p, mag),
+                        None => format!("{}", mag),
+                    };
+                    go_exponent(&raw, spec.verb == 'G')
+                }
                 _ => unreachable!(),
             };
             let sign = numeric_sign(f.is_sign_negative() && f != 0.0, spec.plus, spec.space);
             Ok(pad(spec, body, Some((sign, ""))))
         }
         other => Err(tera::Error::msg(format!(
-            "printf: unsupported verb %{} (supported: s d v x X o b c q f e g t %%)",
+            "printf: unsupported verb %{} (supported: s d v x X o b c q f e E g G t %%)",
             other
         ))),
     }
@@ -203,8 +239,8 @@ fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera:
 
 /// Render a Go/C-style `printf` format string against its argument list.
 ///
-/// Implements a bounded verb subset (`%s %d %v %x %X %o %b %c %q %f %e %g %t
-/// %%`) with the `- + 0 (space) #` flags plus width and precision. Returns a
+/// Implements a bounded verb subset (`%s %d %v %x %X %o %b %c %q %f %e %E %g
+/// %G %t %%`) with the `- + 0 (space) #` flags plus width and precision. Returns a
 /// `tera::Error` on an unsupported verb or a malformed conversion rather than
 /// panicking or emitting silently-wrong output.
 fn sprintf(format: &str, args: &[Value]) -> Result<String, tera::Error> {
