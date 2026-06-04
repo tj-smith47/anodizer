@@ -52,10 +52,24 @@ pub struct ChangelogConfig {
     pub abbrev: Option<i32>,
     /// Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only), Logins (per-entry comma-separated list of GitHub usernames for that commit, `github` backend only), AllLogins (comma-separated list of all GitHub usernames across the entire release, `github` backend only).<br><br>Default depends on backend (the full SHA is used):<br>&bull; `git` backend (default): `"{{ SHA }} {{ Message }}"`<br>&bull; `github`/`gitlab`/`gitea` backend: `"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)"` — falls back to `AuthorName <AuthorEmail>` when `Login` is empty.<br><br>When `abbrev < 0`, the default reduces to `"{{ Message }}"` (no hash prefix).
     pub format: Option<String>,
-    /// File paths to filter commits by. Only commits touching files under these
-    /// paths are included. Works with `use: git` for precise per-commit filtering.
-    /// With `use: github`, only the first path is used for API queries; multi-path
-    /// filtering is coarse. Supports template rendering.
+    /// Optional path filter that NARROWS the per-crate scope by intersection —
+    /// it never replaces it. Each changelog track already scopes to its own
+    /// commits (a per-crate track to its crate directory; the aggregate to the
+    /// union of every crate directory plus the workspace manifests). When set,
+    /// `paths` further restricts that derived scope to commits whose touched
+    /// files match these globs; it can only ever drop commits, never widen to
+    /// another track's directory. A `paths` value that is a superset of the
+    /// derived scope (e.g. `["crates/**", "Cargo.toml", "Cargo.lock"]` over a
+    /// workspace) is therefore a no-op — and so is the recommended default of
+    /// leaving `paths` unset, where scoping is fully derived. The same derived
+    /// scope and intersect drive all three changelog formats
+    /// (`keep-a-changelog`, `json`, and `release-notes`), so they cannot drift.
+    ///
+    /// With `use: git` the intersect is precise (commits are filtered by their
+    /// touched files). With `use: github` only the first path is used for API
+    /// queries; with `use: gitlab` / `gitea` path filtering is unsupported, so a
+    /// narrowing `paths` there is coarse and a warning is emitted. Supports
+    /// template rendering.
     pub paths: Option<Vec<String>>,
     /// Title heading for the changelog. Default: "Changelog". Supports templates.
     pub title: Option<String>,

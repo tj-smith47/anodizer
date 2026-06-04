@@ -2026,3 +2026,210 @@ fn config_shape_matrix_renders_all_formats() {
         assert_no_dist_changelog(root, label);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Per-crate scope: the single resolver routes all three formats. A multi-track
+// repo must scope each track to its OWN crate dir; a global `changelog.paths`
+// can only NARROW that scope (intersect), never REPLACE it across tracks.
+// ---------------------------------------------------------------------------
+
+/// Build a cfgd-shape distinct-prefix multi-track repo: `core` and `cli` each
+/// tagged on their own track, each with a post-tag commit ONLY in its own dir,
+/// plus a workspace-root `Cargo.toml`-only commit. `paths_block` is inserted
+/// verbatim under the `changelog:` block (e.g. a global `paths:` list).
+fn build_multitrack_scope_repo(paths_block: &str) -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (dir, name) in [("crates/core", "core"), ("crates/cli", "cli")] {
+        fs::create_dir_all(root.join(dir).join("src")).unwrap();
+        fs::write(
+            root.join(dir).join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(dir).join("src/lib.rs"), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        format!(
+            "project_name: cfgd\nchangelog:{paths_block}\ncrates:\n  \
+             - name: core\n    path: crates/core\n    tag_template: \"core-v{{{{ Version }}}}\"\n  \
+             - name: cli\n    path: crates/cli\n    tag_template: \"cli-v{{{{ Version }}}}\"\n"
+        ),
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "core-v0.1.0"]);
+    run_git(root, &["tag", "cli-v0.1.0"]);
+
+    // One commit per track, touching ONLY that track's dir.
+    fs::write(root.join("crates/core/src/lib.rs"), "// c\n").unwrap();
+    git_add_commit(root, "feat: core only change");
+    fs::write(root.join("crates/cli/src/lib.rs"), "// c\n").unwrap();
+    git_add_commit(root, "fix: cli only change");
+    // A workspace-manifest-only commit (no crate dir touched).
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n# bump\n",
+    )
+    .unwrap();
+    git_add_commit(root, "chore: workspace manifest bump");
+
+    tmp
+}
+
+/// JSON summaries for `--crate <name>`: returns the concatenated commit
+/// summaries of the single rendered track.
+fn json_summaries_for_crate(root: &Path, name: &str) -> String {
+    let r = changelog(root, &["-q", "--crate", name, "--format", "json"]);
+    assert!(
+        r.success,
+        "json --crate {name} failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    let v: serde_json::Value = serde_json::from_str(&r.stdout)
+        .unwrap_or_else(|e| panic!("json parse failed: {e}\n{}", r.stdout));
+    v.to_string()
+}
+
+/// Assert that across kac, json, and release-notes, the `--crate <name>` render
+/// contains `own` and never the OTHER track's `foreign` commit — proving each
+/// track scopes to its own dir in EVERY format.
+fn assert_track_isolation(root: &Path, name: &str, own: &str, foreign: &str) {
+    let kac = changelog(root, &["-q", "--crate", name]);
+    assert!(
+        kac.success,
+        "kac --crate {name} failed: {}\n{}",
+        kac.stdout, kac.stderr
+    );
+    let rn = changelog(root, &["-q", "--crate", name, "--format", "release-notes"]);
+    assert!(
+        rn.success,
+        "rn --crate {name} failed: {}\n{}",
+        rn.stdout, rn.stderr
+    );
+    let js = json_summaries_for_crate(root, name);
+
+    for (fmt, body) in [
+        ("kac", &kac.stdout),
+        ("release-notes", &rn.stdout),
+        ("json", &js),
+    ] {
+        assert!(
+            body.contains(own),
+            "[{fmt}] --crate {name} must contain its own commit {own:?}:\n{body}"
+        );
+        assert!(
+            !body.contains(foreign),
+            "[{fmt}] --crate {name} must NOT contain the other track's commit {foreign:?}:\n{body}"
+        );
+    }
+}
+
+#[test]
+fn multitrack_each_track_scopes_to_its_own_dir_all_formats() {
+    let tmp = build_multitrack_scope_repo("");
+    let root = tmp.path();
+    assert_track_isolation(root, "core", "core only change", "cli only change");
+    assert_track_isolation(root, "cli", "cli only change", "core only change");
+}
+
+#[test]
+fn multitrack_superset_paths_match_no_paths_proving_intersect_not_replace() {
+    // WITH a global `changelog.paths` superset (cfgd's exact shape): the old
+    // "replace" behavior made every track resolve to `crates/**` and render
+    // identical sections. The intersect makes the superset a no-op, so the
+    // result must match the no-paths case track-for-track.
+    let paths = "\n  paths:\n    - \"crates/**\"\n    - Cargo.toml\n    - Cargo.lock";
+    let tmp = build_multitrack_scope_repo(paths);
+    let root = tmp.path();
+    assert_track_isolation(root, "core", "core only change", "cli only change");
+    assert_track_isolation(root, "cli", "cli only change", "core only change");
+}
+
+#[test]
+fn aggregate_includes_manifest_only_commit() {
+    // The aggregate (no `--crate`) scopes to the union of crate dirs + the
+    // workspace manifests, so a commit touching only `Cargo.toml` appears.
+    // A flat-aggregate (shared `v*` prefix) renders one whole-release body.
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/core/src")).unwrap();
+    fs::write(
+        root.join("crates/core/Cargo.toml"),
+        "[package]\nname = \"core\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/core/src/lib.rs"), "").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: agg\nchangelog: {}\ncrates:\n  \
+         - name: core\n    path: crates/core\n    tag_template: \"v{{ Version }}\"\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\"]\nresolver = \"2\"\n# dep bump\n",
+    )
+    .unwrap();
+    git_add_commit(root, "chore: workspace manifest only bump");
+
+    let rn = changelog(root, &["-q", "--format", "release-notes"]);
+    assert!(rn.success, "rn failed: {}\n{}", rn.stdout, rn.stderr);
+    assert!(
+        rn.stdout.contains("workspace manifest only bump"),
+        "aggregate must include the Cargo.toml-only commit:\n{}",
+        rn.stdout
+    );
+    let js = changelog(root, &["-q", "--format", "json"]);
+    assert!(
+        js.stdout.contains("workspace manifest only bump"),
+        "aggregate json must include the Cargo.toml-only commit:\n{}",
+        js.stdout
+    );
+}
+
+#[test]
+fn narrowing_paths_drop_an_excluded_crates_commits_from_aggregate() {
+    // The precise intersect: a `changelog.paths` that excludes `crates/cli`
+    // narrows the aggregate so cli's commit drops while core's survives.
+    let paths = "\n  paths:\n    - \"crates/core/**\"";
+    let tmp = build_multitrack_scope_repo(paths);
+    let root = tmp.path();
+    // The aggregate render: use a shared-prefix flat aggregate is not this
+    // shape (distinct prefixes ⇒ per-crate), so assert via the cli track that
+    // narrowing to core/** drops cli's own commit.
+    let rn = changelog(root, &["-q", "--crate", "cli", "--format", "release-notes"]);
+    assert!(rn.success, "rn failed: {}\n{}", rn.stdout, rn.stderr);
+    // cli's track scopes to crates/cli, but the narrowing filter only admits
+    // crates/core/** — so cli's commit is filtered out entirely.
+    assert!(
+        !rn.stdout.contains("cli only change"),
+        "narrowing paths (crates/core/**) must drop cli's commit:\n{}",
+        rn.stdout
+    );
+    // core's track survives the narrowing.
+    let core = changelog(
+        root,
+        &["-q", "--crate", "core", "--format", "release-notes"],
+    );
+    assert!(
+        core.stdout.contains("core only change"),
+        "core's commit must survive crates/core/** narrowing:\n{}",
+        core.stdout
+    );
+}

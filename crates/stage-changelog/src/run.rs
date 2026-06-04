@@ -559,7 +559,7 @@ fn render_group_titles(
 ///
 /// An explicit `--from` is validated against git: a ref that doesn't resolve
 /// to a commit `bail!`s (naming the bad ref) rather than silently degrading
-/// to an empty changelog — `fetch_git_commits_in` returns `Ok(vec![])` on a
+/// to an empty changelog — `fetch_git_commits_in_paths` returns `Ok(vec![])` on a
 /// `git log` non-zero, so an unchecked typo would emit a blank changelog with
 /// no error. Auto-discovered tags are always valid, so the check is gated on
 /// the explicit-`--from` arm only.
@@ -613,22 +613,24 @@ fn resolve_prev_tag(
     Ok(candidate.filter(|t| current_tag != Some(t.as_str())))
 }
 
-/// Pick the effective path filter for a crate. Precedence:
-/// changelog-level `paths` > per-crate `path` > monorepo dir.
-fn effective_paths(
+/// Resolve the commit path-scope for `crate_cfg` via the shared
+/// [`anodizer_core::changelog_scope`] resolver — the single source of truth
+/// every changelog format routes through. A per-crate track scopes to its own
+/// directory; the aggregate to the union of all crate dirs + manifests (or the
+/// monorepo dir / whole repo). `changelog.paths`, when set, can only NARROW
+/// the derived scope, never replace it.
+fn resolve_scope(
     changelog_paths: &[String],
     crate_path: &str,
+    all_crate_dirs: &[String],
     monorepo_dir: Option<&str>,
-) -> Vec<String> {
-    if !changelog_paths.is_empty() {
-        changelog_paths.to_vec()
-    } else if !crate_path.is_empty() && crate_path != "." {
-        vec![crate_path.to_string()]
-    } else if let Some(dir) = monorepo_dir {
-        vec![dir.to_string()]
-    } else {
-        Vec::new()
-    }
+) -> anodizer_core::changelog_scope::ChangelogScope {
+    anodizer_core::changelog_scope::resolve_changelog_scope(
+        crate_path,
+        all_crate_dirs,
+        monorepo_dir,
+        changelog_paths,
+    )
 }
 
 /// Fetch commits for a crate via the configured SCM backend, with
@@ -639,9 +641,10 @@ fn fetch_crate_commits(
     log: &StageLogger,
     use_source: &str,
     prev_tag: &Option<String>,
-    paths: &[String],
+    scope: &anodizer_core::changelog_scope::ChangelogScope,
     crate_name: &str,
 ) -> Result<(Vec<CommitInfo>, String)> {
+    let paths = scope.pathspecs();
     let use_github = use_source == "github";
     let use_gitlab = use_source == "gitlab";
     let use_gitea = use_source == "gitea";
@@ -666,7 +669,7 @@ fn fetch_crate_commits(
 
     if scm_no_prev_tag {
         return Ok((
-            fetch_git_commits(prev_tag, paths, crate_name, log)?,
+            fetch_git_commits_scoped(prev_tag, scope, crate_name, log)?,
             String::new(),
         ));
     }
@@ -682,7 +685,7 @@ fn fetch_crate_commits(
                     ),
                 )?;
                 return Ok((
-                    fetch_git_commits(prev_tag, paths, crate_name, log)?,
+                    fetch_git_commits_scoped(prev_tag, scope, crate_name, log)?,
                     String::new(),
                 ));
             }
@@ -700,7 +703,7 @@ fn fetch_crate_commits(
                     ),
                 )?;
                 return Ok((
-                    fetch_git_commits(prev_tag, paths, crate_name, log)?,
+                    fetch_git_commits_scoped(prev_tag, scope, crate_name, log)?,
                     String::new(),
                 ));
             }
@@ -718,16 +721,37 @@ fn fetch_crate_commits(
                     ),
                 )?;
                 return Ok((
-                    fetch_git_commits(prev_tag, paths, crate_name, log)?,
+                    fetch_git_commits_scoped(prev_tag, scope, crate_name, log)?,
                     String::new(),
                 ));
             }
         }
     }
     Ok((
-        fetch_git_commits(prev_tag, paths, crate_name, log)?,
+        fetch_git_commits_scoped(prev_tag, scope, crate_name, log)?,
         String::new(),
     ))
+}
+
+/// Fetch git commits scoped by `scope.dirs`, then apply the precise
+/// `changelog.paths` glob intersect ([`scope.narrow`]) when one is required.
+///
+/// When no narrowing is needed the git pathspec already bounds the result
+/// exactly, so this delegates to the metadata-only [`fetch_git_commits`].
+/// Otherwise it fetches touched-file lists and drops commits whose files all
+/// fall outside `changelog.paths` — the exact intersection of the derived
+/// directory scope with the configured globs.
+fn fetch_git_commits_scoped(
+    prev_tag: &Option<String>,
+    scope: &anodizer_core::changelog_scope::ChangelogScope,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Vec<CommitInfo>> {
+    let paths = scope.pathspecs();
+    if scope.narrow.is_none() {
+        return fetch_git_commits(prev_tag, paths, crate_name, log);
+    }
+    crate::fetch::fetch_git_commits_narrowed(prev_tag, scope, crate_name, log)
 }
 
 /// Run the per-crate fetch → filter → sort → group → render pipeline
@@ -752,8 +776,29 @@ fn render_crate_changelog(
     let current_tag = ctx.template_vars().get("Tag").cloned();
     let prev_tag = resolve_prev_tag(ctx, crate_cfg, monorepo_prefix, current_tag.as_deref())?;
 
-    let monorepo_dir = ctx.config.monorepo_dir().map(str::to_string);
-    let paths = effective_paths(&opts.paths, &crate_cfg.path, monorepo_dir.as_deref());
+    // Source the aggregate's crate dirs + monorepo dir from `.anodizer.yaml` —
+    // the SAME read the engine-backed kac/json formats use — so all three
+    // formats build an identical aggregate union and cannot drift. The
+    // standalone release-notes command flattens `ctx.config.crates` to one
+    // path-cleared aggregate entry, so reading them off `ctx.config` would lose
+    // the union; the on-disk read recovers it.
+    let scope_root = ctx
+        .options
+        .project_root
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let scope_inputs = crate::render::load_scope_inputs(&scope_root)?;
+    let monorepo_dir = scope_inputs
+        .monorepo_dir
+        .clone()
+        .or_else(|| ctx.config.monorepo_dir().map(str::to_string));
+    let scope = resolve_scope(
+        &opts.paths,
+        &crate_cfg.path,
+        &scope_inputs.crate_dirs,
+        monorepo_dir.as_deref(),
+    );
+    let paths = scope.pathspecs().to_vec();
 
     // The GitHub API only supports filtering by a single path parameter;
     // GitLab/Gitea compare APIs don't support path filtering at all.
@@ -774,9 +819,20 @@ fn render_crate_changelog(
             paths.len()
         ));
     }
+    // A precise `changelog.paths` glob narrowing applies only to `use: git`
+    // (the SCM compare APIs already warn that path filtering is coarse /
+    // unsupported above). Surface the limitation rather than silently widen.
+    if scope.narrow.is_some() && (use_github || use_gitlab || use_gitea) {
+        log.warn(
+            "changelog: `changelog.paths` narrows the per-crate scope, but the \
+             SCM compare API cannot apply it precisely; the result may include \
+             commits outside the configured paths. Use `use: git` for an exact \
+             intersect.",
+        );
+    }
 
     let (all_commit_infos, logins_str) =
-        fetch_crate_commits(ctx, log, use_source, &prev_tag, &paths, &crate_name)?;
+        fetch_crate_commits(ctx, log, use_source, &prev_tag, &scope, &crate_name)?;
 
     // include and exclude are mutually exclusive:
     // if include patterns are configured, exclude is completely ignored.

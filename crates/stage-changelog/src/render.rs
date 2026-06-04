@@ -22,7 +22,7 @@ use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
 use serde_json::Value as JsonValue;
 
-use crate::fetch::{fetch_git_commits_in, relative_filter};
+use crate::fetch::relative_filter;
 use crate::group::{
     CommitInfo, GroupedCommits, apply_filters, apply_include_filters, extract_co_authors,
     group_commits, parse_commit_message, sort_commits,
@@ -467,6 +467,71 @@ fn load_changelog_config(
     Ok(Some(cfg))
 }
 
+/// The scoping inputs read from `.anodizer.yaml` beyond the `changelog` block:
+/// every declared crate's directory and the optional `monorepo.dir`, used to
+/// build the aggregate union in [`anodizer_core::changelog_scope`].
+#[derive(Default)]
+pub struct ScopeInputs {
+    /// Every declared crate's `path` (top-level `crates:` and any nested
+    /// `workspaces[].crates`).
+    pub crate_dirs: Vec<String>,
+    /// The optional `monorepo.dir`, the aggregate fallback when no crate
+    /// directories are declared.
+    pub monorepo_dir: Option<String>,
+}
+
+/// Read the crate directories and `monorepo.dir` from `.anodizer.yaml` so every
+/// changelog format builds the aggregate scope from the SAME crate-dir source
+/// (the engine-backed `keep-a-changelog`/`json` formats and the `release-notes`
+/// stage both call this), guaranteeing they cannot drift.
+///
+/// A lightweight read of just `crates[].path` and `monorepo.dir` — the engine
+/// crate cannot depend on the full CLI config loader, and scoping only needs
+/// these two fields. Missing / empty returns an empty [`ScopeInputs`] (the
+/// resolver then falls back to the whole-repo aggregate).
+pub fn load_scope_inputs(workspace_root: &std::path::Path) -> Result<ScopeInputs> {
+    let cfg_path = workspace_root.join(".anodizer.yaml");
+    if !cfg_path.is_file() {
+        return Ok(ScopeInputs::default());
+    }
+    let cfg_text = std::fs::read_to_string(&cfg_path)
+        .with_context(|| format!("failed to read {}", cfg_path.display()))?;
+    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(&cfg_text)
+        .with_context(|| format!("failed to parse YAML at {}", cfg_path.display()))?;
+
+    let mut crate_dirs: Vec<String> = Vec::new();
+    if let Some(crates) = raw.get("crates").and_then(|c| c.as_sequence()) {
+        for c in crates {
+            if let Some(path) = c.get("path").and_then(|p| p.as_str()) {
+                crate_dirs.push(path.to_string());
+            }
+        }
+    }
+    // `workspaces:`-style monorepo configs nest crates under each workspace.
+    if let Some(workspaces) = raw.get("workspaces").and_then(|w| w.as_sequence()) {
+        for ws in workspaces {
+            if let Some(crates) = ws.get("crates").and_then(|c| c.as_sequence()) {
+                for c in crates {
+                    if let Some(path) = c.get("path").and_then(|p| p.as_str()) {
+                        crate_dirs.push(path.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let monorepo_dir = raw
+        .get("monorepo")
+        .and_then(|m| m.get("dir"))
+        .and_then(|d| d.as_str())
+        .map(str::to_string);
+
+    Ok(ScopeInputs {
+        crate_dirs,
+        monorepo_dir,
+    })
+}
+
 /// Load the crate's changelog config, fetch path-filtered commits in the
 /// range `from_tag..to_ref`, then filter/sort/group them into a
 /// [`GroupedCommits`] tree (no Markdown rendering).
@@ -495,9 +560,42 @@ fn group_section_commits(
 
     let log = StageLogger::new("bump-changelog", Verbosity::default());
 
-    let path_filter = relative_filter(workspace_root, crate_path);
-    let raw_commits =
-        fetch_git_commits_in(workspace_root, from_tag, to_ref, path_filter.as_deref())?;
+    // The current track's directory relative to the workspace root; empty for
+    // the aggregate (the workspace-root "crate"), exactly as the resolver
+    // expects.
+    let rel_crate_path = relative_filter(workspace_root, crate_path).unwrap_or_default();
+    let scope_inputs = load_scope_inputs(workspace_root)?;
+    let changelog_paths: Vec<String> = cfg.paths.clone().unwrap_or_default();
+    let scope = anodizer_core::changelog_scope::resolve_changelog_scope(
+        &rel_crate_path,
+        &scope_inputs.crate_dirs,
+        scope_inputs.monorepo_dir.as_deref(),
+        &changelog_paths,
+    );
+
+    // The git pathspec scope is applied via `--`; a precise `changelog.paths`
+    // narrowing (when one is required) is intersected over the fetched commits'
+    // touched files so all three formats agree byte-for-byte.
+    let raw_commits = if scope.narrow.is_some() {
+        let pairs = crate::fetch::fetch_git_commits_with_files_in(
+            workspace_root,
+            from_tag,
+            to_ref,
+            scope.pathspecs(),
+        )?;
+        pairs
+            .into_iter()
+            .filter(|p| scope.commit_survives_narrow(&p.files))
+            .map(|p| p.commit)
+            .collect::<Vec<_>>()
+    } else {
+        crate::fetch::fetch_git_commits_in_paths(
+            workspace_root,
+            from_tag,
+            to_ref,
+            scope.pathspecs(),
+        )?
+    };
     if raw_commits.is_empty() {
         return Ok(None);
     }

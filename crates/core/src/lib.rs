@@ -3,6 +3,7 @@ pub mod artifact;
 pub mod binary_artifact_guard;
 pub mod cargo_lock;
 pub mod cargo_package;
+pub mod changelog_scope;
 pub mod config;
 pub mod content_source;
 pub mod context;

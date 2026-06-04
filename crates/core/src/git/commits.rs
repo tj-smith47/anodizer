@@ -146,6 +146,129 @@ pub fn get_all_commits_paths_in(cwd: &Path, paths: &[String]) -> Result<Vec<Comm
     Ok(parse_commit_output(&output))
 }
 
+/// A commit paired with the workspace-relative paths it touched.
+///
+/// Produced by the `--name-only` fetch variants so the changelog renderers can
+/// apply a precise `changelog.paths` glob intersect over the git-pathspec
+/// scope (see [`crate::changelog_scope`]).
+#[derive(Debug, Clone)]
+pub struct CommitWithFiles {
+    /// The commit metadata.
+    pub commit: Commit,
+    /// Paths this commit touched, relative to the repo root.
+    pub files: Vec<String>,
+}
+
+/// Parse `git log --name-only` output (metadata formatted as
+/// `%H%x1f...%b%x1e`, followed by one touched-file path per line) into
+/// [`CommitWithFiles`].
+///
+/// git emits each commit as `<metadata>\x1e\n<file>\n<file>\n\n` (the touched
+/// files follow the `%x1e`-terminated metadata, then a blank line). Splitting
+/// on `\x1e` yields `[metadata_0, "\n<files_0>\n\n<metadata_1>", ...]`: the
+/// file block trailing each record up to the next metadata belongs to THAT
+/// record's commit.
+pub fn parse_commit_output_with_files(output: &str) -> Vec<CommitWithFiles> {
+    if output.is_empty() {
+        return vec![];
+    }
+    let segments: Vec<&str> = output.split('\x1e').collect();
+    let mut out: Vec<CommitWithFiles> = Vec::new();
+    // segments[i] for i>0 begins with the file block of commit i-1 followed by
+    // the metadata of commit i. The first segment is pure metadata (commit 0);
+    // the last segment is the file block of the final commit (no trailing
+    // metadata). Walk pairwise: metadata from this segment, files from the
+    // NEXT segment's leading lines (before its own metadata's first field).
+    for (idx, seg) in segments.iter().enumerate() {
+        // The metadata of commit `idx` is the part of `seg` AFTER the leading
+        // file block (file block present only for idx>0). For idx==0 the whole
+        // segment up to the unit separators is metadata.
+        let metadata = if idx == 0 {
+            seg.trim_start_matches(['\n', '\r'])
+        } else {
+            // Strip the leading file-block lines: everything up to the first
+            // line containing a unit separator (the metadata record).
+            seg.split('\n')
+                .find(|line| line.contains('\x1f'))
+                .unwrap_or("")
+        };
+        if metadata.trim().is_empty() {
+            continue;
+        }
+        let commits = parse_commit_output(metadata);
+        let Some(commit) = commits.into_iter().next() else {
+            continue;
+        };
+        // Files for THIS commit are the leading lines of the NEXT segment,
+        // before that segment's own metadata line.
+        let files = match segments.get(idx + 1) {
+            Some(next) => next
+                .split('\n')
+                .map(str::trim)
+                .take_while(|line| !line.contains('\x1f'))
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect(),
+            None => Vec::new(),
+        };
+        out.push(CommitWithFiles { commit, files });
+    }
+    out
+}
+
+/// `--name-only` sibling of [`get_commits_between_paths_in`]: each commit is
+/// paired with the repo-relative paths it touched, for a precise
+/// `changelog.paths` glob intersect over the git-pathspec scope.
+pub fn get_commits_between_paths_with_files_in(
+    cwd: &Path,
+    from: &str,
+    to: &str,
+    paths: &[String],
+) -> Result<Vec<CommitWithFiles>> {
+    let range = format!("{}..{}", from, to);
+    let mut args = vec![
+        "-c".to_string(),
+        "log.showSignature=false".to_string(),
+        "log".to_string(),
+        "--name-only".to_string(),
+        "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".to_string(),
+        range,
+    ];
+    if !paths.is_empty() {
+        args.push("--".to_string());
+        for p in paths {
+            args.push(p.clone());
+        }
+    }
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = git_output_in(cwd, &arg_refs)?;
+    Ok(parse_commit_output_with_files(&output))
+}
+
+/// `--name-only` sibling of [`get_all_commits_paths_in`].
+pub fn get_all_commits_paths_with_files_in(
+    cwd: &Path,
+    paths: &[String],
+) -> Result<Vec<CommitWithFiles>> {
+    let mut args = vec![
+        "-c".to_string(),
+        "log.showSignature=false".to_string(),
+        "log".to_string(),
+        "--name-only".to_string(),
+        "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".to_string(),
+        "HEAD".to_string(),
+    ];
+    if !paths.is_empty() {
+        args.push("--".to_string());
+        for p in paths {
+            args.push(p.clone());
+        }
+    }
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = git_output_in(cwd, &arg_refs)?;
+    Ok(parse_commit_output_with_files(&output))
+}
+
 /// Get last N commit subjects.
 pub fn get_last_commit_messages(count: usize) -> Result<Vec<String>> {
     get_last_commit_messages_in(&cwd_or_dot(), count)
@@ -1650,5 +1773,58 @@ mod tests {
         // Empty range (sha IS HEAD) → empty vec.
         let head = get_head_commit_in(dir).unwrap();
         assert!(commits_with_subjects_in(dir, &head).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_commit_output_with_files_pairs_each_commit_with_its_files() {
+        // Two commits: newest first (git log order). Each metadata record is
+        // `%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e`, then `--name-only` files.
+        let raw = "h1\x1fs1\x1ffix: B\x1ft\x1ft@t\x1f\x1e\ncrates/cli/main.rs\n\nh0\x1fs0\x1ffeat: A\x1ft\x1ft@t\x1f\x1e\ncrates/core/lib.rs\nCargo.toml\n";
+        let parsed = parse_commit_output_with_files(raw);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].commit.message, "fix: B");
+        assert_eq!(parsed[0].files, vec!["crates/cli/main.rs".to_string()]);
+        assert_eq!(parsed[1].commit.message, "feat: A");
+        assert_eq!(
+            parsed[1].files,
+            vec!["crates/core/lib.rs".to_string(), "Cargo.toml".to_string()]
+        );
+    }
+
+    #[test]
+    fn get_commits_between_paths_with_files_in_reports_touched_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(dir)
+                    .env("GIT_AUTHOR_NAME", "t")
+                    .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                    .env("GIT_COMMITTER_NAME", "t")
+                    .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        };
+        run(&["init"]);
+        run(&["config", "user.email", "t@t.com"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("base"), "0").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "initial"]);
+        let base = get_head_commit_in(dir).unwrap();
+        std::fs::create_dir_all(dir.join("crates/core")).unwrap();
+        std::fs::write(dir.join("crates/core/lib.rs"), "1").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "feat: core"]);
+
+        let pairs = get_commits_between_paths_with_files_in(dir, &base, "HEAD", &[]).unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].commit.message, "feat: core");
+        assert_eq!(pairs[0].files, vec!["crates/core/lib.rs".to_string()]);
     }
 }
