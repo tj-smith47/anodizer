@@ -21,6 +21,9 @@ pub struct BumpOpts {
     pub yes: bool,
     pub dry_run: bool,
     pub commit: bool,
+    /// Refresh `CHANGELOG.md` in the bump commit. Opt-in and only consulted under
+    /// `--commit` (the changelog gate runs inside the commit path).
+    pub changelog: bool,
     pub sign: bool,
     pub commit_message: Option<String>,
     pub output: String,
@@ -147,13 +150,13 @@ fn commit_plan(
     // for its new version so the files land in the same `git add` + `git commit`
     // as the Cargo.toml edits. The previous tag bounds each crate's commit range.
     //
-    // Gated by the shared `changelog:`-presence + `skip:` resolution so `bump`
-    // and `tag` honor `changelog: { skip: true }` identically. `bump` has no
-    // `--no-changelog` flag, so the opt-out arg is always `false`.
+    // Gated by the shared opt-in + `changelog:`-presence + `skip:` resolution so
+    // `bump` and `tag` honor `--changelog` and `changelog: { skip: true }`
+    // identically. The refresh runs only under `--changelog` (opt-in).
     let changelog_config = load_changelog_config(workspace_root, opts);
     let changelog_enabled = crate::commands::changelog_sync::resolve_changelog_enabled(
         changelog_config.as_ref(),
-        false,
+        opts.changelog,
     );
     let mut changelog_targets: Vec<crate::commands::changelog_sync::ChangelogTarget> = Vec::new();
     for row in rows {

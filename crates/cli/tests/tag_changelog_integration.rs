@@ -8,8 +8,9 @@
 //!   2. workspace-lockstep (`[workspace.package].version`),
 //!   3. workspace per-crate (flat `crates:` with independent versions).
 //!
-//! Also covers the `--no-changelog` opt-out, `--dry-run`, and the
-//! no-`changelog:` default-off case.
+//! The refresh is opt-in via `--changelog`; without it `tag` never touches a
+//! `CHANGELOG.md` even with a `changelog:` block configured. Also covers
+//! `--dry-run`, `changelog.skip: true`, and the no-`changelog:` config case.
 
 use std::fs;
 use std::path::Path;
@@ -107,7 +108,7 @@ crates:
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--crate", "app"])
+        .args(["tag", "--crate", "app", "--changelog"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -135,9 +136,10 @@ crates:
     );
 }
 
-/// `--no-changelog` suppresses the refresh even though `changelog:` is set.
+/// The new default: WITHOUT `--changelog`, `tag` writes no `CHANGELOG.md` even
+/// though `changelog:` is configured (the refresh is opt-in).
 #[test]
-fn single_crate_no_changelog_flag_suppresses() {
+fn single_crate_default_no_flag_suppresses() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     fs::write(
@@ -174,7 +176,7 @@ crates:
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--crate", "app", "--no-changelog"])
+        .args(["tag", "--crate", "app"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -183,11 +185,16 @@ crates:
 
     assert!(
         !root.join("crates/app/CHANGELOG.md").exists(),
-        "--no-changelog must not write a CHANGELOG.md"
+        "without --changelog, tag must not write a per-crate CHANGELOG.md"
+    );
+    assert!(
+        !root.join("CHANGELOG.md").exists(),
+        "without --changelog, tag must not write the root CHANGELOG.md"
     );
 }
 
-/// `--dry-run` writes no CHANGELOG.md but still exits 0.
+/// `--changelog --dry-run` writes no CHANGELOG.md but still exits 0 (dry-run
+/// suppresses the write even with the refresh opted in).
 #[test]
 fn single_crate_dry_run_writes_nothing() {
     let tmp = TempDir::new().unwrap();
@@ -226,7 +233,7 @@ crates:
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--crate", "app", "--dry-run"])
+        .args(["tag", "--crate", "app", "--changelog", "--dry-run"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -239,7 +246,8 @@ crates:
     );
 }
 
-/// No `changelog:` config → tag does not create a CHANGELOG.md.
+/// No `changelog:` config → even `--changelog` creates no CHANGELOG.md (the
+/// flag opts in, but an absent config block has nothing to refresh).
 #[test]
 fn single_crate_no_changelog_config_is_default_off() {
     let tmp = TempDir::new().unwrap();
@@ -278,7 +286,7 @@ crates:
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--crate", "app"])
+        .args(["tag", "--crate", "app", "--changelog"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -291,7 +299,8 @@ crates:
     );
 }
 
-/// A plain `changelog: { skip: true }` disables the refresh.
+/// A plain `changelog: { skip: true }` disables the refresh even when
+/// `--changelog` opts in (skip wins over the opt-in flag).
 #[test]
 fn single_crate_changelog_skip_true_disables() {
     let tmp = TempDir::new().unwrap();
@@ -331,7 +340,7 @@ crates:
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--crate", "app"])
+        .args(["tag", "--crate", "app", "--changelog"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -387,7 +396,11 @@ version = "0.1.0"
     fs::write(root.join("crates/b/src/lib.rs"), "// touched b\n").unwrap();
     git_add_commit(root, "feat: shared change");
 
-    let out = anodizer().current_dir(root).args(["tag"]).output().unwrap();
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--changelog"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
@@ -408,7 +421,7 @@ version = "0.1.0"
     }
 }
 
-/// Lockstep `--dry-run` writes no CHANGELOG.md but still exits 0.
+/// Lockstep `--changelog --dry-run` writes no CHANGELOG.md but still exits 0.
 #[test]
 fn lockstep_dry_run_writes_nothing() {
     let tmp = TempDir::new().unwrap();
@@ -445,7 +458,7 @@ version = "0.1.0"
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--dry-run"])
+        .args(["tag", "--changelog", "--dry-run"])
         .output()
         .unwrap();
     assert!(out.status.success());
@@ -506,7 +519,7 @@ crates:
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--no-push"])
+        .args(["tag", "--no-push", "--changelog"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -535,7 +548,7 @@ crates:
 }
 
 /// Per-crate `changelog: { skip: true }` suppresses the refresh at the
-/// per-crate site (proves the gate, not just single-crate).
+/// per-crate site even with `--changelog` (skip wins over the opt-in flag).
 #[test]
 fn per_crate_changelog_skip_true_disables() {
     let tmp = TempDir::new().unwrap();
@@ -583,7 +596,7 @@ crates:
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--no-push"])
+        .args(["tag", "--no-push", "--changelog"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -640,7 +653,7 @@ crates:
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--crate", "app"])
+        .args(["tag", "--crate", "app", "--changelog"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -713,7 +726,7 @@ crates:
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--crate", "app"])
+        .args(["tag", "--crate", "app", "--changelog"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -745,10 +758,10 @@ crates:
     );
 }
 
-/// Lockstep `--no-changelog` suppresses the refresh for every member (proves the
-/// gate at the lockstep site, not just single-crate).
+/// Lockstep default (no `--changelog`) suppresses the refresh for every member
+/// (proves the opt-in default at the lockstep site, not just single-crate).
 #[test]
-fn lockstep_no_changelog_flag_suppresses() {
+fn lockstep_default_no_flag_suppresses() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     fs::write(
@@ -784,11 +797,7 @@ version = "0.1.0"
     fs::write(root.join("crates/b/src/lib.rs"), "// touched b\n").unwrap();
     git_add_commit(root, "feat: shared change");
 
-    let out = anodizer()
-        .current_dir(root)
-        .args(["tag", "--no-changelog"])
-        .output()
-        .unwrap();
+    let out = anodizer().current_dir(root).args(["tag"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
@@ -796,16 +805,20 @@ version = "0.1.0"
     for name in ["a", "b"] {
         assert!(
             !root.join(format!("crates/{name}/CHANGELOG.md")).exists(),
-            "--no-changelog must not write member {name}'s CHANGELOG.md"
+            "without --changelog, tag must not write member {name}'s CHANGELOG.md"
         );
     }
+    assert!(
+        !root.join("CHANGELOG.md").exists(),
+        "without --changelog, tag must not write the root CHANGELOG.md"
+    );
 }
 
-/// Per-crate `--no-changelog` suppresses the refresh for every bumped crate, yet
-/// the bump commit and tags still happen (proves the opt-out at the per-crate
-/// site, mirroring `lockstep_no_changelog_flag_suppresses`).
+/// Per-crate default (no `--changelog`) suppresses the refresh for every bumped
+/// crate, yet the bump commit and tags still happen (proves the opt-in default
+/// at the per-crate site, mirroring `lockstep_default_no_flag_suppresses`).
 #[test]
-fn per_crate_no_changelog_flag_suppresses() {
+fn per_crate_default_no_flag_suppresses() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     fs::write(
@@ -851,7 +864,7 @@ crates:
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--no-changelog", "--no-push"])
+        .args(["tag", "--no-push"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -861,7 +874,7 @@ crates:
     for name in ["core", "cli"] {
         assert!(
             !root.join(format!("crates/{name}/CHANGELOG.md")).exists(),
-            "--no-changelog must not write {name}'s CHANGELOG.md"
+            "without --changelog, tag must not write {name}'s CHANGELOG.md"
         );
     }
 
@@ -876,8 +889,8 @@ crates:
     }
 }
 
-/// Per-crate `--dry-run` writes no CHANGELOG.md anywhere and exits 0 (mirrors
-/// `lockstep_dry_run_writes_nothing`).
+/// Per-crate `--changelog --dry-run` writes no CHANGELOG.md anywhere and exits 0
+/// (mirrors `lockstep_dry_run_writes_nothing`).
 #[test]
 fn per_crate_dry_run_writes_nothing() {
     let tmp = TempDir::new().unwrap();
@@ -925,7 +938,7 @@ crates:
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--dry-run"])
+        .args(["tag", "--changelog", "--dry-run"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -984,7 +997,11 @@ version = "0.1.0"
     fs::write(root.join("crates/a/src/lib.rs"), "// touched\n").unwrap();
     git_add_commit(root, "fix: a shared change");
 
-    let out = anodizer().current_dir(root).args(["tag"]).output().unwrap();
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--changelog"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
@@ -1060,7 +1077,11 @@ version = "0.1.0"
     fs::write(root.join("crates/b/src/lib.rs"), "// touched b\n").unwrap();
     git_add_commit(root, "fix: change in crate b");
 
-    let out = anodizer().current_dir(root).args(["tag"]).output().unwrap();
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--changelog"])
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
@@ -1220,7 +1241,7 @@ fn multitrack_root_date_promotes_only_tagged_track_subsection() {
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--no-push"])
+        .args(["tag", "--no-push", "--changelog"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1305,7 +1326,7 @@ fn multitrack_root_tag_clusters_by_prefix_not_date() {
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--no-push"])
+        .args(["tag", "--no-push", "--changelog"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1359,7 +1380,7 @@ fn both_destination_writes_per_crate_and_root_in_one_commit() {
 
     let out = anodizer()
         .current_dir(root)
-        .args(["tag", "--no-push"])
+        .args(["tag", "--no-push", "--changelog"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1410,7 +1431,7 @@ fn root_crates_subset_filters_excluded_track_from_root() {
     git_add_commit(inc, "feat: core gains a thing");
     let out = anodizer()
         .current_dir(inc)
-        .args(["tag", "--no-push"])
+        .args(["tag", "--no-push", "--changelog"])
         .output()
         .unwrap();
     assert!(
@@ -1433,7 +1454,7 @@ fn root_crates_subset_filters_excluded_track_from_root() {
     git_add_commit(exc, "feat: cli gains a thing");
     let out = anodizer()
         .current_dir(exc)
-        .args(["tag", "--no-push"])
+        .args(["tag", "--no-push", "--changelog"])
         .output()
         .unwrap();
     assert!(

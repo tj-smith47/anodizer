@@ -216,7 +216,7 @@ Auto-tag based on commit message directives
 | `--no-push` | — | — | Push the tag only, leaving the version-sync bump commit local |
 | `--push-remote` | — | — | Remote to push to (default: origin) |
 | `--push-dry-run` | — | — | Create the tag + bump commit locally but only print (not run) the git push commands --push would use; pass --dry-run to also preview tagging |
-| `--no-changelog` | — | — | Skip refreshing CHANGELOG.md on this tag (overrides the changelog: config) |
+| `--changelog` | — | — | Refresh CHANGELOG.md as part of this tag (requires a `changelog:` config block) |
 
 
 ### `anodizer tag rollback`
@@ -278,6 +278,7 @@ Bump crate versions (Conventional Commits → semver level)
 | `--yes` | `-y` | — | Skip confirmation prompt |
 | `--dry-run` | — | — | Print the plan without editing any files |
 | `--commit` | — | — | Stage edits and create a single commit |
+| `--changelog` | — | — | Refresh CHANGELOG.md in the bump commit (requires --commit and a `changelog:` config block) |
 | `--sign` | — | — | GPG-sign the commit (requires --commit) |
 | `--commit-message` | — | — | Override the default commit message template |
 | `--output` | — | `text` | Output format: text | json (json requires --dry-run) |

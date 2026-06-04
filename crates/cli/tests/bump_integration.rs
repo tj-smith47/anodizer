@@ -615,6 +615,10 @@ fn pre_appends_prerelease() {
 // Bundled changelog (via stage-changelog::render_crate_section)
 // ---------------------------------------------------------------------------
 
+/// `bump --commit --changelog` folds the rendered `## [<version>]` section into
+/// the same bump commit as the Cargo.toml edits. The refresh is opt-in: it runs
+/// only because `--changelog` is passed alongside the configured `changelog:`
+/// block.
 #[test]
 fn commit_bundles_changelog_when_configured() {
     let tmp = TempDir::new().unwrap();
@@ -666,7 +670,7 @@ changelog:
 
     let out = anodizer()
         .current_dir(tmp.path())
-        .args(["bump", "patch", "--commit", "-y"])
+        .args(["bump", "patch", "--commit", "--changelog", "-y"])
         .output()
         .unwrap();
     assert!(
@@ -723,6 +727,70 @@ changelog:
     );
 }
 
+/// The new default: `bump --commit` WITHOUT `--changelog` writes no CHANGELOG.md
+/// even though `changelog:` is configured (the refresh is opt-in). The bump
+/// commit still lands the Cargo.toml edit; it just never touches CHANGELOG.md.
+#[test]
+fn commit_default_no_flag_skips_changelog() {
+    let tmp = TempDir::new().unwrap();
+    single_crate_workspace(tmp.path());
+    fs::write(
+        tmp.path().join(".anodizer.yaml"),
+        r#"version: 2
+project_name: demo
+crates:
+  - name: demo
+    path: .
+    tag_template: "v{{ Version }}"
+changelog:
+  sort: asc
+"#,
+    )
+    .unwrap();
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "v0.1.0"]);
+    git_commit_empty_on_path(
+        tmp.path(),
+        "src/feature.rs",
+        "pub fn f() {}",
+        "feat: add a sparkly new feature",
+    );
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["bump", "patch", "--commit", "-y"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "bump --commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Without --changelog, no CHANGELOG.md is written...
+    assert!(
+        !tmp.path().join("CHANGELOG.md").exists(),
+        "without --changelog, bump --commit must not write a CHANGELOG.md"
+    );
+
+    // ...and the bump commit touches only Cargo.toml, never CHANGELOG.md.
+    let diff = Command::new("git")
+        .current_dir(tmp.path())
+        .args(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])
+        .output()
+        .unwrap();
+    let names = String::from_utf8_lossy(&diff.stdout);
+    assert!(
+        names.lines().any(|l| l == "Cargo.toml"),
+        "commit must still touch Cargo.toml: {names}"
+    );
+    assert!(
+        !names.lines().any(|l| l == "CHANGELOG.md"),
+        "without --changelog, commit must NOT touch CHANGELOG.md: {names}"
+    );
+}
+
 /// A `v{{ Version }}` (no `{crate}-v`) template: the bump-produced root section
 /// heading is the bare `## [<version>]` and the rendered range starts at the
 /// `v`-prefixed previous tag. Against the old hardcoded `demo-v` prefix the
@@ -757,7 +825,7 @@ changelog:
 
     let out = anodizer()
         .current_dir(tmp.path())
-        .args(["bump", "patch", "--commit", "-y"])
+        .args(["bump", "patch", "--commit", "--changelog", "-y"])
         .output()
         .unwrap();
     assert!(
@@ -789,9 +857,9 @@ changelog:
 }
 
 /// `changelog: { skip: true }` suppresses the bundled CHANGELOG.md on
-/// `bump --commit`, matching how `tag` honors the same gate. The bump commit
-/// is still produced (Cargo.toml edit), but no CHANGELOG.md is written or
-/// committed.
+/// `bump --commit --changelog` even with the refresh opted in (skip wins),
+/// matching how `tag` honors the same gate. The bump commit is still produced
+/// (Cargo.toml edit), but no CHANGELOG.md is written or committed.
 #[test]
 fn commit_skips_changelog_when_skip_true() {
     let tmp = TempDir::new().unwrap();
@@ -821,7 +889,7 @@ changelog:
 
     let out = anodizer()
         .current_dir(tmp.path())
-        .args(["bump", "patch", "--commit", "-y"])
+        .args(["bump", "patch", "--commit", "--changelog", "-y"])
         .output()
         .unwrap();
     assert!(

@@ -17,20 +17,21 @@ use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use std::path::{Path, PathBuf};
 
-/// Resolve whether a version-bump commit should refresh `CHANGELOG.md`.
+/// Resolve whether a `tag` / `bump --commit` invocation should refresh
+/// `CHANGELOG.md`.
 ///
-/// Shared by `bump --commit` and `tag` so the two commands gate the changelog
-/// render loop identically. Enabled when the `changelog:` config block is
-/// present and not skipped, and `no_changelog` is not set (only `tag` exposes a
-/// `--no-changelog` flag; `bump` always passes `false`).
+/// Opt-in: the refresh runs only when the caller passes `--changelog`
+/// (`opt_in == true`) AND a `changelog:` config block is present and not
+/// skipped. Shared by `bump --commit` and `tag` so the two commands gate the
+/// changelog render loop identically.
 ///
 /// A plain `skip: true` boolean disables; a templated `skip:` (e.g.
 /// `"{{ if IsSnapshot }}true{{ endif }}"`) is treated as enabled because neither
 /// command has a release context to render the template against — the
 /// per-pipeline changelog stage evaluates such templates at release time, so
 /// suppressing here on an unrenderable template would be a false negative.
-pub(crate) fn resolve_changelog_enabled(config: Option<&Config>, no_changelog: bool) -> bool {
-    if no_changelog {
+pub(crate) fn resolve_changelog_enabled(config: Option<&Config>, opt_in: bool) -> bool {
+    if !opt_in {
         return false;
     }
     let Some(cl) = config.and_then(|c| c.changelog.as_ref()) else {

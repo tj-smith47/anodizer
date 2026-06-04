@@ -414,10 +414,10 @@ pub enum Commands {
         )]
         push_dry_run: bool,
         #[arg(
-            long = "no-changelog",
-            help = "Skip refreshing CHANGELOG.md on this tag (overrides the changelog: config)"
+            long = "changelog",
+            help = "Refresh CHANGELOG.md as part of this tag (requires a `changelog:` config block)"
         )]
-        no_changelog: bool,
+        changelog: bool,
         /// `anodize tag rollback [...]` — failure-recovery counterpart.
         ///
         /// Subcommand is optional: bare `anodize tag` keeps its
@@ -539,6 +539,12 @@ pub enum Commands {
         dry_run: bool,
         #[arg(long, help = "Stage edits and create a single commit")]
         commit: bool,
+        #[arg(
+            long = "changelog",
+            requires = "commit",
+            help = "Refresh CHANGELOG.md in the bump commit (requires --commit and a `changelog:` config block)"
+        )]
+        changelog: bool,
         #[arg(
             long,
             requires = "commit",

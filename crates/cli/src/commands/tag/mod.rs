@@ -30,9 +30,9 @@ pub struct TagOpts {
     pub push_remote: Option<String>,
     /// Preview the `git push` commands `--push` would run, without executing.
     pub push_dry_run: bool,
-    /// Skip refreshing `CHANGELOG.md` on this tag, overriding the `changelog:`
-    /// config (mirrors `--no-push`).
-    pub no_changelog: bool,
+    /// Refresh `CHANGELOG.md` as part of this tag. Opt-in: the refresh runs only
+    /// when set AND a `changelog:` config block is present and not skipped.
+    pub changelog: bool,
     pub config_override: Option<std::path::PathBuf>,
     pub verbose: bool,
     pub debug: bool,
@@ -177,7 +177,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // `git add` as the Cargo.toml / version_files edits) when `changelog:` is
     // configured and not skipped — `tag` is what release CI runs, so without
     // this the changelogs rot between releases even though `bump` refreshes them.
-    let changelog_enabled = resolve_changelog_enabled(loaded_config.as_ref(), opts.no_changelog);
+    let changelog_enabled = resolve_changelog_enabled(loaded_config.as_ref(), opts.changelog);
 
     let mut cfg = ResolvedConfig::from_tag_config(&tag_config, &opts);
 
@@ -2037,7 +2037,7 @@ mod tests {
             no_push,
             push_remote: None,
             push_dry_run: false,
-            no_changelog: false,
+            changelog: false,
             config_override: None,
             verbose: false,
             debug: false,
@@ -2397,7 +2397,7 @@ mod tests {
             no_push: false,
             push_remote: None,
             push_dry_run: false,
-            no_changelog: false,
+            changelog: false,
             config_override: None,
             verbose: false,
             debug: false,
@@ -2435,7 +2435,7 @@ mod tests {
             no_push: false,
             push_remote: None,
             push_dry_run: false,
-            no_changelog: false,
+            changelog: false,
             config_override: None,
             verbose: false,
             debug: false,
@@ -2481,7 +2481,7 @@ mod tests {
             no_push: false,
             push_remote: None,
             push_dry_run: false,
-            no_changelog: false,
+            changelog: false,
             config_override: None,
             verbose: false,
             debug: false,
