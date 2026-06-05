@@ -176,214 +176,368 @@ impl Stage for PkgStage {
             .cloned()
             .unwrap_or_else(|| "0.0.0".to_string());
 
+        // In workspace per-crate mode the same pipeline run produces a pkg for
+        // each crate. Rebinding `ProjectName` to the current crate's name
+        // (mirroring the archive stage) keeps default name templates like
+        // `{{ ProjectName }}_{{ Arch }}` distinct per crate so two crates'
+        // installers don't render the same filename and clobber each other.
+        // Restored after the loop.
+        let multi_crate = crates.len() > 1;
+        let original_project_name = ctx
+            .template_vars()
+            .get("ProjectName")
+            .cloned()
+            .unwrap_or_else(|| ctx.config.project_name.clone());
+
         let mut new_artifacts: Vec<Artifact> = Vec::new();
         let mut archive_paths_to_remove: Vec<PathBuf> = Vec::new();
 
-        for krate in &crates {
-            let Some(pkg_configs) = krate.pkgs.as_ref() else {
-                continue;
-            };
-
-            // Collect macOS binary artifacts for this crate
-            let darwin_binaries: Vec<_> = ctx
-                .artifacts
-                .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
-                .into_iter()
-                .filter(|b| {
-                    b.target
-                        .as_deref()
-                        .map(anodizer_core::target::is_darwin)
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect();
-
-            for pkg_cfg in pkg_configs {
-                let pkg_id_for_log = pkg_cfg.id.as_deref().unwrap_or("default").to_string();
-
-                // `pkg.if`: template-conditional skip (opt-in).
-                // Render error => hard bail (W1 avoidance).
-                let proceed = anodizer_core::config::evaluate_if_condition(
-                    pkg_cfg.if_condition.as_deref(),
-                    &format!("pkg config '{}' for crate '{}'", pkg_id_for_log, krate.name),
-                    |t| ctx.render_template(t),
-                )?;
-                if !proceed {
-                    log.status(&format!(
-                        "skipping pkg config '{}' for crate {}: `if` condition evaluated falsy",
-                        pkg_id_for_log, krate.name
-                    ));
+        // Capture the loop result rather than `?`-ing inside it: a per-crate
+        // failure must still restore the rebound `ProjectName` below before
+        // propagating, so the workspace value never leaks past this stage.
+        let loop_result: Result<()> = (|| {
+            for krate in &crates {
+                let Some(pkg_configs) = krate.pkgs.as_ref() else {
                     continue;
+                };
+                if multi_crate {
+                    ctx.template_vars_mut().set("ProjectName", &krate.name);
                 }
 
-                // Skip configs marked skip:
-                if let Some(ref d) = pkg_cfg.skip {
-                    let off = d
-                        .try_evaluates_to_true(|s| ctx.render_template(s))
-                        .with_context(|| {
-                            format!("pkg: render skip template for crate {}", krate.name)
-                        })?;
-                    if off {
-                        log.status(&format!("pkg config skipped for crate {}", krate.name));
+                // Collect macOS binary artifacts for this crate
+                let darwin_binaries: Vec<_> = ctx
+                    .artifacts
+                    .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
+                    .into_iter()
+                    .filter(|b| {
+                        b.target
+                            .as_deref()
+                            .map(anodizer_core::target::is_darwin)
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect();
+
+                for pkg_cfg in pkg_configs {
+                    let pkg_id_for_log = pkg_cfg.id.as_deref().unwrap_or("default").to_string();
+
+                    // `pkg.if`: template-conditional skip (opt-in).
+                    // Render error => hard bail (W1 avoidance).
+                    let proceed = anodizer_core::config::evaluate_if_condition(
+                        pkg_cfg.if_condition.as_deref(),
+                        &format!("pkg config '{}' for crate '{}'", pkg_id_for_log, krate.name),
+                        |t| ctx.render_template(t),
+                    )?;
+                    if !proceed {
+                        log.status(&format!(
+                            "skipping pkg config '{}' for crate {}: `if` condition evaluated falsy",
+                            pkg_id_for_log, krate.name
+                        ));
                         continue;
                     }
-                }
 
-                // Validate `use` field
-                let use_mode = pkg_cfg.use_.as_deref().unwrap_or("binary");
-                if use_mode != "binary" && use_mode != "appbundle" {
-                    anyhow::bail!(
-                        "pkg: invalid `use` value '{}' for crate '{}'; expected 'binary' or 'appbundle'",
-                        use_mode,
-                        krate.name
-                    );
-                }
+                    // Skip configs marked skip:
+                    if let Some(ref d) = pkg_cfg.skip {
+                        let off = d
+                            .try_evaluates_to_true(|s| ctx.render_template(s))
+                            .with_context(|| {
+                                format!("pkg: render skip template for crate {}", krate.name)
+                            })?;
+                        if off {
+                            log.status(&format!("pkg config skipped for crate {}", krate.name));
+                            continue;
+                        }
+                    }
 
-                // Collect source artifacts depending on `use` mode
-                let source_artifacts: Vec<_> = if use_mode == "appbundle" {
-                    // Collect Installer artifacts with format=appbundle for this crate
-                    ctx.artifacts
-                        .by_kind_and_crate(ArtifactKind::Installer, &krate.name)
-                        .into_iter()
-                        .filter(|a| {
-                            a.metadata
-                                .get("format")
-                                .map(|f| f == "appbundle")
+                    // Validate `use` field
+                    let use_mode = pkg_cfg.use_.as_deref().unwrap_or("binary");
+                    if use_mode != "binary" && use_mode != "appbundle" {
+                        anyhow::bail!(
+                            "pkg: invalid `use` value '{}' for crate '{}'; expected 'binary' or 'appbundle'",
+                            use_mode,
+                            krate.name
+                        );
+                    }
+
+                    // Collect source artifacts depending on `use` mode
+                    let source_artifacts: Vec<_> = if use_mode == "appbundle" {
+                        // Collect Installer artifacts with format=appbundle for this crate
+                        ctx.artifacts
+                            .by_kind_and_crate(ArtifactKind::Installer, &krate.name)
+                            .into_iter()
+                            .filter(|a| {
+                                a.metadata
+                                    .get("format")
+                                    .map(|f| f == "appbundle")
+                                    .unwrap_or(false)
+                            })
+                            .cloned()
+                            .collect()
+                    } else {
+                        darwin_binaries.clone()
+                    };
+
+                    // Filter by build IDs if specified
+                    let mut filtered = source_artifacts.clone();
+                    if let Some(ref filter_ids) = pkg_cfg.ids
+                        && !filter_ids.is_empty()
+                    {
+                        filtered.retain(|b| {
+                            b.metadata
+                                .get("id")
+                                .map(|id| filter_ids.contains(id))
                                 .unwrap_or(false)
-                        })
-                        .cloned()
-                        .collect()
-                } else {
-                    darwin_binaries.clone()
-                };
+                                || b.metadata
+                                    .get("name")
+                                    .map(|n| filter_ids.contains(n))
+                                    .unwrap_or(false)
+                        });
+                    }
 
-                // Filter by build IDs if specified
-                let mut filtered = source_artifacts.clone();
-                if let Some(ref filter_ids) = pkg_cfg.ids
-                    && !filter_ids.is_empty()
-                {
-                    filtered.retain(|b| {
-                        b.metadata
-                            .get("id")
-                            .map(|id| filter_ids.contains(id))
-                            .unwrap_or(false)
-                            || b.metadata
-                                .get("name")
-                                .map(|n| filter_ids.contains(n))
-                                .unwrap_or(false)
-                    });
-                }
-
-                // Warn and skip if no source artifacts found
-                if filtered.is_empty() && source_artifacts.is_empty() {
-                    if use_mode == "appbundle" {
-                        log.warn(&format!(
+                    // Warn and skip if no source artifacts found
+                    if filtered.is_empty() && source_artifacts.is_empty() {
+                        if use_mode == "appbundle" {
+                            log.warn(&format!(
                             "no appbundle artifacts found for crate '{}'; \
                              skipping PKG generation (expected Installer artifacts with format=appbundle)",
                             krate.name
                         ));
-                    } else {
-                        log.warn(&format!(
-                            "no macOS binary artifacts found for crate '{}'; \
+                        } else {
+                            log.warn(&format!(
+                                "no macOS binary artifacts found for crate '{}'; \
                              skipping PKG generation (expected binaries targeting darwin/apple)",
-                            krate.name
-                        ));
+                                krate.name
+                            ));
+                        }
+                        continue;
                     }
-                    continue;
-                }
-                if filtered.is_empty() {
-                    log.warn(&format!(
-                        "ids filter {:?} matched no artifacts for crate '{}'; skipping",
-                        pkg_cfg.ids, krate.name
-                    ));
-                    continue;
-                }
+                    if filtered.is_empty() {
+                        log.warn(&format!(
+                            "ids filter {:?} matched no artifacts for crate '{}'; skipping",
+                            pkg_cfg.ids, krate.name
+                        ));
+                        continue;
+                    }
 
-                let effective_binaries: Vec<(Option<String>, PathBuf)> = filtered
-                    .iter()
-                    .map(|b| (b.target.clone(), b.path.clone()))
-                    .collect();
+                    let effective_binaries: Vec<(Option<String>, PathBuf)> = filtered
+                        .iter()
+                        .map(|b| (b.target.clone(), b.path.clone()))
+                        .collect();
 
-                // Validate identifier is present (template render happens inside the
-                // per-binary loop below so Os/Arch vars are set first).
-                let identifier_template = pkg_cfg.identifier.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "pkg: missing required `identifier` for crate `{}`. \
+                    // Validate identifier is present (template render happens inside the
+                    // per-binary loop below so Os/Arch vars are set first).
+                    let identifier_template = pkg_cfg.identifier.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "pkg: missing required `identifier` for crate `{}`. \
                          Set a reverse-domain identifier (e.g. com.example.myapp)",
-                        krate.name
-                    )
-                })?;
-
-                // Probe pkgbuild once per config entry before entering the per-binary
-                // loop so the error surfaces early with an actionable install hint.
-                if !dry_run && !anodizer_core::util::find_binary("pkgbuild") {
-                    anyhow::bail!(
-                        "pkgbuild not found on PATH; install Xcode Command Line Tools \
-                         with `xcode-select --install`"
-                    );
-                }
-
-                // One .pkg is produced per binary — pkg installers are single-binary
-                // by design. Unlike DMG (which groups multiple binaries into one
-                // container image), each pkg wraps exactly one payload binary so that
-                // Homebrew formula installers and macOS Installer.app each target a
-                // discrete, independently versionable package. Multi-binary crates
-                // therefore emit N packages per target triple.
-                for (target, binary_path) in &effective_binaries {
-                    // Derive Os/Arch from the target triple for template rendering
-                    let (os, arch) = target
-                        .as_deref()
-                        .map(anodizer_core::target::map_target)
-                        .unwrap_or_else(|| ("darwin".to_string(), "amd64".to_string()));
-
-                    // Set Os/Arch/Target in template vars for name template rendering
-                    ctx.template_vars_mut().set("Os", &os);
-                    ctx.template_vars_mut().set("Arch", &arch);
-                    ctx.template_vars_mut()
-                        .set("Target", target.as_deref().unwrap_or(""));
-
-                    let rendered = render_pkg_fields(
-                        ctx,
-                        pkg_cfg,
-                        identifier_template,
-                        &krate.name,
-                        target.as_deref(),
-                    )?;
-                    let identifier = rendered.identifier;
-                    let install_location = rendered.install_location;
-                    let scripts_rendered = rendered.scripts;
-                    let mod_timestamp_rendered = rendered.mod_timestamp;
-
-                    // Determine output filename
-                    let name_template = pkg_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
-
-                    let pkg_filename = ctx.render_template(name_template).with_context(|| {
-                        format!(
-                            "pkg: render name template for crate {} target {:?}",
-                            krate.name, target
+                            krate.name
                         )
                     })?;
 
-                    // Ensure the filename ends with .pkg (case-insensitive). An
-                    // extensionless installer is not recognized by macOS
-                    // Installer.app and breaks the homebrew-cask pkg stanza +
-                    // checksum naming; a user-supplied `name` already ending in
-                    // `.pkg` is not doubled. Mirrors stage-dmg's `.dmg` append.
-                    let pkg_filename = if pkg_filename.to_ascii_lowercase().ends_with(".pkg") {
-                        pkg_filename
-                    } else {
-                        format!("{pkg_filename}.pkg")
-                    };
+                    // Probe pkgbuild once per config entry before entering the per-binary
+                    // loop so the error surfaces early with an actionable install hint.
+                    if !dry_run && !anodizer_core::util::find_binary("pkgbuild") {
+                        anyhow::bail!(
+                            "pkgbuild not found on PATH; install Xcode Command Line Tools \
+                         with `xcode-select --install`"
+                        );
+                    }
 
-                    let output_dir = dist.join("macos");
-                    let pkg_path = output_dir.join(&pkg_filename);
+                    // One .pkg is produced per binary — pkg installers are single-binary
+                    // by design. Unlike DMG (which groups multiple binaries into one
+                    // container image), each pkg wraps exactly one payload binary so that
+                    // Homebrew formula installers and macOS Installer.app each target a
+                    // discrete, independently versionable package. Multi-binary crates
+                    // therefore emit N packages per target triple.
+                    for (target, binary_path) in &effective_binaries {
+                        // Derive Os/Arch from the target triple for template rendering
+                        let (os, arch) = target
+                            .as_deref()
+                            .map(anodizer_core::target::map_target)
+                            .unwrap_or_else(|| ("darwin".to_string(), "amd64".to_string()));
 
-                    if dry_run {
-                        log.status(&format!(
-                            "(dry-run) would run: pkgbuild --identifier {identifier} \
+                        // Set Os/Arch/Target in template vars for name template rendering
+                        ctx.template_vars_mut().set("Os", &os);
+                        ctx.template_vars_mut().set("Arch", &arch);
+                        ctx.template_vars_mut()
+                            .set("Target", target.as_deref().unwrap_or(""));
+
+                        let rendered = render_pkg_fields(
+                            ctx,
+                            pkg_cfg,
+                            identifier_template,
+                            &krate.name,
+                            target.as_deref(),
+                        )?;
+                        let identifier = rendered.identifier;
+                        let install_location = rendered.install_location;
+                        let scripts_rendered = rendered.scripts;
+                        let mod_timestamp_rendered = rendered.mod_timestamp;
+
+                        // Determine output filename
+                        let name_template =
+                            pkg_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
+
+                        let pkg_filename =
+                            ctx.render_template(name_template).with_context(|| {
+                                format!(
+                                    "pkg: render name template for crate {} target {:?}",
+                                    krate.name, target
+                                )
+                            })?;
+
+                        // Ensure the filename ends with .pkg (case-insensitive). An
+                        // extensionless installer is not recognized by macOS
+                        // Installer.app and breaks the homebrew-cask pkg stanza +
+                        // checksum naming; a user-supplied `name` already ending in
+                        // `.pkg` is not doubled. Mirrors stage-dmg's `.dmg` append.
+                        let pkg_filename = if pkg_filename.to_ascii_lowercase().ends_with(".pkg") {
+                            pkg_filename
+                        } else {
+                            format!("{pkg_filename}.pkg")
+                        };
+
+                        let output_dir = dist.join("macos");
+                        let pkg_path = output_dir.join(&pkg_filename);
+
+                        if dry_run {
+                            log.status(&format!(
+                                "(dry-run) would run: pkgbuild --identifier {identifier} \
                              --version {version} for crate {} target {:?}",
-                            krate.name, target
-                        ));
+                                krate.name, target
+                            ));
+
+                            new_artifacts.push(Artifact {
+                                kind: ArtifactKind::MacOsPackage,
+                                name: String::new(),
+                                path: pkg_path,
+                                target: target.clone(),
+                                crate_name: krate.name.clone(),
+                                metadata: {
+                                    let mut m = HashMap::from([(
+                                        "identifier".to_string(),
+                                        identifier.to_string(),
+                                    )]);
+                                    if let Some(id) = &pkg_cfg.id {
+                                        m.insert("id".to_string(), id.clone());
+                                    }
+                                    m
+                                },
+                                size: None,
+                            });
+
+                            // Track archives to remove if replace is true
+                            archive_paths_to_remove.extend(
+                                anodizer_core::util::collect_if_replace(
+                                    pkg_cfg.replace,
+                                    &ctx.artifacts,
+                                    &krate.name,
+                                    target.as_deref(),
+                                ),
+                            );
+
+                            continue;
+                        }
+
+                        // Live mode: create staging directory and copy binary into it
+                        let staging_tmp =
+                            tempfile::tempdir().context("create temp staging dir for pkg")?;
+                        let staging_dir = staging_tmp.path();
+
+                        // Copy the binary into the staging directory
+                        let binary_name = binary_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&krate.name);
+                        let staged_binary = staging_dir.join(binary_name);
+                        fs::copy(binary_path, &staged_binary).with_context(|| {
+                            format!(
+                                "pkg: copy binary {} to staging dir {}",
+                                binary_path.display(),
+                                staging_dir.display()
+                            )
+                        })?;
+
+                        // Copy extra files into the staging directory
+                        if let Some(extra_files) = &pkg_cfg.extra_files {
+                            for spec in extra_files {
+                                let glob_pattern = spec.glob();
+                                for entry in glob::glob(glob_pattern).with_context(|| {
+                                    format!("pkg: invalid extra_files glob '{}'", glob_pattern)
+                                })? {
+                                    let src = entry.with_context(|| {
+                                        format!(
+                                            "pkg: error reading glob match for '{}'",
+                                            glob_pattern
+                                        )
+                                    })?;
+                                    let dst_name = spec
+                                        .name_template()
+                                        .map(|s| s.to_string())
+                                        .or_else(|| {
+                                            src.file_name()
+                                                .and_then(|n| n.to_str())
+                                                .map(|s| s.to_string())
+                                        })
+                                        .unwrap_or_else(|| "extra".to_string());
+                                    let dst = staging_dir.join(&dst_name);
+                                    fs::copy(&src, &dst).with_context(|| {
+                                        format!(
+                                            "pkg: copy extra file {} to staging dir",
+                                            src.display()
+                                        )
+                                    })?;
+                                }
+                            }
+                        }
+
+                        // Render and copy templated_extra_files into the staging directory
+                        if let Some(ref tpl_specs) = pkg_cfg.templated_extra_files
+                            && !tpl_specs.is_empty()
+                        {
+                            anodizer_core::templated_files::process_templated_extra_files(
+                                tpl_specs,
+                                ctx,
+                                staging_dir,
+                                "pkg",
+                            )?;
+                        }
+
+                        // Apply mod_timestamp if set. Templates were already expanded
+                        // upstream via render_pkg_fields, so values like
+                        // `{{ CommitTimestamp }}` reach parse_mod_timestamp as a
+                        // valid RFC3339 string rather than the literal template.
+                        if let Some(ts) = &mod_timestamp_rendered {
+                            anodizer_core::util::apply_mod_timestamp(staging_dir, ts, &log)?;
+                        }
+
+                        // Ensure output directory exists
+                        fs::create_dir_all(&output_dir).with_context(|| {
+                            format!("create pkg output dir: {}", output_dir.display())
+                        })?;
+
+                        let cmd_args = pkgbuild_command(
+                            &staging_dir.to_string_lossy(),
+                            &identifier,
+                            &version,
+                            &install_location,
+                            scripts_rendered.as_deref(),
+                            pkg_cfg.min_os_version.as_deref(),
+                            &pkg_path.to_string_lossy(),
+                        );
+
+                        log.status(&format!("running: {}", cmd_args.join(" ")));
+
+                        let output = Command::new(&cmd_args[0])
+                            .args(&cmd_args[1..])
+                            .output()
+                            .with_context(|| {
+                                format!(
+                                    "execute pkgbuild for crate {} target {:?}",
+                                    krate.name, target
+                                )
+                            })?;
+                        log.check_output(output, "pkgbuild")?;
 
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::MacOsPackage,
@@ -411,131 +565,17 @@ impl Stage for PkgStage {
                             &krate.name,
                             target.as_deref(),
                         ));
-
-                        continue;
                     }
-
-                    // Live mode: create staging directory and copy binary into it
-                    let staging_tmp =
-                        tempfile::tempdir().context("create temp staging dir for pkg")?;
-                    let staging_dir = staging_tmp.path();
-
-                    // Copy the binary into the staging directory
-                    let binary_name = binary_path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(&krate.name);
-                    let staged_binary = staging_dir.join(binary_name);
-                    fs::copy(binary_path, &staged_binary).with_context(|| {
-                        format!(
-                            "pkg: copy binary {} to staging dir {}",
-                            binary_path.display(),
-                            staging_dir.display()
-                        )
-                    })?;
-
-                    // Copy extra files into the staging directory
-                    if let Some(extra_files) = &pkg_cfg.extra_files {
-                        for spec in extra_files {
-                            let glob_pattern = spec.glob();
-                            for entry in glob::glob(glob_pattern).with_context(|| {
-                                format!("pkg: invalid extra_files glob '{}'", glob_pattern)
-                            })? {
-                                let src = entry.with_context(|| {
-                                    format!("pkg: error reading glob match for '{}'", glob_pattern)
-                                })?;
-                                let dst_name = spec
-                                    .name_template()
-                                    .map(|s| s.to_string())
-                                    .or_else(|| {
-                                        src.file_name()
-                                            .and_then(|n| n.to_str())
-                                            .map(|s| s.to_string())
-                                    })
-                                    .unwrap_or_else(|| "extra".to_string());
-                                let dst = staging_dir.join(&dst_name);
-                                fs::copy(&src, &dst).with_context(|| {
-                                    format!("pkg: copy extra file {} to staging dir", src.display())
-                                })?;
-                            }
-                        }
-                    }
-
-                    // Render and copy templated_extra_files into the staging directory
-                    if let Some(ref tpl_specs) = pkg_cfg.templated_extra_files
-                        && !tpl_specs.is_empty()
-                    {
-                        anodizer_core::templated_files::process_templated_extra_files(
-                            tpl_specs,
-                            ctx,
-                            staging_dir,
-                            "pkg",
-                        )?;
-                    }
-
-                    // Apply mod_timestamp if set. Templates were already expanded
-                    // upstream via render_pkg_fields, so values like
-                    // `{{ CommitTimestamp }}` reach parse_mod_timestamp as a
-                    // valid RFC3339 string rather than the literal template.
-                    if let Some(ts) = &mod_timestamp_rendered {
-                        anodizer_core::util::apply_mod_timestamp(staging_dir, ts, &log)?;
-                    }
-
-                    // Ensure output directory exists
-                    fs::create_dir_all(&output_dir).with_context(|| {
-                        format!("create pkg output dir: {}", output_dir.display())
-                    })?;
-
-                    let cmd_args = pkgbuild_command(
-                        &staging_dir.to_string_lossy(),
-                        &identifier,
-                        &version,
-                        &install_location,
-                        scripts_rendered.as_deref(),
-                        pkg_cfg.min_os_version.as_deref(),
-                        &pkg_path.to_string_lossy(),
-                    );
-
-                    log.status(&format!("running: {}", cmd_args.join(" ")));
-
-                    let output = Command::new(&cmd_args[0])
-                        .args(&cmd_args[1..])
-                        .output()
-                        .with_context(|| {
-                            format!(
-                                "execute pkgbuild for crate {} target {:?}",
-                                krate.name, target
-                            )
-                        })?;
-                    log.check_output(output, "pkgbuild")?;
-
-                    new_artifacts.push(Artifact {
-                        kind: ArtifactKind::MacOsPackage,
-                        name: String::new(),
-                        path: pkg_path,
-                        target: target.clone(),
-                        crate_name: krate.name.clone(),
-                        metadata: {
-                            let mut m =
-                                HashMap::from([("identifier".to_string(), identifier.to_string())]);
-                            if let Some(id) = &pkg_cfg.id {
-                                m.insert("id".to_string(), id.clone());
-                            }
-                            m
-                        },
-                        size: None,
-                    });
-
-                    // Track archives to remove if replace is true
-                    archive_paths_to_remove.extend(anodizer_core::util::collect_if_replace(
-                        pkg_cfg.replace,
-                        &ctx.artifacts,
-                        &krate.name,
-                        target.as_deref(),
-                    ));
                 }
             }
+            Ok(())
+        })();
+
+        if multi_crate {
+            ctx.template_vars_mut()
+                .set("ProjectName", &original_project_name);
         }
+        loop_result?;
 
         anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
@@ -785,6 +825,150 @@ mod tests {
         let targets: Vec<Option<&str>> = pkgs.iter().map(|p| p.target.as_deref()).collect();
         assert!(targets.contains(&Some("aarch64-apple-darwin")));
         assert!(targets.contains(&Some("x86_64-apple-darwin")));
+    }
+
+    #[test]
+    fn test_workspace_per_crate_distinct_filenames() {
+        let tmp = TempDir::new().unwrap();
+
+        // Two crates, both using the DEFAULT name template (no Version segment),
+        // so ProjectName is the only distinguishing token. Without the per-crate
+        // ProjectName rebind both render to `<project_name>_arm64.pkg` and clobber.
+        let make_crate = |name: &str| CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![PkgConfig {
+                identifier: Some("com.example.{{ ProjectName }}".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "workspace".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![make_crate("alpha"), make_crate("beta")];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        for crate_name in ["alpha", "beta"] {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from(format!("/build/{crate_name}")),
+                target: Some("aarch64-apple-darwin".to_string()),
+                crate_name: crate_name.to_string(),
+                metadata: HashMap::new(),
+                size: None,
+            });
+        }
+
+        let stage = PkgStage;
+        stage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::MacOsPackage);
+        assert_eq!(pkgs.len(), 2, "expected one PKG per crate");
+
+        let filenames: Vec<String> = pkgs
+            .iter()
+            .map(|p| p.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            filenames.iter().any(|f| f.contains("alpha")),
+            "no PKG filename contains crate name 'alpha': {filenames:?}"
+        );
+        assert!(
+            filenames.iter().any(|f| f.contains("beta")),
+            "no PKG filename contains crate name 'beta': {filenames:?}"
+        );
+        assert_ne!(
+            filenames[0], filenames[1],
+            "the two crates' PKGs must not share a filename (clobber): {filenames:?}"
+        );
+
+        assert_eq!(
+            ctx.template_vars().get("ProjectName").map(String::as_str),
+            Some("workspace"),
+            "ProjectName not restored after per-crate rebind"
+        );
+    }
+
+    #[test]
+    fn test_project_name_restored_after_mid_loop_error() {
+        // A per-crate render failure mid-loop must still restore the rebound
+        // `ProjectName` before propagating, so the workspace value never leaks
+        // out of the stage (the var is process-global on ctx).
+        let tmp = TempDir::new().unwrap();
+
+        let good_crate = CrateConfig {
+            name: "alpha".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![PkgConfig {
+                identifier: Some("com.example.alpha".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let bad_crate = CrateConfig {
+            name: "beta".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![PkgConfig {
+                identifier: Some("com.example.beta".to_string()),
+                // Malformed template — unclosed tag forces a mid-loop render error.
+                name: Some("{{ bad_template".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "workspace".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![good_crate, bad_crate];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        for crate_name in ["alpha", "beta"] {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from(format!("/build/{crate_name}")),
+                target: Some("aarch64-apple-darwin".to_string()),
+                crate_name: crate_name.to_string(),
+                metadata: HashMap::new(),
+                size: None,
+            });
+        }
+
+        let result = PkgStage.run(&mut ctx);
+        assert!(
+            result.is_err(),
+            "malformed name on a crate must fail the stage"
+        );
+
+        assert_eq!(
+            ctx.template_vars().get("ProjectName").map(String::as_str),
+            Some("workspace"),
+            "ProjectName must be restored even when the loop errors mid-iteration"
+        );
     }
 
     #[test]

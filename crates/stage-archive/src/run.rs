@@ -64,41 +64,48 @@ impl Stage for ArchiveStage {
             .cloned()
             .unwrap_or_else(|| ctx.config.project_name.clone());
 
-        for (crate_name, crate_dir, archive_cfgs) in &work {
-            if multi_crate {
-                ctx.template_vars_mut().set("ProjectName", crate_name);
-            }
+        // Capture the loop result rather than `?`-ing inside it: a per-crate
+        // failure must still restore the rebound `ProjectName` below before
+        // propagating, so the workspace value never leaks past this stage.
+        let loop_result: Result<()> = (|| {
+            for (crate_name, crate_dir, archive_cfgs) in &work {
+                if multi_crate {
+                    ctx.template_vars_mut().set("ProjectName", crate_name);
+                }
 
-            let all_binaries = collect_crate_archivable_artifacts(ctx, crate_name);
+                let all_binaries = collect_crate_archivable_artifacts(ctx, crate_name);
 
-            let has_any_meta = archive_cfgs.iter().any(|cfg| cfg.meta.unwrap_or(false));
+                let has_any_meta = archive_cfgs.iter().any(|cfg| cfg.meta.unwrap_or(false));
 
-            if all_binaries.is_empty() && !has_any_meta {
-                ctx.strict_guard(
+                if all_binaries.is_empty() && !has_any_meta {
+                    ctx.strict_guard(
+                        &log,
+                        &format!("no binaries for crate {crate_name}, skipping"),
+                    )?;
+                    continue;
+                }
+
+                archive_one_config(
+                    ctx,
                     &log,
-                    &format!("no binaries for crate {crate_name}, skipping"),
+                    &dist,
+                    dry_run,
+                    multi_crate,
+                    &global_default_format,
+                    &global_format_overrides,
+                    archive_cfgs,
+                    crate_name,
+                    crate_dir,
+                    &all_binaries,
+                    &mut new_artifacts,
                 )?;
-                continue;
             }
-
-            archive_one_config(
-                ctx,
-                &log,
-                &dist,
-                dry_run,
-                multi_crate,
-                &global_default_format,
-                &global_format_overrides,
-                archive_cfgs,
-                crate_name,
-                crate_dir,
-                &all_binaries,
-                &mut new_artifacts,
-            )?;
-        }
+            Ok(())
+        })();
 
         ctx.template_vars_mut()
             .set("ProjectName", &original_project_name);
+        loop_result?;
 
         clear_archive_template_vars(ctx);
 

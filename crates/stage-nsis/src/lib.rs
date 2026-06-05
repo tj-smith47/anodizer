@@ -148,217 +148,401 @@ impl Stage for NsisStage {
             return Ok(());
         }
 
+        // In workspace per-crate mode the same pipeline run produces an NSIS
+        // installer for each crate. Rebinding `ProjectName` to the current
+        // crate's name (mirroring the archive stage) keeps default name
+        // templates like `{{ ProjectName }}_{{ Arch }}_setup` distinct per crate
+        // so two crates' installers don't render the same filename and clobber
+        // each other. Restored after the loop.
+        let multi_crate = crates.len() > 1;
+        let original_project_name = ctx
+            .template_vars()
+            .get("ProjectName")
+            .cloned()
+            .unwrap_or_else(|| ctx.config.project_name.clone());
+
         let mut new_artifacts: Vec<Artifact> = Vec::new();
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
 
-        for krate in &crates {
-            let Some(nsis_configs) = krate.nsis.as_ref() else {
-                continue;
-            };
+        // Capture the loop result rather than `?`-ing inside it: a per-crate
+        // failure must still restore the rebound `ProjectName` below before
+        // propagating, so the workspace value never leaks past this stage.
+        let loop_result: Result<()> = (|| {
+            for krate in &crates {
+                let Some(nsis_configs) = krate.nsis.as_ref() else {
+                    continue;
+                };
+                if multi_crate {
+                    ctx.template_vars_mut().set("ProjectName", &krate.name);
+                }
 
-            // Collect Windows binary artifacts for this crate
-            let windows_binaries: Vec<_> = ctx
-                .artifacts
-                .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
-                .into_iter()
-                .filter(|b| {
-                    b.target
-                        .as_deref()
-                        .map(anodizer_core::target::is_windows)
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect();
+                // Collect Windows binary artifacts for this crate
+                let windows_binaries: Vec<_> = ctx
+                    .artifacts
+                    .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
+                    .into_iter()
+                    .filter(|b| {
+                        b.target
+                            .as_deref()
+                            .map(anodizer_core::target::is_windows)
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect();
 
-            for nsis_cfg in nsis_configs {
-                let nsis_id_for_log = nsis_cfg.id.as_deref().unwrap_or("default").to_string();
+                for nsis_cfg in nsis_configs {
+                    let nsis_id_for_log = nsis_cfg.id.as_deref().unwrap_or("default").to_string();
 
-                // `nsis.if`: template-conditional skip (opt-in).
-                // Render error => hard bail (W1 avoidance).
-                let proceed = anodizer_core::config::evaluate_if_condition(
-                    nsis_cfg.if_condition.as_deref(),
-                    &format!(
-                        "nsis config '{}' for crate '{}'",
-                        nsis_id_for_log, krate.name
-                    ),
-                    |t| ctx.render_template(t),
-                )?;
-                if !proceed {
-                    log.status(&format!(
+                    // `nsis.if`: template-conditional skip (opt-in).
+                    // Render error => hard bail (W1 avoidance).
+                    let proceed = anodizer_core::config::evaluate_if_condition(
+                        nsis_cfg.if_condition.as_deref(),
+                        &format!(
+                            "nsis config '{}' for crate '{}'",
+                            nsis_id_for_log, krate.name
+                        ),
+                        |t| ctx.render_template(t),
+                    )?;
+                    if !proceed {
+                        log.status(&format!(
                         "skipping nsis config '{}' for crate {}: `if` condition evaluated falsy",
                         nsis_id_for_log, krate.name
                     ));
-                    continue;
-                }
-
-                // Skip configs marked skip:
-                if let Some(ref d) = nsis_cfg.skip {
-                    let off = d
-                        .try_evaluates_to_true(|s| ctx.render_template(s))
-                        .with_context(|| {
-                            format!("nsis: render skip template for crate {}", krate.name)
-                        })?;
-                    if off {
-                        log.status(&format!("NSIS config skipped for crate {}", krate.name));
                         continue;
                     }
-                }
 
-                // Filter by build IDs if specified
-                let mut filtered = windows_binaries.clone();
-                if let Some(ref filter_ids) = nsis_cfg.ids
-                    && !filter_ids.is_empty()
-                {
-                    filtered.retain(|b| {
-                        b.metadata
-                            .get("id")
-                            .map(|id| filter_ids.contains(id))
-                            .unwrap_or(false)
-                            || b.metadata
-                                .get("name")
-                                .map(|n| filter_ids.contains(n))
-                                .unwrap_or(false)
-                    });
-                }
-
-                // `amd64_variant` filter.
-                // amd64-variant filtering:
-                // only constrains `amd64` artifacts. Non-amd64 always passes.
-                // Unset `amd64_variant` metadata is treated as `v1`.
-                if let Some(ref want) = nsis_cfg.amd64_variant {
-                    filtered.retain(|b| {
-                        let target = b.target.as_deref().unwrap_or("");
-                        let (_, arch) = anodizer_core::target::map_target(target);
-                        if arch != "amd64" {
-                            return true;
+                    // Skip configs marked skip:
+                    if let Some(ref d) = nsis_cfg.skip {
+                        let off = d
+                            .try_evaluates_to_true(|s| ctx.render_template(s))
+                            .with_context(|| {
+                                format!("nsis: render skip template for crate {}", krate.name)
+                            })?;
+                        if off {
+                            log.status(&format!("NSIS config skipped for crate {}", krate.name));
+                            continue;
                         }
-                        b.metadata
-                            .get("amd64_variant")
-                            .map(String::as_str)
-                            .unwrap_or("v1")
-                            == want
-                    });
-                }
+                    }
 
-                // Warn and skip if no Windows binaries found
-                if filtered.is_empty() && windows_binaries.is_empty() {
-                    log.warn(&format!(
-                        "no Windows binary artifacts found for crate '{}'; \
+                    // Filter by build IDs if specified
+                    let mut filtered = windows_binaries.clone();
+                    if let Some(ref filter_ids) = nsis_cfg.ids
+                        && !filter_ids.is_empty()
+                    {
+                        filtered.retain(|b| {
+                            b.metadata
+                                .get("id")
+                                .map(|id| filter_ids.contains(id))
+                                .unwrap_or(false)
+                                || b.metadata
+                                    .get("name")
+                                    .map(|n| filter_ids.contains(n))
+                                    .unwrap_or(false)
+                        });
+                    }
+
+                    // `amd64_variant` filter.
+                    // amd64-variant filtering:
+                    // only constrains `amd64` artifacts. Non-amd64 always passes.
+                    // Unset `amd64_variant` metadata is treated as `v1`.
+                    if let Some(ref want) = nsis_cfg.amd64_variant {
+                        filtered.retain(|b| {
+                            let target = b.target.as_deref().unwrap_or("");
+                            let (_, arch) = anodizer_core::target::map_target(target);
+                            if arch != "amd64" {
+                                return true;
+                            }
+                            b.metadata
+                                .get("amd64_variant")
+                                .map(String::as_str)
+                                .unwrap_or("v1")
+                                == want
+                        });
+                    }
+
+                    // Warn and skip if no Windows binaries found
+                    if filtered.is_empty() && windows_binaries.is_empty() {
+                        log.warn(&format!(
+                            "no Windows binary artifacts found for crate '{}'; \
                          skipping NSIS generation (expected binaries targeting windows)",
-                        krate.name
-                    ));
-                    continue;
-                }
-                if filtered.is_empty() {
-                    log.warn(&format!(
-                        "ids filter {:?} matched no binaries for crate '{}'; skipping",
-                        nsis_cfg.ids, krate.name
-                    ));
-                    continue;
-                }
+                            krate.name
+                        ));
+                        continue;
+                    }
+                    if filtered.is_empty() {
+                        log.warn(&format!(
+                            "ids filter {:?} matched no binaries for crate '{}'; skipping",
+                            nsis_cfg.ids, krate.name
+                        ));
+                        continue;
+                    }
 
-                let effective_binaries: Vec<(Option<String>, PathBuf)> = filtered
-                    .iter()
-                    .map(|b| (b.target.clone(), b.path.clone()))
-                    .collect();
+                    let effective_binaries: Vec<(Option<String>, PathBuf)> = filtered
+                        .iter()
+                        .map(|b| (b.target.clone(), b.path.clone()))
+                        .collect();
 
-                // Validate extra_files shape up-front so misconfiguration fails
-                // before any subprocess spawn and surfaces in dry-run too.
-                // The canonical resolver bails when a constant name_template is
-                // paired with a multi-match glob (which would silently
-                // overwrite every match to the same dst name). The resolved set
-                // is recomputed at copy time below.
-                if let Some(extra_files) = &nsis_cfg.extra_files {
-                    anodizer_core::extrafiles::resolve(extra_files, &log)
-                        .context("nsis: validate extra_files")?;
-                }
+                    // Validate extra_files shape up-front so misconfiguration fails
+                    // before any subprocess spawn and surfaces in dry-run too.
+                    // The canonical resolver bails when a constant name_template is
+                    // paired with a multi-match glob (which would silently
+                    // overwrite every match to the same dst name). The resolved set
+                    // is recomputed at copy time below.
+                    if let Some(extra_files) = &nsis_cfg.extra_files {
+                        anodizer_core::extrafiles::resolve(extra_files, &log)
+                            .context("nsis: validate extra_files")?;
+                    }
 
-                // Check that makensis is available once per config (not per binary)
-                if !dry_run && !anodizer_core::util::find_binary("makensis") {
-                    anyhow::bail!(
-                        "makensis not found on PATH; install NSIS to create Windows installers"
-                    );
-                }
+                    // Check that makensis is available once per config (not per binary)
+                    if !dry_run && !anodizer_core::util::find_binary("makensis") {
+                        anyhow::bail!(
+                            "makensis not found on PATH; install NSIS to create Windows installers"
+                        );
+                    }
 
-                for (target, binary_path) in &effective_binaries {
-                    // Derive Os/Arch from the target triple for template rendering
-                    let (os, arch) = os_arch_from_target(target.as_deref());
+                    for (target, binary_path) in &effective_binaries {
+                        // Derive Os/Arch from the target triple for template rendering
+                        let (os, arch) = os_arch_from_target(target.as_deref());
 
-                    // Set Os/Arch/Target in the global vars so extra_files,
-                    // templated_extra_files, and mod_timestamp can reference them.
-                    ctx.template_vars_mut().set("Os", &os);
-                    ctx.template_vars_mut().set("Arch", &arch);
-                    ctx.template_vars_mut()
-                        .set("Target", target.as_deref().unwrap_or(""));
+                        // Set Os/Arch/Target in the global vars so extra_files,
+                        // templated_extra_files, and mod_timestamp can reference them.
+                        ctx.template_vars_mut().set("Os", &os);
+                        ctx.template_vars_mut().set("Arch", &arch);
+                        ctx.template_vars_mut()
+                            .set("Target", target.as_deref().unwrap_or(""));
 
-                    // Build a one-shot render context with NSIS-native vars so
-                    // user scripts can use these names without polluting
-                    // the global template var table.
-                    let nsis_arch = map_arch_to_nsis(&arch);
-                    let program_files = program_files_for_arch(nsis_arch);
+                        // Build a one-shot render context with NSIS-native vars so
+                        // user scripts can use these names without polluting
+                        // the global template var table.
+                        let nsis_arch = map_arch_to_nsis(&arch);
+                        let program_files = program_files_for_arch(nsis_arch);
 
-                    let binary_name_raw = binary_path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(&krate.name);
+                        let binary_name_raw = binary_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&krate.name);
 
-                    let binary_val = binary_name_raw.to_string();
+                        let binary_val = binary_name_raw.to_string();
 
-                    // Determine output filename using the one-shot vars so `Arch`
-                    // inside `name` sees NSIS-native values (`x64`, `x86`, `arm64`).
-                    let name_template = nsis_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
+                        // Determine output filename using the one-shot vars so `Arch`
+                        // inside `name` sees NSIS-native values (`x64`, `x86`, `arm64`).
+                        let name_template =
+                            nsis_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
 
-                    let mut name_vars = ctx.template_vars().clone();
-                    name_vars.set("Arch", nsis_arch);
-                    name_vars.set("ProgramFiles", program_files);
-                    name_vars.set("Binary", &binary_val);
+                        let mut name_vars = ctx.template_vars().clone();
+                        name_vars.set("Arch", nsis_arch);
+                        name_vars.set("ProgramFiles", program_files);
+                        name_vars.set("Binary", &binary_val);
 
-                    // Render the name first so it can be re-injected as `Name`
-                    // for the script context.
-                    let rendered_name = anodizer_core::template::render(name_template, &name_vars)
-                        .with_context(|| {
+                        // Render the name first so it can be re-injected as `Name`
+                        // for the script context.
+                        let rendered_name =
+                            anodizer_core::template::render(name_template, &name_vars)
+                                .with_context(|| {
+                                    format!(
+                                        "nsis: render name template for crate {} target {:?}",
+                                        krate.name, target
+                                    )
+                                })?;
+
+                        name_vars.set("Name", &rendered_name);
+
+                        // The recorded artifact path and the `OutFile` makensis is
+                        // told to write must end in `.exe`. The default name template
+                        // is extension-less (mirroring how dmg/pkg append `.dmg`/`.pkg`
+                        // after rendering); append `.exe` here unless the user's custom
+                        // `name` already supplies it (case-insensitive, no double-append).
+                        let exe_filename = if rendered_name.to_ascii_lowercase().ends_with(".exe") {
+                            rendered_name
+                        } else {
+                            format!("{rendered_name}.exe")
+                        };
+
+                        // Output goes in dist/windows/
+                        let output_dir = dist.join("windows");
+                        let exe_path = output_dir.join(&exe_filename);
+
+                        // makensis chdir's to the .nsi script's directory (an
+                        // ephemeral staging tempdir) before resolving a relative
+                        // `OutFile`. Under the default `dist: ./dist`, `exe_path` is
+                        // relative, so a relative OutFile would land the installer
+                        // inside the staging tempdir (which then vanishes). The
+                        // absolute path is cwd-independent and points makensis at the
+                        // real `dist/windows/` location regardless of its chdir.
+                        let exe_path = absolutize_output_path(exe_path);
+
+                        let binary_name = binary_name_raw;
+
+                        if dry_run {
+                            log.status(&format!(
+                                "(dry-run) would create NSIS installer {} for crate {} target {:?}",
+                                exe_filename, krate.name, target
+                            ));
+
+                            if let Some(ts) = &nsis_cfg.mod_timestamp {
+                                log.status(&format!("(dry-run) would apply mod_timestamp={ts}"));
+                            }
+
+                            new_artifacts.push(Artifact {
+                                kind: ArtifactKind::Installer,
+                                name: String::new(),
+                                path: exe_path,
+                                target: target.clone(),
+                                crate_name: krate.name.clone(),
+                                metadata: {
+                                    let mut m =
+                                        HashMap::from([("format".to_string(), "nsis".to_string())]);
+                                    if let Some(id) = &nsis_cfg.id {
+                                        m.insert("id".to_string(), id.clone());
+                                    }
+                                    m
+                                },
+                                size: None,
+                            });
+
+                            // If replace is set, mark archives for this crate+target for removal
+                            archives_to_remove.extend(anodizer_core::util::collect_if_replace(
+                                nsis_cfg.replace,
+                                &ctx.artifacts,
+                                &krate.name,
+                                target.as_deref(),
+                            ));
+
+                            continue;
+                        }
+
+                        // Create output directory
+                        fs::create_dir_all(&output_dir).with_context(|| {
+                            format!("create NSIS output dir: {}", output_dir.display())
+                        })?;
+
+                        // Create staging directory
+                        let staging_tmp =
+                            tempfile::tempdir().context("create temp dir for NSIS staging")?;
+                        let staging_dir = staging_tmp.path();
+
+                        // Copy binary into staging dir
+                        let staged_binary = staging_dir.join(binary_name);
+                        fs::copy(binary_path, &staged_binary).with_context(|| {
+                            format!("copy binary {} to staging dir", binary_path.display())
+                        })?;
+
+                        // Copy extra files into staging dir via the canonical
+                        // resolver (dedup + sort + bail-on-multi-match when a
+                        // name_template is set).
+                        if let Some(extra_files) = &nsis_cfg.extra_files {
+                            let resolved = anodizer_core::extrafiles::resolve(extra_files, &log)
+                                .context("nsis: resolve extra_files")?;
+                            for rf in resolved {
+                                let dst_name = rf
+                                    .name_template
+                                    .or_else(|| {
+                                        rf.path
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .map(|s| s.to_string())
+                                    })
+                                    .unwrap_or_else(|| "extra".to_string());
+                                let dst = staging_dir.join(&dst_name);
+                                fs::copy(&rf.path, &dst).with_context(|| {
+                                    format!("copy extra file {} to staging dir", rf.path.display())
+                                })?;
+                            }
+                        }
+
+                        // Process templated_extra_files: render and copy to staging dir
+                        if let Some(ref tpl_specs) = nsis_cfg.templated_extra_files
+                            && !tpl_specs.is_empty()
+                        {
+                            anodizer_core::templated_files::process_templated_extra_files(
+                                tpl_specs,
+                                ctx,
+                                staging_dir,
+                                "nsis",
+                            )?;
+                        }
+
+                        // Populate the one-shot script context with the remaining
+                        // NSIS-specific vars. name_vars already carries Arch/ProgramFiles/
+                        // Binary/Name from the name-render step above.
+                        let exe_path_str = exe_path.to_string_lossy().into_owned();
+                        let staged_binary_str = staged_binary.to_string_lossy().into_owned();
+                        name_vars.set("NsisOutputFile", &exe_path_str);
+                        name_vars.set("NsisBinaryPath", &staged_binary_str);
+                        name_vars.set("NsisBinaryName", binary_name);
+
+                        // Keep global vars in sync for mod_timestamp and anything that
+                        // follows — they use ctx.render_template, not name_vars.
+                        ctx.template_vars_mut().set("NsisOutputFile", &exe_path_str);
+                        ctx.template_vars_mut()
+                            .set("NsisBinaryPath", &staged_binary_str);
+                        ctx.template_vars_mut().set("NsisBinaryName", binary_name);
+
+                        // Get the script content (user-provided or default), render
+                        // through the one-shot context so NSIS-native vars are available.
+                        let script_content = if let Some(script_tmpl) = &nsis_cfg.script {
+                            fs::read_to_string(script_tmpl).with_context(|| {
+                                format!("nsis: read script template: {script_tmpl}")
+                            })?
+                        } else {
+                            default_nsi_script().to_string()
+                        };
+
+                        let rendered_script =
+                            anodizer_core::template::render(&script_content, &name_vars)
+                                .with_context(|| {
+                                    format!(
+                                        "nsis: render script for crate {} target {:?}",
+                                        krate.name, target
+                                    )
+                                })?;
+
+                        let nsi_script_path = staging_dir.join("installer.nsi");
+                        fs::write(&nsi_script_path, &rendered_script).with_context(|| {
                             format!(
-                                "nsis: render name template for crate {} target {:?}",
-                                krate.name, target
+                                "nsis: write rendered script to {}",
+                                nsi_script_path.display()
                             )
                         })?;
 
-                    name_vars.set("Name", &rendered_name);
+                        // Apply mod_timestamp if set (template-rendered, to staging dir contents)
+                        if let Some(ref ts_tmpl) = nsis_cfg.mod_timestamp {
+                            let ts = ctx
+                                .render_template(ts_tmpl)
+                                .with_context(|| "nsis: render mod_timestamp template")?;
+                            anodizer_core::util::apply_mod_timestamp(staging_dir, &ts, &log)?;
+                        }
 
-                    // The recorded artifact path and the `OutFile` makensis is
-                    // told to write must end in `.exe`. The default name template
-                    // is extension-less (mirroring how dmg/pkg append `.dmg`/`.pkg`
-                    // after rendering); append `.exe` here unless the user's custom
-                    // `name` already supplies it (case-insensitive, no double-append).
-                    let exe_filename = if rendered_name.to_ascii_lowercase().ends_with(".exe") {
-                        rendered_name
-                    } else {
-                        format!("{rendered_name}.exe")
-                    };
+                        // Build makensis command
+                        let script_path_str = nsi_script_path.to_string_lossy().into_owned();
+                        let cmd_args = nsis_command(&script_path_str);
 
-                    // Output goes in dist/windows/
-                    let output_dir = dist.join("windows");
-                    let exe_path = output_dir.join(&exe_filename);
+                        log.status(&format!("running: {}", cmd_args.join(" ")));
 
-                    // makensis chdir's to the .nsi script's directory (an
-                    // ephemeral staging tempdir) before resolving a relative
-                    // `OutFile`. Under the default `dist: ./dist`, `exe_path` is
-                    // relative, so a relative OutFile would land the installer
-                    // inside the staging tempdir (which then vanishes). The
-                    // absolute path is cwd-independent and points makensis at the
-                    // real `dist/windows/` location regardless of its chdir.
-                    let exe_path = absolutize_output_path(exe_path);
+                        let output = Command::new(&cmd_args[0])
+                            .args(&cmd_args[1..])
+                            .output()
+                            .with_context(|| {
+                                format!(
+                                    "execute makensis for crate {} target {:?}",
+                                    krate.name, target
+                                )
+                            })?;
+                        log.check_output(output, "nsis")?;
 
-                    let binary_name = binary_name_raw;
-
-                    if dry_run {
-                        log.status(&format!(
-                            "(dry-run) would create NSIS installer {} for crate {} target {:?}",
-                            exe_filename, krate.name, target
-                        ));
-
-                        if let Some(ts) = &nsis_cfg.mod_timestamp {
-                            log.status(&format!("(dry-run) would apply mod_timestamp={ts}"));
+                        // Apply mod_timestamp to the output .exe if set (template-rendered)
+                        if let Some(ref ts_tmpl) = nsis_cfg.mod_timestamp
+                            && exe_path.exists()
+                        {
+                            let ts = ctx.render_template(ts_tmpl).with_context(
+                                || "nsis: render mod_timestamp template for output",
+                            )?;
+                            let mtime = anodizer_core::util::parse_mod_timestamp(&ts)?;
+                            anodizer_core::util::set_file_mtime(&exe_path, mtime)?;
+                            log.status(&format!(
+                                "applied mod_timestamp={ts} to {}",
+                                exe_path.display()
+                            ));
                         }
 
                         new_artifacts.push(Artifact {
@@ -385,170 +569,17 @@ impl Stage for NsisStage {
                             &krate.name,
                             target.as_deref(),
                         ));
-
-                        continue;
                     }
-
-                    // Create output directory
-                    fs::create_dir_all(&output_dir).with_context(|| {
-                        format!("create NSIS output dir: {}", output_dir.display())
-                    })?;
-
-                    // Create staging directory
-                    let staging_tmp =
-                        tempfile::tempdir().context("create temp dir for NSIS staging")?;
-                    let staging_dir = staging_tmp.path();
-
-                    // Copy binary into staging dir
-                    let staged_binary = staging_dir.join(binary_name);
-                    fs::copy(binary_path, &staged_binary).with_context(|| {
-                        format!("copy binary {} to staging dir", binary_path.display())
-                    })?;
-
-                    // Copy extra files into staging dir via the canonical
-                    // resolver (dedup + sort + bail-on-multi-match when a
-                    // name_template is set).
-                    if let Some(extra_files) = &nsis_cfg.extra_files {
-                        let resolved = anodizer_core::extrafiles::resolve(extra_files, &log)
-                            .context("nsis: resolve extra_files")?;
-                        for rf in resolved {
-                            let dst_name = rf
-                                .name_template
-                                .or_else(|| {
-                                    rf.path
-                                        .file_name()
-                                        .and_then(|n| n.to_str())
-                                        .map(|s| s.to_string())
-                                })
-                                .unwrap_or_else(|| "extra".to_string());
-                            let dst = staging_dir.join(&dst_name);
-                            fs::copy(&rf.path, &dst).with_context(|| {
-                                format!("copy extra file {} to staging dir", rf.path.display())
-                            })?;
-                        }
-                    }
-
-                    // Process templated_extra_files: render and copy to staging dir
-                    if let Some(ref tpl_specs) = nsis_cfg.templated_extra_files
-                        && !tpl_specs.is_empty()
-                    {
-                        anodizer_core::templated_files::process_templated_extra_files(
-                            tpl_specs,
-                            ctx,
-                            staging_dir,
-                            "nsis",
-                        )?;
-                    }
-
-                    // Populate the one-shot script context with the remaining
-                    // NSIS-specific vars. name_vars already carries Arch/ProgramFiles/
-                    // Binary/Name from the name-render step above.
-                    let exe_path_str = exe_path.to_string_lossy().into_owned();
-                    let staged_binary_str = staged_binary.to_string_lossy().into_owned();
-                    name_vars.set("NsisOutputFile", &exe_path_str);
-                    name_vars.set("NsisBinaryPath", &staged_binary_str);
-                    name_vars.set("NsisBinaryName", binary_name);
-
-                    // Keep global vars in sync for mod_timestamp and anything that
-                    // follows — they use ctx.render_template, not name_vars.
-                    ctx.template_vars_mut().set("NsisOutputFile", &exe_path_str);
-                    ctx.template_vars_mut()
-                        .set("NsisBinaryPath", &staged_binary_str);
-                    ctx.template_vars_mut().set("NsisBinaryName", binary_name);
-
-                    // Get the script content (user-provided or default), render
-                    // through the one-shot context so NSIS-native vars are available.
-                    let script_content = if let Some(script_tmpl) = &nsis_cfg.script {
-                        fs::read_to_string(script_tmpl)
-                            .with_context(|| format!("nsis: read script template: {script_tmpl}"))?
-                    } else {
-                        default_nsi_script().to_string()
-                    };
-
-                    let rendered_script =
-                        anodizer_core::template::render(&script_content, &name_vars).with_context(
-                            || {
-                                format!(
-                                    "nsis: render script for crate {} target {:?}",
-                                    krate.name, target
-                                )
-                            },
-                        )?;
-
-                    let nsi_script_path = staging_dir.join("installer.nsi");
-                    fs::write(&nsi_script_path, &rendered_script).with_context(|| {
-                        format!(
-                            "nsis: write rendered script to {}",
-                            nsi_script_path.display()
-                        )
-                    })?;
-
-                    // Apply mod_timestamp if set (template-rendered, to staging dir contents)
-                    if let Some(ref ts_tmpl) = nsis_cfg.mod_timestamp {
-                        let ts = ctx
-                            .render_template(ts_tmpl)
-                            .with_context(|| "nsis: render mod_timestamp template")?;
-                        anodizer_core::util::apply_mod_timestamp(staging_dir, &ts, &log)?;
-                    }
-
-                    // Build makensis command
-                    let script_path_str = nsi_script_path.to_string_lossy().into_owned();
-                    let cmd_args = nsis_command(&script_path_str);
-
-                    log.status(&format!("running: {}", cmd_args.join(" ")));
-
-                    let output = Command::new(&cmd_args[0])
-                        .args(&cmd_args[1..])
-                        .output()
-                        .with_context(|| {
-                            format!(
-                                "execute makensis for crate {} target {:?}",
-                                krate.name, target
-                            )
-                        })?;
-                    log.check_output(output, "nsis")?;
-
-                    // Apply mod_timestamp to the output .exe if set (template-rendered)
-                    if let Some(ref ts_tmpl) = nsis_cfg.mod_timestamp
-                        && exe_path.exists()
-                    {
-                        let ts = ctx
-                            .render_template(ts_tmpl)
-                            .with_context(|| "nsis: render mod_timestamp template for output")?;
-                        let mtime = anodizer_core::util::parse_mod_timestamp(&ts)?;
-                        anodizer_core::util::set_file_mtime(&exe_path, mtime)?;
-                        log.status(&format!(
-                            "applied mod_timestamp={ts} to {}",
-                            exe_path.display()
-                        ));
-                    }
-
-                    new_artifacts.push(Artifact {
-                        kind: ArtifactKind::Installer,
-                        name: String::new(),
-                        path: exe_path,
-                        target: target.clone(),
-                        crate_name: krate.name.clone(),
-                        metadata: {
-                            let mut m = HashMap::from([("format".to_string(), "nsis".to_string())]);
-                            if let Some(id) = &nsis_cfg.id {
-                                m.insert("id".to_string(), id.clone());
-                            }
-                            m
-                        },
-                        size: None,
-                    });
-
-                    // If replace is set, mark archives for this crate+target for removal
-                    archives_to_remove.extend(anodizer_core::util::collect_if_replace(
-                        nsis_cfg.replace,
-                        &ctx.artifacts,
-                        &krate.name,
-                        target.as_deref(),
-                    ));
                 }
             }
+            Ok(())
+        })();
+
+        if multi_crate {
+            ctx.template_vars_mut()
+                .set("ProjectName", &original_project_name);
         }
+        loop_result?;
 
         anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 

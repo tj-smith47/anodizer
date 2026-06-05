@@ -312,6 +312,19 @@ impl Stage for AppBundleStage {
 
         let project_name = ctx.config.project_name.clone();
 
+        // In workspace per-crate mode the same pipeline run produces an app
+        // bundle for each crate. Rebinding `ProjectName` to the current crate's
+        // name (mirroring the archive stage) keeps default name templates like
+        // `{{ ProjectName }}_{{ Arch }}.app` distinct per crate so two crates'
+        // bundles don't render the same filename and clobber each other.
+        // Restored after the loop.
+        let multi_crate = crates.len() > 1;
+        let original_project_name = ctx
+            .template_vars()
+            .get("ProjectName")
+            .cloned()
+            .unwrap_or_else(|| project_name.clone());
+
         // Resolve version from template vars
         let version = ctx
             .template_vars()
@@ -322,172 +335,328 @@ impl Stage for AppBundleStage {
         let mut new_artifacts: Vec<Artifact> = Vec::new();
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
 
-        for krate in &crates {
-            let Some(bundle_configs) = krate.app_bundles.as_ref() else {
-                continue;
-            };
+        // Capture the loop result rather than `?`-ing inside it: a per-crate
+        // failure must still restore the rebound `ProjectName` below before
+        // propagating, so the workspace value never leaks past this stage.
+        let loop_result: Result<()> = (|| {
+            for krate in &crates {
+                let Some(bundle_configs) = krate.app_bundles.as_ref() else {
+                    continue;
+                };
+                if multi_crate {
+                    ctx.template_vars_mut().set("ProjectName", &krate.name);
+                }
+                // Per-crate Info.plist CFBundleName default: the crate's name in
+                // multi-crate mode so each bundle's display name disambiguates like
+                // the filename does; the workspace project name otherwise.
+                let crate_project_name = if multi_crate {
+                    krate.name.clone()
+                } else {
+                    project_name.clone()
+                };
 
-            // Collect macOS (darwin) binary artifacts for this crate
-            let darwin_binaries: Vec<_> = ctx
-                .artifacts
-                .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
-                .into_iter()
-                .filter(|b| {
-                    b.target
-                        .as_deref()
-                        .map(anodizer_core::target::is_darwin)
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect();
+                // Collect macOS (darwin) binary artifacts for this crate
+                let darwin_binaries: Vec<_> = ctx
+                    .artifacts
+                    .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
+                    .into_iter()
+                    .filter(|b| {
+                        b.target
+                            .as_deref()
+                            .map(anodizer_core::target::is_darwin)
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect();
 
-            for bundle_cfg in bundle_configs {
-                let bundle_id_for_log = bundle_cfg.id.as_deref().unwrap_or("default").to_string();
+                for bundle_cfg in bundle_configs {
+                    let bundle_id_for_log =
+                        bundle_cfg.id.as_deref().unwrap_or("default").to_string();
 
-                // `app_bundle.if`: template-conditional skip (opt-in).
-                // Render error => hard bail (W1 avoidance).
-                let proceed = anodizer_core::config::evaluate_if_condition(
-                    bundle_cfg.if_condition.as_deref(),
-                    &format!(
-                        "appbundle config '{}' for crate '{}'",
-                        bundle_id_for_log, krate.name
-                    ),
-                    |t| ctx.render_template(t),
-                )?;
-                if !proceed {
-                    log.status(&format!(
+                    // `app_bundle.if`: template-conditional skip (opt-in).
+                    // Render error => hard bail (W1 avoidance).
+                    let proceed = anodizer_core::config::evaluate_if_condition(
+                        bundle_cfg.if_condition.as_deref(),
+                        &format!(
+                            "appbundle config '{}' for crate '{}'",
+                            bundle_id_for_log, krate.name
+                        ),
+                        |t| ctx.render_template(t),
+                    )?;
+                    if !proceed {
+                        log.status(&format!(
                         "skipping appbundle config '{}' for crate {}: `if` condition evaluated falsy",
                         bundle_id_for_log, krate.name
                     ));
-                    continue;
-                }
+                        continue;
+                    }
 
-                // Skip configs marked skip:
-                if let Some(ref d) = bundle_cfg.skip {
-                    let off = d
-                        .try_evaluates_to_true(|s| ctx.render_template(s))
-                        .with_context(|| {
-                            format!("appbundle: render skip template for crate {}", krate.name)
-                        })?;
-                    if off {
-                        log.status(&format!(
-                            "appbundle config skipped for crate {}",
+                    // Skip configs marked skip:
+                    if let Some(ref d) = bundle_cfg.skip {
+                        let off = d
+                            .try_evaluates_to_true(|s| ctx.render_template(s))
+                            .with_context(|| {
+                                format!("appbundle: render skip template for crate {}", krate.name)
+                            })?;
+                        if off {
+                            log.status(&format!(
+                                "appbundle config skipped for crate {}",
+                                krate.name
+                            ));
+                            continue;
+                        }
+                    }
+
+                    // Filter by build IDs if specified
+                    let mut filtered = darwin_binaries.clone();
+                    if let Some(ref filter_ids) = bundle_cfg.ids
+                        && !filter_ids.is_empty()
+                    {
+                        filtered.retain(|b| {
+                            b.metadata
+                                .get("id")
+                                .map(|id| filter_ids.contains(id))
+                                .unwrap_or(false)
+                                || b.metadata
+                                    .get("name")
+                                    .map(|n| filter_ids.contains(n))
+                                    .unwrap_or(false)
+                        });
+                    }
+
+                    // Warn and skip if no darwin binaries found
+                    if filtered.is_empty() && darwin_binaries.is_empty() {
+                        log.warn(&format!(
+                            "no macOS binary artifacts found for crate '{}'; \
+                         skipping app bundle generation (expected binaries targeting darwin/apple)",
                             krate.name
                         ));
                         continue;
                     }
-                }
+                    if filtered.is_empty() {
+                        log.warn(&format!(
+                            "ids filter {:?} matched no binaries for crate '{}'; skipping",
+                            bundle_cfg.ids, krate.name
+                        ));
+                        continue;
+                    }
 
-                // Filter by build IDs if specified
-                let mut filtered = darwin_binaries.clone();
-                if let Some(ref filter_ids) = bundle_cfg.ids
-                    && !filter_ids.is_empty()
-                {
-                    filtered.retain(|b| {
-                        b.metadata
-                            .get("id")
-                            .map(|id| filter_ids.contains(id))
-                            .unwrap_or(false)
-                            || b.metadata
-                                .get("name")
-                                .map(|n| filter_ids.contains(n))
-                                .unwrap_or(false)
-                    });
-                }
+                    let effective_binaries: Vec<(Option<String>, PathBuf)> = filtered
+                        .iter()
+                        .map(|b| (b.target.clone(), b.path.clone()))
+                        .collect();
 
-                // Warn and skip if no darwin binaries found
-                if filtered.is_empty() && darwin_binaries.is_empty() {
-                    log.warn(&format!(
-                        "no macOS binary artifacts found for crate '{}'; \
-                         skipping app bundle generation (expected binaries targeting darwin/apple)",
-                        krate.name
-                    ));
-                    continue;
-                }
-                if filtered.is_empty() {
-                    log.warn(&format!(
-                        "ids filter {:?} matched no binaries for crate '{}'; skipping",
-                        bundle_cfg.ids, krate.name
-                    ));
-                    continue;
-                }
+                    for (target, binary_path) in &effective_binaries {
+                        // Derive Os/Arch from the target triple for template rendering
+                        let (os, arch) = os_arch_from_target(target.as_deref());
 
-                let effective_binaries: Vec<(Option<String>, PathBuf)> = filtered
-                    .iter()
-                    .map(|b| (b.target.clone(), b.path.clone()))
-                    .collect();
+                        // Set Os/Arch/Target in template vars for this iteration
+                        ctx.template_vars_mut().set("Os", &os);
+                        ctx.template_vars_mut().set("Arch", &arch);
+                        ctx.template_vars_mut()
+                            .set("Target", target.as_deref().unwrap_or(""));
 
-                for (target, binary_path) in &effective_binaries {
-                    // Derive Os/Arch from the target triple for template rendering
-                    let (os, arch) = os_arch_from_target(target.as_deref());
+                        // Determine output bundle name from name template or default
+                        let name_template =
+                            bundle_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
 
-                    // Set Os/Arch/Target in template vars for this iteration
-                    ctx.template_vars_mut().set("Os", &os);
-                    ctx.template_vars_mut().set("Arch", &arch);
-                    ctx.template_vars_mut()
-                        .set("Target", target.as_deref().unwrap_or(""));
+                        let app_name = ctx.render_template(name_template).with_context(|| {
+                            format!(
+                                "appbundle: render name template for crate {} target {:?}",
+                                krate.name, target
+                            )
+                        })?;
 
-                    // Determine output bundle name from name template or default
-                    let name_template = bundle_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
+                        // Ensure the name ends with .app
+                        let app_name = if app_name.to_lowercase().ends_with(".app") {
+                            app_name
+                        } else {
+                            format!("{app_name}.app")
+                        };
 
-                    let app_name = ctx.render_template(name_template).with_context(|| {
-                        format!(
-                            "appbundle: render name template for crate {} target {:?}",
-                            krate.name, target
-                        )
-                    })?;
+                        // Output goes in dist/macos/
+                        let output_dir = dist.join("macos");
+                        let app_dir = output_dir.join(&app_name);
 
-                    // Ensure the name ends with .app
-                    let app_name = if app_name.to_lowercase().ends_with(".app") {
-                        app_name
-                    } else {
-                        format!("{app_name}.app")
-                    };
-
-                    // Output goes in dist/macos/
-                    let output_dir = dist.join("macos");
-                    let app_dir = output_dir.join(&app_name);
-
-                    // Derive the binary name from the file path
-                    let binary_name = binary_path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(&krate.name);
-
-                    // Require an explicit bundle identifier; there is no safe default
-                    // because an auto-generated ID would be registered under
-                    // com.anodizer.* which the user does not own.
-                    let bundle_tmpl = bundle_cfg.bundle.as_deref().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "app_bundles: 'bundle' (reverse-DNS identifier) is required when \
-                             creating a .app bundle for crate '{}'. \
-                             Set it to a value you own (e.g. com.example.myapp).",
-                            krate.name
-                        )
-                    })?;
-                    let bundle_id = ctx.render_template(bundle_tmpl).with_context(|| {
-                        format!("appbundle: render bundle template for {}", krate.name)
-                    })?;
-
-                    // Render icon path and extract filename (if icon is configured)
-                    let rendered_icon_path = if let Some(icon_tmpl) = &bundle_cfg.icon {
-                        Some(ctx.render_template(icon_tmpl).with_context(|| {
-                            format!("appbundle: render icon template for crate {}", krate.name)
-                        })?)
-                    } else {
-                        None
-                    };
-                    let icon_filename = rendered_icon_path.as_ref().map(|p| {
-                        PathBuf::from(p)
+                        // Derive the binary name from the file path
+                        let binary_name = binary_path
                             .file_name()
                             .and_then(|n| n.to_str())
-                            .unwrap_or("icon.icns")
-                            .to_string()
-                    });
+                            .unwrap_or(&krate.name);
 
-                    if dry_run {
+                        // Require an explicit bundle identifier; there is no safe default
+                        // because an auto-generated ID would be registered under
+                        // com.anodizer.* which the user does not own.
+                        let bundle_tmpl = bundle_cfg.bundle.as_deref().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "app_bundles: 'bundle' (reverse-DNS identifier) is required when \
+                             creating a .app bundle for crate '{}'. \
+                             Set it to a value you own (e.g. com.example.myapp).",
+                                krate.name
+                            )
+                        })?;
+                        let bundle_id = ctx.render_template(bundle_tmpl).with_context(|| {
+                            format!("appbundle: render bundle template for {}", krate.name)
+                        })?;
+
+                        // Render icon path and extract filename (if icon is configured)
+                        let rendered_icon_path = if let Some(icon_tmpl) = &bundle_cfg.icon {
+                            Some(ctx.render_template(icon_tmpl).with_context(|| {
+                                format!("appbundle: render icon template for crate {}", krate.name)
+                            })?)
+                        } else {
+                            None
+                        };
+                        let icon_filename = rendered_icon_path.as_ref().map(|p| {
+                            PathBuf::from(p)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("icon.icns")
+                                .to_string()
+                        });
+
+                        if dry_run {
+                            log.status(&format!(
+                                "(dry-run) would create app bundle {} for crate {} target {:?}",
+                                app_name, krate.name, target
+                            ));
+
+                            new_artifacts.push(Artifact {
+                                kind: ArtifactKind::Installer,
+                                name: String::new(),
+                                path: app_dir,
+                                target: target.clone(),
+                                crate_name: krate.name.clone(),
+                                metadata: {
+                                    let mut m = HashMap::from([(
+                                        "format".to_string(),
+                                        "appbundle".to_string(),
+                                    )]);
+                                    if let Some(id) = &bundle_cfg.id {
+                                        m.insert("id".to_string(), id.clone());
+                                    }
+                                    m
+                                },
+                                size: None,
+                            });
+
+                            // If replace is set, mark archives for this crate+target for removal
+                            archives_to_remove.extend(anodizer_core::util::collect_if_replace(
+                                bundle_cfg.replace,
+                                &ctx.artifacts,
+                                &krate.name,
+                                target.as_deref(),
+                            ));
+
+                            continue;
+                        }
+
+                        // Live mode — create .app directory structure
+
+                        // Create Contents/MacOS/ directory
+                        let macos_dir = app_dir.join("Contents/MacOS");
+                        fs::create_dir_all(&macos_dir).with_context(|| {
+                            format!("create app bundle MacOS dir: {}", macos_dir.display())
+                        })?;
+
+                        // Create Contents/Resources/ directory
+                        let resources_dir = app_dir.join("Contents/Resources");
+                        fs::create_dir_all(&resources_dir).with_context(|| {
+                            format!(
+                                "create app bundle Resources dir: {}",
+                                resources_dir.display()
+                            )
+                        })?;
+
+                        // Copy binary into Contents/MacOS/
+                        let staged_binary = macos_dir.join(binary_name);
+                        fs::copy(binary_path, &staged_binary).with_context(|| {
+                            format!(
+                                "copy binary {} to {}",
+                                binary_path.display(),
+                                staged_binary.display()
+                            )
+                        })?;
+
+                        // Ensure the binary is executable inside the .app bundle
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let perms = std::fs::Permissions::from_mode(0o755);
+                            std::fs::set_permissions(&staged_binary, perms).with_context(|| {
+                                format!(
+                                    "appbundle: set executable permission on {}",
+                                    staged_binary.display()
+                                )
+                            })?;
+                        }
+
+                        // Copy icon into Contents/Resources/ if provided
+                        if let Some(icon_path_str) = &rendered_icon_path {
+                            let icon_src = PathBuf::from(icon_path_str);
+                            let icon_name = icon_filename.as_deref().unwrap_or("icon.icns");
+                            let icon_dst = resources_dir.join(icon_name);
+                            fs::copy(&icon_src, &icon_dst).with_context(|| {
+                                format!(
+                                    "copy icon {} to {}",
+                                    icon_src.display(),
+                                    icon_dst.display()
+                                )
+                            })?;
+                        }
+
+                        // Generate and write Info.plist
+                        let plist_content = generate_info_plist(
+                            binary_name,
+                            &bundle_id,
+                            &crate_project_name,
+                            &version,
+                            icon_filename.as_deref(),
+                            bundle_cfg.min_os_version.as_deref(),
+                        );
+                        let plist_path = app_dir.join("Contents/Info.plist");
+                        fs::write(&plist_path, &plist_content).with_context(|| {
+                            format!("write Info.plist to {}", plist_path.display())
+                        })?;
+
+                        // Copy extra files, capturing any per-file mtime overrides so
+                        // they can survive the recursive mod_timestamp sweep below.
+                        let per_file_mtimes = if let Some(extra_files) = &bundle_cfg.extra_files {
+                            copy_extra_files(extra_files, &app_dir, &log, &|t| {
+                                ctx.render_template(t)
+                            })?
+                        } else {
+                            Vec::new()
+                        };
+
+                        // Process templated_extra_files: render and copy into the app bundle
+                        if let Some(ref tpl_specs) = bundle_cfg.templated_extra_files
+                            && !tpl_specs.is_empty()
+                        {
+                            let resources_dir = app_dir.join("Contents").join("Resources");
+                            anodizer_core::templated_files::process_templated_extra_files(
+                                tpl_specs,
+                                ctx,
+                                &resources_dir,
+                                "appbundle",
+                            )?;
+                        }
+
+                        // Apply mod_timestamp if set (template-rendered). Re-apply any
+                        // per-file info.mtime values afterward so the more-specific
+                        // override is not clobbered by the directory-wide sweep.
+                        if let Some(ref ts_tmpl) = bundle_cfg.mod_timestamp {
+                            let ts = ctx
+                                .render_template(ts_tmpl)
+                                .with_context(|| "appbundle: render mod_timestamp template")?;
+                            apply_mod_timestamp_recursive(&app_dir, &ts, &log)?;
+                            for (path, mtime) in &per_file_mtimes {
+                                anodizer_core::util::set_file_mtime(path, *mtime)?;
+                            }
+                        }
+
                         log.status(&format!(
-                            "(dry-run) would create app bundle {} for crate {} target {:?}",
+                            "created app bundle {} for crate {} target {:?}",
                             app_name, krate.name, target
                         ));
 
@@ -517,139 +686,17 @@ impl Stage for AppBundleStage {
                             &krate.name,
                             target.as_deref(),
                         ));
-
-                        continue;
                     }
-
-                    // Live mode — create .app directory structure
-
-                    // Create Contents/MacOS/ directory
-                    let macos_dir = app_dir.join("Contents/MacOS");
-                    fs::create_dir_all(&macos_dir).with_context(|| {
-                        format!("create app bundle MacOS dir: {}", macos_dir.display())
-                    })?;
-
-                    // Create Contents/Resources/ directory
-                    let resources_dir = app_dir.join("Contents/Resources");
-                    fs::create_dir_all(&resources_dir).with_context(|| {
-                        format!(
-                            "create app bundle Resources dir: {}",
-                            resources_dir.display()
-                        )
-                    })?;
-
-                    // Copy binary into Contents/MacOS/
-                    let staged_binary = macos_dir.join(binary_name);
-                    fs::copy(binary_path, &staged_binary).with_context(|| {
-                        format!(
-                            "copy binary {} to {}",
-                            binary_path.display(),
-                            staged_binary.display()
-                        )
-                    })?;
-
-                    // Ensure the binary is executable inside the .app bundle
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let perms = std::fs::Permissions::from_mode(0o755);
-                        std::fs::set_permissions(&staged_binary, perms).with_context(|| {
-                            format!(
-                                "appbundle: set executable permission on {}",
-                                staged_binary.display()
-                            )
-                        })?;
-                    }
-
-                    // Copy icon into Contents/Resources/ if provided
-                    if let Some(icon_path_str) = &rendered_icon_path {
-                        let icon_src = PathBuf::from(icon_path_str);
-                        let icon_name = icon_filename.as_deref().unwrap_or("icon.icns");
-                        let icon_dst = resources_dir.join(icon_name);
-                        fs::copy(&icon_src, &icon_dst).with_context(|| {
-                            format!("copy icon {} to {}", icon_src.display(), icon_dst.display())
-                        })?;
-                    }
-
-                    // Generate and write Info.plist
-                    let plist_content = generate_info_plist(
-                        binary_name,
-                        &bundle_id,
-                        &project_name,
-                        &version,
-                        icon_filename.as_deref(),
-                        bundle_cfg.min_os_version.as_deref(),
-                    );
-                    let plist_path = app_dir.join("Contents/Info.plist");
-                    fs::write(&plist_path, &plist_content)
-                        .with_context(|| format!("write Info.plist to {}", plist_path.display()))?;
-
-                    // Copy extra files, capturing any per-file mtime overrides so
-                    // they can survive the recursive mod_timestamp sweep below.
-                    let per_file_mtimes = if let Some(extra_files) = &bundle_cfg.extra_files {
-                        copy_extra_files(extra_files, &app_dir, &log, &|t| ctx.render_template(t))?
-                    } else {
-                        Vec::new()
-                    };
-
-                    // Process templated_extra_files: render and copy into the app bundle
-                    if let Some(ref tpl_specs) = bundle_cfg.templated_extra_files
-                        && !tpl_specs.is_empty()
-                    {
-                        let resources_dir = app_dir.join("Contents").join("Resources");
-                        anodizer_core::templated_files::process_templated_extra_files(
-                            tpl_specs,
-                            ctx,
-                            &resources_dir,
-                            "appbundle",
-                        )?;
-                    }
-
-                    // Apply mod_timestamp if set (template-rendered). Re-apply any
-                    // per-file info.mtime values afterward so the more-specific
-                    // override is not clobbered by the directory-wide sweep.
-                    if let Some(ref ts_tmpl) = bundle_cfg.mod_timestamp {
-                        let ts = ctx
-                            .render_template(ts_tmpl)
-                            .with_context(|| "appbundle: render mod_timestamp template")?;
-                        apply_mod_timestamp_recursive(&app_dir, &ts, &log)?;
-                        for (path, mtime) in &per_file_mtimes {
-                            anodizer_core::util::set_file_mtime(path, *mtime)?;
-                        }
-                    }
-
-                    log.status(&format!(
-                        "created app bundle {} for crate {} target {:?}",
-                        app_name, krate.name, target
-                    ));
-
-                    new_artifacts.push(Artifact {
-                        kind: ArtifactKind::Installer,
-                        name: String::new(),
-                        path: app_dir,
-                        target: target.clone(),
-                        crate_name: krate.name.clone(),
-                        metadata: {
-                            let mut m =
-                                HashMap::from([("format".to_string(), "appbundle".to_string())]);
-                            if let Some(id) = &bundle_cfg.id {
-                                m.insert("id".to_string(), id.clone());
-                            }
-                            m
-                        },
-                        size: None,
-                    });
-
-                    // If replace is set, mark archives for this crate+target for removal
-                    archives_to_remove.extend(anodizer_core::util::collect_if_replace(
-                        bundle_cfg.replace,
-                        &ctx.artifacts,
-                        &krate.name,
-                        target.as_deref(),
-                    ));
                 }
             }
+            Ok(())
+        })();
+
+        if multi_crate {
+            ctx.template_vars_mut()
+                .set("ProjectName", &original_project_name);
         }
+        loop_result?;
 
         anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 

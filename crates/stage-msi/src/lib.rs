@@ -63,20 +63,48 @@ impl Stage for MsiStage {
             return Ok(());
         }
 
+        // In workspace per-crate mode the same pipeline run produces an MSI for
+        // each crate. Rebinding `ProjectName` to the current crate's name
+        // (mirroring the archive stage) keeps default name templates like
+        // `{{ ProjectName }}_{{ MsiArch }}` distinct per crate so two crates'
+        // installers don't render the same filename and clobber each other.
+        // Restored after the loop.
+        let multi_crate = crates.len() > 1;
+        let original_project_name = ctx
+            .template_vars()
+            .get("ProjectName")
+            .cloned()
+            .unwrap_or_else(|| ctx.config.project_name.clone());
+
         let mut new_artifacts: Vec<Artifact> = Vec::new();
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
 
-        for krate in &crates {
-            process_msi_crate(
-                ctx,
-                &log,
-                krate,
-                &dist,
-                dry_run,
-                &mut new_artifacts,
-                &mut archives_to_remove,
-            )?;
+        // Capture the loop result rather than `?`-ing inside it: a per-crate
+        // failure must still restore the rebound `ProjectName` below before
+        // propagating, so the workspace value never leaks past this stage.
+        let loop_result: Result<()> = (|| {
+            for krate in &crates {
+                if multi_crate {
+                    ctx.template_vars_mut().set("ProjectName", &krate.name);
+                }
+                process_msi_crate(
+                    ctx,
+                    &log,
+                    krate,
+                    &dist,
+                    dry_run,
+                    &mut new_artifacts,
+                    &mut archives_to_remove,
+                )?;
+            }
+            Ok(())
+        })();
+
+        if multi_crate {
+            ctx.template_vars_mut()
+                .set("ProjectName", &original_project_name);
         }
+        loop_result?;
 
         clear_msi_template_vars(ctx);
 

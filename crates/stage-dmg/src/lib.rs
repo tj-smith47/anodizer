@@ -107,7 +107,10 @@ fn os_arch_from_target(target: Option<&str>) -> (String, String) {
     anodizer_core::target::os_arch_with_default(target, "darwin")
 }
 
-/// Default output filename template `'{{.ProjectName}}_{{.Arch}}'`.
+/// Default output filename template `{{ ProjectName }}_{{ Arch }}` (the `.dmg`
+/// extension is appended automatically). In workspace per-crate mode the
+/// `ProjectName` var is rebound to each crate's name so the rendered filename
+/// is distinct per crate.
 const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}";
 
 /// Copy `binary_path` into `staging_dir` and, when `use_mode == "binary"` on
@@ -218,244 +221,404 @@ impl Stage for DmgStage {
 
         let project_name = ctx.config.project_name.clone();
 
+        // In workspace per-crate mode the same pipeline run produces a DMG for
+        // each crate. Rebinding the `ProjectName` template var to the current
+        // crate's name (mirroring the archive stage) keeps default name
+        // templates like `{{ ProjectName }}_{{ Arch }}` distinct per crate so
+        // two crates' DMGs don't render the same filename and clobber each
+        // other. The original value is restored after the loop.
+        let multi_crate = crates.len() > 1;
+        let original_project_name = ctx
+            .template_vars()
+            .get("ProjectName")
+            .cloned()
+            .unwrap_or_else(|| project_name.clone());
+
         let mut new_artifacts: Vec<Artifact> = Vec::new();
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
 
-        for krate in &crates {
-            let Some(dmgs) = krate.dmgs.as_ref() else {
-                continue;
-            };
-            for dmg_cfg in dmgs {
-                let dmg_id_for_log = dmg_cfg.id.as_deref().unwrap_or("default").to_string();
-
-                // `dmg.if`: template-conditional skip (opt-in).
-                // Render error => hard bail (avoids the W1 silent-skip
-                // footgun: user's typo must surface, not silently ship a
-                // release without the DMG they asked for).
-                let proceed = anodizer_core::config::evaluate_if_condition(
-                    dmg_cfg.if_condition.as_deref(),
-                    &format!("dmg config '{}' for crate '{}'", dmg_id_for_log, krate.name),
-                    |t| ctx.render_template(t),
-                )?;
-                if !proceed {
-                    log.status(&format!(
-                        "skipping dmg config '{}' for crate {}: `if` condition evaluated falsy",
-                        dmg_id_for_log, krate.name
-                    ));
+        // Capture the loop result rather than `?`-ing inside it: a per-crate
+        // failure must still restore the rebound `ProjectName` below before
+        // propagating, so the workspace value never leaks past this stage.
+        let loop_result: Result<()> = (|| {
+            for krate in &crates {
+                let Some(dmgs) = krate.dmgs.as_ref() else {
                     continue;
+                };
+                if multi_crate {
+                    ctx.template_vars_mut().set("ProjectName", &krate.name);
                 }
+                // Per-crate volume-label default: the crate's name in multi-crate
+                // mode so the mounted volume disambiguates like the filename does;
+                // the workspace project name otherwise.
+                let crate_project_name = if multi_crate {
+                    krate.name.clone()
+                } else {
+                    project_name.clone()
+                };
+                for dmg_cfg in dmgs {
+                    let dmg_id_for_log = dmg_cfg.id.as_deref().unwrap_or("default").to_string();
 
-                // Skip configs marked skip:
-                if let Some(ref d) = dmg_cfg.skip {
-                    let off = d
-                        .try_evaluates_to_true(|s| ctx.render_template(s))
-                        .with_context(|| {
-                            format!("dmg: render skip template for crate {}", krate.name)
-                        })?;
-                    if off {
-                        log.status(&format!("dmg config skipped for crate {}", krate.name));
+                    // `dmg.if`: template-conditional skip (opt-in).
+                    // Render error => hard bail (avoids the W1 silent-skip
+                    // footgun: user's typo must surface, not silently ship a
+                    // release without the DMG they asked for).
+                    let proceed = anodizer_core::config::evaluate_if_condition(
+                        dmg_cfg.if_condition.as_deref(),
+                        &format!("dmg config '{}' for crate '{}'", dmg_id_for_log, krate.name),
+                        |t| ctx.render_template(t),
+                    )?;
+                    if !proceed {
+                        log.status(&format!(
+                            "skipping dmg config '{}' for crate {}: `if` condition evaluated falsy",
+                            dmg_id_for_log, krate.name
+                        ));
                         continue;
                     }
-                }
 
-                // Validate `use` field
-                let use_mode = dmg_cfg.use_.as_deref().unwrap_or("binary");
-                if use_mode != "binary" && use_mode != "appbundle" {
-                    anyhow::bail!(
-                        "dmg: invalid `use` value '{}' for crate '{}'; expected 'binary' or 'appbundle'",
-                        use_mode,
-                        krate.name
-                    );
-                }
-
-                // Pre-flight: resolve extra_files through the canonical
-                // resolver so a constant name_template paired with a
-                // multi-match glob (which would silently overwrite every
-                // match to the same dst) fails before any subprocess spawn
-                // and in dry-run too. The resolved set is recomputed at copy
-                // time below.
-                if let Some(extra_files) = &dmg_cfg.extra_files {
-                    anodizer_core::extrafiles::resolve(extra_files, &log)
-                        .context("dmg: validate extra_files")?;
-                }
-
-                // Collect source artifacts depending on `use` mode
-                let source_artifacts: Vec<Artifact> = if use_mode == "appbundle" {
-                    // Collect Installer artifacts with format=appbundle for this crate
-                    ctx.artifacts
-                        .by_kind_and_crate(ArtifactKind::Installer, &krate.name)
-                        .into_iter()
-                        .filter(|a| {
-                            a.metadata
-                                .get("format")
-                                .map(|f| f == "appbundle")
-                                .unwrap_or(false)
-                        })
-                        .cloned()
-                        .collect()
-                } else {
-                    // Collect darwin Binary artifacts for this crate
-                    ctx.artifacts
-                        .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
-                        .into_iter()
-                        .filter(|b| {
-                            b.target
-                                .as_deref()
-                                .map(anodizer_core::target::is_darwin)
-                                .unwrap_or(false)
-                        })
-                        .cloned()
-                        .collect()
-                };
-
-                // Filter by build IDs if specified
-                let mut filtered = source_artifacts.clone();
-                if let Some(ref filter_ids) = dmg_cfg.ids
-                    && !filter_ids.is_empty()
-                {
-                    filtered.retain(|b| {
-                        b.metadata
-                            .get("id")
-                            .map(|id| filter_ids.contains(id))
-                            .unwrap_or(false)
-                            || b.metadata
-                                .get("name")
-                                .map(|n| filter_ids.contains(n))
-                                .unwrap_or(false)
-                    });
-                }
-
-                // `amd64_variant` filter.
-                // amd64-variant filtering:
-                // only constrains `amd64` artifacts. Non-amd64 always passes.
-                // Unset `amd64_variant` metadata is treated as `v1`.
-                if let Some(ref want) = dmg_cfg.amd64_variant {
-                    filtered.retain(|b| {
-                        let target = b.target.as_deref().unwrap_or("");
-                        let (_, arch) = anodizer_core::target::map_target(target);
-                        if arch != "amd64" {
-                            return true;
+                    // Skip configs marked skip:
+                    if let Some(ref d) = dmg_cfg.skip {
+                        let off = d
+                            .try_evaluates_to_true(|s| ctx.render_template(s))
+                            .with_context(|| {
+                                format!("dmg: render skip template for crate {}", krate.name)
+                            })?;
+                        if off {
+                            log.status(&format!("dmg config skipped for crate {}", krate.name));
+                            continue;
                         }
-                        b.metadata
-                            .get("amd64_variant")
-                            .map(String::as_str)
-                            .unwrap_or("v1")
-                            == want
-                    });
-                }
+                    }
 
-                // Warn and skip if no source artifacts found
-                if filtered.is_empty() && source_artifacts.is_empty() {
-                    if use_mode == "appbundle" {
-                        log.warn(&format!(
+                    // Validate `use` field
+                    let use_mode = dmg_cfg.use_.as_deref().unwrap_or("binary");
+                    if use_mode != "binary" && use_mode != "appbundle" {
+                        anyhow::bail!(
+                            "dmg: invalid `use` value '{}' for crate '{}'; expected 'binary' or 'appbundle'",
+                            use_mode,
+                            krate.name
+                        );
+                    }
+
+                    // Pre-flight: resolve extra_files through the canonical
+                    // resolver so a constant name_template paired with a
+                    // multi-match glob (which would silently overwrite every
+                    // match to the same dst) fails before any subprocess spawn
+                    // and in dry-run too. The resolved set is recomputed at copy
+                    // time below.
+                    if let Some(extra_files) = &dmg_cfg.extra_files {
+                        anodizer_core::extrafiles::resolve(extra_files, &log)
+                            .context("dmg: validate extra_files")?;
+                    }
+
+                    // Collect source artifacts depending on `use` mode
+                    let source_artifacts: Vec<Artifact> = if use_mode == "appbundle" {
+                        // Collect Installer artifacts with format=appbundle for this crate
+                        ctx.artifacts
+                            .by_kind_and_crate(ArtifactKind::Installer, &krate.name)
+                            .into_iter()
+                            .filter(|a| {
+                                a.metadata
+                                    .get("format")
+                                    .map(|f| f == "appbundle")
+                                    .unwrap_or(false)
+                            })
+                            .cloned()
+                            .collect()
+                    } else {
+                        // Collect darwin Binary artifacts for this crate
+                        ctx.artifacts
+                            .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
+                            .into_iter()
+                            .filter(|b| {
+                                b.target
+                                    .as_deref()
+                                    .map(anodizer_core::target::is_darwin)
+                                    .unwrap_or(false)
+                            })
+                            .cloned()
+                            .collect()
+                    };
+
+                    // Filter by build IDs if specified
+                    let mut filtered = source_artifacts.clone();
+                    if let Some(ref filter_ids) = dmg_cfg.ids
+                        && !filter_ids.is_empty()
+                    {
+                        filtered.retain(|b| {
+                            b.metadata
+                                .get("id")
+                                .map(|id| filter_ids.contains(id))
+                                .unwrap_or(false)
+                                || b.metadata
+                                    .get("name")
+                                    .map(|n| filter_ids.contains(n))
+                                    .unwrap_or(false)
+                        });
+                    }
+
+                    // `amd64_variant` filter.
+                    // amd64-variant filtering:
+                    // only constrains `amd64` artifacts. Non-amd64 always passes.
+                    // Unset `amd64_variant` metadata is treated as `v1`.
+                    if let Some(ref want) = dmg_cfg.amd64_variant {
+                        filtered.retain(|b| {
+                            let target = b.target.as_deref().unwrap_or("");
+                            let (_, arch) = anodizer_core::target::map_target(target);
+                            if arch != "amd64" {
+                                return true;
+                            }
+                            b.metadata
+                                .get("amd64_variant")
+                                .map(String::as_str)
+                                .unwrap_or("v1")
+                                == want
+                        });
+                    }
+
+                    // Warn and skip if no source artifacts found
+                    if filtered.is_empty() && source_artifacts.is_empty() {
+                        if use_mode == "appbundle" {
+                            log.warn(&format!(
                             "no appbundle artifacts found for crate '{}'; \
                              skipping DMG generation (expected Installer artifacts with format=appbundle)",
                             krate.name
                         ));
-                    } else {
-                        log.warn(&format!(
-                            "no macOS binary artifacts found for crate '{}'; \
+                        } else {
+                            log.warn(&format!(
+                                "no macOS binary artifacts found for crate '{}'; \
                              skipping DMG generation (expected binaries targeting darwin/apple)",
-                            krate.name
-                        ));
+                                krate.name
+                            ));
+                        }
+                        continue;
                     }
-                    continue;
-                }
-                if filtered.is_empty() {
-                    log.warn(&format!(
-                        "ids filter {:?} matched no artifacts for crate '{}'; skipping",
-                        dmg_cfg.ids, krate.name
-                    ));
-                    continue;
-                }
+                    if filtered.is_empty() {
+                        log.warn(&format!(
+                            "ids filter {:?} matched no artifacts for crate '{}'; skipping",
+                            dmg_cfg.ids, krate.name
+                        ));
+                        continue;
+                    }
 
-                // Group binaries by target so a multi-binary crate (e.g. CLI
-                // with several `bin = ` entries) produces ONE DMG per target
-                // containing all binaries — the per-target
-                // DMG layout, not per-binary.
-                let mut by_target: std::collections::BTreeMap<Option<String>, Vec<PathBuf>> =
-                    std::collections::BTreeMap::new();
-                for b in &filtered {
-                    by_target
-                        .entry(b.target.clone())
-                        .or_default()
-                        .push(b.path.clone());
-                }
+                    // Group binaries by target so a multi-binary crate (e.g. CLI
+                    // with several `bin = ` entries) produces ONE DMG per target
+                    // containing all binaries — the per-target
+                    // DMG layout, not per-binary.
+                    let mut by_target: std::collections::BTreeMap<Option<String>, Vec<PathBuf>> =
+                        std::collections::BTreeMap::new();
+                    for b in &filtered {
+                        by_target
+                            .entry(b.target.clone())
+                            .or_default()
+                            .push(b.path.clone());
+                    }
 
-                for (target, binary_paths) in &by_target {
-                    // Derive Os/Arch from the target triple for template rendering
-                    let (os, arch) = os_arch_from_target(target.as_deref());
+                    for (target, binary_paths) in &by_target {
+                        // Derive Os/Arch from the target triple for template rendering
+                        let (os, arch) = os_arch_from_target(target.as_deref());
 
-                    // Set Os/Arch/Target in template vars for this iteration
-                    ctx.template_vars_mut().set("Os", &os);
-                    ctx.template_vars_mut().set("Arch", &arch);
-                    ctx.template_vars_mut()
-                        .set("Target", target.as_deref().unwrap_or(""));
+                        // Set Os/Arch/Target in template vars for this iteration
+                        ctx.template_vars_mut().set("Os", &os);
+                        ctx.template_vars_mut().set("Arch", &arch);
+                        ctx.template_vars_mut()
+                            .set("Target", target.as_deref().unwrap_or(""));
 
-                    // Determine output filename from name template or default
-                    let name_template = dmg_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
+                        // Determine output filename from name template or default
+                        let name_template =
+                            dmg_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
 
-                    let dmg_filename = ctx.render_template(name_template).with_context(|| {
-                        format!(
-                            "dmg: render name template for crate {} target {:?}",
-                            krate.name, target
-                        )
-                    })?;
+                        let dmg_filename =
+                            ctx.render_template(name_template).with_context(|| {
+                                format!(
+                                    "dmg: render name template for crate {} target {:?}",
+                                    krate.name, target
+                                )
+                            })?;
 
-                    // Ensure the filename ends with .dmg (case-insensitive)
-                    let dmg_filename = if dmg_filename.to_lowercase().ends_with(".dmg") {
-                        dmg_filename
-                    } else {
-                        format!("{dmg_filename}.dmg")
-                    };
+                        // Ensure the filename ends with .dmg (case-insensitive)
+                        let dmg_filename = if dmg_filename.to_lowercase().ends_with(".dmg") {
+                            dmg_filename
+                        } else {
+                            format!("{dmg_filename}.dmg")
+                        };
 
-                    // Output goes in dist/macos/
-                    let output_dir = dist.join("macos");
-                    let dmg_path = output_dir.join(&dmg_filename);
+                        // Output goes in dist/macos/
+                        let output_dir = dist.join("macos");
+                        let dmg_path = output_dir.join(&dmg_filename);
 
-                    let vol_name = resolve_volume_name(ctx, dmg_cfg, &project_name)?;
+                        let vol_name = resolve_volume_name(ctx, dmg_cfg, &crate_project_name)?;
 
-                    // Resolve each source binary's staged leaf name ONCE: the
-                    // pre-flight duplicate check and the copy loop below both
-                    // need it, so compute the (path, leaf-name) pairs here and
-                    // reuse them rather than re-deriving `file_name()` twice.
-                    let staged: Vec<(&std::path::PathBuf, String)> = binary_paths
-                        .iter()
-                        .map(|p| {
-                            let name = p
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or(&krate.name)
-                                .to_string();
-                            (p, name)
-                        })
-                        .collect();
+                        // Resolve each source binary's staged leaf name ONCE: the
+                        // pre-flight duplicate check and the copy loop below both
+                        // need it, so compute the (path, leaf-name) pairs here and
+                        // reuse them rather than re-deriving `file_name()` twice.
+                        let staged: Vec<(&std::path::PathBuf, String)> = binary_paths
+                            .iter()
+                            .map(|p| {
+                                let name = p
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or(&krate.name)
+                                    .to_string();
+                                (p, name)
+                            })
+                            .collect();
 
-                    // Pre-flight: two source paths with the same leaf name would
-                    // silently overwrite the first during staging. Detect early so
-                    // this fires in both dry-run and live mode.
-                    {
-                        let mut staged_names: std::collections::HashSet<&str> =
-                            std::collections::HashSet::new();
-                        for (_, binary_name) in &staged {
-                            if !staged_names.insert(binary_name.as_str()) {
-                                anyhow::bail!(
-                                    "dmg: duplicate filename '{}' in staging dir for crate \
+                        // Pre-flight: two source paths with the same leaf name would
+                        // silently overwrite the first during staging. Detect early so
+                        // this fires in both dry-run and live mode.
+                        {
+                            let mut staged_names: std::collections::HashSet<&str> =
+                                std::collections::HashSet::new();
+                            for (_, binary_name) in &staged {
+                                if !staged_names.insert(binary_name.as_str()) {
+                                    anyhow::bail!(
+                                        "dmg: duplicate filename '{}' in staging dir for crate \
                                      '{}' target {:?}; two source binaries resolve to the \
                                      same name",
-                                    binary_name,
-                                    krate.name,
-                                    target
-                                );
+                                        binary_name,
+                                        krate.name,
+                                        target
+                                    );
+                                }
                             }
                         }
-                    }
 
-                    if dry_run {
-                        log.status(&format!(
-                            "(dry-run) would create DMG {} for crate {} target {:?}",
-                            dmg_filename, krate.name, target
-                        ));
+                        if dry_run {
+                            log.status(&format!(
+                                "(dry-run) would create DMG {} for crate {} target {:?}",
+                                dmg_filename, krate.name, target
+                            ));
+
+                            new_artifacts.push(Artifact {
+                                kind: ArtifactKind::DiskImage,
+                                name: String::new(),
+                                path: dmg_path,
+                                target: target.clone(),
+                                crate_name: krate.name.clone(),
+                                metadata: {
+                                    let mut m =
+                                        HashMap::from([("format".to_string(), "dmg".to_string())]);
+                                    if let Some(id) = &dmg_cfg.id {
+                                        m.insert("id".to_string(), id.clone());
+                                    }
+                                    m
+                                },
+                                size: None,
+                            });
+
+                            // If replace is set, mark archives for this crate+target for removal
+                            archives_to_remove.extend(anodizer_core::util::collect_if_replace(
+                                dmg_cfg.replace,
+                                &ctx.artifacts,
+                                &krate.name,
+                                target.as_deref(),
+                            ));
+
+                            continue;
+                        }
+
+                        // Live mode — detect tool
+                        let tool = dmg_tool().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "no DMG creation tool found (need hdiutil, genisoimage, or mkisofs)"
+                            )
+                        })?;
+
+                        // Create output directory
+                        fs::create_dir_all(&output_dir).with_context(|| {
+                            format!("create dmg output dir: {}", output_dir.display())
+                        })?;
+
+                        // Create staging directory
+                        let staging_tmp =
+                            tempfile::tempdir().context("create temp dir for dmg staging")?;
+                        let staging_dir = staging_tmp.path();
+
+                        // Copy every binary for this target into the staging dir,
+                        // reusing the leaf names resolved for the pre-flight above.
+                        for (binary_path, binary_name) in &staged {
+                            stage_binary_into(staging_dir, binary_path, binary_name, use_mode)?;
+                        }
+
+                        #[cfg(unix)]
+                        maybe_create_applications_symlink(staging_dir, use_mode)?;
+
+                        // Copy extra files into staging dir via the canonical
+                        // resolver (dedup + sort + bail-on-multi-match when a
+                        // name_template is set).
+                        if let Some(extra_files) = &dmg_cfg.extra_files {
+                            let resolved = anodizer_core::extrafiles::resolve(extra_files, &log)
+                                .context("dmg: resolve extra_files")?;
+                            for rf in resolved {
+                                let dst_name = rf
+                                    .name_template
+                                    .or_else(|| {
+                                        rf.path
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .map(|s| s.to_string())
+                                    })
+                                    .unwrap_or_else(|| "extra".to_string());
+                                let dst = staging_dir.join(&dst_name);
+                                fs::copy(&rf.path, &dst).with_context(|| {
+                                    format!("copy extra file {} to staging dir", rf.path.display())
+                                })?;
+                            }
+                        }
+
+                        // Process templated_extra_files: render and copy to staging dir
+                        if let Some(ref tpl_specs) = dmg_cfg.templated_extra_files
+                            && !tpl_specs.is_empty()
+                        {
+                            anodizer_core::templated_files::process_templated_extra_files(
+                                tpl_specs,
+                                ctx,
+                                staging_dir,
+                                "dmg",
+                            )?;
+                        }
+
+                        if let Some(ref ts_tmpl) = dmg_cfg.mod_timestamp {
+                            let ts = resolve_mod_timestamp(ctx, ts_tmpl)?;
+                            anodizer_core::util::apply_mod_timestamp(staging_dir, &ts, &log)?;
+                        }
+
+                        // On macOS, detach a stale mount at the same volume path before
+                        // creating a new image. Silent best-effort — a non-zero exit
+                        // (e.g. nothing mounted) is not an error.
+                        if tool == DmgTool::Hdiutil {
+                            let mount_path = format!("/Volumes/{vol_name}");
+                            let detach = Command::new("hdiutil")
+                                .args(["detach", "-force", &mount_path])
+                                .output();
+                            if let Ok(out) = detach
+                                && out.status.success()
+                            {
+                                log.status(&format!("detached stale mount at {mount_path}"));
+                            }
+                        }
+
+                        // Build and run the command
+                        let cmd_args = dmg_command(
+                            tool,
+                            &vol_name,
+                            &staging_dir.to_string_lossy(),
+                            &dmg_path.to_string_lossy(),
+                        );
+
+                        log.status(&format!("running: {}", cmd_args.join(" ")));
+
+                        let output = Command::new(&cmd_args[0])
+                            .args(&cmd_args[1..])
+                            .output()
+                            .with_context(|| {
+                                format!(
+                                    "execute dmg tool for crate {} target {:?}",
+                                    krate.name, target
+                                )
+                            })?;
+                        log.check_output(output, "dmg")?;
 
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::DiskImage,
@@ -481,138 +644,17 @@ impl Stage for DmgStage {
                             &krate.name,
                             target.as_deref(),
                         ));
-
-                        continue;
                     }
-
-                    // Live mode — detect tool
-                    let tool = dmg_tool().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "no DMG creation tool found (need hdiutil, genisoimage, or mkisofs)"
-                        )
-                    })?;
-
-                    // Create output directory
-                    fs::create_dir_all(&output_dir).with_context(|| {
-                        format!("create dmg output dir: {}", output_dir.display())
-                    })?;
-
-                    // Create staging directory
-                    let staging_tmp =
-                        tempfile::tempdir().context("create temp dir for dmg staging")?;
-                    let staging_dir = staging_tmp.path();
-
-                    // Copy every binary for this target into the staging dir,
-                    // reusing the leaf names resolved for the pre-flight above.
-                    for (binary_path, binary_name) in &staged {
-                        stage_binary_into(staging_dir, binary_path, binary_name, use_mode)?;
-                    }
-
-                    #[cfg(unix)]
-                    maybe_create_applications_symlink(staging_dir, use_mode)?;
-
-                    // Copy extra files into staging dir via the canonical
-                    // resolver (dedup + sort + bail-on-multi-match when a
-                    // name_template is set).
-                    if let Some(extra_files) = &dmg_cfg.extra_files {
-                        let resolved = anodizer_core::extrafiles::resolve(extra_files, &log)
-                            .context("dmg: resolve extra_files")?;
-                        for rf in resolved {
-                            let dst_name = rf
-                                .name_template
-                                .or_else(|| {
-                                    rf.path
-                                        .file_name()
-                                        .and_then(|n| n.to_str())
-                                        .map(|s| s.to_string())
-                                })
-                                .unwrap_or_else(|| "extra".to_string());
-                            let dst = staging_dir.join(&dst_name);
-                            fs::copy(&rf.path, &dst).with_context(|| {
-                                format!("copy extra file {} to staging dir", rf.path.display())
-                            })?;
-                        }
-                    }
-
-                    // Process templated_extra_files: render and copy to staging dir
-                    if let Some(ref tpl_specs) = dmg_cfg.templated_extra_files
-                        && !tpl_specs.is_empty()
-                    {
-                        anodizer_core::templated_files::process_templated_extra_files(
-                            tpl_specs,
-                            ctx,
-                            staging_dir,
-                            "dmg",
-                        )?;
-                    }
-
-                    if let Some(ref ts_tmpl) = dmg_cfg.mod_timestamp {
-                        let ts = resolve_mod_timestamp(ctx, ts_tmpl)?;
-                        anodizer_core::util::apply_mod_timestamp(staging_dir, &ts, &log)?;
-                    }
-
-                    // On macOS, detach a stale mount at the same volume path before
-                    // creating a new image. Silent best-effort — a non-zero exit
-                    // (e.g. nothing mounted) is not an error.
-                    if tool == DmgTool::Hdiutil {
-                        let mount_path = format!("/Volumes/{vol_name}");
-                        let detach = Command::new("hdiutil")
-                            .args(["detach", "-force", &mount_path])
-                            .output();
-                        if let Ok(out) = detach
-                            && out.status.success()
-                        {
-                            log.status(&format!("detached stale mount at {mount_path}"));
-                        }
-                    }
-
-                    // Build and run the command
-                    let cmd_args = dmg_command(
-                        tool,
-                        &vol_name,
-                        &staging_dir.to_string_lossy(),
-                        &dmg_path.to_string_lossy(),
-                    );
-
-                    log.status(&format!("running: {}", cmd_args.join(" ")));
-
-                    let output = Command::new(&cmd_args[0])
-                        .args(&cmd_args[1..])
-                        .output()
-                        .with_context(|| {
-                            format!(
-                                "execute dmg tool for crate {} target {:?}",
-                                krate.name, target
-                            )
-                        })?;
-                    log.check_output(output, "dmg")?;
-
-                    new_artifacts.push(Artifact {
-                        kind: ArtifactKind::DiskImage,
-                        name: String::new(),
-                        path: dmg_path,
-                        target: target.clone(),
-                        crate_name: krate.name.clone(),
-                        metadata: {
-                            let mut m = HashMap::from([("format".to_string(), "dmg".to_string())]);
-                            if let Some(id) = &dmg_cfg.id {
-                                m.insert("id".to_string(), id.clone());
-                            }
-                            m
-                        },
-                        size: None,
-                    });
-
-                    // If replace is set, mark archives for this crate+target for removal
-                    archives_to_remove.extend(anodizer_core::util::collect_if_replace(
-                        dmg_cfg.replace,
-                        &ctx.artifacts,
-                        &krate.name,
-                        target.as_deref(),
-                    ));
                 }
             }
+            Ok(())
+        })();
+
+        if multi_crate {
+            ctx.template_vars_mut()
+                .set("ProjectName", &original_project_name);
         }
+        loop_result?;
 
         anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
@@ -848,6 +890,84 @@ mod tests {
         let targets: Vec<&str> = dmgs.iter().map(|a| a.target.as_deref().unwrap()).collect();
         assert!(targets.contains(&"aarch64-apple-darwin"));
         assert!(targets.contains(&"x86_64-apple-darwin"));
+    }
+
+    #[test]
+    fn test_workspace_per_crate_distinct_filenames() {
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Two crates in one workspace, both using the DEFAULT name template
+        // (no Version segment, so ProjectName is the only distinguishing token).
+        // Before the per-crate ProjectName rebind, both render to
+        // `<project_name>_arm64.dmg` and clobber each other.
+        let make_crate = |name: &str| CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![DmgConfig::default()]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "workspace".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![make_crate("alpha"), make_crate("beta")];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        for crate_name in ["alpha", "beta"] {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from(format!("dist/{crate_name}")),
+                target: Some("aarch64-apple-darwin".to_string()),
+                crate_name: crate_name.to_string(),
+                metadata: Default::default(),
+                size: None,
+            });
+        }
+
+        let stage = DmgStage;
+        stage.run(&mut ctx).unwrap();
+
+        let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
+        assert_eq!(dmgs.len(), 2, "expected one DMG per crate");
+
+        let filenames: Vec<String> = dmgs
+            .iter()
+            .map(|a| a.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            filenames.iter().any(|f| f.contains("alpha")),
+            "no DMG filename contains crate name 'alpha': {filenames:?}"
+        );
+        assert!(
+            filenames.iter().any(|f| f.contains("beta")),
+            "no DMG filename contains crate name 'beta': {filenames:?}"
+        );
+        assert_ne!(
+            filenames[0], filenames[1],
+            "the two crates' DMGs must not share a filename (clobber): {filenames:?}"
+        );
+
+        // The ProjectName var must be restored to the workspace value after the
+        // stage so downstream stages don't inherit the last crate's name.
+        assert_eq!(
+            ctx.template_vars().get("ProjectName").map(String::as_str),
+            Some("workspace"),
+            "ProjectName not restored after per-crate rebind"
+        );
     }
 
     #[test]
