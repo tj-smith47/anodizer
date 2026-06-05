@@ -69,6 +69,46 @@ pub struct SchemaEntry {
     pub if_condition: Option<String>,
 }
 
+impl SchemastoreConfig {
+    /// Effective `repository` for an entry (block-level; one fork per PR).
+    pub fn resolved_repository(&self, _entry: &SchemaEntry) -> Option<&RepositoryConfig> {
+        self.repository.as_ref()
+    }
+
+    /// Effective `commit_author` (block-level).
+    pub fn resolved_commit_author(&self, _entry: &SchemaEntry) -> Option<&CommitAuthorConfig> {
+        self.commit_author.as_ref()
+    }
+
+    /// Effective `versioned`: per-entry wins, else block default, else false.
+    pub fn resolved_versioned(&self, entry: &SchemaEntry) -> bool {
+        entry.versioned.or(self.versioned).unwrap_or(false)
+    }
+
+    /// Effective `skip`: true if either the entry or the block sets it truthy.
+    pub fn resolved_skip(&self, entry: &SchemaEntry) -> bool {
+        let block = self
+            .skip
+            .as_ref()
+            .map(StringOrBool::as_bool)
+            .unwrap_or(false);
+        let per = entry
+            .skip
+            .as_ref()
+            .map(StringOrBool::as_bool)
+            .unwrap_or(false);
+        block || per
+    }
+
+    /// Effective `if` condition: per-entry wins, else block.
+    pub fn resolved_if<'a>(&'a self, entry: &'a SchemaEntry) -> Option<&'a str> {
+        entry
+            .if_condition
+            .as_deref()
+            .or(self.if_condition.as_deref())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +146,52 @@ schemas:
     fn rejects_unknown_field() {
         let yaml = "schemas: []\nbogus: 1\n";
         assert!(serde_yaml_ng::from_str::<SchemastoreConfig>(yaml).is_err());
+    }
+
+    #[test]
+    fn per_entry_versioned_overrides_block_default() {
+        let cfg = SchemastoreConfig {
+            versioned: Some(false),
+            schemas: vec![
+                SchemaEntry {
+                    name: "a".into(),
+                    versioned: None,
+                    ..Default::default()
+                },
+                SchemaEntry {
+                    name: "b".into(),
+                    versioned: Some(true),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(!cfg.resolved_versioned(&cfg.schemas[0])); // inherits block
+        assert!(cfg.resolved_versioned(&cfg.schemas[1])); // overrides
+    }
+
+    #[test]
+    fn repository_and_author_fall_through_to_block() {
+        let repo = RepositoryConfig {
+            owner: Some("tj-smith47".into()),
+            name: Some("schemastore".into()),
+            ..Default::default()
+        };
+        let cfg = SchemastoreConfig {
+            repository: Some(repo),
+            schemas: vec![SchemaEntry {
+                name: "a".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolved_repository(&cfg.schemas[0])
+                .unwrap()
+                .owner
+                .as_deref(),
+            Some("tj-smith47")
+        );
     }
 
     #[test]
