@@ -1,5 +1,5 @@
 use crate::schemastore::catalog::{
-    Verdict, build_entry_json, merge_versions, splice_entry, verdict,
+    Verdict, add_high_schema_version, build_entry_json, merge_versions, splice_entry, verdict,
 };
 use crate::schemastore::manifest::{
     DescriptionError, Dialect, check_id, classify_dialect, sanitize_description, slugify,
@@ -209,6 +209,90 @@ fn merge_versions_carries_prior_and_adds_new() {
         merged.get("1.3").unwrap(),
         "https://www.schemastore.org/cfgd-config-1.3.json"
     );
+}
+
+#[test]
+fn adds_name_to_high_schema_version_array() {
+    let jsonc = "{\n  // comment\n  \"highSchemaVersion\": [\n    \"existing-2020\"\n  ]\n}\n";
+    let out = add_high_schema_version(jsonc, "cfgd-module").unwrap();
+    assert!(out.contains("// comment"), "comments preserved");
+    assert!(out.contains("\"existing-2020\""));
+    assert!(out.contains("\"cfgd-module\""));
+}
+
+#[test]
+fn idempotent_when_already_present() {
+    let jsonc = "{\n  \"highSchemaVersion\": [\n    \"cfgd-module\"\n  ]\n}\n";
+    let out = add_high_schema_version(jsonc, "cfgd-module").unwrap();
+    assert_eq!(out.matches("\"cfgd-module\"").count(), 1);
+}
+
+/// A `//` comment line before the array contains both `]` and the key text,
+/// and an existing element string contains a `]`. A naive `[`/`]` depth scan
+/// (without comment- and string-skipping) would mislocate the array open/close
+/// and splice in the wrong place. This proves the scanner ignores brackets and
+/// key-text inside comments and string literals.
+#[test]
+fn add_high_schema_version_ignores_brackets_in_comments_and_strings() {
+    let jsonc = "{\n  // note: highSchemaVersion ] array follows; do not be fooled ]\n  \"highSchemaVersion\": [\n    \"has-a-]-bracket\"\n  ]\n}\n";
+    let out = add_high_schema_version(jsonc, "cfgd-module").unwrap();
+    assert!(
+        out.contains("// note: highSchemaVersion"),
+        "comment survives"
+    );
+    assert!(
+        out.contains("\"has-a-]-bracket\""),
+        "string element survives"
+    );
+    assert!(out.contains("\"cfgd-module\""), "new element inserted");
+    // Strip `//` comments, then re-parse to prove the splice produced valid
+    // JSON with exactly one new element added to the array.
+    let stripped: String = out
+        .lines()
+        .map(|l| match l.find("//") {
+            Some(i) => &l[..i],
+            None => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let v: serde_json::Value = serde_json::from_str(&stripped).unwrap();
+    let arr = v["highSchemaVersion"].as_array().unwrap();
+    assert_eq!(arr.len(), 2, "exactly one element added");
+    assert!(arr.iter().any(|e| e == "has-a-]-bracket"));
+    assert!(arr.iter().any(|e| e == "cfgd-module"));
+}
+
+/// `"cfgd-module-extra"` contains the bytes of `cfgd-module` but is a distinct
+/// element. Idempotency must be element-exact, not substring — adding
+/// `cfgd-module` to an array holding only `cfgd-module-extra` must insert.
+#[test]
+fn add_high_schema_version_distinguishes_prefix_elements() {
+    let jsonc = "{\n  \"highSchemaVersion\": [\n    \"cfgd-module-extra\"\n  ]\n}\n";
+    let out = add_high_schema_version(jsonc, "cfgd-module").unwrap();
+    assert!(
+        out.contains("\"cfgd-module-extra\""),
+        "prefix element preserved"
+    );
+    // `"cfgd-module"` (with trailing quote) does NOT match inside
+    // `"cfgd-module-extra"`, so this counts the standalone element only.
+    assert_eq!(
+        out.matches("\"cfgd-module\"").count(),
+        1,
+        "new element inserted"
+    );
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let arr = v["highSchemaVersion"].as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+}
+
+#[test]
+fn add_high_schema_version_handles_empty_array() {
+    let jsonc = "{\n  \"highSchemaVersion\": []\n}\n";
+    let out = add_high_schema_version(jsonc, "cfgd-module").unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let arr = v["highSchemaVersion"].as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0], "cfgd-module");
 }
 
 #[test]
