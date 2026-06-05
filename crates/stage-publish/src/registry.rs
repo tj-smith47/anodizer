@@ -185,6 +185,14 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
             crate::mcp::publisher::McpPublisher::with_required(req),
         ));
     }
+    if is_schemastore_configured(ctx) {
+        // Escalate-to-true across `schemastore.schemas[]` entries. One block →
+        // one publisher; it iterates its own schemas internally.
+        let req = collapse_required(ctx.config.schemastore.schemas.iter().map(|s| s.required));
+        v.push(Box::new(
+            crate::schemastore::SchemastorePublisher::with_required(req),
+        ));
+    }
     if is_npm_configured(ctx) {
         // Escalate-to-true across `npms:` entries.
         let req = collapse_required(ctx.config.npms.iter().flatten().map(|c| c.required));
@@ -307,6 +315,13 @@ fn is_krew_configured(ctx: &Context) -> bool {
         .crates
         .iter()
         .any(|c| c.publish.as_ref().is_some_and(|p| p.krew.is_some()))
+}
+
+/// True when the top-level `schemastore:` block carries at least one schema
+/// entry. The per-entry `skip:` template is evaluated later in the publisher;
+/// presence of any entry is the opt-in.
+fn is_schemastore_configured(ctx: &Context) -> bool {
+    !ctx.config.schemastore.schemas.is_empty()
 }
 
 /// True when the top-level `npms:` block has at least one entry.
@@ -1366,6 +1381,46 @@ mod tests {
         assert!(
             p.required(),
             "mcp.required = Some(true) must override the default false"
+        );
+    }
+
+    #[test]
+    fn schemastore_registers_in_manager_group_when_schemas_present() {
+        use anodizer_core::config::{SchemaEntry, SchemastoreConfig};
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.config.schemastore = SchemastoreConfig {
+            schemas: vec![SchemaEntry {
+                name: "Anodizer".into(),
+                file_match: vec![".anodizer.yaml".into()],
+                url: Some("https://x/s.json".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let publishers = configured_publishers(&ctx);
+        // Exactly one schemastore publisher per config block (it iterates its
+        // own `schemas` internally), in the Manager group.
+        let schemastore: Vec<&Box<dyn Publisher>> = publishers
+            .iter()
+            .filter(|p| p.name() == "schemastore")
+            .collect();
+        assert_eq!(
+            schemastore.len(),
+            1,
+            "exactly one schemastore publisher per config block, got {}",
+            schemastore.len()
+        );
+        assert_eq!(schemastore[0].group(), PublisherGroup::Manager);
+    }
+
+    #[test]
+    fn schemastore_absent_without_schemas() {
+        let ctx = Context::test_fixture();
+        let publishers = configured_publishers(&ctx);
+        let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
+        assert!(
+            !names.contains(&"schemastore"),
+            "schemastore must not register with an empty `schemas` block (got {names:?})"
         );
     }
 }

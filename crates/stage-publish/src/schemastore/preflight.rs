@@ -22,11 +22,6 @@ use super::manifest;
 /// Aggregation is first-blocker-wins: the first [`PreflightCheck::Blocker`]
 /// short-circuits and is returned; absent any blocker the first
 /// [`PreflightCheck::Warning`] is returned; otherwise [`PreflightCheck::Pass`].
-//
-// Interim `dead_code`: the only production caller is the publisher's
-// `preflight()`, reachable once the registry constructs `SchemastorePublisher`.
-// Task 12 wires that registry and removes this attribute.
-#[allow(dead_code)]
 pub(crate) fn preflight_checks(ctx: &Context) -> anyhow::Result<PreflightCheck> {
     let cfg = &ctx.config.schemastore;
     let root = ctx

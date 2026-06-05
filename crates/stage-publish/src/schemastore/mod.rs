@@ -8,14 +8,6 @@
 //! substantive logic lives in submodules — `preflight` (self-checks),
 //! `catalog`/`scan`/`manifest` (pure builders) — so each can grow independently.
 
-// Interim `dead_code` for the whole module: the `simple_publisher!`-generated
-// struct, its `impl Publisher`, and the run/rollback stubs have no production
-// call site until the publisher registry constructs `SchemastorePublisher`. A
-// per-item `#[allow]` cannot reach inside the macro expansion (the struct +
-// `with_required` keep warning), so the allow is module-scoped here. Task 12
-// wires the registry and removes it.
-#![allow(dead_code)]
-
 pub(crate) mod catalog;
 pub(crate) mod manifest;
 pub(crate) mod preflight;
