@@ -142,6 +142,24 @@ pub(crate) fn find_array_close(catalog: &str) -> anyhow::Result<usize> {
     find_bracket_close(catalog, open)
 }
 
+/// True when the JSON/JSONC array named `key` contains the exact string element
+/// `value`. Comment- and string-aware (reuses the [`JsonScan`] stack), so a
+/// `value` appearing inside a `//` comment or another string never counts.
+///
+/// Returns `false` — never an error — when the `key` array is absent or
+/// malformed: the schemastore change-decision treats "couldn't confirm
+/// membership" as "not allowlisted ⇒ change needed", which is the conservative
+/// direction (it never yields a false no-op).
+pub(crate) fn jsonc_array_contains(jsonc: &str, key: &str, value: &str) -> bool {
+    let Ok(open) = find_array_open_after(jsonc, key) else {
+        return false;
+    };
+    let Ok(close) = find_bracket_close(jsonc, open) else {
+        return false;
+    };
+    array_contains_element(&jsonc[open + 1..close], value)
+}
+
 /// True if the array interior contains a string element whose decoded value
 /// exactly equals `name`. Element-exact (not substring): scans for `"..."`
 /// tokens via `JsonScan` and compares each decoded literal, so `"foo-extra"`
