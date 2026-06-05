@@ -839,10 +839,6 @@ pub fn refresh_crate_unreleased(
     from_tag: Option<&str>,
     to_ref: Option<&str>,
 ) -> Result<Option<ChangelogUpdate>> {
-    // Kept for API symmetry with `render_crate_section` and to identify the
-    // crate at the call site; the flat per-crate body needs no `### <crate>`
-    // wrapper, so the value is not consumed here.
-    let _ = crate_name;
     let (cfg_present, body) = refresh_body(workspace_root, crate_path, from_tag, to_ref)?;
     if !cfg_present {
         return Ok(None);
@@ -850,7 +846,9 @@ pub fn refresh_crate_unreleased(
 
     let file_path = crate_path.join("CHANGELOG.md");
     let existing = read_existing(&file_path)?;
-    let merged = replace_unreleased_body(existing.as_deref(), &body);
+    // Per-crate file: a synthesized H1 is crate-named (`# Changelog — <crate>`),
+    // matching the per-crate promote path.
+    let merged = replace_unreleased_body(existing.as_deref(), &crate_h1(crate_name), &body);
 
     if existing.as_deref() == Some(merged.as_str()) {
         return Ok(None);
@@ -943,10 +941,12 @@ pub fn refresh_root_unreleased(
             .as_deref()
             .is_some_and(|e| has_crate_subsections(e, crate_names));
 
+    // Root file: a synthesized H1 is the project header, never a crate name.
+    let h1 = project_h1(workspace_root);
     let merged = if use_multitrack {
-        replace_crate_subsection_body(existing.as_deref(), crate_name, &body)
+        replace_crate_subsection_body(existing.as_deref(), &h1, crate_name, &body)
     } else {
-        replace_unreleased_body(existing.as_deref(), &body)
+        replace_unreleased_body(existing.as_deref(), &h1, &body)
     };
 
     if existing.as_deref() == Some(merged.as_str()) {
@@ -970,14 +970,65 @@ fn read_existing(file_path: &std::path::Path) -> Result<Option<String>> {
     Ok(Some(text))
 }
 
-/// Build a fresh Keep-a-Changelog skeleton holding only an `## [Unreleased]`
-/// section with `body` (empty body collapses to a blank section). The single
-/// owner of the bare skeleton string.
-fn kac_skeleton(body: &str) -> String {
-    if body.is_empty() {
-        "# Changelog\n\n## [Unreleased]\n".to_string()
+/// The descriptive H1 for a PER-CRATE `CHANGELOG.md`: `# Changelog — <crate>`.
+/// Used identically by the per-crate refresh and per-crate promote paths so the
+/// two never disagree on the synthesized title.
+fn crate_h1(crate_name: &str) -> String {
+    format!("# Changelog — {}", crate_name)
+}
+
+/// The H1 for the SHARED ROOT `CHANGELOG.md`: the project header. Renders
+/// `changelog.header` from `.anodizer.yaml` when it is an inline string
+/// (resolving `{{ ProjectName }}` against `project_name`), else `# Changelog`.
+///
+/// A root H1 must NEVER carry a crate name. `from_file` / `from_url` header
+/// sources need a full release [`Context`] to resolve and are handled by the
+/// release-pipeline header path; this absent-file synthesis falls back to the
+/// plain `# Changelog` default (an EXISTING root H1 is always preserved, so the
+/// default only applies on first creation).
+fn project_h1(workspace_root: &std::path::Path) -> String {
+    const DEFAULT: &str = "# Changelog";
+    let cfg_path = workspace_root.join(".anodizer.yaml");
+    let Ok(text) = std::fs::read_to_string(&cfg_path) else {
+        return DEFAULT.to_string();
+    };
+    let Ok(raw) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text) else {
+        return DEFAULT.to_string();
+    };
+
+    let header = raw
+        .get("changelog")
+        .and_then(|c| c.get("header"))
+        .and_then(|h| h.as_str());
+    let Some(header) = header else {
+        return DEFAULT.to_string();
+    };
+
+    let project_name = raw
+        .get("project_name")
+        .and_then(|n| n.as_str())
+        .unwrap_or_default();
+    let mut vars = TemplateVars::new();
+    vars.set("ProjectName", project_name);
+    let rendered = template::render(header, &vars)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if rendered.is_empty() {
+        DEFAULT.to_string()
     } else {
-        format!("# Changelog\n\n## [Unreleased]\n\n{}\n", body)
+        rendered
+    }
+}
+
+/// Build a fresh Keep-a-Changelog skeleton holding only an `## [Unreleased]`
+/// section with `body` (empty body collapses to a blank section), titled with
+/// `h1` (the per-crate or project H1, WITHOUT a trailing newline). The single
+/// owner of the skeleton shape.
+fn kac_skeleton(h1: &str, body: &str) -> String {
+    if body.is_empty() {
+        format!("{}\n\n## [Unreleased]\n", h1)
+    } else {
+        format!("{}\n\n## [Unreleased]\n\n{}\n", h1, body)
     }
 }
 
@@ -996,19 +1047,20 @@ fn wrap_subsection(crate_name: &str, body: &str) -> String {
 /// Replace the `## [Unreleased]` body of a flat changelog with `body`,
 /// preserving the H1, every released section, and the footer verbatim.
 ///
-/// `existing == None` (absent file) yields a fresh KAC skeleton. An existing
-/// file with an H1 but no `## [Unreleased]` heading gets the section inserted
-/// directly after the H1, preserving the rest.
-fn replace_unreleased_body(existing: Option<&str>, body: &str) -> String {
+/// `existing == None` (absent file) yields a fresh KAC skeleton titled with
+/// `h1`. An existing file with an H1 but no `## [Unreleased]` heading gets the
+/// section inserted directly after the H1, preserving the rest (its existing H1
+/// is kept; `h1` only seeds an absent file).
+fn replace_unreleased_body(existing: Option<&str>, h1: &str, body: &str) -> String {
     let Some(existing) = existing else {
-        return kac_skeleton(body);
+        return kac_skeleton(h1, body);
     };
 
     let lines: Vec<&str> = existing.lines().collect();
     let trailing_newline = existing.ends_with('\n');
 
     let Some(unreleased_idx) = lines.iter().position(|l| is_unreleased_heading(l)) else {
-        return insert_unreleased_after_h1(&lines, body, trailing_newline);
+        return insert_unreleased_after_h1(&lines, h1, body, trailing_newline);
     };
 
     // Bound the existing `[Unreleased]` body: from after the heading to the
@@ -1042,12 +1094,19 @@ fn replace_unreleased_body(existing: Option<&str>, body: &str) -> String {
 ///
 /// `body` is inserted verbatim under the `## [Unreleased]` heading, so callers
 /// pass either a flat group body (`### <Group>` …) or a wrapped crate
-/// subsection (`### <crate>` …) — the spine is identical either way.
-fn insert_unreleased_after_h1(lines: &[&str], body: &str, trailing_newline: bool) -> String {
+/// subsection (`### <crate>` …) — the spine is identical either way. `h1` titles
+/// a synthesized skeleton when the file has no H1 to anchor to; an existing H1 is
+/// preserved.
+fn insert_unreleased_after_h1(
+    lines: &[&str],
+    h1: &str,
+    body: &str,
+    trailing_newline: bool,
+) -> String {
     let Some(h1_idx) = lines.iter().position(|l| l.starts_with("# ")) else {
         // No H1 to anchor to: fall back to a fresh skeleton, then append the
         // prior content so nothing is lost.
-        let skeleton = kac_skeleton(body);
+        let skeleton = kac_skeleton(h1, body);
         if lines.is_empty() {
             return skeleton;
         }
@@ -1116,7 +1175,12 @@ fn demote_group_headings(body: &str) -> String {
 /// untouched (R4 — an empty range never blanks a curated subsection). A
 /// non-empty `body` regenerates an existing subsection in place (idempotent for
 /// a fixed commit set).
-fn replace_crate_subsection_body(existing: Option<&str>, crate_name: &str, body: &str) -> String {
+fn replace_crate_subsection_body(
+    existing: Option<&str>,
+    h1: &str,
+    crate_name: &str,
+    body: &str,
+) -> String {
     // `nested_body`: the demoted (`#### <Group>`) crate body, unwrapped — spliced
     // under an EXISTING `### <crate>` heading. `subsection`: the same body WRAPPED
     // under a fresh `### <crate>` heading (empty body → empty, so a crate with no
@@ -1125,10 +1189,11 @@ fn replace_crate_subsection_body(existing: Option<&str>, crate_name: &str, body:
     let subsection = wrap_subsection(crate_name, &nested_body);
 
     let Some(existing) = existing else {
-        // Absent file: bootstrap a skeleton carrying this crate's subsection (or
-        // a bare `[Unreleased]` when the crate has no commits, so a later crate's
-        // refresh has an anchor to append to).
-        return kac_skeleton(&subsection);
+        // Absent file: bootstrap a skeleton (titled with the project `h1`)
+        // carrying this crate's subsection (or a bare `[Unreleased]` when the
+        // crate has no commits, so a later crate's refresh has an anchor to
+        // append to).
+        return kac_skeleton(h1, &subsection);
     };
 
     let lines: Vec<&str> = existing.lines().collect();
@@ -1137,7 +1202,7 @@ fn replace_crate_subsection_body(existing: Option<&str>, crate_name: &str, body:
     let Some(unreleased_idx) = lines.iter().position(|l| is_unreleased_heading(l)) else {
         // No `[Unreleased]` heading: insert one after the H1 carrying the
         // subsection, preserving the rest of the file.
-        return insert_unreleased_after_h1(&lines, &subsection, trailing_newline);
+        return insert_unreleased_after_h1(&lines, h1, &subsection, trailing_newline);
     };
 
     // Bound the `[Unreleased]` block: up to the first `## ` heading or footer.
@@ -1311,9 +1376,11 @@ pub fn render_crate_section(
     let new_section = format!("{}\n\n{}\n", section_heading, body.trim_end());
 
     let file_path = crate_path.join("CHANGELOG.md");
+    // Per-crate file: a synthesized H1 is crate-named, matching the per-crate
+    // refresh path.
     let merged = merge_into_changelog(MergeArgs {
         file_path: &file_path,
-        crate_name,
+        h1: &crate_h1(crate_name),
         new_section: &new_section,
         generated_body: body.trim_end(),
         from_tag,
@@ -1422,6 +1489,7 @@ pub fn render_root_section(
         let base = resolve_compare_base(existing.as_deref().unwrap_or(""), workspace_root);
         let Some(merged) = promote_multitrack_section(MultitrackPromoteArgs {
             existing: existing.as_deref(),
+            h1: &project_h1(workspace_root),
             crate_name,
             tag,
             from_tag,
@@ -1451,9 +1519,11 @@ pub fn render_root_section(
         date = today_yyyy_mm_dd()
     );
     let new_section = format!("{}\n\n{}\n", section_heading, body.trim_end());
+    // Root file: a synthesized H1 is the project header, never a crate name (a
+    // fresh lockstep/flat root must not be titled with the last-bumped crate).
     let merged = merge_into_changelog(MergeArgs {
         file_path: &file_path,
-        crate_name,
+        h1: &project_h1(workspace_root),
         new_section: &new_section,
         generated_body: body.trim_end(),
         from_tag,
@@ -1549,6 +1619,9 @@ struct PromoteArgs<'a> {
 struct MultitrackPromoteArgs<'a> {
     /// Current root `CHANGELOG.md` contents, or `None` when the file is absent.
     existing: Option<&'a str>,
+    /// Project H1 ([`project_h1`]) used to title an absent root; an existing H1
+    /// is always preserved. Never a crate name.
+    h1: &'a str,
     /// Crate being released; its `### <crate>` subsection is consumed when one
     /// exists under `[Unreleased]`, else the section is built from commits.
     crate_name: &'a str,
@@ -1627,6 +1700,7 @@ fn append_slotted_section(
 fn promote_multitrack_section(args: MultitrackPromoteArgs<'_>) -> Result<Option<String>> {
     let MultitrackPromoteArgs {
         existing,
+        h1,
         crate_name,
         tag,
         from_tag,
@@ -1668,12 +1742,12 @@ fn promote_multitrack_section(args: MultitrackPromoteArgs<'_>) -> Result<Option<
         return Ok(Some(existing.to_string()));
     }
 
-    // Preserve the file's existing H1, else synthesize the project header. The
-    // H1 is a project title (`# Changelog`), never a crate name.
+    // Preserve the file's existing H1, else synthesize the project header `h1`
+    // (a project title, never a crate name).
     let h1_idx = lines.iter().position(|l| l.starts_with("# "));
     let head: Vec<String> = match h1_idx {
         Some(idx) => lines[..=idx].iter().map(|s| s.to_string()).collect(),
-        None => vec!["# Changelog".to_string()],
+        None => vec![h1.to_string()],
     };
 
     // Existing released sections + footer live after the H1 (or are the whole
@@ -2103,8 +2177,11 @@ fn today_yyyy_mm_dd() -> String {
 pub(crate) struct MergeArgs<'a> {
     /// Absolute path of the crate's `CHANGELOG.md` (may not yet exist).
     pub(crate) file_path: &'a std::path::Path,
-    /// Crate name, used only to synthesize an H1 for an absent file.
-    pub(crate) crate_name: &'a str,
+    /// H1 used ONLY to synthesize a title for an absent file (or a file with no
+    /// H1). An existing H1 is always preserved. The caller passes
+    /// [`crate_h1`] for a per-crate file or [`project_h1`] for the shared root,
+    /// so the title never keys off the crate name in the root case.
+    pub(crate) h1: &'a str,
     /// Fully-rendered `## [<version>] - <date>\n\n<body>\n` section used by
     /// the non-KAC splice path.
     pub(crate) new_section: &'a str,
@@ -2163,7 +2240,7 @@ fn is_version_heading(line: &str, version: &str) -> bool {
 pub(crate) fn merge_into_changelog(args: MergeArgs<'_>) -> Result<String> {
     let MergeArgs {
         file_path,
-        crate_name,
+        h1,
         new_section,
         generated_body,
         from_tag,
@@ -2171,7 +2248,7 @@ pub(crate) fn merge_into_changelog(args: MergeArgs<'_>) -> Result<String> {
         workspace_root,
     } = args;
 
-    let header = format!("# Changelog — {}\n\n", crate_name);
+    let header = format!("{}\n\n", h1);
     if !file_path.is_file() {
         return Ok(format!("{}{}", header, new_section));
     }
@@ -3027,7 +3104,7 @@ mod root_section_tests {
         let new_section = format!("## [0.7.0] - {date}\n\n- a feature\n");
         let merged = merge_into_changelog(MergeArgs {
             file_path: &path,
-            crate_name: "cfgd",
+            h1: "# Changelog",
             new_section: &new_section,
             generated_body: "- a feature",
             from_tag: Some("v0.6.0"),

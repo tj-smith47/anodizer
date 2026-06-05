@@ -3471,7 +3471,7 @@ fn run_merge(
     let new_section = format!("{section_heading}\n\n{generated_body}\n");
     merge_into_changelog(MergeArgs {
         file_path: &path,
-        crate_name: "anodizer",
+        h1: "# Changelog — anodizer",
         new_section: &new_section,
         generated_body,
         from_tag,
@@ -3793,7 +3793,7 @@ fn kac_synthesize_footer_from_github_remote() {
 
     let out = merge_into_changelog(MergeArgs {
         file_path: &path,
-        crate_name: "widget",
+        h1: "# Changelog — widget",
         new_section: "## [0.2.0] - 2026-06-03\n\n### Fixes\n- gen\n",
         generated_body: "### Fixes\n- gen",
         from_tag: Some("v0.1.0"),
@@ -3833,7 +3833,7 @@ fn kac_synthesize_footer_from_gitlab_remote_is_host_correct() {
 
     let out = merge_into_changelog(MergeArgs {
         file_path: &path,
-        crate_name: "widget",
+        h1: "# Changelog — widget",
         new_section: "## [0.2.0] - 2026-06-03\n\n### Fixes\n- gen\n",
         generated_body: "### Fixes\n- gen",
         from_tag: Some("v0.1.0"),
@@ -4058,6 +4058,7 @@ mod refresh_unreleased_tests {
 
     use crate::{
         InsertionMode, refresh_crate_unreleased, refresh_root_unreleased, render_changelog_json,
+        render_crate_section, render_root_section,
     };
 
     /// Run `git <args>` inside `dir`, asserting success.
@@ -4320,7 +4321,12 @@ line two\n\
             .expect("ok")
             .expect("some update");
         let out = &update.rendered_text;
-        assert!(out.starts_with("# Changelog\n"));
+        // Per-crate file: a synthesized H1 is crate-named (matches the per-crate
+        // promote path).
+        assert!(
+            out.starts_with("# Changelog — mylib\n"),
+            "per-crate refresh synthesizes a crate-named H1, got:\n{out}"
+        );
         assert!(out.contains("## [Unreleased]"));
         assert!(out.contains("first ever"));
         assert!(
@@ -4899,5 +4905,224 @@ line two\n\
         assert!(text.contains("- sibling kept"), "sibling lost:\n{text}");
         assert!(text.contains("[Unreleased]: https://github.com/o/r/compare/v0.2.0...HEAD"));
         assert!(text.contains("[v0.2.0]: https://github.com/o/r/releases/tag/v0.2.0"));
+    }
+
+    // -- H1 title rules ----------------------------------------------------
+    //
+    // ROOT changelog H1 = the project header (`# Changelog`, or the configured
+    // `changelog.header` rendered with `{{ ProjectName }}`), NEVER a crate name.
+    // PER-CRATE changelog H1 = `# Changelog — <crate>`. Both refresh and promote
+    // synthesize the SAME title for an absent file; an existing H1 is preserved.
+
+    /// Write `.anodizer.yaml` with a project_name + an inline `changelog.header`
+    /// template, so the root H1 resolves `{{ ProjectName }}`.
+    fn write_config_with_header(root: &Path) {
+        std::fs::write(
+            root.join(".anodizer.yaml"),
+            "project_name: myproj\nchangelog:\n  header: \"# Changelog for {{ ProjectName }}\"\n  groups:\n    - title: Features\n      regexp: '^feat'\n      order: 0\n",
+        )
+        .expect("write config");
+    }
+
+    /// PER-CRATE absent-file title is crate-named in BOTH refresh and promote.
+    #[test]
+    fn per_crate_title_is_crate_named_refresh_and_promote() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: a thing");
+
+        let refresh = refresh_crate_unreleased(root, "demo-core", root, None, None)
+            .expect("ok")
+            .expect("update");
+        assert!(
+            refresh
+                .rendered_text
+                .starts_with("# Changelog — demo-core\n"),
+            "per-crate refresh H1, got:\n{}",
+            refresh.rendered_text
+        );
+
+        let promote = render_crate_section(root, "demo-core", root, None, "0.1.0")
+            .expect("ok")
+            .expect("update");
+        assert!(
+            promote
+                .rendered_text
+                .starts_with("# Changelog — demo-core\n"),
+            "per-crate promote H1, got:\n{}",
+            promote.rendered_text
+        );
+    }
+
+    /// ROOT absent-file title is the project header (default `# Changelog`),
+    /// never a crate name, in BOTH refresh and promote.
+    #[test]
+    fn root_title_is_project_header_refresh_and_promote() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: a thing");
+
+        let refresh = refresh_root_unreleased(
+            root,
+            "demo-core",
+            root,
+            None,
+            None,
+            Chronology::Date,
+            false,
+            &[],
+            None,
+        )
+        .expect("ok")
+        .expect("update");
+        assert!(
+            refresh.rendered_text.starts_with("# Changelog\n"),
+            "root refresh H1 is the project header, got:\n{}",
+            refresh.rendered_text
+        );
+        assert!(
+            !refresh.rendered_text.contains("# Changelog —"),
+            "root H1 must not be crate-named:\n{}",
+            refresh.rendered_text
+        );
+
+        let promote = render_root_section(
+            root,
+            "demo-core",
+            root,
+            None,
+            "0.1.0",
+            "v0.1.0",
+            Chronology::Date,
+            false,
+            &[],
+        )
+        .expect("ok")
+        .expect("update");
+        assert!(
+            promote.rendered_text.starts_with("# Changelog\n"),
+            "root promote H1 is the project header, got:\n{}",
+            promote.rendered_text
+        );
+        assert!(
+            !promote.rendered_text.contains("# Changelog —"),
+            "root H1 must not be crate-named:\n{}",
+            promote.rendered_text
+        );
+    }
+
+    /// A configured inline `changelog.header` resolves `{{ ProjectName }}` for
+    /// the synthesized ROOT H1.
+    #[test]
+    fn root_title_renders_configured_header_template() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config_with_header(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: a thing");
+
+        let promote = render_root_section(
+            root,
+            "demo-core",
+            root,
+            None,
+            "0.1.0",
+            "v0.1.0",
+            Chronology::Date,
+            false,
+            &[],
+        )
+        .expect("ok")
+        .expect("update");
+        assert!(
+            promote
+                .rendered_text
+                .starts_with("# Changelog for myproj\n"),
+            "configured header resolves ProjectName, got:\n{}",
+            promote.rendered_text
+        );
+    }
+
+    /// A configured `changelog.header` referencing a variable other than
+    /// `ProjectName` cannot be rendered for the absent-root seed (no release
+    /// Context here), so the title falls back to plain `# Changelog` rather than
+    /// leaking a half-rendered `{{ ... }}` literal into the file.
+    #[test]
+    fn root_title_falls_back_when_header_uses_non_projectname_var() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        std::fs::write(
+            root.join(".anodizer.yaml"),
+            "project_name: myproj\nchangelog:\n  header: \"# {{ Version }} Changelog\"\n  groups:\n    - title: Features\n      regexp: '^feat'\n      order: 0\n",
+        )
+        .expect("write config");
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: a thing");
+
+        let promote = render_root_section(
+            root,
+            "demo-core",
+            root,
+            None,
+            "0.1.0",
+            "v0.1.0",
+            Chronology::Date,
+            false,
+            &[],
+        )
+        .expect("ok")
+        .expect("update");
+        assert!(
+            promote.rendered_text.starts_with("# Changelog\n"),
+            "non-ProjectName header var must fall back to plain title, got:\n{}",
+            promote.rendered_text
+        );
+        assert!(
+            !promote.rendered_text.contains("{{"),
+            "no half-rendered template literal leaks, got:\n{}",
+            promote.rendered_text
+        );
+    }
+
+    /// An EXISTING root H1 (even a stale crate-named one) is PRESERVED, never
+    /// rewritten — the title rules apply to synthesis only.
+    #[test]
+    fn existing_root_h1_is_preserved_not_rewritten() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(root, "feat: a thing");
+        // A pre-existing (stale) crate-named root H1.
+        std::fs::write(
+            root.join("CHANGELOG.md"),
+            "# Changelog — stale-name\n\n## [Unreleased]\n",
+        )
+        .unwrap();
+
+        let refresh = refresh_root_unreleased(
+            root,
+            "demo-core",
+            root,
+            None,
+            None,
+            Chronology::Date,
+            false,
+            &[],
+            None,
+        )
+        .expect("ok")
+        .expect("update");
+        assert!(
+            refresh
+                .rendered_text
+                .starts_with("# Changelog — stale-name\n"),
+            "existing H1 must be preserved verbatim, got:\n{}",
+            refresh.rendered_text
+        );
     }
 }
