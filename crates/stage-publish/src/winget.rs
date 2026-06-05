@@ -2184,10 +2184,12 @@ mod publisher_tests {
     /// helper-string tests above.
     #[test]
     fn winget_publisher_run_dry_run_records_target() {
+        let repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![winget_crate("demo")])
             .selected_crates(vec!["demo".to_string()])
             .dry_run(true)
+            .project_root(repo.path().to_path_buf())
             .build();
         let p = WingetPublisher::new();
         let evidence = p.run(&mut ctx).expect("dry-run publisher.run");
@@ -2254,10 +2256,12 @@ mod publisher_tests {
     /// this regression test pins against.
     #[test]
     fn winget_publisher_run_empty_selection_publishes_all_configured() {
+        let repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![winget_crate("demo")])
             // selected_crates intentionally left at the default Vec::new()
             .dry_run(true)
+            .project_root(repo.path().to_path_buf())
             .build();
         let p = WingetPublisher::new();
         let evidence = p.run(&mut ctx).expect("publisher.run ok");
@@ -2310,10 +2314,12 @@ mod publisher_tests {
     #[test]
     fn winget_publisher_visible_work_contract() {
         use crate::testing::assert_publisher_visible_work_contract;
+        let repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![winget_crate("demo")])
             .selected_crates(vec!["demo".to_string()])
             .dry_run(true)
+            .project_root(repo.path().to_path_buf())
             .build();
         let p = WingetPublisher::new();
         assert_publisher_visible_work_contract(&p, &mut ctx);

@@ -1743,10 +1743,12 @@ mod publisher_tests {
     /// indirectly via the helper-string tests above.
     #[test]
     fn aur_publisher_run_dry_run_returns_ok() {
+        let repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![aur_crate("demo")])
             .selected_crates(vec!["demo".to_string()])
             .dry_run(true)
+            .project_root(repo.path().to_path_buf())
             .build();
         let p = AurOurPublisher::new();
         let evidence = p.run(&mut ctx).expect("dry-run publisher.run");
@@ -1791,10 +1793,12 @@ mod publisher_tests {
     /// pins the gate where phantom rollback targets used to leak.
     #[test]
     fn test_publish_to_aur_dry_run_implicit_all_produces_empty_evidence() {
+        let repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![aur_crate("demo"), aur_crate("other")])
             // No selected_crates → implicit-all resolves to both aur crates.
             .dry_run(true)
+            .project_root(repo.path().to_path_buf())
             .build();
         let p = AurOurPublisher::new();
         let evidence = p.run(&mut ctx).expect("dry-run implicit-all publisher.run");
@@ -1814,9 +1818,11 @@ mod publisher_tests {
         {
             aur.skip_upload = Some(StringOrBool::Bool(true));
         }
+        let repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![crate_with_skip])
             .selected_crates(vec!["demo".to_string()])
+            .project_root(repo.path().to_path_buf())
             .build();
         let p = AurOurPublisher::new();
         let evidence = p.run(&mut ctx).expect("skip_upload publisher.run");
@@ -1830,10 +1836,12 @@ mod publisher_tests {
     #[test]
     fn aur_publisher_visible_work_contract() {
         use crate::testing::assert_publisher_visible_work_contract;
+        let repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![aur_crate("demo")])
             .selected_crates(vec!["demo".to_string()])
             .dry_run(true)
+            .project_root(repo.path().to_path_buf())
             .build();
         let p = AurOurPublisher::new();
         assert_publisher_visible_work_contract(&p, &mut ctx);

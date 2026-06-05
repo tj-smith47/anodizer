@@ -1260,10 +1260,12 @@ mod publisher_tests {
     /// `should_warn_no_eligible_only_fires_when_predicate_filtered_everything`.
     #[test]
     fn scoop_publisher_run_dry_run_returns_ok() {
+        let repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![scoop_crate("demo")])
             .selected_crates(vec!["demo".to_string()])
             .dry_run(true)
+            .project_root(repo.path().to_path_buf())
             .build();
         let p = ScoopPublisher::new();
         let evidence = p.run(&mut ctx).expect("dry-run publisher.run");
@@ -1309,10 +1311,12 @@ mod publisher_tests {
     #[test]
     fn scoop_publisher_visible_work_contract() {
         use crate::testing::assert_publisher_visible_work_contract;
+        let repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![scoop_crate("demo")])
             .selected_crates(vec!["demo".to_string()])
             .dry_run(true)
+            .project_root(repo.path().to_path_buf())
             .build();
         let p = ScoopPublisher::new();
         assert_publisher_visible_work_contract(&p, &mut ctx);

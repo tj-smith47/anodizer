@@ -351,3 +351,30 @@ pub fn assert_publisher_visible_work_contract(publisher: &dyn Publisher, ctx: &m
         capture.all_messages()
     );
 }
+
+/// Create a throwaway git repo tagged `v0.1.0` and return its [`TempDir`]
+/// handle (kept alive by the caller).
+///
+/// Every per-crate publisher's `run()` re-scopes each crate's version by
+/// resolving its `tag_template` against `project_root` — which falls back to
+/// the process cwd when a test leaves `project_root` unset. Pointing
+/// `project_root` at this hermetic repo makes the version resolve from a
+/// deterministic tag set rather than whatever git checkout the process cwd
+/// happens to be inside, which a concurrently-running test in the same binary
+/// can swap to a tag-less tempdir (via `CwdGuard`), starving the resolution and
+/// flaking the run.
+///
+/// `#[cfg(test)]`-only: `init_git_repo_with_commits` lives behind
+/// anodizer-core's `test-helpers` feature, which this crate enables only as a
+/// dev-dependency, so the helper is unavailable to external `test-support`
+/// consumers.
+#[cfg(test)]
+pub fn hermetic_tagged_repo() -> tempfile::TempDir {
+    let repo = tempfile::tempdir().expect("tempdir for hermetic publisher repo");
+    // `init_git_repo_with_commits` writes a file per commit before committing,
+    // so it works in an empty tempdir (plain `init_git_repo` assumes the caller
+    // already wrote files and its `git commit` errors on an empty tree). The
+    // first commit is tagged `v0.1.0`, matching the `v{{ .Version }}` template.
+    anodizer_core::test_helpers::init_git_repo_with_commits(repo.path(), &["initial"]);
+    repo
+}

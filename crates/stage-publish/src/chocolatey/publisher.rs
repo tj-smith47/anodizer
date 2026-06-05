@@ -508,10 +508,12 @@ mod publisher_tests {
     #[test]
     fn chocolatey_publisher_run_dry_run_executes_without_recording_targets() {
         use anodizer_core::artifact::{Artifact, ArtifactKind};
+        let repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![choco_crate("demo", None)])
             .selected_crates(vec!["demo".to_string()])
             .dry_run(true)
+            .project_root(repo.path().to_path_buf())
             .build();
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -644,10 +646,12 @@ mod publisher_tests {
     fn chocolatey_publisher_visible_work_contract() {
         use crate::testing::assert_publisher_visible_work_contract;
         use anodizer_core::artifact::{Artifact, ArtifactKind};
+        let repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = TestContextBuilder::new()
             .crates(vec![choco_crate("demo", None)])
             .selected_crates(vec!["demo".to_string()])
             .dry_run(true)
+            .project_root(repo.path().to_path_buf())
             .build();
         // Chocolatey's publish path resolves a Windows archive artifact — without
         // one configured here the per-crate publish would bail before emitting
