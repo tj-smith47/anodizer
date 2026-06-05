@@ -69,6 +69,44 @@ pub struct SchemaEntry {
     pub if_condition: Option<String>,
 }
 
+/// Hosting mode, inferred from which source field is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaMode {
+    External,
+    Vendor,
+}
+
+impl SchemaEntry {
+    /// Infer the mode from field presence. Error if neither/both source fields set.
+    pub fn mode(&self) -> anyhow::Result<SchemaMode> {
+        match (self.url.is_some(), self.schema_file.is_some()) {
+            (true, false) => Ok(SchemaMode::External),
+            (false, true) => Ok(SchemaMode::Vendor),
+            (false, false) => anyhow::bail!(
+                "schemastore schema `{}`: set `url` or `schema_file`",
+                self.name
+            ),
+            (true, true) => anyhow::bail!(
+                "schemastore schema `{}`: set `url` or `schema_file`, not both",
+                self.name
+            ),
+        }
+    }
+
+    /// Config-shape validation (mode + file_match). Content rules that need the
+    /// resolved description/dialect are checked later in `manifest`.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        self.mode()?;
+        if self.file_match.is_empty() {
+            anyhow::bail!(
+                "schemastore schema `{}`: `file_match` must list at least one filename",
+                self.name
+            );
+        }
+        Ok(())
+    }
+}
+
 impl SchemastoreConfig {
     /// Effective `repository` for an entry (block-level; one fork per PR).
     pub fn resolved_repository(&self, _entry: &SchemaEntry) -> Option<&RepositoryConfig> {
@@ -191,6 +229,66 @@ schemas:
                 .owner
                 .as_deref(),
             Some("tj-smith47")
+        );
+    }
+
+    #[test]
+    fn mode_inferred_from_field_presence() {
+        let ext = SchemaEntry {
+            name: "a".into(),
+            url: Some("https://x/s.json".into()),
+            file_match: vec!["a.yaml".into()],
+            ..Default::default()
+        };
+        let ven = SchemaEntry {
+            name: "b".into(),
+            schema_file: Some("s.json".into()),
+            file_match: vec!["b.yaml".into()],
+            ..Default::default()
+        };
+        assert_eq!(ext.mode().unwrap(), SchemaMode::External);
+        assert_eq!(ven.mode().unwrap(), SchemaMode::Vendor);
+    }
+
+    #[test]
+    fn validate_rejects_neither_both_and_empty_filematch() {
+        let neither = SchemaEntry {
+            name: "a".into(),
+            file_match: vec!["a.yaml".into()],
+            ..Default::default()
+        };
+        assert!(
+            neither
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("url` or `schema_file")
+        );
+        let both = SchemaEntry {
+            name: "a".into(),
+            url: Some("u".into()),
+            schema_file: Some("s".into()),
+            file_match: vec!["a.yaml".into()],
+            ..Default::default()
+        };
+        assert!(
+            both.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("not both")
+        );
+        let no_fm = SchemaEntry {
+            name: "a".into(),
+            url: Some("u".into()),
+            file_match: vec![],
+            ..Default::default()
+        };
+        assert!(
+            no_fm
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("file_match")
         );
     }
 
