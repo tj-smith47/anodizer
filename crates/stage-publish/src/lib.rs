@@ -26,6 +26,7 @@ pub mod rollback;
 pub mod rollback_only;
 pub mod run_summary;
 pub(crate) mod schema_validation;
+pub(crate) mod schemastore;
 pub mod scoop;
 pub(crate) mod scope;
 pub(crate) mod snapshot_validation;
