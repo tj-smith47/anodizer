@@ -1395,89 +1395,71 @@ pub fn render_root_section(
         .unwrap_or_default();
 
     let file_path = workspace_root.join("CHANGELOG.md");
-
-    // Absent root file: synthesize the flat first-write exactly as the
-    // per-crate path does (there is no Unreleased shape to promote into).
-    if !file_path.is_file() {
-        let Some((_cfg, body)) = rendered else {
-            return Ok(None);
-        };
-        let section_heading = format!(
-            "## [{ver}] - {date}",
-            ver = to_version,
-            date = today_yyyy_mm_dd()
-        );
-        let new_section = format!("{}\n\n{}\n", section_heading, body.trim_end());
-        let merged = merge_into_changelog(MergeArgs {
-            file_path: &file_path,
-            crate_name,
-            new_section: &new_section,
-            generated_body: body.trim_end(),
-            from_tag,
-            to_version,
-            workspace_root,
-        })?;
-        return Ok(Some(ChangelogUpdate {
-            file_path,
-            rendered_text: merged,
-            insertion_mode: InsertionMode::Replace,
-        }));
-    }
-
-    let existing = std::fs::read_to_string(&file_path)
-        .with_context(|| format!("failed to read {}", file_path.display()))?;
-
-    // Flat root (caller's topology says single-track and no existing crate
-    // subsection rescues it): delegate to the flat roll / splice so a
-    // single-track root behaves exactly as `render_crate_section` would. The
-    // existing-subsection fallback covers a `--crate`-filtered single-target run
-    // on a PerCrate repo (topology count can't say "multi").
-    let use_multitrack = multitrack || has_crate_subsections(&existing, crate_names);
-    if !use_multitrack {
-        let Some((_cfg, body)) = rendered else {
-            return Ok(None);
-        };
-        let section_heading = format!(
-            "## [{ver}] - {date}",
-            ver = to_version,
-            date = today_yyyy_mm_dd()
-        );
-        let new_section = format!("{}\n\n{}\n", section_heading, body.trim_end());
-        let merged = merge_into_changelog(MergeArgs {
-            file_path: &file_path,
-            crate_name,
-            new_section: &new_section,
-            generated_body: body.trim_end(),
-            from_tag,
-            to_version,
-            workspace_root,
-        })?;
-        return Ok(Some(ChangelogUpdate {
-            file_path,
-            rendered_text: merged,
-            insertion_mode: InsertionMode::Replace,
-        }));
-    }
-
-    // Subsection-promote path. Resolve a compare base from an existing footer
-    // link, falling back to the `origin` remote, so the rolled footer keeps the
-    // file's host (self-hosted GitLab/Gitea stays host-correct).
-    let base = resolve_compare_base(&existing, workspace_root);
-
-    let Some(merged) = promote_subsection(PromoteArgs {
-        existing: &existing,
-        crate_name,
-        tag,
-        from_tag,
-        chronology,
-        groups: &groups,
-        generated_body: generated_body.trim_end(),
-        base: base.as_deref(),
-    })?
-    else {
-        return Ok(None);
+    let existing: Option<String> = if file_path.is_file() {
+        Some(
+            std::fs::read_to_string(&file_path)
+                .with_context(|| format!("failed to read {}", file_path.display()))?,
+        )
+    } else {
+        None
     };
 
+    // Multi-track decision. `multitrack` is the caller's repo TOPOLOGY (the root
+    // aggregates more than one independent crate track). The existing-subsection
+    // fallback additionally rescues a `--crate`-filtered single-target run on a
+    // PerCrate repo (topology count alone can't say "multi"). When neither
+    // holds, the root is flat (Single / Lockstep / FlatAggregate).
+    let use_multitrack = multitrack
+        || existing
+            .as_deref()
+            .is_some_and(|e| has_crate_subsections(e, crate_names));
+
+    if use_multitrack {
+        // Tag-prefixed, accumulating, chronology-slotted dated section built
+        // from this track's commits (or a consumed `### <crate>` subsection).
+        // The footer base prefers an existing compare link, then the `origin`
+        // remote, so a self-hosted host stays correct.
+        let base = resolve_compare_base(existing.as_deref().unwrap_or(""), workspace_root);
+        let Some(merged) = promote_multitrack_section(MultitrackPromoteArgs {
+            existing: existing.as_deref(),
+            crate_name,
+            tag,
+            from_tag,
+            chronology,
+            groups: &groups,
+            generated_body: generated_body.trim_end(),
+            base: base.as_deref(),
+        })?
+        else {
+            return Ok(None);
+        };
+        return Ok(Some(ChangelogUpdate {
+            file_path,
+            rendered_text: merged,
+            insertion_mode: InsertionMode::Replace,
+        }));
+    }
+
+    // Flat root (single-track aggregate): the whole release is one flat
+    // `## [<version>]` section, byte-identical to `render_crate_section`.
+    let Some((_cfg, body)) = rendered else {
+        return Ok(None);
+    };
+    let section_heading = format!(
+        "## [{ver}] - {date}",
+        ver = to_version,
+        date = today_yyyy_mm_dd()
+    );
+    let new_section = format!("{}\n\n{}\n", section_heading, body.trim_end());
+    let merged = merge_into_changelog(MergeArgs {
+        file_path: &file_path,
+        crate_name,
+        new_section: &new_section,
+        generated_body: body.trim_end(),
+        from_tag,
+        to_version,
+        workspace_root,
+    })?;
     Ok(Some(ChangelogUpdate {
         file_path,
         rendered_text: merged,
@@ -1557,6 +1539,167 @@ struct PromoteArgs<'a> {
     generated_body: &'a str,
     /// `<base>/compare` URL prefix for footer links, or `None` to omit them.
     base: Option<&'a str>,
+}
+
+/// Inputs to [`promote_multitrack_section`].
+///
+/// Kept distinct from [`PromoteArgs`] rather than folded: this path runs at tag
+/// time before any refresh, so `existing` is `Option` (the root may not exist
+/// yet) — `PromoteArgs` requires a present file with a `## [Unreleased]` heading.
+struct MultitrackPromoteArgs<'a> {
+    /// Current root `CHANGELOG.md` contents, or `None` when the file is absent.
+    existing: Option<&'a str>,
+    /// Crate being released; its `### <crate>` subsection is consumed when one
+    /// exists under `[Unreleased]`, else the section is built from commits.
+    crate_name: &'a str,
+    /// FULL new tag for this release (e.g. `aaa-v0.3.0`, `v0.2.0`).
+    tag: &'a str,
+    /// This track's previous tag, or `None` for its first release.
+    from_tag: Option<&'a str>,
+    /// Section ordering for slotting the promoted section.
+    chronology: anodizer_core::config::Chronology,
+    /// Configured commit groups, used to bucket a consumed curated subsection.
+    groups: &'a [ChangelogGroup],
+    /// This crate's generated grouped body (already `### <GroupTitle>`-grouped),
+    /// used when no curated subsection is present.
+    generated_body: &'a str,
+    /// `<base>/compare` URL prefix for footer links, or `None` to omit them.
+    base: Option<&'a str>,
+}
+
+/// Build the promoted dated section block: `## [<tag>] - <date>` followed by the
+/// section `body` lines and a trailing blank. The body opens with its own
+/// `### <GroupTitle>` (or a bare bullet) directly under the heading — no blank
+/// line between — matching the Keep-a-Changelog shape of existing released
+/// sections.
+fn build_promoted_section(tag: &str, body: &str) -> Vec<String> {
+    let mut promoted: Vec<String> = Vec::with_capacity(body.lines().count() + 2);
+    promoted.push(format!("## [{}] - {}", tag, today_yyyy_mm_dd()));
+    promoted.extend(body.lines().map(|s| s.to_string()));
+    promoted.push(String::new());
+    promoted
+}
+
+/// Slot a promoted section among the existing released sections of `tail` and
+/// roll the per-track compare-link footer, appending the result onto `out`
+/// (whose head — the rebuilt `[Unreleased]` block or the project H1 — the caller
+/// has already pushed). `tail` is the existing-sections-plus-footer slice; it is
+/// split at the first footer-link line so `slot_sections` only reorders dated
+/// sections and the footer is rolled by `push_root_footer`. Single source of the
+/// shared promote tail for both root-promote paths.
+fn append_slotted_section(
+    out: &mut Vec<String>,
+    tail: &[&str],
+    promoted: &[String],
+    tag: &str,
+    from_tag: Option<&str>,
+    chronology: anodizer_core::config::Chronology,
+    base: Option<&str>,
+) {
+    let footer_idx = tail
+        .iter()
+        .position(|l| parse_unreleased_footer(l).is_some());
+    let (sections, footer): (&[&str], &[&str]) = match footer_idx {
+        Some(fi) => (&tail[..fi], &tail[fi..]),
+        None => (tail, &[]),
+    };
+    out.extend(slot_sections(sections, promoted, tag, chronology));
+    push_root_footer(out, footer, tag, from_tag, base);
+}
+
+/// Promote one track's release into the shared multi-track root, emitting a
+/// tag-prefixed `## [<tag>] - <date>` section built from THIS crate's commits,
+/// accumulated among the existing dated sections and slotted per `chronology`.
+///
+/// Unlike [`promote_subsection`] this does NOT require a pre-existing
+/// `### <crate>` subsection under `## [Unreleased]`: a release runs at tag time,
+/// before any `changelog --write` refresh has built subsections. Three input
+/// states all reach the same dated-section result:
+/// - file absent / has no `## [Unreleased]` heading → synthesize a `# Changelog`
+///   H1 (or preserve the file's existing H1) and slot the new section among any
+///   already-promoted `## [<tag>]` sections;
+/// - `## [Unreleased]` present with this crate's `### <crate>` subsection →
+///   delegate to [`promote_subsection`], which consumes the subsection.
+///
+/// Returns `Ok(None)` when there is nothing to release (no commits and no
+/// curated subsection). Idempotent: a `## [<tag>]` section already present is
+/// returned unchanged.
+fn promote_multitrack_section(args: MultitrackPromoteArgs<'_>) -> Result<Option<String>> {
+    let MultitrackPromoteArgs {
+        existing,
+        crate_name,
+        tag,
+        from_tag,
+        chronology,
+        groups,
+        generated_body,
+        base,
+    } = args;
+
+    // When the root already carries a `## [Unreleased]` heading, reuse the
+    // subsection-consuming promote (the refresh-then-tag workflow) so a curated
+    // `### <crate>` body is honored verbatim.
+    if let Some(existing) = existing
+        && existing.lines().any(is_unreleased_heading)
+    {
+        return promote_subsection(PromoteArgs {
+            existing,
+            crate_name,
+            tag,
+            from_tag,
+            chronology,
+            groups,
+            generated_body,
+            base,
+        });
+    }
+
+    // No `[Unreleased]` to consume: build the dated section straight from this
+    // crate's commits. Nothing to release when the crate produced no body.
+    if generated_body.is_empty() {
+        return Ok(None);
+    }
+
+    let existing = existing.unwrap_or("");
+    let lines: Vec<&str> = existing.lines().collect();
+
+    // Idempotence: this track's section already promoted.
+    if lines.iter().any(|l| is_version_heading(l, tag)) {
+        return Ok(Some(existing.to_string()));
+    }
+
+    // Preserve the file's existing H1, else synthesize the project header. The
+    // H1 is a project title (`# Changelog`), never a crate name.
+    let h1_idx = lines.iter().position(|l| l.starts_with("# "));
+    let head: Vec<String> = match h1_idx {
+        Some(idx) => lines[..=idx].iter().map(|s| s.to_string()).collect(),
+        None => vec!["# Changelog".to_string()],
+    };
+
+    // Existing released sections + footer live after the H1 (or are the whole
+    // file when no H1). Drop blank padding that bounds them; `slot_sections`
+    // re-fences with single blanks and the footer push restores spacing.
+    let rest: &[&str] = match h1_idx {
+        Some(idx) => &lines[idx + 1..],
+        None => &lines,
+    };
+    let tail: Vec<&str> = rest
+        .iter()
+        .copied()
+        .skip_while(|l| l.trim().is_empty())
+        .collect();
+
+    let promoted = build_promoted_section(tag, generated_body);
+
+    let mut out: Vec<String> = head;
+    out.push(String::new());
+    append_slotted_section(&mut out, &tail, &promoted, tag, from_tag, chronology, base);
+
+    // `finish` collapses the blank-line padding the slot/footer assembly may
+    // butt together and restores the trailing-newline state (an absent file
+    // gets one).
+    let trailing = existing.is_empty() || existing.ends_with('\n');
+    Ok(Some(finish(out, trailing)))
 }
 
 /// Pure transform: promote `crate_name`'s `### <crate>` subsection out of
@@ -1645,38 +1788,18 @@ fn promote_subsection(args: PromoteArgs<'_>) -> Result<Option<String>> {
         return Ok(None);
     };
 
-    let promoted_heading = format!("## [{}] - {}", tag, today_yyyy_mm_dd());
-    let mut promoted: Vec<String> = Vec::new();
-    promoted.push(promoted_heading);
-    // The body opens with its own `### <GroupTitle>` (or a bare bullet) right
-    // under the heading — no blank line between, matching the Keep-a-Changelog
-    // shape of the existing released sections.
-    promoted.extend(body.lines().map(|s| s.to_string()));
-    promoted.push(String::new());
+    let promoted = build_promoted_section(tag, &body);
 
     // Rebuild the `[Unreleased]` block with this crate's subsection removed and
-    // every other subsection byte-identical.
-    let unreleased_block = rebuild_unreleased(&lines, unreleased_idx, unreleased_end, sub_start);
-
-    // Split the remainder (existing released sections + footer) at the footer.
+    // every other subsection byte-identical, then slot the promoted section among
+    // the existing dated sections and roll the per-track footer (shared tail).
+    let mut out: Vec<String> =
+        rebuild_unreleased(&lines, unreleased_idx, unreleased_end, sub_start);
     let tail = &lines[unreleased_end..];
-    let footer_idx = tail
-        .iter()
-        .position(|l| parse_unreleased_footer(l).is_some());
-    let (sections, footer): (&[&str], &[&str]) = match footer_idx {
-        Some(fi) => (&tail[..fi], &tail[fi..]),
-        None => (tail, &[]),
-    };
+    append_slotted_section(&mut out, tail, &promoted, tag, from_tag, chronology, base);
 
-    // Slot the promoted section among the existing `## [<...>]` sections.
-    let mut out: Vec<String> = Vec::new();
-    out.extend(unreleased_block);
-    let slotted = slot_sections(sections, &promoted, tag, chronology);
-    out.extend(slotted);
-
-    // Roll the footer using THIS track's `from_tag`-derived links.
-    push_root_footer(&mut out, footer, tag, from_tag, base);
-
+    // Manual newline finish (not `finish`): the rebuilt `[Unreleased]` block is
+    // already byte-stable, so collapsing here could perturb its spacing.
     let mut result = out.join("\n");
     if existing.ends_with('\n') {
         result.push('\n');
@@ -3342,5 +3465,259 @@ mod root_section_tests {
             text.contains("### cfgd-core\n- feat: sibling thing"),
             "sibling subsection retained: {text}"
         );
+    }
+
+    /// R1+R2+R3+R5: a multitrack tag-promote on a root with NO `### <crate>`
+    /// subsection (the release-time workflow, no refresh first) must still emit a
+    /// tag-PREFIXED `## [<tag>]` dated section built from this crate's commits,
+    /// ACCUMULATE across successive promotes (both sections survive), keep a
+    /// `# Changelog` project title, and NOT collide two same-version tracks.
+    #[test]
+    fn render_root_section_multitrack_promote_without_subsection_accumulates() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        init_repo_with_commit(root);
+        write_anodizer_yaml(root);
+        // First track promote: no root file yet.
+        let first = render_root_section(
+            root,
+            "demo-core",
+            root,
+            None,
+            "0.2.0",
+            "aaa-v0.2.0",
+            Chronology::Date,
+            true,
+            &["demo-core".to_string(), "demo-app".to_string()],
+        )
+        .expect("ok")
+        .expect("first promote produces a section");
+        std::fs::write(root.join("CHANGELOG.md"), &first.rendered_text).expect("write root");
+
+        let t1 = &first.rendered_text;
+        assert!(
+            t1.starts_with("# Changelog\n"),
+            "project H1, not a crate: {t1}"
+        );
+        assert!(
+            !t1.contains("# Changelog —"),
+            "title must not carry a crate name: {t1}"
+        );
+        assert!(
+            t1.contains("## [aaa-v0.2.0] -"),
+            "tag-prefixed heading, not bare version: {t1}"
+        );
+        assert!(!t1.contains("## [0.2.0]"), "no bare-version heading: {t1}");
+
+        // Second track at the SAME version (different prefix) must NOT collide.
+        let second = render_root_section(
+            root,
+            "demo-app",
+            root,
+            None,
+            "0.2.0",
+            "v0.2.0",
+            Chronology::Date,
+            true,
+            &["demo-core".to_string(), "demo-app".to_string()],
+        )
+        .expect("ok")
+        .expect("second promote produces a section");
+        let t2 = &second.rendered_text;
+        // R3: both sections accumulate; R1: tag-prefixed, no collision.
+        assert!(
+            t2.contains("## [aaa-v0.2.0] -"),
+            "first section survives: {t2}"
+        );
+        assert!(
+            t2.contains("## [v0.2.0] -"),
+            "second section accumulates: {t2}"
+        );
+        // Date chronology: newest promote on top.
+        let pos_app = t2.find("## [v0.2.0]").expect("app section present");
+        let pos_core = t2.find("## [aaa-v0.2.0]").expect("core section present");
+        assert!(pos_app < pos_core, "date: newest (app) on top: {t2}");
+    }
+
+    /// R4: `tag` chronology clusters by prefix (`aaa-` before `v`), so the same
+    /// two same-version promotes order differently than `date` chronology.
+    #[test]
+    fn render_root_section_multitrack_tag_chronology_clusters_by_prefix() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        init_repo_with_commit(root);
+        write_anodizer_yaml(root);
+        let names = &["demo-core".to_string(), "demo-app".to_string()];
+
+        let first = render_root_section(
+            root,
+            "demo-core",
+            root,
+            None,
+            "0.2.0",
+            "aaa-v0.2.0",
+            Chronology::Tag,
+            true,
+            names,
+        )
+        .expect("ok")
+        .expect("first");
+        std::fs::write(root.join("CHANGELOG.md"), &first.rendered_text).expect("write");
+        let second = render_root_section(
+            root,
+            "demo-app",
+            root,
+            None,
+            "0.2.0",
+            "v0.2.0",
+            Chronology::Tag,
+            true,
+            names,
+        )
+        .expect("ok")
+        .expect("second");
+        let t = &second.rendered_text;
+        let pos_core = t.find("## [aaa-v0.2.0]").expect("core present");
+        let pos_app = t.find("## [v0.2.0]").expect("app present");
+        // Tag: `aaa-` cluster sorts before the `v` cluster.
+        assert!(
+            pos_core < pos_app,
+            "tag: aaa- cluster before v cluster: {t}"
+        );
+    }
+
+    /// R6: re-promoting a tag whose `## [<tag>]` already exists is a no-op.
+    #[test]
+    fn render_root_section_multitrack_promote_is_idempotent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        init_repo_with_commit(root);
+        write_anodizer_yaml(root);
+        let names = &["demo-core".to_string(), "demo-app".to_string()];
+
+        let first = render_root_section(
+            root,
+            "demo-core",
+            root,
+            None,
+            "0.2.0",
+            "aaa-v0.2.0",
+            Chronology::Date,
+            true,
+            names,
+        )
+        .expect("ok")
+        .expect("first");
+        std::fs::write(root.join("CHANGELOG.md"), &first.rendered_text).expect("write");
+        let again = render_root_section(
+            root,
+            "demo-core",
+            root,
+            None,
+            "0.2.0",
+            "aaa-v0.2.0",
+            Chronology::Date,
+            true,
+            names,
+        )
+        .expect("ok");
+        // Either no update, or a byte-identical one.
+        if let Some(u) = again {
+            assert_eq!(
+                u.rendered_text, first.rendered_text,
+                "re-promote of an existing tag must be a no-op"
+            );
+        }
+    }
+
+    /// Write `file` under `crates/<crate>/`, commit it with `subject`, so a
+    /// path-scoped changelog fetch attributes the commit to that crate only.
+    fn commit_in_crate(root: &std::path::Path, crate_dir: &str, file: &str, subject: &str) {
+        use std::process::Command;
+        let dir = root.join("crates").join(crate_dir);
+        std::fs::create_dir_all(&dir).expect("mkdir crate dir");
+        std::fs::write(dir.join(file), subject).expect("write crate file");
+        for args in [vec!["add", "."], vec!["commit", "-q", "-m", subject]] {
+            let ok = Command::new("git")
+                .args(&args)
+                .current_dir(root)
+                .status()
+                .expect("git command runs")
+                .success();
+            assert!(ok, "git {args:?} failed");
+        }
+    }
+
+    /// R2 (body provenance / no cross-track leakage — the headline live bug):
+    /// each promoted section must carry ONLY its own track's commit. Distinct
+    /// per-crate commit ranges (core gets `alpha`, app gets `beta`) prove the
+    /// section body is path-scoped to the crate, not shared across tracks.
+    #[test]
+    fn render_root_section_multitrack_body_is_per_crate_no_leakage() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        init_repo_with_commit(root);
+        write_anodizer_yaml(root);
+        let core_dir = root.join("crates").join("core");
+        let app_dir = root.join("crates").join("app");
+        let names = &["demo-core".to_string(), "demo-app".to_string()];
+
+        // Crate-distinct commits, each touching only its own crate path.
+        commit_in_crate(root, "core", "lib.rs", "feat(core): alpha");
+        commit_in_crate(root, "app", "main.rs", "feat(app): beta");
+
+        // Promote core from its OWN path: body must hold `alpha`, never `beta`.
+        let core = render_root_section(
+            root,
+            "demo-core",
+            &core_dir,
+            None,
+            "0.2.0",
+            "aaa-v0.2.0",
+            Chronology::Date,
+            true,
+            names,
+        )
+        .expect("ok")
+        .expect("core promote");
+        std::fs::write(root.join("CHANGELOG.md"), &core.rendered_text).expect("write");
+
+        // Promote app from its OWN path: body must hold `beta`, never `alpha`.
+        let app = render_root_section(
+            root,
+            "demo-app",
+            &app_dir,
+            None,
+            "0.2.0",
+            "v0.2.0",
+            Chronology::Date,
+            true,
+            names,
+        )
+        .expect("ok")
+        .expect("app promote");
+        let text = &app.rendered_text;
+
+        // Isolate each dated section's body to assert provenance per-section.
+        let core_section = section_body(text, "## [aaa-v0.2.0]");
+        let app_section = section_body(text, "## [v0.2.0]");
+        assert!(
+            core_section.contains("alpha") && !core_section.contains("beta"),
+            "core section must hold ONLY alpha (no cross-track leakage):\n{core_section}"
+        );
+        assert!(
+            app_section.contains("beta") && !app_section.contains("alpha"),
+            "app section must hold ONLY beta (no cross-track leakage):\n{app_section}"
+        );
+    }
+
+    /// Slice the body of the dated section opened by `heading` up to the next
+    /// `## ` heading (or end), so a per-section provenance assertion can't be
+    /// satisfied by a sibling section's bullet.
+    fn section_body(text: &str, heading: &str) -> String {
+        let start = text.find(heading).expect("section heading present");
+        let after = &text[start + heading.len()..];
+        let end = after.find("\n## ").map(|i| i + 1).unwrap_or(after.len());
+        after[..end].to_string()
     }
 }

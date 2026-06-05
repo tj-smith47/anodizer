@@ -1584,21 +1584,16 @@ fn run_per_crate_tag(
     }
 
     // Genuine multi-track root: each target owns a `### <crate>` subsection.
-    // Derive the topology signal + the full root-routed crate-name set so the
-    // root renderer bootstraps every crate's subsection (no last-writer-wins on
-    // a fresh root) and classifies subsections by crate name. The crate-name set
-    // is the FULL configured set (one shared `config_root_crate_names` source) so
-    // the classification fallback never sees a changed-crates-only subset; the
-    // multitrack COUNT is the number of bumped tracks routed to the root.
-    let bumped_root_tracks = changelog_targets
-        .iter()
-        .filter(|t| {
-            crate::commands::changelog_sync::crate_in_root(
-                &t.crate_name,
-                changelog_routing.root_crates,
-            )
-        })
-        .count();
+    // Multi-track-ness is a property of the repo TOPOLOGY — more than one crate
+    // routed to the shared root — not of how many tracks bump in this run. A
+    // PerCrate release bumps one crate per tag, yet that crate's section still
+    // belongs in the shared root as a tag-prefixed `## [<tag>]` section promoted
+    // from its `### <crate>` subsection; gating on the per-run bump count would
+    // drop every single-crate release to the flat roll (bare `## [<version>]`
+    // headings that collide across tracks). Gate on the full root-routed crate
+    // count from the one shared `config_root_crate_names` source — also the
+    // crate-name set the renderer uses to bootstrap and classify subsections —
+    // so this matches the refresh path and the two cannot diverge.
     changelog_routing.root_crate_names = anodizer_config
         .map(|cfg| {
             crate::commands::changelog_sync::config_root_crate_names(
@@ -1607,8 +1602,9 @@ fn run_per_crate_tag(
             )
         })
         .unwrap_or_default();
-    changelog_routing.multitrack =
-        changelog_routing.root_enabled && !changelog_routing.single_track && bumped_root_tracks > 1;
+    changelog_routing.multitrack = changelog_routing.root_enabled
+        && !changelog_routing.single_track
+        && changelog_routing.root_crate_names.len() > 1;
 
     if !opts.dry_run {
         // Apply version bumps across all changed crates in a single commit.
