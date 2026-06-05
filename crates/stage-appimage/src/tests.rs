@@ -176,6 +176,7 @@ fn sample_job(tmp: &Path, entries: Vec<AppDirEntry>) -> AppImageJob {
         appdir_entries: entries,
         primary_target: Some("x86_64-unknown-linux-gnu".to_string()),
         primary_crate_name: "myapp".to_string(),
+        sde_epoch: None,
     }
 }
 
@@ -490,7 +491,7 @@ fn multi_arch_produces_distinct_filenames() {
     let log = ctx.logger("appimage");
     let mut jobs = Vec::new();
     collect_config_jobs(
-        &mut ctx, &log, &cfg, &dist, "1.2.3", "myapp", false, &mut jobs,
+        &mut ctx, &log, &cfg, &dist, "1.2.3", "myapp", None, false, &mut jobs,
     )
     .unwrap();
 
@@ -562,7 +563,7 @@ fn update_information_threads_into_job() {
     let log = ctx.logger("appimage");
     let mut jobs = Vec::new();
     collect_config_jobs(
-        &mut ctx, &log, &cfg, &dist, "1.2.3", "myapp", false, &mut jobs,
+        &mut ctx, &log, &cfg, &dist, "1.2.3", "myapp", None, false, &mut jobs,
     )
     .unwrap();
     assert_eq!(jobs.len(), 1);
@@ -578,4 +579,126 @@ fn update_information_threads_into_job() {
     );
     let map: std::collections::HashMap<_, _> = env.into_iter().collect();
     assert!(map.contains_key("UPDATE_INFORMATION"));
+}
+
+/// SOURCE_DATE_EPOCH is resolved in the serial phase and threaded onto every
+/// job so the parallel phase can pin AppDir mtimes + forward it to
+/// linuxdeploy/appimagetool for a reproducible squashfs.
+#[test]
+fn sde_epoch_threads_into_job() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let mut ctx = build_ctx_with_binaries(&dist, &["x86_64-unknown-linux-gnu"]);
+    let cfg = appimage_fixture(tmp.path());
+    let log = ctx.logger("appimage");
+    let mut jobs = Vec::new();
+    collect_config_jobs(
+        &mut ctx,
+        &log,
+        &cfg,
+        &dist,
+        "1.2.3",
+        "myapp",
+        Some(1_577_836_800),
+        false,
+        &mut jobs,
+    )
+    .unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].sde_epoch, Some(1_577_836_800));
+}
+
+/// `pin_appdir_mtimes` rewrites every staged file's mtime to the epoch so the
+/// squashfs payload is byte-stable across runs.
+#[test]
+fn pin_appdir_mtimes_sets_every_file() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("AppDir");
+    write(&root.join("usr/bin/app"), b"bin");
+    write(&root.join("usr/share/icons/app.png"), b"png");
+    write(&root.join("app.desktop"), b"[Desktop Entry]");
+
+    let epoch = 1_577_836_800i64; // 2020-01-01T00:00:00Z
+    pin_appdir_mtimes(&root, epoch).unwrap();
+
+    for rel in ["usr/bin/app", "usr/share/icons/app.png", "app.desktop"] {
+        let m = fs::metadata(root.join(rel)).unwrap();
+        let secs = m
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(secs as i64, epoch, "mtime not pinned on {rel}");
+    }
+}
+
+/// `locate_built_appimage` prefers the entry whose basename equals the
+/// expected output filename, ignoring stale `.AppImage` files left in the
+/// work dir by a prior failed attempt (the old first-`read_dir`-entry pick
+/// could grab the wrong one).
+#[test]
+fn locate_built_appimage_prefers_expected_name() {
+    let tmp = TempDir::new().unwrap();
+    let work = tmp.path().join("work");
+    let appdir = work.join("myapp.AppDir");
+    fs::create_dir_all(&appdir).unwrap();
+    // A stale output from a previous run, plus the freshly-built expected one.
+    write(&work.join("stale-old.AppImage"), b"stale");
+    write(&work.join("myapp-1.2.3-x86_64.AppImage"), b"fresh");
+
+    let found = locate_built_appimage(&appdir, "myapp-1.2.3-x86_64.AppImage").unwrap();
+    assert_eq!(
+        found.file_name().and_then(|n| n.to_str()),
+        Some("myapp-1.2.3-x86_64.AppImage"),
+        "must select the expected output, not an arbitrary read_dir entry"
+    );
+}
+
+/// With no exact-name match, `locate_built_appimage` falls back to the newest
+/// `.AppImage` rather than an arbitrary `read_dir` entry.
+#[test]
+fn locate_built_appimage_falls_back_to_newest() {
+    let tmp = TempDir::new().unwrap();
+    let work = tmp.path().join("work");
+    let appdir = work.join("app.AppDir");
+    fs::create_dir_all(&appdir).unwrap();
+
+    let old = work.join("App-x86_64.AppImage");
+    write(&old, b"old");
+    anodizer_core::util::set_file_mtime_epoch(&old, 1_000_000_000).unwrap();
+    let new = work.join("App-aarch64.AppImage");
+    write(&new, b"new");
+    anodizer_core::util::set_file_mtime_epoch(&new, 2_000_000_000).unwrap();
+
+    let found = locate_built_appimage(&appdir, "does-not-match.AppImage").unwrap();
+    assert_eq!(
+        found.file_name().and_then(|n| n.to_str()),
+        Some("App-aarch64.AppImage"),
+        "must pick the newest .AppImage when no exact name matches"
+    );
+}
+
+/// `group_by_platform` groups by `os_arch` and iterates in deterministic
+/// (alphabetical) key order via `BTreeMap`, pinning the order-regression
+/// guard so `dist/artifacts.json` does not drift between runs.
+#[test]
+fn group_by_platform_is_deterministic() {
+    let mk = |target: &str| Artifact {
+        kind: ArtifactKind::Binary,
+        name: "app".into(),
+        path: PathBuf::from(format!("/dist/{target}")),
+        target: Some(target.into()),
+        crate_name: "app".into(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    };
+    // Input order is reversed relative to the expected sorted key order.
+    let inputs = [
+        mk("x86_64-unknown-linux-gnu"),
+        mk("aarch64-unknown-linux-gnu"),
+    ];
+    let groups = group_by_platform(&inputs);
+    let keys: Vec<_> = groups.keys().cloned().collect();
+    assert_eq!(keys, vec!["linux_amd64".to_string(), "linux_arm64".into()]);
 }

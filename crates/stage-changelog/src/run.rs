@@ -751,7 +751,7 @@ fn fetch_git_commits_scoped(
 ) -> Result<Vec<CommitInfo>> {
     let paths = scope.pathspecs();
     if scope.narrow.is_none() {
-        return fetch_git_commits(prev_tag, paths, crate_name, log);
+        return fetch_git_commits(workspace_root, prev_tag, paths, crate_name, log);
     }
     crate::fetch::fetch_git_commits_narrowed(workspace_root, prev_tag, scope, crate_name, log)
 }

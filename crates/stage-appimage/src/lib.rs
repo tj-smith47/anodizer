@@ -211,6 +211,32 @@ fn host_missing_error(id: &str) -> anyhow::Error {
 // Per-target template vars (mirrors makeself)
 // ---------------------------------------------------------------------------
 
+/// Group binary artifacts by platform string (e.g. `linux_amd64`) so each
+/// (os, arch) yields exactly one AppImage.
+///
+/// Uses a `BTreeMap` (not `HashMap`) so iteration order is deterministic
+/// across runs: callers register one AppImage Artifact per platform, and
+/// `HashMap` iteration is randomised per process — the matching
+/// `stage-archive`/`stage-makeself` regression shipped per-run drift into
+/// `dist/artifacts.json`. This stage shares the same guard.
+fn group_by_platform<'a>(
+    binaries: &'a [Artifact],
+) -> std::collections::BTreeMap<String, Vec<&'a Artifact>> {
+    let mut groups: std::collections::BTreeMap<String, Vec<&'a Artifact>> =
+        std::collections::BTreeMap::new();
+    for a in binaries {
+        let key = match &a.target {
+            Some(t) => {
+                let (os, arch) = anodizer_core::target::map_target(t);
+                format!("{os}_{arch}")
+            }
+            None => "unknown".to_string(),
+        };
+        groups.entry(key).or_default().push(a);
+    }
+    groups
+}
+
 fn set_per_target_template_vars(ctx: &mut Context, target: Option<&str>, os: &str, arch: &str) {
     ctx.template_vars_mut().set("Os", os);
     ctx.template_vars_mut().set("Arch", arch);
@@ -370,6 +396,35 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Recursively pin every regular file's mtime under `dir` to `epoch_secs`.
+///
+/// linuxdeploy's `appimage` output plugin wraps the AppDir in a squashfs;
+/// squashfs embeds each file's on-disk mtime. `fs::copy` (in
+/// [`assemble_appdir`]) stamps every staged file with the current wall-clock,
+/// so two runs produce identical content with different timestamps and the
+/// resulting `.AppImage` bytes drift. Pinning the AppDir tree to
+/// `SOURCE_DATE_EPOCH` removes that drift; appimagetool itself honours
+/// `SOURCE_DATE_EPOCH` for the squashfs superblock when the env var is set.
+fn pin_appdir_mtimes(dir: &Path, epoch_secs: i64) -> Result<()> {
+    let mut stack: Vec<PathBuf> = vec![dir.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        for entry in std::fs::read_dir(&p)
+            .with_context(|| format!("appimage: read_dir {} for mtime pin", p.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            let ft = entry.file_type()?;
+            if ft.is_dir() {
+                stack.push(path);
+            } else if ft.is_file() {
+                anodizer_core::util::set_file_mtime_epoch(&path, epoch_secs)
+                    .with_context(|| format!("appimage: pin mtime on {}", path.display()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The basename of `path`, or `fallback` when it has none.
 fn file_basename(path: &Path, fallback: &str) -> String {
     path.file_name()
@@ -452,6 +507,10 @@ struct AppImageJob {
     appdir_entries: Vec<AppDirEntry>,
     primary_target: Option<String>,
     primary_crate_name: String,
+    /// Pre-resolved `SOURCE_DATE_EPOCH` seconds. Resolved in the serial phase
+    /// via `ctx.env_var` so the parallel execution phase never calls
+    /// `std::env`; `None` outside a reproducible (harness) build.
+    sde_epoch: Option<i64>,
 }
 
 /// Execute a prepared AppImage job: assemble the AppDir, then spawn
@@ -464,6 +523,13 @@ fn execute_appimage_job(
     let thread_log = anodizer_core::log::StageLogger::new("appimage", verbosity);
 
     let (desktop_dst, icon_dst) = assemble_appdir(&job.appdir_root, job)?;
+
+    // Reproducibility: pin every staged file's mtime to SOURCE_DATE_EPOCH so
+    // the squashfs payload is byte-stable across runs (mirrors the sibling
+    // makeself stage's mtime pinning). No-op outside a harness build.
+    if let Some(epoch) = job.sde_epoch {
+        pin_appdir_mtimes(&job.appdir_root, epoch)?;
+    }
 
     let args = linuxdeploy_args(&job.appdir_root, &desktop_dst, &icon_dst, &job.extra_args);
     let env = linuxdeploy_env(
@@ -485,6 +551,13 @@ fn execute_appimage_job(
     for (k, v) in &env {
         command.env(k, v);
     }
+    // Forward SOURCE_DATE_EPOCH so the child appimagetool stamps the squashfs
+    // superblock deterministically (it honours the var when set, else falls
+    // back to wall-clock). Resolved in the serial phase to keep this code
+    // `std::env`-free.
+    if let Some(epoch) = job.sde_epoch {
+        command.env("SOURCE_DATE_EPOCH", epoch.to_string());
+    }
     let output = command.output().with_context(|| {
         format!(
             "appimage: failed to spawn 'linuxdeploy' for {} (is linuxdeploy on PATH?)",
@@ -504,7 +577,7 @@ fn execute_appimage_job(
 
     // linuxdeploy writes the AppImage into the current working dir named after
     // APP/ARCH; locate it and move it to the deterministic output path.
-    let built = locate_built_appimage(&job.appdir_root)?;
+    let built = locate_built_appimage(&job.appdir_root, &job.filename)?;
     if built != job.output_path {
         std::fs::rename(&built, &job.output_path)
             .or_else(|_| {
@@ -538,20 +611,44 @@ fn execute_appimage_job(
 
 /// Find the `.AppImage` linuxdeploy emitted in the cwd (the AppDir's parent),
 /// where it writes `<APP>-<ARCH>.AppImage`.
-fn locate_built_appimage(appdir_root: &Path) -> Result<PathBuf> {
+///
+/// Selection is deterministic and retry-safe: prefer an `.AppImage` whose
+/// basename matches `expected_filename` (linuxdeploy's name is derived from
+/// the same APP/ARCH that built `expected_filename`), then fall back to the
+/// newest `.AppImage` by mtime. Picking the first `read_dir` entry would
+/// otherwise be filesystem-order-dependent and could grab a stale output left
+/// by a prior failed attempt in the same work dir.
+fn locate_built_appimage(appdir_root: &Path, expected_filename: &str) -> Result<PathBuf> {
     let search_dir = appdir_root.parent().unwrap_or(appdir_root);
+    let mut candidates: Vec<PathBuf> = Vec::new();
     for entry in std::fs::read_dir(search_dir)
         .with_context(|| format!("appimage: scan {} for output", search_dir.display()))?
     {
         let path = entry?.path();
         if path.extension().and_then(|e| e.to_str()) == Some("AppImage") {
-            return Ok(path);
+            candidates.push(path);
         }
     }
-    bail!(
-        "appimage: linuxdeploy reported success but no .AppImage was found in {}",
-        search_dir.display()
-    )
+
+    if let Some(exact) = candidates
+        .iter()
+        .find(|p| p.file_name().and_then(|n| n.to_str()) == Some(expected_filename))
+    {
+        return Ok(exact.clone());
+    }
+
+    // No exact match (linuxdeploy chose a different APP/ARCH casing): pick the
+    // newest output so a stale `.AppImage` from a prior failed run is not
+    // selected over the one just produced.
+    candidates
+        .into_iter()
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "appimage: linuxdeploy reported success but no .AppImage was found in {}",
+                search_dir.display()
+            )
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -583,6 +680,11 @@ impl Stage for AppImageStage {
             .cloned()
             .unwrap_or_else(|| "0.0.0".to_string());
         let project_name = ctx.config.project_name.clone();
+        // Resolve SOURCE_DATE_EPOCH once in the serial phase so each job
+        // carries the value (the parallel phase never touches `std::env`).
+        let sde_epoch = ctx
+            .env_var("SOURCE_DATE_EPOCH")
+            .and_then(|s| s.parse::<i64>().ok());
 
         let mut jobs: Vec<AppImageJob> = Vec::new();
         for cfg in &configs {
@@ -593,6 +695,7 @@ impl Stage for AppImageStage {
                 &dist,
                 &version,
                 &project_name,
+                sde_epoch,
                 dry_run,
                 &mut jobs,
             )?;
@@ -629,6 +732,7 @@ fn collect_config_jobs(
     dist: &Path,
     version: &str,
     project_name: &str,
+    sde_epoch: Option<i64>,
     dry_run: bool,
     jobs: &mut Vec<AppImageJob>,
 ) -> Result<()> {
@@ -715,21 +819,12 @@ fn collect_config_jobs(
     }
 
     // Group by platform so each (os, arch) produces exactly one AppImage.
-    let mut groups: std::collections::BTreeMap<String, Vec<&Artifact>> =
-        std::collections::BTreeMap::new();
-    for a in &binaries {
-        let key = match &a.target {
-            Some(t) => {
-                let (os, arch) = anodizer_core::target::map_target(t);
-                format!("{os}_{arch}")
-            }
-            None => "unknown".to_string(),
-        };
-        groups.entry(key).or_default().push(a);
-    }
+    let groups = group_by_platform(&binaries);
 
     for group in groups.values() {
-        let primary = group[0];
+        let Some(primary) = group.first() else {
+            continue;
+        };
         let (os, arch) = primary
             .target
             .as_deref()
@@ -786,6 +881,7 @@ fn collect_config_jobs(
             appdir_entries: extra_entries.clone(),
             primary_target: primary.target.clone(),
             primary_crate_name: primary.crate_name.clone(),
+            sde_epoch,
         });
     }
 

@@ -22,6 +22,30 @@ pub(crate) struct SourceArchiveInputs<'a> {
     pub(crate) sde_mtime: Option<u64>,
 }
 
+/// Convert a `SOURCE_DATE_EPOCH` seconds value into a zip `DateTime` for an
+/// entry's `last_modified_time`.
+///
+/// The zip (MS-DOS) timestamp format spans 1980..=2107 at 2-second resolution,
+/// so the epoch is clamped into that window and the UTC calendar fields are
+/// fed to [`zip::DateTime::from_date_and_time`]. Pinning the time explicitly
+/// keeps zip source archives byte-stable regardless of whether the `zip`
+/// crate's `time` feature is enabled (with it on, `SimpleFileOptions::default`
+/// would otherwise stamp the wall-clock).
+fn zip_datetime_from_epoch(epoch_secs: u64) -> Option<zip::DateTime> {
+    use chrono::{Datelike as _, Timelike as _};
+    let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(epoch_secs as i64, 0)?;
+    let year = u16::try_from(dt.year()).ok()?.clamp(1980, 2107);
+    zip::DateTime::from_date_and_time(
+        year,
+        dt.month() as u8,
+        dt.day() as u8,
+        dt.hour() as u8,
+        dt.minute() as u8,
+        dt.second() as u8,
+    )
+    .ok()
+}
+
 /// Extra files are placed under the prefix directory
 /// by creating a temporary staging directory and using `tar --append` to
 /// insert them into the archive after creation.
@@ -108,6 +132,12 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
         let reader = std::io::Cursor::new(&zip_data);
         let mut archive = zip::ZipArchive::new(reader).context("source: open zip archive")?;
 
+        // Pin every rewritten entry's last-modified stamp to SOURCE_DATE_EPOCH
+        // (same source the tar path uses) when reproducibility is in effect, so
+        // the zip is byte-stable across runs and immune to the `zip` crate's
+        // `time` feature defaulting to wall-clock.
+        let sde_zip_time = sde_mtime.and_then(zip_datetime_from_epoch);
+
         // Track the compression method observed in the source archive's
         // entries. The copy preserves the original
         // archive's compression on round-trip; anodizer must do the same
@@ -132,8 +162,11 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                 if source_compression.is_none() && !entry.is_dir() {
                     source_compression = Some(entry_method);
                 }
-                let options =
+                let mut options =
                     zip::write::SimpleFileOptions::default().compression_method(entry_method);
+                if let Some(t) = sde_zip_time {
+                    options = options.last_modified_time(t);
+                }
                 zip_writer
                     .start_file(entry.name().to_string(), options)
                     .context("source: start zip entry")?;
@@ -151,8 +184,15 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
             // source is empty (no entries observed).
             let extras_method = source_compression.unwrap_or(zip::CompressionMethod::Deflated);
 
+            // Iterate in archive-path order so two runs against the same
+            // input set produce byte-identical zips. The glob expansion that
+            // built `extra_files` walks the filesystem in inode order which
+            // differs between fresh worktrees (matches the tar path's sort).
+            let mut sorted_extras: Vec<&SourceFileEntry> = extra_files.iter().collect();
+            sorted_extras.sort_by(|a, b| a.src.cmp(&b.src));
+
             // Append extra files under prefix
-            for file_entry in extra_files {
+            for file_entry in sorted_extras {
                 let src = std::path::Path::new(&file_entry.src);
                 let do_strip = file_entry.strip_parent.unwrap_or(false);
                 let dest_rel = if let Some(ref dst) = file_entry.dst {
@@ -188,8 +228,11 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                 let file_data = std::fs::read(src)
                     .with_context(|| format!("source: read extra file '{}'", file_entry.src))?;
 
-                let options =
+                let mut options =
                     zip::write::SimpleFileOptions::default().compression_method(extras_method);
+                if let Some(t) = sde_zip_time {
+                    options = options.last_modified_time(t);
+                }
                 zip_writer
                     .start_file(&archive_path, options)
                     .context("source: start zip extra file entry")?;

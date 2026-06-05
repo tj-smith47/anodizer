@@ -475,9 +475,9 @@ impl BlobStage {
                     continue;
                 }
 
-                // Log each file before upload (serial stays in Step 1 so
-                // the per-config announcement order remains deterministic,
-                // matching the pre-parallel behaviour).
+                // Log each file in the serial prep phase so the per-config
+                // announcement order stays deterministic; the actual upload
+                // runs later in parallel where ordering is not guaranteed.
                 for (local_path, remote_key) in &upload_items {
                     let remote = format_remote_path(
                         provider,

@@ -1562,3 +1562,94 @@ fn test_source_archive_zip_extras_match_stored_source_compression() {
         "extras must inherit the Stored compression of the source zip"
     );
 }
+
+/// A zip source archive with extra files must be byte-identical across two
+/// runs under a fixed `SOURCE_DATE_EPOCH`: stable entry ordering (sort) plus a
+/// pinned per-entry last-modified time. Before the fix the zip path appended
+/// extras in caller order and let `SimpleFileOptions::default` choose the
+/// timestamp, so the bytes drifted run-to-run.
+#[test]
+fn test_source_archive_zip_extras_deterministic_under_sde() {
+    use anodizer_core::config::SourceFileEntry;
+    use anodizer_core::test_helpers::{create_test_project, init_git_repo};
+
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    // Several untracked extras whose `src` order differs from any plausible
+    // filesystem-walk order, so the sort is load-bearing.
+    let extras_dir = tmp.path().join("extras");
+    std::fs::create_dir_all(&extras_dir).unwrap();
+    for name in ["zeta.txt", "alpha.txt", "mid.txt"] {
+        std::fs::write(extras_dir.join(name), format!("content of {name}\n")).unwrap();
+    }
+    let extra_files = vec![
+        SourceFileEntry {
+            src: extras_dir.join("zeta.txt").to_string_lossy().to_string(),
+            dst: None,
+            strip_parent: Some(true),
+            info: None,
+        },
+        SourceFileEntry {
+            src: extras_dir.join("alpha.txt").to_string_lossy().to_string(),
+            dst: None,
+            strip_parent: Some(true),
+            info: None,
+        },
+        SourceFileEntry {
+            src: extras_dir.join("mid.txt").to_string_lossy().to_string(),
+            dst: None,
+            strip_parent: Some(true),
+            info: None,
+        },
+    ];
+
+    let log = anodizer_core::log::StageLogger::new("source", anodizer_core::log::Verbosity::Quiet);
+
+    let build = |dist: &std::path::Path| -> Vec<u8> {
+        std::fs::create_dir_all(dist).unwrap();
+        let path = create_source_archive(&SourceArchiveInputs {
+            dist,
+            format: "zip",
+            name: "proj-1.0.0",
+            prefix: "proj-1.0.0",
+            extra_files: &extra_files,
+            repo_root: tmp.path(),
+            commit: "HEAD",
+            log: &log,
+            strict: false,
+            sde_mtime: Some(1_577_836_800), // 2020-01-01T00:00:00Z
+        })
+        .unwrap_or_else(|e| panic!("create_source_archive should succeed: {e}"));
+        std::fs::read(&path).unwrap()
+    };
+
+    let first = build(&tmp.path().join("dist-a"));
+    let second = build(&tmp.path().join("dist-b"));
+
+    assert_eq!(
+        first, second,
+        "zip source archive with extras must be byte-identical across runs under a fixed SOURCE_DATE_EPOCH"
+    );
+
+    // Entry order inside the zip must be the sorted extra order regardless of
+    // the caller's input order (alpha < mid < zeta).
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&first)).unwrap();
+    let names: Vec<String> = (0..archive.len())
+        .map(|i| archive.by_index(i).unwrap().name().to_string())
+        .collect();
+    let positions: Vec<usize> = ["alpha.txt", "mid.txt", "zeta.txt"]
+        .iter()
+        .map(|want| {
+            names
+                .iter()
+                .position(|n| n == &format!("proj-1.0.0/{want}"))
+                .unwrap_or_else(|| panic!("missing extra {want} in {names:?}"))
+        })
+        .collect();
+    assert!(
+        positions.windows(2).all(|w| w[0] < w[1]),
+        "extras must be appended in sorted src order, got positions {positions:?} in {names:?}"
+    );
+}

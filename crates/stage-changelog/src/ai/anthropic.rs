@@ -77,17 +77,17 @@ impl AiProvider for AnthropicProvider {
             "anthropic",
         )?;
 
-        // Extract the first text block from the content array.
+        // Extract the first `text`-type block from the content array. The
+        // array can lead with non-text blocks (e.g. a `thinking` block when
+        // extended thinking is active), so scan for the first text block rather
+        // than assuming index 0 is one.
         parsed["content"]
             .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|block| {
-                if block["type"].as_str() == Some("text") {
-                    block["text"].as_str().map(str::to_owned)
-                } else {
-                    None
-                }
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|block| block["type"].as_str() == Some("text"))
             })
+            .and_then(|block| block["text"].as_str().map(str::to_owned))
             .ok_or_else(|| anyhow::anyhow!("anthropic: no text block in response: {parsed}"))
     }
 

@@ -8,7 +8,7 @@
 use anyhow::{Context as _, Result};
 
 use anodizer_core::git::{
-    get_all_commits_paths, get_all_commits_paths_with_files_in, get_commits_between_paths,
+    get_all_commits_paths_in, get_all_commits_paths_with_files_in, get_commits_between_paths_in,
     get_commits_between_paths_with_files_in,
 };
 use anodizer_core::log::StageLogger;
@@ -242,24 +242,26 @@ pub(crate) fn fetch_git_commits_narrowed(
 }
 
 pub(crate) fn fetch_git_commits(
+    workspace_root: &std::path::Path,
     prev_tag: &Option<String>,
     paths: &[String],
     crate_name: &str,
     log: &StageLogger,
 ) -> Result<Vec<CommitInfo>> {
     let raw_commits = match prev_tag {
-        Some(tag) => get_commits_between_paths(tag, "HEAD", paths).with_context(|| {
-            format!(
-                "changelog: read git commits between {}..HEAD for crate '{}'",
-                tag, crate_name
-            )
-        })?,
+        Some(tag) => get_commits_between_paths_in(workspace_root, tag, "HEAD", paths)
+            .with_context(|| {
+                format!(
+                    "changelog: read git commits between {}..HEAD for crate '{}'",
+                    tag, crate_name
+                )
+            })?,
         None => {
             log.status(&format!(
                 "no previous tag found for crate '{}', using all commits",
                 crate_name
             ));
-            get_all_commits_paths(paths).with_context(|| {
+            get_all_commits_paths_in(workspace_root, paths).with_context(|| {
                 format!("changelog: read all git commits for crate '{}'", crate_name)
             })?
         }
@@ -277,4 +279,52 @@ pub(crate) fn fetch_git_commits(
         all_commit_infos.push(info);
     }
     Ok(all_commit_infos)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::CwdGuard;
+    use std::process::Command;
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("git runs")
+            .success();
+        assert!(ok, "git {args:?} failed");
+    }
+
+    // m1: the non-narrowed git fetch must run against the discovered
+    // workspace_root, not the process cwd — so an off-root caller (cwd ≠ repo)
+    // still reads the repo's commits.
+    #[test]
+    #[serial_test::serial]
+    fn fetch_git_commits_uses_workspace_root_not_cwd() {
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let repo_path = repo.path();
+        git(repo_path, &["init", "-q"]);
+        git(repo_path, &["config", "user.email", "test@example.com"]);
+        git(repo_path, &["config", "user.name", "Test"]);
+        std::fs::write(repo_path.join("a.txt"), "seed").expect("write seed");
+        git(repo_path, &["add", "."]);
+        git(repo_path, &["commit", "-q", "-m", "feat: only-in-repo"]);
+
+        // Point the process cwd at a DIFFERENT empty dir (not a git repo).
+        let elsewhere = tempfile::tempdir().expect("cwd tempdir");
+        let _cwd = CwdGuard::new(elsewhere.path()).expect("cwd guard");
+
+        let log = StageLogger::new("changelog", Verbosity::Quiet);
+        let commits = fetch_git_commits(repo_path, &None, &[], "demo", &log)
+            .expect("fetch reads the workspace_root repo despite a foreign cwd");
+        assert!(
+            commits
+                .iter()
+                .any(|c| c.raw_message.contains("only-in-repo")),
+            "the workspace_root repo's commit is returned: {commits:?}"
+        );
+    }
 }

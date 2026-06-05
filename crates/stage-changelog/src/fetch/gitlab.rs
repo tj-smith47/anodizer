@@ -120,7 +120,9 @@ pub(crate) fn fetch_gitlab_commits(
 
     for item in &commits_arr {
         let sha = item.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-        let short_sha = if sha.len() >= 7 { &sha[..7] } else { sha };
+        // `id` is untrusted JSON; a non-char-boundary at byte 7 (a multibyte
+        // char in a malformed id) would panic a byte slice, so truncate safely.
+        let short_sha = sha.get(..7).unwrap_or(sha);
         let message = item
             .get("message")
             .and_then(|v| v.as_str())
@@ -259,5 +261,49 @@ mod tests {
             2,
             "one 503 retry then success"
         );
+    }
+
+    // A short, multibyte `id` (a malformed GitLab payload) must NOT panic the
+    // `&sha[..7]` byte slice the parser once used: `sha.get(..7)` truncates on
+    // a char boundary or falls back to the whole string.
+    #[test]
+    #[serial_test::serial]
+    fn fetch_gitlab_commits_short_multibyte_id_does_not_panic() {
+        // `id` is "café" — 4 chars / 5 bytes, shorter than 7 and with a
+        // multibyte char straddling byte 4: a naive `&sha[..7]` would panic.
+        let body = r#"{"commits":[{"id":"café","message":"feat: add x","author_name":"Ada","author_email":"ada@example.com"}]}"#;
+        let body_len = body.len();
+        let ok_resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body_len}\r\n\r\n{body}"
+            )
+            .into_boxed_str(),
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![ok_resp]);
+
+        let config = Config {
+            gitlab_urls: Some(GitLabUrlsConfig {
+                api: Some(format!("http://{addr}/api/v4")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let repo_dir = temp_git_repo_with_remote("git@gitlab.example.com:myorg/myrepo.git");
+        let _cwd_guard = CwdGuard::new(repo_dir.path()).expect("cwd guard");
+
+        let ctx = Context::new(
+            config,
+            ContextOptions {
+                token: Some("test-token".to_string()),
+                ..Default::default()
+            },
+        );
+        let log = ctx.logger("changelog");
+
+        let (commits, _logins) = fetch_gitlab_commits(&ctx, &Some("v1.0.0".to_string()), &log)
+            .expect("short multibyte id parses without panic");
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].hash, "café", "short id kept whole");
     }
 }

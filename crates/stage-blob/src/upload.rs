@@ -190,10 +190,10 @@ pub(crate) fn collect_artifacts<'a>(
 // ---------------------------------------------------------------------------
 
 /// Upload a per-config batch of files with intra-config parallelism via
-/// tokio, given fully owned data. Step 2 of `BlobStage::run` calls this
-/// on worker threads so `ctx` is never touched after Step 1. `runtime`
-/// is shared across every blob job so we don't spin up one tokio
-/// thread pool per job.
+/// tokio, given fully owned data. `BlobStage::run`'s parallel-upload phase
+/// calls this on worker threads so `ctx` is never touched once the serial
+/// prep phase has completed. `runtime` is shared across every blob job so a
+/// single tokio thread pool serves all uploads instead of one per job.
 ///
 /// Returns the list of fully-qualified object keys that successfully
 /// landed in the store. On failure the `Err` payload carries the keys

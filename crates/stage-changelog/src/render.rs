@@ -17,9 +17,12 @@
 //!
 //! [Keep a Changelog]: https://keepachangelog.com/
 
+use std::sync::LazyLock;
+
 use anodizer_core::config::ChangelogGroup;
 use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
+use regex::Regex;
 use serde_json::Value as JsonValue;
 
 use crate::fetch::relative_filter;
@@ -532,6 +535,76 @@ pub fn load_scope_inputs(workspace_root: &std::path::Path) -> Result<ScopeInputs
     })
 }
 
+/// The per-crate template inputs the write path resolves templated group
+/// fields (`groups[].title` / `divider` / `paths`) against.
+///
+/// The in-pipeline `Stage::run` path renders these through the full `Context`;
+/// the write path (`bump`/`tag` changelog sync) has no `Context`, so it builds
+/// a minimal [`TemplateVars`] from these inputs so all three output formats
+/// (per-crate Markdown, root Markdown, JSON) agree byte-for-byte. `version` and
+/// `tag` are empty on the `[Unreleased]` refresh path (no release version yet).
+#[derive(Clone, Copy)]
+struct SectionVars<'a> {
+    crate_name: &'a str,
+    version: &'a str,
+    tag: &'a str,
+}
+
+/// Build the template context the write path renders templated group fields
+/// against, mirroring the per-crate vars [`anodizer_core::crate_scope`]
+/// installs into the `Context` (`ProjectName` / `Name` / `Version` /
+/// `RawVersion` / `Tag`).
+fn build_section_template_vars(sv: SectionVars<'_>) -> TemplateVars {
+    let mut vars = TemplateVars::new();
+    vars.set("ProjectName", sv.crate_name);
+    vars.set("Name", sv.crate_name);
+    vars.set("Version", sv.version);
+    vars.set("RawVersion", sv.version);
+    vars.set("Tag", sv.tag);
+    vars
+}
+
+/// Render a single templated field through `vars`, falling back to the raw
+/// string on a render error.
+///
+/// The write path has no strict-mode flag or logger, so a malformed template
+/// is kept verbatim (matching the non-strict `render_template_strict` branch)
+/// rather than failing a `bump`/`tag` mid-flight.
+fn render_field(raw: &str, vars: &TemplateVars) -> String {
+    template::render(raw, vars).unwrap_or_else(|_| raw.to_string())
+}
+
+/// Recursively render each group's `title` through `vars`, mutating the tree
+/// in place so the grouping/render pipeline downstream sees resolved headings.
+fn render_group_titles_in_place(groups: &mut [ChangelogGroup], vars: &TemplateVars) {
+    for g in groups.iter_mut() {
+        if !g.title.is_empty() {
+            g.title = render_field(&g.title, vars);
+        }
+        if let Some(subs) = g.groups.as_mut() {
+            render_group_titles_in_place(subs, vars);
+        }
+    }
+}
+
+/// Render the config's templated group fields (`groups[].title`, `divider`,
+/// `paths`) through `vars` so the write path matches the in-pipeline
+/// `Stage::run` rendering. Mutates `cfg` in place.
+fn render_section_config_fields(
+    cfg: &mut anodizer_core::config::ChangelogConfig,
+    vars: &TemplateVars,
+) {
+    if let Some(groups) = cfg.groups.as_mut() {
+        render_group_titles_in_place(groups, vars);
+    }
+    if let Some(divider) = cfg.divider.as_ref() {
+        cfg.divider = Some(render_field(divider, vars));
+    }
+    if let Some(paths) = cfg.paths.as_ref() {
+        cfg.paths = Some(paths.iter().map(|p| render_field(p, vars)).collect());
+    }
+}
+
 /// Load the crate's changelog config, fetch path-filtered commits in the
 /// range `from_tag..to_ref`, then filter/sort/group them into a
 /// [`GroupedCommits`] tree (no Markdown rendering).
@@ -541,6 +614,9 @@ pub fn load_scope_inputs(workspace_root: &std::path::Path) -> Result<ScopeInputs
 /// renderer) so they can never drift on which commits they see.
 ///
 /// `to_ref` bounds the upper end of the commit range (`None` ⇒ `HEAD`).
+/// `section_vars` supplies the per-crate template context used to resolve
+/// templated `groups[].title` / `divider` / `paths` (so the write path renders
+/// them the same way the in-pipeline `Stage::run` does).
 ///
 /// Returns the resolved [`ChangelogConfig`] alongside the grouped tree.
 /// Returns `Ok(None)` under the conditions every caller treats as "nothing to
@@ -551,12 +627,20 @@ fn group_section_commits(
     crate_path: &std::path::Path,
     from_tag: Option<&str>,
     to_ref: Option<&str>,
+    section_vars: SectionVars<'_>,
 ) -> Result<Option<(anodizer_core::config::ChangelogConfig, Vec<GroupedCommits>)>> {
     use anodizer_core::log::{StageLogger, Verbosity};
 
-    let Some(cfg) = load_changelog_config(workspace_root)? else {
+    let Some(mut cfg) = load_changelog_config(workspace_root)? else {
         return Ok(None);
     };
+
+    // Resolve templated group fields (`groups[].title` / `divider` / `paths`)
+    // against the per-crate context before they feed grouping/rendering, so the
+    // write path matches the in-pipeline `Stage::run` rendering and never ships
+    // a literal `{{ ... }}` into the committed CHANGELOG.md.
+    let template_vars = build_section_template_vars(section_vars);
+    render_section_config_fields(&mut cfg, &template_vars);
 
     let log = StageLogger::new("bump-changelog", Verbosity::default());
 
@@ -665,8 +749,10 @@ fn render_section_body(
     crate_path: &std::path::Path,
     from_tag: Option<&str>,
     to_ref: Option<&str>,
+    section_vars: SectionVars<'_>,
 ) -> Result<Option<(anodizer_core::config::ChangelogConfig, String)>> {
-    let Some((cfg, grouped)) = group_section_commits(workspace_root, crate_path, from_tag, to_ref)?
+    let Some((cfg, grouped)) =
+        group_section_commits(workspace_root, crate_path, from_tag, to_ref, section_vars)?
     else {
         return Ok(None);
     };
@@ -773,8 +859,21 @@ pub fn render_changelog_json(
     from_tag: Option<&str>,
     to_ref: Option<&str>,
 ) -> Result<Option<String>> {
+    // The JSON preview renders an arbitrary range with no release version/tag
+    // in hand, so only `ProjectName`/`Name` carry meaning for a templated group
+    // title; derive them from the crate directory name (a group title
+    // referencing `{{ .Version }}`/`{{ .Tag }}` resolves to empty).
+    let crate_name = crate_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    let section_vars = SectionVars {
+        crate_name,
+        version: "",
+        tag: "",
+    };
     let Some((_cfg, grouped)) =
-        group_section_commits(workspace_root, crate_path, from_tag, to_ref)?
+        group_section_commits(workspace_root, crate_path, from_tag, to_ref, section_vars)?
     else {
         return Ok(None);
     };
@@ -802,15 +901,17 @@ fn refresh_body(
     crate_path: &std::path::Path,
     from_tag: Option<&str>,
     to_ref: Option<&str>,
+    section_vars: SectionVars<'_>,
 ) -> Result<(bool, String)> {
     if load_changelog_config(workspace_root)?.is_none() {
         return Ok((false, String::new()));
     }
-    let body = match render_section_body(workspace_root, crate_path, from_tag, to_ref)? {
-        Some((_cfg, body)) => body.trim_end().to_string(),
-        // No qualifying commits in range: the regenerated body is empty.
-        None => String::new(),
-    };
+    let body =
+        match render_section_body(workspace_root, crate_path, from_tag, to_ref, section_vars)? {
+            Some((_cfg, body)) => body.trim_end().to_string(),
+            // No qualifying commits in range: the regenerated body is empty.
+            None => String::new(),
+        };
     Ok((true, body))
 }
 
@@ -839,7 +940,15 @@ pub fn refresh_crate_unreleased(
     from_tag: Option<&str>,
     to_ref: Option<&str>,
 ) -> Result<Option<ChangelogUpdate>> {
-    let (cfg_present, body) = refresh_body(workspace_root, crate_path, from_tag, to_ref)?;
+    // The `[Unreleased]` refresh has no release version/tag in hand; only
+    // `ProjectName`/`Name` carry meaning for a templated group title here.
+    let section_vars = SectionVars {
+        crate_name,
+        version: "",
+        tag: "",
+    };
+    let (cfg_present, body) =
+        refresh_body(workspace_root, crate_path, from_tag, to_ref, section_vars)?;
     if !cfg_present {
         return Ok(None);
     }
@@ -923,7 +1032,15 @@ pub fn refresh_root_unreleased(
     // dated section, so it has no ordering effect here.
     let _ = chronology;
 
-    let (cfg_present, body) = refresh_body(workspace_root, crate_path, from_tag, to_ref)?;
+    // The `[Unreleased]` refresh has no release version/tag in hand; only
+    // `ProjectName`/`Name` carry meaning for a templated group title here.
+    let section_vars = SectionVars {
+        crate_name,
+        version: "",
+        tag: "",
+    };
+    let (cfg_present, body) =
+        refresh_body(workspace_root, crate_path, from_tag, to_ref, section_vars)?;
     if !cfg_present {
         return Ok(None);
     }
@@ -1363,7 +1480,17 @@ pub fn render_crate_section(
     from_tag: Option<&str>,
     to_version: &str,
 ) -> Result<Option<ChangelogUpdate>> {
-    let Some((_cfg, body)) = render_section_body(workspace_root, crate_path, from_tag, None)?
+    // Per-crate context for templated group fields. `Tag` is left empty here:
+    // the per-crate file carries only the bare version, and this entry point
+    // takes no full tag (a group title referencing `{{ .Version }}` /
+    // `{{ .ProjectName }}` resolves correctly).
+    let section_vars = SectionVars {
+        crate_name,
+        version: to_version,
+        tag: "",
+    };
+    let Some((_cfg, body)) =
+        render_section_body(workspace_root, crate_path, from_tag, None, section_vars)?
     else {
         return Ok(None);
     };
@@ -1445,16 +1572,29 @@ pub fn render_root_section(
     multitrack: bool,
     crate_names: &[String],
 ) -> Result<Option<ChangelogUpdate>> {
-    let rendered = render_section_body(workspace_root, crate_path, from_tag, None)?;
-    // Reuse the config already parsed by `render_section_body`. Only re-load on
-    // the `None` arm (no `changelog:` block, or a curated subsection with no
-    // qualifying commits) so a curated promote still buckets under the
-    // configured group headings without a second disk read.
+    // Per-crate context for templated group fields (`groups[].title` etc.).
+    let section_vars = SectionVars {
+        crate_name,
+        version: to_version,
+        tag,
+    };
+    let rendered = render_section_body(workspace_root, crate_path, from_tag, None, section_vars)?;
+    // Reuse the config already parsed by `render_section_body` (its group titles
+    // are already template-rendered). Only re-load on the `None` arm (no
+    // `changelog:` block, or a curated subsection with no qualifying commits) so
+    // a curated promote still buckets under the configured group headings
+    // without a second disk read; the reloaded titles are rendered here so the
+    // curated-bucketing path agrees with the commit-driven one.
     let groups = match &rendered {
         Some((cfg, _)) => cfg.groups.clone().unwrap_or_default(),
-        None => load_changelog_config(workspace_root)?
-            .and_then(|c| c.groups)
-            .unwrap_or_default(),
+        None => {
+            let mut groups = load_changelog_config(workspace_root)?
+                .and_then(|c| c.groups)
+                .unwrap_or_default();
+            let template_vars = build_section_template_vars(section_vars);
+            render_group_titles_in_place(&mut groups, &template_vars);
+            groups
+        }
     };
     let generated_body = rendered
         .as_ref()
@@ -2313,10 +2453,28 @@ struct KacRollArgs<'a> {
     workspace_root: &'a std::path::Path,
 }
 
-/// Non-digit prefix of a tag/anchor (`v0.5.0` → `v`, `anodizer-v0.5.0`
-/// → `anodizer-v`). Stops at the first ASCII digit.
+/// The tag/anchor prefix that precedes its version (`v0.5.0` → `v`,
+/// `anodizer-v0.5.0` → `anodizer-v`, `2024.01.0` → `""`). Used to cluster a
+/// `Tag`-chronology changelog by track.
+///
+/// Strips the trailing version group (`v?<digits>.<digits>[...]`, optionally
+/// after a `-`/`_`/`/` separator, or `v`-led / bare-digit at the start) and
+/// returns what remains. This tolerates a digit *inside* the prefix
+/// (`py3-v1.2.3` → `py3-v`, where a first-digit scan would wrongly yield `py`)
+/// and a leading-digit calendar version (`2024.01.0` → `""`).
 fn tag_prefix(anchor: &str) -> String {
-    anchor.chars().take_while(|c| !c.is_ascii_digit()).collect()
+    // The trailing version core (`\d+\.\d+[...]`) is captured so the prefix is
+    // simply everything before it. Mirrors `git::parse_semver_tag`'s version
+    // recognition so prefix clustering and version parsing agree on where the
+    // version begins. A `v` immediately before the digits stays in the prefix
+    // (`anodizer-v1.2.3` → `anodizer-v`).
+    static VERSION_CORE_RE: LazyLock<Regex> =
+        LazyLock::new(|| anodizer_core::util::static_regex(r"\d+\.\d+(?:\.\d+)?(?:[-+].*)?$"));
+    match VERSION_CORE_RE.find(anchor) {
+        Some(m) => anchor[..m.start()].to_string(),
+        // No recognizable trailing version: fall back to the whole anchor.
+        None => anchor.to_string(),
+    }
 }
 
 /// Perform the Keep-a-Changelog release roll on `existing`:
@@ -2534,6 +2692,24 @@ fn synthesize_footer(
 mod root_section_tests {
     use super::*;
     use anodizer_core::config::{ChangelogGroup, Chronology};
+
+    #[test]
+    fn tag_prefix_handles_common_and_embedded_digit_schemes() {
+        // Common: `v`-led and bare semver.
+        assert_eq!(tag_prefix("v0.5.0"), "v");
+        assert_eq!(tag_prefix("0.5.0"), "");
+        // Monorepo prefix with a separator.
+        assert_eq!(tag_prefix("anodizer-v0.5.0"), "anodizer-v");
+        // n6: a digit *inside* the prefix must not truncate the prefix
+        // (first-digit scan wrongly yielded `py`).
+        assert_eq!(tag_prefix("py3-v1.2.3"), "py3-v");
+        // n6: a leading-digit calendar version yields an empty prefix (all
+        // calver tags cluster together).
+        assert_eq!(tag_prefix("2024.01.0"), "");
+        assert_eq!(tag_prefix("release-2024.01.0"), "release-");
+        // Pre-release / build metadata stays out of the prefix.
+        assert_eq!(tag_prefix("v1.2.3-rc.1"), "v");
+    }
 
     /// Features (`^feat`) / Bug Fixes (`^fix`) groups, mirroring a typical
     /// `groups:` config for the curated-bucketing tests.
@@ -3294,6 +3470,77 @@ mod root_section_tests {
       order: 1
 "#;
         std::fs::write(dir.join(".anodizer.yaml"), yaml).expect("write .anodizer.yaml");
+    }
+
+    /// Write a `changelog:` block whose group title is a `{{ .ProjectName }}`
+    /// template, exercising the write-time template-rendering path.
+    fn write_anodizer_yaml_templated_group(dir: &std::path::Path) {
+        let yaml = r#"changelog:
+  groups:
+    - title: "{{ .ProjectName }} features"
+      regexp: '^feat'
+      order: 0
+"#;
+        std::fs::write(dir.join(".anodizer.yaml"), yaml).expect("write .anodizer.yaml");
+    }
+
+    #[test]
+    fn render_crate_section_renders_templated_group_title() {
+        // M1: a templated group title (`{{ .ProjectName }} features`) must be
+        // rendered through the per-crate template context on the write path,
+        // not shipped as a literal `{{ ... }}` into the committed CHANGELOG.md.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        init_repo_with_commit(root);
+        write_anodizer_yaml_templated_group(root);
+
+        let update = render_crate_section(root, "myapp", root, None, "0.7.0")
+            .expect("render_crate_section succeeds")
+            .expect("commits present → an update is produced");
+
+        let text = &update.rendered_text;
+        assert!(
+            text.contains("### myapp features"),
+            "templated group title is rendered with the crate's ProjectName: {text}"
+        );
+        assert!(
+            !text.contains("{{"),
+            "no literal template braces leak into the changelog: {text}"
+        );
+    }
+
+    #[test]
+    fn render_root_section_renders_templated_group_title() {
+        // M1 (root write path): the per-crate context must drive the templated
+        // group title on the shared root file too.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        init_repo_with_commit(root);
+        write_anodizer_yaml_templated_group(root);
+
+        let update = render_root_section(
+            root,
+            "myapp",
+            root,
+            None,
+            "0.7.0",
+            "v0.7.0",
+            Chronology::Date,
+            false,
+            &[],
+        )
+        .expect("render_root_section succeeds")
+        .expect("commits present → an update is produced");
+
+        let text = &update.rendered_text;
+        assert!(
+            text.contains("### myapp features"),
+            "root templated group title is rendered with ProjectName: {text}"
+        );
+        assert!(
+            !text.contains("{{"),
+            "no literal template braces leak into the root changelog: {text}"
+        );
     }
 
     #[test]

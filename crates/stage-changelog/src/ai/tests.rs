@@ -134,6 +134,41 @@ fn anthropic_200_replaces_body() {
     assert_eq!(out, "# v1.0.0\n\nEnhanced notes.");
 }
 
+// n6: a `thinking` block leading the content array (extended thinking) must not
+// shadow the text block — the parser scans for the first `text`-type block.
+#[test]
+fn anthropic_200_skips_leading_thinking_block() {
+    let body = "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"hmm\"},\
+{\"type\":\"text\",\"text\":\"# Real notes\"}]}";
+    let response: &'static str = Box::leak(json_200(body).into_boxed_str());
+    let (addr, _calls) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "POST",
+        path_pattern: "/v1/messages",
+        response,
+        times: Some(1),
+    }]);
+    let base = format!("http://{addr}");
+
+    let ctx = ctx_with_env(
+        false,
+        &[
+            ("ANODIZER_ANTHROPIC_ENDPOINT", &base),
+            ("ANTHROPIC_API_KEY", "sk-ant-test-1234"),
+        ],
+    );
+    let log = ctx.logger("changelog");
+    let cfg = ChangelogAiConfig {
+        provider: Some("anthropic".to_string()),
+        model: Some("claude-test".to_string()),
+        prompt: Some(ChangelogAiPrompt::Inline(
+            "Summarise: {{ ReleaseNotes }}".to_string(),
+        )),
+    };
+    let out = enhance_with_ai(&ctx, &cfg, "raw notes", &log)
+        .expect("text block after a thinking block is extracted");
+    assert_eq!(out, "# Real notes");
+}
+
 // ---------------------------------------------------------------------------
 // OpenAI — 200 OK replaces the body
 // ---------------------------------------------------------------------------

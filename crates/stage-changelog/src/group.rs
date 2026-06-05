@@ -347,9 +347,10 @@ fn group_commits_inner(
 /// Render grouped commits as a Markdown string. Each group becomes a `## Title`
 /// section, and each commit is a bullet formatted according to `format_template`.
 ///
-/// `abbrev` controls the hash abbreviation length (default 7). A value of `0`
-/// means "use the full SHA" (no truncation). Negative values (e.g.
-/// `-1`) omit the hash entirely.
+/// `abbrev` controls the hash abbreviation length (default 0, the full SHA).
+/// A value of `0` means "use the full SHA" (no truncation); a positive value
+/// truncates to that many characters. Negative values (e.g. `-1`) omit the
+/// hash entirely.
 ///
 /// If `format_template` is `None`, the default format depends on the SCM backend:
 /// - `git` backend (default): `{{ SHA }} {{ Message }}` (full SHA)
