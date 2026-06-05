@@ -105,6 +105,16 @@ pub(crate) fn classify_dialect(schema_url: &str) -> Dialect {
     }
 }
 
+/// Reformat a schema's JSON to SchemaStore's prettier defaults (2-space indent,
+/// trailing newline). Preserves key order (serde_json `preserve_order`).
+#[allow(dead_code)]
+pub(crate) fn format_vendor_schema(raw: &str) -> anyhow::Result<String> {
+    let v: serde_json::Value = serde_json::from_str(raw)?;
+    let mut s = serde_json::to_string_pretty(&v)?;
+    s.push('\n');
+    Ok(s)
+}
+
 /// SchemaStore requires `$id` to be an absolute http(s) URL.
 #[allow(dead_code)]
 pub(crate) fn check_id(id: Option<&str>) -> anyhow::Result<()> {

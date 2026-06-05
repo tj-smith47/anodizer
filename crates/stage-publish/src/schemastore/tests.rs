@@ -2,7 +2,8 @@ use crate::schemastore::catalog::{
     Verdict, add_high_schema_version, build_entry_json, merge_versions, splice_entry, verdict,
 };
 use crate::schemastore::manifest::{
-    DescriptionError, Dialect, check_id, classify_dialect, sanitize_description, slugify,
+    DescriptionError, Dialect, check_id, classify_dialect, format_vendor_schema,
+    sanitize_description, slugify,
 };
 
 const CATALOG: &str = r#"{ "schemas": [
@@ -336,5 +337,28 @@ fn merge_versions_from_empty() {
     assert_eq!(
         merged.get("1.0.0").unwrap(),
         "https://www.schemastore.org/x-1.0.0.json"
+    );
+}
+
+#[test]
+fn format_vendor_schema_is_2space_with_trailing_newline() {
+    let raw = "{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"type\":\"object\"}";
+    let out = format_vendor_schema(raw).unwrap();
+    assert!(out.ends_with("}\n"));
+    assert!(out.contains("\n  \"type\": \"object\""));
+}
+
+#[test]
+fn format_vendor_schema_preserves_key_order() {
+    // Non-alphabetical order: type, $schema, title — a sorting serializer would
+    // emit $schema, title, type (alphabetical). Proves preserve_order is in effect.
+    let raw = "{\"type\":\"object\",\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"title\":\"X\"}";
+    let out = format_vendor_schema(raw).unwrap();
+    let type_pos = out.find("\"type\"").unwrap();
+    let schema_pos = out.find("\"$schema\"").unwrap();
+    let title_pos = out.find("\"title\"").unwrap();
+    assert!(
+        type_pos < schema_pos && schema_pos < title_pos,
+        "key order must be preserved (type < $schema < title); got:\n{out}"
     );
 }
