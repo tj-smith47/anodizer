@@ -9,7 +9,6 @@ use crate::schemastore::scan::{
 };
 
 /// What the publisher should do about one schema entry, given the upstream catalog.
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Verdict {
     NoOp,
@@ -19,7 +18,6 @@ pub(crate) enum Verdict {
 
 /// Merge a new version into an existing `versions` map (or start fresh),
 /// carrying all prior versions forward.
-#[allow(dead_code)]
 pub(crate) fn merge_versions(
     prior: Option<&Map<String, Value>>,
     version: &str,
@@ -32,7 +30,6 @@ pub(crate) fn merge_versions(
 
 /// Decide add/update/no-op by matching `name` in `catalog_json` against the
 /// desired entry `want`. Comparison is structural (key order irrelevant).
-#[allow(dead_code)]
 pub(crate) fn verdict(catalog_json: &str, name: &str, want: &Value) -> anyhow::Result<Verdict> {
     let cat: Value = serde_json::from_str(catalog_json)?;
     let entries = cat
@@ -55,7 +52,6 @@ pub(crate) fn verdict(catalog_json: &str, name: &str, want: &Value) -> anyhow::R
 /// The crate enables serde_json's `preserve_order`, so the insertion order
 /// here is the on-disk serialization order. `versions` is appended only when
 /// `Some`.
-#[allow(dead_code)]
 pub(crate) fn build_entry_json(
     name: &str,
     description: &str,
@@ -102,7 +98,6 @@ fn render_entry(entry: &Value, indent: usize) -> anyhow::Result<String> {
 /// by prettier in CI. Reserializing the whole file would reorder entries and
 /// produce an unreviewable diff, so this edits only the targeted entry's byte
 /// span (replace) or appends before the array's closing `]` (add).
-#[allow(dead_code)]
 pub(crate) fn splice_entry(catalog: &str, name: &str, entry: &Value) -> anyhow::Result<String> {
     let v: Value = serde_json::from_str(catalog)?;
     let arr = v
@@ -157,7 +152,6 @@ pub(crate) fn splice_entry(catalog: &str, name: &str, entry: &Value) -> anyhow::
 /// reserialized: the array's `[`/`]` span is located with a comment- and
 /// string-aware scan, and a new `"<name>"` line is spliced in at the existing
 /// element indentation, comma-joining the previous last element.
-#[allow(dead_code)]
 pub(crate) fn add_high_schema_version(jsonc: &str, name: &str) -> anyhow::Result<String> {
     let open = find_array_open_after(jsonc, "highSchemaVersion")?;
     let close = find_bracket_close(jsonc, open)?;

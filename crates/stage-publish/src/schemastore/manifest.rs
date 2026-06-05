@@ -3,7 +3,6 @@
 //! construction. No I/O — every fn is unit-testable from a string.
 
 /// Lowercase, trim, and replace runs of non-alphanumeric chars with a single `-`.
-#[allow(dead_code)]
 pub(crate) fn slugify(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut prev_dash = false;
@@ -20,7 +19,6 @@ pub(crate) fn slugify(name: &str) -> String {
 }
 
 /// Reason a description fails SchemaStore's `assertCatalogJsonHasNoBadFields`.
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum DescriptionError {
     Empty,
@@ -50,7 +48,6 @@ impl std::error::Error for DescriptionError {}
 /// `Empty` rather than `BadEdge`. All other checks use `desc` (original) so
 /// leading/trailing whitespace is caught by `BadEdge` before the caller
 /// receives a value — the two checks target different invariants.
-#[allow(dead_code)]
 pub(crate) fn sanitize_description(desc: &str) -> Result<String, DescriptionError> {
     let trimmed = desc.trim();
     if trimmed.is_empty() {
@@ -81,7 +78,6 @@ pub(crate) fn sanitize_description(desc: &str) -> Result<String, DescriptionErro
 }
 
 /// Result of classifying a schema's `$schema` against SchemaStore's CI gate.
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Dialect {
     /// draft-04/06/07 — accepted unconditionally.
@@ -93,7 +89,6 @@ pub(crate) enum Dialect {
 }
 
 /// Classify a `$schema` URL. Mirrors SchemaStore's `SchemaDialects` table.
-#[allow(dead_code)]
 pub(crate) fn classify_dialect(schema_url: &str) -> Dialect {
     let u = schema_url.trim_end_matches('#');
     if u.contains("/draft-04/") || u.contains("/draft-06/") || u.contains("/draft-07/") {
@@ -107,7 +102,6 @@ pub(crate) fn classify_dialect(schema_url: &str) -> Dialect {
 
 /// Reformat a schema's JSON to SchemaStore's prettier defaults (2-space indent,
 /// trailing newline). Preserves key order (serde_json `preserve_order`).
-#[allow(dead_code)]
 pub(crate) fn format_vendor_schema(raw: &str) -> anyhow::Result<String> {
     let v: serde_json::Value = serde_json::from_str(raw)?;
     let mut s = serde_json::to_string_pretty(&v)?;
@@ -116,7 +110,6 @@ pub(crate) fn format_vendor_schema(raw: &str) -> anyhow::Result<String> {
 }
 
 /// SchemaStore requires `$id` to be an absolute http(s) URL.
-#[allow(dead_code)]
 pub(crate) fn check_id(id: Option<&str>) -> anyhow::Result<()> {
     match id {
         Some(s) if s.starts_with("http://") || s.starts_with("https://") => Ok(()),

@@ -11,6 +11,7 @@
 pub(crate) mod catalog;
 pub(crate) mod manifest;
 pub(crate) mod preflight;
+pub(crate) mod publish;
 pub(crate) mod scan;
 
 #[cfg(test)]
@@ -70,11 +71,11 @@ impl anodizer_core::Publisher for SchemastorePublisher {
 
 /// Run the SchemaStore publish, returning evidence of what was registered.
 ///
-/// Currently a no-op that returns empty evidence: the catalog-splice and PR
-/// pipeline is built on the pure helpers in `catalog`/`scan`/`manifest` but
-/// not yet driven from here.
-fn run_publish(_ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
-    Ok(PublishEvidence::new("schemastore"))
+/// Delegates to [`publish::run_publish`], which resolves the effective schemas,
+/// builds the desired catalog entries, and (on the real path) opens one PR
+/// against a fork of `SchemaStore/schemastore` carrying every registration.
+fn run_publish(ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
+    publish::run_publish(ctx)
 }
 
 /// Roll back a SchemaStore publish given its evidence. Currently a no-op: the

@@ -365,6 +365,36 @@ pub struct GemFuryExtra {
     pub gemfury_targets: Vec<GemFuryTargetSnapshot>,
 }
 
+/// Operator-public snapshot of a single SchemaStore registration PR — the
+/// fork branch anodizer pushed and the upstream it opened the PR against.
+/// Stored in [`SchemastoreExtra::schemastore_targets`] so a later
+/// `--rollback-only --from-run` can find and close the open PR.
+///
+/// **CREDENTIAL CONTRACT**: no token field — the rollback token is
+/// resolved at rollback time from the env var named by `token_env_var`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct SchemastoreTargetSnapshot {
+    /// Upstream `SchemaStore/schemastore` owner the PR targets.
+    pub upstream_owner: String,
+    /// Upstream repo name (`schemastore`).
+    pub upstream_repo: String,
+    /// Login of the fork the branch was pushed to.
+    pub fork_owner: String,
+    /// Branch pushed to the fork (the PR head).
+    pub branch: String,
+    /// Env var NAME the rollback path consults for the close-PR token.
+    /// NEVER the token VALUE.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_env_var: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct SchemastoreExtra {
+    pub schemastore_targets: Vec<SchemastoreTargetSnapshot>,
+}
+
 /// Typed `extra` payload for [`PublishEvidence`]. Untagged on the wire —
 /// each variant's JSON shape matches the prior free-form
 /// `serde_json::json!({"<publisher>_targets": [...]})` form so existing
@@ -404,6 +434,7 @@ pub enum PublishEvidenceExtra {
     GithubRelease(GithubReleaseExtra),
     Npm(NpmExtra),
     GemFury(GemFuryExtra),
+    Schemastore(SchemastoreExtra),
     /// Default for publishers with no per-evidence operator-public fields,
     /// or for runs that no-op'd. Serializes as JSON `null`.
     #[default]
