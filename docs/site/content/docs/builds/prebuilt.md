@@ -15,7 +15,7 @@ Reasons to use this builder:
 - **CGO / external toolchains.** You build with a tool anodizer can't drive
   in-process (a custom `Makefile`, Bazel, a vendored cross-compiler).
 - **Sharded CI.** You build each platform on its own runner with
-  `anodize build --single-target` and want a second config to assemble the
+  `anodizer build --single-target` and want a second config to assemble the
   release from the artifacts.
 - **Pre-compiled vendor binaries.** You're shipping a binary you didn't
   build yourself (vendor SDK, statically linked third-party tool).
@@ -50,7 +50,7 @@ output/myapp_aarch64-apple-darwin
 output/myapp_x86_64-pc-windows-msvc.exe
 ```
 
-…`anodize build` imports each one, registers it as an `ArtifactKind::Binary`
+…`anodizer build` imports each one, registers it as an `ArtifactKind::Binary`
 artifact tagged with the matching target triple, and lets the rest of the
 pipeline (archive, sbom, sign, checksum, publish) run unchanged.
 
@@ -174,7 +174,7 @@ crates:
 Each runner invokes:
 
 ```bash
-anodize build -f .anodizer.build.yaml --single-target
+anodizer build -f .anodizer.build.yaml --single-target
 ```
 
 See [Single-Target Builds](single-target/) for the `--single-target` flag
@@ -208,7 +208,7 @@ crates:
 ```
 
 ```bash
-anodize release -f .anodizer.release.yaml
+anodizer release -f .anodizer.release.yaml
 ```
 
 This pattern keeps build environments isolated (each runner only needs its
@@ -218,7 +218,7 @@ checksum, publish).
 
 ## Determinism harness behaviour
 
-`anodize check determinism` runs N from-clean rebuilds of your project in
+`anodizer check determinism` runs N from-clean rebuilds of your project in
 hermetic git worktrees and diffs the emitted artifacts byte-for-byte. With
 `builder: prebuilt`:
 

@@ -2475,7 +2475,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Conditional-skip gate.",
+          "description": "Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.",
           "default": null,
           "type": [
             "array",
@@ -2610,6 +2610,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "gobinary": {
+          "description": "Accepted-but-ignored legacy key. anodizer always drives the cargo toolchain (or `cross` / `zigbuild`) directly, so there is no pluggable build binary to point at. The field is parsed only so that configs imported from a Go-style tool keep loading instead of hard-failing under `deny_unknown_fields`; its value is never read. Use `command:` to override the cargo subcommand instead.",
+          "writeOnly": true,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "hooks": {
           "description": "Per-build hooks executed before and after compilation.",
@@ -2882,7 +2890,7 @@
           ]
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the cargo publisher is skipped. Render failure hard-errors. The publisher `if:` semantics.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the cargo publisher is skipped. Render failure hard-errors. Config key: the publisher's `if:`.",
           "default": null,
           "type": [
             "string",
@@ -3414,7 +3422,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Template-rendered extra files.",
+          "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.",
           "default": null,
           "type": [
             "array",
@@ -3516,7 +3524,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Chocolatey publisher is skipped. Render failure hard-errors. The `chocolateys[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Chocolatey publisher is skipped. Render failure hard-errors. Config key: `chocolateys[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -3788,7 +3796,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. The `cloudsmiths[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. Config key: `cloudsmiths[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -3853,7 +3861,7 @@
       }
     },
     "CloudSmithDistributions": {
-      "description": "Per-format distribution value. Accepts either a single distribution string (`deb: \"ubuntu/focal\"`) or an array of distribution slugs (`deb: [\"ubuntu/focal\", \"ubuntu/jammy\"]`) — the array form mirrors causes the publisher to issue one upload per distribution slug.",
+      "description": "Per-format distribution value. Accepts either a single distribution string (`deb: \"ubuntu/focal\"`) or an array of distribution slugs (`deb: [\"ubuntu/focal\", \"ubuntu/jammy\"]`) — the array form causes the publisher to issue one upload per distribution slug.",
       "anyOf": [
         {
           "description": "Single distribution slug (`\"ubuntu/focal\"`).",
@@ -4853,7 +4861,7 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. The DMG `goamd64: string` field. When unset, all amd64 variants are included (no filtering).",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`), set via the `amd64_variant:` key. When set, only artifacts with the matching `amd64_variant` metadata are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs. When unset, all amd64 variants are included (no filtering).",
           "default": null,
           "type": [
             "string",
@@ -6481,7 +6489,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. The `homebrew_casks[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Config key: `homebrew_casks[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -7059,7 +7067,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Homebrew publisher is skipped. Render failure hard-errors. The `brews[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Homebrew publisher is skipped. Render failure hard-errors. Config key: `brews[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -7461,7 +7469,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Krew publisher is skipped. Render failure hard-errors. The `krews[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Krew publisher is skipped. Render failure hard-errors. Config key: `krews[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -8733,7 +8741,7 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. The MSI `goamd64: string` field.",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`), set via the `amd64_variant:` key. When set, only artifacts with the matching `amd64_variant` metadata are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs.",
           "default": null,
           "type": [
             "string",
@@ -8965,7 +8973,7 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (`[\"v1\"]`, `[\"v2\", \"v3\"]`, etc.). When set, only amd64 binaries with `amd64_variant` matching one of the listed values are included via the `goamd64: []string` filter. When unset, all amd64 variants are included (no filtering).",
+          "description": "amd64 microarchitecture variant filter (`[\"v1\"]`, `[\"v2\", \"v3\"]`, etc.), set via the `amd64_variant:` key. When set, only amd64 binaries with `amd64_variant` matching one of the listed values are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs. When unset, all amd64 variants are included (no filtering).",
           "default": null,
           "type": [
             "array",
@@ -10006,7 +10014,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "NixConfig": {
       "type": "object",
@@ -10094,7 +10103,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Nix publisher is skipped. Render failure hard-errors. The `nix[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Nix publisher is skipped. Render failure hard-errors. Config key: `nix[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -10540,7 +10549,7 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, only artifacts with the matching `amd64_variant` metadata are included. The NSIS `goamd64: string` field.",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`), set via the `amd64_variant:` key. When set, only artifacts with the matching `amd64_variant` metadata are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs.",
           "default": null,
           "type": [
             "string",
@@ -10688,7 +10697,7 @@
       "type": "object",
       "properties": {
         "by": {
-          "description": "How to split builds: \"os\" (by OS, default) or \"target\" (by full triple). \"os\" groups all arch variants for the same OS into one split job. \"target\" gives each unique target triple its own split job.",
+          "description": "How to split builds: \"os\" (by OS, default) or \"target\" (by full triple). \"os\" groups all arch variants for the same OS into one split job. \"target\" gives each unique target triple its own split job.\n\nThe legacy `goos` spelling is accepted as a back-compat alias for `os` (folded at parse time, with a deprecation warning); imported configs keep loading.",
           "default": null,
           "type": [
             "string",
@@ -11245,7 +11254,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before publishing. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Conditional-skip gate.",
+          "description": "Extra files whose contents are rendered through the template engine before publishing. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.",
           "default": null,
           "type": [
             "array",
@@ -11616,7 +11625,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Conditional-skip gate.\n\nSame path-traversal caveat as `extra_files`: `..` segments reach outside the project tree.",
+          "description": "Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.\n\nSame path-traversal caveat as `extra_files`: `..` segments reach outside the project tree.",
           "default": null,
           "type": [
             "array",
@@ -11727,7 +11736,8 @@
           "format": "uint",
           "minimum": 0.0
         }
-      }
+      },
+      "additionalProperties": false
     },
     "RetryConfig": {
       "description": "User-facing retry configuration block (`retry:` at config root).\n\nAll fields are optional in YAML; missing fields fall back to the defaults (10 attempts, 10s base delay, 5m cap).",
@@ -11987,7 +11997,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Scoop publisher is skipped. Render failure hard-errors. The `scoop[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Scoop publisher is skipped. Render failure hard-errors. Config key: `scoop[].if:`.",
           "default": null,
           "type": [
             "string",
@@ -12924,7 +12934,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before bundling. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Template-rendered extra files.",
+          "description": "Extra files whose contents are rendered through the template engine before bundling. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.",
           "default": null,
           "type": [
             "array",
@@ -14462,7 +14472,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the WinGet publisher is skipped. Render failure hard-errors. The `winget[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the WinGet publisher is skipped. Render failure hard-errors. Config key: `winget[].if:`.",
           "default": null,
           "type": [
             "string",

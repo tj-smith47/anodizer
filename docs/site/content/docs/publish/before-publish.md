@@ -78,12 +78,12 @@ the remaining hooks AND the publish phase.
 
 ## Skipping the hook
 
-Use `--skip=before-publish` on the `anodize release` command to bypass the
+Use `--skip=before-publish` on the `anodizer release` command to bypass the
 entire block (e.g. during a hotfix where the validators would block a
 critical patch):
 
 ```bash
-anodize release --skip=before-publish
+anodizer release --skip=before-publish
 ```
 
 The stage is also skipped automatically in dry-run mode for any hook

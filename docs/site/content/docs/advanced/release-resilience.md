@@ -102,7 +102,7 @@ Between Manager and Submitter dispatch, anodizer inspects the in-progress
 The gate is on by default. Operator opt-out:
 
 ```bash
-anodize release --no-gate-submitter
+anodizer release --no-gate-submitter
 ```
 
 Use this only when you have manually verified the failed publisher is not
@@ -170,7 +170,7 @@ every release attempt. `--rollback-only` re-attempts rollback against that
 report:
 
 ```bash
-anodize release --rollback-only --from-run=20260514T142301Z
+anodizer release --rollback-only --from-run=20260514T142301Z
 ```
 
 What runs:
@@ -190,7 +190,7 @@ have written during the original run.
 Captures the audit trail of a run as a single JSON document:
 
 ```bash
-anodize release --summary-json=dist/run-summary.json
+anodizer release --summary-json=dist/run-summary.json
 ```
 
 Shape:
@@ -274,7 +274,7 @@ the push because branch protection got tightened.
 Run:
 
 ```bash
-anodize release --summary-json=dist/run-summary.json
+anodizer release --summary-json=dist/run-summary.json
 ```
 
 Timeline:
@@ -324,7 +324,7 @@ $ ls dist/run-v0.2.1/
 report.json
 
 # Retrying with the same tag is refused — duplicate-PR risk:
-$ anodize release
+$ anodizer release
 Error: publish refusing to run: a prior report.json exists at
   dist/run-v0.2.1/report.json (run_id=v0.2.1). To recover from a partial
   failure, run `anodizer release --rollback-only --from-run=v0.2.1` first
@@ -341,37 +341,37 @@ on a new tag:
 ```bash
 # Step 1: replay rollback against the prior run. Idempotent: re-running
 #         only re-attempts entries that haven't already RolledBack.
-anodize release --rollback-only --from-run=v0.2.1
+anodizer release --rollback-only --from-run=v0.2.1
 
 # Step 2: read dist/run-v0.2.1/rollback.json to confirm every Assets /
 #         Manager publisher flipped to RolledBack (or RollbackFailed
 #         for the ones that need manual cleanup — those entries name
 #         the publisher and the error).
 
-# Step 3: cut a new tag (anodize tag creates and pushes the next
+# Step 3: cut a new tag (anodizer tag creates and pushes the next
 #         semver from your commit log; release.yml triggers on the
 #         pushed tag and re-runs the pipeline).
-anodize tag
+anodizer tag
 ```
 
 ### Recovering a poisoned tag with `tag rollback`
 
-`anodize tag rollback` is the inverse of `anodize tag`: when a downstream
+`anodizer tag rollback` is the inverse of `anodizer tag`: when a downstream
 release fails (publish error, mcp 422, an irreversible Submitter blows up),
 the operator is left with a tag pointing at a bumped-but-broken commit. The
 subcommand deletes the anodize-managed tag(s) at that SHA, reverts the bump
 commit, and pushes the revert — restoring the branch to a clean state so the
-next `anodize tag` invocation can re-cut from the fixed commit.
+next `anodizer tag` invocation can re-cut from the fixed commit.
 
 ```bash
 # Rollback the bump at the current HEAD (or any SHA you pass explicitly):
-anodize tag rollback "$GITHUB_SHA"
+anodizer tag rollback "$GITHUB_SHA"
 
 # Dry-run first:
-anodize tag rollback --dry-run "$GITHUB_SHA"
+anodizer tag rollback --dry-run "$GITHUB_SHA"
 
 # Don't push — just mutate locally:
-anodize tag rollback --no-push "$GITHUB_SHA"
+anodizer tag rollback --no-push "$GITHUB_SHA"
 ```
 
 **Flag matrix:**
@@ -417,7 +417,7 @@ rollback from running when the release step itself was skipped (e.g.,
 `tag rollback` complements `release --rollback-only` rather than replacing
 it: use `--rollback-only` to unwind individual publisher state (reversible
 Assets / Manager DELETEs, PR closes, blob removes); use `tag rollback` to
-delete the tag itself and revert the bump commit so the next `anodize tag`
+delete the tag itself and revert the bump commit so the next `anodizer tag`
 can cut a fresh version from the fixed code.
 
 Only use `--allow-rerun` when:
@@ -433,13 +433,13 @@ Only use `--allow-rerun` when:
 
 ```bash
 # Escape hatch — duplicate-publish risk, see warnings above:
-anodize release --allow-rerun
+anodizer release --allow-rerun
 ```
 
 ## CLI surface summary
 
 ```
-anodize release \
+anodizer release \
   --fail-fast \
   --no-gate-submitter \
   --rollback={none|best-effort} \

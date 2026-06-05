@@ -44,7 +44,7 @@ appimages:
     extra_args: []                   # optional; extra linuxdeploy CLI arguments
     os: ["linux"]                    # optional; target OS filter (AppImage is Linux-only)
     arch: []                         # optional; target architecture filter
-    disable: false                   # optional
+    skip: false                      # optional (alias: disable)
 ```
 
 ## linuxdeploy invocation
@@ -113,7 +113,7 @@ runtime_harvest:
 | `extra_args` | list | none | Extra `linuxdeploy` CLI arguments |
 | `os` | list | `["linux"]` | Target OS filter |
 | `arch` | list | all | Target architecture filter |
-| `disable` | string/bool | none | Disable this config |
+| `skip` | string/bool | none | Skip this config (alias: `disable`) |
 
 ### `appdir_extra` entries
 

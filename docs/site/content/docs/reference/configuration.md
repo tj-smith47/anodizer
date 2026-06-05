@@ -278,7 +278,7 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 | `distributions` | map | — | Distribution mapping per format. Each entry accepts either a single slug (`deb: "ubuntu/focal"`) or an array of slugs (`deb: ["ubuntu/focal", "ubuntu/jammy"]`); the array form issues one upload per entry. |
 | `formats` | list of string | — | Package format filter: only publish artifacts matching these formats. |
 | `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. The `cloudsmiths[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. Config key: `cloudsmiths[].if:`. |
 | `organization` | string | — | CloudSmith organization slug. |
 | `repository` | string | — | CloudSmith repository slug. |
 | `republish` | StringOrBool | — | When true, allow republishing over existing package versions. |
@@ -473,7 +473,7 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `homepage` | string | — | Project homepage URL. |
 | `hooks` | HomebrewCaskHooks | — | Pre/post install/uninstall hooks. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts from builds whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. The `homebrew_casks[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Config key: `homebrew_casks[].if:`. |
 | `license` | string | — | License identifier (SPDX). |
 | `manpage` | string | — | Deprecated singular spelling of [`Self::manpages`]. The upstream replaced `manpage: foo.1` with `manpages: [foo.1]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::manpages`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
 | `manpages` | list of string | — | Manual page references to install. |
@@ -634,7 +634,9 @@ Default: `true` — NPM is a Manager-group publisher (one-way 72-hour unpublish 
 ## `partial`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `by` | string | — | How to split builds: "os" (by OS, default) or "target" (by full triple). "os" groups all arch variants for the same OS into one split job. "target" gives each unique target triple its own split job. |
+| `by` | string | — | How to split builds: "os" (by OS, default) or "target" (by full triple). "os" groups all arch variants for the same OS into one split job. "target" gives each unique target triple its own split job.
+
+The legacy `goos` spelling is accepted as a back-compat alias for `os` (folded at parse time, with a deprecation warning); imported configs keep loading. |
 
 ## `publishers`
 | Field | Type | Default | Description |
@@ -652,7 +654,7 @@ Default: `true` — NPM is a Manager-group publisher (one-way 72-hour unpublish 
 | `name` | string | — | Human-readable name for this publisher (used in logs). |
 | `signature` | bool | — | Include signatures in published artifacts. |
 | `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`). |
-| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before publishing. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Conditional-skip gate. |
+| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before publishing. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. |
 
 ## `release`
 | Field | Type | Default | Description |
@@ -687,7 +689,7 @@ Default: `true` — a failure here aborts the release. Set to `false` to log fai
 | `skip_upload` | StringOrBool | — | Skip uploading artifacts: true, false, or "auto" (skip for snapshots). Accepts bool or template string. |
 | `tag` | string | — | Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `"{{ Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`). A cross-platform publishing feature provided for free by anodizer. |
 | `target_commitish` | string | — | Target branch or SHA for the release tag. |
-| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. Conditional-skip gate.
+| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
 
 Same path-traversal caveat as `extra_files`: `..` segments reach outside the project tree. |
 | `upload_concurrency` | integer | — | Maximum number of asset-upload requests in flight simultaneously.
@@ -968,7 +970,7 @@ Fields intentionally omitted because anodizer owns them: - `--package` / `--work
 | `allow_dirty` | bool | — | Allow publishing with an uncommitted working tree (`--allow-dirty`). |
 | `features` | list of string | — | Crate features to activate (`--features`). |
 | `frozen` | bool | — | Both `--locked` and `--offline` (`--frozen`). |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the cargo publisher is skipped. Render failure hard-errors. The publisher `if:` semantics. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the cargo publisher is skipped. Render failure hard-errors. Config key: the publisher's `if:`. |
 | `index` | string | — | Registry index URL (`--index`). |
 | `index_timeout` | integer | — | Seconds to wait for the crates.io sparse index to publish a crate before its dependents are pushed (anodizer-original — no `cargo publish` equivalent). |
 | `jobs` | integer | — | Number of parallel compile jobs for verification (`--jobs`). |
@@ -1008,7 +1010,7 @@ Single-crate workspaces and lockstep-bumped monorepos (anodizer itself) leave th
 | `extra_install` | string | — | Additional install commands appended after the main install block. |
 | `homepage` | string | — | Project homepage URL. Falls back to the GitHub release URL when unset. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew publisher is skipped. Render failure hard-errors. The `brews[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew publisher is skipped. Render failure hard-errors. Config key: `brews[].if:`. |
 | `install` | string | — | Ruby `install` block content for the formula. |
 | `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
 | `name` | string | — | Override the formula name (default: crate name). |
@@ -1051,7 +1053,7 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `homepage` | string | — | Project homepage URL. |
 | `hooks` | HomebrewCaskHooks | — | Pre/post install/uninstall hooks. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts from builds whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. The `homebrew_casks[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Config key: `homebrew_casks[].if:`. |
 | `license` | string | — | License identifier (SPDX). |
 | `manpage` | string | — | Deprecated singular spelling of [`Self::manpages`]. The upstream replaced `manpage: foo.1` with `manpages: [foo.1]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::manpages`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
 | `manpages` | list of string | — | Manual page references to install. |
@@ -1081,7 +1083,7 @@ Cannot be combined with `url.template:` — set one or the other. If both are pr
 | `directory` | string | — | Subdirectory in the bucket repo for manifest placement. |
 | `homepage` | string | — | Project homepage URL. Falls back to the GitHub-derived URL when unset. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Scoop publisher is skipped. Render failure hard-errors. The `scoop[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Scoop publisher is skipped. Render failure hard-errors. Config key: `scoop[].if:`. |
 | `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
 | `name` | string | — | Override the manifest name (default: crate name). |
 | `persist` | list of string | — | Data paths persisted between Scoop updates. |
@@ -1109,7 +1111,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `docs_url` | string | — | Documentation URL. |
 | `icon_url` | string | — | URL to the package icon image shown in the Chocolatey gallery. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Chocolatey publisher is skipped. Render failure hard-errors. The `chocolateys[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Chocolatey publisher is skipped. Render failure hard-errors. Config key: `chocolateys[].if:`. |
 | `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
 | `license_url` | string | — | Optional explicit license URL. Falls back to `https://opensource.org/licenses/<license>` when not set. |
 | `name` | string | — | Override the package name (default: crate name). |
@@ -1146,7 +1148,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `description` | string | — | Full package description displayed in the WinGet gallery. |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the WinGet publisher is skipped. Render failure hard-errors. The `winget[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the WinGet publisher is skipped. Render failure hard-errors. Config key: `winget[].if:`. |
 | `installation_notes` | string | — | Post-install notes shown to the user. |
 | `license` | string | — | License identifier (required, e.g. "MIT"). |
 | `license_url` | string | — | License URL. |
@@ -1255,7 +1257,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `description` | string | — | Full description of the kubectl plugin. |
 | `homepage` | string | — | Project homepage URL for the plugin. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Krew publisher is skipped. Render failure hard-errors. The `krews[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Krew publisher is skipped. Render failure hard-errors. Config key: `krews[].if:`. |
 | `mode` | KrewMode | — | Which krew-index submission path to take.
 
 - `auto` (default): probe whether the plugin already exists in `kubernetes-sigs/krew-index`. Already present → `bot` (the hosted krew-release-bot opens the version-bump PR server-side); definitively absent → `pr-direct` (anodizer opens the initial fork PR). A probe that can't reach a definitive answer (rate-limit, network error) hard-errors rather than guessing, so a transient blip never routes an existing plugin into a maintainer-hostile fork PR. - `bot`: always POST to the krew-release-bot webhook. Use when the plugin is known to be in krew-index and you want to skip the membership probe entirely. - `pr-direct`: always open a fork PR against krew-index. Use for the initial submission, or a self-hosted krew-index mirror the hosted bot can't reach. |
@@ -1282,7 +1284,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `formatter` | string | — | Nix formatter to run on the generated file: "alejandra" or "nixfmt". |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Nix publisher is skipped. Render failure hard-errors. The `nix[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Nix publisher is skipped. Render failure hard-errors. Config key: `nix[].if:`. |
 | `install` | string | — | Custom install commands (replaces auto-generated binary install). |
 | `license` | string | — | Nix license identifier (e.g. "mit", "asl20"). Validated against known licenses. |
 | `main_program` | string | — | Value for `meta.mainProgram` in the generated Nix derivation. When set, the rendered derivation includes `mainProgram = "<value>";` inside the `meta` block, telling Nix which binary `nix run` should execute when the derivation contains multiple executables. Templated: supports `{{ Version }}` etc. Omitted when unset. |

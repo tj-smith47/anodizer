@@ -89,7 +89,7 @@ sboms:
 
 | Key | Status | Notes |
 |---|---|---|
-| `builds[].goos` / `builds[].goarch` | ✅ Verified | [v0.1.1 assets](https://github.com/tj-smith47/anodizer/releases/tag/v0.1.1) cover 6 targets (`*-linux-amd64.tar.gz` to `*-windows-arm64.zip`) |
+| `builds[].targets` → per-target `os` / `arch` | ✅ Verified | [v0.1.1 assets](https://github.com/tj-smith47/anodizer/releases/tag/v0.1.1) cover 6 targets (`*-linux-amd64.tar.gz` to `*-windows-arm64.zip`) |
 | `universal_binaries[]` | ✅ Verified | [cfgd v0.3.5](https://github.com/tj-smith47/cfgd/releases/tag/v0.3.5) ships `cfgd-0.3.5-darwin-all.tar.gz` via `lipo` |
 | `upx[]` | ✅ Verified | [`anodizer-0.1.1-linux-amd64.tar.gz`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-linux-amd64.tar.gz) (UPX-packed) |
 | `builds[].overrides` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`format_overrides` for windows zip) |

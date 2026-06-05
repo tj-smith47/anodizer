@@ -57,7 +57,7 @@ publish:
     registry: ""              # alternative registry name from ~/.cargo/config.toml
     index: ""                 # alternative registry index URL
     no_verify: false          # skip local cargo build verification
-    allow_dirty: true         # default true (anodize tag dirties the tree)
+    allow_dirty: true         # default true (anodizer tag dirties the tree)
     features: []              # features to enable
     all_features: false
     no_default_features: false
@@ -85,7 +85,7 @@ anodizer release
 
 - **Version slot burned permanently**: once a version is published to crates.io it cannot be deleted — only yanked. A yanked version stays reserved; consumers with an explicit version pin can still install it, but `cargo add` and `cargo update` will not select it. Plan releases carefully before pushing.
 - **Index lag**: crates.io's index update can take 30–120 seconds after publish. Anodizer waits up to `index_timeout` seconds (default 300) before publishing dependent crates in the workspace ordering chain.
-- **`allow_dirty: true`** is the default because `anodize tag` writes a version bump commit that leaves the tree dirty. Set `allow_dirty: false` only if you manage version bumps externally.
+- **`allow_dirty: true`** is the default because `anodizer tag` writes a version bump commit that leaves the tree dirty. Set `allow_dirty: false` only if you manage version bumps externally.
 
 ## Config options
 
@@ -101,7 +101,7 @@ publish:
 
     # ----- verify / dirty -----
     no_verify: false          # skip the local cargo build verification
-    allow_dirty: true         # default: true (anodize tag dirties the tree)
+    allow_dirty: true         # default: true (anodizer tag dirties the tree)
 
     # ----- features -----
     features: ["telemetry"]

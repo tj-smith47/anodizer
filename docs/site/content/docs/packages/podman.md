@@ -12,7 +12,7 @@ Anodizer supports the `podman` backend as a swap-in alternative to `docker build
 The podman backend is **Linux-only**, matching GoReleaser Pro. Anodizer refuses to load a config with `use: podman` on macOS or Windows hosts and surfaces a clear error rather than failing later with `podman: command not found`.
 
 ```text
-$ anodize release         # on macOS
+$ anodizer release         # on macOS
 Error: podman backend is supported on Linux only (host OS: macos);
        remove `use: podman` or run on a Linux host
 ```
@@ -75,7 +75,7 @@ Mirrors GoReleaser Pro's caveats verbatim:
 
 ## Determinism harness compatibility
 
-`anodize check determinism` shells out to `docker buildx build --output=type=oci,rewrite-timestamp=true,...` for its byte-stability probe. Those flags are BuildKit-only and have no podman equivalent. When the project config has `use: podman` set on any `docker_v2[]` entry, the harness skips the docker stage with an explanatory warning:
+`anodizer check determinism` shells out to `docker buildx build --output=type=oci,rewrite-timestamp=true,...` for its byte-stability probe. Those flags are BuildKit-only and have no podman equivalent. When the project config has `use: podman` set on any `docker_v2[]` entry, the harness skips the docker stage with an explanatory warning:
 
 ```text
 warn: docker stage requested but project config has `use: podman` (Linux-only);
@@ -88,7 +88,7 @@ Verify podman image reproducibility out-of-band (re-build the image twice, compa
 
 ## Healthcheck
 
-`anodize healthcheck` probes `podman --version` alongside `docker --version` so operators can confirm the binary is reachable before opting into the backend.
+`anodizer healthcheck` probes `podman --version` alongside `docker --version` so operators can confirm the binary is reachable before opting into the backend.
 
 ## Anodizer extension: `docker_manifests[].use: podman`
 

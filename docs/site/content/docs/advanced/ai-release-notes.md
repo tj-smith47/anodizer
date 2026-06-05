@@ -26,7 +26,7 @@ changelog:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-anodize release
+anodizer release
 ```
 
 The flow:
@@ -203,7 +203,7 @@ operator noticing.
 Opt in to degraded behaviour with `--allow-ai-failure`:
 
 ```bash
-anodize release --allow-ai-failure
+anodizer release --allow-ai-failure
 ```
 
 With the flag set, a provider error is logged as a warning and the
@@ -216,7 +216,7 @@ Ollama in CI where transient unavailability shouldn't block a tag).
 AI enhancement is automatically skipped in `--snapshot` mode for cost
 containment. Snapshot builds are typically rapid local iterations, and
 billing a model per local test run adds up. To preview AI-enhanced
-notes without publishing, run `anodize release --dry-run` (which
+notes without publishing, run `anodizer release --dry-run` (which
 keeps the AI call active) instead.
 
 ## Secret hygiene

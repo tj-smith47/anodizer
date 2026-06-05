@@ -347,7 +347,7 @@ anodizer tag --custom-tag v2.0.0            # skip bump logic entirely
 
 When a downstream release fails on a freshly-tagged commit, the operator is
 left with a tag pointing at a bumped-but-broken commit. The reverse direction
-of `anodize tag` is `anodize tag rollback`:
+of `anodizer tag` is `anodizer tag rollback`:
 
 ```bash
 anodizer tag rollback "$GITHUB_SHA"       # delete tag(s) at SHA + revert the bump

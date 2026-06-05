@@ -255,7 +255,7 @@ After your initial krew-index PR is approved and merged, every subsequent
 version bump is a mechanical update the krew maintainers run through a hosted
 service ([krew-release-bot](https://github.com/rajatjindal/krew-release-bot)):
 it forks krew-index and opens the version-bump PR server-side, under the bot's
-own GitHub account. **Anodizer drives that service directly — `anodize release`
+own GitHub account. **Anodizer drives that service directly — `anodizer release`
 completes the krew-index submission itself, with no separate GitHub-Actions
 step and no extra token.**
 

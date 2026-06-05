@@ -1,6 +1,6 @@
 +++
 title = "Determinism"
-description = "Byte-stability contract, allow-list, and the anodize check determinism harness"
+description = "Byte-stability contract, allow-list, and the anodizer check determinism harness"
 weight = 7
 template = "docs.html"
 +++
@@ -15,7 +15,7 @@ This guide covers:
 
 - The byte-stability contract.
 - The compile-time allow-list (what is currently exempt and why).
-- The `anodize check determinism` harness CLI.
+- The `anodizer check determinism` harness CLI.
 - `--allow-nondeterministic <name>=<reason>`, the operator escape, and its
   three audit surfaces.
 - Snapshot-mode `SOURCE_DATE_EPOCH` resolution.
@@ -76,13 +76,13 @@ sentinel. The Docker stage's only `dist/` output is a `.digest` text
 file (content-addressable sha256), which is byte-stable without
 allow-listing.
 
-## `anodize check determinism`
+## `anodizer check determinism`
 
-The verification harness is a leaf of `anodize check`:
+The verification harness is a leaf of `anodizer check`:
 
 ```
-anodize check config [--workspace=<path>]
-anodize check determinism \
+anodizer check config [--workspace=<path>]
+anodizer check determinism \
   --runs=<N> \
   --stages=<subset> \
   --targets=<csv> \
@@ -95,7 +95,7 @@ anodize check determinism \
 |---|---|---|
 | `--runs=<N>` | `2` | Number of from-clean rebuilds to diff against each other. |
 | `--stages=<subset>` | full set | Restrict to a stage subset (`build,archive,sbom,sign,checksum`). |
-| `--targets=<csv>` | (all) | Restrict the harness to a comma-separated subset of configured target triples (forwarded to the child `anodize release` subprocess). Used by the sharded release matrix so each runner only validates targets it can natively build. |
+| `--targets=<csv>` | (all) | Restrict the harness to a comma-separated subset of configured target triples (forwarded to the child `anodizer release` subprocess). Used by the sharded release matrix so each runner only validates targets it can natively build. |
 | `--report=<path>` | `dist/run-<id>/determinism.json` | JSON report destination. |
 | `--preserve-dist=<path>` | off | On green, copy run-0's `<worktree>/dist/**` to `<path>` and emit `<path>/context.json`. The release workflow's `release --publish-only` step consumes this directly — eliminating a separate recompile job. See [Preserved raw binaries layout](#preserved-raw-binaries-layout) for how `binary_signs:` source binaries are mirrored alongside dist. |
 | `--snapshot` / `--no-snapshot` | auto | Force snapshot mode on or off for the child release subprocess. Default: auto — `--no-snapshot` when HEAD is at a tag (`git describe --tags --exact-match HEAD` succeeds), `--snapshot` otherwise. Mutually exclusive. |
@@ -147,7 +147,7 @@ emergency cases where a third-party tool's reproducibility breaks
 unexpectedly. The flag is **repeatable**, not comma-separated:
 
 ```bash
-anodize release \
+anodizer release \
   --allow-nondeterministic foo.rpm=tool-bug-1234 \
   --allow-nondeterministic bar.msi=signing-cert-rotation
 ```
@@ -244,7 +244,7 @@ unknown fields per JSON convention.
 
 ## Snapshot-mode SDE resolution
 
-`anodize release --snapshot` must produce byte-identical artifacts across
+`anodizer release --snapshot` must produce byte-identical artifacts across
 runs of the same commit at the same anodize version. SDE source for snapshot
 mode (first match wins):
 
@@ -258,7 +258,7 @@ mode (first match wins):
    read-only worktrees produce the same value.
 
 This is what makes the harness useful pre-release: an operator can run
-`anodize check determinism --snapshot` against a dirty tree and catch drift
+`anodizer check determinism --snapshot` against a dirty tree and catch drift
 before tagging.
 
 ## Worked example
@@ -266,13 +266,13 @@ before tagging.
 Run the harness with two from-clean rebuilds:
 
 ```bash
-anodize check determinism --runs=2
+anodizer check determinism --runs=2
 ```
 
 Output (abbreviated):
 
 ```
-anodize check determinism: runs=2 stages=build,archive,sbom,sign,checksum
+anodizer check determinism: runs=2 stages=build,archive,sbom,sign,checksum
   run 1: 18.4s  (4 artifacts emitted)
   run 2: 17.9s  (4 artifacts emitted)
   diff:  0 artifacts drifted
@@ -296,7 +296,7 @@ drift (timestamp embed, file-order non-determinism, embedded GUID).
 
 ### `--publish-only` auto-enables `resume_release`
 
-When `anodize release --publish-only` runs, `resume_release` is automatically
+When `anodizer release --publish-only` runs, `resume_release` is automatically
 set to `true`. This lets the publish-only job proceed even when the release
 stage previously uploaded some assets (the prior determinism-harness run on the
 same tag left a partial release on disk). Without this implicit flag, the release
@@ -367,7 +367,7 @@ In CI, the determinism check runs as a fan-out matrix that doubles as
 the build step. Each shard validates one platform's targets and
 uploads its byte-stable `dist/` under `dist-<shard>`; the downstream
 `release:` job downloads every shard's preserved dist and runs
-`anodize release --publish-only` against the merged tree. The release
+`anodizer release --publish-only` against the merged tree. The release
 proceeds only when every shard passes. Anodizer's own release workflow
 uses this shape:
 
