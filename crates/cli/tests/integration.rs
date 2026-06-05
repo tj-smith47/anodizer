@@ -1536,6 +1536,156 @@ crates:
     );
 }
 
+/// Regression: `release --all` change detection must resolve its pathspecs
+/// against the discovered workspace root, NOT the process CWD, so it selects
+/// the same crates whether invoked from the root or a subdirectory.
+///
+/// The discriminating case is the workspace-level check
+/// (`check_workspace_files_changed`): editing a *per-crate* manifest
+/// (`crates/myapp/Cargo.toml`) leaves the root `Cargo.toml`/`Cargo.lock`
+/// untouched, so only `myapp` should be selected. Run from the `crates/myapp`
+/// subdirectory, the old CWD-relative pathspec resolved `Cargo.toml` to the
+/// subdir's own (changed) manifest and false-promoted the *entire* workspace.
+///
+/// This asserts on the build stage's per-crate lines, which enumerate exactly
+/// the selected set — and crucially that the unrelated `solo-lib`/`core-lib`/
+/// `helper-lib` are NOT selected (the `--all` "empty set means all crates"
+/// collapse would otherwise mask under-detection).
+#[test]
+fn test_e2e_release_change_detection_from_subdir() {
+    let tmp = TempDir::new().unwrap();
+
+    create_workspace_project(tmp.path());
+
+    // Add a fourth, fully independent crate so a strict-subset selection is
+    // observable (the existing fixture's crates all relate to core-lib).
+    let solo_dir = tmp.path().join("crates/solo-lib");
+    fs::create_dir_all(solo_dir.join("src")).unwrap();
+    fs::write(
+        solo_dir.join("Cargo.toml"),
+        "[package]\nname = \"solo-lib\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(solo_dir.join("src/lib.rs"), "pub fn solo() {}").unwrap();
+    fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/core-lib\", \"crates/helper-lib\", \"crates/myapp\", \"crates/solo-lib\"]\n",
+    )
+    .unwrap();
+
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(tmp.path())
+            .output()
+            .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+
+    git(&["init"]);
+    git(&["config", "user.email", "test@test.com"]);
+    git(&["config", "user.name", "Test"]);
+
+    create_config(
+        tmp.path(),
+        r#"project_name: my-workspace
+crates:
+  - name: core-lib
+    path: "crates/core-lib"
+    tag_template: "core-lib-v{{ .Version }}"
+
+  - name: helper-lib
+    path: "crates/helper-lib"
+    tag_template: "helper-lib-v{{ .Version }}"
+    depends_on:
+      - core-lib
+
+  - name: myapp
+    path: "crates/myapp"
+    tag_template: "myapp-v{{ .Version }}"
+    depends_on:
+      - core-lib
+
+  - name: solo-lib
+    path: "crates/solo-lib"
+    tag_template: "solo-lib-v{{ .Version }}"
+"#,
+    );
+
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "initial workspace"]);
+
+    git(&["tag", "core-lib-v0.1.0"]);
+    git(&["tag", "helper-lib-v0.1.0"]);
+    git(&["tag", "myapp-v0.1.0"]);
+    git(&["tag", "solo-lib-v0.1.0"]);
+
+    // Edit ONLY a per-crate manifest. The root manifests are untouched, so the
+    // workspace-level check must NOT fire; only `myapp` (which nothing depends
+    // on) should be selected.
+    let myapp_manifest = tmp.path().join("crates/myapp/Cargo.toml");
+    let manifest = fs::read_to_string(&myapp_manifest).unwrap();
+    fs::write(
+        &myapp_manifest,
+        format!("{manifest}# touched per-crate manifest\n"),
+    )
+    .unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "bump myapp manifest only"]);
+
+    // Invoke from the crate subdirectory with an explicit (absolute) --config
+    // pointing at the root config, so workspace-root discovery is driven by the
+    // config override rather than the CWD. Build is intentionally NOT skipped so
+    // the per-crate `[build] ... crate '<name>'` lines enumerate the selection.
+    let subdir = tmp.path().join("crates/myapp");
+    let config_path = tmp.path().join(".anodizer.yaml");
+    let release_output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--dry-run",
+            "--snapshot",
+            "--all",
+            "--single-target",
+            "--skip=release,publish,docker,sign,announce,changelog,nfpm",
+            "--timeout",
+            "5m",
+            "--config",
+        ])
+        .arg(&config_path)
+        .current_dir(&subdir)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&release_output.stderr);
+    assert!(
+        release_output.status.success(),
+        "subdir change detection should succeed.\nstderr:\n{}",
+        stderr
+    );
+
+    // Only `myapp` changed; it must be selected.
+    assert!(
+        stderr.contains("crate 'myapp'"),
+        "myapp (changed manifest) must be selected, got:\n{stderr}",
+    );
+    // The unchanged, independent crates must be excluded. Under the CWD bug the
+    // subdir's own Cargo.toml false-promoted the whole workspace, pulling these
+    // in.
+    for unchanged in ["crate 'solo-lib'", "crate 'core-lib'", "crate 'helper-lib'"] {
+        assert!(
+            !stderr.contains(unchanged),
+            "{unchanged} must NOT be selected (subdir pathspec must resolve at the \
+             workspace root), got:\n{stderr}",
+        );
+    }
+}
+
 // ============================================================================
 // Error Path Tests
 // ============================================================================

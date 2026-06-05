@@ -654,15 +654,20 @@ fn resolve_selected_crates(
         if opts.force {
             all_known_crates.iter().map(|c| c.name.clone()).collect()
         } else {
-            // The release command does not discover a workspace root; its change
-            // detection has always run with crate paths resolved against the cwd.
-            // Pass the cwd explicitly so behavior is preserved in the normal case
-            // (root-aware release discovery is out of scope here). A failed
-            // current_dir now propagates rather than silently resolving pathspecs
-            // against `.` — strictly more correct than the prior cwd_or_dot fallback.
-            let cwd = std::env::current_dir()?;
+            // Resolve crate + workspace-file pathspecs against the discovered
+            // Cargo workspace root, not the process CWD, so change detection is
+            // identical whether `release` is invoked from the root or a
+            // subdirectory. This mirrors the unification `tag`/`changelog`/`bump`
+            // already share via `discover_workspace_root`. From a subdir the old
+            // cwd anchor mis-resolved every pathspec: per-crate paths pointed at
+            // `<subdir>/crates/<x>` (no match → under-detect, masked by the
+            // empty-means-all collapse) and the workspace-level `Cargo.toml`
+            // pathspec pointed at the subdir's own manifest (a per-crate manifest
+            // edit then false-promoted the entire workspace).
+            let workspace_root =
+                crate::commands::helpers::discover_workspace_root(opts.config_override.as_deref())?;
             detect_changed_crates(
-                &cwd,
+                &workspace_root,
                 all_known_crates,
                 config.git.as_ref(),
                 config.monorepo_tag_prefix(),
@@ -1557,7 +1562,7 @@ fn detect_changed_crates(
 
     // Check workspace-level files against the oldest tag
     if let Some(ref tag) = oldest_tag {
-        let ws_changed = check_workspace_files_changed(tag)?;
+        let ws_changed = check_workspace_files_changed(workspace_root, tag)?;
         if ws_changed {
             // Include all crates
             return Ok(crates.iter().map(|c| c.name.clone()).collect());
@@ -1611,8 +1616,16 @@ fn propagate_dependents(crates: &[CrateConfig], changed: Vec<String>) -> Vec<Str
 }
 
 /// Check if workspace-level files (Cargo.toml, Cargo.lock) changed since tag.
-fn check_workspace_files_changed(tag: &str) -> Result<bool> {
-    anodizer_core::git::paths_changed_since_tag(tag, &["Cargo.toml", "Cargo.lock"])
+///
+/// Pathspecs resolve against `workspace_root` (the discovered Cargo root), not
+/// the process CWD, so a `release --all` from a subdirectory inspects the root
+/// manifests rather than the subdir's own `Cargo.toml`/`Cargo.lock`.
+fn check_workspace_files_changed(workspace_root: &Path, tag: &str) -> Result<bool> {
+    anodizer_core::git::paths_changed_since_tag_in(
+        workspace_root,
+        tag,
+        &["Cargo.toml", "Cargo.lock"],
+    )
 }
 
 /// Resolve a workspace by name from the config. Returns an error if
