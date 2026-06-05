@@ -573,7 +573,6 @@ pub struct ChecksumConfig {
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before inclusion.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
-    /// Template-rendered extra files.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Build IDs filter: only checksum artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,

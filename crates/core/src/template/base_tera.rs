@@ -10,15 +10,7 @@ use sha3::Digest as Sha3Digest;
 
 // --- Helper functions for template engine ---
 
-/// Expand a leading `~/` to the user's home directory.
-fn expand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return format!("{}/{}", home, rest);
-    }
-    path.to_string()
-}
+use crate::path_util::expand_tilde;
 
 /// Convert a Tera `Value` to a string for comparison purposes.
 /// Numbers, bools, and strings are all stringified; null → "".
@@ -793,7 +785,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| tera::Error::msg("readFile requires `path` argument"))?;
             let resolved = expand_tilde(path);
-            let content = std::fs::read_to_string(resolved).unwrap_or_default();
+            let content = std::fs::read_to_string(resolved.as_ref()).unwrap_or_default();
             Ok(Value::String(content.trim().to_string()))
         },
     );
@@ -808,7 +800,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| tera::Error::msg("mustReadFile requires `path` argument"))?;
             let resolved = expand_tilde(path);
-            let content = std::fs::read_to_string(&resolved)
+            let content = std::fs::read_to_string(resolved.as_ref())
                 .map_err(|e| tera::Error::msg(format!("mustReadFile: {}: {}", resolved, e)))?;
             Ok(Value::String(content.trim().to_string()))
         },

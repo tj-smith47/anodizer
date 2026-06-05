@@ -118,7 +118,7 @@ impl DeterminismState {
         // plus a `created` timestamp. syft does not honor SOURCE_DATE_EPOCH
         // for the document timestamp and (per the CycloneDX/SPDX specs) the
         // serial/namespace must be unique per document, so two runs over
-        // byte-identical inputs still produce differing SBOM bytes. This
+        // byte-identical inputs still produce differing SBOM bytes. These
         // SBOMs are excluded from the reproducibility
         // guarantee. Surfaced in the report, excluded from `drift_count`.
         // Extensions mirror `infer_stage_from_path`'s `sbom` classifier.

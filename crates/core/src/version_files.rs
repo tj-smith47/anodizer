@@ -102,7 +102,7 @@ pub fn rewrite_version_in_files(
             .with_context(|| format!("failed to read version file {path}"))?;
         let (rewritten, replacements) = rewrite_content(&content, old, new)?;
         if !dry_run && replacements > 0 {
-            fs::write(path, &rewritten)
+            crate::fs_atomic::atomic_write_str(std::path::Path::new(path), &rewritten)
                 .with_context(|| format!("failed to write version file {path}"))?;
         }
         outcomes.push(RewriteOutcome {

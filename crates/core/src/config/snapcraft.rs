@@ -66,7 +66,6 @@ pub struct SnapcraftConfig {
     pub extra_files: Option<Vec<SnapcraftExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before bundling.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
-    /// Template-rendered extra files.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Template for the output snap filename.
     pub name_template: Option<String>,

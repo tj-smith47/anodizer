@@ -34,10 +34,12 @@ pub struct DmgConfig {
     /// Which artifact type to package: "binary" (default) or "appbundle".
     #[serde(rename = "use")]
     pub use_: Option<String>,
-    /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
-    /// When set, only artifacts with the matching `amd64_variant` metadata
-    /// are included. The DMG `goamd64: string` field.
-    /// When unset, all amd64 variants are included (no filtering).
+    /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`),
+    /// set via the `amd64_variant:` key. When set, only artifacts with the
+    /// matching `amd64_variant` metadata are included. The legacy `goamd64:`
+    /// spelling is accepted via serde alias for back-compat with imported
+    /// configs. When unset, all amd64 variants are included (no filtering).
+    #[serde(alias = "goamd64")]
     pub amd64_variant: Option<String>,
     /// Template-conditional: skip this DMG config if rendered result is "false"
     /// or empty. Render failure hard-errors (not silent-skip).
@@ -79,9 +81,12 @@ pub struct MsiConfig {
         deserialize_with = "deserialize_string_or_bool_opt"
     )]
     pub skip: Option<StringOrBool>,
-    /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
-    /// When set, only artifacts with the matching `amd64_variant` metadata
-    /// are included. The MSI `goamd64: string` field.
+    /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`),
+    /// set via the `amd64_variant:` key. When set, only artifacts with the
+    /// matching `amd64_variant` metadata are included. The legacy `goamd64:`
+    /// spelling is accepted via serde alias for back-compat with imported
+    /// configs.
+    #[serde(alias = "goamd64")]
     pub amd64_variant: Option<String>,
     /// Additional files available in the WiX build context (simple filenames).
     pub extra_files: Option<Vec<String>>,
@@ -179,9 +184,12 @@ pub struct NsisConfig {
         deserialize_with = "deserialize_string_or_bool_opt"
     )]
     pub skip: Option<StringOrBool>,
-    /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
-    /// When set, only artifacts with the matching `amd64_variant` metadata
-    /// are included. The NSIS `goamd64: string` field.
+    /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`),
+    /// set via the `amd64_variant:` key. When set, only artifacts with the
+    /// matching `amd64_variant` metadata are included. The legacy `goamd64:`
+    /// spelling is accepted via serde alias for back-compat with imported
+    /// configs.
+    #[serde(alias = "goamd64")]
     pub amd64_variant: Option<String>,
     /// Remove source archives from artifacts, keeping only the installer.
     pub replace: Option<bool>,
@@ -272,4 +280,33 @@ pub struct FlatpakConfig {
     /// Skip this Flatpak config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
+}
+
+#[cfg(test)]
+mod goamd64_alias_tests {
+    use super::*;
+
+    #[test]
+    fn dmg_goamd64_alias_parses_into_amd64_variant() {
+        let dmg: DmgConfig = serde_yaml_ng::from_str("goamd64: v3").unwrap();
+        assert_eq!(dmg.amd64_variant.as_deref(), Some("v3"));
+    }
+
+    #[test]
+    fn dmg_canonical_amd64_variant_still_parses() {
+        let dmg: DmgConfig = serde_yaml_ng::from_str("amd64_variant: v2").unwrap();
+        assert_eq!(dmg.amd64_variant.as_deref(), Some("v2"));
+    }
+
+    #[test]
+    fn msi_goamd64_alias_parses_into_amd64_variant() {
+        let msi: MsiConfig = serde_yaml_ng::from_str("goamd64: v4").unwrap();
+        assert_eq!(msi.amd64_variant.as_deref(), Some("v4"));
+    }
+
+    #[test]
+    fn nsis_goamd64_alias_parses_into_amd64_variant() {
+        let nsis: NsisConfig = serde_yaml_ng::from_str("goamd64: v1").unwrap();
+        assert_eq!(nsis.amd64_variant.as_deref(), Some("v1"));
+    }
 }

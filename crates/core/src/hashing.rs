@@ -12,12 +12,17 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 use sha2::{Digest, Sha256};
 
+/// Read-buffer length for the streaming hashers. 64 KiB amortizes syscall
+/// overhead over the multi-MB release binaries these helpers hash; smaller
+/// buffers measurably slow throughput on large artifacts.
+const STREAM_BUF_LEN: usize = 64 * 1024;
+
 /// Open a file, feed its bytes through any `Digest` hasher, return hex.
 pub fn hash_file_with<D: Digest>(path: &Path, algo_name: &str) -> Result<String> {
     let mut file =
         File::open(path).with_context(|| format!("{algo_name}: open {}", path.display()))?;
     let mut hasher = D::new();
-    let mut buf = [0u8; 8192];
+    let mut buf = [0u8; STREAM_BUF_LEN];
     loop {
         let n = file
             .read(&mut buf)
@@ -46,7 +51,7 @@ pub fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
-/// Stream a file through `update`, calling it with each 8 KiB chunk.
+/// Stream a file through `update`, calling it with each 64 KiB chunk.
 /// Use this for hashers that don't implement the `Digest` trait
 /// (e.g. blake3, crc32fast) so the chunked-read loop lives in one place
 /// instead of being copy-pasted per algorithm.
@@ -57,7 +62,7 @@ pub fn hash_file_streaming<F: FnMut(&[u8])>(
 ) -> Result<()> {
     let mut file =
         File::open(path).with_context(|| format!("{algo_name}: open {}", path.display()))?;
-    let mut buf = [0u8; 8192];
+    let mut buf = [0u8; STREAM_BUF_LEN];
     loop {
         let n = file
             .read(&mut buf)

@@ -64,10 +64,13 @@ pub struct NfpmConfig {
     /// marked `deprecated`, aliasing `ids`).
     #[serde(alias = "builds")]
     pub ids: Option<Vec<String>>,
-    /// amd64 microarchitecture variant filter (`["v1"]`, `["v2", "v3"]`, etc.).
-    /// When set, only amd64 binaries with `amd64_variant` matching one of the
-    /// listed values are included via the `goamd64: []string` filter.
-    /// When unset, all amd64 variants are included (no filtering).
+    /// amd64 microarchitecture variant filter (`["v1"]`, `["v2", "v3"]`, etc.),
+    /// set via the `amd64_variant:` key. When set, only amd64 binaries with
+    /// `amd64_variant` matching one of the listed values are included. The
+    /// legacy `goamd64:` spelling is accepted via serde alias for back-compat
+    /// with imported configs. When unset, all amd64 variants are included (no
+    /// filtering).
+    #[serde(alias = "goamd64")]
     pub amd64_variant: Option<Vec<String>>,
     /// Package epoch for versioning (integer as string).
     pub epoch: Option<String>,
@@ -437,6 +440,28 @@ mod is_empty_tests {
     #[test]
     fn deb_default_is_empty() {
         assert!(NfpmDebConfig::default().is_empty());
+    }
+
+    /// The legacy `goamd64:` spelling folds into `amd64_variant` so imported
+    /// configs keep parsing under `deny_unknown_fields`.
+    #[test]
+    fn nfpm_goamd64_alias_parses_into_amd64_variant() {
+        let nfpm: NfpmConfig =
+            serde_yaml_ng::from_str("formats: [deb]\ngoamd64: [v2, v3]").unwrap();
+        assert_eq!(
+            nfpm.amd64_variant.as_deref(),
+            Some(["v2".to_string(), "v3".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn nfpm_canonical_amd64_variant_still_parses() {
+        let nfpm: NfpmConfig =
+            serde_yaml_ng::from_str("formats: [deb]\namd64_variant: [v1]").unwrap();
+        assert_eq!(
+            nfpm.amd64_variant.as_deref(),
+            Some(["v1".to_string()].as_slice())
+        );
     }
 }
 

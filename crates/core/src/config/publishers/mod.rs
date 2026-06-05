@@ -258,8 +258,7 @@ pub struct CargoPublishConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the cargo publisher is
-    /// skipped. Render failure hard-errors. The
-    /// publisher `if:` semantics.
+    /// skipped. Render failure hard-errors. Config key: the publisher's `if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }

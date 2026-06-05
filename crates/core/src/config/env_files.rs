@@ -92,18 +92,9 @@ pub struct EnvFilesTokenConfig {
 /// Returns `Ok(None)` if the file does not exist.
 /// Returns `Err` if the file exists but cannot be read.
 pub fn read_token_file(path: &str) -> Result<Option<String>, String> {
-    // Expand ~ to home directory
-    let expanded = if let Some(suffix) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            format!("{}/{}", home, suffix)
-        } else {
-            path.to_string()
-        }
-    } else {
-        path.to_string()
-    };
+    let expanded = crate::path_util::expand_tilde(path);
 
-    match std::fs::read_to_string(&expanded) {
+    match std::fs::read_to_string(expanded.as_ref()) {
         Ok(content) => {
             let token = content.lines().next().unwrap_or("").trim().to_string();
             if token.is_empty() {

@@ -6963,11 +6963,10 @@ crates:
 }
 
 #[test]
-fn test_builds_gobinary_field_is_rejected() {
-    // The Go-only `gobinary:` shim has been removed entirely (no serde alias,
-    // no back-compat capture). `BuildConfig` carries `deny_unknown_fields`, so a
-    // stray `gobinary:` is a hard parse error rather than being silently
-    // dropped — surfacing the removed field instead of swallowing it.
+fn test_builds_gobinary_field_is_accepted_and_ignored() {
+    // The Go-only `gobinary:` key is accepted as a back-compat alias and then
+    // ignored: imported configs carrying it must parse rather than hard-fail,
+    // but anodizer never acts on it (cargo is the only builder).
     let yaml = r#"
 project_name: test
 crates:
@@ -6978,12 +6977,10 @@ crates:
       - id: legacy
         gobinary: /usr/local/bin/go
 "#;
-    let err = serde_yaml_ng::from_str::<Config>(yaml)
-        .expect_err("gobinary: must be rejected as an unknown build field");
-    assert!(
-        err.to_string().contains("gobinary"),
-        "error should name the unknown field, got: {err}"
-    );
+    let config: Config = serde_yaml_ng::from_str(yaml)
+        .expect("gobinary: must parse as an accepted-but-ignored legacy field");
+    let build = &config.crates[0].builds.as_ref().unwrap()[0];
+    assert_eq!(build.gobinary.as_deref(), Some("/usr/local/bin/go"));
 }
 
 #[test]
@@ -7093,16 +7090,21 @@ fn test_nfpm_config_accepts_builds_alias_into_ids() {
 }
 
 #[test]
-fn test_installer_and_nfpm_configs_reject_renamed_goamd64() {
-    // `goamd64` was hard-renamed to `amd64_variant` across dmg/msi/nsis/nfpm.
-    let err = serde_yaml_ng::from_str::<super::DmgConfig>("goamd64: v3\n").unwrap_err();
-    assert!(err.to_string().contains("goamd64"), "dmg: {err}");
-    let err = serde_yaml_ng::from_str::<super::MsiConfig>("goamd64: v3\n").unwrap_err();
-    assert!(err.to_string().contains("goamd64"), "msi: {err}");
-    let err = serde_yaml_ng::from_str::<super::NsisConfig>("goamd64: v3\n").unwrap_err();
-    assert!(err.to_string().contains("goamd64"), "nsis: {err}");
-    let err = serde_yaml_ng::from_str::<super::NfpmConfig>("goamd64: [v3]\n").unwrap_err();
-    assert!(err.to_string().contains("goamd64"), "nfpm: {err}");
+fn test_installer_and_nfpm_configs_accept_legacy_goamd64_alias() {
+    // `goamd64` is accepted as a serde alias for `amd64_variant` across
+    // dmg/msi/nsis/nfpm so imported configs carrying the legacy spelling fold
+    // into the canonical field rather than hard-failing.
+    let dmg: super::DmgConfig = serde_yaml_ng::from_str("goamd64: v3\n").unwrap();
+    assert_eq!(dmg.amd64_variant.as_deref(), Some("v3"));
+    let msi: super::MsiConfig = serde_yaml_ng::from_str("goamd64: v3\n").unwrap();
+    assert_eq!(msi.amd64_variant.as_deref(), Some("v3"));
+    let nsis: super::NsisConfig = serde_yaml_ng::from_str("goamd64: v3\n").unwrap();
+    assert_eq!(nsis.amd64_variant.as_deref(), Some("v3"));
+    let nfpm: super::NfpmConfig = serde_yaml_ng::from_str("goamd64: [v3]\n").unwrap();
+    assert_eq!(
+        nfpm.amd64_variant.as_deref(),
+        Some(&[String::from("v3")][..])
+    );
 }
 
 #[test]

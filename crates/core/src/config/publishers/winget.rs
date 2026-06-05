@@ -98,8 +98,7 @@ pub struct WingetConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the WinGet publisher is
-    /// skipped. Render failure hard-errors. The
-    /// `winget[].if:`.
+    /// skipped. Render failure hard-errors. Config key: `winget[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }

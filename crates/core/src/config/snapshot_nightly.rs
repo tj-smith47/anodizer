@@ -24,7 +24,7 @@ pub struct SnapshotConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NightlyConfig {
     /// Template for the rendered version string the nightly run sets on
     /// `Version` / `RawVersion`. Default:
@@ -80,7 +80,7 @@ pub struct NightlyConfig {
 /// nightly tag/name) and deletes the older ones, including the git tags
 /// anodizer created for them.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RetentionConfig {
     /// Number of newest nightly releases to keep. `0` is treated as `1`
     /// (never delete every nightly), matching the `keep_single_release`

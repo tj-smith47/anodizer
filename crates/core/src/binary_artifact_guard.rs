@@ -135,6 +135,12 @@ fn binary_requiring_surfaces(krate: &CrateConfig) -> Vec<&'static str> {
     if has_entries(&krate.app_bundles) {
         surfaces.push("app_bundle");
     }
+    if binstall_enabled(krate) {
+        // binstall metadata points cargo-binstall at the release archives;
+        // a crate with no produced binary would write pkg-url / overrides for
+        // assets the release never uploads, so `cargo binstall` 404s.
+        surfaces.push("binstall");
+    }
 
     if let Some(publish) = &krate.publish {
         surfaces.extend(binary_requiring_publishers(publish));
@@ -175,11 +181,21 @@ fn has_entries<T>(field: &Option<Vec<T>>) -> bool {
     field.as_ref().is_some_and(|v| !v.is_empty())
 }
 
+/// `true` when a crate's `binstall:` block is present and `enabled: true`. A
+/// missing block, or one with `enabled` unset / `false`, declares no surface
+/// and must not arm the guard.
+fn binstall_enabled(krate: &CrateConfig) -> bool {
+    krate
+        .binstall
+        .as_ref()
+        .is_some_and(|b| b.enabled == Some(true))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::artifact::Artifact;
-    use crate::config::{DockerV2Config, ScoopConfig};
+    use crate::config::{BinstallConfig, DockerV2Config, ScoopConfig};
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -352,6 +368,96 @@ mod tests {
             .to_string();
         assert!(err.contains("crate 'svc'"), "{err}");
         assert!(err.contains("no binary artifacts"), "{err}");
+    }
+
+    #[test]
+    fn errors_when_binstall_enabled_but_no_binary() {
+        // A binstall-enabled crate with no produced binary would write
+        // pkg-url / overrides for assets the release never uploads (404).
+        // The guard must catch it like any other binary-requiring surface.
+        let mut krate = crate_named("tool");
+        krate.binstall = Some(BinstallConfig {
+            enabled: Some(true),
+            ..BinstallConfig::default()
+        });
+        let config = config_with(krate);
+
+        let mut artifacts = ArtifactRegistry::new();
+        artifacts.add(source_artifact("tool"));
+
+        let err = check(&config, &artifacts, &[], None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("crate 'tool'"), "{err}");
+        assert!(err.contains("binstall"), "{err}");
+        assert!(err.contains("no binary artifacts"), "{err}");
+    }
+
+    #[test]
+    fn binstall_enabled_with_binary_passes() {
+        let mut krate = crate_named("tool");
+        krate.binstall = Some(BinstallConfig {
+            enabled: Some(true),
+            ..BinstallConfig::default()
+        });
+        let config = config_with(krate);
+
+        let mut artifacts = ArtifactRegistry::new();
+        artifacts.add(binary_artifact("tool"));
+
+        check(&config, &artifacts, &[], None).expect("binstall + binary must pass");
+    }
+
+    #[test]
+    fn binstall_disabled_does_not_arm_guard() {
+        // `enabled: false` (or unset) declares no binstall surface; a
+        // library-shaped crate with a disabled binstall block must pass.
+        let mut krate = crate_named("lib");
+        krate.binstall = Some(BinstallConfig {
+            enabled: Some(false),
+            ..BinstallConfig::default()
+        });
+        let config = config_with(krate);
+
+        let mut artifacts = ArtifactRegistry::new();
+        artifacts.add(source_artifact("lib"));
+
+        check(&config, &artifacts, &[], None).expect("disabled binstall must not arm guard");
+    }
+
+    #[test]
+    fn binstall_enabled_per_crate_scoped_check() {
+        // Workspace per-crate mode: only the selected binstall crate is
+        // checked; a sibling binstall crate out of scope is untouched.
+        let mut bad = crate_named("bin-crate");
+        bad.binstall = Some(BinstallConfig {
+            enabled: Some(true),
+            ..BinstallConfig::default()
+        });
+        let mut other = crate_named("other");
+        other.binstall = Some(BinstallConfig {
+            enabled: Some(true),
+            ..BinstallConfig::default()
+        });
+        let config = Config {
+            crates: vec![bad, other],
+            ..Config::default()
+        };
+
+        let mut artifacts = ArtifactRegistry::new();
+        artifacts.add(source_artifact("bin-crate"));
+        artifacts.add(binary_artifact("other"));
+
+        // Selecting only the binary-having crate passes.
+        check(&config, &artifacts, &["other".to_string()], None)
+            .expect("in-scope binstall crate with a binary must pass");
+
+        // Selecting the binary-less binstall crate fires.
+        let err = check(&config, &artifacts, &["bin-crate".to_string()], None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("crate 'bin-crate'"), "{err}");
+        assert!(err.contains("binstall"), "{err}");
     }
 
     #[test]

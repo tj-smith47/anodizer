@@ -11,9 +11,8 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 
 /// Per-format distribution value. Accepts either a single distribution string
 /// (`deb: "ubuntu/focal"`) or an array of distribution slugs
-/// (`deb: ["ubuntu/focal", "ubuntu/jammy"]`) — the array form mirrors
-/// causes the publisher to issue one upload per
-/// distribution slug.
+/// (`deb: ["ubuntu/focal", "ubuntu/jammy"]`) — the array form causes the
+/// publisher to issue one upload per distribution slug.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum CloudSmithDistributions {
@@ -71,8 +70,7 @@ pub struct CloudSmithConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the CloudSmith publisher is
-    /// skipped. Render failure hard-errors. The
-    /// `cloudsmiths[].if:`.
+    /// skipped. Render failure hard-errors. Config key: `cloudsmiths[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }

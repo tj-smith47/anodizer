@@ -349,6 +349,15 @@ pub struct BuildConfig {
     /// Options for the `prebuilt` builder. Required when
     /// `builder: prebuilt`; ignored (with a config-load warning) otherwise.
     pub prebuilt: Option<PrebuiltConfig>,
+    /// Accepted-but-ignored legacy key. anodizer always drives the cargo
+    /// toolchain (or `cross` / `zigbuild`) directly, so there is no
+    /// pluggable build binary to point at. The field is parsed only so that
+    /// configs imported from a Go-style tool keep loading instead of
+    /// hard-failing under `deny_unknown_fields`; its value is never read.
+    /// Use `command:` to override the cargo subcommand instead.
+    #[doc(hidden)]
+    #[serde(default, skip_serializing)]
+    pub gobinary: Option<String>,
 }
 
 /// Pre/post hook configuration shared across multiple stages. Despite the
@@ -376,4 +385,36 @@ pub struct ArchiveHooksConfig {
     pub before: Option<Vec<HookEntry>>,
     /// Commands to run after the archive step.
     pub after: Option<Vec<HookEntry>>,
+}
+
+#[cfg(test)]
+mod legacy_field_tests {
+    use super::*;
+
+    /// An imported config carrying the removed Go-style `gobinary:` key must
+    /// still parse (accept-and-ignore) rather than hard-fail under
+    /// `deny_unknown_fields`. The value is captured but never read.
+    #[test]
+    fn build_gobinary_is_accepted_and_ignored() {
+        let build: BuildConfig =
+            serde_yaml_ng::from_str("binary: myapp\ngobinary: /usr/local/bin/go")
+                .expect("gobinary: must parse as an accepted-but-ignored legacy field");
+        assert_eq!(build.binary.as_deref(), Some("myapp"));
+        assert_eq!(build.gobinary.as_deref(), Some("/usr/local/bin/go"));
+    }
+
+    /// `gobinary` is parse-only and must not round-trip into serialized output
+    /// (it carries no behavior).
+    #[test]
+    fn build_gobinary_is_not_serialized() {
+        let build = BuildConfig {
+            gobinary: Some("/usr/local/bin/go".to_string()),
+            ..Default::default()
+        };
+        let yaml = serde_yaml_ng::to_string(&build).unwrap();
+        assert!(
+            !yaml.contains("gobinary"),
+            "gobinary must be skipped on serialize: {yaml}"
+        );
+    }
 }

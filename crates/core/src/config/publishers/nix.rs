@@ -71,8 +71,7 @@ pub struct NixConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the Nix publisher is
-    /// skipped. Render failure hard-errors. The
-    /// `nix[].if:`.
+    /// skipped. Render failure hard-errors. Config key: `nix[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }

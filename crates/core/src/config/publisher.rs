@@ -39,7 +39,6 @@ pub struct PublisherConfig {
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before publishing.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
-    /// Conditional-skip gate.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the publisher is skipped.

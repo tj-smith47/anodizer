@@ -85,8 +85,7 @@ pub struct HomebrewConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the Homebrew publisher is
-    /// skipped. Render failure hard-errors. The
-    /// `brews[].if:`.
+    /// skipped. Render failure hard-errors. Config key: `brews[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }
@@ -276,8 +275,7 @@ pub struct HomebrewCaskConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is
-    /// skipped. Render failure hard-errors. The
-    /// `homebrew_casks[].if:`.
+    /// skipped. Render failure hard-errors. Config key: `homebrew_casks[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }
@@ -486,8 +484,7 @@ pub struct ScoopConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the Scoop publisher is
-    /// skipped. Render failure hard-errors. The
-    /// `scoop[].if:`.
+    /// skipped. Render failure hard-errors. Config key: `scoop[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }

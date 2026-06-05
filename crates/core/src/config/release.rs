@@ -42,7 +42,6 @@ pub struct ReleaseConfig {
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before upload.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
-    /// Conditional-skip gate.
     ///
     /// Same path-traversal caveat as `extra_files`: `..` segments reach
     /// outside the project tree.
