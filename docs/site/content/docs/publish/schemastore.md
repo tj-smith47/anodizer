@@ -13,7 +13,7 @@ SchemaStore registration is always a PR with CI + human codeowner review — aut
 
 | Group | Required (default) | Rollback | Token scope |
 |---|---|---|---|
-| Manager | false (collapsed across `schemas[]`) | close PR (or `git revert` + push the fork branch) | `GITHUB_TOKEN pull_request:write` (fork push + upstream PR) |
+| Manager | false (collapsed across `schemas[]`) | close the PR (already-merged PRs need a manual revert — see [Rollback](#rollback)) | `GITHUB_TOKEN pull_request:write` (fork push + upstream PR) |
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Manager rollback semantics.
 
@@ -241,13 +241,23 @@ The schema's `$id` field must be an absolute `http(s)://` URL. Relative or urn-f
 
 ## Authentication
 
-Anodizer resolves a GitHub token from `repository.token`, or falls back to the `GITHUB_TOKEN` / `ANODIZER_FORCE_TOKEN` environment variables. The token needs push access to your fork (`contents:write`) and permission to open a pull request against the upstream `SchemaStore/schemastore` (`pull_request:write`).
+Anodizer resolves a GitHub token from the first source that is set, in this order:
+
+1. `repository.token` in the config
+2. `SCHEMASTORE_TOKEN` environment variable
+3. `ANODIZER_GITHUB_TOKEN` environment variable
+4. `GITHUB_TOKEN` environment variable
+
+The token needs push access to your fork (`contents:write`) and permission to open a pull request against the upstream `SchemaStore/schemastore` (`pull_request:write`).
 
 See the anodizer-action docs for how to wire the fork token in GitHub Actions alongside other publisher tokens.
 
 ## `skip` and `if`
 
-Both accept a bool or a Tera template string. The per-entry and block-level fields are OR-combined: if either is truthy, that schema is skipped.
+Both accept a bool or a Tera template string, but they combine differently:
+
+- **`skip`** (alias `disable`) is **OR-combined**: a schema is skipped if *either* the block-level `skip` or the entry-level `skip` is truthy.
+- **`if`** follows the normal **cascade**: a per-entry `if` condition overrides the block-level `if` entirely (it does not AND/OR with it). When only the block sets `if`, every entry inherits it; an entry that sets its own `if` uses only its own condition.
 
 ```yaml
 schemastore:
@@ -265,17 +275,22 @@ Before opening a PR, anodizer checks whether the upstream `SchemaStore/schemasto
 
 ## Rollback
 
-If the release fails after the SchemaStore PR is opened, anodizer closes it (and/or reverts the fork branch). Rollback is best-effort: if the PR was merged within the release window, closing is impossible. In that case a follow-up revert PR is required — anodizer logs a warning with the PR URL.
+If the release fails after the SchemaStore PR is opened, anodizer closes it (`PATCH state=closed`). Rollback is best-effort: if the PR was merged within the release window, closing cannot undo it. In that case a follow-up revert PR is required — anodizer logs a recommendation to open one manually (it does not open the revert PR for you).
 
 ## Dry-run
 
 `anodizer release --dry-run` renders the planned catalog diff (new or updated entries, any vendor files, `highSchemaVersion` additions) and logs the intended PR without cloning, committing, or pushing:
 
+The dry-run path does not fetch the upstream catalog, so each line reports the
+planned mode and URL (the verb is `register/refresh`, since no add/refresh
+verdict is computed without the catalog):
+
 ```
 $ anodizer release --dry-run
-[schemastore] would open PR: tj-smith47/schemastore → SchemaStore/schemastore:master
-[schemastore] catalog entry: ADD Anodizer (external, url=https://tj-smith47.github.io/anodizer/schema.json)
-[schemastore] catalog entry: ADD cfgd-config (vendor, src/schemas/json/cfgd-config.json)
+schemastore: would register/refresh `Anodizer` (external) → url https://tj-smith47.github.io/anodizer/schema.json
+schemastore: would register/refresh `cfgd-config` (vendor) → url https://www.schemastore.org/cfgd-config.json, vendor file src/schemas/json/cfgd-config.json
+schemastore: would register/refresh `cfgd-module` (vendor, versioned) → url https://www.schemastore.org/cfgd-module-1.2.3.json, vendor file src/schemas/json/cfgd-module-1.2.3.json
+schemastore: (dry-run) planned 3 schema registration(s); no PR opened
 ```
 
 ## Full end-to-end example
