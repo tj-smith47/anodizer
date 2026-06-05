@@ -378,3 +378,34 @@ pub fn hermetic_tagged_repo() -> tempfile::TempDir {
     anodizer_core::test_helpers::init_git_repo_with_commits(repo.path(), &["initial"]);
     repo
 }
+
+/// Create a throwaway git repo carrying an arbitrary set of tags and return its
+/// [`TempDir`] handle (kept alive by the caller).
+///
+/// Unlike [`hermetic_tagged_repo`] (one `v0.1.0` tag), this seeds each tag in
+/// `tags` onto the same initial commit so a workspace context with INDEPENDENT
+/// per-crate `tag_template`s can resolve each crate's own version through the
+/// production [`anodizer_core::crate_scope::resolve_crate_tag`] path. Pass tags
+/// that match each crate's rendered `tag_template`, e.g.
+/// `&["cfgd-core-v1.0.0", "cfgd-v2.0.0"]` for crates templated
+/// `cfgd-core-v{{ .Version }}` / `cfgd-v{{ .Version }}` — the disjoint prefixes
+/// keep each crate's regex from matching the sibling's tag.
+///
+/// `#[cfg(test)]`-only for the same reason as [`hermetic_tagged_repo`]:
+/// `init_git_repo_with_commits` is behind anodizer-core's dev-only
+/// `test-helpers` feature. The `git tag` spawns sit in a `#[cfg(test)]` helper,
+/// covered by the module-boundaries test exemption.
+#[cfg(test)]
+pub fn hermetic_repo_with_tags(tags: &[&str]) -> tempfile::TempDir {
+    let repo = tempfile::tempdir().expect("tempdir for hermetic per-crate repo");
+    anodizer_core::test_helpers::init_git_repo_with_commits(repo.path(), &["initial"]);
+    for tag in tags {
+        let status = std::process::Command::new("git")
+            .args(["tag", tag])
+            .current_dir(repo.path())
+            .status()
+            .unwrap_or_else(|e| panic!("git tag {tag}: {e}"));
+        assert!(status.success(), "git tag {tag} exited non-zero");
+    }
+    repo
+}

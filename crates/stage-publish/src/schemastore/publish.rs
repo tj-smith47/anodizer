@@ -1003,6 +1003,152 @@ mod tests {
         );
     }
 
+    // --- per-crate version scope across config modes --------------------
+    //
+    // A versioned vendor schema stamps `<VER>` from the SCHEMA'S OWN crate's
+    // tag — never crate[0]'s — in every config mode. The all-config-modes axis
+    // is the canonical anodizer bug surface (flat/clobbering/first-crate
+    // resolution), so each mode gets an executable proof. `plan_schema_scoped`
+    // drives the real `with_published_crate_scope` → `resolve_crate_tag` path
+    // against a git fixture, so a regression of the scope to crate[0] would
+    // change the asserted `<VER>` and fail the test.
+
+    /// Build a versioned vendor entry bound to `crate_name`.
+    fn versioned_vendor_entry(crate_name: &str) -> SchemaEntry {
+        SchemaEntry {
+            name: "cfgd-config".into(),
+            slug: Some("cfgd-config".into()),
+            file_match: vec!["cfgd.yaml".into()],
+            schema_file: Some("schemas/cfgd-config.schema.json".into()),
+            crate_: Some(crate_name.into()),
+            versioned: Some(true),
+            description: Some("cfgd machine configuration".into()),
+            ..Default::default()
+        }
+    }
+
+    fn crate_cfg(name: &str, tag_template: &str) -> anodizer_core::config::CrateConfig {
+        anodizer_core::config::CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: tag_template.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// The schema's crate (`cfgd`, tag `cfgd-v2.0.0` ⇒ 2.0.0) is the SECOND
+    /// crate; crate[0] is `cfgd-core` (tag `cfgd-core-v1.0.0` ⇒ 1.0.0). A
+    /// versioned vendor schema must stamp the bound crate's own version
+    /// (2.0.0) — if the scope regressed to crate[0], `<VER>` would be 1.0.0.
+    #[test]
+    fn per_crate_mode_stamps_schema_crate_version_not_crate_zero() {
+        // Independent per-crate tags on a hermetic repo so the production
+        // `resolve_crate_tag` path resolves each crate's OWN version.
+        let repo = crate::testing::hermetic_repo_with_tags(&["cfgd-core-v1.0.0", "cfgd-v2.0.0"]);
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                crate_cfg("cfgd-core", "cfgd-core-v{{ .Version }}"),
+                crate_cfg("cfgd", "cfgd-v{{ .Version }}"),
+            ])
+            .project_root(repo.path().to_path_buf())
+            .build();
+
+        let cfg = SchemastoreConfig::default();
+        let entry = versioned_vendor_entry("cfgd");
+        let plan = plan_schema_scoped(&mut ctx, &cfg, &entry, "cfgd machine configuration", None)
+            .expect("plan_schema_scoped for per-crate versioned vendor");
+
+        assert_eq!(
+            plan.url, "https://www.schemastore.org/cfgd-config-2.0.0.json",
+            "expected cfgd's own version 2.0.0 in the catalog url; \
+             a scope regressed to crate[0] would yield cfgd-core's 1.0.0"
+        );
+        assert_eq!(
+            plan.vendor_path.as_ref().unwrap(),
+            &PathBuf::from("src/schemas/json/cfgd-config-2.0.0.json"),
+            "expected the vendor filename stamped with cfgd's own 2.0.0"
+        );
+        assert!(
+            !plan.url.contains("1.0.0"),
+            "the schema's crate version (cfgd@2.0.0) must NOT be crate[0]'s \
+             (cfgd-core@1.0.0); url was {}",
+            plan.url
+        );
+        let versions = plan
+            .desired_entry
+            .get("versions")
+            .and_then(Value::as_object)
+            .expect("versioned entry carries a versions map");
+        assert!(
+            versions.contains_key("2.0.0"),
+            "versions map keyed by cfgd's own 2.0.0; got {versions:?}"
+        );
+        assert!(
+            !versions.contains_key("1.0.0"),
+            "versions map must NOT carry crate[0]'s 1.0.0; got {versions:?}"
+        );
+    }
+
+    /// Single-crate mode: one crate `mytool` tagged `v3.1.0`. A versioned
+    /// vendor schema (crate unset ⇒ defaults to the sole crate) stamps 3.1.0.
+    #[test]
+    fn single_crate_mode_stamps_sole_crate_version() {
+        let repo = crate::testing::hermetic_repo_with_tags(&["v3.1.0"]);
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_cfg("mytool", "v{{ .Version }}")])
+            .project_root(repo.path().to_path_buf())
+            .build();
+
+        let cfg = SchemastoreConfig::default();
+        // `crate` unset: `plan_schema_scoped` binds the version to the sole
+        // crate via the all_crates().first() fallback.
+        let mut entry = versioned_vendor_entry("mytool");
+        entry.crate_ = None;
+        let plan = plan_schema_scoped(&mut ctx, &cfg, &entry, "mytool configuration", None)
+            .expect("plan_schema_scoped for single-crate versioned vendor");
+
+        assert_eq!(
+            plan.url, "https://www.schemastore.org/cfgd-config-3.1.0.json",
+            "single-crate versioned vendor must stamp the sole crate's 3.1.0"
+        );
+        assert_eq!(
+            plan.vendor_path.as_ref().unwrap(),
+            &PathBuf::from("src/schemas/json/cfgd-config-3.1.0.json"),
+        );
+    }
+
+    /// Lockstep mode: two crates share ONE tag `v4.0.0`. A versioned schema
+    /// bound to the SECOND crate must still resolve the shared 4.0.0,
+    /// proving lockstep resolution is independent of which crate is named.
+    #[test]
+    fn lockstep_mode_stamps_shared_version_regardless_of_named_crate() {
+        // Both crates use the same `v{{ .Version }}` template, so the single
+        // `v4.0.0` tag resolves identically for either crate.
+        let repo = crate::testing::hermetic_repo_with_tags(&["v4.0.0"]);
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                crate_cfg("alpha", "v{{ .Version }}"),
+                crate_cfg("beta", "v{{ .Version }}"),
+            ])
+            .project_root(repo.path().to_path_buf())
+            .build();
+
+        let cfg = SchemastoreConfig::default();
+        let entry = versioned_vendor_entry("beta");
+        let plan = plan_schema_scoped(&mut ctx, &cfg, &entry, "beta configuration", None)
+            .expect("plan_schema_scoped for lockstep versioned vendor");
+
+        assert_eq!(
+            plan.url, "https://www.schemastore.org/cfgd-config-4.0.0.json",
+            "lockstep versioned vendor must stamp the shared 4.0.0 even for \
+             the second-named crate"
+        );
+        assert_eq!(
+            plan.vendor_path.as_ref().unwrap(),
+            &PathBuf::from("src/schemas/json/cfgd-config-4.0.0.json"),
+        );
+    }
+
     // --- evidence shape -------------------------------------------------
 
     #[test]
