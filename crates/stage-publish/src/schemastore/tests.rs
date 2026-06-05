@@ -285,6 +285,34 @@ fn add_high_schema_version_distinguishes_prefix_elements() {
     assert_eq!(arr.len(), 2);
 }
 
+/// A string value containing `//` (a URL) sits BEFORE the array and a
+/// URL-looking element sits inside it. A scanner that did not track string
+/// state would treat the `//` as a comment opener and desync, mislocating the
+/// array. This directly exercises the new entry point against the most likely
+/// real-world break (SchemaStore's file is full of `https://` URLs).
+#[test]
+fn add_high_schema_version_ignores_double_slash_in_string() {
+    let jsonc = "{\n  \"someUrl\": \"https://schemastore.org/x.json\",\n  \"highSchemaVersion\": [\n    \"https://elem/y.json\"\n  ]\n}\n";
+    let out = add_high_schema_version(jsonc, "cfgd-module").unwrap();
+    assert!(
+        out.contains("\"https://schemastore.org/x.json\""),
+        "sibling URL preserved"
+    );
+    assert!(
+        out.contains("\"https://elem/y.json\""),
+        "URL element preserved"
+    );
+    assert_eq!(
+        out.matches("\"cfgd-module\"").count(),
+        1,
+        "inserted exactly once"
+    );
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let arr = v["highSchemaVersion"].as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert!(arr.iter().any(|e| e == "cfgd-module"));
+}
+
 #[test]
 fn add_high_schema_version_handles_empty_array() {
     let jsonc = "{\n  \"highSchemaVersion\": []\n}\n";
@@ -293,6 +321,12 @@ fn add_high_schema_version_handles_empty_array() {
     let arr = v["highSchemaVersion"].as_array().unwrap();
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0], "cfgd-module");
+    // Formatting is pinned, not just JSON-validity: the key line is indented 2
+    // spaces, so the element lands at 4 and the closing `]` at 2 (prettier).
+    assert!(
+        out.contains("\n    \"cfgd-module\"\n  ]"),
+        "element at key-indent+2, closing ] at key-indent; got:\n{out}"
+    );
 }
 
 #[test]

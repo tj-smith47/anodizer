@@ -3,6 +3,7 @@
 
 pub(crate) mod catalog;
 pub(crate) mod manifest;
+pub(crate) mod scan;
 
 #[cfg(test)]
 mod tests;
