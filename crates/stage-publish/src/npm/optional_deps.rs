@@ -78,6 +78,18 @@ pub(crate) fn resolve_bin<'a>(cfg: &'a NpmConfig, metapackage: &'a str) -> &'a s
         .unwrap_or_else(|| metapackage.rsplit('/').next().unwrap_or(metapackage))
 }
 
+/// Tie-break rank for the not-libc-aware linux dedup: lower sorts first, and
+/// `dedup_by` keeps the first of each same-name run. glibc (rank 0) wins over
+/// musl (rank 1) so the retained single linux package is the broadest-
+/// compatibility build; any other/absent libc (rank 2) loses to both.
+fn libc_dedup_rank(libc: &str) -> u8 {
+    match libc {
+        "glibc" => 0,
+        "musl" => 1,
+        _ => 2,
+    }
+}
+
 /// Build the per-platform package name suffix from a triple, honouring
 /// `libc_aware`. With `libc_aware`, a linux package gains `-<libc>` so musl
 /// and glibc are distinct packages; without it the libc selector is dropped
@@ -276,7 +288,8 @@ process.exit(result.status === null ? 1 : result.status);
 /// `Binary`) artifacts, derives each one's npm triple from its target, and
 /// builds one per-platform package plus the metapackage. With `libc_aware`,
 /// linux musl and glibc binaries become distinct packages; without it they
-/// collapse to a single linux package per cpu (last one wins, deduped).
+/// collapse to a single linux package per cpu (the glibc build wins the dedup
+/// deterministically — see [`libc_dedup_rank`]).
 ///
 /// Errors when no platform binary maps to an npm triple — emitting an empty
 /// `optionalDependencies` set would make `npm install` of the metapackage
@@ -344,10 +357,21 @@ pub(crate) fn generate_layout(
     }
     warn_excluded_targets(log, &excluded);
 
-    platforms.sort_by(|a, b| a.name.cmp(&b.name));
+    // Sort by name, breaking ties on libc so the dedup below has a
+    // deterministic winner instead of one defined by artifact-insertion order.
+    // When not libc-aware, a linux musl and glibc binary share the same package
+    // name; `libc_dedup_rank` ranks glibc ahead of musl so `dedup_by` (which
+    // keeps the first of each run) always keeps the glibc binary. glibc is the
+    // broadest-compatibility default for a single fallback linux package.
+    platforms.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| libc_dedup_rank(&a.triple.libc).cmp(&libc_dedup_rank(&b.triple.libc)))
+    });
     // When not libc-aware, two linux binaries (musl + glibc) collapse to the
     // same package name; drop the duplicate so optionalDependencies has no
-    // colliding key.
+    // colliding key. The sort above guarantees glibc precedes musl, so the
+    // glibc binary is the one retained.
     platforms.dedup_by(|a, b| a.name == b.name);
 
     if platforms.is_empty() {

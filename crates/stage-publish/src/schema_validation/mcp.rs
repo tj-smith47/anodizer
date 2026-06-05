@@ -23,7 +23,7 @@
 use anodizer_core::context::Context;
 use anyhow::{Context as _, Result};
 
-use super::{PublisherSchemaValidator, SchemaFinding, validate_json};
+use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, validate_json};
 
 /// The MCP registry's vendored `server.json` schema (draft-07). Pinned to the
 /// `$schema` version anodizer stamps onto every published document
@@ -40,7 +40,15 @@ impl PublisherSchemaValidator for McpSchemaValidator {
         "mcp"
     }
 
-    fn validate(&self, ctx: &Context) -> Result<Vec<SchemaFinding>> {
+    fn validate(
+        &self,
+        ctx: &mut Context,
+        _resolve_tag: TagResolver<'_>,
+    ) -> Result<Vec<SchemaFinding>> {
+        // MCP is a single project-wide `server.json` (not per-crate), so it
+        // renders under the global version the stage scoped — no per-crate
+        // re-scope is needed; `_resolve_tag` is unused for this publisher.
+        //
         // `None` means the publisher is unconfigured / disabled (no `mcp.name`,
         // truthy `mcp.skip`, or falsy `mcp.if`) — nothing to render or validate.
         let Some(server) = crate::mcp::render_server_json(ctx)? else {
@@ -145,9 +153,14 @@ mod tests {
     /// each option where the registry schema expects it.
     #[test]
     fn every_option_validates_and_lands_in_fields() {
-        let ctx = ctx_with_mcp(every_option_mcp_cfg(), "1.0.0");
+        let mut ctx = ctx_with_mcp(every_option_mcp_cfg(), "1.0.0");
 
-        let findings = McpSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = McpSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "every-option server.json must conform, got: {findings:?}"
@@ -202,9 +215,14 @@ mod tests {
     #[test]
     fn version_axis_drives_the_document_and_validates() {
         for version in ["1.0.0", "2.3.4-alpha"] {
-            let ctx = ctx_with_mcp(every_option_mcp_cfg(), version);
+            let mut ctx = ctx_with_mcp(every_option_mcp_cfg(), version);
 
-            let findings = McpSchemaValidator.validate(&ctx).expect("validation runs");
+            let findings = McpSchemaValidator
+                .validate(
+                    &mut ctx,
+                    &crate::schema_validation::test_current_version_resolver(),
+                )
+                .expect("validation runs");
             assert!(
                 findings.is_empty(),
                 "server.json must conform under version {version}, got: {findings:?}"
@@ -231,8 +249,13 @@ mod tests {
     /// the live publish would skip.
     #[test]
     fn unconfigured_mcp_yields_no_findings() {
-        let ctx = ctx_with_mcp(McpConfig::default(), "1.0.0");
-        let findings = McpSchemaValidator.validate(&ctx).expect("validation runs");
+        let mut ctx = ctx_with_mcp(McpConfig::default(), "1.0.0");
+        let findings = McpSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "an unconfigured mcp block yields no findings, got: {findings:?}"
@@ -379,7 +402,12 @@ mod tests {
             .set_env("MCP_HOST", "mcp.acme.example");
         ctx.template_vars_mut().set_env("MCP_TOKEN", "s3cr3t");
 
-        let findings = McpSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = McpSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "a remote-transport server.json must conform, got: {findings:?}"

@@ -11,7 +11,32 @@
 //! until the swap lands.
 
 use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 use anodizer_core::{Publisher, PublisherGroup};
+
+/// Collapse a set of per-crate / per-entry `required` overrides into one
+/// publisher-level value, escalating to `true`.
+///
+/// `required` is a safety gate: when any crate (or any top-level entry) marks a
+/// publisher `required: true`, a failure there must fail the release — so a
+/// single `Some(true)` wins over every `Some(false)`. Returns `Some(false)`
+/// only when at least one override is present and none is `true`; `None` when
+/// no override is set anywhere (the publisher keeps its built-in default).
+///
+/// This replaces a first-non-None `find_map` collapse, under which an earlier
+/// crate's `required: false` would silently mask a later crate's `true` and
+/// drop the safety gate.
+fn collapse_required(overrides: impl Iterator<Item = Option<bool>>) -> Option<bool> {
+    let mut result: Option<bool> = None;
+    for o in overrides {
+        match o {
+            Some(true) => return Some(true),
+            Some(false) => result = Some(false),
+            None => {}
+        }
+    }
+    result
+}
 
 /// Returns the publishers configured for this release run.
 ///
@@ -37,120 +62,120 @@ use anodizer_core::{Publisher, PublisherGroup};
 pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     let mut v: Vec<Box<dyn Publisher>> = Vec::new();
     if is_cargo_configured(ctx) {
-        // First non-None across crates wins; cross-crate conflict is the
-        // config author's problem to resolve.
-        let req = ctx
-            .config
-            .crates
-            .iter()
-            .find_map(|c| c.publish.as_ref()?.cargo.as_ref()?.required);
+        // Escalate-to-true across crates: any crate's `required: true` wins.
+        let req = collapse_required(
+            ctx.config
+                .crates
+                .iter()
+                .map(|c| c.publish.as_ref().and_then(|p| p.cargo.as_ref()?.required)),
+        );
         v.push(Box::new(crate::cargo::CargoPublisher::with_required(req)));
     }
     // Assets group: dockerhub, artifactory, cloudsmith.
     // `blob` is also Assets-group but runs as its own `BlobStage` (see
     // doc on `configured_publishers` above for why it's not registered).
     if is_dockerhub_configured(ctx) {
-        // First non-None across `dockerhub:` entries wins.
-        let req = ctx
-            .config
-            .dockerhub
-            .as_ref()
-            .and_then(|v| v.iter().find_map(|c| c.required));
+        // Escalate-to-true across `dockerhub:` entries.
+        let req = collapse_required(ctx.config.dockerhub.iter().flatten().map(|c| c.required));
         v.push(Box::new(
             crate::dockerhub::DockerhubPublisher::with_required(req),
         ));
     }
     if is_artifactory_configured(ctx) {
-        // First non-None across `artifactories:` entries wins.
-        let req = ctx
-            .config
-            .artifactories
-            .as_ref()
-            .and_then(|v| v.iter().find_map(|c| c.required));
+        // Escalate-to-true across `artifactories:` entries.
+        let req = collapse_required(
+            ctx.config
+                .artifactories
+                .iter()
+                .flatten()
+                .map(|c| c.required),
+        );
         v.push(Box::new(
             crate::artifactory::ArtifactoryPublisher::with_required(req),
         ));
     }
     if is_cloudsmith_configured(ctx) {
-        // First non-None across `cloudsmiths:` entries wins.
-        let req = ctx
-            .config
-            .cloudsmiths
-            .as_ref()
-            .and_then(|v| v.iter().find_map(|c| c.required));
+        // Escalate-to-true across `cloudsmiths:` entries.
+        let req = collapse_required(ctx.config.cloudsmiths.iter().flatten().map(|c| c.required));
         v.push(Box::new(
             crate::cloudsmith::CloudsmithPublisher::with_required(req),
         ));
     }
     if is_github_release_configured(ctx) {
-        // First non-None across crates' `release.required` wins.
-        let req = ctx
-            .config
-            .crates
-            .iter()
-            .find_map(|c| c.release.as_ref()?.required);
+        // Escalate-to-true across crates' `release.required`.
+        let req = collapse_required(
+            ctx.config
+                .crates
+                .iter()
+                .map(|c| c.release.as_ref().and_then(|r| r.required)),
+        );
         v.push(Box::new(
             anodizer_stage_release::publisher::GithubReleasePublisher::with_required(req),
         ));
     }
     // Manager group — git-revert rollback against publisher-owned repo.
     if is_homebrew_configured(ctx) {
-        // First non-None across per-crate `publish.homebrew.required` wins;
-        // falls back to the first non-None across top-level `homebrew_casks:`
-        // entries so cask-only setups (no per-crate publish block) can still
-        // override the publisher's required default.
-        let req = ctx
+        // Escalate-to-true across per-crate `publish.homebrew.required` AND
+        // top-level `homebrew_casks:` entries: a `required: true` anywhere
+        // (formula or cask config) wins, so a cask-only setup with no per-crate
+        // publish block can still escalate the gate.
+        let per_crate = ctx.config.crates.iter().map(|c| {
+            c.publish
+                .as_ref()
+                .and_then(|p| p.homebrew.as_ref()?.required)
+        });
+        let casks = ctx
             .config
-            .crates
+            .homebrew_casks
             .iter()
-            .find_map(|c| c.publish.as_ref()?.homebrew.as_ref()?.required)
-            .or_else(|| {
-                ctx.config
-                    .homebrew_casks
-                    .as_ref()
-                    .and_then(|v| v.iter().find_map(|c| c.required))
-            });
+            .flatten()
+            .map(|c| c.required);
+        let req = collapse_required(per_crate.chain(casks));
         v.push(Box::new(
             crate::homebrew::publisher::HomebrewPublisher::with_required(req),
         ));
     }
     if is_scoop_configured(ctx) {
-        // First non-None across crates wins.
-        let req = ctx
-            .config
-            .crates
-            .iter()
-            .find_map(|c| c.publish.as_ref()?.scoop.as_ref()?.required);
+        // Escalate-to-true across crates.
+        let req = collapse_required(
+            ctx.config
+                .crates
+                .iter()
+                .map(|c| c.publish.as_ref().and_then(|p| p.scoop.as_ref()?.required)),
+        );
         v.push(Box::new(crate::scoop::ScoopPublisher::with_required(req)));
     }
     if is_nix_configured(ctx) {
-        // First non-None across crates wins.
-        let req = ctx
-            .config
-            .crates
-            .iter()
-            .find_map(|c| c.publish.as_ref()?.nix.as_ref()?.required);
+        // Escalate-to-true across crates.
+        let req = collapse_required(
+            ctx.config
+                .crates
+                .iter()
+                .map(|c| c.publish.as_ref().and_then(|p| p.nix.as_ref()?.required)),
+        );
         v.push(Box::new(
             crate::nix::publisher::NixPublisher::with_required(req),
         ));
     }
     if is_aur_configured(ctx) {
-        // First non-None across crates wins.
-        let req = ctx
-            .config
-            .crates
-            .iter()
-            .find_map(|c| c.publish.as_ref()?.aur.as_ref()?.required);
+        // Escalate-to-true across crates.
+        let req = collapse_required(
+            ctx.config
+                .crates
+                .iter()
+                .map(|c| c.publish.as_ref().and_then(|p| p.aur.as_ref()?.required)),
+        );
         v.push(Box::new(crate::aur::AurOurPublisher::with_required(req)));
     }
     // Manager group — close-PR / registry rollback.
     if is_krew_configured(ctx) {
-        // First non-None across crates wins.
-        let req = ctx
-            .config
-            .crates
-            .iter()
-            .find_map(|c| c.publish.as_ref()?.krew.as_ref()?.required);
+        // Escalate-to-true across crates.
+        let req = collapse_required(
+            ctx.config
+                .crates
+                .iter()
+                .map(|c| c.publish.as_ref().and_then(|p| p.krew.as_ref()?.required)),
+        );
         v.push(Box::new(crate::krew::KrewPublisher::with_required(req)));
     }
     if is_mcp_configured(ctx) {
@@ -161,61 +186,49 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
         ));
     }
     if is_npm_configured(ctx) {
-        // First non-None across `npms:` entries wins.
-        let req = ctx
-            .config
-            .npms
-            .as_ref()
-            .and_then(|v| v.iter().find_map(|c| c.required));
+        // Escalate-to-true across `npms:` entries.
+        let req = collapse_required(ctx.config.npms.iter().flatten().map(|c| c.required));
         v.push(Box::new(crate::npm::NpmPublisher::with_required(req)));
     }
     if is_gemfury_configured(ctx) {
-        // First non-None across `gemfury:` entries wins.
-        let req = ctx
-            .config
-            .gemfury
-            .as_ref()
-            .and_then(|v| v.iter().find_map(|c| c.required));
+        // Escalate-to-true across `gemfury:` entries.
+        let req = collapse_required(ctx.config.gemfury.iter().flatten().map(|c| c.required));
         v.push(Box::new(crate::gemfury::GemFuryPublisher::with_required(
             req,
         )));
     }
     // Submitter group (no programmatic rollback — warn-only).
     if is_chocolatey_configured(ctx) {
-        // First non-None across crates wins.
-        let req = ctx
-            .config
-            .crates
-            .iter()
-            .find_map(|c| c.publish.as_ref()?.chocolatey.as_ref()?.required);
+        // Escalate-to-true across crates.
+        let req = collapse_required(ctx.config.crates.iter().map(|c| {
+            c.publish
+                .as_ref()
+                .and_then(|p| p.chocolatey.as_ref()?.required)
+        }));
         v.push(Box::new(
             crate::chocolatey::ChocolateyPublisher::with_required(req),
         ));
     }
     if is_winget_configured(ctx) {
-        // First non-None across crates wins.
-        let req = ctx
-            .config
-            .crates
-            .iter()
-            .find_map(|c| c.publish.as_ref()?.winget.as_ref()?.required);
+        // Escalate-to-true across crates.
+        let req = collapse_required(
+            ctx.config
+                .crates
+                .iter()
+                .map(|c| c.publish.as_ref().and_then(|p| p.winget.as_ref()?.required)),
+        );
         v.push(Box::new(crate::winget::WingetPublisher::with_required(req)));
     }
     if crate::aur_source::is_aur_source_configured(ctx) {
-        // First non-None across per-crate `publish.aur_source.required` wins;
-        // falls back to the first non-None across top-level `aur_sources:`
-        // entries.
-        let req = ctx
-            .config
-            .crates
-            .iter()
-            .find_map(|c| c.publish.as_ref()?.aur_source.as_ref()?.required)
-            .or_else(|| {
-                ctx.config
-                    .aur_sources
-                    .as_ref()
-                    .and_then(|v| v.iter().find_map(|c| c.required))
-            });
+        // Escalate-to-true across per-crate `publish.aur_source.required` AND
+        // top-level `aur_sources:` entries: a `required: true` anywhere wins.
+        let per_crate = ctx.config.crates.iter().map(|c| {
+            c.publish
+                .as_ref()
+                .and_then(|p| p.aur_source.as_ref()?.required)
+        });
+        let top = ctx.config.aur_sources.iter().flatten().map(|c| c.required);
+        let req = collapse_required(per_crate.chain(top));
         v.push(Box::new(
             crate::aur_source::AurSourcePublisher::with_required(req),
         ));
@@ -376,6 +389,57 @@ fn is_github_release_configured(ctx: &Context) -> bool {
         .iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .any(|c| c.release.is_some())
+}
+
+/// Warn when the GitHub release is made non-required (`release.required:
+/// false`) yet a publisher whose manifest points at the release's download URL
+/// is enabled.
+///
+/// homebrew, scoop, and krew render install manifests that link to the GitHub
+/// release assets. With `release.required: false`, a release-upload failure is
+/// non-fatal — so those manifests can still ship pointing at a release URL that
+/// 404s, silently breaking `brew install` / `scoop install` / `kubectl krew
+/// install` for end users. The operator should see this coupling before the
+/// run rather than discover it from a bug report.
+///
+/// Routed through the reporter (`log.warn`), never `eprintln!`.
+pub fn warn_release_optional_with_dependent_publisher(ctx: &Context, log: &StageLogger) {
+    if !is_github_release_configured(ctx) {
+        return;
+    }
+    let release_required = collapse_required(
+        ctx.config
+            .crates
+            .iter()
+            .map(|c| c.release.as_ref().and_then(|r| r.required)),
+    );
+    // Only warn on an EXPLICIT opt-out. `None` keeps the publisher default and
+    // is not a deliberate weakening of the gate.
+    if release_required != Some(false) {
+        return;
+    }
+
+    let mut dependents: Vec<&str> = Vec::new();
+    if is_homebrew_configured(ctx) {
+        dependents.push("homebrew");
+    }
+    if is_scoop_configured(ctx) {
+        dependents.push("scoop");
+    }
+    if is_krew_configured(ctx) {
+        dependents.push("krew");
+    }
+    if dependents.is_empty() {
+        return;
+    }
+
+    log.warn(&format!(
+        "release.required is false but release-URL-dependent publisher(s) [{}] are enabled: \
+         if the GitHub release upload fails it will not fail the run, yet these manifests will \
+         still ship pointing at a release URL that 404s. Set release.required: true (or verify \
+         the release succeeds) before relying on those installers.",
+        dependents.join(", ")
+    ));
 }
 
 /// Group dispatch order: Assets first (uploadable bytes, server-side
@@ -1013,26 +1077,30 @@ mod tests {
     }
 
     #[test]
-    fn config_required_first_non_none_across_crates_wins() {
+    fn config_required_escalates_to_true_across_crates() {
         use anodizer_core::config::{HomebrewConfig, RepositoryConfig};
-        // Two crates with conflicting `required` settings. The walk uses
-        // `find_map`, so the FIRST crate with a non-None value wins.
-        // Order in `crates:` is the tiebreak; cross-crate conflict is the
-        // config author's problem to resolve.
+        // `required` is a safety gate: a later crate's `required: true` must NOT
+        // be masked by an earlier crate's `required: false`. The first crate
+        // (alpha) opts OUT, the second (beta) opts IN — the collapse must
+        // escalate to `true`. A first-non-None `find_map` would (wrongly)
+        // return alpha's `false` and drop the gate.
+        let homebrew = |required: bool| {
+            Some(HomebrewConfig {
+                repository: Some(RepositoryConfig {
+                    owner: Some("acme".to_string()),
+                    name: Some("homebrew-tap".to_string()),
+                    ..Default::default()
+                }),
+                required: Some(required),
+                ..Default::default()
+            })
+        };
         let alpha = CrateConfig {
             name: "alpha".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
-                homebrew: Some(HomebrewConfig {
-                    repository: Some(RepositoryConfig {
-                        owner: Some("acme".to_string()),
-                        name: Some("homebrew-tap".to_string()),
-                        ..Default::default()
-                    }),
-                    required: Some(true),
-                    ..Default::default()
-                }),
+                homebrew: homebrew(false),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1042,15 +1110,7 @@ mod tests {
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
-                homebrew: Some(HomebrewConfig {
-                    repository: Some(RepositoryConfig {
-                        owner: Some("acme".to_string()),
-                        name: Some("homebrew-tap".to_string()),
-                        ..Default::default()
-                    }),
-                    required: Some(false),
-                    ..Default::default()
-                }),
+                homebrew: homebrew(true),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1063,8 +1123,29 @@ mod tests {
             .expect("homebrew registered");
         assert!(
             p.required(),
-            "first non-None across crates wins — alpha's Some(true) takes precedence over beta's Some(false)"
+            "any crate's required:true must escalate the gate to true, even when an earlier crate said false"
         );
+    }
+
+    #[test]
+    fn collapse_required_escalates_true_over_false_and_handles_none() {
+        // true anywhere wins regardless of order.
+        assert_eq!(
+            collapse_required([Some(false), Some(true), Some(false)].into_iter()),
+            Some(true)
+        );
+        assert_eq!(
+            collapse_required([Some(true), Some(false)].into_iter()),
+            Some(true)
+        );
+        // All-false (with Nones interleaved) collapses to false.
+        assert_eq!(
+            collapse_required([None, Some(false), None].into_iter()),
+            Some(false)
+        );
+        // No override anywhere → None (publisher keeps its built-in default).
+        assert_eq!(collapse_required([None, None].into_iter()), None);
+        assert_eq!(collapse_required(std::iter::empty()), None);
     }
 
     #[test]
@@ -1157,6 +1238,115 @@ mod tests {
             !p.required(),
             "release.required = Some(false) must override the default true"
         );
+    }
+
+    #[test]
+    fn release_optional_warns_when_dependent_publisher_enabled() {
+        use anodizer_core::config::{
+            HomebrewConfig, ReleaseConfig, RepositoryConfig, ScmRepoConfig,
+        };
+        use anodizer_core::log::{StageLogger, Verbosity};
+        let crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            release: Some(ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: "acme".to_string(),
+                    name: "widget".to_string(),
+                }),
+                required: Some(false),
+                ..Default::default()
+            }),
+            publish: Some(PublishConfig {
+                homebrew: Some(HomebrewConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("homebrew-tap".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+        let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
+        warn_release_optional_with_dependent_publisher(&ctx, &log);
+        let warns = cap.warn_messages();
+        assert!(
+            warns
+                .iter()
+                .any(|m| m.contains("release.required is false") && m.contains("homebrew")),
+            "expected a release-optional warning naming homebrew, got: {warns:?}"
+        );
+    }
+
+    #[test]
+    fn release_optional_no_warn_without_dependent_publisher() {
+        use anodizer_core::config::{ReleaseConfig, ScmRepoConfig};
+        use anodizer_core::log::{StageLogger, Verbosity};
+        let crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            release: Some(ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: "acme".to_string(),
+                    name: "widget".to_string(),
+                }),
+                required: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+        let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
+        warn_release_optional_with_dependent_publisher(&ctx, &log);
+        assert_eq!(
+            cap.warn_count(),
+            0,
+            "no dependent publisher → no warning, got: {:?}",
+            cap.warn_messages()
+        );
+    }
+
+    #[test]
+    fn release_required_default_none_no_warn_even_with_dependent_publisher() {
+        use anodizer_core::config::{
+            HomebrewConfig, ReleaseConfig, RepositoryConfig, ScmRepoConfig,
+        };
+        use anodizer_core::log::{StageLogger, Verbosity};
+        // No explicit `required` (None) is not a deliberate opt-out → no warn.
+        let crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            release: Some(ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: "acme".to_string(),
+                    name: "widget".to_string(),
+                }),
+                ..Default::default()
+            }),
+            publish: Some(PublishConfig {
+                homebrew: Some(HomebrewConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("homebrew-tap".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+        let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
+        warn_release_optional_with_dependent_publisher(&ctx, &log);
+        assert_eq!(cap.warn_count(), 0, "None required is not an opt-out");
     }
 
     #[test]

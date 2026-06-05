@@ -277,10 +277,13 @@ fn multi_publisher_ctx(winget_publisher_url: &str) -> Context {
 /// clean as a unit. The whole pass returns `Ok(())`.
 #[test]
 fn all_publishers_with_valid_config_validate_clean_together() {
-    let ctx = multi_publisher_ctx("https://acme.example");
+    let mut ctx = multi_publisher_ctx("https://acme.example");
     let log = ctx.logger("publish");
 
-    validate_publisher_schemas(&ctx, &log)
+    // Fixed-tag resolver: single crate at the pre-scoped VERSION, so per-crate
+    // scoping resolves to the same version without a git fixture.
+    let resolver = |_: &Context, _: &CrateConfig| Some(VERSION.to_string());
+    validate_publisher_schemas(&mut ctx, &log, &resolver)
         .expect("every configured publisher's artifact validates clean together");
 }
 
@@ -292,10 +295,11 @@ fn all_publishers_with_valid_config_validate_clean_together() {
 /// defect rather than passing a release that would later be rejected.
 #[test]
 fn one_malformed_option_fails_loud_naming_publisher_and_field() {
-    let ctx = multi_publisher_ctx("not-a-url");
+    let mut ctx = multi_publisher_ctx("not-a-url");
     let log = ctx.logger("publish");
 
-    let err = validate_publisher_schemas(&ctx, &log)
+    let resolver = |_: &Context, _: &CrateConfig| Some(VERSION.to_string());
+    let err = validate_publisher_schemas(&mut ctx, &log, &resolver)
         .expect_err("a malformed winget publisher_url must fail the pass");
     let message = format!("{err:#}");
 

@@ -32,9 +32,9 @@
 /// Format a uniform "scope unavailable" warn line for the three
 /// call sites that consume `Publisher::rollback_scope_needed`
 /// (`rollback::run`, `rollback_only::run_with_publishers`,
-/// `preflight::run_publisher_preflight_extension`). Audit ref:
-/// B6 review M-7 + M-8 — three character-drifted messages
-/// collapsed into one source of truth.
+/// `preflight::run_publisher_preflight_extension`). Centralizing the
+/// wording keeps those three messages byte-identical — when each
+/// site formatted its own string they drifted character-by-character.
 ///
 /// `prefix` identifies the calling subsystem (`"rollback"`,
 /// `"rollback-only"`, `"preflight"`); `publisher` and `label` are

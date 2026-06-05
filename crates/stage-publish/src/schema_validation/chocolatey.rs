@@ -15,9 +15,9 @@
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 
-use super::{PublisherSchemaValidator, SchemaFinding};
+use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, with_validated_crate_scope};
 use crate::chocolatey::{is_chocolatey_per_crate_configured, render_nuspec_for_crate};
 
 /// The NuGet nuspec XML Schema, with the `{0}` namespace placeholders replaced
@@ -42,7 +42,11 @@ impl PublisherSchemaValidator for ChocolateySchemaValidator {
         "chocolatey"
     }
 
-    fn validate(&self, ctx: &Context) -> Result<Vec<SchemaFinding>> {
+    fn validate(
+        &self,
+        ctx: &mut Context,
+        resolve_tag: TagResolver<'_>,
+    ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
 
@@ -59,14 +63,20 @@ impl PublisherSchemaValidator for ChocolateySchemaValidator {
                 continue;
             }
 
-            // `None` means the publisher would skip this crate (skip / falsy
-            // `if`) — nothing to render or validate.
-            let Some(nuspec) = render_nuspec_for_crate(ctx, crate_name, &log)? else {
-                continue;
-            };
-
-            findings.extend(validate_nuspec_structural(&nuspec));
-            findings.extend(validate_nuspec_xmllint(&nuspec, &log)?);
+            // Render + validate under THIS crate's own version (workspace
+            // per-crate independent-version mode renders each crate's nuspec
+            // `<version>` against its own version, not the first crate's).
+            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
+                // `None` means the publisher would skip this crate (skip / falsy
+                // `if`) — nothing to render or validate.
+                let Some(nuspec) = render_nuspec_for_crate(ctx, crate_name, &log)? else {
+                    return Ok(Vec::new());
+                };
+                let mut out = validate_nuspec_structural(&nuspec);
+                out.extend(validate_nuspec_xmllint(&nuspec, &log)?);
+                Ok(out)
+            })?;
+            findings.extend(crate_findings);
         }
 
         Ok(findings)
@@ -177,53 +187,23 @@ pub(crate) fn validate_nuspec_structural(xml: &str) -> Vec<SchemaFinding> {
 /// `xmllint` is absent, log a `verbose` note and return no findings — the
 /// structural floor stands; a missing tool is never a manifest defect.
 fn validate_nuspec_xmllint(xml: &str, log: &StageLogger) -> Result<Vec<SchemaFinding>> {
-    if !anodizer_core::tool_detect::tool_available("xmllint").unwrap_or(false) {
-        log.verbose(
-            "chocolatey: xmllint not on PATH; relying on the structural nuspec floor \
-             for schema validation",
-        );
-        return Ok(Vec::new());
-    }
-
-    let dir = tempfile::tempdir().context("chocolatey: create temp dir for xmllint validation")?;
-    let xsd_path = dir.path().join("chocolatey.nuspec.xsd");
-    let nuspec_path = dir.path().join("package.nuspec");
-    std::fs::write(&xsd_path, NUSPEC_XSD).context("chocolatey: write vendored nuspec.xsd")?;
-    std::fs::write(&nuspec_path, xml).context("chocolatey: write rendered nuspec")?;
-
-    let output = std::process::Command::new("xmllint")
-        .arg("--noout")
-        .arg("--schema")
-        .arg(&xsd_path)
-        .arg(&nuspec_path)
-        .output()
-        .context("chocolatey: run xmllint")?;
-    if output.status.success() {
-        return Ok(Vec::new());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let mut findings = parse_xmllint_stderr(&stderr);
-    // A non-zero exit with no parseable validity line means the document is
-    // schema-invalid for a reason this parser didn't recognize (or xmllint
-    // itself errored). Returning an empty Vec here would silently report a
-    // failed validator as PASS, so surface a fallback finding carrying the raw
-    // stderr — a real failure must always surface.
-    if findings.is_empty() {
-        let trimmed = stderr.trim();
-        let expected = if trimmed.is_empty() {
-            "xmllint reported the nuspec schema-invalid but emitted no parseable validity line"
-                .to_string()
-        } else {
-            trimmed.to_string()
-        };
-        findings.push(SchemaFinding {
-            publisher: "chocolatey".to_string(),
-            field: "(root)".to_string(),
-            expected,
-        });
-    }
-    Ok(findings)
+    super::run_external_validator(
+        &super::ExternalValidator {
+            publisher: "chocolatey",
+            tool: "xmllint",
+            // Schema first, then the document — matches `--schema <xsd> <nuspec>`.
+            flags: &["--noout", "--schema"],
+            files: &[
+                ("chocolatey.nuspec.xsd", NUSPEC_XSD),
+                ("package.nuspec", xml),
+            ],
+            skip_message: "chocolatey: xmllint not on PATH; relying on the structural nuspec floor \
+                 for schema validation",
+            empty_fallback: "xmllint reported the nuspec schema-invalid but emitted no parseable validity line",
+        },
+        parse_xmllint_stderr,
+        log,
+    )
 }
 
 /// Parse `xmllint --schema` stderr into [`SchemaFinding`]s. Each validity
@@ -354,7 +334,10 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
 
         let findings = ChocolateySchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -460,7 +443,10 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
 
         let findings = ChocolateySchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -499,7 +485,10 @@ mod tests {
             .build();
         scope_version(&mut ctx_a, "2.0.0");
         let findings_a = ChocolateySchemaValidator
-            .validate(&ctx_a)
+            .validate(
+                &mut ctx_a,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_a.is_empty(),
@@ -518,7 +507,10 @@ mod tests {
             .build();
         scope_version(&mut ctx_b, "3.1.0");
         let findings_b = ChocolateySchemaValidator
-            .validate(&ctx_b)
+            .validate(
+                &mut ctx_b,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_b.is_empty(),
@@ -553,7 +545,10 @@ mod tests {
         );
 
         let findings = ChocolateySchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),

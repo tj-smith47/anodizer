@@ -69,6 +69,52 @@ pub(crate) fn effective_publish_crates(
         .collect()
 }
 
+/// Run a per-crate publisher body with the crate's OWN version/name/tag
+/// template vars in scope, restoring the prior scope afterward.
+///
+/// Every per-crate publisher (`winget`, `scoop`, `krew`, `homebrew`, `nix`,
+/// `aur`, `aur_source`, `chocolatey`) renders the crate's version into the
+/// manifest it pushes. `Context::populate_git_vars` derives the global
+/// `Version`/`Tag`/`ProjectName` from the FIRST crate's tag, so in workspace
+/// per-crate INDEPENDENT-version mode every sibling would inherit the first
+/// crate's version — an irreversible broken publish (each crate's manifest
+/// carrying the wrong version). Wrapping the publish call in
+/// [`anodizer_core::crate_scope::with_crate_scope`] re-scopes the vars to
+/// THIS crate's own tag for the duration of `body`, so each manifest renders
+/// under its own version. In single-crate / workspace-lockstep mode the
+/// per-crate tag resolves to the same version the global context already
+/// carries, so behavior is identical.
+///
+/// Fails loud when `crate_name` is absent from the crate universe, or when
+/// the crate has no resolvable tag matching its `tag_template`: a per-crate
+/// emission stamped with the wrong (first-crate) version ships a broken
+/// artifact, so the error must surface locally rather than be papered over.
+///
+/// `resolve_tag` is the per-crate tag source — production passes
+/// [`anodizer_core::crate_scope::resolve_crate_tag`]; tests inject a
+/// fixed-tag closure so the version dimension can be exercised without a git
+/// fixture.
+pub(crate) fn with_published_crate_scope<T>(
+    ctx: &mut anodizer_core::context::Context,
+    crate_name: &str,
+    resolve_tag: &dyn Fn(
+        &anodizer_core::context::Context,
+        &anodizer_core::config::CrateConfig,
+    ) -> Option<String>,
+    body: impl FnOnce(&mut anodizer_core::context::Context) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let crate_cfg = crate::util::all_crates(ctx)
+        .into_iter()
+        .find(|c| c.name == crate_name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "publish: crate '{crate_name}' selected for a per-crate emission \
+                 is not present in the crate universe"
+            )
+        })?;
+    anodizer_core::crate_scope::with_crate_scope(ctx, &crate_cfg, resolve_tag, body)
+}
+
 /// Canonical wording for a PR-based publisher's rollback failure warn line.
 ///
 /// PR-based rollbacks shell out to `git revert HEAD --no-edit` + `git push`.

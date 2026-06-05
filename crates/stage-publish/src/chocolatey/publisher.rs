@@ -191,15 +191,28 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             }
             processed += 1;
             log.status(&run_per_crate_start_message(crate_name));
-            // Snapshot the target shape BEFORE the publish path runs so
-            // a mid-publish failure still leaves the operator a manual
-            // withdrawal pointer — but only commit the snapshot if the
-            // publish actually pushed (returns Ok(true)). Recording a
-            // target for a skipped run produces a misleading
-            // "manual withdrawal required" warning at rollback time
+            // Re-scope the version/name template vars to THIS crate's own tag so
+            // the rendered nuspec — AND the recorded target version — carry the
+            // crate's version, not the first crate's (workspace per-crate
+            // independent-version mode).
+            //
+            // Snapshot the target shape BEFORE the publish path runs (inside the
+            // same scope) so a mid-publish failure still leaves the operator a
+            // manual withdrawal pointer whose version matches what is pushed —
+            // but only commit the snapshot if the publish actually pushed
+            // (returns Ok(true)). Recording a target for a skipped run produces
+            // a misleading "manual withdrawal required" warning at rollback time
             // for a package this run never submitted.
-            let snapshot = collect_chocolatey_target(ctx, crate_name);
-            let pushed = super::publish::publish_to_chocolatey(ctx, crate_name, &log)?;
+            let (pushed, snapshot) = crate::publisher_helpers::with_published_crate_scope(
+                ctx,
+                crate_name,
+                &anodizer_core::crate_scope::resolve_crate_tag,
+                |ctx| {
+                    let snapshot = collect_chocolatey_target(ctx, crate_name);
+                    let pushed = super::publish::publish_to_chocolatey(ctx, crate_name, &log)?;
+                    Ok((pushed, snapshot))
+                },
+            )?;
             if pushed && let Some(t) = snapshot {
                 targets.push(t);
             }

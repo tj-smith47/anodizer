@@ -171,7 +171,7 @@ pub fn publish_command(crate_name: &str, cfg: Option<&CargoPublishConfig>) -> Ve
 /// makes the invariant load-bearing — any caller passing a non-ASCII name
 /// would surface the violation in a debug build long before the slice
 /// could panic at runtime.
-fn sparse_index_url(crate_name: &str) -> String {
+pub(crate) fn sparse_index_url(crate_name: &str) -> String {
     debug_assert!(
         crate_name.is_ascii(),
         "cargo crate names must be ASCII; got {crate_name:?}"

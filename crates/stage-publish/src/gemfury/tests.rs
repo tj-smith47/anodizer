@@ -544,6 +544,98 @@ fn version_already_published_returns_false_on_404() {
     );
 }
 
+/// A non-404 HTTP error (registry outage) must FAIL CLOSED: the probe cannot
+/// prove the version is absent, so it bails rather than returning Ok(false)
+/// and green-lighting a push to a registry that is irreversible for up to 72h.
+#[test]
+#[serial_test::serial]
+fn version_already_published_bails_on_non_404() {
+    use super::publish::version_already_published;
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    let (api_addr, _calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+    ]);
+
+    let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(2))
+        .expect("http client");
+    let policy = anodizer_core::retry::RetryPolicy {
+        max_attempts: 1,
+        base_delay: std::time::Duration::from_millis(1),
+        max_delay: std::time::Duration::from_millis(1),
+    };
+    let log = anodizer_core::log::StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
+
+    unsafe {
+        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
+    }
+    let result = version_already_published(
+        &client,
+        "acme",
+        "demo",
+        "1.2.3",
+        "fake-push-token",
+        &policy,
+        &log,
+    );
+    unsafe {
+        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
+    }
+
+    let err = result.expect_err("non-404 probe must bail, not return Ok(false)");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("inconclusive non-404"),
+        "expected fail-closed diagnostic, got: {msg}"
+    );
+}
+
+/// A transport/connect failure (registry unreachable) must FAIL CLOSED for the
+/// same reason: an unproven absence cannot green-light an irreversible push.
+#[test]
+#[serial_test::serial]
+fn version_already_published_bails_on_transport_failure() {
+    use super::publish::version_already_published;
+    use std::net::TcpListener;
+
+    // Bind then drop the listener to obtain a port that refuses connections.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let dead_addr = listener.local_addr().expect("addr");
+    drop(listener);
+
+    let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(2))
+        .expect("http client");
+    let policy = anodizer_core::retry::RetryPolicy {
+        max_attempts: 1,
+        base_delay: std::time::Duration::from_millis(1),
+        max_delay: std::time::Duration::from_millis(1),
+    };
+    let log = anodizer_core::log::StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
+
+    unsafe {
+        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{dead_addr}"));
+    }
+    let result = version_already_published(
+        &client,
+        "acme",
+        "demo",
+        "1.2.3",
+        "fake-push-token",
+        &policy,
+        &log,
+    );
+    unsafe {
+        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
+    }
+
+    let err = result.expect_err("transport failure must bail, not return Ok(false)");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("inconclusive non-404"),
+        "expected fail-closed diagnostic, got: {msg}"
+    );
+}
+
 // -----------------------------------------------------------------------------
 // Idempotency: package-name derivation + 409/422 conflict-as-success
 // -----------------------------------------------------------------------------

@@ -15,9 +15,9 @@
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 
-use super::{PublisherSchemaValidator, SchemaFinding};
+use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, with_validated_crate_scope};
 use crate::homebrew::{
     CaskGenResult, crate_has_homebrew_archives, crate_has_macos_cask_artifact,
     is_homebrew_per_crate_configured, render_homebrew_cask_for_crate,
@@ -41,7 +41,11 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
         "homebrew"
     }
 
-    fn validate(&self, ctx: &Context) -> Result<Vec<SchemaFinding>> {
+    fn validate(
+        &self,
+        ctx: &mut Context,
+        resolve_tag: TagResolver<'_>,
+    ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
 
@@ -58,57 +62,69 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
                 continue;
             }
 
-            let hb_cfg = crate::util::all_crates(ctx)
-                .into_iter()
-                .find(|c| &c.name == crate_name)
-                .and_then(|c| c.publish)
-                .and_then(|p| p.homebrew);
+            // Render + validate the per-crate formula/cask under THIS crate's
+            // own version (workspace per-crate independent-version mode renders
+            // each crate's `version`/`url` against its own version, not the
+            // first crate's). The top-level `homebrew_casks:` loop below is
+            // project-wide and stays under the global scope.
+            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
+                let mut findings = Vec::new();
+                let hb_cfg = crate::util::all_crates(ctx)
+                    .into_iter()
+                    .find(|c| &c.name == crate_name)
+                    .and_then(|c| c.publish)
+                    .and_then(|p| p.homebrew);
 
-            // FORMULA path. A real release always builds at least one archive a
-            // formula can point at, but a sharded / single-target snapshot may
-            // build none for this crate. The presence probe is `bail!`-free and
-            // does NOT read url/sha256: when it reports a candidate exists, the
-            // render is called and ANY error propagates (`?`) — a present-but-
-            // broken artifact, a missing url/sha256, is a real defect to surface,
-            // not a skip. Only genuine artifact ABSENCE skips.
-            if let Some(hb_cfg) = hb_cfg.as_ref() {
-                if !crate_has_homebrew_archives(ctx, hb_cfg, crate_name) {
-                    log.verbose(&format!(
-                        "homebrew: crate '{}' produced no archive artifact in this snapshot \
-                         shard; skipping formula schema validation",
-                        crate_name
-                    ));
-                } else if let Some(rendered) =
-                    render_homebrew_formula_for_crate(ctx, crate_name, &log)?
-                {
-                    findings.extend(validate_ruby_structural(
-                        RubyKind::Formula,
-                        &rendered.formula,
-                    ));
-                    findings.extend(validate_ruby_syntax(&rendered.formula, &log)?);
+                // FORMULA path. A real release always builds at least one archive
+                // a formula can point at, but a sharded / single-target snapshot
+                // may build none for this crate. The presence probe is `bail!`-
+                // free and does NOT read url/sha256: when it reports a candidate
+                // exists, the render is called and ANY error propagates (`?`) — a
+                // present-but-broken artifact, a missing url/sha256, is a real
+                // defect to surface, not a skip. Only genuine artifact ABSENCE
+                // skips.
+                if let Some(hb_cfg) = hb_cfg.as_ref() {
+                    if !crate_has_homebrew_archives(ctx, hb_cfg, crate_name) {
+                        log.verbose(&format!(
+                            "homebrew: crate '{}' produced no archive artifact in this snapshot \
+                             shard; skipping formula schema validation",
+                            crate_name
+                        ));
+                    } else if let Some(rendered) =
+                        render_homebrew_formula_for_crate(ctx, crate_name, &log)?
+                    {
+                        findings.extend(validate_ruby_structural(
+                            RubyKind::Formula,
+                            &rendered.formula,
+                        ));
+                        findings.extend(validate_ruby_syntax(&rendered.formula, &log)?);
+                    }
+
+                    // SAME-TAP CASK path. The render needs a macOS artifact. Gate
+                    // the not-applicable skip on darwin-artifact PRESENCE, then
+                    // call the render and propagate any `Err` — a missing
+                    // url/sha256 on a present artifact is a real defect, not a
+                    // not-applicable skip.
+                    if hb_cfg.cask.is_some()
+                        && crate_has_macos_cask_artifact(ctx, crate_name)
+                        && let Some(cask) =
+                            render_same_tap_cask_for_crate(ctx, hb_cfg, crate_name, &log)?
+                    {
+                        validate_cask_and_versioned(&mut findings, &cask, &log)?;
+                    }
                 }
 
-                // SAME-TAP CASK path. The render needs a macOS artifact. Gate
-                // the not-applicable skip on darwin-artifact PRESENCE, then call
-                // the render and propagate any `Err` — a missing url/sha256 on a
-                // present artifact is a real defect, not a not-applicable skip.
-                if hb_cfg.cask.is_some()
-                    && crate_has_macos_cask_artifact(ctx, crate_name)
-                    && let Some(cask) =
-                        render_same_tap_cask_for_crate(ctx, hb_cfg, crate_name, &log)?
+                // STANDALONE CASK path. Same darwin-presence gate over a render
+                // whose `Err` propagates: a present-but-broken macOS artifact
+                // must surface, only true absence skips.
+                if crate_has_macos_cask_artifact(ctx, crate_name)
+                    && let Some(cask) = render_homebrew_cask_for_crate(ctx, crate_name, &log)?
                 {
                     validate_cask_and_versioned(&mut findings, &cask, &log)?;
                 }
-            }
-
-            // STANDALONE CASK path. Same darwin-presence gate over a render
-            // whose `Err` propagates: a present-but-broken macOS artifact must
-            // surface, only true absence skips.
-            if crate_has_macos_cask_artifact(ctx, crate_name)
-                && let Some(cask) = render_homebrew_cask_for_crate(ctx, crate_name, &log)?
-            {
-                validate_cask_and_versioned(&mut findings, &cask, &log)?;
-            }
+                Ok(findings)
+            })?;
+            findings.extend(crate_findings);
         }
 
         // Top-level `homebrew_casks:` (not per-crate). Empty when unconfigured
@@ -298,58 +314,50 @@ fn validate_cask_structural(ruby: &str) -> Vec<SchemaFinding> {
 /// skip marker and return no findings — the structural floor stands; a missing
 /// tool is never a manifest defect.
 fn validate_ruby_syntax(ruby: &str, log: &StageLogger) -> Result<Vec<SchemaFinding>> {
-    if !anodizer_core::tool_detect::tool_available("ruby").unwrap_or(false) {
-        log.verbose(
-            "homebrew: ruby not on PATH; relying on the structural Ruby floor for \
-             syntax validation",
-        );
-        return Ok(Vec::new());
-    }
-
-    let dir = tempfile::tempdir().context("homebrew: create temp dir for ruby -c validation")?;
-    let ruby_path = dir.path().join("artifact.rb");
-    std::fs::write(&ruby_path, ruby).context("homebrew: write rendered ruby for ruby -c")?;
-
-    let output = std::process::Command::new("ruby")
-        .arg("-c")
-        .arg(&ruby_path)
-        .output()
-        .context("homebrew: run ruby -c")?;
-    if output.status.success() {
-        return Ok(Vec::new());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let mut findings = parse_ruby_c_stderr(&stderr);
-    // A non-zero exit with no parseable syntax line means ruby rejected the
-    // file for a reason this parser didn't recognize (or ruby itself errored).
-    // Returning an empty Vec here would silently report a failed validator as
-    // PASS, so surface a fallback finding carrying the raw stderr.
-    if findings.is_empty() {
-        let trimmed = stderr.trim();
-        let expected = if trimmed.is_empty() {
-            "ruby -c reported the generated Ruby invalid but emitted no parseable diagnostic"
-                .to_string()
-        } else {
-            trimmed.to_string()
-        };
-        findings.push(finding("(root)", &expected));
-    }
-    Ok(findings)
+    super::run_external_validator(
+        &super::ExternalValidator {
+            publisher: "homebrew",
+            tool: "ruby",
+            flags: &["-c"],
+            files: &[(RUBY_TEMP_NAME, ruby)],
+            skip_message: "homebrew: ruby not on PATH; relying on the structural Ruby floor for \
+                 syntax validation",
+            empty_fallback: "ruby -c reported the generated Ruby invalid but emitted no parseable diagnostic",
+        },
+        parse_ruby_c_stderr,
+        log,
+    )
 }
+
+/// Filename the rendered Ruby is written to for `ruby -c`. `parse_ruby_c_stderr`
+/// anchors on this exact name to read the line number out of each diagnostic,
+/// so the two must agree.
+const RUBY_TEMP_NAME: &str = "artifact.rb";
 
 /// Parse `ruby -c` stderr into [`SchemaFinding`]s. A syntax error line has the
 /// shape `<file>:<line>: <message>` (e.g.
 /// `artifact.rb:14: syntax error, unexpected …`); the line number becomes the
 /// finding field and the message its expectation. Lines without a `:<digits>:`
 /// position (continuation / caret lines) are ignored.
+///
+/// The `<file>` prefix is the full tempfile path, which on Windows begins with a
+/// drive-letter colon (`C:\…\artifact.rb`); splitting on the first `:` would
+/// take `C` as the file and `\…\artifact.rb` as the line number, corrupting
+/// every diagnostic. So the parser anchors on the known filename marker
+/// (`artifact.rb:`) and reads the digits after it — robust to any path shape
+/// ruby emits. A line lacking that marker falls through, letting the caller's
+/// raw-stderr fallback surface the failure.
 fn parse_ruby_c_stderr(stderr: &str) -> Vec<SchemaFinding> {
+    // Derived from RUBY_TEMP_NAME so a rename of the written file can't silently
+    // desync the parser's anchor.
+    let marker = format!("{RUBY_TEMP_NAME}:");
     stderr
         .lines()
         .filter_map(|line| {
-            // Split off the leading `<file>:` then a `<line>:` numeric position.
-            let (_file, rest) = line.split_once(':')?;
-            let (lineno, msg) = rest.split_once(':')?;
+            // Anchor on the LAST `<file>:` occurrence so a directory component
+            // that happens to repeat the filename does not mis-split.
+            let after = &line[line.rfind(&marker)? + marker.len()..];
+            let (lineno, msg) = after.split_once(':')?;
             let lineno = lineno.trim();
             if lineno.is_empty() || !lineno.chars().all(|c| c.is_ascii_digit()) {
                 return None;
@@ -465,7 +473,10 @@ mod tests {
         add_macos_archive(&mut ctx, "widget", "1.0.0");
 
         let findings = HomebrewSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -555,7 +566,10 @@ mod tests {
         add_macos_archive(&mut ctx, "beta", "1.0.0");
 
         let findings = HomebrewSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -607,7 +621,10 @@ mod tests {
         scope_version(&mut ctx_a, "2.0.0");
         add_macos_archive(&mut ctx_a, "alpha", "2.0.0");
         let findings_a = HomebrewSchemaValidator
-            .validate(&ctx_a)
+            .validate(
+                &mut ctx_a,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_a.is_empty(),
@@ -630,7 +647,10 @@ mod tests {
         scope_version(&mut ctx_b, "3.1.0");
         add_macos_archive(&mut ctx_b, "beta", "3.1.0");
         let findings_b = HomebrewSchemaValidator
-            .validate(&ctx_b)
+            .validate(
+                &mut ctx_b,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_b.is_empty(),
@@ -662,7 +682,10 @@ mod tests {
         // No archive artifact at all in this shard.
 
         let findings = HomebrewSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs without erroring on the absent archive");
         assert!(
             findings.is_empty(),
@@ -694,7 +717,10 @@ mod tests {
         );
 
         let findings = HomebrewSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -811,6 +837,39 @@ end
             findings[0].expected.contains("syntax error"),
             "expectation carries the diagnostic, got: {}",
             findings[0].expected
+        );
+    }
+
+    /// A Windows temp path carries a drive-letter colon (`C:\…\artifact.rb`).
+    /// Splitting on the first `:` would read `C` as the file and `\…` as the
+    /// line number; anchoring on the `artifact.rb:` marker must still recover
+    /// the real line number.
+    #[test]
+    fn ruby_c_stderr_keeps_line_number_for_windows_drive_path() {
+        let stderr =
+            "C:\\Users\\runner\\Temp\\abc\\artifact.rb:14: syntax error, unexpected end-of-input\n";
+        let findings = parse_ruby_c_stderr(stderr);
+        assert_eq!(findings.len(), 1, "one syntax line, got: {findings:?}");
+        assert_eq!(
+            findings[0].field, "line 14",
+            "the drive-letter colon must not corrupt the line number"
+        );
+        assert!(
+            findings[0].expected.contains("syntax error"),
+            "expectation carries the diagnostic, got: {}",
+            findings[0].expected
+        );
+    }
+
+    /// A line with no `artifact.rb:` marker (no recognizable position) is
+    /// dropped, leaving the caller's raw-stderr fallback to surface the failure.
+    #[test]
+    fn ruby_c_stderr_drops_lines_without_the_filename_marker() {
+        let stderr = "ruby: No such file or directory -- /nope (LoadError)\n";
+        let findings = parse_ruby_c_stderr(stderr);
+        assert!(
+            findings.is_empty(),
+            "no filename marker means no parsed finding, got: {findings:?}"
         );
     }
 
@@ -956,7 +1015,10 @@ end
         }]);
 
         let findings = HomebrewSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -1015,7 +1077,10 @@ end
         );
 
         let findings = HomebrewSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -1087,7 +1152,10 @@ end
         );
 
         let findings = HomebrewSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs without erroring");
         assert!(
             findings.is_empty(),
@@ -1127,7 +1195,10 @@ end
             size: None,
         });
 
-        let result = HomebrewSchemaValidator.validate(&ctx);
+        let result = HomebrewSchemaValidator.validate(
+            &mut ctx,
+            &crate::schema_validation::test_current_version_resolver(),
+        );
         let err = result.expect_err(
             "a present-but-broken archive (missing sha256) must surface as an error, \
              not a silent skip",

@@ -966,10 +966,25 @@ impl anodizer_core::Publisher for AurSourcePublisher {
             if !is_aur_source_per_crate_configured(ctx, crate_name) {
                 continue;
             }
-            if let Some(t) = collect_aur_source_per_crate_target(ctx, crate_name) {
+            // Re-scope the version/name template vars to THIS crate's own tag so
+            // the rendered PKGBUILD `pkgver` — AND the recorded source tag —
+            // carry the crate's version, not the first crate's (workspace
+            // per-crate independent-version mode). The target snapshot is taken
+            // inside the same scope so its recorded `tag` matches what is pushed.
+            let (pushed, target) = crate::publisher_helpers::with_published_crate_scope(
+                ctx,
+                crate_name,
+                &anodizer_core::crate_scope::resolve_crate_tag,
+                |ctx| {
+                    let target = collect_aur_source_per_crate_target(ctx, crate_name);
+                    let pushed = publish_to_aur_source(ctx, crate_name, &log)?;
+                    Ok((pushed, target))
+                },
+            )?;
+            any_pushed |= pushed;
+            if let Some(t) = target {
                 targets.push(t);
             }
-            any_pushed |= publish_to_aur_source(ctx, crate_name, &log)?;
         }
         // Top-level aur_sources array (project-wide).
         let top_level_targets = collect_aur_source_top_level_targets(ctx);

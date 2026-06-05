@@ -30,7 +30,10 @@ use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use serde_json::Value;
 
-use super::{PublisherSchemaValidator, SchemaFinding, validate_json, yaml_to_json};
+use super::{
+    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_json,
+    with_validated_crate_scope, yaml_to_json,
+};
 
 /// nfpm's own config schema (draft 2020-12), pinned to the nfpm version
 /// `crates/stage-nfpm` targets. Embedded so the primary layer is fully
@@ -58,7 +61,11 @@ impl PublisherSchemaValidator for NfpmSchemaValidator {
         "nfpm"
     }
 
-    fn validate(&self, ctx: &Context) -> Result<Vec<SchemaFinding>> {
+    fn validate(
+        &self,
+        ctx: &mut Context,
+        resolve_tag: TagResolver<'_>,
+    ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
 
@@ -74,27 +81,34 @@ impl PublisherSchemaValidator for NfpmSchemaValidator {
                 continue;
             }
 
-            // One rendered config per (config × target × format). An empty Vec
-            // means there is nothing to validate — the configs were all
-            // `if:`-suppressed / format-less, the `ids` filter admitted none,
-            // or no packaging-eligible artifact was built for the crate in this
-            // snapshot shard (the same shard-tolerance cases the build skips).
-            let configs = anodizer_stage_nfpm::nfpm_yaml_configs_for_crate(ctx, crate_name)?;
-            if configs.is_empty() {
-                log.verbose(&format!(
-                    "nfpm: crate '{}' produced no nfpm config in this snapshot \
-                     shard (skipped or no eligible artifact); skipping schema validation",
-                    crate_name
-                ));
-                continue;
-            }
-
-            for cfg in &configs {
-                let value = yaml_to_json(&cfg.yaml)?;
-                findings.extend(validate_json("nfpm", &value, NFPM_SCHEMA)?);
-            }
-
-            findings.extend(validate_built_packages(ctx, crate_name, &configs, &log)?);
+            // Render + validate under THIS crate's own version (workspace
+            // per-crate independent-version mode renders each crate's nfpm
+            // `version` against its own version, not the first crate's).
+            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
+                let mut out = Vec::new();
+                // One rendered config per (config × target × format). An empty Vec
+                // means there is nothing to validate — the configs were all
+                // `if:`-suppressed / format-less, the `ids` filter admitted none,
+                // or no packaging-eligible artifact was built for the crate in
+                // this snapshot shard (the same shard-tolerance cases the build
+                // skips).
+                let configs = anodizer_stage_nfpm::nfpm_yaml_configs_for_crate(ctx, crate_name)?;
+                if configs.is_empty() {
+                    log.verbose(&format!(
+                        "nfpm: crate '{}' produced no nfpm config in this snapshot \
+                         shard (skipped or no eligible artifact); skipping schema validation",
+                        crate_name
+                    ));
+                    return Ok(out);
+                }
+                for cfg in &configs {
+                    let value = yaml_to_json(&cfg.yaml)?;
+                    out.extend(validate_json("nfpm", &value, NFPM_SCHEMA)?);
+                }
+                out.extend(validate_built_packages(ctx, crate_name, &configs, &log)?);
+                Ok(out)
+            })?;
+            findings.extend(crate_findings);
         }
 
         Ok(findings)
@@ -612,7 +626,12 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
         add_linux_binary(&mut ctx, "widget", "widget");
 
-        let findings = NfpmSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = NfpmSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "every-option single-crate nfpm configs must conform, got: {findings:?}"
@@ -679,7 +698,12 @@ mod tests {
         add_linux_binary(&mut ctx, "alpha", "alpha");
         add_linux_binary(&mut ctx, "beta", "beta");
 
-        let findings = NfpmSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = NfpmSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "lockstep workspace nfpm configs must conform, got: {findings:?}"
@@ -717,7 +741,10 @@ mod tests {
         scope_version(&mut ctx_a, "2.0.0");
         add_linux_binary(&mut ctx_a, "alpha", "alpha");
         let findings_a = NfpmSchemaValidator
-            .validate(&ctx_a)
+            .validate(
+                &mut ctx_a,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_a.is_empty(),
@@ -740,7 +767,10 @@ mod tests {
         scope_version(&mut ctx_b, "3.1.0");
         add_linux_binary(&mut ctx_b, "beta", "beta");
         let findings_b = NfpmSchemaValidator
-            .validate(&ctx_b)
+            .validate(
+                &mut ctx_b,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_b.is_empty(),
@@ -771,7 +801,12 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
         add_linux_binary_on_target(&mut ctx, "widget", "widget", "aarch64-unknown-linux-gnu");
 
-        let findings = NfpmSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = NfpmSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "aarch64 nfpm configs must conform, got: {findings:?}"
@@ -819,7 +854,12 @@ mod tests {
             deb.yaml
         );
 
-        let findings = NfpmSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = NfpmSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "an arch_variant-bearing config must conform to the v2.46.3 schema, \
@@ -832,7 +872,7 @@ mod tests {
     /// render an empty config.
     #[test]
     fn crate_without_eligible_binary_is_skipped_not_failed() {
-        let ctx = TestContextBuilder::new()
+        let mut ctx = TestContextBuilder::new()
             .snapshot(true)
             .project_name("widget")
             .crates(vec![nfpm_crate(
@@ -843,7 +883,10 @@ mod tests {
             .build();
 
         let findings = NfpmSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs without erroring on the absent binary");
         assert!(
             findings.is_empty(),
@@ -867,7 +910,12 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
         add_linux_binary(&mut ctx, "widget", "widget");
 
-        let findings = NfpmSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = NfpmSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "a falsy-`if` config must be skipped, got: {findings:?}"
@@ -911,7 +959,12 @@ mod tests {
             size: None,
         });
 
-        let findings = NfpmSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = NfpmSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "an unbuilt predicted package must not trip the gated layer, got: {findings:?}"

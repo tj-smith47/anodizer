@@ -57,7 +57,7 @@ impl PreflightChecker for CargoCratesIo {
     }
 
     fn check(&self, package: &str, version: &str) -> PublisherState {
-        let url = sparse_index_url(package);
+        let url = crate::cargo::sparse_index_url(package);
         match query_crates_io(&url, package, version, &self.policy) {
             Ok(true) => PublisherState::Published,
             Ok(false) => PublisherState::Clean,
@@ -66,18 +66,6 @@ impl PreflightChecker for CargoCratesIo {
             },
         }
     }
-}
-
-/// Build the sparse-index URL for a crate name (mirrors `cargo.rs`).
-fn sparse_index_url(crate_name: &str) -> String {
-    let lower = crate_name.to_ascii_lowercase();
-    let prefix = match lower.len() {
-        1 => format!("1/{}", lower),
-        2 => format!("2/{}", lower),
-        3 => format!("3/{}/{}", &lower[..1], lower),
-        _ => format!("{}/{}/{}", &lower[..2], &lower[2..4], lower),
-    };
-    format!("https://index.crates.io/{}", prefix)
 }
 
 /// Returns `Ok(true)` when the version is in the sparse index, `Ok(false)`

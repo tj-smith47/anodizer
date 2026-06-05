@@ -114,7 +114,15 @@ fn validate_snapshot_emissions_with_resolver(
     // structural defects the per-field asset cross-checks above cannot — a
     // manifest that omits a registry-required key or carries a wrong-typed value
     // would be rejected at submission, only after a real release uploaded it.
-    crate::schema_validation::validate_publisher_schemas(ctx, log)?;
+    //
+    // Each validator scopes its OWN per-crate render to that crate's version/
+    // name/tag (via `with_crate_scope`, the same resolver the cross-checks use)
+    // so a per-crate manifest is validated against the version a real release
+    // would stamp — matching what the live publish path now renders. Cross-crate
+    // aggregation (the nix root flake) stays under the global scope since it is
+    // version-independent. The resolver is threaded through so tests can drive
+    // the version dimension without a git fixture.
+    crate::schema_validation::validate_publisher_schemas(ctx, log, resolve_tag)?;
 
     Ok(())
 }

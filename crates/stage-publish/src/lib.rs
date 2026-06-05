@@ -267,7 +267,7 @@ pub fn write_report_to_run_dir(ctx: &Context, log: &StageLogger) {
         }
     };
 
-    if let Err(e) = std::fs::write(&path, &text) {
+    if let Err(e) = anodizer_core::fs_atomic::atomic_write_str(&path, &text) {
         log.warn(&format!(
             "publish: failed to write run-report to {}: {}",
             path.display(),
@@ -830,6 +830,10 @@ impl Stage for PublishStage {
         // `configured_publishers` is the single source of truth for
         // which publishers run.
         let publishers = registry::configured_publishers(ctx);
+        // Surface the release-optional + dependent-manifest-publisher coupling
+        // before any publisher fires (a manifest pointing at a 404 release URL
+        // ships silently otherwise).
+        registry::warn_release_optional_with_dependent_publisher(ctx, &log);
         Self::run_with_publishers(ctx, &log, &publishers)?;
 
         // ---- Best-effort rollback dispatch ----

@@ -13,7 +13,9 @@
 use anodizer_core::context::Context;
 use anyhow::Result;
 
-use super::{PublisherSchemaValidator, SchemaFinding, validate_json};
+use super::{
+    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_json, with_validated_crate_scope,
+};
 use crate::scoop::{
     crate_has_scoop_artifacts, is_scoop_per_crate_configured, render_scoop_manifest_for_crate,
 };
@@ -31,7 +33,11 @@ impl PublisherSchemaValidator for ScoopSchemaValidator {
         "scoop"
     }
 
-    fn validate(&self, ctx: &Context) -> Result<Vec<SchemaFinding>> {
+    fn validate(
+        &self,
+        ctx: &mut Context,
+        resolve_tag: TagResolver<'_>,
+    ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
 
@@ -67,15 +73,21 @@ impl PublisherSchemaValidator for ScoopSchemaValidator {
                 continue;
             }
 
-            // `None` means the publisher would skip this crate
-            // (skip_upload / falsy `if`) — nothing to validate.
-            let Some(manifest) = render_scoop_manifest_for_crate(ctx, crate_name, &log)? else {
-                continue;
-            };
-
-            let value: serde_json::Value = serde_json::from_str(&manifest)
-                .map_err(|e| anyhow::anyhow!("scoop: rendered manifest is not valid JSON: {e}"))?;
-            findings.extend(validate_json("scoop", &value, SCOOP_SCHEMA)?);
+            // Render + validate under THIS crate's own version (workspace
+            // per-crate independent-version mode renders each crate's manifest
+            // against its own version, not the first crate's).
+            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
+                // `None` means the publisher would skip this crate
+                // (skip_upload / falsy `if`) — nothing to validate.
+                let Some(manifest) = render_scoop_manifest_for_crate(ctx, crate_name, &log)? else {
+                    return Ok(Vec::new());
+                };
+                let value: serde_json::Value = serde_json::from_str(&manifest).map_err(|e| {
+                    anyhow::anyhow!("scoop: rendered manifest is not valid JSON: {e}")
+                })?;
+                validate_json("scoop", &value, SCOOP_SCHEMA)
+            })?;
+            findings.extend(crate_findings);
         }
 
         Ok(findings)
@@ -236,7 +248,10 @@ mod tests {
         add_windows_zip(&mut ctx, "widget", "widget");
 
         let findings = ScoopSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -320,7 +335,10 @@ mod tests {
         add_windows_zip(&mut ctx, "beta", "beta");
 
         let findings = ScoopSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -360,7 +378,10 @@ mod tests {
         scope_version(&mut ctx_a, "2.0.0");
         add_windows_zip(&mut ctx_a, "alpha", "alpha");
         let findings_a = ScoopSchemaValidator
-            .validate(&ctx_a)
+            .validate(
+                &mut ctx_a,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_a.is_empty(),
@@ -383,7 +404,10 @@ mod tests {
         scope_version(&mut ctx_b, "3.1.0");
         add_windows_zip(&mut ctx_b, "beta", "beta");
         let findings_b = ScoopSchemaValidator
-            .validate(&ctx_b)
+            .validate(
+                &mut ctx_b,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_b.is_empty(),
@@ -430,7 +454,10 @@ mod tests {
         });
 
         let findings = ScoopSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs without erroring on the absent Windows artifact");
         assert!(
             findings.is_empty(),
@@ -483,10 +510,15 @@ mod tests {
             size: None,
         });
 
-        let err = ScoopSchemaValidator.validate(&ctx).expect_err(
-            "a present-but-broken Windows archive (missing sha256) must surface as an \
+        let err = ScoopSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect_err(
+                "a present-but-broken Windows archive (missing sha256) must surface as an \
              error, not a silent skip",
-        );
+            );
         assert!(
             format!("{err:#}").contains("sha256"),
             "the surfaced error must name the missing sha256, got: {err:#}"
@@ -586,7 +618,10 @@ mod tests {
         add_windows_zip_with_id(&mut ctx, "widget", "extra", "sneaky");
 
         let findings = ScoopSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),

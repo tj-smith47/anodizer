@@ -233,10 +233,19 @@ pub(crate) fn resolve_formats(cfg: &GemFuryConfig) -> Vec<String> {
     }
 }
 
-/// Probe Fury for an already-published `<package>@<version>`. Returns
-/// `Ok(true)` when the version is present, `Ok(false)` when 404 or any
-/// other transient/spawn failure (so the publish path still runs and
-/// surfaces the real error).
+/// Probe Fury for an already-published `<package>@<version>`.
+///
+/// Returns `Ok(true)` when the version is present, `Ok(false)` only on a
+/// definitive `404` (the version genuinely does not exist on Fury).
+///
+/// Fail-closed on an inconclusive probe: a transport/connect failure or any
+/// non-404 HTTP shape (5xx, auth failure, rate-limit) surfaces an `Err`
+/// rather than `Ok(false)`. A Fury push can be irreversible for up to 72h
+/// after upload, so a probe that *cannot prove* the version is absent must
+/// not green-light the push — assuming "not published" on an outage would
+/// re-push over an existing version the moment the registry recovers. The
+/// caller aborts this artifact's push and records the failure for the
+/// operator instead.
 ///
 /// Endpoint: `GET https://api.fury.io/<account>/packages/<name>/versions/<version>`.
 /// HTTP Basic auth (push token as username).
@@ -277,21 +286,29 @@ pub(crate) fn version_already_published(
         Ok((status, _body)) => Ok(status.is_success() || status.is_redirection()),
         Err(err) => {
             // Walk the anyhow chain looking for the wrapped HTTP status.
-            // 404 is the documented "not present" response — surface as
-            // `false` so the publish path proceeds; any other shape is
-            // unknown and we still default to `false` so the publish runs
-            // (the actual upload will surface the real failure).
+            // 404 is the documented "not present" response — the only shape
+            // that proves the version is absent, surfaced as `false` so the
+            // publish proceeds. Any other shape (5xx, auth, rate-limit) or a
+            // transport failure leaves presence UNKNOWN; bail rather than
+            // publish blind to a registry that is irreversible for up to 72h.
             let status_in_chain: Option<u16> = err
                 .chain()
                 .find_map(|e| e.downcast_ref::<HttpError>().map(|h| h.status));
             if matches!(status_in_chain, Some(404)) {
                 return Ok(false);
             }
-            log.verbose(&format!(
-                "gemfury: probe inconclusive for '{}@{}' ({}); proceeding with push",
-                package, version, err
+            log.warn(&format!(
+                "gemfury: idempotency probe for '{}@{}' was inconclusive (not a 404): {}; \
+                 refusing to publish blind to a registry that is irreversible for up to 72h — \
+                 retry once Fury is healthy",
+                package,
+                version,
+                redact_bearer_tokens(&format!("{err:#}"))
             ));
-            Ok(false)
+            Err(err.context(format!(
+                "gemfury: idempotency probe for '{}@{}' returned an inconclusive non-404 error",
+                package, version
+            )))
         }
     }
 }

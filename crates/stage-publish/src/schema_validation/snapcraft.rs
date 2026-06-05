@@ -18,7 +18,10 @@
 use anodizer_core::context::Context;
 use anyhow::Result;
 
-use super::{PublisherSchemaValidator, SchemaFinding, validate_json, yaml_to_json};
+use super::{
+    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_json,
+    with_validated_crate_scope, yaml_to_json,
+};
 
 /// The snap.yaml metadata schema (draft 2020-12), authored from snapd's own
 /// Go validators (`snap/validate.go` / `snap/info.go`) plus the snap-format
@@ -48,7 +51,11 @@ impl PublisherSchemaValidator for SnapcraftSchemaValidator {
         "snapcraft"
     }
 
-    fn validate(&self, ctx: &Context) -> Result<Vec<SchemaFinding>> {
+    fn validate(
+        &self,
+        ctx: &mut Context,
+        resolve_tag: TagResolver<'_>,
+    ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
 
@@ -68,29 +75,38 @@ impl PublisherSchemaValidator for SnapcraftSchemaValidator {
                 continue;
             }
 
-            // The render walk returns one snap.yaml per (config, target). An
-            // empty Vec means there is nothing to validate — the crate's
-            // configs were all `skip:`/`if:`-suppressed, or no Linux binary was
-            // built for it in this snapshot shard (the same shard-tolerance
-            // case the build's "no Linux binaries → skip" guard hits).
-            let yamls = anodizer_stage_snapcraft::snapcraft_snap_yamls_for_crate(ctx, crate_name)?;
-            if yamls.is_empty() {
-                log.verbose(&format!(
-                    "snapcraft: crate '{}' produced no snap.yaml in this snapshot \
-                     shard (skipped or no Linux binary); skipping schema validation",
-                    crate_name
-                ));
-                continue;
-            }
-
-            for yaml in &yamls {
-                let value = yaml_to_json(yaml)?;
-                findings.extend(validate_json(
-                    "snapcraft",
-                    &value,
-                    SNAPCRAFT_SNAP_YAML_SCHEMA,
-                )?);
-            }
+            // Render + validate under THIS crate's own version (workspace
+            // per-crate independent-version mode renders each crate's snap.yaml
+            // `version` against its own version, not the first crate's).
+            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
+                let mut out = Vec::new();
+                // The render walk returns one snap.yaml per (config, target). An
+                // empty Vec means there is nothing to validate — the crate's
+                // configs were all `skip:`/`if:`-suppressed, or no Linux binary
+                // was built for it in this snapshot shard (the same
+                // shard-tolerance case the build's "no Linux binaries → skip"
+                // guard hits).
+                let yamls =
+                    anodizer_stage_snapcraft::snapcraft_snap_yamls_for_crate(ctx, crate_name)?;
+                if yamls.is_empty() {
+                    log.verbose(&format!(
+                        "snapcraft: crate '{}' produced no snap.yaml in this snapshot \
+                         shard (skipped or no Linux binary); skipping schema validation",
+                        crate_name
+                    ));
+                    return Ok(out);
+                }
+                for yaml in &yamls {
+                    let value = yaml_to_json(yaml)?;
+                    out.extend(validate_json(
+                        "snapcraft",
+                        &value,
+                        SNAPCRAFT_SNAP_YAML_SCHEMA,
+                    )?);
+                }
+                Ok(out)
+            })?;
+            findings.extend(crate_findings);
         }
 
         Ok(findings)
@@ -237,7 +253,10 @@ mod tests {
         add_linux_binary(&mut ctx, "widget", "widget");
 
         let findings = SnapcraftSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -319,7 +338,10 @@ mod tests {
         add_linux_binary(&mut ctx, "beta", "beta");
 
         let findings = SnapcraftSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -361,7 +383,10 @@ mod tests {
         scope_version(&mut ctx_a, "2.0.0");
         add_linux_binary(&mut ctx_a, "alpha", "alpha");
         let findings_a = SnapcraftSchemaValidator
-            .validate(&ctx_a)
+            .validate(
+                &mut ctx_a,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_a.is_empty(),
@@ -385,7 +410,10 @@ mod tests {
         scope_version(&mut ctx_b, "3.1.0");
         add_linux_binary(&mut ctx_b, "beta", "beta");
         let findings_b = SnapcraftSchemaValidator
-            .validate(&ctx_b)
+            .validate(
+                &mut ctx_b,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_b.is_empty(),
@@ -407,14 +435,17 @@ mod tests {
     #[test]
     fn crate_without_linux_binary_is_skipped_not_failed() {
         let cfg = every_option_snap_cfg();
-        let ctx = TestContextBuilder::new()
+        let mut ctx = TestContextBuilder::new()
             .snapshot(true)
             .project_name("widget")
             .crates(vec![snap_crate("widget", "v{{ .Version }}", cfg)])
             .build();
         // No Linux binary artifact in this shard at all.
         let findings = SnapcraftSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs without erroring on the absent binary");
         assert!(
             findings.is_empty(),
@@ -448,7 +479,10 @@ mod tests {
             "an invalid-snap-arch-only crate renders no snap.yaml, got: {yamls:?}"
         );
         let findings = SnapcraftSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -473,7 +507,10 @@ mod tests {
         add_linux_binary(&mut ctx, "widget", "widget");
 
         let findings = SnapcraftSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),

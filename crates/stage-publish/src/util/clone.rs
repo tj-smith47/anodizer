@@ -108,15 +108,8 @@ pub(crate) fn clone_repo_ssh(
         // sibling directory to avoid conflicts with the clone itself.
         let key_dir = tmp_dir.parent().unwrap_or(tmp_dir);
         let key_path = key_dir.join(".anodizer_ssh_key");
-        std::fs::write(&key_path, key_content)
+        write_ssh_key_secure(&key_path, key_content)
             .with_context(|| format!("{label}: write SSH private key"))?;
-        // SSH requires the key file to be user-readable only.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("{label}: set SSH key permissions"))?;
-        }
         let built_ssh_cmd = format!(
             "ssh -i {} -o StrictHostKeyChecking=accept-new -F /dev/null",
             key_path.display()
@@ -148,6 +141,39 @@ pub(crate) fn clone_repo_ssh(
     }
 
     Ok(())
+}
+
+/// Write an SSH private key to `path` such that it is never world-readable,
+/// even for the instant between creation and the mode being applied.
+///
+/// On unix the file is created with mode `0o600` from the start via
+/// `OpenOptions::mode` + `create_new` — a plain `fs::write` followed by a
+/// `set_permissions` call would leave a credential-leak window during which
+/// the key sits at the umask default (commonly `0o644`, world-readable) on a
+/// shared CI runner. `create_new` also rejects an already-present path so a
+/// stale key left by an earlier run cannot be silently reused.
+fn write_ssh_key_secure(path: &Path, key_content: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(key_content.as_bytes())?;
+        f.flush()
+    }
+    #[cfg(not(unix))]
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        f.write_all(key_content.as_bytes())?;
+        f.flush()
+    }
 }
 
 /// Smart clone: decide between HTTPS and SSH based on RepositoryConfig.
@@ -433,6 +459,43 @@ mod tests {
         assert_eq!(mode, 0o600, "key file must be 0600 for ssh to accept it");
         let body = std::fs::read_to_string(&key_path).unwrap();
         assert_eq!(body, "FAKE-KEY-MATERIAL\n");
+    }
+
+    /// `write_ssh_key_secure` must never expose a world-readable window: the
+    /// file is created with `0o600` from the start. The helper applies no
+    /// separate `chmod`, so observing `0o600` immediately after creation
+    /// proves the mode was carried by `OpenOptions::mode` at `open` time
+    /// rather than relaxed-then-tightened the way a `fs::write` + chmod pair
+    /// would briefly leave it at the umask default (commonly `0o644`).
+    #[cfg(unix)]
+    #[test]
+    fn write_ssh_key_secure_creates_with_0600_at_open_time() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join(".anodizer_ssh_key");
+
+        write_ssh_key_secure(&key_path, "FAKE-KEY\n").expect("secure key write succeeds");
+
+        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "key file must be created at 0600 with no permissive window, got {mode:o}"
+        );
+        assert_eq!(std::fs::read_to_string(&key_path).unwrap(), "FAKE-KEY\n");
+    }
+
+    /// `create_new` semantics: an already-present key path is rejected rather
+    /// than silently truncated/reused, so a stale sidecar from an earlier run
+    /// cannot leak into a fresh clone.
+    #[cfg(unix)]
+    #[test]
+    fn write_ssh_key_secure_rejects_existing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join(".anodizer_ssh_key");
+        write_ssh_key_secure(&key_path, "first\n").expect("first write succeeds");
+        let err = write_ssh_key_secure(&key_path, "second\n")
+            .expect_err("second write must fail on an existing path");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
     }
 
     // ------------------------------------------------------------------

@@ -268,13 +268,25 @@ fn preflight_multi_format_unambiguous(
 }
 
 /// Probe the registry for an existing `<name>@<version>` publication via
-/// `npm view`. Returns `Ok(true)` when already published, `Ok(false)` on
-/// `E404` or any other failure shape (so a transient glitch doesn't block).
+/// `npm view`.
+///
+/// Returns `Ok(true)` when the version is already published, `Ok(false)` only
+/// on a definitive `E404` (the package/version genuinely does not exist).
+///
+/// Fail-closed on an inconclusive probe: a spawn failure or any non-404 error
+/// shape (registry 5xx, auth failure, network glitch) surfaces an `Err`
+/// rather than `Ok(false)`. An `npm publish` is irreversible after npm's 72h
+/// unpublish window, so a probe that *cannot prove* the version is absent must
+/// not green-light the publish — assuming "not published" on an outage would
+/// re-push over an existing version (or double-ship) the moment the registry
+/// recovers. The caller aborts this package's publish and records the failure
+/// for the operator instead.
 pub(crate) fn version_already_published(
     name: &str,
     version: &str,
     cfg_dir: &Path,
     registry: &str,
+    log: &StageLogger,
 ) -> Result<bool> {
     let mut cmd = Command::new("npm");
     cmd.arg("view")
@@ -288,7 +300,18 @@ pub(crate) fn version_already_published(
         .stderr(std::process::Stdio::piped());
     let out = match cmd.output() {
         Ok(o) => o,
-        Err(_) => return Ok(false),
+        Err(e) => {
+            log.warn(&format!(
+                "npm: could not probe '{}@{}' on {} (spawn failed: {}); \
+                 refusing to publish blind — fix the npm CLI and retry",
+                name, version, registry, e
+            ));
+            bail!(
+                "npm: idempotency probe for '{}@{}' failed to spawn npm view",
+                name,
+                version
+            );
+        }
     };
     if out.status.success() {
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -298,7 +321,20 @@ pub(crate) fn version_already_published(
     if stderr.contains("E404") {
         return Ok(false);
     }
-    Ok(false)
+    log.warn(&format!(
+        "npm: idempotency probe for '{}@{}' on {} was inconclusive (not a 404): {}; \
+         refusing to publish blind to a 72h-irreversible registry — retry once the \
+         registry is healthy",
+        name,
+        version,
+        registry,
+        anodizer_core::redact::redact_bearer_tokens(stderr.trim())
+    ));
+    bail!(
+        "npm: idempotency probe for '{}@{}' returned an inconclusive non-404 error",
+        name,
+        version
+    );
 }
 
 /// Classify an `npm publish` stderr blob as transient (worth retrying) vs.
@@ -456,12 +492,16 @@ pub fn publish_to_npm(
     }
 }
 
-/// `optional-deps` publish: pack + publish each per-platform package, then the
-/// metapackage last (so its `optionalDependencies` already resolve).
+/// `optional-deps` publish: stage every per-platform package + the metapackage
+/// FIRST, then publish them in order (metapackage last so its
+/// `optionalDependencies` already resolve).
 ///
-/// Each successful publish is pushed onto `targets` immediately, so a failure
-/// partway through the sequence leaves the already-published packages recorded
-/// for rollback rather than orphaning them.
+/// Staging up front reads each platform binary and packs its tarball before the
+/// first `npm publish` fires, so a missing/unbuilt binary aborts with nothing
+/// published instead of half-shipping the earlier platforms to a 72h-
+/// irreversible registry. Once publishing begins, each success is pushed onto
+/// `targets` immediately so a mid-sequence failure still records the already-
+/// live packages for rollback.
 fn publish_optional_deps(
     ctx: &Context,
     cfg: &NpmConfig,
@@ -502,22 +542,48 @@ fn publish_optional_deps(
 
     let policy = ctx.retry_policy();
 
-    // Per-platform packages first so the metapackage's optionalDependencies
-    // resolve at install time.
+    // Stage EVERY tarball (per-platform + metapackage) up front, BEFORE the
+    // first irreversible `npm publish`. Reading each platform binary and
+    // packing its tarball validates that all artifacts exist and assemble
+    // cleanly — so a missing binary for platform N aborts here with NOTHING
+    // published, rather than half-shipping platforms 1..N-1 to a registry
+    // whose unpublish window closes after 72h.
+    let mut staged_all: Vec<StagedTarball> = Vec::with_capacity(layout.platforms.len() + 1);
     for plat in &layout.platforms {
         let binary = fs::read(&plat.binary_src)
             .with_context(|| format!("npm: read binary {}", plat.binary_src.display()))?;
         let embedded = vec![(plat.binary_name.clone(), binary, 0o755u32)];
-        let staged = assemble_optional_deps_tarball(
+        staged_all.push(assemble_optional_deps_tarball(
             ctx,
             cfg,
             &plat.name,
             &version,
             &plat.package_json,
             &embedded,
-        )?;
+        )?);
+    }
+    // Metapackage staged last so it publishes last (its optionalDependencies
+    // must already resolve at install time).
+    let meta_embedded = vec![(
+        "shim.js".to_string(),
+        layout.shim_js.clone().into_bytes(),
+        0o755u32,
+    )];
+    staged_all.push(assemble_optional_deps_tarball(
+        ctx,
+        cfg,
+        &layout.metapackage,
+        &version,
+        &layout.metapackage_json,
+        &meta_embedded,
+    )?);
+
+    // All artifacts validated and staged — now publish in order (per-platform
+    // packages first, metapackage last). Each success is recorded immediately
+    // for rollback before the next attempt.
+    for staged in &staged_all {
         if let Some(t) = publish_one_tarball(
-            &staged,
+            staged,
             &version,
             &registry,
             &dist_tag,
@@ -529,34 +595,6 @@ fn publish_optional_deps(
         )? {
             targets.push(t);
         }
-    }
-
-    // Metapackage last.
-    let meta_embedded = vec![(
-        "shim.js".to_string(),
-        layout.shim_js.clone().into_bytes(),
-        0o755u32,
-    )];
-    let staged = assemble_optional_deps_tarball(
-        ctx,
-        cfg,
-        &layout.metapackage,
-        &version,
-        &layout.metapackage_json,
-        &meta_embedded,
-    )?;
-    if let Some(t) = publish_one_tarball(
-        &staged,
-        &version,
-        &registry,
-        &dist_tag,
-        &access,
-        cfg_dir.path(),
-        &policy,
-        cfg,
-        log,
-    )? {
-        targets.push(t);
     }
 
     Ok(())
@@ -642,7 +680,7 @@ fn publish_one_tarball(
     cfg: &NpmConfig,
     log: &StageLogger,
 ) -> Result<Option<NpmTarget>> {
-    if version_already_published(&staged.package, version, cfg_dir, registry)? {
+    if version_already_published(&staged.package, version, cfg_dir, registry, log)? {
         log.status(&format!(
             "npm: '{}@{}' already published to {} — skipping (idempotent re-run)",
             staged.package, version, registry

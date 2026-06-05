@@ -15,7 +15,10 @@
 use anodizer_core::context::Context;
 use anyhow::Result;
 
-use super::{PublisherSchemaValidator, SchemaFinding, validate_json, yaml_to_json};
+use super::{
+    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_json,
+    with_validated_crate_scope, yaml_to_json,
+};
 use crate::krew::{
     crate_has_krew_artifacts, is_krew_per_crate_configured, render_krew_manifest_for_crate,
 };
@@ -34,7 +37,11 @@ impl PublisherSchemaValidator for KrewSchemaValidator {
         "krew"
     }
 
-    fn validate(&self, ctx: &Context) -> Result<Vec<SchemaFinding>> {
+    fn validate(
+        &self,
+        ctx: &mut Context,
+        resolve_tag: TagResolver<'_>,
+    ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
 
@@ -71,14 +78,19 @@ impl PublisherSchemaValidator for KrewSchemaValidator {
                 continue;
             }
 
-            // `None` means the publisher would skip this crate
-            // (skip / skip_upload / falsy `if`) — nothing to validate.
-            let Some(manifest) = render_krew_manifest_for_crate(ctx, crate_name, &log)? else {
-                continue;
-            };
-
-            let value = yaml_to_json(&manifest)?;
-            findings.extend(validate_json("krew", &value, KREW_SCHEMA)?);
+            // Render + validate under THIS crate's own version (workspace
+            // per-crate independent-version mode renders each crate's manifest
+            // against its own version, not the first crate's).
+            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
+                // `None` means the publisher would skip this crate
+                // (skip / skip_upload / falsy `if`) — nothing to validate.
+                let Some(manifest) = render_krew_manifest_for_crate(ctx, crate_name, &log)? else {
+                    return Ok(Vec::new());
+                };
+                let value = yaml_to_json(&manifest)?;
+                validate_json("krew", &value, KREW_SCHEMA)
+            })?;
+            findings.extend(crate_findings);
         }
 
         Ok(findings)
@@ -213,7 +225,12 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
         add_linux_archive(&mut ctx, "widget", "kubectl-widget");
 
-        let findings = KrewSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = KrewSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "every-option single-crate manifest must conform, got: {findings:?}"
@@ -314,7 +331,12 @@ mod tests {
         add_linux_archive(&mut ctx, "alpha", "kubectl-alpha");
         add_linux_archive(&mut ctx, "beta", "kubectl-beta");
 
-        let findings = KrewSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = KrewSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "lockstep workspace manifests must conform, got: {findings:?}"
@@ -353,7 +375,10 @@ mod tests {
         scope_version(&mut ctx_a, "2.0.0");
         add_linux_archive(&mut ctx_a, "alpha", "kubectl-alpha");
         let findings_a = KrewSchemaValidator
-            .validate(&ctx_a)
+            .validate(
+                &mut ctx_a,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_a.is_empty(),
@@ -376,7 +401,10 @@ mod tests {
         scope_version(&mut ctx_b, "3.1.0");
         add_linux_archive(&mut ctx_b, "beta", "kubectl-beta");
         let findings_b = KrewSchemaValidator
-            .validate(&ctx_b)
+            .validate(
+                &mut ctx_b,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_b.is_empty(),
@@ -400,13 +428,16 @@ mod tests {
     #[test]
     fn crate_without_artifact_is_skipped_not_failed() {
         let cfg = every_option_krew_cfg();
-        let ctx = TestContextBuilder::new()
+        let mut ctx = TestContextBuilder::new()
             .snapshot(true)
             .crates(vec![krew_crate("widget", "v{{ .Version }}", cfg)])
             .build();
         // No archive artifact in this shard at all.
         let findings = KrewSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs without erroring on the absent artifact");
         assert!(
             findings.is_empty(),
@@ -591,7 +622,12 @@ mod tests {
         add_archive_with_id(&mut ctx, "widget", Some("main"), "kubectl-widget");
         add_archive_with_id(&mut ctx, "widget", Some("extra"), "sneaky");
 
-        let findings = KrewSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = KrewSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "the admitted-only manifest must conform, got: {findings:?}"

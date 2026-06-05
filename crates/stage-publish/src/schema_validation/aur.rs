@@ -19,9 +19,9 @@
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 
-use super::{PublisherSchemaValidator, SchemaFinding};
+use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, with_validated_crate_scope};
 use crate::aur::{
     AurRendered, crate_has_aur_linux_archive, is_aur_per_crate_configured,
     render_aur_pkgbuild_and_srcinfo_for_crate,
@@ -39,7 +39,11 @@ impl PublisherSchemaValidator for AurSchemaValidator {
         "aur"
     }
 
-    fn validate(&self, ctx: &Context) -> Result<Vec<SchemaFinding>> {
+    fn validate(
+        &self,
+        ctx: &mut Context,
+        resolve_tag: TagResolver<'_>,
+    ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
 
@@ -54,35 +58,43 @@ impl PublisherSchemaValidator for AurSchemaValidator {
                 continue;
             }
 
-            let aur_cfg = crate::util::all_crates(ctx)
-                .into_iter()
-                .find(|c| &c.name == crate_name)
-                .and_then(|c| c.publish)
-                .and_then(|p| p.aur);
+            // Render + validate under THIS crate's own version (workspace
+            // per-crate independent-version mode renders each crate's PKGBUILD
+            // `pkgver` against its own version, not the first crate's).
+            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
+                let mut out = Vec::new();
+                let aur_cfg = crate::util::all_crates(ctx)
+                    .into_iter()
+                    .find(|c| &c.name == crate_name)
+                    .and_then(|c| c.publish)
+                    .and_then(|p| p.aur);
 
-            // A real release always builds at least one Linux archive the
-            // PKGBUILD points at, but a sharded / single-target snapshot may
-            // build none for this crate. The probe distinguishes ABSENCE from
-            // ERROR: a clean `Ok(false)` (no artifact matched) skips, while a
-            // matched-but-broken artifact (missing sha256) propagates as `Err`
-            // via the `?` — the same defect the live publish path bails on —
-            // rather than being silently skipped.
-            if let Some(aur_cfg) = aur_cfg.as_ref()
-                && !crate_has_aur_linux_archive(ctx, aur_cfg, crate_name)?
-            {
-                log.verbose(&format!(
-                    "aur: crate '{}' produced no linux archive in this snapshot shard; \
-                     skipping binary PKGBUILD schema validation",
-                    crate_name
-                ));
-                continue;
-            }
+                // A real release always builds at least one Linux archive the
+                // PKGBUILD points at, but a sharded / single-target snapshot may
+                // build none for this crate. The probe distinguishes ABSENCE from
+                // ERROR: a clean `Ok(false)` (no artifact matched) skips, while a
+                // matched-but-broken artifact (missing sha256) propagates as
+                // `Err` via the `?` — the same defect the live publish path bails
+                // on — rather than being silently skipped.
+                if let Some(aur_cfg) = aur_cfg.as_ref()
+                    && !crate_has_aur_linux_archive(ctx, aur_cfg, crate_name)?
+                {
+                    log.verbose(&format!(
+                        "aur: crate '{}' produced no linux archive in this snapshot shard; \
+                         skipping binary PKGBUILD schema validation",
+                        crate_name
+                    ));
+                    return Ok(out);
+                }
 
-            if let Some(rendered) =
-                render_aur_pkgbuild_and_srcinfo_for_crate(ctx, crate_name, &log)?
-            {
-                validate_rendered(&mut findings, &rendered, &log)?;
-            }
+                if let Some(rendered) =
+                    render_aur_pkgbuild_and_srcinfo_for_crate(ctx, crate_name, &log)?
+                {
+                    validate_rendered(&mut out, &rendered, &log)?;
+                }
+                Ok(out)
+            })?;
+            findings.extend(crate_findings);
         }
 
         // SOURCE AUR per-crate (`publish.aur_source`). No built-artifact gate —
@@ -97,11 +109,17 @@ impl PublisherSchemaValidator for AurSchemaValidator {
             if !is_aur_source_per_crate_configured(ctx, crate_name) {
                 continue;
             }
-            if let Some(rendered) =
-                render_aur_source_pkgbuild_and_srcinfo_for_crate(ctx, crate_name, &log)?
-            {
-                validate_rendered(&mut findings, &rendered, &log)?;
-            }
+            // Render + validate under THIS crate's own version.
+            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
+                let mut out = Vec::new();
+                if let Some(rendered) =
+                    render_aur_source_pkgbuild_and_srcinfo_for_crate(ctx, crate_name, &log)?
+                {
+                    validate_rendered(&mut out, &rendered, &log)?;
+                }
+                Ok(out)
+            })?;
+            findings.extend(crate_findings);
         }
 
         // Top-level `aur_sources:` array (not per-crate). Empty when unset or
@@ -298,44 +316,19 @@ pub(crate) fn validate_srcinfo_structural(text: &str) -> Vec<SchemaFinding> {
 /// visible skip marker and return no findings — the structural floor stands; a
 /// missing tool is never a manifest defect.
 fn validate_pkgbuild_syntax(pkgbuild: &str, log: &StageLogger) -> Result<Vec<SchemaFinding>> {
-    if !anodizer_core::tool_detect::tool_available("bash").unwrap_or(false) {
-        log.verbose(
-            "aur: bash not on PATH; relying on the structural PKGBUILD floor for \
-             syntax validation",
-        );
-        return Ok(Vec::new());
-    }
-
-    let dir = tempfile::tempdir().context("aur: create temp dir for bash -n validation")?;
-    let pkgbuild_path = dir.path().join("PKGBUILD");
-    std::fs::write(&pkgbuild_path, pkgbuild).context("aur: write rendered PKGBUILD for bash -n")?;
-
-    let output = std::process::Command::new("bash")
-        .arg("-n")
-        .arg(&pkgbuild_path)
-        .output()
-        .context("aur: run bash -n")?;
-    if output.status.success() {
-        return Ok(Vec::new());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let mut findings = parse_bash_n_stderr(&stderr);
-    // A non-zero exit with no parseable syntax line means bash rejected the
-    // file for a reason this parser didn't recognize (or bash itself errored).
-    // Returning an empty Vec here would silently report a failed validator as
-    // PASS, so surface a fallback finding carrying the raw stderr.
-    if findings.is_empty() {
-        let trimmed = stderr.trim();
-        let expected = if trimmed.is_empty() {
-            "bash -n reported the generated PKGBUILD invalid but emitted no parseable diagnostic"
-                .to_string()
-        } else {
-            trimmed.to_string()
-        };
-        findings.push(finding("(root)", &expected));
-    }
-    Ok(findings)
+    super::run_external_validator(
+        &super::ExternalValidator {
+            publisher: "aur",
+            tool: "bash",
+            flags: &["-n"],
+            files: &[("PKGBUILD", pkgbuild)],
+            skip_message: "aur: bash not on PATH; relying on the structural PKGBUILD floor for \
+                 syntax validation",
+            empty_fallback: "bash -n reported the generated PKGBUILD invalid but emitted no parseable diagnostic",
+        },
+        parse_bash_n_stderr,
+        log,
+    )
 }
 
 /// Parse `bash -n` stderr into [`SchemaFinding`]s. A syntax error line has the
@@ -509,7 +502,12 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
         add_linux_archive(&mut ctx, "widget", "1.0.0");
 
-        let findings = AurSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = AurSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "every-option single-crate binary PKGBUILD must conform, got: {findings:?}"
@@ -572,7 +570,12 @@ mod tests {
             .build();
         scope_version(&mut ctx, "1.0.0");
 
-        let findings = AurSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = AurSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "every-option single-crate source PKGBUILD must conform, got: {findings:?}"
@@ -663,7 +666,12 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
         add_linux_archive(&mut ctx, "alpha", "1.0.0");
 
-        let findings = AurSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = AurSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "lockstep workspace binary + source AUR must conform, got: {findings:?}"
@@ -703,7 +711,10 @@ mod tests {
         scope_version(&mut ctx_a, "2.0.0");
         add_linux_archive(&mut ctx_a, "alpha", "2.0.0");
         let findings_a = AurSchemaValidator
-            .validate(&ctx_a)
+            .validate(
+                &mut ctx_a,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_a.is_empty(),
@@ -730,7 +741,10 @@ mod tests {
         scope_version(&mut ctx_b, "3.1.0");
         add_linux_archive(&mut ctx_b, "beta", "3.1.0");
         let findings_b = AurSchemaValidator
-            .validate(&ctx_b)
+            .validate(
+                &mut ctx_b,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_b.is_empty(),
@@ -764,7 +778,10 @@ mod tests {
         // No archive artifact at all in this shard.
 
         let findings = AurSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs without erroring on the absent archive");
         assert!(
             findings.is_empty(),
@@ -806,7 +823,10 @@ mod tests {
             size: None,
         });
 
-        let result = AurSchemaValidator.validate(&ctx);
+        let result = AurSchemaValidator.validate(
+            &mut ctx,
+            &crate::schema_validation::test_current_version_resolver(),
+        );
         assert!(
             result.is_err(),
             "a matched-but-broken (missing sha256) archive must surface as an error, \
@@ -837,7 +857,12 @@ mod tests {
             "a falsy `if` must skip the binary-AUR crate, got a rendered PKGBUILD"
         );
 
-        let findings = AurSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = AurSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "a skipped crate yields no findings, got: {findings:?}"
@@ -868,7 +893,12 @@ mod tests {
             "a truthy `skip` must suppress the source-AUR entry"
         );
 
-        let findings = AurSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = AurSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "a skipped source entry yields no findings, got: {findings:?}"
@@ -934,7 +964,12 @@ mod tests {
             render_top_level_aur_source(&ctx, &ctx.logger("publish")).expect("render ok");
         assert_eq!(rendered.len(), 1, "one top-level source entry renders");
 
-        let findings = AurSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = AurSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "top-level aur_sources entry must conform, got: {findings:?}"

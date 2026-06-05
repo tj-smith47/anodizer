@@ -180,7 +180,8 @@ pub fn write_summary_json(summary: &RunSummary, path: &Path) -> Result<()> {
         })?;
     }
     let text = serde_json::to_string_pretty(summary).context("serialize run summary")?;
-    fs::write(path, text).with_context(|| format!("write run summary to {}", path.display()))?;
+    anodizer_core::fs_atomic::atomic_write_str(path, &text)
+        .with_context(|| format!("write run summary to {}", path.display()))?;
     Ok(())
 }
 

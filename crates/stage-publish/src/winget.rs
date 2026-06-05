@@ -1649,14 +1649,27 @@ impl anodizer_core::Publisher for WingetPublisher {
                 log.status(&run_skip_unconfigured_message(crate_name));
                 continue;
             }
-            // Snapshot the target shape BEFORE the publish path runs so
-            // a mid-publish failure still leaves the operator a manual
-            // PR-close pointer.
-            if let Some(t) = collect_winget_target(ctx, crate_name) {
+            log.status(&run_per_crate_start_message(crate_name));
+            // Re-scope the version/name template vars to THIS crate's own tag so
+            // the rendered manifest — AND the snapshot target's version/branch —
+            // carry the crate's version, not the first crate's (workspace
+            // per-crate independent-version mode). The target snapshot is taken
+            // BEFORE the publish path runs (inside the same scope) so a
+            // mid-publish failure still leaves the operator a manual PR-close
+            // pointer whose recorded branch matches the one actually pushed.
+            let target = crate::publisher_helpers::with_published_crate_scope(
+                ctx,
+                crate_name,
+                &anodizer_core::crate_scope::resolve_crate_tag,
+                |ctx| {
+                    let target = collect_winget_target(ctx, crate_name);
+                    publish_to_winget(ctx, crate_name, &log)?;
+                    Ok(target)
+                },
+            )?;
+            if let Some(t) = target {
                 targets.push(t);
             }
-            log.status(&run_per_crate_start_message(crate_name));
-            publish_to_winget(ctx, crate_name, &log)?;
         }
         let processed = targets.len();
         if processed == 0 {
@@ -1761,6 +1774,139 @@ mod publisher_tests {
             metadata: meta,
             size: None,
         });
+    }
+
+    /// A per-crate winget crate carrying its own `tag_template` and
+    /// `package_identifier`, for the independent-version live-path test.
+    fn winget_crate_with(crate_name: &str, tag_template: &str, package_id: &str) -> CrateConfig {
+        CrateConfig {
+            name: crate_name.to_string(),
+            path: ".".to_string(),
+            tag_template: tag_template.to_string(),
+            publish: Some(PublishConfig {
+                winget: Some(WingetConfig {
+                    publisher: Some("AcmeCo".to_string()),
+                    package_identifier: Some(package_id.to_string()),
+                    short_description: Some("A widget management tool".to_string()),
+                    license: Some("MIT".to_string()),
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("winget-pkgs-fork".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Add a Windows zip archive (with the sha256 + url metadata the installer
+    /// manifest needs) for `crate_name`.
+    fn add_windows_zip(ctx: &mut Context, crate_name: &str) {
+        let target = "x86_64-pc-windows-msvc";
+        let mut meta = std::collections::HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            format!(
+                "https://github.com/acme/widget/releases/download/v1.0.0/{crate_name}-{target}.zip"
+            ),
+        );
+        meta.insert("sha256".to_string(), "a".repeat(64));
+        meta.insert("format".to_string(), "zip".to_string());
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
+            kind: anodizer_core::artifact::ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/dist/{crate_name}-{target}.zip")),
+            name: format!("{crate_name}-{target}.zip"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: meta,
+            size: None,
+        });
+        let mut bin_meta = std::collections::HashMap::new();
+        bin_meta.insert("binary".to_string(), crate_name.to_string());
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
+            kind: anodizer_core::artifact::ArtifactKind::Binary,
+            path: std::path::PathBuf::from(format!("/dist/{crate_name}.exe")),
+            name: format!("{crate_name}.exe"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: bin_meta,
+            size: None,
+        });
+    }
+
+    /// LIVE PATH, workspace per-crate INDEPENDENT-version mode: the publisher's
+    /// per-crate render must stamp EACH crate's OWN version, not the first
+    /// crate's. The live `run` loop wraps each `publish_to_winget` in
+    /// `with_published_crate_scope`; this drives that same helper and asserts the
+    /// rendered manifest carries the scoped crate's version. Fails against the
+    /// pre-fix code that rendered every crate against the global first-crate
+    /// `Version`.
+    #[test]
+    fn live_per_crate_render_stamps_each_crate_own_version() {
+        let alpha = winget_crate_with("alpha", "alpha-v{{ .Version }}", "AcmeCo.Alpha");
+        let beta = winget_crate_with("beta", "beta-v{{ .Version }}", "AcmeCo.Beta");
+
+        // One ctx, both crates, global Version = first crate's (2.0.0).
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![alpha, beta])
+            .build();
+        ctx.template_vars_mut().set("Version", "2.0.0");
+        ctx.template_vars_mut().set("RawVersion", "2.0.0");
+        ctx.template_vars_mut().set("Tag", "alpha-v2.0.0");
+        add_windows_zip(&mut ctx, "alpha");
+        add_windows_zip(&mut ctx, "beta");
+
+        // Per-crate resolver: alpha @ 2.0.0, beta @ 3.1.0.
+        let resolver = |_: &Context, c: &CrateConfig| {
+            Some(match c.name.as_str() {
+                "beta" => "3.1.0".to_string(),
+                _ => "2.0.0".to_string(),
+            })
+        };
+
+        // beta renders UNDER ITS OWN SCOPE → 3.1.0, the version a real release
+        // would stamp; never the global first-crate 2.0.0.
+        let beta_yaml = crate::publisher_helpers::with_published_crate_scope(
+            &mut ctx,
+            "beta",
+            &resolver,
+            |ctx| {
+                let r = render_winget_manifests_for_crate(ctx, "beta", &ctx.logger("publish"))?
+                    .expect("beta not skipped");
+                Ok(r.version_yaml)
+            },
+        )
+        .expect("scoped render ok");
+        assert!(
+            beta_yaml.contains("PackageVersion: 3.1.0"),
+            "live per-crate render must stamp beta's OWN version 3.1.0; got:\n{beta_yaml}"
+        );
+        assert!(
+            !beta_yaml.contains("PackageVersion: 2.0.0"),
+            "beta's live manifest must NOT carry the first crate's version; got:\n{beta_yaml}"
+        );
+
+        // alpha renders 2.0.0 under its own scope (single/lockstep parity: the
+        // per-crate scope reproduces the same version it already had).
+        let alpha_yaml = crate::publisher_helpers::with_published_crate_scope(
+            &mut ctx,
+            "alpha",
+            &resolver,
+            |ctx| {
+                let r = render_winget_manifests_for_crate(ctx, "alpha", &ctx.logger("publish"))?
+                    .expect("alpha not skipped");
+                Ok(r.version_yaml)
+            },
+        )
+        .expect("scoped render ok");
+        assert!(
+            alpha_yaml.contains("PackageVersion: 2.0.0"),
+            "alpha must render its own 2.0.0; got:\n{alpha_yaml}"
+        );
     }
 
     /// The shard-guard and the live collector must agree on what a winget

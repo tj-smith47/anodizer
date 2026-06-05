@@ -13,7 +13,10 @@
 use anodizer_core::context::Context;
 use anyhow::Result;
 
-use super::{PublisherSchemaValidator, SchemaFinding, validate_json, yaml_to_json};
+use super::{
+    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_json,
+    with_validated_crate_scope, yaml_to_json,
+};
 use crate::winget::{
     crate_has_winget_installer_artifacts, is_winget_per_crate_configured,
     render_winget_manifests_for_crate,
@@ -37,7 +40,11 @@ impl PublisherSchemaValidator for WingetSchemaValidator {
         "winget"
     }
 
-    fn validate(&self, ctx: &Context) -> Result<Vec<SchemaFinding>> {
+    fn validate(
+        &self,
+        ctx: &mut Context,
+        resolve_tag: TagResolver<'_>,
+    ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
 
@@ -73,21 +80,27 @@ impl PublisherSchemaValidator for WingetSchemaValidator {
                 continue;
             }
 
-            // `None` means the publisher would skip this crate
-            // (skip_upload / falsy `if`) — nothing to validate.
-            let Some(rendered) = render_winget_manifests_for_crate(ctx, crate_name, &log)? else {
-                continue;
-            };
-
-            findings.extend(validate_manifest(&rendered.version_yaml, VERSION_SCHEMA)?);
-            findings.extend(validate_manifest(
-                &rendered.installer_yaml,
-                INSTALLER_SCHEMA,
-            )?);
-            findings.extend(validate_manifest(
-                &rendered.locale_yaml,
-                DEFAULT_LOCALE_SCHEMA,
-            )?);
+            // Render + validate under THIS crate's own version so the manifest's
+            // `PackageVersion` is the version a real release would stamp, not the
+            // first crate's (workspace per-crate independent-version mode).
+            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
+                let mut out = Vec::new();
+                // `None` means the publisher would skip this crate
+                // (skip_upload / falsy `if`) — nothing to validate.
+                if let Some(rendered) = render_winget_manifests_for_crate(ctx, crate_name, &log)? {
+                    out.extend(validate_manifest(&rendered.version_yaml, VERSION_SCHEMA)?);
+                    out.extend(validate_manifest(
+                        &rendered.installer_yaml,
+                        INSTALLER_SCHEMA,
+                    )?);
+                    out.extend(validate_manifest(
+                        &rendered.locale_yaml,
+                        DEFAULT_LOCALE_SCHEMA,
+                    )?);
+                }
+                Ok(out)
+            })?;
+            findings.extend(crate_findings);
         }
 
         Ok(findings)
@@ -239,7 +252,10 @@ mod tests {
         add_windows_zip(&mut ctx, "widget", "widget");
 
         let findings = WingetSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -303,7 +319,10 @@ mod tests {
         add_windows_zip(&mut ctx, "beta", "beta");
 
         let findings = WingetSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -343,7 +362,10 @@ mod tests {
         scope_version(&mut ctx_a, "2.0.0");
         add_windows_zip(&mut ctx_a, "alpha", "alpha");
         let findings_a = WingetSchemaValidator
-            .validate(&ctx_a)
+            .validate(
+                &mut ctx_a,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_a.is_empty(),
@@ -369,7 +391,10 @@ mod tests {
         scope_version(&mut ctx_b, "3.1.0");
         add_windows_zip(&mut ctx_b, "beta", "beta");
         let findings_b = WingetSchemaValidator
-            .validate(&ctx_b)
+            .validate(
+                &mut ctx_b,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_b.is_empty(),
@@ -384,6 +409,93 @@ mod tests {
             rendered_b
                 .version_yaml
                 .contains("PackageIdentifier: AcmeCo.Beta")
+        );
+    }
+
+    /// (d) Workspace per-crate INDEPENDENT-version mode, multi-crate in ONE
+    /// context (the live publish-stage shape, NOT a `--crate`-narrowed run).
+    ///
+    /// alpha and beta carry DIFFERENT versions. The global `Version` is the
+    /// FIRST crate's (2.0.0) — exactly what `populate_git_vars` derives. Before
+    /// the fix, the validator rendered EVERY crate's `PackageVersion` against
+    /// that global 2.0.0, so beta's manifest carried the wrong version. With the
+    /// per-crate resolver each crate is re-scoped to its own tag, so beta renders
+    /// 3.1.0. This pins each crate's rendered version to ITS OWN version and
+    /// fails against the pre-fix global-version code.
+    #[test]
+    fn multi_crate_independent_versions_render_each_crate_own_version() {
+        let alpha = winget_crate(
+            "alpha",
+            "alpha-v{{ .Version }}",
+            WingetConfig {
+                package_identifier: Some("AcmeCo.Alpha".to_string()),
+                ..every_option_winget_cfg()
+            },
+        );
+        let beta = winget_crate(
+            "beta",
+            "beta-v{{ .Version }}",
+            WingetConfig {
+                package_identifier: Some("AcmeCo.Beta".to_string()),
+                ..every_option_winget_cfg()
+            },
+        );
+
+        // One ctx, BOTH crates, NO `--crate` narrowing. Global Version is the
+        // first crate's (2.0.0) — the bug's poison value for beta.
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![alpha, beta])
+            .build();
+        scope_version(&mut ctx, "2.0.0");
+        add_windows_zip(&mut ctx, "alpha", "alpha");
+        add_windows_zip(&mut ctx, "beta", "beta");
+
+        // Per-crate resolver: each crate maps to its OWN independent version.
+        let resolver = |_: &Context, c: &CrateConfig| {
+            Some(match c.name.as_str() {
+                "beta" => "3.1.0".to_string(),
+                _ => "2.0.0".to_string(),
+            })
+        };
+
+        // The whole driver must pass: each crate's manifest conforms under its
+        // own version.
+        let findings = WingetSchemaValidator
+            .validate(&mut ctx, &resolver)
+            .expect("validation runs");
+        assert!(
+            findings.is_empty(),
+            "independent-version multi-crate manifests must conform, got: {findings:?}"
+        );
+
+        // Prove the load-bearing claim: rendering beta UNDER ITS OWN SCOPE stamps
+        // beta's version (3.1.0), NOT the global first-crate 2.0.0. Without the
+        // per-crate scope this asserts `PackageVersion: 2.0.0` and fails.
+        let rendered_beta = crate::schema_validation::with_validated_crate_scope(
+            &mut ctx,
+            "beta",
+            &resolver,
+            |ctx| {
+                let r = render_winget_manifests_for_crate(ctx, "beta", &ctx.logger("publish"))?
+                    .expect("beta not skipped");
+                Ok(vec![SchemaFinding {
+                    publisher: "winget".to_string(),
+                    field: "PackageVersion".to_string(),
+                    expected: r.version_yaml,
+                }])
+            },
+        )
+        .expect("scoped render ok");
+        let beta_yaml = &rendered_beta[0].expected;
+        assert!(
+            beta_yaml.contains("PackageVersion: 3.1.0"),
+            "beta must render its OWN version 3.1.0, not the global first-crate \
+             2.0.0; got:\n{beta_yaml}"
+        );
+        assert!(
+            !beta_yaml.contains("PackageVersion: 2.0.0"),
+            "beta must NOT carry the first crate's version; got:\n{beta_yaml}"
         );
     }
 
@@ -419,7 +531,10 @@ mod tests {
         });
 
         let findings = WingetSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs without erroring on the absent Windows artifact");
         assert!(
             findings.is_empty(),
@@ -456,7 +571,10 @@ mod tests {
         });
 
         let findings = WingetSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs without erroring on the absent Windows artifact");
         assert!(
             findings.is_empty(),
@@ -509,10 +627,15 @@ mod tests {
             size: None,
         });
 
-        let err = WingetSchemaValidator.validate(&ctx).expect_err(
-            "a present-but-broken Windows archive (missing sha256) must surface as an \
+        let err = WingetSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect_err(
+                "a present-but-broken Windows archive (missing sha256) must surface as an \
              error, not a silent skip",
-        );
+            );
         assert!(
             format!("{err:#}").contains("sha256"),
             "the surfaced error must name the missing sha256, got: {err:#}"

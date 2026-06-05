@@ -20,9 +20,9 @@
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 
-use super::{PublisherSchemaValidator, SchemaFinding};
+use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, with_validated_crate_scope};
 use crate::nix::{
     self, FlakePackage, crate_has_nix_archive, is_nix_per_crate_configured,
     render_nix_for_validation,
@@ -45,7 +45,11 @@ impl PublisherSchemaValidator for NixSchemaValidator {
         "nix"
     }
 
-    fn validate(&self, ctx: &Context) -> Result<Vec<SchemaFinding>> {
+    fn validate(
+        &self,
+        ctx: &mut Context,
+        resolve_tag: TagResolver<'_>,
+    ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
 
@@ -57,7 +61,10 @@ impl PublisherSchemaValidator for NixSchemaValidator {
 
         // The flake the next publish writes merges every package into one root
         // `flake.nix`; accumulate each rendered crate's package entry so the
-        // single merged flake is validated once below.
+        // single merged flake is validated once below. The flake itself carries
+        // no version, so it is validated under the global scope; only the
+        // per-crate DERIVATION (which carries `version`) is rendered under the
+        // crate's own version scope.
         let mut flake_pkgs: Vec<FlakePackage> = Vec::new();
 
         for crate_name in &selected {
@@ -65,56 +72,72 @@ impl PublisherSchemaValidator for NixSchemaValidator {
                 continue;
             }
 
-            let nix_cfg = crate::util::all_crates(ctx)
-                .into_iter()
-                .find(|c| &c.name == crate_name)
-                .and_then(|c| c.publish)
-                .and_then(|p| p.nix);
+            // Render + validate the per-crate derivation under THIS crate's own
+            // version (workspace per-crate independent-version mode renders each
+            // crate's `version` against its own version, not the first crate's),
+            // returning the flake package entry for the post-loop merged flake.
+            let (crate_findings, flake_pkg) =
+                with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
+                    let mut out = Vec::new();
+                    let nix_cfg = crate::util::all_crates(ctx)
+                        .into_iter()
+                        .find(|c| &c.name == crate_name)
+                        .and_then(|c| c.publish)
+                        .and_then(|p| p.nix);
 
-            // A real release always builds at least one archive the derivation
-            // `src` points at, but a sharded / single-target snapshot may build
-            // none for this crate. The probe distinguishes ABSENCE from ERROR:
-            // a clean `Ok(false)` (no Nix-mappable artifact) skips, while a
-            // matched-but-broken artifact (missing sha256) propagates as `Err`
-            // via the `?` — the same defect the live publish path bails on —
-            // rather than being silently skipped.
-            if let Some(nix_cfg) = nix_cfg.as_ref()
-                && !crate_has_nix_archive(ctx, nix_cfg, crate_name)?
-            {
-                log.verbose(&format!(
-                    "nix: crate '{}' produced no Nix-mappable archive in this snapshot \
-                     shard; skipping derivation schema validation",
-                    crate_name
-                ));
-                continue;
+                    // A real release always builds at least one archive the
+                    // derivation `src` points at, but a sharded / single-target
+                    // snapshot may build none for this crate. The probe
+                    // distinguishes ABSENCE from ERROR: a clean `Ok(false)` (no
+                    // Nix-mappable artifact) skips, while a matched-but-broken
+                    // artifact (missing sha256) propagates as `Err` via the `?` —
+                    // the same defect the live publish path bails on — rather than
+                    // being silently skipped.
+                    if let Some(nix_cfg) = nix_cfg.as_ref()
+                        && !crate_has_nix_archive(ctx, nix_cfg, crate_name)?
+                    {
+                        log.verbose(&format!(
+                            "nix: crate '{}' produced no Nix-mappable archive in this snapshot \
+                             shard; skipping derivation schema validation",
+                            crate_name
+                        ));
+                        return Ok((out, None));
+                    }
+
+                    // `render_nix_for_validation` returns `None` when the
+                    // publisher would skip (skip / `if` falsy / skip_upload), so a
+                    // skipped emission is nothing to validate rather than a
+                    // failure.
+                    let Some(render) = render_nix_for_validation(ctx, crate_name, &log)? else {
+                        log.verbose(&format!(
+                            "nix: crate '{}' publisher would skip; nothing to validate",
+                            crate_name
+                        ));
+                        return Ok((out, None));
+                    };
+
+                    out.extend(validate_derivation_structural(&render.expr));
+                    out.extend(validate_nix_syntax(
+                        NixKind::Derivation,
+                        &render.expr,
+                        &log,
+                    )?);
+
+                    // The flake exposes this package via the default derivation
+                    // path; the live `write_flake` honors a custom `nix.path`, but
+                    // the validated flake only needs a path that round-trips
+                    // through the overlay-line recovery parser, so the default
+                    // path is sufficient.
+                    let flake_pkg = FlakePackage {
+                        attr: render.name.clone(),
+                        path: format!("pkgs/{}/default.nix", render.name),
+                    };
+                    Ok((out, Some(flake_pkg)))
+                })?;
+            findings.extend(crate_findings);
+            if let Some(pkg) = flake_pkg {
+                flake_pkgs.push(pkg);
             }
-
-            // `render_nix_for_validation` returns `None` when the publisher
-            // would skip (skip / `if` falsy / skip_upload), so a skipped
-            // emission is nothing to validate rather than a failure.
-            let Some(render) = render_nix_for_validation(ctx, crate_name, &log)? else {
-                log.verbose(&format!(
-                    "nix: crate '{}' publisher would skip; nothing to validate",
-                    crate_name
-                ));
-                continue;
-            };
-
-            findings.extend(validate_derivation_structural(&render.expr));
-            findings.extend(validate_nix_syntax(
-                NixKind::Derivation,
-                &render.expr,
-                &log,
-            )?);
-
-            // The flake exposes this package via the default derivation path;
-            // the live `write_flake` honors a custom `nix.path`, but the
-            // validated flake only needs a path that round-trips through the
-            // overlay-line recovery parser, so the default path is sufficient.
-            flake_pkgs.push(FlakePackage {
-                attr: render.name.clone(),
-                path: format!("pkgs/{}/default.nix", render.name),
-            });
         }
 
         // The merged root flake exposing every rendered package. Skipped when
@@ -302,50 +325,24 @@ fn validate_nix_syntax(
     nix_src: &str,
     log: &StageLogger,
 ) -> Result<Vec<SchemaFinding>> {
-    if !anodizer_core::tool_detect::tool_available("nix-instantiate").unwrap_or(false) {
-        log.verbose(
-            "nix: nix-instantiate not on PATH; relying on the structural Nix floor for \
-             syntax validation",
-        );
-        return Ok(Vec::new());
-    }
-
-    let dir = tempfile::tempdir().context("nix: create temp dir for nix-instantiate validation")?;
     let file_name = match kind {
         NixKind::Derivation => "default.nix",
         NixKind::Flake => "flake.nix",
     };
-    let nix_path = dir.path().join(file_name);
-    std::fs::write(&nix_path, nix_src).context("nix: write rendered expression for parse check")?;
-
-    let output = std::process::Command::new("nix-instantiate")
-        .arg("--parse")
-        .arg(&nix_path)
-        .output()
-        .context("nix: run nix-instantiate --parse")?;
-    if output.status.success() {
-        return Ok(Vec::new());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let mut findings = parse_nix_instantiate_stderr(&stderr);
-    // A non-zero exit with no parseable diagnostic means nix-instantiate
-    // rejected the file for a reason this parser didn't recognize (or the tool
-    // itself errored). Returning an empty Vec here would silently report a
-    // failed validator as PASS, so surface a fallback finding carrying the raw
-    // stderr.
-    if findings.is_empty() {
-        let trimmed = stderr.trim();
-        let expected = if trimmed.is_empty() {
-            "nix-instantiate --parse reported the generated Nix invalid but emitted no \
-             parseable diagnostic"
-                .to_string()
-        } else {
-            trimmed.to_string()
-        };
-        findings.push(finding("(root)", &expected));
-    }
-    Ok(findings)
+    super::run_external_validator(
+        &super::ExternalValidator {
+            publisher: "nix",
+            tool: "nix-instantiate",
+            flags: &["--parse"],
+            files: &[(file_name, nix_src)],
+            skip_message: "nix: nix-instantiate not on PATH; relying on the structural Nix floor \
+                 for syntax validation",
+            empty_fallback: "nix-instantiate --parse reported the generated Nix invalid but \
+                 emitted no parseable diagnostic",
+        },
+        parse_nix_instantiate_stderr,
+        log,
+    )
 }
 
 /// Parse `nix-instantiate --parse` stderr into [`SchemaFinding`]s. A parse
@@ -496,7 +493,12 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
         add_linux_archive(&mut ctx, "widget", "1.0.0", true);
 
-        let findings = NixSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = NixSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "every-option single-crate derivation + flake must conform, got: {findings:?}"
@@ -578,7 +580,12 @@ mod tests {
         add_linux_archive(&mut ctx, "alpha", "1.0.0", true);
         add_linux_archive(&mut ctx, "beta", "1.0.0", true);
 
-        let findings = NixSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = NixSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "lockstep workspace derivations + flake must conform, got: {findings:?}"
@@ -616,7 +623,10 @@ mod tests {
         scope_version(&mut ctx_a, "2.0.0");
         add_linux_archive(&mut ctx_a, "alpha", "2.0.0", true);
         let findings_a = NixSchemaValidator
-            .validate(&ctx_a)
+            .validate(
+                &mut ctx_a,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_a.is_empty(),
@@ -639,7 +649,10 @@ mod tests {
         scope_version(&mut ctx_b, "3.1.0");
         add_linux_archive(&mut ctx_b, "beta", "3.1.0", true);
         let findings_b = NixSchemaValidator
-            .validate(&ctx_b)
+            .validate(
+                &mut ctx_b,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs");
         assert!(
             findings_b.is_empty(),
@@ -673,7 +686,10 @@ mod tests {
         // No archive at all in this shard.
 
         let findings = NixSchemaValidator
-            .validate(&ctx)
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect("validation runs without erroring on the absent archive");
         assert!(
             findings.is_empty(),
@@ -694,7 +710,10 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
         add_linux_archive(&mut ctx, "widget", "1.0.0", false);
 
-        let result = NixSchemaValidator.validate(&ctx);
+        let result = NixSchemaValidator.validate(
+            &mut ctx,
+            &crate::schema_validation::test_current_version_resolver(),
+        );
         assert!(
             result.is_err(),
             "a present archive missing sha256 must error, not silently skip: {result:?}"
@@ -729,7 +748,12 @@ mod tests {
             "a falsy `if` must skip the crate, got a rendered derivation"
         );
 
-        let findings = NixSchemaValidator.validate(&ctx).expect("validation runs");
+        let findings = NixSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
         assert!(
             findings.is_empty(),
             "a skipped crate yields no findings, got: {findings:?}"

@@ -1900,45 +1900,39 @@ fn resolve_krew_upstream(krew_cfg: &anodizer_core::config::KrewConfig) -> (Strin
 /// Build a [`KrewPrTarget`] for each crate the publisher would run on.
 /// Reads config + the live process version so the branch name matches
 /// what `publish_to_krew` will push.
-fn collect_krew_run_targets(ctx: &Context) -> Vec<KrewPrTarget> {
-    let mut out: Vec<KrewPrTarget> = Vec::new();
+/// Snapshot the rollback PR target for a single crate under the version
+/// currently scoped on `ctx`.
+///
+/// MUST be called inside the per-crate version scope so the recorded branch
+/// (`{plugin}-v{version}`) matches the branch [`publish_to_krew`] actually
+/// pushed — in workspace per-crate independent-version mode the global
+/// `ctx.version()` is the FIRST crate's version, which would record the wrong
+/// branch and orphan this crate's PR from rollback.
+fn collect_krew_target(ctx: &Context, crate_name: &str) -> Option<KrewPrTarget> {
     let version = ctx.version();
-    let selected = &ctx.options.selected_crates;
-    for c in &ctx.config.crates {
-        if !selected.is_empty() && !selected.contains(&c.name) {
-            continue;
-        }
-        let Some(krew_cfg) = c.publish.as_ref().and_then(|p| p.krew.as_ref()) else {
-            continue;
-        };
-        let Some((fork_owner_raw, _)) =
-            crate::util::resolve_repo_owner_name(krew_cfg.repository.as_ref())
-        else {
-            continue;
-        };
-        let fork_owner = ctx
-            .render_template(&fork_owner_raw)
-            .unwrap_or(fork_owner_raw);
-        // Plugin-name override resolved through the same single-source helper
-        // as `publish_to_krew` so the rollback-evidence branch name cannot
-        // drift from the manifest `metadata.name` / file basename / webhook.
-        let Ok(plugin_name) = resolve_plugin_name(krew_cfg.name.as_deref(), &c.name, |t| {
-            ctx.render_template(t)
-        }) else {
-            continue;
-        };
-        let branch = format!("{}-v{}", plugin_name, version);
-        let (upstream_owner, upstream_repo) = resolve_krew_upstream(krew_cfg);
-        out.push(KrewPrTarget {
-            target: c.name.clone(),
-            upstream_owner,
-            upstream_repo,
-            fork_owner,
-            branch,
-            token_env_var: Some("KREW_INDEX_TOKEN".to_string()),
-        });
-    }
-    out
+    let c = ctx.config.crates.iter().find(|c| c.name == crate_name)?;
+    let krew_cfg = c.publish.as_ref().and_then(|p| p.krew.as_ref())?;
+    let (fork_owner_raw, _) = crate::util::resolve_repo_owner_name(krew_cfg.repository.as_ref())?;
+    let fork_owner = ctx
+        .render_template(&fork_owner_raw)
+        .unwrap_or(fork_owner_raw);
+    // Plugin-name override resolved through the same single-source helper
+    // as `publish_to_krew` so the rollback-evidence branch name cannot
+    // drift from the manifest `metadata.name` / file basename / webhook.
+    let plugin_name = resolve_plugin_name(krew_cfg.name.as_deref(), &c.name, |t| {
+        ctx.render_template(t)
+    })
+    .ok()?;
+    let branch = format!("{}-v{}", plugin_name, version);
+    let (upstream_owner, upstream_repo) = resolve_krew_upstream(krew_cfg);
+    Some(KrewPrTarget {
+        target: c.name.clone(),
+        upstream_owner,
+        upstream_repo,
+        fork_owner,
+        branch,
+        token_env_var: Some("KREW_INDEX_TOKEN".to_string()),
+    })
 }
 
 /// True when the crate has a `publish.krew` block — mirrors the
@@ -2041,6 +2035,7 @@ impl anodizer_core::Publisher for KrewPublisher {
         log.status(&run_start_message(selected.len()));
         let mut processed = 0usize;
         let mut any_pushed = false;
+        let mut targets: Vec<KrewPrTarget> = Vec::new();
         for crate_name in &selected {
             // Defensive guard for explicit `--crate=X` selection when X has no
             // publisher block; implicit-all is already filtered by effective_publish_crates above.
@@ -2050,9 +2045,30 @@ impl anodizer_core::Publisher for KrewPublisher {
             }
             processed += 1;
             log.status(&run_per_crate_start_message(crate_name));
-            let outcome = publish_to_krew(ctx, crate_name, &log)?;
-            if outcome.pushed {
+            // Re-scope the version/name template vars to THIS crate's own tag so
+            // the rendered manifest — AND the rollback PR branch — carry the
+            // crate's version, not the first crate's (workspace per-crate
+            // independent-version mode). The target snapshot is collected inside
+            // the same scope so its recorded branch matches the one pushed.
+            let (pushed, target) = crate::publisher_helpers::with_published_crate_scope(
+                ctx,
+                crate_name,
+                &anodizer_core::crate_scope::resolve_crate_tag,
+                |ctx| {
+                    let outcome = publish_to_krew(ctx, crate_name, &log)?;
+                    let target = if outcome.pushed {
+                        collect_krew_target(ctx, crate_name)
+                    } else {
+                        None
+                    };
+                    Ok((outcome.pushed, target))
+                },
+            )?;
+            if pushed {
                 any_pushed = true;
+            }
+            if let Some(t) = target {
+                targets.push(t);
             }
         }
         if should_warn_no_eligible(processed, selected.len()) {
@@ -2069,7 +2085,7 @@ impl anodizer_core::Publisher for KrewPublisher {
         if any_pushed {
             evidence.extra = anodizer_core::PublishEvidenceExtra::Krew(
                 anodizer_core::publish_evidence::KrewExtra {
-                    krew_targets: collect_krew_run_targets(ctx),
+                    krew_targets: targets,
                 },
             );
         }
@@ -2425,16 +2441,15 @@ mod publisher_tests {
         let ctx = TestContextBuilder::new()
             .crates(vec![krew_crate("demo")])
             .build();
-        let targets = collect_krew_run_targets(&ctx);
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].target, "demo");
-        assert_eq!(targets[0].upstream_owner, "kubernetes-sigs");
-        assert_eq!(targets[0].upstream_repo, "krew-index");
-        assert_eq!(targets[0].fork_owner, "acme");
+        let target = collect_krew_target(&ctx, "demo").expect("target");
+        assert_eq!(target.target, "demo");
+        assert_eq!(target.upstream_owner, "kubernetes-sigs");
+        assert_eq!(target.upstream_repo, "krew-index");
+        assert_eq!(target.fork_owner, "acme");
         assert!(
-            targets[0].branch.starts_with("demo-v"),
+            target.branch.starts_with("demo-v"),
             "branch: {}",
-            targets[0].branch
+            target.branch
         );
     }
 
@@ -2458,10 +2473,9 @@ mod publisher_tests {
             });
         }
         let ctx = TestContextBuilder::new().crates(vec![c]).build();
-        let targets = collect_krew_run_targets(&ctx);
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].upstream_owner, "custom-org");
-        assert_eq!(targets[0].upstream_repo, "custom-index");
+        let target = collect_krew_target(&ctx, "demo").expect("target");
+        assert_eq!(target.upstream_owner, "custom-org");
+        assert_eq!(target.upstream_repo, "custom-index");
     }
 
     // -----------------------------------------------------------------------

@@ -530,6 +530,45 @@ fn optional_deps_libc_aware_false_collapses_linux() {
 }
 
 #[test]
+fn optional_deps_libc_aware_false_collapse_keeps_glibc_deterministically() {
+    // Insertion order favors musl (added first), yet the not-libc-aware
+    // collapse must deterministically retain the GLIBC binary — the winner is
+    // defined by libc rank, not artifact-insertion order. On the pre-fix code
+    // (stable sort + dedup-keep-first) the musl binary would survive here.
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate()])
+        .build();
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-musl", "demo");
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "demo");
+
+    let cfg = NpmConfig {
+        libc_aware: false,
+        ..opt_cfg()
+    };
+    let layout =
+        generate_layout(&ctx, &cfg, "demo", "1.2.3", &ctx.logger("publish")).expect("layout");
+
+    let linux = layout
+        .platforms
+        .iter()
+        .find(|p| p.name == "@anodize/demo-linux-x64")
+        .expect("collapsed linux pkg");
+    let src = linux.binary_src.to_string_lossy();
+    assert!(
+        src.ends_with("x86_64-unknown-linux-gnu"),
+        "collapse must keep the glibc binary deterministically, got {src}"
+    );
+    assert_eq!(
+        linux.triple.libc, "glibc",
+        "retained triple must be glibc, got {:?}",
+        linux.triple.libc
+    );
+}
+
+#[test]
 fn optional_deps_requires_scope() {
     let (_tmp, ctx) = optional_deps_ctx();
     let cfg = NpmConfig {
@@ -973,6 +1012,118 @@ esac
     let outcome = ctx
         .take_pending_outcome()
         .expect("a Failed outcome override must be recorded");
+    assert!(
+        matches!(outcome, PublisherOutcome::Failed(_)),
+        "outcome must be Failed, got {outcome:?}"
+    );
+}
+
+/// M4: a missing platform binary must abort the optional-deps publish with
+/// NOTHING published — the staging pass reads every binary BEFORE the first
+/// `npm publish`, so a binary that is not on disk fails fast and no irreversible
+/// publish fires. A fake `npm` records every `publish` invocation; the counter
+/// must stay at zero.
+#[cfg(unix)]
+#[test]
+fn missing_platform_binary_publishes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("bin dir");
+    let counter = tmp.path().join("publish_count");
+
+    // Fake `npm`: `view` reports E404 (never-published); `publish` increments a
+    // counter so the test can prove zero publishes occurred.
+    let npm = bin_dir.join("npm");
+    std::fs::write(
+        &npm,
+        r#"#!/bin/sh
+case "$1" in
+  view)
+    echo "npm error code E404" 1>&2
+    exit 1
+    ;;
+  publish)
+    n=0
+    if [ -f "$NPM_PUBLISH_COUNTER" ]; then n=$(cat "$NPM_PUBLISH_COUNTER"); fi
+    n=$((n + 1))
+    echo "$n" > "$NPM_PUBLISH_COUNTER"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+"#,
+    )
+    .expect("write fake npm");
+    std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).expect("chmod npm");
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .env("NPM_TOKEN", "fake-token")
+        .crates(vec![demo_crate()])
+        .build();
+    // One real binary, plus one whose on-disk path is missing. Both map to
+    // distinct npm platforms so neither is deduped away.
+    add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-musl", "demo");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::UploadableBinary,
+        // A path that was never written — simulates an unbuilt platform.
+        path: tmp.path().join("demo-aarch64-apple-darwin-MISSING"),
+        name: "demo".to_string(),
+        target: Some("aarch64-apple-darwin".to_string()),
+        crate_name: "demo".to_string(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    });
+    ctx.config.npms = Some(vec![opt_cfg()]);
+
+    let _g = anodizer_core::test_helpers::env::env_mutex()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let orig_path = std::env::var("PATH").unwrap_or_default();
+    // SAFETY: serialised by env_mutex; paired set/restore below.
+    unsafe {
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path));
+        std::env::set_var("NPM_PUBLISH_COUNTER", counter.display().to_string());
+    }
+
+    let p = NpmPublisher::new();
+    let evidence = p
+        .run(&mut ctx)
+        .expect("run records Failed, never bubbles Err");
+
+    // SAFETY: serialised by env_mutex; paired with the set above.
+    unsafe {
+        std::env::set_var("PATH", orig_path);
+        std::env::remove_var("NPM_PUBLISH_COUNTER");
+    }
+
+    // NOTHING published: the counter file was never created because the staging
+    // pass aborted on the missing binary before any `npm publish` ran.
+    assert!(
+        !counter.exists(),
+        "no `npm publish` may run when a platform binary is missing"
+    );
+
+    // No rollback targets recorded (no package is live).
+    match &evidence.extra {
+        anodizer_core::PublishEvidenceExtra::Npm(n) => assert!(
+            n.npm_targets.is_empty(),
+            "no targets recorded — nothing was published"
+        ),
+        anodizer_core::PublishEvidenceExtra::Empty => {}
+        other => panic!("unexpected evidence shape: {other:?}"),
+    }
+
+    // The failure is surfaced as a Failed outcome (the publisher catches the
+    // staging error and records it rather than bubbling Err).
+    let outcome = ctx
+        .take_pending_outcome()
+        .expect("a Failed outcome must be recorded for the aborted publish");
     assert!(
         matches!(outcome, PublisherOutcome::Failed(_)),
         "outcome must be Failed, got {outcome:?}"
