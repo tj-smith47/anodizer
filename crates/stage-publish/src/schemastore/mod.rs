@@ -12,6 +12,7 @@ pub(crate) mod catalog;
 pub(crate) mod manifest;
 pub(crate) mod preflight;
 pub(crate) mod publish;
+pub(crate) mod rollback;
 pub(crate) mod scan;
 
 #[cfg(test)]
@@ -78,10 +79,13 @@ fn run_publish(ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
     publish::run_publish(ctx)
 }
 
-/// Roll back a SchemaStore publish given its evidence. Currently a no-op: the
-/// PR-revert path has no recorded targets to act on yet.
-fn rollback_publish(_ctx: &mut Context, _evidence: &PublishEvidence) -> anyhow::Result<()> {
-    Ok(())
+/// Roll back a SchemaStore publish given its evidence.
+///
+/// Delegates to [`rollback::rollback_publish`], which closes the registration
+/// PR(s) [`run_publish`] opened against `SchemaStore/schemastore` (best-effort,
+/// mirroring krew's PR-close rollback).
+fn rollback_publish(ctx: &mut Context, evidence: &PublishEvidence) -> anyhow::Result<()> {
+    rollback::rollback_publish(ctx, evidence)
 }
 
 #[cfg(test)]
@@ -120,5 +124,23 @@ mod publisher_tests {
         let ev = p.run(&mut ctx).expect("run stub ok");
         assert_eq!(ev.publisher, "schemastore");
         assert!(p.rollback(&mut ctx, &ev).is_ok());
+    }
+
+    #[test]
+    fn rollback_with_no_targets_is_noop_warning() {
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
+        let ev = PublishEvidence::new("schemastore");
+        let p = SchemastorePublisher::new();
+        assert!(p.rollback(&mut ctx, &ev).is_ok());
+
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("schemastore")
+                && m.contains("PR targets")
+                && m.contains("verify")),
+            "expected captured warn naming publisher + target-noun + 'verify'; got: {warns:?}"
+        );
     }
 }
