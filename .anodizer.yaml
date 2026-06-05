@@ -641,10 +641,6 @@ changelog:
   sort: asc
   abbrev: 12
   format: "* {{ .SHA }} {{ .Message }} ({{ .AuthorUsername }})"
-  paths:
-    - "crates/**"
-    - "Cargo.toml"
-    - "Cargo.lock"
   filters:
     exclude:
       - "^docs:"

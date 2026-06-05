@@ -46,7 +46,7 @@ jobs:
           from-artifact: anodizer-linux
           artifact-workflow: ci.yml
           artifact-run-id: auto
-          args: tag --push
+          args: tag --push --changelog
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
