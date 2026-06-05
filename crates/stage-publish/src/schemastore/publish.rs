@@ -61,14 +61,21 @@ pub(crate) struct SchemaPlan {
 }
 
 impl SchemaPlan {
+    /// Operator-facing hosting-mode label, distinguishing a versioned vendor
+    /// from a plain one. Shared by the dry-run log line and the PR body so the
+    /// two surfaces never drift.
+    fn mode_label(&self) -> &'static str {
+        match self.mode {
+            SchemaMode::External => "external",
+            SchemaMode::Vendor if self.versioned => "vendor, versioned",
+            SchemaMode::Vendor => "vendor",
+        }
+    }
+
     /// One-line operator-facing summary of the planned action, used by the
     /// dry-run log so an operator sees exactly what a real run would do.
     fn planned_line(&self) -> String {
-        let mode = match self.mode {
-            SchemaMode::External => "external",
-            SchemaMode::Vendor if self.versioned => "vendor/versioned",
-            SchemaMode::Vendor => "vendor",
-        };
+        let mode = self.mode_label();
         let verb = match self.verdict {
             Some(catalog::Verdict::NoOp) => "no-op (already registered)",
             Some(catalog::Verdict::Add) => "register",
@@ -375,7 +382,10 @@ fn run_real(
         .clone()
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let mut any_change = false;
+    // Plans that produced a real change (Add/Update), in apply order — the
+    // PR title/body/commit message are built from these so they distinguish
+    // vendor/versioned and never re-derive a mode that was already proven.
+    let mut applied: Vec<SchemaPlan> = Vec::new();
     for (entry, description) in effective {
         let plan = plan_schema_scoped(ctx, cfg, entry, description, Some(&catalog_json))?;
         match plan.verdict {
@@ -398,10 +408,10 @@ fn run_real(
 
         catalog_json = catalog::splice_entry(&catalog_json, &plan.name, &plan.desired_entry)
             .with_context(|| format!("schemastore: splice catalog entry for `{}`", plan.name))?;
-        any_change = true;
+        applied.push(plan);
     }
 
-    if !any_change {
+    if applied.is_empty() {
         log.status("schemastore: every schema already registered and current — nothing to publish");
         return Ok(PublishEvidence::new("schemastore"));
     }
@@ -436,7 +446,7 @@ fn run_real(
         )),
     }
 
-    let commit_msg = schemastore_commit_msg(effective);
+    let commit_msg = schemastore_commit_msg(&applied);
     let commit_opts = crate::util::resolve_commit_opts(ctx, cfg.commit_author.as_ref());
     let push = crate::util::commit_and_push_with_opts(
         repo_path,
@@ -456,8 +466,8 @@ fn run_real(
         repo_path,
         &upstream_slug,
         &format!("{fork_owner}:{branch}"),
-        &schemastore_pr_title(effective),
-        &schemastore_pr_body(effective),
+        &schemastore_pr_title(&applied),
+        &schemastore_pr_body(&applied),
         "schemastore",
         log,
         crate::util::SubmitPrOpts {
@@ -612,27 +622,29 @@ fn schemastore_evidence(fork_owner: &str, branch: &str) -> PublishEvidence {
 }
 
 /// Commit message naming the registered schemas.
-fn schemastore_commit_msg(effective: &[(&SchemaEntry, String)]) -> String {
-    let names: Vec<&str> = effective.iter().map(|(e, _)| e.name.as_str()).collect();
+fn schemastore_commit_msg(applied: &[SchemaPlan]) -> String {
+    let names: Vec<&str> = applied.iter().map(|p| p.name.as_str()).collect();
     format!("Register/refresh {}", names.join(", "))
 }
 
 /// PR title naming the registered schemas.
-fn schemastore_pr_title(effective: &[(&SchemaEntry, String)]) -> String {
-    let names: Vec<&str> = effective.iter().map(|(e, _)| e.name.as_str()).collect();
+fn schemastore_pr_title(applied: &[SchemaPlan]) -> String {
+    let names: Vec<&str> = applied.iter().map(|p| p.name.as_str()).collect();
     format!("Add/update {} schema(s)", names.join(", "))
 }
 
-/// PR body listing each schema's name, mode, and url.
-fn schemastore_pr_body(effective: &[(&SchemaEntry, String)]) -> String {
+/// PR body listing each registered schema's name, hosting mode, and url.
+/// Built from the already-computed [`SchemaPlan`]s so the mode (including
+/// `vendor, versioned`) is the proven one — never re-derived.
+fn schemastore_pr_body(applied: &[SchemaPlan]) -> String {
     let mut body = String::from("## Schemas\n");
-    for (e, _) in effective {
-        let mode = match e.mode() {
-            Ok(SchemaMode::External) => "external",
-            Ok(SchemaMode::Vendor) => "vendor",
-            Err(_) => "?",
-        };
-        body.push_str(&format!("- **{}** ({mode})\n", e.name));
+    for p in applied {
+        body.push_str(&format!(
+            "- **{}** ({}) → {}\n",
+            p.name,
+            p.mode_label(),
+            p.url
+        ));
     }
     body.push_str("\nAutomatically submitted by anodizer.");
     body
@@ -890,6 +902,104 @@ mod tests {
         assert!(
             !msgs.iter().any(|m| m.contains("would")),
             "a skipped entry must not produce a planned line; got {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn dry_run_if_false_filters_entry() {
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = TestContextBuilder::new().dry_run(true).build();
+        ctx.with_log_capture(capture.clone());
+        let mut entry = external_entry();
+        // A falsy `if:` must filter the entry out of the effective set, the
+        // same as `skip:` — exercising the `resolved_if` falsy branch.
+        entry.if_condition = Some("false".into());
+        ctx.config.schemastore = SchemastoreConfig {
+            schemas: vec![entry],
+            ..Default::default()
+        };
+        let ev = run_publish(&mut ctx).expect("dry-run if-false ok");
+        assert_eq!(ev.extra, anodizer_core::PublishEvidenceExtra::Empty);
+        let msgs: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        assert!(
+            !msgs.iter().any(|m| m.contains("would")),
+            "an `if: false` entry must not produce a planned line; got {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn empty_effective_set_returns_empty_evidence_and_logs_no_schemas() {
+        let capture = anodizer_core::log::LogCapture::new();
+        // Not dry-run: the early return must fire BEFORE any network/fork path,
+        // proving the empty-set guard short-circuits regardless of mode.
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
+        ctx.config.schemastore = SchemastoreConfig {
+            schemas: vec![],
+            ..Default::default()
+        };
+        let ev = run_publish(&mut ctx).expect("empty schemas ok");
+        assert_eq!(ev.publisher, "schemastore");
+        assert_eq!(ev.extra, anodizer_core::PublishEvidenceExtra::Empty);
+        let msgs: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("no schemas to register")),
+            "expected the 'no schemas to register' status line; got {msgs:?}"
+        );
+    }
+
+    // --- resolve_description (both branches) ----------------------------
+
+    #[test]
+    fn resolve_description_derives_from_project_metadata_when_unset() {
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.config.metadata = Some(anodizer_core::config::MetadataConfig {
+            description: Some("derived project config".into()),
+            ..Default::default()
+        });
+        let mut entry = external_entry();
+        entry.description = None; // force the metadata-derivation branch
+        let desc = resolve_description(&ctx, &entry).expect("derive + sanitize ok");
+        assert_eq!(desc, "derived project config");
+    }
+
+    #[test]
+    fn resolve_description_bails_when_nothing_derivable() {
+        // No entry description and no project/crate metadata → the error path.
+        let ctx = TestContextBuilder::new().build();
+        let mut entry = external_entry();
+        entry.description = None;
+        let err = resolve_description(&ctx, &entry)
+            .expect_err("must bail when no description is derivable");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Anodizer") && msg.contains("no description"),
+            "expected an actionable no-description error; got {msg}"
+        );
+    }
+
+    // --- PR body distinguishes vendor/versioned -------------------------
+
+    #[test]
+    fn pr_body_labels_external_vendor_and_versioned_distinctly() {
+        let external =
+            plan_schema(&external_entry(), "Anodizer config", false, None, None).unwrap();
+        let vendor =
+            plan_schema(&vendor_entry(), "cfgd machine config", false, None, None).unwrap();
+        let versioned = plan_schema(
+            &vendor_entry(),
+            "cfgd machine config",
+            true,
+            Some("0.4.2"),
+            None,
+        )
+        .unwrap();
+        let body = schemastore_pr_body(&[external, vendor, versioned]);
+        assert!(body.contains("**Anodizer** (external)"), "{body}");
+        assert!(body.contains("**cfgd-config** (vendor) →"), "{body}");
+        assert!(
+            body.contains("**cfgd-config** (vendor, versioned) → https://www.schemastore.org/cfgd-config-0.4.2.json"),
+            "versioned vendor must be labeled distinctly with its versioned url; got {body}"
         );
     }
 
