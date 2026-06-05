@@ -16,9 +16,8 @@ use anyhow::{Context as _, Result};
 /// Anodizer-local precedence: `release.header` / `release.footer` is the more
 /// specific override and wins; `changelog.header` / `changelog.footer` is the
 /// fallback so a YAML-configured changelog wrapper still reaches the release
-/// body. The `release.*` source is loaded via
-/// the changelog stage loads the release header;
-/// we extend that to a second source as a Rust-first ergonomic.
+/// body. The changelog stage stashes the `changelog.*` value on the context;
+/// the `release.*` value layers on top as a more specific override.
 ///
 /// `release_value` is the already-rendered `release.header` / `release.footer`
 /// string; `changelog_value` is the rendered `changelog.header` /
@@ -98,9 +97,8 @@ pub(crate) fn render_nondeterministic_exemptions_block(entries: &[(String, Strin
 /// Returns `(path, optional_rendered_name)` pairs. When a `Detailed` spec has
 /// a `name_template`, the template is rendered using the provided `Context` and
 /// returned as the second element; the upload loop should use this as the
-/// upload filename instead of the filesystem name.
-/// invalid glob patterns
-/// and patterns that match zero files are hard errors, not silent skips.
+/// upload filename instead of the filesystem name. Invalid glob patterns and
+/// patterns that match zero files are hard errors, not silent skips.
 pub(crate) fn collect_extra_files(
     specs: &[ExtraFileSpec],
     ctx: &Context,

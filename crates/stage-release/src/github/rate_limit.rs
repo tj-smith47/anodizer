@@ -1,14 +1,13 @@
 //! Proactive GitHub API rate-limit checking.
 //!
-//! Before every PATCH/POST/PUT we hit `/rate_limit`; if the remaining quota
-//! sits at or below `threshold` the loop sleeps until reset. Uses the
-//! the secondary-rate-limit reset header (commit
+//! Before every PATCH/POST/PUT anodizer hits `/rate_limit`; if the remaining
+//! quota sits at or below `threshold` the loop sleeps until reset, reading the
+//! secondary-rate-limit reset header (commit
 //! `60028b19eb6845164ed7bac541032efe1b07fe14`, which made the wait
-//! iterative + ctx-cancellable). The Go version uses `time.After(sleep)`
-//! inside `select { case <-ctx.Done() ... }`; the Rust analog races the
-//! timer against both SIGINT (`ctrl_c()`) and SIGTERM (`SignalKind::terminate()`,
-//! Unix only) so the wait aborts promptly under either signal — important
-//! for containerised CI runs that receive SIGTERM on cancellation.
+//! iterative + ctx-cancellable). The wait races the timer against both SIGINT
+//! (`ctrl_c()`) and SIGTERM (`SignalKind::terminate()`, Unix only) so it
+//! aborts promptly under either signal — important for containerised CI runs
+//! that receive SIGTERM on cancellation.
 //!
 //! Note: `check_github_search_rate_limit` was deleted alongside the Search
 //! API author-lookup removal (commit
@@ -82,9 +81,8 @@ fn github_api_base_from<E: EnvSource + ?Sized>(env: &E) -> String {
 /// (Unix only) interrupts the wait — whichever is sooner.
 ///
 /// Failures (transport, non-success response, malformed JSON) silently
-/// degrade to "continue and hope for the best", matching the upstream
-/// behaviour where `rateLimitChecker` logs and returns without aborting the
-/// outer release flow.
+/// degrade to "continue and hope for the best": the rate-limit probe logs and
+/// returns without aborting the outer release flow.
 ///
 /// Process-env-fed shim retained for the transport-failure test (which
 /// pins the `silently degrade on connect refused` contract through the

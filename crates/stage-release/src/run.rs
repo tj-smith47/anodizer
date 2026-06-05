@@ -508,10 +508,11 @@ struct ResolvedReleaseFlags {
     include_meta: bool,
     use_existing_draft: bool,
     /// Nightly retention: keep the N newest nightly releases and delete the
-    /// rest (+ their tags) before creating the new one. `Some(1)` is the
-    /// rolling-single-release case (the `keep_single_release` alias). Resolved
-    /// from `NightlyConfig::resolved_keep_last` (which folds in the legacy
-    /// alias and its precedence). Only honored on `--nightly` runs.
+    /// rest (+ their tags) AFTER the new release is created and published.
+    /// `Some(1)` is the rolling-single-release case (the `keep_single_release`
+    /// alias). Resolved from `NightlyConfig::resolved_keep_last` (which folds in
+    /// the legacy alias and its precedence). Only honored on `--nightly` runs,
+    /// and only acted on by the GitHub backend.
     retention_keep_last: Option<usize>,
     /// Nightly `publish_repo`: `(owner, repo)` to redirect the release to a
     /// repo other than the source. Only honored on `--nightly` runs.
@@ -581,6 +582,35 @@ fn resolve_release_flags(
     })
 }
 
+/// Warn when nightly retention / `publish_repo` is configured for an SCM
+/// backend that does not act on it.
+///
+/// `nightly.retention` / `nightly.keep_single_release` and
+/// `nightly.publish_repo` are only wired into the GitHub backend's release
+/// sweep. On GitLab / Gitea they would silently no-op, so surface a clear
+/// reporter warning (not `eprintln!`) rather than let the user assume the old
+/// releases are being pruned.
+fn warn_unsupported_nightly_retention(
+    log: &anodizer_core::log::StageLogger,
+    backend_label: &str,
+    flags: &ResolvedReleaseFlags,
+) {
+    if flags.retention_keep_last.is_some() {
+        log.warn(&format!(
+            "nightly retention (keep_last / keep_single_release) is only \
+             applied on GitHub releases; it has no effect on {backend_label} \
+             and prior nightly releases will NOT be pruned"
+        ));
+    }
+    if let Some((owner, repo)) = &flags.publish_repo_override {
+        log.warn(&format!(
+            "nightly.publish_repo '{owner}/{repo}' is only honored on GitHub \
+             releases; it has no effect on {backend_label} (the release targets \
+             the configured {backend_label} repo)"
+        ));
+    }
+}
+
 /// Dispatch a single crate's release to the appropriate SCM backend
 /// (GitHub, GitLab, or Gitea) based on `ctx.token_type`.
 ///
@@ -604,6 +634,7 @@ fn dispatch_to_scm_backend(
 ) -> Result<Option<(String, String, String, String)>> {
     match ctx.token_type {
         ScmTokenType::GitLab => {
+            warn_unsupported_nightly_retention(log, "GitLab", flags);
             let gitlab_env = gitlab::GitlabBackendEnv {
                 rt,
                 ctx,
@@ -630,6 +661,7 @@ fn dispatch_to_scm_backend(
         }
 
         ScmTokenType::Gitea => {
+            warn_unsupported_nightly_retention(log, "Gitea", flags);
             let gitea_env = gitea::GiteaBackendEnv {
                 rt,
                 ctx,
@@ -911,7 +943,7 @@ fn handle_dry_run(
 /// Returned entries pair each artifact's path with an optional custom
 /// destination name (always `None` here; extra-files appending happens
 /// at the call site).
-pub(crate) fn collect_release_upload_candidates(
+pub fn collect_release_upload_candidates(
     ctx: &Context,
     crate_name: &str,
     ids: Option<&[String]>,
@@ -1093,6 +1125,67 @@ mod tests {
         let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly")
             .expect("resolve_release_flags returns Ok");
         assert_eq!(flags.retention_keep_last, Some(10));
+    }
+
+    /// Build a `ResolvedReleaseFlags` with only the retention fields set, for
+    /// the unsupported-backend warning tests.
+    fn flags_with_retention(
+        keep_last: Option<usize>,
+        publish_repo: Option<(String, String)>,
+    ) -> ResolvedReleaseFlags {
+        ResolvedReleaseFlags {
+            draft: false,
+            prerelease: false,
+            skip_upload: false,
+            replace_existing_draft: false,
+            replace_existing_artifacts: false,
+            make_latest: None,
+            target_commitish: None,
+            discussion_category_name: None,
+            include_meta: false,
+            use_existing_draft: false,
+            retention_keep_last: keep_last,
+            publish_repo_override: publish_repo,
+        }
+    }
+
+    #[test]
+    fn warn_unsupported_nightly_retention_warns_for_keep_last() {
+        let (log, capture) = StageLogger::with_capture("release", Verbosity::Normal);
+        warn_unsupported_nightly_retention(&log, "GitLab", &flags_with_retention(Some(3), None));
+        let warns = capture.warn_messages();
+        assert_eq!(warns.len(), 1, "exactly one warning expected: {warns:?}");
+        assert!(
+            warns[0].contains("GitLab") && warns[0].contains("retention"),
+            "warning must name the backend + retention: {warns:?}"
+        );
+    }
+
+    #[test]
+    fn warn_unsupported_nightly_retention_warns_for_publish_repo() {
+        let (log, capture) = StageLogger::with_capture("release", Verbosity::Normal);
+        warn_unsupported_nightly_retention(
+            &log,
+            "Gitea",
+            &flags_with_retention(None, Some(("nushell".into(), "nightly".into()))),
+        );
+        let warns = capture.warn_messages();
+        assert_eq!(warns.len(), 1, "exactly one warning expected: {warns:?}");
+        assert!(
+            warns[0].contains("Gitea") && warns[0].contains("publish_repo"),
+            "warning must name the backend + publish_repo: {warns:?}"
+        );
+    }
+
+    #[test]
+    fn warn_unsupported_nightly_retention_silent_when_unset() {
+        let (log, capture) = StageLogger::with_capture("release", Verbosity::Normal);
+        warn_unsupported_nightly_retention(&log, "GitLab", &flags_with_retention(None, None));
+        assert_eq!(
+            capture.warn_count(),
+            0,
+            "no warning when neither retention nor publish_repo is set"
+        );
     }
 
     #[test]

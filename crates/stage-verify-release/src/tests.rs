@@ -129,10 +129,68 @@ fn produced_asset_names_derives_from_registry_per_crate() {
     // A raw Binary is NOT in release_uploadable_kinds(); must be excluded.
     add_artifact(&mut ctx, ArtifactKind::Binary, "raw-bin", "crate-a");
 
-    let a = produced_asset_names(&ctx, "crate-a");
+    let a = produced_asset_names(&ctx, "crate-a", None);
     assert_eq!(a, vec!["a.deb", "a.tar.gz", "checksums.txt"]);
-    let b = produced_asset_names(&ctx, "crate-b");
+    let b = produced_asset_names(&ctx, "crate-b", None);
     assert_eq!(b, vec!["b.tar.gz"], "crate-b set is isolated from crate-a");
+}
+
+/// Add an artifact carrying an `id` in metadata so `release.ids` filtering can
+/// select / exclude it (mirrors how upstream stages tag artifacts with `id`).
+fn add_artifact_with_id(
+    ctx: &mut Context,
+    kind: ArtifactKind,
+    name: &str,
+    crate_name: &str,
+    id: &str,
+) {
+    let mut metadata = HashMap::new();
+    metadata.insert("id".to_string(), id.to_string());
+    ctx.artifacts.add(Artifact {
+        kind,
+        name: name.to_string(),
+        path: std::path::PathBuf::from(name),
+        target: None,
+        crate_name: crate_name.to_string(),
+        metadata,
+        size: None,
+    });
+}
+
+#[test]
+fn produced_asset_names_honors_release_ids_filter() {
+    // The upload path applies `release.ids`; the asset-existence check must use
+    // the SAME filter so an artifact intentionally filtered OUT of the upload
+    // set is NOT reported as a missing asset (false post-release FAIL).
+    let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+    add_artifact_with_id(
+        &mut ctx,
+        ArtifactKind::Archive,
+        "linux.tar.gz",
+        "app",
+        "linux",
+    );
+    add_artifact_with_id(
+        &mut ctx,
+        ArtifactKind::Archive,
+        "windows.zip",
+        "app",
+        "windows",
+    );
+
+    // No filter: both candidates are expected assets.
+    let all = produced_asset_names(&ctx, "app", None);
+    assert_eq!(all, vec!["linux.tar.gz", "windows.zip"]);
+
+    // ids = [linux]: the windows artifact is filtered out of the upload set and
+    // therefore must NOT appear in the expected (produced) asset names.
+    let ids = vec!["linux".to_string()];
+    let filtered = produced_asset_names(&ctx, "app", Some(&ids));
+    assert_eq!(
+        filtered,
+        vec!["linux.tar.gz"],
+        "ids-filtered-out artifact must not be reported as a produced asset"
+    );
 }
 
 #[test]

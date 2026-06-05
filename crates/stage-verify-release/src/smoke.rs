@@ -90,23 +90,32 @@ pub struct SmokeJob {
 /// Shape:
 /// ```text
 /// docker run --rm \
-///   -v <host_pkg_path>:/pkg/<pkg_name>:ro \
+///   --mount type=bind,source=<host_pkg_path>,destination=/pkg/<pkg_name>,readonly \
 ///   <image> \
 ///   sh -c "<install cmd> && <binary> --version"
 /// ```
+///
+/// The bind mount uses `--mount` (comma-separated `key=value` fields) rather
+/// than `-v` (`source:dest:opts`): the `-v` form splits its spec on `:`, so a
+/// host path or package name containing a colon would silently corrupt the
+/// mount. `--mount` does not colon-split, making the mount robust for the full
+/// range of artifact path/name characters anodizer produces.
 ///
 /// Network is left enabled so the `.deb` install's `apt-get -f` can pull
 /// missing runtime dependencies (the `|| (...)` fixup only runs when the bare
 /// `dpkg -i` left deps unsatisfied). The package is bind-mounted read-only so
 /// the container cannot mutate the host artifact.
 pub fn build_smoke_argv(job: &SmokeJob) -> Vec<String> {
-    let mount = format!("{}:/pkg/{}:ro", job.host_pkg_path, job.pkg_name);
+    let mount = format!(
+        "type=bind,source={},destination=/pkg/{},readonly",
+        job.host_pkg_path, job.pkg_name
+    );
     let install = job.package_type.install_cmd(&job.pkg_name);
     let script = format!("{install} && {} --version", sh_single_quote(&job.binary));
     vec![
         "run".to_string(),
         "--rm".to_string(),
-        "-v".to_string(),
+        "--mount".to_string(),
         mount,
         job.image.clone(),
         "sh".to_string(),
@@ -199,10 +208,19 @@ mod tests {
         // image present as a positional before `sh`.
         let sh_pos = argv.iter().position(|a| a == "sh").unwrap();
         assert_eq!(argv[sh_pos - 1], "debian:12");
-        // mount references the host path and the in-container /pkg path.
+        // mount references the host path and the in-container /pkg path via
+        // `--mount` (colon-safe), not the colon-splitting `-v` form.
         assert!(
-            argv.iter()
-                .any(|a| a == "/dist/myapp_1.0_amd64.deb:/pkg/myapp_1.0_amd64.deb:ro"),
+            argv.contains(&"--mount".to_string()),
+            "uses --mount: {argv:?}"
+        );
+        assert!(
+            !argv.contains(&"-v".to_string()),
+            "no colon-split -v: {argv:?}"
+        );
+        assert!(
+            argv.iter().any(|a| a
+                == "type=bind,source=/dist/myapp_1.0_amd64.deb,destination=/pkg/myapp_1.0_amd64.deb,readonly"),
             "bind mount argv: {argv:?}"
         );
         let script = argv.last().unwrap();
@@ -276,6 +294,26 @@ mod tests {
             !script.contains("; rm -rf /.deb'/pkg"),
             "metachar broke out of quoting: {script}"
         );
+    }
+
+    #[test]
+    fn mount_path_with_colon_is_not_corrupted() {
+        // A host path containing a colon would split the legacy `-v src:dst:opt`
+        // spec into the wrong fields; `--mount`'s comma-separated key=value
+        // syntax keeps the colon inside the `source=` value untouched.
+        let argv = build_smoke_argv(&SmokeJob {
+            image: "debian:12".to_string(),
+            package_type: PackageType::Deb,
+            host_pkg_path: "/dist/v1:2/myapp.deb".to_string(),
+            pkg_name: "myapp.deb".to_string(),
+            binary: "myapp".to_string(),
+        });
+        assert!(
+            argv.iter().any(|a| a
+                == "type=bind,source=/dist/v1:2/myapp.deb,destination=/pkg/myapp.deb,readonly"),
+            "colon in host path must survive intact in source=: {argv:?}"
+        );
+        assert!(!argv.contains(&"-v".to_string()));
     }
 
     #[test]

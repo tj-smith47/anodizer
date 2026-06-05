@@ -476,9 +476,10 @@ pub(crate) async fn gitea_delete_asset_by_name(
 }
 
 /// What to do with a release asset whose name already exists on the remote,
-/// decided from the size probe + the `replace_existing_artifacts` flag.
-/// Pure so the same-size-skip-regardless-of-flag contract is unit-testable
-/// without I/O — mirrors the GitHub backend's `classify_already_exists`.
+/// decided from the size probe + the `replace_existing_artifacts` flag. The
+/// same-size-skip-regardless-of-flag invariant comes from the shared
+/// [`classify_asset_conflict`](crate::classify_asset_conflict); this enum is the
+/// Gitea-specific projection of that decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GiteaUploadAction {
     /// Remote bytes match the local file: skip the upload (idempotent no-op).
@@ -499,18 +500,30 @@ pub(crate) enum GiteaUploadAction {
 /// `replace_existing_artifacts: false` does not block it. The
 /// delete-then-reupload only fires when the user opted in AND a
 /// different-size remote asset actually exists.
+///
+/// Routes through the shared
+/// [`classify_asset_conflict`](crate::classify_asset_conflict): the size probe
+/// returns `Some` only when a same-named asset exists, so `remote_size.is_some()`
+/// is the `remote_present` signal. A differing remote with overwrites forbidden
+/// proceeds to `Upload` (Gitea has no pre-upload bail; the API surfaces the
+/// conflict), matching the prior behaviour.
 pub(crate) fn gitea_upload_action(
     replace_existing_artifacts: bool,
     remote_size: Option<u64>,
     local_size: u64,
 ) -> GiteaUploadAction {
-    if remote_size == Some(local_size) {
-        return GiteaUploadAction::SkipIdempotent;
+    match crate::classify_asset_conflict(
+        replace_existing_artifacts,
+        remote_size.is_some(),
+        remote_size,
+        local_size,
+    ) {
+        crate::AssetConflict::IdenticalSkip => GiteaUploadAction::SkipIdempotent,
+        crate::AssetConflict::ReplaceDiffering => GiteaUploadAction::DeleteThenUpload,
+        crate::AssetConflict::ConflictForbidden | crate::AssetConflict::NoConflict => {
+            GiteaUploadAction::Upload
+        }
     }
-    if replace_existing_artifacts && remote_size.is_some() {
-        return GiteaUploadAction::DeleteThenUpload;
-    }
-    GiteaUploadAction::Upload
 }
 
 /// Look up an existing release attachment by name and return its byte size.

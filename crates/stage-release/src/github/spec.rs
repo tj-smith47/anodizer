@@ -56,11 +56,11 @@ pub(crate) struct UploadOpts {
     /// attempt.
     pub resume_release: bool,
     /// Nightly retention: keep the N newest nightly releases (matched by the
-    /// rendered nightly name) and delete the rest before creating the new
-    /// one, including the git tags anodizer created for them. `keep_last: 1`
-    /// is the rolling-single-release case (`keep_single_release`); `None`
-    /// disables the sweep. Operates on [`Self::publish_repo_override`] when
-    /// set. Resolution of the legacy `keep_single_release` alias vs the
+    /// rendered nightly name) and delete the rest AFTER the new release is
+    /// created and published, including the git tags anodizer created for them.
+    /// `keep_last: 1` is the rolling-single-release case (`keep_single_release`);
+    /// `None` disables the sweep. Operates on [`Self::publish_repo_override`]
+    /// when set. Resolution of the legacy `keep_single_release` alias vs the
     /// `retention:` block happens upstream in
     /// [`anodizer_core::config::NightlyConfig::resolved_keep_last`], so this
     /// field is the single source of truth for the backend.
@@ -127,54 +127,74 @@ pub(crate) fn check_existing_assets_block_upload(
 }
 
 /// Decide what to do when the GitHub upload-asset API returns
-/// `422 already_exists`. Pure function so the (re-)introduced
+/// `422 already_exists`. Pure function so the
 /// `replace_existing_artifacts: false` guard can be tested without I/O.
+///
+/// A `422 already_exists` means the asset definitively exists, so the shared
+/// [`classify_asset_conflict`](crate::classify_asset_conflict) is consulted
+/// with `remote_present: true`; an unreadable `remote_size` (`None`) is
+/// treated as a mismatch, matching the conservative size-compare rule. The
+/// byte-identical-skip invariant lives in that shared classifier, not here.
 pub(crate) fn classify_already_exists(
     replace_existing_artifacts: bool,
     remote_size: Option<u64>,
     local_size: u64,
 ) -> AlreadyExistsAction {
-    // Idempotency check first: bytes that already match the local
-    // artifact aren't an "overwrite", so the user's
-    // `replace_existing_artifacts: false` does NOT block this path.
-    if remote_size == Some(local_size) {
-        return AlreadyExistsAction::SkipIdempotent;
+    match crate::classify_asset_conflict(replace_existing_artifacts, true, remote_size, local_size)
+    {
+        crate::AssetConflict::IdenticalSkip => AlreadyExistsAction::SkipIdempotent,
+        crate::AssetConflict::ReplaceDiffering => AlreadyExistsAction::DeleteAndRetry,
+        // A `422 already_exists` guarantees the asset is present, so the shared
+        // classifier never returns `NoConflict` here; both remaining variants
+        // mean "differs, overwrite forbidden" -> bail rather than mutate
+        // published bytes.
+        crate::AssetConflict::ConflictForbidden | crate::AssetConflict::NoConflict => {
+            AlreadyExistsAction::BailReplaceForbidden
+        }
     }
-    if !replace_existing_artifacts {
-        return AlreadyExistsAction::BailReplaceForbidden;
-    }
-    AlreadyExistsAction::DeleteAndRetry
 }
 
-/// Decide which nightly releases to prune so that — after the about-to-be-created
-/// release is added — exactly `keep_last` nightly releases survive.
+/// Decide which nightly releases to prune so that exactly `keep_last` nightly
+/// releases survive — run AFTER the new release is created and published.
 ///
-/// `releases` is the set of existing releases (`(id, tag)`) whose `name` matches
-/// the nightly release name. They are sorted newest-first internally by release
-/// `id` descending — monotonic with creation order on a single repo — so
-/// correctness does not depend on the order GitHub returns them. Because the new
-/// release will become the newest of the kept set, the prune target is "every
-/// release beyond the newest `keep_last - 1`": that leaves `keep_last - 1` old
-/// releases plus the new one = `keep_last`.
+/// `releases` is the full set of releases (`(id, tag)`) whose `name` matches the
+/// nightly release name, INCLUDING the just-created `protect_id`. They are sorted
+/// newest-first internally by release `id` descending — monotonic with creation
+/// order on a single repo — so correctness does not depend on the order GitHub
+/// returns them. The newest `keep_last` survive; everything older is pruned.
 ///
-/// For `keep_last = 1` this returns ALL existing nightly releases — the rolling
-/// single-release semantics (only the just-created release survives). This is the
-/// single function both the `keep_single_release` alias and `retention.keep_last`
-/// route through; there is no parallel single-delete path.
+/// `protect_id` is the id of the release just created/published this run. It is
+/// NEVER returned for pruning even if it somehow sorts outside the newest
+/// `keep_last` window: deleting the release that was just made live would defeat
+/// the retention sweep's irreversible-before-reversible ordering. The new release
+/// is the highest id (creation is monotonic), so it normally tops the kept set;
+/// the filter is the safety net.
+///
+/// For `keep_last = 1` this returns every release except `protect_id` — the
+/// rolling-single-release semantics (only the just-created release survives).
+/// This is the single function both the `keep_single_release` alias and
+/// `retention.keep_last` route through; there is no parallel single-delete path.
 ///
 /// Pure (no I/O) so the keep/delete arithmetic is unit-testable without octocrab.
 pub(crate) fn nightly_releases_to_prune(
     releases: &[(u64, String)],
     keep_last: usize,
+    protect_id: u64,
 ) -> Vec<(u64, String)> {
     let keep_last = keep_last.max(1);
     // Sort newest-first by id descending so the keep/prune split is correct
     // regardless of the API response order.
     let mut sorted = releases.to_vec();
     sorted.sort_by_key(|r| std::cmp::Reverse(r.0));
-    // The new release occupies one of the kept slots, so retain `keep_last - 1`
-    // of the existing (newest-first) set and prune the remainder.
-    sorted.into_iter().skip(keep_last - 1).collect()
+    // The just-created release is counted in the kept set, so the newest
+    // `keep_last` survive and everything older is pruned. The just-created
+    // release is filtered out of the prune set unconditionally so a surprising
+    // id ordering can never delete the release this run just published.
+    sorted
+        .into_iter()
+        .skip(keep_last)
+        .filter(|(id, _)| *id != protect_id)
+        .collect()
 }
 
 /// Resolve the upload retry loop's per-iteration locals from a [`RetryPolicy`].
@@ -542,28 +562,74 @@ mod spec_struct_surface_tests {
     }
 
     #[test]
-    fn nightly_releases_to_prune_keep_last_one_prunes_all() {
-        // keep_last=1 (the keep_single_release alias): every existing nightly
-        // release is pruned — only the about-to-be-created one survives.
-        let existing = vec![
+    fn nightly_releases_to_prune_keep_last_one_prunes_all_but_new() {
+        // keep_last=1 (the keep_single_release alias): the prune list (which
+        // now includes the just-created release id=4) keeps only the new
+        // release; every older nightly is pruned.
+        let all = vec![
+            (4u64, "v1.2.3".to_string()), // the just-created release
             (3u64, "0.1.0-nightly.2".to_string()),
             (2u64, "0.1.0-nightly.1".to_string()),
             (1u64, "0.1.0-nightly.0".to_string()),
         ];
-        let pruned = nightly_releases_to_prune(&existing, 1);
-        assert_eq!(pruned, existing);
+        let pruned = nightly_releases_to_prune(&all, 1, 4);
+        assert_eq!(
+            pruned,
+            vec![
+                (3u64, "0.1.0-nightly.2".to_string()),
+                (2u64, "0.1.0-nightly.1".to_string()),
+                (1u64, "0.1.0-nightly.0".to_string()),
+            ]
+        );
     }
 
     #[test]
-    fn nightly_releases_to_prune_keep_last_n_keeps_newest() {
-        // keep_last=2: with the new release counting as the newest, retain
-        // only the single newest existing release; prune the older two.
-        let existing = vec![
+    fn nightly_releases_to_prune_never_prunes_the_new_release() {
+        // The just-created release id MUST NOT appear in the prune list,
+        // even at keep_last=1: deleting it would leave zero published nightly.
+        let all = vec![
+            (4u64, "v1.2.3".to_string()),
             (3u64, "t3".to_string()),
             (2u64, "t2".to_string()),
             (1u64, "t1".to_string()),
         ];
-        let pruned = nightly_releases_to_prune(&existing, 2);
+        for keep in [1usize, 2, 3, 4, 10] {
+            let pruned = nightly_releases_to_prune(&all, keep, 4);
+            assert!(
+                !pruned.iter().any(|(id, _)| *id == 4),
+                "protect_id=4 must never be pruned (keep_last={keep}); got {pruned:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn nightly_releases_to_prune_protects_new_even_if_lowest_id() {
+        // Defensive: if the just-created release somehow has the LOWEST id
+        // (an out-of-order/API surprise), the protect filter still keeps it
+        // out of the prune set rather than deleting the live release.
+        let all = vec![
+            (3u64, "t3".to_string()),
+            (2u64, "t2".to_string()),
+            (1u64, "new".to_string()), // protected, but lowest id
+        ];
+        let pruned = nightly_releases_to_prune(&all, 1, 1);
+        assert!(
+            !pruned.iter().any(|(id, _)| *id == 1),
+            "the protected (just-created) release must not be pruned: {pruned:?}",
+        );
+    }
+
+    #[test]
+    fn nightly_releases_to_prune_keep_last_n_keeps_newest() {
+        // keep_last=2: with the new release (id=4) the newest, retain it plus
+        // one older release; prune the rest.
+        let all = vec![
+            (4u64, "v1.2.3".to_string()),
+            (3u64, "t3".to_string()),
+            (2u64, "t2".to_string()),
+            (1u64, "t1".to_string()),
+        ];
+        let pruned = nightly_releases_to_prune(&all, 2, 4);
         assert_eq!(
             pruned,
             vec![(2u64, "t2".to_string()), (1u64, "t1".to_string())]
@@ -572,34 +638,37 @@ mod spec_struct_surface_tests {
 
     #[test]
     fn nightly_releases_to_prune_keeps_all_when_under_budget() {
-        // Fewer existing releases than (keep_last - 1): nothing to prune.
-        let existing = vec![(1u64, "t1".to_string())];
-        assert!(nightly_releases_to_prune(&existing, 10).is_empty());
+        // Fewer releases than keep_last: nothing to prune.
+        let all = vec![(2u64, "v1.2.3".to_string()), (1u64, "t1".to_string())];
+        assert!(nightly_releases_to_prune(&all, 10, 2).is_empty());
     }
 
     #[test]
     fn nightly_releases_to_prune_floors_zero_to_one() {
-        let existing = vec![(1u64, "t1".to_string())];
-        // keep_last=0 floored to 1 -> prune everything.
-        assert_eq!(nightly_releases_to_prune(&existing, 0), existing);
+        let all = vec![(2u64, "v1.2.3".to_string()), (1u64, "t1".to_string())];
+        // keep_last=0 floored to 1 -> prune everything except the new release.
+        assert_eq!(
+            nightly_releases_to_prune(&all, 0, 2),
+            vec![(1u64, "t1".to_string())]
+        );
     }
 
     #[test]
     fn nightly_releases_to_prune_sorts_out_of_order_input() {
         // API response order must not matter: feed ids out of order and
-        // assert the newest (highest id) is the one kept.
-        let existing = vec![
+        // assert the newest (highest id) survives.
+        let all = vec![
             (1u64, "t1".to_string()),
+            (4u64, "v1.2.3".to_string()),
             (3u64, "t3".to_string()),
             (2u64, "t2".to_string()),
         ];
-        // keep_last=2: keep the single newest existing (id=3), prune 2 and 1
-        // in newest-first order.
-        let pruned = nightly_releases_to_prune(&existing, 2);
+        // keep_last=2: keep new (id=4) + id=3; prune 2 and 1 newest-first.
+        let pruned = nightly_releases_to_prune(&all, 2, 4);
         assert_eq!(
             pruned,
             vec![(2u64, "t2".to_string()), (1u64, "t1".to_string())],
-            "must keep the highest-id release regardless of input order",
+            "must keep the highest-id releases regardless of input order",
         );
     }
 }

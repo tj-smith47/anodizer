@@ -163,16 +163,28 @@ fn crate_binary_name(crate_cfg: &CrateConfig) -> String {
         .unwrap_or_else(|| crate_cfg.name.clone())
 }
 
-/// The produced (upload-candidate) artifact NAMES for one crate, derived from
-/// `release_uploadable_kinds()` + the artifact registry — the same source of
-/// truth the release stage uploads from. Rule #11: zero new config, no
-/// hand-maintained list.
-fn produced_asset_names(ctx: &Context, crate_name: &str) -> Vec<String> {
-    let mut names: Vec<String> = anodizer_core::artifact::release_uploadable_kinds()
-        .iter()
-        .flat_map(|&kind| ctx.artifacts.by_kind_and_crate(kind, crate_name))
-        .map(|a| a.name.clone())
-        .collect();
+/// The produced (upload-candidate) asset NAMES for one crate.
+///
+/// Derived from the SAME canonical upload-candidate enumeration the release
+/// stage uploads from (`collect_release_upload_candidates`), so the
+/// `release.ids` filter and the binary-sign-intermediate exclusion are shared
+/// and cannot drift: an artifact the release stage filtered OUT by `ids` is
+/// not reported as a missing asset here. The asset name is resolved exactly as
+/// the upload path resolves it — the custom destination name when set,
+/// otherwise the file's basename. Rule #11: zero new config, no hand-maintained
+/// list.
+fn produced_asset_names(ctx: &Context, crate_name: &str, ids: Option<&[String]>) -> Vec<String> {
+    let mut names: Vec<String> = anodizer_stage_release::collect_release_upload_candidates(
+        ctx, crate_name, ids,
+        // include_meta: the asset-existence check verifies the regular
+        // release-uploadable set, not the optional metadata.json sidecar.
+        false,
+    )
+    .into_iter()
+    .filter_map(|(path, custom_name)| {
+        custom_name.or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+    })
+    .collect();
     names.sort();
     names.dedup();
     names
@@ -189,10 +201,11 @@ fn verify_one_crate(
     docker_ok: bool,
     issues: &mut Vec<String>,
 ) -> Result<()> {
-    let release_cfg = crate_cfg
-        .release
-        .as_ref()
-        .expect("filtered to crates with a release block");
+    // The caller filters to crates carrying a release block; if absent there
+    // is no published release to verify, so skip this crate rather than panic.
+    let Some(release_cfg) = crate_cfg.release.as_ref() else {
+        return Ok(());
+    };
 
     // (a) asset-existence ---------------------------------------------------
     if cfg.assert_assets_enabled() {
@@ -202,7 +215,8 @@ fn verify_one_crate(
             crate_cfg,
         )) {
             Ok(Some(published)) => {
-                let produced = produced_asset_names(ctx, &crate_cfg.name);
+                let produced =
+                    produced_asset_names(ctx, &crate_cfg.name, release_cfg.ids.as_deref());
                 let diff = diff_assets(&produced, &published);
                 if diff.has_missing() {
                     issues.push(format!(
@@ -247,11 +261,12 @@ fn verify_one_crate(
     }
 
     // (c) libc-ceiling ------------------------------------------------------
-    if cfg.glibc_check_enabled() {
-        let ceiling = cfg
-            .glibc_ceiling
-            .as_deref()
-            .expect("glibc_check_enabled implies a ceiling");
+    // `glibc_check_enabled()` is true only when a ceiling is set; the
+    // `if let` keeps that an invariant the type system enforces rather than an
+    // unwrap that could panic if the predicate ever diverges from the field.
+    if cfg.glibc_check_enabled()
+        && let Some(ceiling) = cfg.glibc_ceiling.as_deref()
+    {
         for (path, name) in linux_packages(ctx, &crate_cfg.name) {
             if !name.to_ascii_lowercase().ends_with(".deb") {
                 continue;
@@ -261,11 +276,12 @@ fn verify_one_crate(
     }
 
     // (b) install smoke-test ------------------------------------------------
-    if smoke_enabled && docker_ok {
-        let smoke_cfg = cfg
-            .install_smoke
-            .as_ref()
-            .expect("smoke_enabled implies install_smoke is Some");
+    // `smoke_enabled` is derived from `install_smoke.is_some()`; the `if let`
+    // ties the config presence to its enablement flag without an unwrap.
+    if smoke_enabled
+        && docker_ok
+        && let Some(smoke_cfg) = cfg.install_smoke.as_ref()
+    {
         let binary = crate_binary_name(crate_cfg);
         for (path, name) in linux_packages(ctx, &crate_cfg.name) {
             let Some(pt) = PackageType::from_filename(&name) else {

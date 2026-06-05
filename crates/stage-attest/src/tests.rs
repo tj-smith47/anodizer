@@ -560,6 +560,65 @@ fn workspace_per_crate_manifests_do_not_clobber() {
     );
 }
 
+/// A workspace with a lib-only member (produces no artifacts) plus one binary
+/// crate must NOT warn about the lib crate, and must treat the run as
+/// single-crate (bare manifest name) because only one crate contributes
+/// attestable output — the lib crate is excluded from the effective set.
+#[test]
+fn lib_only_crate_neither_warns_nor_inflates_multi_crate() {
+    use anodizer_core::log::LogCapture;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    fs::create_dir_all(&dist).unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("ws")
+        .tag("v1.0.0")
+        .dist(dist.clone())
+        // `corelib` is a lib-only member: it registers no artifacts.
+        .crates(vec![crate_cfg("corelib"), crate_cfg("app")])
+        .build();
+    let cap = LogCapture::new();
+    ctx.with_log_capture(cap.clone());
+    ctx.config.attestations = Some(attest_config(
+        AttestationMode::Subjects,
+        Some(vec![AttestationArtifactKind::Archive]),
+    ));
+    // Only `app` produces an artifact; `corelib` produces none.
+    add_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::Archive,
+        "app.tar.gz",
+        "app",
+        b"app archive",
+    );
+
+    AttestStage.run(&mut ctx).unwrap();
+
+    // No spurious "no artifacts matched" warn for the lib-only crate.
+    assert_eq!(
+        cap.warn_count(),
+        0,
+        "lib-only crate must not draw an empty-match warn: {:?}",
+        cap.warn_messages()
+    );
+    // Only one crate contributes output → single-crate (bare) naming, NOT a
+    // crate-prefixed name (which would mean `corelib` inflated multi_crate).
+    assert!(
+        dist.join(AttestationConfig::SUBJECTS_MANIFEST_NAME)
+            .exists(),
+        "single effective crate must use the bare manifest name"
+    );
+    assert!(
+        !dist
+            .join(format!("app.{}", AttestationConfig::SUBJECTS_MANIFEST_NAME))
+            .exists(),
+        "must not crate-prefix when only one crate is effective"
+    );
+}
+
 /// The in-toto statement is byte-deterministic for the same inputs (no clock
 /// reads): two builds of the same tag + subjects produce identical bytes.
 #[test]

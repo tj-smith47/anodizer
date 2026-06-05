@@ -261,6 +261,19 @@ fn is_attestation_output(artifact: &Artifact) -> bool {
         || artifact.metadata.contains_key("attestation_statement")
 }
 
+/// Whether `crate_name` registered any artifact in this run.
+///
+/// Used to scope attestation to the effective (build/package-producing) crate
+/// set: a lib-only workspace member produces no artifacts, so it is excluded
+/// from the per-crate loop entirely — no spurious empty-match warn, and it
+/// doesn't count toward `multi_crate` output naming.
+fn crate_has_artifacts(ctx: &Context, crate_name: &str) -> bool {
+    ctx.artifacts
+        .all()
+        .iter()
+        .any(|a| a.crate_name == crate_name)
+}
+
 /// Collect attestation subjects for one crate, in a deterministic order.
 ///
 /// Resolves the concrete [`ArtifactKind`] set — the explicit `artifacts:`
@@ -383,9 +396,13 @@ impl Stage for AttestStage {
         let dist = ctx.config.dist.clone();
         let dry_run = ctx.is_dry_run();
 
-        // Per-crate output naming only kicks in when more than one published
-        // crate runs through this stage in the same invocation (workspace
-        // per-crate mode). Determined from the crate set the run targets.
+        // The effective crate set: config crates that the run targets AND that
+        // produced at least one artifact. A lib-only crate (no builds, no
+        // packaged output) registers nothing, so it is NOT iterated — this is
+        // what keeps it from drawing a spurious "no artifacts matched" warn and
+        // from inflating the `multi_crate` count that drives per-crate output
+        // naming. Mirrors how verify-release/archive scope to the crates that
+        // actually contribute release output rather than every config crate.
         let selected_crates = ctx.options.selected_crates.clone();
         let crates: Vec<String> = ctx
             .config
@@ -393,7 +410,11 @@ impl Stage for AttestStage {
             .iter()
             .filter(|c| selected_crates.is_empty() || selected_crates.contains(&c.name))
             .map(|c| c.name.clone())
+            .filter(|name| crate_has_artifacts(ctx, name))
             .collect();
+        // Per-crate output naming only kicks in when more than one crate
+        // contributes attestable output in the same invocation (workspace
+        // per-crate mode).
         let multi_crate = crates.len() > 1;
 
         let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();

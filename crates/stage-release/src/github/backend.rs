@@ -2,10 +2,12 @@
 //!
 //! [`run_github_backend`] is the body of the `ScmTokenType::GitHub` match arm
 //! in the dispatcher loop: it resolves the repo + tag, creates / updates /
-//! replaces the release, runs the nightly-retention sweep, and drives the
-//! parallel asset-upload loop with bounded transient retry. The lookup,
-//! classifier, and client helpers it composes live in the sibling
-//! [`super::lookup`], [`super::spec`], and the per-tool helper submodules.
+//! replaces the release, drives the parallel asset-upload loop with bounded
+//! transient retry, publishes the release, and only then runs the
+//! nightly-retention sweep (so the new release is live before any prior
+//! release is pruned). The lookup, classifier, and client helpers it composes
+//! live in the sibling [`super::lookup`], [`super::spec`], and the per-tool
+//! helper submodules.
 
 use std::sync::Arc;
 
@@ -222,102 +224,11 @@ pub(crate) fn run_github_backend(
             None
         };
 
-        // Nightly retention sweep: keep the N newest nightly releases (matched
-        // by the rendered nightly release name) and delete the rest before
-        // creating the new one, so after this run exactly `keep_last` nightly
-        // releases survive. `keep_last: 1` is the rolling-single-release case
-        // (the `keep_single_release` alias resolves to it upstream); larger N
-        // keeps N (e.g. nushell keeps 10). All route through the same prune
-        // arithmetic ([`nightly_releases_to_prune`]) — no parallel path.
-        //
-        // Skipped when an existing-draft reuse is in play (the draft IS the
-        // release that gets PATCHed).
-        //
-        // Tag handling: each pruned release's git ref is deleted too, EXCEPT
-        // the tag about to be (re)created — leaving that ref intact lets the
-        // create POST below reuse it instead of dangling. For distinct-tag
-        // schemes (nushell `…-nightly.<build>+<sha>`) every pruned tag differs
-        // from the current one, so all stale refs are cleaned up.
-        if let Some(keep_last) = retention_keep_last
-            && existing_draft.is_none()
-        {
-            let existing = list_releases_by_name(
-                &octo,
-                &github.owner,
-                &github.name,
-                release_name,
-                &policy,
-                Some(&retry_after_capture),
-            )
-            .await?;
-            let to_prune = nightly_releases_to_prune(&existing, keep_last);
-            for (rel_id, rel_tag) in to_prune {
-                log.status(&format!(
-                    "nightly retention (keep_last={keep_last}): deleting prior release '{release_name}' (id={rel_id}, tag='{rel_tag}')"
-                ));
-                let delete_result = retry_octocrab_call(&policy, "delete release (retention)", Some(&retry_after_capture), || {
-                    let octo = octo.clone();
-                    let owner = github.owner.clone();
-                    let repo = github.name.clone();
-                    async move {
-                        octo.repos(&owner, &repo)
-                            .releases()
-                            .delete(rel_id)
-                            .await
-                    }
-                })
-                .await;
-                match delete_result {
-                    Ok(()) => {}
-                    Err(ref err) if is_octocrab_404(err) => {
-                        // A concurrent process already removed the release; the
-                        // post-condition (release gone) is satisfied.
-                        log.status(&format!(
-                            "nightly retention: release '{release_name}' (id={rel_id}) already deleted by concurrent process"
-                        ));
-                    }
-                    Err(err) => {
-                        return Err(anyhow::Error::new(err)).with_context(|| {
-                            format!(
-                                "release: delete prior nightly release (id={rel_id}) on {}/{}",
-                                github.owner, github.name
-                            )
-                        });
-                    }
-                }
-                // Delete the pruned release's git tag too, unless it is the tag
-                // about to be (re)created (which the create POST reuses).
-                if rel_tag != tag && !rel_tag.is_empty() {
-                    let tag_route = format!(
-                        "/repos/{}/{}/git/refs/tags/{}",
-                        github.owner, github.name, rel_tag
-                    );
-                    let tag_delete: std::result::Result<(), octocrab::Error> =
-                        retry_octocrab_call(&policy, "delete tag (retention)", Some(&retry_after_capture), || {
-                            let octo = octo.clone();
-                            let route = tag_route.clone();
-                            async move {
-                                octo._delete(route, None::<&()>).await.map(|_| ())
-                            }
-                        })
-                        .await;
-                    match tag_delete {
-                        Ok(()) => {}
-                        // Already-absent tag is success (the prune post-condition).
-                        Err(ref err) if is_octocrab_404(err) => {}
-                        Err(err) => {
-                            // A failed tag delete is non-fatal: the release (the
-                            // user-visible artifact) is already gone. Warn and
-                            // continue rather than abort the whole publish.
-                            log.warn(&format!(
-                                "nightly retention: failed to delete stale tag '{rel_tag}' on {}/{}: {err}",
-                                github.owner, github.name
-                            ));
-                        }
-                    }
-                }
-            }
-        }
+        // Nightly retention runs AFTER the new release is created, uploaded,
+        // and published (see the sweep below the publish PATCH). Pruning before
+        // creation is irreversible-before-reversible: a hard failure between the
+        // delete and a live new release would leave zero published nightly with
+        // `keep_last: 1`.
 
         // When updating an existing release, apply mode-based body composition.
         // Also track any existing release found by tag so it can be PATCHed
@@ -1039,6 +950,104 @@ pub(crate) fn run_github_backend(
             }
         }
 
+        // Nightly retention sweep: keep the N newest nightly releases (matched
+        // by the rendered nightly release name) and delete the rest, AFTER the
+        // new release is created, uploaded, and published. Running it here
+        // (rather than before creation) is irreversible-before-reversible: the
+        // new release is live first, so a failure during the prune can never
+        // leave zero published nightly. `keep_last: 1` is the
+        // rolling-single-release case (the `keep_single_release` alias resolves
+        // to it upstream); larger N keeps N. All route through the same prune
+        // arithmetic ([`nightly_releases_to_prune`]) — no parallel path.
+        //
+        // Skipped when an existing-draft reuse is in play (the draft IS the
+        // release that gets PATCHed).
+        //
+        // The just-created release id (`release_id_raw`) is passed as the
+        // protected id so the prune arithmetic can never select the release this
+        // run just published. Each pruned release's git ref is deleted too,
+        // EXCEPT the current `tag` (the live release's own ref).
+        if let Some(keep_last) = retention_keep_last
+            && existing_draft.is_none()
+        {
+            let existing = list_releases_by_name(
+                &octo,
+                &github.owner,
+                &github.name,
+                release_name,
+                &policy,
+                Some(&retry_after_capture),
+            )
+            .await?;
+            let to_prune = nightly_releases_to_prune(&existing, keep_last, release_id_raw);
+            for (rel_id, rel_tag) in to_prune {
+                log.status(&format!(
+                    "nightly retention (keep_last={keep_last}): deleting prior release '{release_name}' (id={rel_id}, tag='{rel_tag}')"
+                ));
+                let delete_result = retry_octocrab_call(&policy, "delete release (retention)", Some(&retry_after_capture), || {
+                    let octo = octo.clone();
+                    let owner = github.owner.clone();
+                    let repo = github.name.clone();
+                    async move {
+                        octo.repos(&owner, &repo)
+                            .releases()
+                            .delete(rel_id)
+                            .await
+                    }
+                })
+                .await;
+                match delete_result {
+                    Ok(()) => {}
+                    Err(ref err) if is_octocrab_404(err) => {
+                        // A concurrent process already removed the release; the
+                        // post-condition (release gone) is satisfied.
+                        log.status(&format!(
+                            "nightly retention: release '{release_name}' (id={rel_id}) already deleted by concurrent process"
+                        ));
+                    }
+                    Err(err) => {
+                        return Err(anyhow::Error::new(err)).with_context(|| {
+                            format!(
+                                "release: delete prior nightly release (id={rel_id}) on {}/{}",
+                                github.owner, github.name
+                            )
+                        });
+                    }
+                }
+                // Delete the pruned release's git tag too, unless it is the live
+                // release's own tag (which must stay intact).
+                if rel_tag != tag && !rel_tag.is_empty() {
+                    let tag_route = format!(
+                        "/repos/{}/{}/git/refs/tags/{}",
+                        github.owner, github.name, rel_tag
+                    );
+                    let tag_delete: std::result::Result<(), octocrab::Error> =
+                        retry_octocrab_call(&policy, "delete tag (retention)", Some(&retry_after_capture), || {
+                            let octo = octo.clone();
+                            let route = tag_route.clone();
+                            async move {
+                                octo._delete(route, None::<&()>).await.map(|_| ())
+                            }
+                        })
+                        .await;
+                    match tag_delete {
+                        Ok(()) => {}
+                        // Already-absent tag is success (the prune post-condition).
+                        Err(ref err) if is_octocrab_404(err) => {}
+                        Err(err) => {
+                            // A failed tag delete is non-fatal: the release (the
+                            // user-visible artifact) is already gone. Warn and
+                            // continue rather than abort the whole publish.
+                            log.warn(&format!(
+                                "nightly retention: failed to delete stale tag '{rel_tag}' on {}/{}: {err}",
+                                github.owner, github.name
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
         Ok::<String, anyhow::Error>(html_url)
     })?;
 
@@ -1652,36 +1661,20 @@ mod orchestrator_tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
 
-        // Two existing nightly releases sharing the name "demo-nightly" but
-        // with distinct tags (newest-first, as GitHub lists them). The new
-        // release (tag v1.2.3) will become the newest, so with keep_last=2
-        // id=11 is kept and id=10 + its tag "nightly.0" is pruned.
+        // The retention sweep now runs AFTER the new release is created, so the
+        // list-by-name returns the just-created release (id=42) alongside the
+        // two existing nightly releases. Newest-first: 42, 11, 10. With
+        // keep_last=2 the kept set is {42, 11}; id=10 + its tag "nightly.0" is
+        // pruned. The new release id=42 must NEVER be pruned.
+        let new_release = release_json_named(addr, 42, "demo-nightly", "v1.2.3");
         let list_body = format!(
-            "[{},{}]",
+            "[{},{},{}]",
+            release_json_named(addr, 42, "demo-nightly", "v1.2.3"),
             release_json_named(addr, 11, "demo-nightly", "nightly.1"),
             release_json_named(addr, 10, "demo-nightly", "nightly.0"),
         );
-        let new_release = release_json_named(addr, 42, "demo-nightly", "v1.2.3");
 
         let routes = vec![
-            ScriptedRoute {
-                method: "GET",
-                path_pattern: "/repos/o/r/releases?per_page=100&page=1",
-                response: http_ok(list_body),
-                times: Some(1),
-            },
-            ScriptedRoute {
-                method: "DELETE",
-                path_pattern: "/repos/o/r/releases/10",
-                response: HTTP_204,
-                times: Some(1),
-            },
-            ScriptedRoute {
-                method: "DELETE",
-                path_pattern: "/repos/o/r/git/refs/tags/nightly.0",
-                response: HTTP_204,
-                times: Some(1),
-            },
             ScriptedRoute {
                 method: "POST",
                 path_pattern: "/repos/o/r/releases",
@@ -1698,6 +1691,24 @@ mod orchestrator_tests {
                 method: "POST",
                 path_pattern: "/upload/42?name=demo.tar.gz",
                 response: http_201(asset_json(7, "demo.tar.gz", artifact_len)),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases?per_page=100&page=1",
+                response: http_ok(list_body),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/repos/o/r/releases/10",
+                response: HTTP_204,
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/repos/o/r/git/refs/tags/nightly.0",
+                response: HTTP_204,
                 times: Some(1),
             },
         ];
@@ -1741,6 +1752,37 @@ mod orchestrator_tests {
                 .iter()
                 .any(|e| e.method == "DELETE" && e.path == "/repos/o/r/releases/11"),
             "must KEEP the newest existing release id=11; calls: {entries:?}",
+        );
+        // The just-created release (id=42) must NEVER be deleted by the sweep.
+        assert!(
+            !entries
+                .iter()
+                .any(|e| e.method == "DELETE" && e.path == "/repos/o/r/releases/42"),
+            "the just-created release id=42 must never be pruned; calls: {entries:?}",
+        );
+
+        // M6 ordering: the new release must be created (and its asset uploaded)
+        // BEFORE any retention delete fires. Pruning before the new release is
+        // live is irreversible-before-reversible.
+        let create_pos = entries
+            .iter()
+            .position(|e| e.method == "POST" && e.path == "/repos/o/r/releases")
+            .expect("create POST must occur");
+        let upload_pos = entries
+            .iter()
+            .position(|e| e.method == "POST" && e.path == "/upload/42?name=demo.tar.gz")
+            .expect("asset upload POST must occur");
+        let first_delete_pos = entries
+            .iter()
+            .position(|e| e.method == "DELETE" && e.path.starts_with("/repos/o/r/releases/"))
+            .expect("a retention delete must occur");
+        assert!(
+            create_pos < first_delete_pos,
+            "release must be created before any retention delete; calls: {entries:?}",
+        );
+        assert!(
+            upload_pos < first_delete_pos,
+            "asset upload must complete before any retention delete; calls: {entries:?}",
         );
     }
 

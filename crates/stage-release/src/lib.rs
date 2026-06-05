@@ -20,12 +20,76 @@ mod gitlab;
 pub mod publisher;
 mod release_body;
 mod run;
+pub use run::collect_release_upload_candidates;
 
 #[cfg(test)]
 mod test_support;
 
 #[cfg(test)]
 mod tests;
+
+// ---------------------------------------------------------------------------
+// classify_asset_conflict — shared release-asset overwrite decision
+// ---------------------------------------------------------------------------
+
+/// The decision for a release asset whose name already exists (or may exist)
+/// on the remote, derived from a byte-size probe plus the user's
+/// `replace_existing_artifacts` setting.
+///
+/// This is the single source of truth for the immutable-releases invariant
+/// shared by every SCM backend: a **byte-identical** remote asset is a no-op,
+/// not an overwrite, so it is skipped REGARDLESS of `replace_existing_artifacts`
+/// — the user's flag guards against replacing *different* bytes, never against
+/// re-uploading the same bytes. Each backend maps these variants onto its own
+/// action type (GitHub's post-422 `AlreadyExistsAction`, Gitea's pre-upload
+/// `GiteaUploadAction`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AssetConflict {
+    /// Remote asset is present and byte-identical to the local file: skip the
+    /// upload (idempotent no-op), independent of the replace flag.
+    IdenticalSkip,
+    /// Remote asset is present, differs from the local file, and the user
+    /// opted into overwrites (`replace_existing_artifacts: true`): delete the
+    /// stale asset, then upload.
+    ReplaceDiffering,
+    /// Remote asset is present, differs from the local file, and overwrites are
+    /// forbidden (`replace_existing_artifacts: false`): surface the conflict
+    /// instead of mutating published bytes.
+    ConflictForbidden,
+    /// No conflicting remote asset to reconcile: upload as-is.
+    NoConflict,
+}
+
+/// Classify a release-asset upload against any same-named remote asset.
+///
+/// `remote_present` is whether a remote asset with the target name exists at
+/// all; `remote_size` is its byte size when known (`None` = present but size
+/// unreadable). `local_size` is the local file's byte count.
+///
+/// Pure (no I/O) so the overwrite decision is unit-testable without a live
+/// API client. The same-size idempotent skip fires regardless of
+/// `replace_existing_artifacts`; a differing remote routes to overwrite when
+/// the flag is set and to a forbidden-conflict otherwise. An unknown remote
+/// size on a present asset is treated as a mismatch (better to bail/replace
+/// than silently keep possibly-wrong bytes).
+pub(crate) fn classify_asset_conflict(
+    replace_existing_artifacts: bool,
+    remote_present: bool,
+    remote_size: Option<u64>,
+    local_size: u64,
+) -> AssetConflict {
+    if !remote_present {
+        return AssetConflict::NoConflict;
+    }
+    if remote_size == Some(local_size) {
+        return AssetConflict::IdenticalSkip;
+    }
+    if replace_existing_artifacts {
+        AssetConflict::ReplaceDiffering
+    } else {
+        AssetConflict::ConflictForbidden
+    }
+}
 
 // ---------------------------------------------------------------------------
 // retry_upload — shared exponential-backoff retry for upload operations
@@ -81,8 +145,8 @@ where
 
 /// Set `metadata["url"]` on every artifact for the given crate, constructing
 /// the download URL from the SCM backend's download base, owner/repo, tag, and
-/// artifact name. This is the release-URL-template pattern and
-/// allows publishers to resolve download URLs without explicit `url_template`.
+/// artifact name. This lets publishers resolve download URLs without an
+/// explicit `url_template`.
 pub(crate) fn populate_artifact_download_urls(
     ctx: &mut Context,
     crate_name: &str,
@@ -192,10 +256,9 @@ pub(crate) fn compose_release_url(
 ///
 /// # Design note
 ///
-/// The `prerelease == "auto"` check could be evaluated once at config-load
-/// time: it inspects
-/// `ctx.Semver.Prerelease` and stores a single `ctx.PreRelease` flag for the
-/// whole release run. Every release in the run shares that one decision.
+/// A prerelease decision could be made once at config-load time by inspecting
+/// the parsed semver's prerelease segment and storing a single flag for the
+/// whole release run, so every release in the run shares that one decision.
 ///
 /// Anodizer evaluates per-tag at run time. Each crate in a workspace can
 /// have an independent tag with its own prerelease suffix, so a single
@@ -248,8 +311,8 @@ pub(crate) fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &st
 /// release body templated with `{{ .Checksums }}` renders the full
 /// workspace inventory).
 ///
-/// Mixed mode (some combined + some split sidecars) falls back to the
-/// a map keyed by `ChecksumOf` for every artifact, with the
+/// Mixed mode (some combined + some split sidecars) falls back to a map keyed
+/// by `ChecksumOf` for every artifact, with the
 /// combined files keyed by their artifact `name` since they have no
 /// `ChecksumOf`. Mixed mode is unusual but the map shape stays consistent
 /// for templates that already iterate with `{% for k, v in Checksums %}`.
@@ -309,3 +372,64 @@ pub(crate) fn populate_checksums_var(ctx: &mut Context) {
 // ---------------------------------------------------------------------------
 
 pub struct ReleaseStage;
+
+#[cfg(test)]
+mod asset_conflict_tests {
+    //! The shared overwrite classifier consumed by both the GitHub and Gitea
+    //! backends. The byte-identical-skip invariant lives here once; the
+    //! per-backend projection tests (`spec.rs` / `gitea.rs`) pin the mapping
+    //! onto their own action enums.
+    use super::{AssetConflict, classify_asset_conflict};
+
+    #[test]
+    fn absent_remote_is_no_conflict_regardless_of_flag() {
+        assert_eq!(
+            classify_asset_conflict(false, false, None, 100),
+            AssetConflict::NoConflict
+        );
+        assert_eq!(
+            classify_asset_conflict(true, false, None, 100),
+            AssetConflict::NoConflict
+        );
+    }
+
+    #[test]
+    fn identical_bytes_skip_regardless_of_flag() {
+        // The cardinal invariant: same size = idempotent no-op even when
+        // `replace_existing_artifacts: false`.
+        assert_eq!(
+            classify_asset_conflict(false, true, Some(100), 100),
+            AssetConflict::IdenticalSkip
+        );
+        assert_eq!(
+            classify_asset_conflict(true, true, Some(100), 100),
+            AssetConflict::IdenticalSkip
+        );
+    }
+
+    #[test]
+    fn differing_bytes_with_replace_allowed_overwrites() {
+        assert_eq!(
+            classify_asset_conflict(true, true, Some(100), 200),
+            AssetConflict::ReplaceDiffering
+        );
+        // Unknown remote size on a present asset is treated as a mismatch.
+        assert_eq!(
+            classify_asset_conflict(true, true, None, 200),
+            AssetConflict::ReplaceDiffering
+        );
+    }
+
+    #[test]
+    fn differing_bytes_with_replace_forbidden_is_conflict() {
+        assert_eq!(
+            classify_asset_conflict(false, true, Some(100), 200),
+            AssetConflict::ConflictForbidden
+        );
+        // Present-but-unreadable size + no opt-in: bail rather than mutate.
+        assert_eq!(
+            classify_asset_conflict(false, true, None, 200),
+            AssetConflict::ConflictForbidden
+        );
+    }
+}
