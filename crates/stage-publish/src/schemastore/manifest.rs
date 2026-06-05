@@ -79,3 +79,38 @@ pub(crate) fn sanitize_description(desc: &str) -> Result<String, DescriptionErro
     }
     Ok(trimmed.to_string())
 }
+
+/// Result of classifying a schema's `$schema` against SchemaStore's CI gate.
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Dialect {
+    /// draft-04/06/07 — accepted unconditionally.
+    Ok,
+    /// 2019-09 / 2020-12 — rejected unless allowlisted in `highSchemaVersion`.
+    TooHigh,
+    /// Not a recognized json-schema dialect URL.
+    Unknown,
+}
+
+/// Classify a `$schema` URL. Mirrors SchemaStore's `SchemaDialects` table.
+#[allow(dead_code)]
+pub(crate) fn classify_dialect(schema_url: &str) -> Dialect {
+    let u = schema_url.trim_end_matches('#');
+    if u.contains("/draft-04/") || u.contains("/draft-06/") || u.contains("/draft-07/") {
+        Dialect::Ok
+    } else if u.contains("/draft/2019-09/") || u.contains("/draft/2020-12/") {
+        Dialect::TooHigh
+    } else {
+        Dialect::Unknown
+    }
+}
+
+/// SchemaStore requires `$id` to be an absolute http(s) URL.
+#[allow(dead_code)]
+pub(crate) fn check_id(id: Option<&str>) -> anyhow::Result<()> {
+    match id {
+        Some(s) if s.starts_with("http://") || s.starts_with("https://") => Ok(()),
+        Some(s) => anyhow::bail!("schema `$id` must be an http(s) URL, got `{s}`"),
+        None => anyhow::bail!("schema is missing a `$id` (SchemaStore requires an http(s) `$id`)"),
+    }
+}
