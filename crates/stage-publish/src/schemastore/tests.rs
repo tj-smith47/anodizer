@@ -1,4 +1,6 @@
-use crate::schemastore::catalog::{Verdict, build_entry_json, splice_entry, verdict};
+use crate::schemastore::catalog::{
+    Verdict, build_entry_json, merge_versions, splice_entry, verdict,
+};
 use crate::schemastore::manifest::{
     DescriptionError, Dialect, check_id, classify_dialect, sanitize_description, slugify,
 };
@@ -185,4 +187,36 @@ fn splice_appends_into_empty_array() {
     let arr = v["schemas"].as_array().unwrap();
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["name"], "First");
+}
+
+#[test]
+fn merge_versions_carries_prior_and_adds_new() {
+    let mut prior = serde_json::Map::new();
+    prior.insert(
+        "1.2".into(),
+        serde_json::json!("https://www.schemastore.org/cfgd-config-1.2.json"),
+    );
+    let merged = merge_versions(
+        Some(&prior),
+        "1.3",
+        "https://www.schemastore.org/cfgd-config-1.3.json",
+    );
+    assert_eq!(
+        merged.get("1.2").unwrap(),
+        "https://www.schemastore.org/cfgd-config-1.2.json"
+    );
+    assert_eq!(
+        merged.get("1.3").unwrap(),
+        "https://www.schemastore.org/cfgd-config-1.3.json"
+    );
+}
+
+#[test]
+fn merge_versions_from_empty() {
+    let merged = merge_versions(None, "1.0.0", "https://www.schemastore.org/x-1.0.0.json");
+    assert_eq!(merged.len(), 1);
+    assert_eq!(
+        merged.get("1.0.0").unwrap(),
+        "https://www.schemastore.org/x-1.0.0.json"
+    );
 }

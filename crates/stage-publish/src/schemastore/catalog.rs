@@ -12,6 +12,19 @@ pub(crate) enum Verdict {
     Update,
 }
 
+/// Merge a new version into an existing `versions` map (or start fresh),
+/// carrying all prior versions forward.
+#[allow(dead_code)]
+pub(crate) fn merge_versions(
+    prior: Option<&Map<String, Value>>,
+    version: &str,
+    url: &str,
+) -> Map<String, Value> {
+    let mut m = prior.cloned().unwrap_or_default();
+    m.insert(version.to_string(), Value::String(url.to_string()));
+    m
+}
+
 /// Decide add/update/no-op by matching `name` in `catalog_json` against the
 /// desired entry `want`. Comparison is structural (key order irrelevant).
 #[allow(dead_code)]
