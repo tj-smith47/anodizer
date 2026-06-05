@@ -46,7 +46,7 @@ List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Orde
 | `homebrew_casks` | list of HomebrewCaskConfig | — | Top-level Homebrew Cask configurations. `homebrew_casks` is a top-level array with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, completions, manpages, structured uninstall/zap, etc. |
 | `includes` | list of IncludeSpec | — | Additional config files to merge into this config. Supports plain string paths, `from_file:` for structured file paths, and `from_url:` for fetching configs from URLs with optional headers. |
 | `makeselfs` | list of MakeselfConfig | `[]` | Makeself self-extracting archive configurations. |
-| `mcp` | McpConfig | `{"auth":{"type":"none"},"description":null,"homepage":null,"if":null,"name":null,"packages":[],"registry":null,"repository":{"id":"","source":"","subfolder":"","url":""},"skip":null,"title":null,"transports":[]}` | MCP (Model Context Protocol) server registry publishing configuration. When `name` is empty (the default), the publisher is skipped. The `mcp:` publisher block. |
+| `mcp` | McpConfig | `{"name":null,"title":null,"description":null,"homepage":null,"packages":[],"transports":[],"skip":null,"repository":{"url":"","source":"","id":"","subfolder":""},"auth":{"type":"none"},"registry":null,"if":null}` | MCP (Model Context Protocol) server registry publishing configuration. When `name` is empty (the default), the publisher is skipped. The `mcp:` publisher block. |
 | `metadata` | MetadataConfig | — | Project metadata configuration (applied to metadata.json output files). |
 | `milestones` | list of MilestoneConfig | — | Milestone closing configurations. |
 | `monorepo` | MonorepoConfig | — | Monorepo configuration. When configured, tag discovery filters by tag_prefix and the working directory is scoped to dir. |
@@ -60,7 +60,7 @@ List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Orde
 | `report_sizes` | bool | — | When true, log artifact file sizes after building. |
 | `retry` | RetryConfig | — | Top-level retry configuration applied to network-bound operations (announcers, git providers, HTTP uploads, docker pipes). When omitted, `RetryConfig::default()` is used (10 attempts, 10s base, 5m cap — the project-level retry policy). |
 | `sboms` | list of SbomConfig | `[]` | Software bill of materials (SBOM) generation configurations. |
-| `schemastore` | SchemastoreConfig | `{"commit_author":null,"if":null,"repository":null,"schemas":[],"skip":null,"versioned":null}` | SchemaStore publisher. Registers the project's JSON Schema(s) on SchemaStore at release time. When `schemas` is empty (the default), the publisher is skipped. The `schemastore:` publisher block. |
+| `schemastore` | SchemastoreConfig | `{"repository":null,"commit_author":null,"versioned":null,"skip":null,"if":null,"schemas":[]}` | SchemaStore publisher. Registers the project's JSON Schema(s) on SchemaStore at release time. When `schemas` is empty (the default), the publisher is skipped. The `schemastore:` publisher block. |
 | `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
 | `snapshot` | SnapshotConfig | — | Snapshot release configuration (local/non-tag builds). |
 | `source` | SourceConfig | — | Source archive configuration. |
@@ -72,7 +72,7 @@ List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Orde
 | `variables` | map | — | Custom template variables accessible as `{{ Var.<key> }}` in templates. Provides a way to define reusable values, especially useful with config includes.
 
 Stored as a `BTreeMap` so rendering iterates in deterministic (sorted) key order — without this guarantee, a value that references another variable (`b: "{{ Var.a }}_v2"`) could render before its dependency on a different process / host. The current resolver is single-pass (one render per value), so cross-variable references only resolve when the referenced key sorts earlier. |
-| `verify_release` | VerifyReleaseConfig | `{"assert_assets":true,"enabled":false,"install_smoke":null}` | Opt-in post-release verification gate. Runs LAST (after the release is created and every publisher has run) and REPORTS post-publish defects — missing assets, failed install smoke-tests, glibc-ceiling violations. Because it runs after the irreversible publish, a failure exits non-zero to flag CI but never undoes the release. Off unless `verify_release.enabled: true`. |
+| `verify_release` | VerifyReleaseConfig | `{"enabled":false,"assert_assets":true,"install_smoke":null}` | Opt-in post-release verification gate. Runs LAST (after the release is created and every publisher has run) and REPORTS post-publish defects — missing assets, failed install smoke-tests, glibc-ceiling violations. Because it runs after the irreversible publish, a failure exits non-zero to flag CI but never undoes the release. Off unless `verify_release.enabled: true`. |
 | `version` | integer | — | Schema version. Currently supports 1 (implicit default) and 2. |
 | `version_files` | list of string | — | Repo-committed files that embed the release version outside `Cargo.toml` (e.g. a Helm `Chart.yaml`, an install doc, a README badge), given as repo-root-relative path strings. At `tag` time each listed file has its occurrences of the old version rewritten to the new version — both the bare (`0.1.0`) and `v`-prefixed (`v0.1.0`) forms, word-boundary anchored — and is staged into the same bump commit as `Cargo.toml` / `Cargo.lock`, so these files never drift from the tag.
 
@@ -526,7 +526,7 @@ Publishes an `apiv0.ServerJSON` document to the MCP registry (`https://registry.
 | `name` | string | — | Server name in reverse-DNS format (e.g. `io.github.user/weather`). Must contain exactly one forward slash separating namespace from server name. An empty / unset value skips the publisher entirely. |
 | `packages` | list of McpPackage | `[]` | Distribution packages — one entry per package registry (npm, pypi, nuget, oci, mcpb). |
 | `registry` | string | — | Override the registry endpoint (for staging or a private mirror). Defaults to `https://registry.modelcontextprotocol.io` when unset. |
-| `repository` | McpRepository | `{"id":"","source":"","subfolder":"","url":""}` | Optional source repository metadata. Emitted as the `repository` object in the registry payload — omitted entirely when `url` is empty. |
+| `repository` | McpRepository | `{"url":"","source":"","id":"","subfolder":""}` | Optional source repository metadata. Emitted as the `repository` object in the registry payload — omitted entirely when `url` is empty. |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |

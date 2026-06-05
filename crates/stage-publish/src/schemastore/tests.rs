@@ -1,6 +1,37 @@
+use crate::schemastore::catalog::{Verdict, verdict};
 use crate::schemastore::manifest::{
     DescriptionError, Dialect, check_id, classify_dialect, sanitize_description, slugify,
 };
+
+const CATALOG: &str = r#"{ "schemas": [
+  { "name": "Aaa", "description": "a", "fileMatch": ["a"], "url": "https://x/a.json" },
+  { "name": "Anodizer", "description": "d", "fileMatch": [".anodizer.yaml"], "url": "https://tj-smith47.github.io/anodizer/schema.json" }
+] }"#;
+
+#[test]
+fn verdict_noop_when_entry_present_and_equal() {
+    let want = serde_json::json!({
+        "name": "Anodizer", "description": "d",
+        "fileMatch": [".anodizer.yaml"],
+        "url": "https://tj-smith47.github.io/anodizer/schema.json"
+    });
+    assert_eq!(verdict(CATALOG, "Anodizer", &want).unwrap(), Verdict::NoOp);
+}
+
+#[test]
+fn verdict_update_when_present_but_differs() {
+    let want = serde_json::json!({ "name": "Anodizer", "description": "CHANGED", "fileMatch": [".anodizer.yaml"], "url": "https://tj-smith47.github.io/anodizer/schema.json" });
+    assert_eq!(
+        verdict(CATALOG, "Anodizer", &want).unwrap(),
+        Verdict::Update
+    );
+}
+
+#[test]
+fn verdict_add_when_absent() {
+    let want = serde_json::json!({ "name": "Zzz", "description": "z", "fileMatch": ["z"], "url": "https://x/z.json" });
+    assert_eq!(verdict(CATALOG, "Zzz", &want).unwrap(), Verdict::Add);
+}
 
 #[test]
 fn slugify_lowercases_and_hyphenates() {

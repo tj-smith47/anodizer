@@ -299,24 +299,24 @@
     "mcp": {
       "description": "MCP (Model Context Protocol) server registry publishing configuration. When `name` is empty (the default), the publisher is skipped. The `mcp:` publisher block.",
       "default": {
+        "name": null,
+        "title": null,
+        "description": null,
+        "homepage": null,
+        "packages": [],
+        "transports": [],
+        "skip": null,
+        "repository": {
+          "url": "",
+          "source": "",
+          "id": "",
+          "subfolder": ""
+        },
         "auth": {
           "type": "none"
         },
-        "description": null,
-        "homepage": null,
-        "if": null,
-        "name": null,
-        "packages": [],
         "registry": null,
-        "repository": {
-          "id": "",
-          "source": "",
-          "subfolder": "",
-          "url": ""
-        },
-        "skip": null,
-        "title": null,
-        "transports": []
+        "if": null
       },
       "allOf": [
         {
@@ -465,12 +465,12 @@
     "schemastore": {
       "description": "SchemaStore publisher. Registers the project's JSON Schema(s) on SchemaStore at release time. When `schemas` is empty (the default), the publisher is skipped. The `schemastore:` publisher block.",
       "default": {
-        "commit_author": null,
-        "if": null,
         "repository": null,
-        "schemas": [],
+        "commit_author": null,
+        "versioned": null,
         "skip": null,
-        "versioned": null
+        "if": null,
+        "schemas": []
       },
       "allOf": [
         {
@@ -578,8 +578,8 @@
     "verify_release": {
       "description": "Opt-in post-release verification gate. Runs LAST (after the release is created and every publisher has run) and REPORTS post-publish defects — missing assets, failed install smoke-tests, glibc-ceiling violations. Because it runs after the irreversible publish, a failure exits non-zero to flag CI but never undoes the release. Off unless `verify_release.enabled: true`.",
       "default": {
-        "assert_assets": true,
         "enabled": false,
+        "assert_assets": true,
         "install_smoke": null
       },
       "allOf": [
@@ -8398,10 +8398,10 @@
         "repository": {
           "description": "Optional source repository metadata. Emitted as the `repository` object in the registry payload — omitted entirely when `url` is empty.",
           "default": {
-            "id": "",
+            "url": "",
             "source": "",
-            "subfolder": "",
-            "url": ""
+            "id": "",
+            "subfolder": ""
           },
           "allOf": [
             {
