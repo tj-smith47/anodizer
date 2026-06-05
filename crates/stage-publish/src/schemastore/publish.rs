@@ -176,6 +176,93 @@ pub(crate) fn plan_schema(
     })
 }
 
+/// Upstream state the change-decision compares the desired plan against,
+/// carrying only the strings the caller fetched (the probe fetches them over
+/// HTTP; `run_real` reads them from the synced clone).
+///
+/// A `None` field means the caller could not obtain that piece. The
+/// change-decision treats every `None` it needs as "change required" so a
+/// missing fetch can never collapse to a false no-op — see
+/// [`schema_change_needed`].
+pub(crate) struct RemoteState<'a> {
+    /// Upstream `src/api/json/catalog.json` content.
+    pub(crate) catalog_json: &'a str,
+    /// Upstream `src/schemas/json/<slug>.json` content, or `None` when the
+    /// file is absent (404) or was not fetched. Only consulted for vendor.
+    pub(crate) vendor_file: Option<&'a str>,
+    /// Upstream `src/schema-validation.jsonc` content, or `None` when not
+    /// fetched. Only consulted for a too-high-dialect vendor schema.
+    pub(crate) jsonc: Option<&'a str>,
+}
+
+/// Decide whether publishing `plan` would change the upstream tree.
+///
+/// This is the SINGLE change-decision shared by the pre-clone network probe
+/// ([`probe_remote_all_noop`]) and the authoritative `run_real` path, so the
+/// two can never disagree about whether a schema is already current.
+///
+/// `local_schema` is the locally-formatted vendored schema content (the bytes a
+/// real publish would write); pass `None` for external entries, which carry no
+/// file.
+///
+/// A schema is a no-op (returns `false`) ONLY when every required piece is
+/// present and matches:
+/// - **external:** the catalog entry already matches ([`catalog::verdict`] ⇒
+///   `NoOp`). There is no file, so that is the whole story.
+/// - **vendor:** the catalog entry matches AND the upstream vendored file byte-
+///   equals `local_schema` AND, when the schema's `$schema` dialect is
+///   [`Dialect::TooHigh`], the vendored filename is already listed in the
+///   upstream `highSchemaVersion` allowlist.
+///
+/// Any uncertainty is reported as change-needed (`true`): a malformed/absent
+/// catalog, a vendor schema whose upstream file was not fetched
+/// (`vendor_file: None`), or a too-high vendor whose `schema-validation.jsonc`
+/// was not fetched (`jsonc: None`). A no-op verdict is therefore always
+/// CERTAIN — never assumed on missing data.
+pub(crate) fn schema_change_needed(
+    plan: &SchemaPlan,
+    local_schema: Option<&str>,
+    remote: &RemoteState,
+) -> bool {
+    // The catalog entry must already match; an `Err` (malformed catalog) is
+    // uncertainty ⇒ change needed.
+    match catalog::verdict(remote.catalog_json, &plan.name, &plan.desired_entry) {
+        Ok(catalog::Verdict::NoOp) => {}
+        Ok(catalog::Verdict::Add) | Ok(catalog::Verdict::Update) | Err(_) => return true,
+    }
+
+    if plan.mode != SchemaMode::Vendor {
+        // External: catalog entry match is sufficient — no file to compare.
+        return false;
+    }
+
+    // Vendor: the upstream file must byte-equal what we would write. A missing
+    // upstream file (None) or missing local content is uncertainty ⇒ change.
+    let (Some(local), Some(upstream)) = (local_schema, remote.vendor_file) else {
+        return true;
+    };
+    if local != upstream {
+        return true;
+    }
+
+    // Too-high dialect: the vendored filename must already be allowlisted. The
+    // dialect is read off the local schema (what we'd publish); if the jsonc
+    // wasn't fetched, treat as change-needed.
+    if raw_dialect(local) == Dialect::TooHigh {
+        let Some(jsonc) = remote.jsonc else {
+            return true;
+        };
+        let Ok(allow_name) = allowlist_name_for(plan) else {
+            return true;
+        };
+        if !super::scan::jsonc_array_contains(jsonc, "highSchemaVersion", &allow_name) {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Extract a catalog entry's existing `versions` map by `name`, if present.
 /// Returns `None` when the entry is absent or has no `versions`; `Some(Err)`
 /// only on malformed catalog JSON.
@@ -272,7 +359,148 @@ pub(crate) fn run_publish(ctx: &mut Context) -> anyhow::Result<PublishEvidence> 
         return plan_dry_run(ctx, &cfg, &effective, &log);
     }
 
+    // Steady-state fast path: probe the upstream catalog (one HTTP GET, plus a
+    // GET per vendor file) BEFORE cloning. When every schema is a CERTAIN no-op
+    // the publish needs no fork, no clone, and no token — anodizer's own
+    // external entry is a no-op every release. The probe is best-effort: any
+    // fetch failure or uncertainty falls through to the authoritative
+    // `run_real`, which re-derives from the synced clone.
+    if probe_remote_all_noop(ctx, &cfg, &effective, &log) {
+        log.status(&format!(
+            "schemastore: all {} schema(s) already current upstream — nothing to publish (no clone)",
+            effective.len()
+        ));
+        return Ok(PublishEvidence::new("schemastore"));
+    }
+
     run_real(ctx, &cfg, &effective, &log)
+}
+
+/// Best-effort pre-clone probe: GET the upstream catalog (and, per vendor
+/// schema, the upstream vendored file and — for a too-high dialect — the
+/// `schema-validation.jsonc` allowlist) and return `true` only when EVERY
+/// effective schema is a CERTAIN no-op via the shared [`schema_change_needed`].
+///
+/// The decision logic is the same pure fn `run_real` uses, so the probe can
+/// never disagree with the authoritative path. Conservatism is total: any
+/// HTTP error, non-success status the caller can't interpret as "absent", or
+/// unexpected failure returns `false` (fall through to the clone). A `true`
+/// result therefore means every required piece was fetched and matched — never
+/// an assumption on missing data.
+fn probe_remote_all_noop(
+    ctx: &mut Context,
+    cfg: &SchemastoreConfig,
+    effective: &[(&SchemaEntry, String)],
+    log: &StageLogger,
+) -> bool {
+    match probe_remote_all_noop_inner(ctx, cfg, effective) {
+        Ok(all_noop) => all_noop,
+        Err(e) => {
+            // Never abort the release on a probe failure; fall through to the
+            // clone, which is the source of truth.
+            log.status(&format!(
+                "schemastore: pre-clone catalog probe skipped ({e}); proceeding to clone"
+            ));
+            false
+        }
+    }
+}
+
+/// Fallible core of [`probe_remote_all_noop`]. Returns `Ok(true)` only when the
+/// catalog GET succeeded and every schema is a certain no-op; `Ok(false)` when
+/// any schema needs a change; `Err` when the catalog could not be fetched (the
+/// wrapper turns that into a conservative fall-through).
+fn probe_remote_all_noop_inner(
+    ctx: &mut Context,
+    cfg: &SchemastoreConfig,
+    effective: &[(&SchemaEntry, String)],
+) -> anyhow::Result<bool> {
+    let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(30))?;
+    let raw_base = format!(
+        "https://raw.githubusercontent.com/{UPSTREAM_OWNER}/{UPSTREAM_REPO}/{UPSTREAM_DEFAULT_BRANCH}"
+    );
+    let catalog_url = format!("{raw_base}/{CATALOG_PATH}");
+    let catalog_json = fetch_raw_required(&client, &catalog_url)?;
+
+    let project_root = ctx
+        .options
+        .project_root
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    for (entry, description) in effective {
+        let plan = plan_schema_scoped(ctx, cfg, entry, description, Some(&catalog_json))?;
+
+        // Vendor: format the LOCAL file and fetch the upstream copy + (for a
+        // too-high dialect) the allowlist. External: no file.
+        let (local_schema, vendor_file, jsonc) = if plan.mode == SchemaMode::Vendor {
+            let local = read_local_vendor_schema(&project_root, entry)?;
+            let vendor_url = match plan.vendor_path.as_ref() {
+                Some(rel) => format!("{raw_base}/{}", rel.display()),
+                None => return Ok(false),
+            };
+            // A 404 ⇒ file absent upstream ⇒ Add ⇒ change-needed; a transport
+            // error is uncertainty ⇒ change-needed. Both are `None`, which the
+            // decision reads as change-needed.
+            let vendor_file = fetch_raw_optional(&client, &vendor_url)?;
+            let jsonc = if raw_dialect(&local) == Dialect::TooHigh {
+                let jsonc_url = format!("{raw_base}/{DIALECT_ALLOWLIST_PATH}");
+                fetch_raw_optional(&client, &jsonc_url)?
+            } else {
+                None
+            };
+            (Some(local), vendor_file, jsonc)
+        } else {
+            (None, None, None)
+        };
+
+        let remote = RemoteState {
+            catalog_json: &catalog_json,
+            vendor_file: vendor_file.as_deref(),
+            jsonc: jsonc.as_deref(),
+        };
+        if schema_change_needed(&plan, local_schema.as_deref(), &remote) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// GET a raw.githubusercontent.com URL whose presence is REQUIRED for the probe
+/// to proceed. A non-success status or transport error is an error (the probe
+/// wrapper falls through to the clone).
+fn fetch_raw_required(client: &reqwest::blocking::Client, url: &str) -> anyhow::Result<String> {
+    let resp = client
+        .get(url)
+        .send()
+        .with_context(|| format!("schemastore: probe GET {url}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        anyhow::bail!("schemastore: probe GET {url} returned {status}");
+    }
+    Ok(anodizer_core::http::body_of_blocking(resp))
+}
+
+/// GET a raw.githubusercontent.com URL whose absence is MEANINGFUL: a 404 maps
+/// to `None` (file absent upstream ⇒ change-needed), a success maps to
+/// `Some(body)`, and any OTHER non-success / transport error is an error (so
+/// the probe falls through rather than guessing).
+fn fetch_raw_optional(
+    client: &reqwest::blocking::Client,
+    url: &str,
+) -> anyhow::Result<Option<String>> {
+    let resp = client
+        .get(url)
+        .send()
+        .with_context(|| format!("schemastore: probe GET {url}"))?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        anyhow::bail!("schemastore: probe GET {url} returned {status}");
+    }
+    Ok(Some(anodizer_core::http::body_of_blocking(resp)))
 }
 
 /// Dry-run / snapshot path: compute the planned action per schema and log it
@@ -392,22 +620,42 @@ fn run_real(
     let mut applied: Vec<SchemaPlan> = Vec::new();
     for (entry, description) in effective {
         let plan = plan_schema_scoped(ctx, cfg, entry, description, Some(&catalog_json))?;
-        match plan.verdict {
-            Some(catalog::Verdict::NoOp) => {
-                log.status(&format!(
-                    "schemastore: `{}` already registered and current — no change",
-                    plan.name
-                ));
-                continue;
-            }
-            Some(catalog::Verdict::Add) | Some(catalog::Verdict::Update) | None => {}
+
+        // For a vendor schema, read + format the LOCAL file now so the change-
+        // decision can byte-compare it against the upstream copy. External
+        // entries have no file (`None`).
+        let local_schema = if plan.mode == SchemaMode::Vendor {
+            Some(read_local_vendor_schema(&project_root, entry)?)
+        } else {
+            None
+        };
+
+        // Gate on the SHARED change-decision, not the catalog-entry verdict
+        // alone: a vendor schema whose catalog entry is unchanged but whose
+        // file content drifted upstream must still be re-pushed. The clone
+        // already holds every upstream file, so the comparison is authoritative.
+        let cloned_vendor = read_cloned_vendor_file(repo_path, &plan);
+        let cloned_jsonc = read_cloned_jsonc(repo_path);
+        let remote = RemoteState {
+            catalog_json: &catalog_json,
+            vendor_file: cloned_vendor.as_deref(),
+            jsonc: cloned_jsonc.as_deref(),
+        };
+        if !schema_change_needed(&plan, local_schema.as_deref(), &remote) {
+            log.status(&format!(
+                "schemastore: `{}` already registered and current — no change",
+                plan.name
+            ));
+            continue;
         }
 
         // Vendor mode: copy the schema file in, and allowlist a too-high
         // dialect in the SAME PR (SchemaStore CI rejects 2019-09/2020-12
-        // otherwise). External mode writes nothing but the catalog entry.
-        if plan.mode == SchemaMode::Vendor {
-            write_vendor_schema(repo_path, &project_root, entry, &plan, log)?;
+        // otherwise). External mode writes nothing but the catalog entry. The
+        // file is written even when the catalog entry alone was a no-op (the
+        // drift case) — the decision above already proved a change is needed.
+        if let Some(formatted) = local_schema.as_deref() {
+            write_vendor_schema(repo_path, entry, &plan, formatted, log)?;
         }
 
         catalog_json = catalog::splice_entry(&catalog_json, &plan.name, &plan.desired_entry)
@@ -522,16 +770,16 @@ fn sync_to_upstream(repo_path: &std::path::Path, log: &StageLogger) -> anyhow::R
     Ok(())
 }
 
-/// Read the vendor schema off disk, format it, and write it into the cloned
-/// repo. When the schema's `$schema` dialect is too high for SchemaStore's CI,
-/// allowlist its catalog name in `schema-validation.jsonc` in the same PR.
-fn write_vendor_schema(
-    repo_path: &std::path::Path,
+/// Read the LOCAL vendor schema off `project_root` and reformat it to
+/// SchemaStore's prettier defaults — the exact bytes a publish would write.
+///
+/// Shared by the change-decision (which byte-compares this against the upstream
+/// copy) and the write path, so the content that gates the no-op and the
+/// content that lands in the PR are derived identically.
+fn read_local_vendor_schema(
     project_root: &std::path::Path,
     entry: &SchemaEntry,
-    plan: &SchemaPlan,
-    log: &StageLogger,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     let rel = entry.schema_file.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
             "{}: vendor entry has no schema_file",
@@ -546,9 +794,35 @@ fn write_vendor_schema(
             src.display()
         )
     })?;
-    let formatted = manifest::format_vendor_schema(&raw)
-        .with_context(|| format!("{}: format vendor schema", entry_label(&entry.name)))?;
+    manifest::format_vendor_schema(&raw)
+        .with_context(|| format!("{}: format vendor schema", entry_label(&entry.name)))
+}
 
+/// Read the upstream copy of a vendor plan's file from the cloned tree, or
+/// `None` when the plan has no vendor path or the file is absent upstream
+/// (which the change-decision reads as "differs ⇒ change needed").
+fn read_cloned_vendor_file(repo_path: &std::path::Path, plan: &SchemaPlan) -> Option<String> {
+    let rel = plan.vendor_path.as_ref()?;
+    std::fs::read_to_string(repo_path.join(rel)).ok()
+}
+
+/// Read the upstream `schema-validation.jsonc` from the cloned tree, or `None`
+/// when it is missing (the change-decision reads `None` for a too-high schema
+/// as "couldn't confirm the allowlist ⇒ change needed").
+fn read_cloned_jsonc(repo_path: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(repo_path.join(DIALECT_ALLOWLIST_PATH)).ok()
+}
+
+/// Write the already-formatted vendor schema `formatted` into the cloned repo.
+/// When the schema's `$schema` dialect is too high for SchemaStore's CI,
+/// allowlist its vendored filename in `schema-validation.jsonc` in the same PR.
+fn write_vendor_schema(
+    repo_path: &std::path::Path,
+    entry: &SchemaEntry,
+    plan: &SchemaPlan,
+    formatted: &str,
+    log: &StageLogger,
+) -> anyhow::Result<()> {
     let vendor_rel = plan
         .vendor_path
         .as_ref()
@@ -558,7 +832,7 @@ fn write_vendor_schema(
         std::fs::create_dir_all(parent)
             .with_context(|| format!("schemastore: mkdir {}", parent.display()))?;
     }
-    std::fs::write(&dest, &formatted)
+    std::fs::write(&dest, formatted)
         .with_context(|| format!("schemastore: write {}", dest.display()))?;
     log.status(&format!(
         "schemastore: vendored `{}` → {}",
@@ -568,8 +842,9 @@ fn write_vendor_schema(
 
     // A 2019-09 / 2020-12 schema fails SchemaStore CI unless its catalog name
     // is allowlisted under `highSchemaVersion` — add it in this same PR so the
-    // schema lands as-authored.
-    let dialect = raw_dialect(&raw);
+    // schema lands as-authored. The `$schema` survives reformatting, so the
+    // dialect read off `formatted` matches the source.
+    let dialect = raw_dialect(formatted);
     if dialect == Dialect::TooHigh {
         let allow_abs = repo_path.join(DIALECT_ALLOWLIST_PATH);
         let jsonc = std::fs::read_to_string(&allow_abs)
@@ -898,6 +1173,206 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.verdict, Some(catalog::Verdict::Update));
+    }
+
+    // --- schema_change_needed (pure, shared by probe + run_real) --------
+    //
+    // This is the SINGLE change-decision both the pre-clone probe and
+    // `run_real` gate on. Its no-op result must be CERTAIN: every uncertainty
+    // (missing file, unfetched jsonc, malformed catalog) yields change-needed.
+
+    /// Build a vendor plan + its locally-formatted schema content, plus a
+    /// catalog that already holds the exact desired entry (so the catalog half
+    /// of the decision is a no-op and the file/dialect half is under test).
+    fn vendor_plan_with_matching_catalog(schema_src: &str) -> (SchemaPlan, String, String) {
+        let e = vendor_entry();
+        let plan = plan_schema(&e, "cfgd machine config", false, None, None).unwrap();
+        let cat = catalog_with(std::slice::from_ref(&plan.desired_entry));
+        let local = manifest::format_vendor_schema(schema_src).unwrap();
+        (plan, cat, local)
+    }
+
+    /// A draft-07 schema body (dialect `Ok` ⇒ no allowlist needed).
+    const DRAFT07_SCHEMA: &str =
+        r#"{"$schema":"https://json-schema.org/draft-07/schema#","type":"object"}"#;
+    /// A 2020-12 schema body (dialect `TooHigh` ⇒ allowlist required).
+    const DRAFT2020_SCHEMA: &str =
+        r#"{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object"}"#;
+
+    #[test]
+    fn change_needed_external_entry_match_is_noop() {
+        let e = external_entry();
+        let plan = plan_schema(&e, "Anodizer config", false, None, None).unwrap();
+        let cat = catalog_with(std::slice::from_ref(&plan.desired_entry));
+        let remote = RemoteState {
+            catalog_json: &cat,
+            vendor_file: None,
+            jsonc: None,
+        };
+        assert!(
+            !schema_change_needed(&plan, None, &remote),
+            "external entry matching the catalog must be a no-op"
+        );
+    }
+
+    #[test]
+    fn change_needed_external_entry_absent_needs_change() {
+        let e = external_entry();
+        let plan = plan_schema(&e, "Anodizer config", false, None, None).unwrap();
+        let cat = catalog_with(&[]); // entry absent ⇒ Add
+        let remote = RemoteState {
+            catalog_json: &cat,
+            vendor_file: None,
+            jsonc: None,
+        };
+        assert!(schema_change_needed(&plan, None, &remote));
+    }
+
+    #[test]
+    fn change_needed_external_entry_differs_needs_change() {
+        let e = external_entry();
+        let plan = plan_schema(&e, "Anodizer config", false, None, None).unwrap();
+        // Same name, different description ⇒ Update.
+        let stale = catalog::build_entry_json(
+            &e.name,
+            "an older description",
+            &e.file_match,
+            e.url.as_deref().unwrap(),
+            None,
+        );
+        let cat = catalog_with(&[stale]);
+        let remote = RemoteState {
+            catalog_json: &cat,
+            vendor_file: None,
+            jsonc: None,
+        };
+        assert!(schema_change_needed(&plan, None, &remote));
+    }
+
+    #[test]
+    fn change_needed_vendor_entry_and_file_match_is_noop() {
+        let (plan, cat, local) = vendor_plan_with_matching_catalog(DRAFT07_SCHEMA);
+        // Upstream file byte-equals the locally-formatted content.
+        let remote = RemoteState {
+            catalog_json: &cat,
+            vendor_file: Some(&local),
+            jsonc: None,
+        };
+        assert!(
+            !schema_change_needed(&plan, Some(&local), &remote),
+            "vendor entry + file both matching (draft-07, no allowlist) ⇒ no-op"
+        );
+    }
+
+    /// The latent-bug regression test: the catalog entry matches but the
+    /// vendored FILE content drifted. The old code gated on the catalog-entry
+    /// verdict alone (`catalog::verdict` ⇒ NoOp) and never re-pushed the file.
+    /// `schema_change_needed` compares the file too ⇒ change-needed.
+    #[test]
+    fn change_needed_vendor_file_drift_with_matching_catalog_needs_change() {
+        let (plan, cat, local) = vendor_plan_with_matching_catalog(DRAFT07_SCHEMA);
+        // Prove the catalog half alone would have been a false no-op.
+        assert_eq!(
+            catalog::verdict(&cat, &plan.name, &plan.desired_entry).unwrap(),
+            catalog::Verdict::NoOp,
+            "precondition: catalog entry matches ⇒ entry-only verdict is NoOp"
+        );
+        // Upstream file content differs from the local formatted content.
+        let drifted_upstream = manifest::format_vendor_schema(
+            r#"{"$schema":"https://json-schema.org/draft-07/schema#","type":"string"}"#,
+        )
+        .unwrap();
+        assert_ne!(local, drifted_upstream, "fixture must actually differ");
+        let remote = RemoteState {
+            catalog_json: &cat,
+            vendor_file: Some(&drifted_upstream),
+            jsonc: None,
+        };
+        assert!(
+            schema_change_needed(&plan, Some(&local), &remote),
+            "vendor file content drift MUST trigger a change even when the \
+             catalog entry is unchanged — this is the latent-bug regression"
+        );
+    }
+
+    #[test]
+    fn change_needed_vendor_missing_upstream_file_is_conservative_change() {
+        let (plan, cat, local) = vendor_plan_with_matching_catalog(DRAFT07_SCHEMA);
+        // Upstream file unfetched / absent ⇒ never a false no-op.
+        let remote = RemoteState {
+            catalog_json: &cat,
+            vendor_file: None,
+            jsonc: None,
+        };
+        assert!(
+            schema_change_needed(&plan, Some(&local), &remote),
+            "a vendor schema with no upstream file content is uncertain ⇒ change"
+        );
+    }
+
+    #[test]
+    fn change_needed_too_high_with_allowlisted_filename_is_noop() {
+        let (plan, cat, local) = vendor_plan_with_matching_catalog(DRAFT2020_SCHEMA);
+        let allow_name = allowlist_name_for(&plan).unwrap(); // cfgd-config.json
+        let jsonc = format!(
+            "{{\n  // dialects\n  \"highSchemaVersion\": [\n    \"{allow_name}\"\n  ]\n}}\n"
+        );
+        let remote = RemoteState {
+            catalog_json: &cat,
+            vendor_file: Some(&local),
+            jsonc: Some(&jsonc),
+        };
+        assert!(
+            !schema_change_needed(&plan, Some(&local), &remote),
+            "too-high vendor whose filename is already allowlisted ⇒ no-op"
+        );
+    }
+
+    #[test]
+    fn change_needed_too_high_missing_from_allowlist_needs_change() {
+        let (plan, cat, local) = vendor_plan_with_matching_catalog(DRAFT2020_SCHEMA);
+        // Allowlist present but does NOT contain the vendored filename.
+        let jsonc = "{\n  \"highSchemaVersion\": [\n    \"something-else.json\"\n  ]\n}\n";
+        let remote = RemoteState {
+            catalog_json: &cat,
+            vendor_file: Some(&local),
+            jsonc: Some(jsonc),
+        };
+        assert!(
+            schema_change_needed(&plan, Some(&local), &remote),
+            "too-high vendor missing from the allowlist must be a change"
+        );
+    }
+
+    #[test]
+    fn change_needed_too_high_unfetched_jsonc_is_conservative_change() {
+        let (plan, cat, local) = vendor_plan_with_matching_catalog(DRAFT2020_SCHEMA);
+        // Entry + file match, but the allowlist could not be fetched (None) ⇒
+        // can't confirm the dialect is allowlisted ⇒ conservative change.
+        let remote = RemoteState {
+            catalog_json: &cat,
+            vendor_file: Some(&local),
+            jsonc: None,
+        };
+        assert!(
+            schema_change_needed(&plan, Some(&local), &remote),
+            "too-high vendor with unfetched jsonc is uncertain ⇒ change"
+        );
+    }
+
+    #[test]
+    fn change_needed_malformed_catalog_is_conservative_change() {
+        let e = external_entry();
+        let plan = plan_schema(&e, "Anodizer config", false, None, None).unwrap();
+        let remote = RemoteState {
+            catalog_json: "{ not valid json",
+            vendor_file: None,
+            jsonc: None,
+        };
+        assert!(
+            schema_change_needed(&plan, None, &remote),
+            "a malformed catalog is uncertainty ⇒ change, never a false no-op"
+        );
     }
 
     // --- dry-run run_publish (NO network) -------------------------------

@@ -5,6 +5,7 @@ use crate::schemastore::manifest::{
     DescriptionError, Dialect, check_id, classify_dialect, format_vendor_schema,
     sanitize_description, slugify,
 };
+use crate::schemastore::scan::jsonc_array_contains;
 
 const CATALOG: &str = r#"{ "schemas": [
   { "name": "Aaa", "description": "a", "fileMatch": ["a"], "url": "https://x/a.json" },
@@ -328,6 +329,39 @@ fn add_high_schema_version_handles_empty_array() {
         out.contains("\n    \"cfgd-module\"\n  ]"),
         "element at key-indent+2, closing ] at key-indent; got:\n{out}"
     );
+}
+
+#[test]
+fn jsonc_array_contains_finds_element_ignoring_comments() {
+    let jsonc = "{\n  // dialect allowlist\n  \"highSchemaVersion\": [\n    \"cfgd-module.json\",\n    \"other.json\"\n  ]\n}\n";
+    assert!(jsonc_array_contains(
+        jsonc,
+        "highSchemaVersion",
+        "cfgd-module.json"
+    ));
+    assert!(jsonc_array_contains(
+        jsonc,
+        "highSchemaVersion",
+        "other.json"
+    ));
+}
+
+#[test]
+fn jsonc_array_contains_is_element_exact_not_substring() {
+    let jsonc = "{\n  \"highSchemaVersion\": [\n    \"cfgd-module-extra.json\"\n  ]\n}\n";
+    assert!(!jsonc_array_contains(
+        jsonc,
+        "highSchemaVersion",
+        "cfgd-module.json"
+    ));
+}
+
+#[test]
+fn jsonc_array_contains_missing_key_is_false_not_error() {
+    // A catalog/jsonc lacking the key must read as "not a member" — the
+    // conservative direction for the schemastore change-decision.
+    let jsonc = "{\n  \"other\": []\n}\n";
+    assert!(!jsonc_array_contains(jsonc, "highSchemaVersion", "x.json"));
 }
 
 #[test]
