@@ -25,6 +25,9 @@ pub use krew::*;
 mod nix;
 pub use nix::*;
 
+mod schemastore;
+pub use schemastore::{SchemaEntry, SchemastoreConfig};
+
 // ---------------------------------------------------------------------------
 // Shared publisher config types: RepositoryConfig, CommitAuthorConfig
 // ---------------------------------------------------------------------------

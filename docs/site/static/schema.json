@@ -462,6 +462,22 @@
         "$ref": "#/definitions/SbomConfig"
       }
     },
+    "schemastore": {
+      "description": "SchemaStore publisher. Registers the project's JSON Schema(s) on SchemaStore at release time. When `schemas` is empty (the default), the publisher is skipped. The `schemastore:` publisher block.",
+      "default": {
+        "commit_author": null,
+        "if": null,
+        "repository": null,
+        "schemas": [],
+        "skip": null,
+        "versioned": null
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/SchemastoreConfig"
+        }
+      ]
+    },
     "signs": {
       "description": "Signing configurations for binaries, archives, and checksums.",
       "default": [],
@@ -11901,6 +11917,169 @@
           ]
         }
       }
+    },
+    "SchemaEntry": {
+      "description": "One schema registration. `url` XOR `schema_file` selects the mode.",
+      "type": "object",
+      "properties": {
+        "crate": {
+          "description": "Crate whose version a vendored/versioned schema tracks (per-crate workspaces).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "Catalog description (required at publish time; derived if omitted).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file_match": {
+          "description": "Well-known config filenames this schema validates (folder globs need `**/`).",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "if": {
+          "description": "Per-entry Tera condition.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Catalog display name (may be Title Case, e.g. `Anodizer`).",
+          "default": "",
+          "type": "string"
+        },
+        "required": {
+          "description": "Whether a failure here fails the release. Collapsed across `schemas`.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "schema_file": {
+          "description": "VENDOR mode: repo-root-relative path to the generated schema file.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skip": {
+          "description": "Per-entry skip. Alias: `disable`.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "slug": {
+          "description": "Vendor filename / url basename. Defaults to `name` slugified. Vendor-only.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "EXTERNAL mode: the URL you host the schema at.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "versioned": {
+          "description": "Emit a version-suffixed vendored file + `versions` map. Vendor-only.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SchemastoreConfig": {
+      "description": "Top-level `schemastore:` block. Shared fields here are defaults for every entry in `schemas`; a per-entry field overrides them (cascade).",
+      "type": "object",
+      "properties": {
+        "commit_author": {
+          "description": "Commit author for the SchemaStore commit (defaults to git config).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CommitAuthorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "if": {
+          "description": "Tera condition; when it renders falsy the publisher is skipped.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repository": {
+          "description": "Fork of `SchemaStore/schemastore` to push branches to and open the PR from.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RepositoryConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schemas": {
+          "description": "The schema entries to register/refresh.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SchemaEntry"
+          }
+        },
+        "skip": {
+          "description": "Skip the whole publisher. Alias: `disable`.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "versioned": {
+          "description": "Default for `SchemaEntry::versioned`.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "ScmRepoConfig": {
       "type": "object",

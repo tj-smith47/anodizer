@@ -252,6 +252,11 @@ pub struct Config {
     /// skipped. The `mcp:` publisher block.
     #[serde(default)]
     pub mcp: McpConfig,
+    /// SchemaStore publisher. Registers the project's JSON Schema(s) on
+    /// SchemaStore at release time. When `schemas` is empty (the default),
+    /// the publisher is skipped. The `schemastore:` publisher block.
+    #[serde(default)]
+    pub schemastore: crate::config::publishers::SchemastoreConfig,
     /// NPM package registry publishing configurations. One entry per
     /// published package. In the default `optional-deps` mode anodizer emits
     /// npm's native per-platform packages (biome / git-cliff pattern); in
@@ -366,6 +371,7 @@ impl Default for Config {
             aur_sources: None,
             retry: None,
             mcp: McpConfig::default(),
+            schemastore: crate::config::publishers::SchemastoreConfig::default(),
             npms: None,
             gemfury: None,
             derived_metadata: BTreeMap::new(),

@@ -60,6 +60,7 @@ List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Orde
 | `report_sizes` | bool | — | When true, log artifact file sizes after building. |
 | `retry` | RetryConfig | — | Top-level retry configuration applied to network-bound operations (announcers, git providers, HTTP uploads, docker pipes). When omitted, `RetryConfig::default()` is used (10 attempts, 10s base, 5m cap — the project-level retry policy). |
 | `sboms` | list of SbomConfig | `[]` | Software bill of materials (SBOM) generation configurations. |
+| `schemastore` | SchemastoreConfig | `{"commit_author":null,"if":null,"repository":null,"schemas":[],"skip":null,"versioned":null}` | SchemaStore publisher. Registers the project's JSON Schema(s) on SchemaStore at release time. When `schemas` is empty (the default), the publisher is skipped. The `schemastore:` publisher block. |
 | `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
 | `snapshot` | SnapshotConfig | — | Snapshot release configuration (local/non-tag builds). |
 | `source` | SourceConfig | — | Source archive configuration. |
@@ -718,6 +719,17 @@ All fields are optional in YAML; missing fields fall back to the defaults (10 at
 | `id` | string | — | Unique identifier for this SBOM config (default: "default"). |
 | `ids` | list of string | — | Filter by artifact IDs (ignored if artifacts="source"). |
 | `skip` | StringOrBool | — | Skip this SBOM config. Accepts bool or template string. |
+
+## `schemastore`
+Top-level `schemastore:` block. Shared fields here are defaults for every entry in `schemas`; a per-entry field overrides them (cascade).
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `commit_author` | CommitAuthorConfig | — | Commit author for the SchemaStore commit (defaults to git config). |
+| `if` | string | — | Tera condition; when it renders falsy the publisher is skipped. |
+| `repository` | RepositoryConfig | — | Fork of `SchemaStore/schemastore` to push branches to and open the PR from. |
+| `schemas` | list of SchemaEntry | `[]` | The schema entries to register/refresh. |
+| `skip` | StringOrBool | — | Skip the whole publisher. Alias: `disable`. |
+| `versioned` | bool | — | Default for `SchemaEntry::versioned`. |
 
 ## `signs`
 | Field | Type | Default | Description |
