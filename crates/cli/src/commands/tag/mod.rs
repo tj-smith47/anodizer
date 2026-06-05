@@ -156,17 +156,19 @@ fn skip_ci_suffix(skip_ci_on_bump: bool) -> &'static str {
 }
 
 pub fn run(opts: TagOpts) -> Result<()> {
-    // Load the full config + Cargo workspace once so all downstream helpers
-    // share the same parse (eliminates the previous triple workspace-file
-    // read on lockstep repos).
-    let loaded_config: Option<anodizer_core::config::Config> =
-        resolve_config_path(&opts).and_then(|p| crate::pipeline::load_config(&p).ok());
     // Discover the workspace root once, config-derived, so `tag` resolves the
     // same root whether invoked from the repo root or a subdirectory (matching
     // `bump` and `changelog`); every workspace-load / git-working-dir site below
     // threads this one value instead of re-reading the cwd.
     let workspace_root_path =
         crate::commands::helpers::discover_workspace_root(resolve_config_path(&opts).as_deref())?;
+    // Load the full config + Cargo workspace once so all downstream helpers
+    // share the same parse (eliminates the previous triple workspace-file
+    // read on lockstep repos). Resolved at the discovered workspace root so a
+    // subdirectory invocation still finds the repo-root `.anodizer.yaml` and its
+    // `version_files` enrollment, not just whatever sits in the cwd.
+    let loaded_config: Option<anodizer_core::config::Config> =
+        load_config_at(&opts, &workspace_root_path);
     let loaded_workspace: Option<WorkspaceInfo> = load_workspace(&workspace_root_path).ok();
 
     let tag_config = loaded_config
@@ -200,13 +202,13 @@ pub fn run(opts: TagOpts) -> Result<()> {
     let config_push = tag_config.push;
 
     // When --crate is given, look up the crate in config and derive the tag
-    // prefix from its tag_template.  Also capture the crate path so we can
+    // prefix from its tag_template.  Also capture the crate path to
     // scope change detection to only that directory.
     let mut crate_path: Option<String> = None;
     let mut version_sync_enabled = false;
     let mut crate_version_files: Vec<String> = Vec::new();
     if let Some(ref crate_name) = opts.crate_name
-        && let Some(info) = load_crate_tag_info(&opts, crate_name)
+        && let Some(info) = load_crate_tag_info(&opts, &workspace_root_path, crate_name)
     {
         cfg.tag_prefix = info.tag_prefix;
         crate_path = Some(info.path);
@@ -226,7 +228,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     if let Some(ref ct) = cfg.custom_tag
         && opts.crate_name.is_none()
     {
-        // Peek at the repo shape without consuming it, so we can give a useful
+        // Peek at the repo shape without consuming it, to surface a useful
         // error rather than silently discarding the custom_tag value.
         if matches!(
             detect_repo_shape(
@@ -543,7 +545,10 @@ pub fn run(opts: TagOpts) -> Result<()> {
     let cargo_current_ver: Option<String> = if let Some(ws) = workspace_info {
         ws.workspace_package_version.clone()
     } else if version_sync_enabled && let Some(ref path) = crate_path {
-        anodizer_stage_build::version_sync::read_cargo_version(path).ok()
+        // Resolve against the discovered workspace root so the manifest read
+        // matches the git working dir when `tag` runs from a subdirectory.
+        let abs = workspace_root_path.join(path);
+        anodizer_stage_build::version_sync::read_cargo_version(&abs.to_string_lossy()).ok()
     } else {
         None
     };
@@ -669,13 +674,26 @@ pub fn run(opts: TagOpts) -> Result<()> {
     } else if let Some(ref path) = crate_path
         && version_sync_enabled
     {
-        anodizer_stage_build::version_sync::sync_version(path, &new_version, opts.dry_run, &log)?;
+        // `path` is the config-declared (repo-root-relative) crate directory.
+        // Resolve it against the discovered workspace root so the manifest /
+        // dep-scan file IO hits the same tree git operates on even when `tag`
+        // is invoked from a subdirectory.
+        let abs_crate_dir = workspace_root_path
+            .join(path)
+            .to_string_lossy()
+            .into_owned();
+        anodizer_stage_build::version_sync::sync_version(
+            &abs_crate_dir,
+            &new_version,
+            opts.dry_run,
+            &log,
+        )?;
 
         // Cross-crate dep updates scan from the discovered workspace root.
         let workspace_root = workspace_root_path.to_string_lossy().to_string();
 
         // Read the crate name from its Cargo.toml for dep scanning.
-        let crate_cargo = std::path::Path::new(path).join("Cargo.toml");
+        let crate_cargo = std::path::Path::new(&abs_crate_dir).join("Cargo.toml");
         let crate_name = if let Ok(content) = std::fs::read_to_string(&crate_cargo) {
             content
                 .parse::<toml_edit::DocumentMut>()
@@ -697,7 +715,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
         let dep_modified = if let Some(ref name) = crate_name {
             anodizer_stage_build::version_sync::sync_workspace_deps(
                 &workspace_root,
-                path,
+                &abs_crate_dir,
                 name,
                 &new_version,
                 opts.dry_run,
@@ -717,6 +735,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
         let vf_old = bare_version_from_tag(old_tag_str);
         let vf_changed = match vf_old {
             Some(ref old) => rewrite_and_stage_version_files(
+                &workspace_root_path,
                 &crate_version_files,
                 old,
                 &new_version,
@@ -766,7 +785,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
             // Without this, the tagged commit has Cargo.toml at the new version
             // but Cargo.lock at the old version, causing `cargo test` (from
             // before hooks) to update Cargo.lock and dirty the tree.
-            match anodizer_core::cargo_lock::cargo_update_workspace(None) {
+            match anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root_path.as_path())) {
                 Ok(true) => {}
                 Ok(false) => log.warn(
                     "version-sync: `cargo update --workspace` exited non-zero; Cargo.lock may be stale",
@@ -794,7 +813,10 @@ pub fn run(opts: TagOpts) -> Result<()> {
             // NOT at `new_version` would ship an orphan tag pointing at the
             // wrong version. `Ok(false)` (no diff to commit) likewise means no
             // bump commit was produced, so the orphan-bump hint must not fire.
-            bump_commit_created = git::stage_and_commit(
+            // Staged from the discovered workspace root so the repo-relative
+            // paths resolve there, not against a subdirectory cwd.
+            bump_commit_created = git::stage_and_commit_in(
+                &workspace_root_path,
                 &files_to_stage,
                 &format!(
                     "chore: bump {} to {}{}",
@@ -1022,7 +1044,7 @@ fn apply_workspace_bump(
             new_version
         ));
         if let Some(old) = vf.old {
-            rewrite_and_stage_version_files(vf.files, old, new_version, true, log)?;
+            rewrite_and_stage_version_files(workspace_root, vf.files, old, new_version, true, log)?;
         }
         render_and_stage_changelogs(
             workspace_root,
@@ -1079,7 +1101,14 @@ fn apply_workspace_bump(
     // version_files are repo-root-relative already; rewrite the shared old→new
     // and fold the changed paths into the same bump commit.
     if let Some(old) = vf.old {
-        let vf_changed = rewrite_and_stage_version_files(vf.files, old, new_version, false, log)?;
+        let vf_changed = rewrite_and_stage_version_files(
+            workspace_root,
+            vf.files,
+            old,
+            new_version,
+            false,
+            log,
+        )?;
         for f in vf_changed {
             if !staged_rel.contains(&f) {
                 staged_rel.push(f);
@@ -1112,7 +1141,8 @@ fn apply_workspace_bump(
 
     let staged_refs: Vec<&str> = staged_rel.iter().map(|s| s.as_str()).collect();
 
-    git::stage_and_commit(
+    git::stage_and_commit_in(
+        workspace_root,
         &staged_refs,
         &format!(
             "chore(release): bump workspace → {}{}",
@@ -1125,13 +1155,32 @@ fn apply_workspace_bump(
     Ok(true)
 }
 
-/// Resolve the config file path from CLI overrides or auto-detection.
+/// Resolve the config file path from CLI overrides or cwd-relative
+/// auto-detection.
+///
+/// Used only for the bootstrap workspace-root discovery, where the root is not
+/// yet known. Once the root is known, prefer [`resolve_config_path_at`] so a
+/// subdirectory invocation still finds the repo-root config.
 fn resolve_config_path(opts: &TagOpts) -> Option<std::path::PathBuf> {
     opts.config_override
         .as_deref()
         .filter(|p| p.exists())
         .map(|p| p.to_path_buf())
         .or_else(|| crate::pipeline::find_config(None).ok())
+}
+
+/// Load the anodizer config against a known workspace `root`.
+///
+/// A `--config` override always wins. Otherwise the config is searched at the
+/// discovered workspace root (via [`crate::pipeline::load_repo_config`]) rather
+/// than the process cwd, so `tag` invoked from a subdirectory still loads the
+/// repo-root `.anodizer.yaml` and its `version_files` enrollment. Returns `None`
+/// when no config is found or it fails to parse.
+fn load_config_at(opts: &TagOpts, root: &Path) -> Option<anodizer_core::config::Config> {
+    match opts.config_override.as_deref().filter(|p| p.exists()) {
+        Some(p) => crate::pipeline::load_config(p).ok(),
+        None => crate::pipeline::load_repo_config(root).ok(),
+    }
 }
 
 /// Repository shape as detected from Cargo.toml + `.anodizer.yaml`.
@@ -1608,8 +1657,17 @@ fn run_per_crate_tag(
 
     if !opts.dry_run {
         // Apply version bumps across all changed crates in a single commit.
+        // Crate paths are repo-root-relative; resolve each against the
+        // discovered workspace root so the manifest IO matches the git working
+        // dir even when `tag` runs from a subdirectory.
         for (path, new_version) in &all_version_updates {
-            anodizer_stage_build::version_sync::sync_version(path, new_version, false, log)?;
+            let abs_crate_dir = workspace_root.join(path).to_string_lossy().into_owned();
+            anodizer_stage_build::version_sync::sync_version(
+                &abs_crate_dir,
+                new_version,
+                false,
+                log,
+            )?;
         }
 
         // Propagate every bumped crate's new version into sibling manifests'
@@ -1631,9 +1689,13 @@ fn run_per_crate_tag(
                 .iter()
                 .zip(group_result.version_updates.iter())
             {
+                let abs_crate_dir = workspace_root
+                    .join(crate_path)
+                    .to_string_lossy()
+                    .into_owned();
                 let modified = anodizer_stage_build::version_sync::sync_workspace_deps(
                     &workspace_root_str,
-                    crate_path,
+                    &abs_crate_dir,
                     crate_name,
                     new_version,
                     false,
@@ -1644,7 +1706,7 @@ fn run_per_crate_tag(
         }
 
         // Update Cargo.lock to match bumped manifests.
-        match anodizer_core::cargo_lock::cargo_update_workspace(None) {
+        match anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root.as_path())) {
             Ok(_) => {}
             Err(e) => log.warn(&format!(
                 "version-sync: could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
@@ -1673,6 +1735,7 @@ fn run_per_crate_tag(
         // branch, so the preview matches the real run.
         for rewrite in &vf_plan {
             let vf_changed = rewrite_and_stage_version_files(
+                &workspace_root,
                 std::slice::from_ref(&rewrite.file),
                 &rewrite.old,
                 &rewrite.new,
@@ -1719,7 +1782,8 @@ fn run_per_crate_tag(
         } else {
             version_arrows.join(", ")
         };
-        git::stage_and_commit(
+        git::stage_and_commit_in(
+            &workspace_root,
             &staged_refs,
             &format!(
                 "chore(release): bump {}{}",
@@ -1748,6 +1812,7 @@ fn run_per_crate_tag(
         // without touching disk.
         for rewrite in &vf_plan {
             rewrite_and_stage_version_files(
+                &workspace_root,
                 std::slice::from_ref(&rewrite.file),
                 &rewrite.old,
                 &rewrite.new,
@@ -1820,9 +1885,8 @@ struct CrateTagInfo {
 /// When `--crate` is specified, look up the crate in top-level crates and
 /// workspace crates.  Returns the tag prefix (from `tag_template`) and the
 /// crate's `path` so change detection can be scoped to that directory.
-fn load_crate_tag_info(opts: &TagOpts, crate_name: &str) -> Option<CrateTagInfo> {
-    let config_path = resolve_config_path(opts)?;
-    let config = crate::pipeline::load_config(&config_path).ok()?;
+fn load_crate_tag_info(opts: &TagOpts, root: &Path, crate_name: &str) -> Option<CrateTagInfo> {
+    let config = load_config_at(opts, root)?;
 
     // Search top-level crates first, then workspace crates.
     let crate_cfg = config
@@ -2067,7 +2131,7 @@ fn detect_conventional_bump(messages: &[String]) -> Option<BumpKind> {
         });
         let is_breaking_shorthand = marker.starts_with('!') || ty.ends_with('!');
         // Ignore pattern where `rest` is empty (e.g. `feat:` with nothing after) —
-        // still counts as a typed commit. We only require the prefix match.
+        // still counts as a typed commit; only the prefix match is required.
         let _ = rest;
 
         if is_breaking_shorthand {
@@ -2111,11 +2175,18 @@ fn bare_version_from_tag(tag: &str) -> Option<String> {
 /// entry, log the per-file outcome, and return the repo-relative paths that
 /// actually changed (so the caller can stage them into the bump commit).
 ///
+/// Enrolled paths are repo-root-relative; each is resolved against `root` (the
+/// discovered workspace root) for the read/write so the rewrite hits the same
+/// files git operates on even when `tag` is invoked from a subdirectory. The
+/// logged and returned paths stay repo-relative so staging via
+/// [`git::stage_and_commit_in`] (rooted at the same `root`) matches.
+///
 /// A file with zero matches is reported via `warn` but is not an error: a stale
 /// enrollment should surface loudly without aborting the tag. When `dry_run` is
 /// set, counts are logged but no file is written and no path is returned for
 /// staging. A no-op (`old == new`) returns immediately.
 fn rewrite_and_stage_version_files(
+    root: &Path,
     files: &[String],
     old: &str,
     new: &str,
@@ -2125,10 +2196,14 @@ fn rewrite_and_stage_version_files(
     if files.is_empty() || old == new {
         return Ok(Vec::new());
     }
+    let resolved: Vec<String> = files
+        .iter()
+        .map(|f| root.join(f).to_string_lossy().into_owned())
+        .collect();
     let outcomes =
-        anodizer_core::version_files::rewrite_version_in_files(files, old, new, dry_run)?;
+        anodizer_core::version_files::rewrite_version_in_files(&resolved, old, new, dry_run)?;
     let mut changed = Vec::new();
-    for outcome in &outcomes {
+    for (outcome, rel) in outcomes.iter().zip(files.iter()) {
         if outcome.replacements > 0 {
             log.status(&format!(
                 "{}version_files: rewrote {} occurrence(s) of {} → {} in {}",
@@ -2136,15 +2211,15 @@ fn rewrite_and_stage_version_files(
                 outcome.replacements,
                 old,
                 new,
-                outcome.path
+                rel
             ));
             if !dry_run {
-                changed.push(outcome.path.clone());
+                changed.push(rel.clone());
             }
         } else {
             log.warn(&format!(
                 "version_files: enrolled file {} did not contain version {} (nothing rewritten)",
-                outcome.path, old
+                rel, old
             ));
         }
     }

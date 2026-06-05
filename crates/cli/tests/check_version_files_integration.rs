@@ -154,6 +154,61 @@ fn missing_enrolled_file_exits_nonzero() {
     );
 }
 
+/// Invoked from a SUBDIRECTORY with an explicit `--config` pointing at the
+/// root config: the guard must resolve every enrolled (repo-root-relative)
+/// path against the discovered workspace root, not the process cwd. Before the
+/// fix the top-level `Chart.yaml` misresolved against `crates/app/` and the
+/// guard reported a spurious missing-file finding.
+#[test]
+fn from_subdir_with_config_resolves_top_level_files() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    // Crate version is 0.1.0, enrolled file matches → in sync.
+    single_crate_fixture(root, "0.1.0");
+
+    let cfg = root.join(".anodizer.yaml");
+    let out = anodizer()
+        .current_dir(root.join("crates/app"))
+        .args(["check", "version-files", "--config", cfg.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "subdir check should resolve the top-level Chart.yaml and pass: {stdout}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("in sync") || stdout.contains("in sync"),
+        "expected an in-sync line from the subdir invocation: {stdout}\n{stderr}"
+    );
+}
+
+/// The drift case from a subdirectory: a genuinely stale top-level file must
+/// still be flagged (not masked by a cwd-misresolution).
+#[test]
+fn from_subdir_with_config_flags_drift() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    single_crate_fixture(root, "0.0.9");
+
+    let cfg = root.join(".anodizer.yaml");
+    let out = anodizer()
+        .current_dir(root.join("crates/app"))
+        .args(["check", "version-files", "--config", cfg.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "stale top-level file should fail from a subdir: {stderr}"
+    );
+    assert!(
+        stderr.contains("STALE: Chart.yaml") && stderr.contains("expected 0.1.0"),
+        "expected a drift finding (not a spurious missing-file error): {stderr}"
+    );
+}
+
 #[test]
 fn no_version_files_configured_exits_zero() {
     let tmp = TempDir::new().unwrap();

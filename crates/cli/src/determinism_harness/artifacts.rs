@@ -214,9 +214,14 @@ pub(super) fn hash_artifacts(
     for p in paths {
         let bytes =
             std::fs::read(p).with_context(|| format!("reading artifact {}", p.display()))?;
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let digest = format!("sha256:{:x}", hasher.finalize());
+        // Bytes are already in memory (head/tail samples + size below need
+        // them), so hash the one-shot buffer rather than re-opening the
+        // file via `core::hashing::sha256_file`. Format through the shared
+        // `hex_lower` helper so the hex encoding stays in one place.
+        let digest = format!(
+            "sha256:{}",
+            anodizer_core::hashing::hex_lower(&Sha256::digest(&bytes))
+        );
         let relative = p
             .strip_prefix(worktree_path)
             .unwrap_or(p)

@@ -24,8 +24,6 @@
 use anodizer_core::DeterminismReport;
 use anyhow::{Context, Result};
 use std::collections::{BTreeSet, HashMap};
-use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 
 /// One artifact entry in [`PreservedDistContext::artifacts`].
@@ -654,7 +652,7 @@ fn collect_preserved_entries(
         // collide when fanning 4 shards back into one `dist/`. If we
         // record them here under the un-suffixed name, the rename
         // leaves dangling path references that `hash_verify_preserved_dist`
-        // bails on (`opening preserved artifact ./dist/artifacts.json:
+        // bails on (`hashing preserved artifact ./dist/artifacts.json:
         // No such file or directory`). The publish-only path
         // discovers the renamed manifests directly via
         // `discover_artifacts_manifests` and does not need them in the
@@ -700,34 +698,20 @@ fn collect_preserved_entries(
 }
 
 /// Stream a file through SHA-256 in 64 KiB chunks. Returns
-/// `("sha256:<hex>", byte_count)`. Mirrors
-/// `anodizer_core::hashing::hash_file_with`'s shape (read → update →
-/// finalize), with a larger buffer (64 KiB vs 8 KiB) since this is
-/// occasionally called on multi-MB raw binaries that aren't in the
-/// report's hash map.
-///
-/// Why not reuse [`anodizer_core::hashing::sha256_file`]: it returns
-/// just the hex digest, but the preserved-manifest entry needs the
-/// `size` too. Wrapping it would need a separate `fs::metadata` round-
-/// trip; doing both in one streaming pass costs one file open instead
-/// of two.
+/// `("sha256:<hex>", byte_count)`. Streams the file once through
+/// [`anodizer_core::hashing::hash_file_streaming`], accumulating both
+/// the SHA-256 digest and the byte count in the single pass so the
+/// preserved-manifest entry's `size` doesn't cost a second
+/// `fs::metadata` round-trip.
 fn hash_file_streaming(path: &Path) -> Result<(String, u64)> {
     use sha2::{Digest, Sha256};
-    let mut file = File::open(path)
-        .with_context(|| format!("opening preserved artifact {}", path.display()))?;
     let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
     let mut total: u64 = 0;
-    loop {
-        let n = file
-            .read(&mut buf)
-            .with_context(|| format!("reading preserved artifact {}", path.display()))?;
-        if n == 0 {
-            break;
-        }
-        Digest::update(&mut hasher, &buf[..n]);
-        total += n as u64;
-    }
+    anodizer_core::hashing::hash_file_streaming(path, "sha256", |chunk| {
+        Digest::update(&mut hasher, chunk);
+        total += chunk.len() as u64;
+    })
+    .with_context(|| format!("hashing preserved artifact {}", path.display()))?;
     Ok((format!("sha256:{:x}", hasher.finalize()), total))
 }
 
@@ -936,7 +920,7 @@ mod tests {
     /// `download-artifact merge-multiple: true` does not collide;
     /// recording them under the un-suffixed name leaves dangling
     /// references that the publish-only hash-verify chokes on
-    /// (`opening preserved artifact ./dist/artifacts.json: No such
+    /// (`hashing preserved artifact ./dist/artifacts.json: No such
     /// file or directory`). They are pipeline metadata, not
     /// shippable artifacts; publish-only discovers them directly via
     /// `discover_artifacts_manifests`.

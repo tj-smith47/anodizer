@@ -315,11 +315,7 @@ fn parse_targets(s: Option<&str>) -> Result<Option<Vec<String>>, String> {
 /// Truncate a commit hash to the conventional 7-char "short" form, used
 /// in the default `dist/run-<short>/determinism.json` path.
 fn commit_short(commit: &str) -> String {
-    if commit.len() >= 7 {
-        commit[..7].to_string()
-    } else {
-        commit.to_string()
-    }
+    commit.get(..7).unwrap_or(commit).to_string()
 }
 
 /// Resolve the harness's `child_snapshot` flag.

@@ -570,3 +570,208 @@ version = "0.1.0"
     // Untouched on disk.
     assert_eq!(read(root, "Chart.yaml"), "appVersion: v0.1.0\n");
 }
+
+// ---------------------------------------------------------------------------
+// Invoked from a SUBDIRECTORY of the workspace
+//
+// `tag` discovers the workspace root and runs every git op there. The enrolled
+// version_files (and the manifest/lockfile IO) must resolve against that same
+// root, not the process cwd — otherwise a top-level `Chart.yaml` misresolves
+// when `tag` is run from a crate subdirectory. One test per config mode.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn single_crate_from_subdir_rewrites_top_level_version_files() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/app/src")).unwrap();
+    fs::write(
+        root.join("crates/app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/app/src/lib.rs"), "").unwrap();
+    fs::write(
+        root.join("Chart.yaml"),
+        "version: 0.1.0\nappVersion: v0.1.0\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: single
+crates:
+  - name: app
+    path: crates/app
+    tag_template: "v{{ .Version }}"
+    version_sync:
+      enabled: true
+    version_files:
+      - Chart.yaml
+"#,
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/app/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: a bug");
+
+    // Invoke from the crate subdirectory, NOT the workspace root. The explicit
+    // `--config` (root `.anodizer.yaml`) anchors the workspace-root discovery
+    // (walk up from the config's parent), matching the established subdir
+    // contract; the fix is that the version_files IO then resolves against that
+    // root rather than the cwd.
+    let cfg = root.join(".anodizer.yaml");
+    let out = anodizer()
+        .current_dir(root.join("crates/app"))
+        .args([
+            "tag",
+            "--crate",
+            "app",
+            "--no-push",
+            "--config",
+            cfg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+    assert!(stdout.contains("new_tag=v0.1.1"), "stdout: {stdout}");
+
+    // The TOP-LEVEL Chart.yaml is rewritten + committed (resolved against the
+    // workspace root, not the crates/app cwd).
+    assert_eq!(
+        read(root, "Chart.yaml"),
+        "version: 0.1.1\nappVersion: v0.1.1\n"
+    );
+    assert_eq!(
+        show_head(root, "Chart.yaml"),
+        "version: 0.1.1\nappVersion: v0.1.1\n"
+    );
+}
+
+#[test]
+fn lockstep_from_subdir_rewrites_top_level_version_files() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        r#"[workspace]
+members = ["crates/a"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/a/src")).unwrap();
+    fs::write(
+        root.join("crates/a/Cargo.toml"),
+        "[package]\nname = \"a\"\nversion.workspace = true\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/a/src/lib.rs"), "").unwrap();
+    fs::write(root.join("Chart.yaml"), "appVersion: v0.1.0\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: lockstep\nversion_files:\n  - Chart.yaml\n",
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/a/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: a bug");
+
+    let cfg = root.join(".anodizer.yaml");
+    let out = anodizer()
+        .current_dir(root.join("crates/a"))
+        .args(["tag", "--no-push", "--config", cfg.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+    assert!(stdout.contains("new_tag=v0.1.1"), "stdout: {stdout}");
+
+    assert_eq!(read(root, "Chart.yaml"), "appVersion: v0.1.1\n");
+    assert_eq!(show_head(root, "Chart.yaml"), "appVersion: v0.1.1\n");
+}
+
+#[test]
+fn per_crate_from_subdir_rewrites_top_level_version_files() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (name, ver) in [("core", "0.1.0"), ("cli", "0.2.0")] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    // Top-level (repo-root-relative) enrolled files, one per crate.
+    fs::write(root.join("core-install.md"), "core is at v0.1.0\n").unwrap();
+    fs::write(root.join("cli-install.md"), "cli is at 0.2.0\n").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: percrate
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "core-v{{ .Version }}"
+    version_sync:
+      enabled: true
+    version_files:
+      - core-install.md
+  - name: cli
+    path: crates/cli
+    tag_template: "cli-v{{ .Version }}"
+    version_sync:
+      enabled: true
+    version_files:
+      - cli-install.md
+"#,
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "core-v0.1.0"]);
+    run_git(root, &["tag", "cli-v0.2.0"]);
+    fs::write(root.join("crates/core/src/lib.rs"), "// core touched\n").unwrap();
+    fs::write(root.join("crates/cli/src/lib.rs"), "// cli touched\n").unwrap();
+    git_add_commit(root, "feat: both updated");
+
+    // Invoke from a crate subdirectory; the per-crate engine still resolves
+    // every top-level enrolled file against the workspace root.
+    let cfg = root.join(".anodizer.yaml");
+    let out = anodizer()
+        .current_dir(root.join("crates/core"))
+        .args(["tag", "--no-push", "--config", cfg.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+
+    assert_eq!(read(root, "core-install.md"), "core is at v0.2.0\n");
+    assert_eq!(read(root, "cli-install.md"), "cli is at 0.3.0\n");
+    assert_eq!(show_head(root, "core-install.md"), "core is at v0.2.0\n");
+    assert_eq!(show_head(root, "cli-install.md"), "cli is at 0.3.0\n");
+}

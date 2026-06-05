@@ -24,11 +24,29 @@ use std::path::Path;
 pub fn run(config_override: Option<&Path>, verbose: bool, debug: bool, quiet: bool) -> Result<()> {
     let log = StageLogger::new("check", Verbosity::from_flags(quiet, verbose, debug));
 
-    let path = pipeline::find_config_with_logger(config_override, Some(&log))?;
-    log.verbose(&format!("loading config from {}", path.display()));
-    let config = pipeline::load_config(&path)?;
+    // Resolve enrolled (repo-root-relative) paths against the discovered
+    // workspace root, not the process cwd, so the guard inspects the same files
+    // `tag`'s rewrite touches even when run from a subdirectory. A rootless
+    // layout (no Cargo.toml in the chain) has no workspace root to discover, so
+    // fall back to the process cwd — the crate is then its own root.
+    let repo_root = match crate::commands::helpers::discover_workspace_root(config_override) {
+        Ok(root) => root,
+        Err(_) => std::env::current_dir().context("resolving repo root")?,
+    };
 
-    let repo_root = std::env::current_dir().context("resolving repo root")?;
+    // Load the config at that root (an explicit `--config` override still wins)
+    // so a subdirectory invocation finds the repo-root `.anodizer.yaml` and its
+    // `version_files` enrollment rather than whatever sits in the cwd.
+    let config = match config_override {
+        Some(p) => {
+            log.verbose(&format!("loading config from {}", p.display()));
+            pipeline::load_config(p)?
+        }
+        None => {
+            log.verbose(&format!("loading config from {}", repo_root.display()));
+            pipeline::load_repo_config(&repo_root)?
+        }
+    };
 
     run_guard(&config, &repo_root, &log)
 }
@@ -72,11 +90,15 @@ fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) -> Result<()>
             if !seen.insert((file.clone(), version.clone())) {
                 continue;
             }
-            match check_version_present(std::slice::from_ref(file), &version) {
+            // Enrolled paths are repo-root-relative; resolve against the
+            // discovered root for the read while keeping `file` (relative) for
+            // user-facing messages.
+            let abs = repo_root.join(file).to_string_lossy().into_owned();
+            match check_version_present(std::slice::from_ref(&abs), &version) {
                 Ok(results) => {
                     checked += 1;
-                    let (_, present) = &results[0];
-                    if *present {
+                    let present = results.first().map(|(_, p)| *p).unwrap_or(false);
+                    if present {
                         log.verbose(&format!("OK: {file} contains {version}"));
                     } else {
                         findings.push(format!("STALE: {file} (expected {version}, not found)"));

@@ -280,6 +280,13 @@ pub(super) fn run_per_crate(
         // (appended, not replaced, by the overlay) would accumulate
         // every prior workspace's entries.
         guard.reset_overlay_fields();
+        // Rewind the version-derived template vars to the pre-loop
+        // baseline before re-anchoring this crate's version. Without it,
+        // a crate whose preserved manifest records no version (where
+        // `apply_per_crate_version` early-returns) would inherit the
+        // prior crate's re-anchored version and render its tag / release
+        // title / artifact names against the WRONG version.
+        guard.reset_version_vars();
         let ctx = guard.ctx_mut();
         // Reset the artifact registry before each crate so artifacts
         // from a prior crate's pipeline don't leak into the next one's
@@ -300,16 +307,27 @@ pub(super) fn run_per_crate(
         // publisher's effective-crates resolution sees a single entry
         // instead of the workspace-flattened fallback.
         ctx.options.selected_crates = vec![crate_name.clone()];
+        // Re-anchor `Version` (and the vars derived from it) onto this
+        // crate's preserved manifest BEFORE rendering its tag. The
+        // upstream `resolve_git_context` set `Version` once from HEAD's
+        // first-resolved crate; in a lockstep workspace every crate
+        // shares that version, but in workspace per-crate
+        // INDEPENDENT-version mode each crate carries its own version in
+        // its preserved `context.json`. Without re-anchoring, a crate's
+        // `tag_template` / release-title / artifact-name would render
+        // against the wrong version and mint a mis-tagged GitHub release
+        // (irreversible). Best-effort: a missing/unparseable preserved
+        // version leaves the upstream `Version` in place.
+        apply_per_crate_version(ctx, &crate_dist, crate_name, log);
         // Re-derive the per-crate `Tag` (and matching `PreviousTag`).
         // The upstream `resolve_git_context` set these once from the
         // first-resolved crate's `tag_template` against HEAD; every
         // iteration would otherwise inherit that single global tag,
         // titling each crate's GitHub release with the wrong tag and
         // skewing the changelog's current-tag / compare-link to a
-        // foreign crate's tag. `Version` is shared across a lockstep
-        // workspace, so rendering each crate's own `tag_template`
-        // recovers its correct tag (`core-v0.4.0` for cfgd-core,
-        // `v0.4.0` for cfgd).
+        // foreign crate's tag. Rendering each crate's own `tag_template`
+        // against the now-re-anchored per-crate `Version` recovers its
+        // correct tag (`core-v0.4.0` for cfgd-core, `v0.4.0` for cfgd).
         apply_per_crate_tag(ctx, config, crate_name, log);
         let per_crate_opts = RunOpts {
             dry_run: opts.dry_run,
@@ -327,10 +345,11 @@ pub(super) fn run_per_crate(
 
 /// RAII guard that snapshots the `ctx` fields mutated by
 /// `run_per_crate`'s overlay loop (`config.dist`,
-/// `options.selected_crates`, `options.skip_stages`, and the per-crate
-/// `Tag` / `PreviousTag` template vars) and restores them in `Drop` so
-/// an unwind through the loop body still leaves the caller's `ctx`
-/// pointed at its pre-loop shape.
+/// `options.selected_crates`, `options.skip_stages`, the per-crate
+/// `Tag` / `PreviousTag` template vars, and the version-derived
+/// template vars in [`VERSION_TEMPLATE_VARS`]) and restores them in
+/// `Drop` so an unwind through the loop body still leaves the caller's
+/// `ctx` pointed at its pre-loop shape.
 ///
 /// The save/restore-via-closure pattern this replaces was
 /// panic-unsafe: a panic from inside the iteration would skip the
@@ -344,8 +363,24 @@ struct PerCrateOverlayGuard<'a> {
     saved_skip_stages: Vec<String>,
     saved_tag: Option<String>,
     saved_previous_tag: Option<String>,
+    saved_version_vars: Vec<(&'static str, Option<String>)>,
     saved_overlay: OverlayFields,
 }
+
+/// Template vars derived from the resolved `Version`. `run_per_crate`
+/// re-anchors all of them onto each crate's preserved version (see
+/// [`apply_per_crate_version`]); the guard snapshots and restores the
+/// set so a per-iteration override can't leak past the loop.
+const VERSION_TEMPLATE_VARS: &[&str] = &[
+    "Version",
+    "RawVersion",
+    "Base",
+    "Major",
+    "Minor",
+    "Patch",
+    "Prerelease",
+    "BuildMetadata",
+];
 
 /// Snapshot of the `config` fields `apply_workspace_overlay` mutates.
 ///
@@ -398,6 +433,10 @@ impl<'a> PerCrateOverlayGuard<'a> {
         let saved_skip_stages = ctx.options.skip_stages.clone();
         let saved_tag = ctx.template_vars().get("Tag").cloned();
         let saved_previous_tag = ctx.template_vars().get("PreviousTag").cloned();
+        let saved_version_vars = VERSION_TEMPLATE_VARS
+            .iter()
+            .map(|&k| (k, ctx.template_vars().get(k).cloned()))
+            .collect();
         let saved_overlay = OverlayFields::capture(&ctx.config);
         Self {
             ctx,
@@ -406,6 +445,7 @@ impl<'a> PerCrateOverlayGuard<'a> {
             saved_skip_stages,
             saved_tag,
             saved_previous_tag,
+            saved_version_vars,
             saved_overlay,
         }
     }
@@ -425,6 +465,24 @@ impl<'a> PerCrateOverlayGuard<'a> {
     /// `skip:` list.
     fn snapshot_skip_stages(&self) -> &[String] {
         &self.saved_skip_stages
+    }
+
+    /// Rewind the version-derived template vars to the captured baseline.
+    /// Call at the start of each iteration *before* `apply_per_crate_version`
+    /// so a version re-anchored for a prior crate can't leak into one whose
+    /// preserved manifest records no version (where `apply_per_crate_version`
+    /// early-returns and leaves the vars untouched). Mirrors the
+    /// `baseline_skip_stages` reset; the Drop-restore at loop end still
+    /// returns the caller's pre-loop values.
+    fn reset_version_vars(&mut self) {
+        for (key, value) in &self.saved_version_vars {
+            match value {
+                Some(v) => self.ctx.template_vars_mut().set(key, v),
+                None => {
+                    self.ctx.template_vars_mut().unset(key);
+                }
+            }
+        }
     }
 
     /// Reborrow the wrapped `&mut Context` for one loop iteration.
@@ -464,6 +522,14 @@ impl Drop for PerCrateOverlayGuard<'_> {
                 self.ctx.template_vars_mut().unset("PreviousTag");
             }
         }
+        for (key, value) in std::mem::take(&mut self.saved_version_vars) {
+            match value {
+                Some(v) => self.ctx.template_vars_mut().set(key, &v),
+                None => {
+                    self.ctx.template_vars_mut().unset(key);
+                }
+            }
+        }
     }
 }
 
@@ -488,6 +554,71 @@ impl Drop for PerCrateOverlayGuard<'_> {
 /// this path never deserializes, so there is no preserved tag to prefer.
 /// Re-rendering against the shared, already-resolved `Version` recovers
 /// each crate's correct tag.
+/// Re-anchor `ctx`'s `Version` (and the vars derived from it —
+/// `RawVersion`, `Base`, `Major`, `Minor`, `Patch`, `Prerelease`,
+/// `BuildMetadata`) onto the version recorded in the crate's preserved
+/// `context.json`.
+///
+/// In a lockstep workspace every crate shares the single `Version` that
+/// `resolve_git_context` resolved from HEAD, so this is a no-op rewrite
+/// of the same value. In workspace per-crate INDEPENDENT-version mode
+/// each crate's preserved manifest carries its own version; without this
+/// re-anchor the crate's `tag_template`, release title, and artifact
+/// names would all render against the first-resolved crate's version and
+/// mint a mis-tagged GitHub release.
+///
+/// Best-effort: a missing preserved manifest or a non-semver version
+/// string leaves the upstream `Version` vars in place rather than
+/// aborting the publish.
+fn apply_per_crate_version(
+    ctx: &mut Context,
+    crate_dist: &Path,
+    crate_name: &str,
+    log: &StageLogger,
+) {
+    let Some(version) = peek_preserved_version(crate_dist) else {
+        return;
+    };
+    let semver = match anodizer_core::git::parse_semver(&version) {
+        Ok(sv) => sv,
+        Err(e) => {
+            log.verbose(&format!(
+                "publish-only: preserved version '{version}' for crate '{crate_name}' \
+                 is not strict semver ({e}); leaving Version vars unchanged"
+            ));
+            return;
+        }
+    };
+
+    let vars = ctx.template_vars_mut();
+    vars.set("Version", &semver.version_string());
+    vars.set("RawVersion", &semver.raw_version_string());
+    vars.set("Base", &semver.raw_version_string());
+    vars.set("Major", &semver.major.to_string());
+    vars.set("Minor", &semver.minor.to_string());
+    vars.set("Patch", &semver.patch.to_string());
+    vars.set("Prerelease", semver.prerelease.as_deref().unwrap_or(""));
+    vars.set(
+        "BuildMetadata",
+        semver.build_metadata.as_deref().unwrap_or(""),
+    );
+}
+
+/// Read the canonical version recorded in a crate's preserved dist
+/// (`context.json` / `context-<shard>.json`). Returns the first
+/// non-empty version found; `None` when no manifest exists, none records
+/// a version, or discovery fails. The full cross-shard version/commit
+/// consistency check runs later in `run_one_crate_dist` — this peek only
+/// needs a value to re-anchor the per-crate template vars before tag
+/// rendering.
+fn peek_preserved_version(crate_dist: &Path) -> Option<String> {
+    let contexts = discover_preserved_contexts(crate_dist).ok()?;
+    contexts
+        .into_iter()
+        .map(|(_, c)| c.version)
+        .find(|v| !v.is_empty())
+}
+
 fn apply_per_crate_tag(ctx: &mut Context, config: &Config, crate_name: &str, log: &StageLogger) {
     let tag_template = ctx
         .config
@@ -1285,9 +1416,7 @@ fn is_ephemeral_signature_path(path: &str) -> bool {
 /// so verifying them would fail the multi-shard fan-out on signatures
 /// whose mismatch is an architectural feature.
 fn hash_verify_preserved_dist(ctx: &PreservedDistContext, dist_root: &Path) -> Result<()> {
-    use sha2::{Digest, Sha256};
     use std::collections::BTreeMap;
-    use std::io::Read;
 
     // Group recorded hashes by relative path. The merged context carries
     // one entry per (shard, path) pair, so a cross-shard duplicate like
@@ -1311,24 +1440,12 @@ fn hash_verify_preserved_dist(ctx: &PreservedDistContext, dist_root: &Path) -> R
 
     for (path_str, expected_hashes) in &by_path {
         let path = dist_root.join(path_str);
-        let mut file = std::fs::File::open(&path).with_context(|| {
+        let actual_hex = anodizer_core::hashing::sha256_file(&path).with_context(|| {
             format!(
-                "publish-only hash-verify: opening preserved artifact {}",
+                "publish-only hash-verify: hashing preserved artifact {}",
                 path.display(),
             )
         })?;
-        let mut hasher = Sha256::new();
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            let n = file
-                .read(&mut buf)
-                .with_context(|| format!("publish-only hash-verify: reading {}", path.display()))?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-        }
-        let actual_hex = format!("{:x}", hasher.finalize());
         let actual = format!("sha256:{actual_hex}");
 
         // Tolerate bare hex OR `sha256:<hex>` on the recorded side.
@@ -2058,8 +2175,8 @@ mod tests {
         let err = hash_verify_preserved_dist(&ctx, tmp.path()).unwrap_err();
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("opening preserved artifact"),
-            "error must surface the open-failure wording; got: {msg}"
+            msg.contains("hashing preserved artifact"),
+            "error must surface the hash-failure wording; got: {msg}"
         );
         assert!(
             msg.contains("absent.tar.gz"),
@@ -2644,6 +2761,222 @@ mod tests {
                     );
                 }
             });
+        }
+
+        /// Write a minimal preserved `context.json` recording only the
+        /// `version`, under `<base>/<crate>/context.json`. Returns the
+        /// per-crate dist subdir.
+        fn write_preserved_version(
+            base: &Path,
+            crate_name: &str,
+            version: &str,
+        ) -> std::path::PathBuf {
+            let crate_dist = base.join(crate_name);
+            std::fs::create_dir_all(&crate_dist).unwrap();
+            std::fs::write(
+                crate_dist.join("context.json"),
+                format!(r#"{{"version":"{version}","commit":"deadbeefcafe"}}"#),
+            )
+            .unwrap();
+            crate_dist
+        }
+
+        /// Workspace per-crate INDEPENDENT-version mode: each crate's
+        /// preserved manifest carries its OWN version, so the per-crate
+        /// tag (and any version-templated artifact name / release title)
+        /// must render against that crate's version, NOT the single
+        /// HEAD-resolved global version. cfgd-core preserved at 0.5.1 and
+        /// cfgd preserved at 0.4.0 — re-anchoring `Version` before the tag
+        /// render recovers `core-v0.5.1` / `v0.4.0`. Without the
+        /// `apply_per_crate_version` re-anchor, both render against the
+        /// global `0.4.0` and the wrong crate gets a mis-tagged release.
+        #[test]
+        #[serial]
+        fn independent_version_workspace_renders_per_crate_version() {
+            with_hermetic_git_cwd(|| {
+                let tmp = tempfile::tempdir().unwrap();
+                let dist = tmp.path().join("dist");
+
+                let cases = [
+                    ("cfgd", "v{{ Version }}", "0.4.0", "v0.4.0"),
+                    ("cfgd-core", "core-v{{ Version }}", "0.5.1", "core-v0.5.1"),
+                ];
+                for (crate_name, tag_template, preserved_version, expect_tag) in cases {
+                    let crate_dist = write_preserved_version(&dist, crate_name, preserved_version);
+                    let config = config_with_crates(vec![crate_cfg(crate_name, tag_template)]);
+                    let mut ctx = Context::new(config.clone(), ContextOptions::default());
+                    // The single HEAD-resolved global version every
+                    // iteration would otherwise inherit.
+                    ctx.template_vars_mut().set("Version", "0.4.0");
+                    ctx.template_vars_mut().set("Tag", "v0.4.0");
+
+                    apply_per_crate_version(&mut ctx, &crate_dist, crate_name, &quiet_log());
+                    assert_eq!(
+                        ctx.template_vars().get("Version").map(String::as_str),
+                        Some(preserved_version),
+                        "crate '{crate_name}' must carry its own preserved Version",
+                    );
+
+                    apply_per_crate_tag(&mut ctx, &config, crate_name, &quiet_log());
+                    assert_eq!(
+                        ctx.template_vars().get("Tag").map(String::as_str),
+                        Some(expect_tag),
+                        "crate '{crate_name}' tag must render against its own preserved version",
+                    );
+                }
+            });
+        }
+
+        /// Write a minimal preserved `context.json` that records NO
+        /// `version` (only a commit), under `<base>/<crate>/context.json`.
+        /// Mirrors a preserved dist whose manifest predates the version
+        /// field or was hand-written without it — the case where
+        /// `apply_per_crate_version` early-returns.
+        fn write_preserved_no_version(base: &Path, crate_name: &str) -> std::path::PathBuf {
+            let crate_dist = base.join(crate_name);
+            std::fs::create_dir_all(&crate_dist).unwrap();
+            std::fs::write(
+                crate_dist.join("context.json"),
+                r#"{"version":"","commit":"deadbeefcafe"}"#,
+            )
+            .unwrap();
+            crate_dist
+        }
+
+        /// Per-crate iteration must rewind the version-derived vars to the
+        /// pre-loop baseline at the START of each iteration, mirroring the
+        /// `baseline_skip_stages` reset. `apply_per_crate_version`
+        /// early-returns (leaves the vars untouched) when a crate's
+        /// preserved manifest records no version; without the per-iteration
+        /// reset, crate 2 (no preserved version) would inherit crate 1's
+        /// re-anchored version and render its tag against the WRONG value.
+        ///
+        /// Drives the real loop shape: capture the guard, then per crate
+        /// `reset_version_vars()` → `apply_per_crate_version`. Crate 1
+        /// preserves 0.5.1; crate 2 preserves no version and must fall back
+        /// to the pre-loop baseline (0.4.0), NOT inherit crate 1's 0.5.1.
+        #[test]
+        fn per_iteration_reset_prevents_version_bleed_when_next_crate_lacks_version() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dist = tmp.path().join("dist");
+            let crate1_dist = write_preserved_version(&dist, "cfgd-core", "0.5.1");
+            let crate2_dist = write_preserved_no_version(&dist, "cfgd");
+
+            let mut ctx = Context::new(Config::default(), ContextOptions::default());
+            // The single HEAD-resolved baseline every iteration rewinds to.
+            ctx.template_vars_mut().set("Version", "0.4.0");
+            ctx.template_vars_mut().set("Major", "0");
+            ctx.template_vars_mut().set("Minor", "4");
+            ctx.template_vars_mut().set("Patch", "0");
+
+            let mut guard = PerCrateOverlayGuard::capture(&mut ctx);
+
+            // Iteration 1: crate with a preserved version re-anchors to it.
+            guard.reset_version_vars();
+            apply_per_crate_version(guard.ctx_mut(), &crate1_dist, "cfgd-core", &quiet_log());
+            assert_eq!(
+                guard
+                    .ctx_mut()
+                    .template_vars()
+                    .get("Version")
+                    .map(String::as_str),
+                Some("0.5.1"),
+                "crate 1 must re-anchor to its own preserved version",
+            );
+
+            // Iteration 2: crate WITHOUT a preserved version. The
+            // per-iteration reset must rewind to the baseline before the
+            // early-returning `apply_per_crate_version`, so the vars are the
+            // pre-loop 0.4.0 — NOT crate 1's leaked 0.5.1.
+            guard.reset_version_vars();
+            apply_per_crate_version(guard.ctx_mut(), &crate2_dist, "cfgd", &quiet_log());
+            let vars = guard.ctx_mut();
+            assert_eq!(
+                vars.template_vars().get("Version").map(String::as_str),
+                Some("0.4.0"),
+                "crate 2 (no preserved version) must fall back to the pre-loop \
+                 baseline, NOT inherit crate 1's re-anchored version",
+            );
+            assert_eq!(
+                vars.template_vars().get("Major").map(String::as_str),
+                Some("0"),
+                "derived Major must also rewind to baseline, not crate 1's",
+            );
+        }
+
+        /// A preserved version with prerelease + build metadata must
+        /// populate the derived vars (`Major`/`Minor`/`Patch`/
+        /// `Prerelease`/`BuildMetadata`) so version-templated names that
+        /// reference them render with the per-crate values too.
+        #[test]
+        fn apply_per_crate_version_populates_derived_vars() {
+            let tmp = tempfile::tempdir().unwrap();
+            let crate_dist = write_preserved_version(tmp.path(), "cfgd", "1.2.3-rc.1+build.7");
+            let mut ctx = Context::new(Config::default(), ContextOptions::default());
+
+            apply_per_crate_version(&mut ctx, &crate_dist, "cfgd", &quiet_log());
+
+            let v = ctx.template_vars();
+            assert_eq!(
+                v.get("Version").map(String::as_str),
+                Some("1.2.3-rc.1+build.7")
+            );
+            assert_eq!(v.get("RawVersion").map(String::as_str), Some("1.2.3"));
+            assert_eq!(v.get("Major").map(String::as_str), Some("1"));
+            assert_eq!(v.get("Minor").map(String::as_str), Some("2"));
+            assert_eq!(v.get("Patch").map(String::as_str), Some("3"));
+            assert_eq!(v.get("Prerelease").map(String::as_str), Some("rc.1"));
+            assert_eq!(v.get("BuildMetadata").map(String::as_str), Some("build.7"));
+        }
+
+        /// A missing preserved manifest (or a non-semver version) leaves
+        /// the upstream `Version` untouched rather than blanking it.
+        #[test]
+        fn apply_per_crate_version_missing_manifest_leaves_version() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut ctx = Context::new(Config::default(), ContextOptions::default());
+            ctx.template_vars_mut().set("Version", "9.9.9");
+
+            apply_per_crate_version(
+                &mut ctx,
+                &tmp.path().join("absent-crate"),
+                "absent-crate",
+                &quiet_log(),
+            );
+
+            assert_eq!(
+                ctx.template_vars().get("Version").map(String::as_str),
+                Some("9.9.9"),
+                "a missing preserved manifest must not clobber the upstream Version",
+            );
+        }
+
+        /// The overlay guard must snapshot the pre-loop version-derived
+        /// vars and restore them on drop so the per-iteration re-anchor
+        /// never leaks into the caller's context.
+        #[test]
+        fn overlay_guard_restores_version_vars() {
+            let mut ctx = Context::new(Config::default(), ContextOptions::default());
+            ctx.template_vars_mut().set("Version", "0.4.0");
+            ctx.template_vars_mut().set("Major", "0");
+
+            {
+                let mut guard = PerCrateOverlayGuard::capture(&mut ctx);
+                let inner = guard.ctx_mut();
+                inner.template_vars_mut().set("Version", "0.5.1");
+                inner.template_vars_mut().set("Major", "9");
+            }
+
+            assert_eq!(
+                ctx.template_vars().get("Version").map(String::as_str),
+                Some("0.4.0"),
+                "Drop must restore the caller's Version",
+            );
+            assert_eq!(
+                ctx.template_vars().get("Major").map(String::as_str),
+                Some("0"),
+                "Drop must restore the caller's Major",
+            );
         }
 
         /// The crate may live in `config.workspaces` rather than the

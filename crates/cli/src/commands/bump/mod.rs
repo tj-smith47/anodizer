@@ -46,6 +46,14 @@ pub fn run(opts: BumpOpts) -> Result<()> {
     if opts.output != "text" && opts.output != "json" {
         bail!("--output must be 'text' or 'json', got '{}'", opts.output);
     }
+
+    // `--changelog` only takes effect inside the `--commit` path (the changelog
+    // refresh rides in the bump commit). Reject the combination loudly rather
+    // than silently ignoring `--changelog`, mirroring the help text
+    // ("requires --commit") and `tag rollback`'s hard-fail on a misplaced flag.
+    if opts.changelog && !opts.commit {
+        bail!("--changelog requires --commit (the changelog refresh rides in the bump commit)");
+    }
     if opts.output == "json" && !opts.dry_run {
         bail!("--output json requires --dry-run");
     }
@@ -374,4 +382,45 @@ fn enforce_version_pins(
         log.warn(&format!("version pin: {}", v));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opts() -> BumpOpts {
+        BumpOpts {
+            level_or_version: Some("patch".to_string()),
+            package: vec![],
+            workspace: false,
+            exclude: vec![],
+            pre: None,
+            exact: false,
+            allow_dirty: true,
+            yes: true,
+            dry_run: true,
+            commit: false,
+            changelog: false,
+            sign: false,
+            commit_message: None,
+            output: "text".to_string(),
+            config_override: None,
+            verbose: false,
+            debug: false,
+            quiet: true,
+            strict: false,
+        }
+    }
+
+    #[test]
+    fn changelog_without_commit_is_rejected() {
+        let mut o = opts();
+        o.changelog = true;
+        o.commit = false;
+        let err = run(o).unwrap_err();
+        assert!(
+            err.to_string().contains("--changelog requires --commit"),
+            "expected the changelog/commit guard to fire, got: {err}"
+        );
+    }
 }

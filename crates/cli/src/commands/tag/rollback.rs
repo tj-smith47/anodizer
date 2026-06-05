@@ -90,8 +90,8 @@ pub struct RollbackOpts {
 /// Strict semver-ish per-crate tag pattern: `<crate>-v<MAJOR>.<MINOR>.<PATCH>[-pre][+build]`.
 /// The crate-name portion accepts ASCII letters, `_` and `-` as the
 /// first char (cargo crate names must start with a letter — digits are
-/// rejected), then letters/digits/`_`/`-` for the remainder; we then
-/// assert the suffix is anodize's `v<semver>` form so a tag like
+/// rejected), then letters/digits/`_`/`-` for the remainder; the
+/// suffix is then asserted to be anodize's `v<semver>` form so a tag like
 /// `foo-bar` (no `-v` suffix) doesn't accidentally match.
 ///
 /// Compiled once at first use (the pattern is a compile-time literal) so
@@ -365,7 +365,7 @@ fn delete_tags(
 /// Resolution order:
 /// 1. `--branch` flag wins unconditionally.
 /// 2. SHA-derivation: `git branch -r --contains <bump_sha>`. The bump
-///    SHA is the deterministic anchor of the tag we just rolled back,
+///    SHA is the deterministic anchor of the just-rolled-back tag,
 ///    so it's race-immune to the default branch moving between bump
 ///    and rollback. Exactly one remote branch → use it. Multiple →
 ///    require `--branch` to disambiguate.
@@ -640,8 +640,8 @@ mod tests {
         }
     }
 
-    /// Process-wide cwd swap. Marked `serial` upstream tests do the same;
-    /// we re-use that pattern here.
+    /// Process-wide cwd swap. Marked `serial` to match the surrounding
+    /// cwd-swapping tests so they don't race.
     use serial_test::serial;
 
     #[test]

@@ -593,16 +593,7 @@ fn canonical_path_key(path: &Path) -> Option<String> {
 /// security and cross-platform-portability cost.
 fn expand_path_tilde_and_env(path_str: &str) -> String {
     let expanded = expand_env_vars(path_str);
-    if let Some(rest) = expanded.strip_prefix('~')
-        && let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty())
-    {
-        let home = PathBuf::from(home);
-        let rest_trimmed = rest.strip_prefix('/').unwrap_or(rest);
-        if rest.starts_with('/') || rest.is_empty() {
-            return home.join(rest_trimmed).to_string_lossy().to_string();
-        }
-    }
-    expanded
+    anodizer_core::path_util::expand_tilde(&expanded).into_owned()
 }
 
 /// Resolve a single include entry recursively, walking the included
