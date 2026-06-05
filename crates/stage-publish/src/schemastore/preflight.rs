@@ -14,10 +14,12 @@ use super::manifest;
 
 /// Validate every non-skipped schema entry before the publish stage runs.
 ///
-/// Per entry, in order: config-shape (`validate`), description content rules,
+/// Per entry, in order: config-shape (`validate`), description content rules
+/// (resolving the DERIVED description when none is set, so the omitted-
+/// `description` path is validated here exactly as the publish stage will),
 /// and — for vendor mode — that the schema file exists on disk, parses as
 /// JSON, carries an http(s) `$id`, and uses a recognized json-schema dialect.
-/// External entries are checked only for a well-formed http(s) `url`.
+/// External entries are additionally checked for a well-formed http(s) `url`.
 ///
 /// Aggregation is first-blocker-wins: the first [`PreflightCheck::Blocker`]
 /// short-circuits and is returned; absent any blocker the first
@@ -44,13 +46,21 @@ pub(crate) fn preflight_checks(ctx: &Context) -> anyhow::Result<PreflightCheck> 
             )));
         }
 
-        if let Some(desc) = entry.description.as_deref()
-            && let Err(e) = manifest::sanitize_description(desc)
-        {
-            return Ok(PreflightCheck::Blocker(format!(
-                "{} description: {e}",
-                entry_label(&entry.name)
-            )));
+        // Resolve+sanitize through the SAME path the publish stage uses, so a
+        // DERIVED description (the omitted-`description` case) is validated here
+        // too — not just an explicit one. A derived Cargo description containing
+        // "schema" would otherwise pass preflight and fail mid-publish.
+        if let Err(e) = super::publish::resolve_description(ctx, entry) {
+            // `e` already carries the entry label; append a hint pointing at the
+            // derived-description path so the operator knows to set an explicit
+            // `description:` rather than chase the project/crate metadata.
+            let hint = if entry.description.is_none() {
+                " — derived from project/crate metadata; set an explicit \
+                 `description:` to override"
+            } else {
+                ""
+            };
+            return Ok(PreflightCheck::Blocker(format!("{e}{hint}")));
         }
 
         match entry.mode()? {
@@ -168,6 +178,7 @@ mod tests {
                 name: "Anodizer".into(),
                 file_match: vec![".anodizer.yaml".into()],
                 schema_file: Some("schemas/does-not-exist.json".into()),
+                description: Some("Anodizer config".into()),
                 ..Default::default()
             }],
             ..Default::default()
@@ -189,6 +200,7 @@ mod tests {
                 name: "Anodizer".into(),
                 file_match: vec![".anodizer.yaml".into()],
                 url: Some("ftp://example.com/a.json".into()),
+                description: Some("Anodizer config".into()),
                 ..Default::default()
             }],
             ..Default::default()
@@ -210,6 +222,7 @@ mod tests {
                 name: "Anodizer".into(),
                 file_match: vec![".anodizer.yaml".into()],
                 url: Some("https://example.com/a.json".into()),
+                description: Some("Anodizer config".into()),
                 ..Default::default()
             }],
             ..Default::default()
@@ -239,6 +252,58 @@ mod tests {
             }
             other => panic!("expected Blocker for bad description, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn preflight_blocks_on_bad_derived_description() {
+        use anodizer_core::config::MetadataConfig;
+        let mut ctx = TestContextBuilder::new().build();
+        // No explicit `description:` — the derived project description (which
+        // contains the banned word "schema") must be validated at preflight,
+        // not slip through to fail mid-publish.
+        ctx.config.metadata = Some(MetadataConfig {
+            description: Some("a schema for configs".into()),
+            ..Default::default()
+        });
+        ctx.config.schemastore = SchemastoreConfig {
+            schemas: vec![SchemaEntry {
+                name: "Anodizer".into(),
+                file_match: vec![".anodizer.yaml".into()],
+                url: Some("https://example.com/a.json".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        match preflight_checks(&ctx).expect("preflight ok") {
+            PreflightCheck::Blocker(msg) => {
+                assert!(msg.contains("Anodizer"), "{msg}");
+                assert!(msg.contains("derived"), "{msg}");
+            }
+            other => panic!("expected Blocker for bad derived description, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preflight_passes_for_clean_derived_description() {
+        use anodizer_core::config::MetadataConfig;
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.config.metadata = Some(MetadataConfig {
+            description: Some("Rust release-automation configuration".into()),
+            ..Default::default()
+        });
+        ctx.config.schemastore = SchemastoreConfig {
+            schemas: vec![SchemaEntry {
+                name: "Anodizer".into(),
+                file_match: vec![".anodizer.yaml".into()],
+                url: Some("https://example.com/a.json".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            preflight_checks(&ctx).expect("preflight ok"),
+            PreflightCheck::Pass
+        ));
     }
 
     #[test]
@@ -277,6 +342,7 @@ mod tests {
                 name: "Anodizer".into(),
                 file_match: vec![".anodizer.yaml".into()],
                 schema_file: Some("schemas/anodizer.schema.json".into()),
+                description: Some("Anodizer config".into()),
                 ..Default::default()
             }],
             ..Default::default()

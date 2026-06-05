@@ -229,7 +229,11 @@ fn effective_schemas<'a>(
 /// `description` if set, else derived from the bound crate's metadata (or the
 /// project metadata when no crate is bound), then validated against
 /// SchemaStore's content rules.
-fn resolve_description(ctx: &Context, entry: &SchemaEntry) -> anyhow::Result<String> {
+///
+/// Shared by the publish path and preflight so a DERIVED description (the
+/// omitted-`description` path) is validated at preflight exactly as it will be
+/// at publish time — the two surfaces can never disagree on what passes.
+pub(crate) fn resolve_description(ctx: &Context, entry: &SchemaEntry) -> anyhow::Result<String> {
     let raw = match entry.description.as_deref() {
         Some(d) => d.to_string(),
         None => {
@@ -570,17 +574,19 @@ fn write_vendor_schema(
         let allow_abs = repo_path.join(DIALECT_ALLOWLIST_PATH);
         let jsonc = std::fs::read_to_string(&allow_abs)
             .with_context(|| format!("schemastore: read {}", allow_abs.display()))?;
-        let updated = catalog::add_high_schema_version(&jsonc, &entry.name).with_context(|| {
-            format!(
-                "schemastore: allowlist high-dialect schema `{}`",
-                entry.name
-            )
+        // SchemaStore matches the allowlist against `path.basename(schemaPath)`
+        // (cli.js: `highSchemaVersion.includes(schema.name)`), i.e. the vendored
+        // file's basename WITH `.json` (`cfgd-module.json`, `cfgd-module-0.4.2.json`)
+        // — NOT the catalog display name. Keying on the display name never
+        // matches the file and hard-fails SchemaStore CI.
+        let allow_name = allowlist_name_for(plan)?;
+        let updated = catalog::add_high_schema_version(&jsonc, &allow_name).with_context(|| {
+            format!("schemastore: allowlist high-dialect schema `{allow_name}`")
         })?;
         std::fs::write(&allow_abs, &updated)
             .with_context(|| format!("schemastore: write {}", allow_abs.display()))?;
         log.status(&format!(
-            "schemastore: allowlisted high-dialect schema `{}` in {DIALECT_ALLOWLIST_PATH}",
-            entry.name
+            "schemastore: allowlisted high-dialect schema `{allow_name}` in {DIALECT_ALLOWLIST_PATH}"
         ));
     }
     Ok(())
@@ -596,6 +602,30 @@ fn raw_dialect(raw: &str) -> Dialect {
         .and_then(Value::as_str)
         .map(manifest::classify_dialect)
         .unwrap_or(Dialect::Unknown)
+}
+
+/// The `highSchemaVersion` allowlist key for a vendor plan: the vendored
+/// file's basename **including** the `.json` extension (`cfgd-module.json` for
+/// a plain vendor, `cfgd-module-0.4.2.json` for a versioned one).
+///
+/// SchemaStore's CI matches this allowlist against `path.basename(schemaPath)`
+/// — the vendored filename — never the catalog display name, so the key must
+/// be derived from [`SchemaPlan::vendor_path`], not [`SchemaPlan::name`].
+fn allowlist_name_for(plan: &SchemaPlan) -> anyhow::Result<String> {
+    let vendor_rel = plan.vendor_path.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("{}: vendor plan has no path for allowlist key", plan.name)
+    })?;
+    vendor_rel
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{}: vendor path `{}` has no file name for allowlist key",
+                plan.name,
+                vendor_rel.display()
+            )
+        })
 }
 
 /// Branch name for the fork-side work branch. One branch per release version
@@ -769,6 +799,38 @@ mod tests {
             "prior version carried forward"
         );
         assert!(versions.contains_key("0.4.2"), "new version added");
+    }
+
+    // --- allowlist key derivation ---------------------------------------
+
+    #[test]
+    fn allowlist_key_is_vendor_filename_with_json_extension() {
+        // The catalog display name here is the Title-case `cfgd-module`, but the
+        // allowlist key must be the vendored file basename WITH `.json` so
+        // SchemaStore's `path.basename` match succeeds — never the display name.
+        let e = SchemaEntry {
+            name: "cfgd-module".into(),
+            file_match: vec!["cfgd.yaml".into()],
+            schema_file: Some("schemas/cfgd-module.schema.json".into()),
+            description: Some("cfgd module configuration".into()),
+            ..Default::default()
+        };
+        let plan = plan_schema(&e, "cfgd module configuration", false, None, None).unwrap();
+        assert_eq!(allowlist_name_for(&plan).unwrap(), "cfgd-module.json");
+        assert_ne!(allowlist_name_for(&plan).unwrap(), "cfgd-module");
+    }
+
+    #[test]
+    fn allowlist_key_is_versioned_vendor_filename() {
+        let e = SchemaEntry {
+            name: "cfgd-module".into(),
+            file_match: vec!["cfgd.yaml".into()],
+            schema_file: Some("schemas/cfgd-module.schema.json".into()),
+            description: Some("cfgd module configuration".into()),
+            ..Default::default()
+        };
+        let plan = plan_schema(&e, "cfgd module configuration", true, Some("0.4.2"), None).unwrap();
+        assert_eq!(allowlist_name_for(&plan).unwrap(), "cfgd-module-0.4.2.json");
     }
 
     // --- verdict against a fixture catalog ------------------------------

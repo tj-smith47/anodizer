@@ -192,7 +192,7 @@ In single-crate and workspace-lockstep modes, `crate:` is optional and defaults 
 
 ## `versioned`
 
-Vendor-only. When `true`, anodizer writes a version-suffixed file (`<slug>-<VER>.json`) alongside the base file, and merges the new version into the catalog entry's `versions` map — carrying prior versions forward so editors that locked to an older version still resolve:
+Vendor-only. When `true`, anodizer writes a version-suffixed file (`<slug>-<VER>.json`) and merges the new version into the catalog entry's `versions` map — carrying prior versions forward so editors that locked to an older version still resolve:
 
 ```yaml
 schemas:
@@ -235,7 +235,7 @@ The schema's `$id` field must be an absolute `http(s)://` URL. Relative or urn-f
 ### `$schema` dialect
 
 - **Draft-04, draft-06, draft-07**: accepted unconditionally.
-- **Draft 2019-09 or 2020-12**: allowed, but anodizer automatically adds the schema's `<slug>` to the `highSchemaVersion` allowlist in `src/schema-validation.jsonc` in the same PR. This keeps your schema as-authored; the allowlist entry satisfies SchemaStore CI.
+- **Draft 2019-09 or 2020-12**: allowed, but anodizer automatically adds the vendored filename (`<slug>.json`, or `<slug>-<VER>.json` when `versioned`) to the `highSchemaVersion` allowlist in `src/schema-validation.jsonc` in the same PR. SchemaStore CI matches that allowlist on the file's basename, so the entry is the filename — not the catalog display name. This keeps your schema as-authored; the allowlist entry satisfies SchemaStore CI.
 
 > A failed `$schema` check on one entry fails the **entire PR**, including any good entries. Anodizer catches dialect mismatches at preflight so the PR lands clean.
 
@@ -272,6 +272,8 @@ schemastore:
 ## Idempotency
 
 Before opening a PR, anodizer checks whether the upstream `SchemaStore/schemastore:master` already has an identical entry (same `name`, same `url`, same vendored file bytes for vendor mode). If nothing changed, no PR is opened. This is the expected result when anodizer runs against its own config — the entry for `#5727` is already present and unchanged.
+
+anodizer also guards against duplicate submissions of the same version: before pushing, it queries upstream for an open PR from the fork's `schemastore-v<version>` branch. If one is found, anodizer logs that the work is in-flight and skips the push, leaving the open PR untouched. Re-running a release whose SchemaStore PR is still open is therefore a no-op — anodizer never force-updates an open PR within the same version (unlike krew/homebrew/winget, schemastore exposes no `update_existing_pr`). A new version opens a fresh `schemastore-v<version>` branch and PR.
 
 ## Rollback
 
@@ -338,5 +340,5 @@ schemastore:
 In this config:
 - The **Anodizer** entry is external — SchemaStore gets only the catalog entry; no file changes on version bumps.
 - The **cfgd-config** entry is vendored — the schema file is copied to `src/schemas/json/cfgd-config.json` on each release.
-- The **cfgd-module** entry is vendored + versioned — emits `cfgd-module-<VER>.json` and merges the version into `versions`. Because it is draft-2020-12, anodizer automatically adds `cfgd-module` to the `highSchemaVersion` allowlist in the same PR.
+- The **cfgd-module** entry is vendored + versioned — emits `cfgd-module-<VER>.json` and merges the version into `versions`. Because it is draft-2020-12, anodizer automatically adds the vendored filename (`cfgd-module-<VER>.json`) to the `highSchemaVersion` allowlist in the same PR — SchemaStore CI matches that allowlist on the file's basename.
 - `repository` and `commit_author` are block-level defaults shared across all three entries; one PR carries all three changes.
