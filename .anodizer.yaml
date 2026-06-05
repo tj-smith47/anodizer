@@ -624,6 +624,16 @@ homebrew_casks:
       name: TJ Smith
       email: tj@jarvispro.io
 
+schemastore:
+  repository:
+    owner: tj-smith47
+    name: schemastore
+  schemas:
+    - name: Anodizer
+      description: "Anodizer Rust release-automation configuration file"
+      file_match: [".anodizer.yaml", ".anodizer.yml"]
+      url: "https://tj-smith47.github.io/anodizer/schema.json"
+
 notarize:
   skip: true  # disabled — no Apple Developer credentials configured
 
