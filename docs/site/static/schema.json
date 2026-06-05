@@ -11961,7 +11961,6 @@
         },
         "required": {
           "description": "Whether a failure here fails the release. Collapsed across `schemas`.",
-          "default": null,
           "type": [
             "boolean",
             "null"

@@ -1,7 +1,6 @@
 //! `schemastore:` publisher config — registers a tool's JSON Schema(s) on
 //! SchemaStore. Field presence selects the mode: `url` ⇒ external (catalog
 //! entry only), `schema_file` ⇒ vendor (file copied into the SchemaStore repo).
-//! See `.claude/specs/2026-06-05-schemastore-publisher.md`.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -56,6 +55,7 @@ pub struct SchemaEntry {
     /// Emit a version-suffixed vendored file + `versions` map. Vendor-only.
     pub versioned: Option<bool>,
     /// Whether a failure here fails the release. Collapsed across `schemas`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
     /// Per-entry skip. Alias: `disable`.
     #[serde(
@@ -106,5 +106,16 @@ schemas:
     fn rejects_unknown_field() {
         let yaml = "schemas: []\nbogus: 1\n";
         assert!(serde_yaml_ng::from_str::<SchemastoreConfig>(yaml).is_err());
+    }
+
+    #[test]
+    fn disable_alias_is_accepted() {
+        let yaml = "schemas: []\nskip: true\n";
+        let cfg: SchemastoreConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(cfg.skip.is_some());
+
+        let via_alias = "schemas: []\ndisable: true\n";
+        let cfg2: SchemastoreConfig = serde_yaml_ng::from_str(via_alias).unwrap();
+        assert!(cfg2.skip.is_some());
     }
 }
