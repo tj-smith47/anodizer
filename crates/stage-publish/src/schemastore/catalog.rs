@@ -125,7 +125,7 @@ pub(crate) fn splice_entry(catalog: &str, name: &str, entry: &Value) -> anyhow::
     out.push('\n');
     out.push_str(&rendered);
     out.push('\n');
-    out.push_str("  "); // indentation for the closing `]`
+    out.push_str("  "); // array closes at the 2-space array indent (see entry_indent note)
     out.push_str(&catalog[close..]);
     Ok(out)
 }
@@ -247,7 +247,11 @@ fn find_entry_span(catalog: &str, name: &str) -> anyhow::Result<(usize, usize)> 
                 b'}' => {
                     depth -= 1;
                     if depth == 0 {
-                        let s_idx = start.take().expect("object close without open");
+                        let Some(s_idx) = start.take() else {
+                            anyhow::bail!(
+                                "internal: object close without matching open in `schemas` array"
+                            );
+                        };
                         let end = i + 1;
                         if let Ok(obj) = serde_json::from_str::<Value>(&catalog[s_idx..end])
                             && obj.get("name").and_then(Value::as_str) == Some(name)
