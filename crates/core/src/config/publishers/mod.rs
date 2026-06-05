@@ -26,7 +26,7 @@ mod nix;
 pub use nix::*;
 
 mod schemastore;
-pub use schemastore::{SchemaEntry, SchemastoreConfig};
+pub use schemastore::{SchemaEntry, SchemaMode, SchemastoreConfig};
 
 // ---------------------------------------------------------------------------
 // Shared publisher config types: RepositoryConfig, CommitAuthorConfig
