@@ -389,22 +389,31 @@ fn prebuilt_dry_run_skips_stat_when_binary_absent() {
     // Intentionally DO NOT stage the binary; dry-run must still succeed
     // because it validates config + template rendering without touching disk.
 
+    // Configure the DETECTED host target (not a hardcoded linux triple) so
+    // `--single-target` — which resolves to the host — always finds a matching
+    // configured target on any runner (linux-amd64, darwin-arm64, windows-amd64).
+    // The binary is still absent on disk, so the dry-run-skips-stat behaviour
+    // under test is exercised identically regardless of host.
+    let host_target = anodizer_core::partial::detect_host_target()
+        .expect("host target detection must succeed in test env");
     create_config(
         tmp.path(),
-        r#"
+        &format!(
+            r#"
 project_name: test-project
 crates:
   - name: test-project
     path: "."
-    tag_template: "v{{ .Version }}"
+    tag_template: "v{{{{ .Version }}}}"
     builds:
       - binary: test-project
         builder: prebuilt
         prebuilt:
-          path: "output/test-project_{{ .Target }}"
+          path: "output/test-project_{{{{ .Target }}}}"
         targets:
-          - x86_64-unknown-linux-gnu
-"#,
+          - {host_target}
+"#
+        ),
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))

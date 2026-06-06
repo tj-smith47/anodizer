@@ -5496,8 +5496,16 @@ fn mode_a_shell_var_does_not_leak_into_manpage_or_archive_name() {
         .unwrap()
         .to_string_lossy()
         .to_string();
+    // The name_template ends in `{{ .Os }}-{{ .Arch }}`, which the archive
+    // stage renders via `map_target(host_target)`. Derive the same tokens here
+    // so the expectation is correct on any host (linux-amd64, darwin-arm64, …);
+    // a hardcoded `linux-amd64` would false-fail on macOS/Windows runners. With
+    // `{{ .Shell }}` cleared, the template yields the double-dash `myapp--`.
+    let (os, arch) =
+        anodizer_core::target::map_target(&anodizer_core::partial::detect_host_target().unwrap());
     assert_eq!(
-        stem, "myapp--linux-amd64.tar.gz",
+        stem,
+        format!("myapp--{os}-{arch}.tar.gz"),
         "Shell leaked into archive name template (should be empty)"
     );
 }
@@ -5567,8 +5575,15 @@ fn mode_a_artifact_path_does_not_leak_into_name_or_templated_files() {
         !stem.contains("hostbin"),
         "ArtifactPath leaked into archive name: {stem}"
     );
+    // Derive the host's os/arch tokens via the same `map_target` the archive
+    // stage uses, so the expectation holds on any runner (not just
+    // linux-amd64). With `{{ .ArtifactPath }}` cleared, the stem is
+    // `myapp-{os}-{arch}`.
+    let (os, arch) =
+        anodizer_core::target::map_target(&anodizer_core::partial::detect_host_target().unwrap());
     assert_eq!(
-        stem, "myapp-linux-amd64.tar.gz",
+        stem,
+        format!("myapp-{os}-{arch}.tar.gz"),
         "name must render ArtifactPath empty"
     );
 
