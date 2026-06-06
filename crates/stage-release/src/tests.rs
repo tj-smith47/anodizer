@@ -3851,6 +3851,39 @@ fn test_skip_upload_string_auto_in_snapshot_succeeds() {
 }
 
 #[test]
+fn test_snapshot_without_dry_run_does_not_reach_live_backend() {
+    use anodizer_core::config::ScmRepoConfig;
+    use anodizer_core::scm::ScmTokenType;
+    // `--snapshot` (WITHOUT `--dry-run`) must take the no-publish telemetry path,
+    // not the live GitHub backend — which bails on the missing token (and would
+    // create a real release if a token were present). Regression for the release
+    // stage computing `dry_run = is_dry_run()` and omitting `|| is_snapshot()`.
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .snapshot(true)
+        .token(None)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: "octocat".to_string(),
+                    name: "hello".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    ctx.token_type = ScmTokenType::GitHub;
+    assert!(
+        ReleaseStage.run(&mut ctx).is_ok(),
+        "release --snapshot must not reach the live SCM backend / token gate"
+    );
+}
+
+#[test]
 fn test_skip_upload_string_zero_and_one_are_valid() {
     for value in ["1", "0", "true", "false", ""] {
         let mut ctx = TestContextBuilder::new()

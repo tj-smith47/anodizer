@@ -26,7 +26,14 @@ impl Stage for super::ReleaseStage {
         let token = ctx.options.token.clone();
 
         let selected = ctx.options.selected_crates.clone();
-        let dry_run = ctx.is_dry_run();
+        // `--snapshot` means "build without publishing", so it must take the same
+        // no-live-API path as `--dry-run`: emit the "would create …" telemetry and
+        // return before `dispatch_to_scm_backend`. Without this, snapshot fell
+        // through to the live SCM backend, which bails on a missing token (and
+        // would create a real release if one were present). Mirrors the
+        // `!is_dry_run() && !is_snapshot()` guard the GitHub backend already uses
+        // for release-ID capture.
+        let dry_run = ctx.is_dry_run() || ctx.is_snapshot();
 
         // Collect crates that have a `release` block.
         let crates: Vec<_> = ctx
