@@ -11,10 +11,14 @@ use std::path::Path;
 /// when the target is a release artifact, manifest, or checksum that downstream
 /// tooling trusts. This instead writes to a uniquely-named temp file in the
 /// SAME directory as the target (so the final `rename` is a same-filesystem,
-/// atomic operation), `fsync`s that file, and renames it over `path`. The
-/// rename either fully succeeds or leaves the previous contents intact; readers
-/// never observe a partial write. The temp file is removed on any error before
-/// the rename, so a failed write does not litter the directory.
+/// atomic operation), `fsync`s that file, renames it over `path`, and then
+/// `fsync`s the parent directory so the rename itself is durable (a crash after
+/// the rename returns but before the directory entry is flushed could otherwise
+/// lose it). The rename either fully succeeds or leaves the previous contents
+/// intact; readers never observe a partial write. The temp file is removed on
+/// any error before the rename, so a failed write does not litter the directory.
+/// The directory `fsync` is best-effort: a platform that rejects it (or has no
+/// such concept) does not fail the write.
 pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty());
     let dir = dir.unwrap_or_else(|| Path::new("."));
@@ -51,6 +55,14 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
     if let Err(e) = fs::rename(&tmp_path, path) {
         let _ = fs::remove_file(&tmp_path);
         return Err(e);
+    }
+
+    // Durably flush the rename: fsync the parent directory so a crash right
+    // after this call cannot lose the new directory entry. Best-effort — some
+    // filesystems/platforms reject an fsync on a directory handle, which must
+    // not fail an otherwise-successful write.
+    if let Ok(dir_handle) = File::open(dir) {
+        let _ = dir_handle.sync_all();
     }
 
     Ok(())

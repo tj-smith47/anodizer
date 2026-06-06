@@ -9,7 +9,7 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ChangelogConfig {
     /// Sort order for changelog entries: "asc" or "desc" (default: "asc").
     pub sort: Option<String>,
@@ -96,7 +96,7 @@ pub struct ChangelogConfig {
 /// the content-generation keys on [`ChangelogConfig`] (`use`, `format`,
 /// `groups`, `filters`, `paths`, `sort`, ...).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ChangelogFilesConfig {
     /// When `true`, write a per-crate `crates/<name>/CHANGELOG.md` for each
     /// crate instead of (or in addition to) the single root `CHANGELOG.md`.
@@ -274,7 +274,7 @@ pub enum Chronology {
 
 /// Configuration for the single aggregate root `CHANGELOG.md`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RootChangelogConfig {
     /// Ordering of release sections in the root changelog: `date` (default) or
     /// `tag`.
@@ -396,7 +396,7 @@ pub struct ContentFromFile {
 /// (`anodizer changelog --check` or any external regex tool) before
 /// committing config changes.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ChangelogFilters {
     /// Regex patterns: commits matching any of these are excluded from the changelog.
     pub exclude: Option<Vec<String>>,
@@ -405,7 +405,7 @@ pub struct ChangelogFilters {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ChangelogGroup {
     /// Section heading for this group (e.g., "Features", "Bug Fixes").
     pub title: String,
@@ -420,6 +420,30 @@ pub struct ChangelogGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_unknown_top_level_field() {
+        // The pre-`changelog.files` flat keys (`per_crate:` / `root:` at the
+        // changelog top level) must now hard-error rather than be silently
+        // ignored — `deny_unknown_fields` is what turns the moved-key migration
+        // into a loud, actionable failure instead of changed-output-no-error.
+        let yaml = "use: github-native\nper_crate: true\n";
+        assert!(serde_yaml_ng::from_str::<ChangelogConfig>(yaml).is_err());
+    }
+
+    #[test]
+    fn accepts_per_crate_under_files_block() {
+        // The supported form (nested under `files:`) still parses.
+        let yaml = "use: github-native\nfiles:\n  per_crate: true\n";
+        let cfg: ChangelogConfig = serde_yaml_ng::from_str(yaml).expect("nested form parses");
+        assert_eq!(cfg.files.and_then(|f| f.per_crate), Some(true));
+    }
+
+    #[test]
+    fn rejects_unknown_field_under_files_block() {
+        let yaml = "files:\n  per_crat: true\n";
+        assert!(serde_yaml_ng::from_str::<ChangelogConfig>(yaml).is_err());
+    }
 
     #[test]
     fn destination_bare_config_is_root_only() {

@@ -59,19 +59,12 @@ pub(crate) fn sanitize_description(desc: &str) -> Result<String, DescriptionErro
     if desc.to_ascii_lowercase().contains("schema") {
         return Err(DescriptionError::ContainsSchemaWord);
     }
+    // Reject leading/trailing punctuation or whitespace on the ORIGINAL string
+    // (not `trimmed`) so surrounding whitespace is caught as BadEdge. Matching
+    // on the raw `desc` is safe even when it's all-whitespace — the trimmed
+    // emptiness check above has already returned for that case.
     let bad = [',', '.', ' ', '\t', '-'];
-    // Safe: trimmed is non-empty, so desc has at least one non-whitespace
-    // char; but we need the ORIGINAL first/last chars (not trimmed) to
-    // reject leading/trailing whitespace as BadEdge.
-    let first = match desc.chars().next() {
-        Some(c) => c,
-        None => return Err(DescriptionError::Empty),
-    };
-    let last = match desc.chars().last() {
-        Some(c) => c,
-        None => return Err(DescriptionError::Empty),
-    };
-    if bad.contains(&first) || bad.contains(&last) {
+    if desc.starts_with(bad) || desc.ends_with(bad) {
         return Err(DescriptionError::BadEdge);
     }
     Ok(trimmed.to_string())

@@ -570,6 +570,17 @@ fn run_real(
     effective: &[(&SchemaEntry, String)],
     log: &StageLogger,
 ) -> anyhow::Result<PublishEvidence> {
+    // The work branch and the pending-PR idempotency check are both keyed on
+    // the release version (`schemastore-v<version>`). An empty `Version` would
+    // yield a bare `schemastore-v` that collides release-to-release and defeats
+    // the duplicate-PR guard — bail before any irreversible clone/push.
+    if ctx.version().is_empty() {
+        anyhow::bail!(
+            "schemastore: the release Version is empty — cannot build a stable PR branch; \
+             ensure the tag/version is resolved before the publish stage runs"
+        );
+    }
+
     let repo = cfg.repository.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
             "schemastore: no `repository` (fork of {UPSTREAM_OWNER}/{UPSTREAM_REPO}) configured \
