@@ -213,6 +213,28 @@ fn ai_provider_active(ai_cfg: Option<&anodizer_core::config::ChangelogAiConfig>)
         .is_some_and(|p| !p.trim().is_empty())
 }
 
+/// Whether a github-native generate-notes body should be treated as empty
+/// (and therefore warned about, because the GitHub release will have no
+/// real release notes).
+///
+/// GitHub's `generate-notes` endpoint returns 2xx with a body containing
+/// only a `**Full Changelog**: …/compare/…` link when there are no merged
+/// PRs between the two tags. That compare-only body carries no release
+/// notes, so it is treated as empty here alongside genuinely blank /
+/// whitespace-only bodies.
+fn github_native_body_is_empty(body: &str) -> bool {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    // A body whose every non-empty line is the auto-appended compare link
+    // carries no actual release notes.
+    trimmed
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .all(|l| l.trim_start().starts_with("**Full Changelog**:"))
+}
+
 /// Honour `--release-notes <path>`: read the file, fan it out to every
 /// selected crate, and write `dist/CHANGELOG.md`. Returns `true` when the
 /// override path was taken (caller short-circuits the rest of the stage).
@@ -323,6 +345,12 @@ fn handle_github_native_changelog(
     // single aggregated warn after the loop — one line per workspace instead
     // of one per crate (a wide workspace would otherwise emit dozens).
     let mut missing_github: Vec<String> = Vec::new();
+    // Crates whose github-native body came back empty in a REAL run are
+    // collected here and reported in a single aggregated warn after the loop.
+    // An empty body means the published GitHub release notes will be blank —
+    // the operator must see this, so it is a warn (not status/verbose). This
+    // is the silent-empty-release-notes outcome the warn makes visible.
+    let mut empty_github_body: Vec<String> = Vec::new();
     for crate_cfg in &crates {
         let github_cfg = crate_cfg.release.as_ref().and_then(|r| r.github.as_ref());
         let Some(repo) = github_cfg else {
@@ -380,6 +408,13 @@ fn handle_github_native_changelog(
         if dry_run_or_snapshot || !body.trim().is_empty() {
             any_github_body = true;
         }
+        // Real run + a crate that HAS release.github but got an empty body
+        // back: github-native notes are PR-based, so this is the canonical
+        // "no merged PRs between the two tags" case. Flag it loudly below so
+        // the operator isn't surprised by a blank release body.
+        if !dry_run_or_snapshot && github_native_body_is_empty(&body) {
+            empty_github_body.push(crate_cfg.name.clone());
+        }
     }
 
     // Aggregated skip warning: one line listing every crate without
@@ -393,6 +428,27 @@ fn handle_github_native_changelog(
              add release.github.owner and release.github.name)",
             missing_github.len(),
             missing_github.join(", ")
+        ));
+    }
+
+    // Aggregated empty-body warning: github-native generate-notes returned a
+    // blank (or compare-link-only) body for these crates, so their GitHub
+    // release notes will be EMPTY. github-native notes are PR-based, so the
+    // usual cause is no merged PRs between previous_tag_name and tag_name
+    // (e.g. a direct-push workflow). Point the operator at `changelog.use:
+    // git` (or github/gitlab/gitea) for commit-based notes instead. Warn —
+    // not status — because shipping silent empty release notes is exactly the
+    // failure this surfaces.
+    if !empty_github_body.is_empty() {
+        log.warn(&format!(
+            "changelog: use=github-native produced an EMPTY release body for {} \
+             crate(s): {}. The GitHub release(s) will have NO release notes. \
+             github-native notes are PR-based, so the likely cause is no merged \
+             PRs between previous_tag_name and tag_name (e.g. a direct-push \
+             workflow). Set `changelog.use: git` (or github/gitlab/gitea) for \
+             commit-based release notes instead.",
+            empty_github_body.len(),
+            empty_github_body.join(", ")
         ));
     }
 
@@ -939,6 +995,45 @@ fn write_changelog_dist(log: &StageLogger, dist: &PathBuf, markdown: &str) -> Re
         .with_context(|| format!("changelog: write {}", notes_path.display()))?;
     log.status(&format!("wrote {}", notes_path.display()));
     Ok(())
+}
+
+#[cfg(test)]
+mod github_native_empty_body_tests {
+    use super::github_native_body_is_empty;
+
+    #[test]
+    fn blank_body_is_empty() {
+        assert!(github_native_body_is_empty(""));
+        assert!(github_native_body_is_empty("   \n\t  \n"));
+    }
+
+    #[test]
+    fn compare_link_only_body_is_empty() {
+        // The exact shape generate-notes returns when there are no merged
+        // PRs between the two tags (proven live against this repo's
+        // v0.4.0..v0.5.0 range).
+        let body = "**Full Changelog**: https://github.com/o/r/compare/v0.4.0...v0.5.0";
+        assert!(
+            github_native_body_is_empty(body),
+            "compare-link-only body must warn → treated as empty"
+        );
+    }
+
+    #[test]
+    fn compare_link_with_surrounding_blank_lines_is_empty() {
+        let body = "\n\n**Full Changelog**: https://github.com/o/r/compare/a...b\n\n";
+        assert!(github_native_body_is_empty(body));
+    }
+
+    #[test]
+    fn body_with_real_notes_is_not_empty() {
+        let body = "## What's Changed\n* feat: add thing by @x in #1\n\n\
+                    **Full Changelog**: https://github.com/o/r/compare/a...b";
+        assert!(
+            !github_native_body_is_empty(body),
+            "a body with actual notes must NOT be treated as empty"
+        );
+    }
 }
 
 #[cfg(test)]
