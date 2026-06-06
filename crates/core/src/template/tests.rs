@@ -2686,3 +2686,13 @@ fn test_printf_g_explicit_precision_exponent_trims_zeros() {
     let result = render("{{ printf \"%.3g\" V }}", &vars).unwrap();
     assert_eq!(result, "1.2e+06");
 }
+
+#[test]
+fn test_render_preserves_emoji_in_literal_footer() {
+    // End-to-end: a release-note footer with non-ASCII literal text must render
+    // the emoji intact, not the Latin-1 double-encode mojibake (`ð...`).
+    let vars = test_vars();
+    let result = render("Released with [anodizer](https://x) 🦀", &vars).unwrap();
+    assert_eq!(result, "Released with [anodizer](https://x) 🦀");
+    assert!(!result.contains('\u{f0}'), "no mojibake `ð`: {result:?}");
+}

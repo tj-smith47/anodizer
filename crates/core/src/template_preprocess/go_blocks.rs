@@ -40,6 +40,15 @@ static GO_VAR_ASSIGN_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// Match `{{ . }}` (bare dot reference to current context).
 static GO_DOT_RE: LazyLock<Regex> = LazyLock::new(|| static_regex(r"^\{\{(-?)\s*\.\s*(-?)\}\}"));
 
+/// Push the full UTF-8 char that starts at byte index `i` of `s`, returning its
+/// byte length. Keeps multibyte chars intact instead of Latin-1-decoding each
+/// byte (which would double-encode every non-ASCII codepoint into mojibake).
+pub(super) fn push_char_at(out: &mut String, s: &str, i: usize) -> usize {
+    let ch = s[i..].chars().next().expect("byte index at char boundary");
+    out.push(ch);
+    ch.len_utf8()
+}
+
 /// Format a Tera block tag with optional whitespace trim markers.
 fn tera_block(ltrim: &str, content: &str, rtrim: &str) -> String {
     let l = if ltrim == "-" { "{%-" } else { "{%" };
@@ -193,9 +202,8 @@ pub(super) fn preprocess_go_blocks(template: &str) -> String {
             }
         }
 
-        // No match at this position — copy one byte and advance.
-        result.push(bytes[pos] as char);
-        pos += 1;
+        // No match at this position — copy one full UTF-8 char and advance.
+        pos += push_char_at(&mut result, template, pos);
     }
 
     // Post-pass: strip `$` prefix from Go variable references inside template blocks.

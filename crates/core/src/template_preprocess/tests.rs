@@ -892,3 +892,33 @@ fn test_preprocess_printf_named_unchanged() {
     let result = preprocess(input);
     assert_eq!(result, input);
 }
+
+#[test]
+fn test_preprocess_preserves_emoji_in_literal_text() {
+    // A non-ASCII char in plain literal text (no template syntax) must survive
+    // the byte-walk intact, not get Latin-1-decoded into mojibake.
+    let input = "Released with anodizer 🦀";
+    let result = preprocess(input);
+    assert!(result.contains('🦀'), "emoji must survive, got: {result:?}");
+    assert_eq!(result, input);
+}
+
+#[test]
+fn test_preprocess_preserves_multibyte_mix_in_literal_text() {
+    // Mixed multibyte literal (accents, CJK, emoji, em-dash) round-trips unchanged.
+    let input = "café — 日本語 🚀 end";
+    let result = preprocess(input);
+    assert_eq!(result, input);
+}
+
+#[test]
+fn test_preprocess_preserves_emoji_inside_block_string() {
+    // A non-ASCII char inside a quoted block string must survive the
+    // dots_dollars/strip_dots byte-walk that copies quoted-string content.
+    let input = "{{ printf \"%s\" \"🦀\" }}";
+    let result = preprocess(input);
+    assert!(
+        result.contains('🦀'),
+        "emoji inside block string must survive, got: {result:?}"
+    );
+}
