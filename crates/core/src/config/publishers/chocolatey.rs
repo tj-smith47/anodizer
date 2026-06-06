@@ -111,7 +111,7 @@ pub struct ChocolateyConfig {
 
 /// Chocolatey package dependency with optional version constraint.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ChocolateyDependency {
     /// Chocolatey package ID of the dependency.
     pub id: String,

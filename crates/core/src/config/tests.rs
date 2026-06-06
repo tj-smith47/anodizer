@@ -75,7 +75,6 @@ defaults:
     - x86_64-unknown-linux-gnu
     - aarch64-apple-darwin
   cross: auto
-  flags: --release
   archives:
     formats: [tar.gz]
     format_overrides:
@@ -2575,45 +2574,51 @@ crates:
     );
 }
 
+/// Every config struct is `deny_unknown_fields` (GoReleaser-style strict
+/// parsing), so an unknown key at ANY nesting depth — top-level section,
+/// nested sub-config, or per-crate leaf — is a hard error, not silently
+/// ignored. This pins the strict contract at each level so a typo'd or
+/// misplaced key surfaces at parse time rather than silently no-op'ing on a
+/// release.
 #[test]
-fn test_unknown_nested_fields_ignored() {
-    let yaml = r#"
+fn test_unknown_nested_fields_rejected() {
+    let cases = [
+        (
+            "nested section (defaults)",
+            r#"
 project_name: test
 defaults:
   targets:
     - x86_64-unknown-linux-gnu
-  unknown_default_field: "ignored"
-changelog:
-  sort: asc
-  mystery_option: true
+  unknown_default_field: "boom"
+"#,
+        ),
+        (
+            "nested section (changelog)",
+            "project_name: test\nchangelog:\n  sort: asc\n  mystery_option: true\n",
+        ),
+        (
+            "per-crate leaf (checksum)",
+            r#"
+project_name: test
 crates:
   - name: a
     path: "."
     tag_template: "v{{ .Version }}"
     checksum:
       algorithm: sha256
-      future_field: "ignored"
-"#;
-    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert_eq!(
-        config
-            .defaults
-            .as_ref()
-            .unwrap()
-            .targets
-            .as_ref()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(
-        config.changelog.as_ref().unwrap().sort,
-        Some("asc".to_string())
-    );
-    assert_eq!(
-        config.crates[0].checksum.as_ref().unwrap().algorithm,
-        Some("sha256".to_string())
-    );
+      future_field: "boom"
+"#,
+        ),
+    ];
+    for (label, yaml) in cases {
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        let err = result.expect_err(&format!("{label}: unknown field must be rejected"));
+        assert!(
+            err.to_string().contains("unknown field"),
+            "{label}: error should name the unknown field, got: {err}"
+        );
+    }
 }
 
 // ---- BuildConfig reproducible field tests ----

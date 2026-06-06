@@ -12,7 +12,7 @@ use super::{ExtraFileSpec, StringOrBool, deserialize_string_or_bool_opt};
 /// Artifactory upload configuration.
 /// Uploads artifacts to JFrog Artifactory repositories.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ArtifactoryConfig {
     /// Human-readable name for this publisher (used in logs).
     pub name: Option<String>,

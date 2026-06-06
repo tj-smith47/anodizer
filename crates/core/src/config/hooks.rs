@@ -87,7 +87,7 @@ impl<'de> Deserialize<'de> for HooksConfig {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize, Default)]
-        #[serde(default)]
+        #[serde(default, deny_unknown_fields)]
         struct Raw {
             hooks: Option<Vec<HookEntry>>,
             post: Option<Vec<HookEntry>>,

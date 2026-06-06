@@ -80,7 +80,7 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SignConfig {
     /// Unique identifier for this sign config.
     pub id: Option<String>,
@@ -227,7 +227,7 @@ impl SignConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DockerSignConfig {
     /// Unique identifier for this docker sign config.
     pub id: Option<String>,

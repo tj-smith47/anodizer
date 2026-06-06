@@ -10,7 +10,7 @@ use super::StringOrU32;
 /// An individual file entry for the source archive, supporting src/dst mapping
 /// and file metadata overrides.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SourceFileEntry {
     /// Source file path or glob pattern.
     pub src: String,
@@ -24,7 +24,7 @@ pub struct SourceFileEntry {
 
 /// File metadata overrides for source archive entries.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SourceFileInfo {
     /// File owner.
     pub owner: Option<String>,
@@ -39,7 +39,7 @@ pub struct SourceFileInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SourceConfig {
     /// When true, generate a source code archive for the release.
     pub enabled: Option<bool>,

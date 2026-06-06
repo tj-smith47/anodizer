@@ -25,7 +25,7 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 // schemars-generated JSON-schema description carries the same prose for
 // editor / IDE consumers.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DockerRetryConfig {
     /// Number of retry attempts for failed docker push operations
     /// (default: 10, set in `crates/stage-docker/src/lib.rs::resolve_retry_settings`).
@@ -145,7 +145,7 @@ pub struct DockerV2Config {
 /// is written to the dist directory. This config controls whether that happens
 /// and how the files are named.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DockerDigestConfig {
     /// When truthy, disable docker digest artifact creation.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -172,7 +172,7 @@ pub struct DockerDigestConfig {
 /// rustdoc HTML, both of which are how downstream config authors discover
 /// that the v2 pipe is the preferred entry point.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DockerManifestConfig {
     /// Template for the manifest name, e.g. "ghcr.io/owner/app:{{ Version }}".
     pub name_template: String,

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct VersionSyncConfig {
     /// When true, synchronize the crate version with the git tag during release.
     pub enabled: Option<bool>,

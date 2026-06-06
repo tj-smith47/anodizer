@@ -94,7 +94,7 @@ pub struct SnapcraftConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SnapcraftApp {
     /// Command to run (relative to snap root).
     pub command: Option<String>,
@@ -175,7 +175,7 @@ pub struct SnapcraftApp {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SnapcraftLayout {
     /// Bind-mount a directory to the snap's layout.
     pub bind: Option<String>,

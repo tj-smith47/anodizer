@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct BinstallConfig {
     /// When true, write `[package.metadata.binstall]` into the crate's
     /// Cargo.toml so `cargo binstall` can install prebuilt release archives.
@@ -59,7 +59,7 @@ pub struct BinstallConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct BinstallOverride {
     /// Custom download URL template for this target triple (supports templates).
     /// Lets you point cargo-binstall at a per-target asset name such as

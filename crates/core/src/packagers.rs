@@ -68,7 +68,7 @@ pub struct MakeselfConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MakeselfFile {
     /// Source file path (relative to project root).
     /// Accepts the `src:` spelling via serde alias for back-compat
@@ -310,7 +310,7 @@ pub(crate) fn appimages_schema(
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SrpmConfig {
     /// Enable source RPM generation. Default: false.
     pub enabled: Option<bool>,

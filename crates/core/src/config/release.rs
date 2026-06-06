@@ -10,7 +10,7 @@ use super::{
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ReleaseConfig {
     /// GitHub repository to release to (owner and name).
     pub github: Option<ScmRepoConfig>,
@@ -258,6 +258,7 @@ pub(super) fn skip_push_schema(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ScmRepoConfig {
     /// Repository owner (user or organization).
     pub owner: String,

@@ -13,7 +13,7 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 /// All rendered template files are uploaded to the
 /// release by default. Both `src` and `dst` paths support template rendering.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TemplateFileConfig {
     /// Identifier for this template file entry (default: "default").
     pub id: Option<String>,

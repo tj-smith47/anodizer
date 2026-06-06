@@ -11,7 +11,7 @@ use super::{
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct BlobConfig {
     /// Unique identifier for this blob config.
     pub id: Option<String>,

@@ -37,7 +37,7 @@ impl CloudSmithDistributions {
 /// CloudSmith publisher configuration.
 /// Pushes packages to CloudSmith repositories.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct CloudSmithConfig {
     /// CloudSmith organization slug.
     pub organization: Option<String>,

@@ -8,7 +8,7 @@ use super::ScmRepoConfig;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MilestoneConfig {
     /// Repository owner/name. Auto-detected from git remote if not set.
     pub repo: Option<ScmRepoConfig>,

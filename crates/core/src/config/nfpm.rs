@@ -127,7 +127,7 @@ pub struct NfpmConfig {
 /// Controls where header files, static archives, and shared libraries
 /// are installed in the package.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmLibdirs {
     /// Installation directory for C header files.
     pub header: Option<String>,
@@ -138,7 +138,7 @@ pub struct NfpmLibdirs {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmScripts {
     /// Path to script run before package installation.
     pub preinstall: Option<String>,
@@ -163,6 +163,7 @@ pub type NfpmFileInfo = FileInfo;
 /// required fields with no meaningful defaults — forcing callers to provide
 /// them explicitly prevents accidentally packaging empty paths.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NfpmContent {
     /// Source path on the build machine (supports glob patterns and templates).
     ///
@@ -194,7 +195,7 @@ pub struct NfpmContent {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmRpmConfig {
     /// One-line package summary (RPM Summary tag).
     pub summary: Option<String>,
@@ -216,7 +217,7 @@ pub struct NfpmRpmConfig {
 
 /// RPM-specific transaction scripts that run outside the normal install/remove lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmRpmScripts {
     /// Script to run before the RPM transaction begins.
     pub pretrans: Option<String>,
@@ -240,7 +241,7 @@ impl NfpmRpmConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmDebConfig {
     /// Deb compression algorithm (e.g. "gzip", "xz", "zstd", "none").
     pub compression: Option<String>,
@@ -268,7 +269,7 @@ pub struct NfpmDebConfig {
 
 /// Deb-specific maintainer scripts for package configuration and rules.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmDebScripts {
     /// Path to debian/rules file.
     pub rules: Option<String>,
@@ -299,7 +300,7 @@ impl NfpmDebConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmDebTriggers {
     /// Deb interest triggers: package waits for these triggers to complete.
     pub interest: Option<Vec<String>>,
@@ -316,7 +317,7 @@ pub struct NfpmDebTriggers {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmApkConfig {
     /// APK signing configuration.
     pub signature: Option<NfpmSignatureConfig>,
@@ -326,7 +327,7 @@ pub struct NfpmApkConfig {
 
 /// APK-specific upgrade lifecycle scripts.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmApkScripts {
     /// Script to run before upgrading an existing package.
     pub preupgrade: Option<String>,
@@ -343,7 +344,7 @@ impl NfpmApkConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmArchlinuxConfig {
     /// Base package name for split packages.
     pub pkgbase: Option<String>,
@@ -362,7 +363,7 @@ impl NfpmArchlinuxConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmArchlinuxScripts {
     /// Script to run before upgrading an existing package.
     pub preupgrade: Option<String>,
@@ -372,7 +373,7 @@ pub struct NfpmArchlinuxScripts {
 
 /// IPK (OpenWrt) package-specific configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmIpkConfig {
     /// ABI version string for the package.
     pub abi_version: Option<String>,
@@ -406,7 +407,7 @@ impl NfpmIpkConfig {
 
 /// An alternative file link for IPK's update-alternatives system.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmIpkAlternative {
     /// Priority for alternative selection (higher wins).
     pub priority: Option<i32>,
@@ -475,7 +476,7 @@ mod is_empty_tests {
 /// different fields. Anodizer's union here avoids the 3-struct cascade
 /// when 90% of fields overlap.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NfpmSignatureConfig {
     /// Path to the signing key file.
     pub key_file: Option<String>,

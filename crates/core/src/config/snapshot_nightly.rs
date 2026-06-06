@@ -8,6 +8,7 @@ use super::{CommitAuthorConfig, ContentSource};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotConfig {
     /// Version string template for snapshot builds (e.g., "{{ Commit }}-SNAPSHOT").
     /// Accepts the deprecated `name_template:` alias (renamed to
@@ -139,7 +140,7 @@ pub fn validate_nightly_publish_repo(config: &crate::config::Config) -> Result<(
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MetadataConfig {
     /// Human-readable project description (exposed as `{{ Metadata.Description }}`).
     pub description: Option<String>,

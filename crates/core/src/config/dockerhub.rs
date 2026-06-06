@@ -12,7 +12,7 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 /// DockerHub description sync configuration.
 /// Pushes image descriptions and README content to DockerHub repositories.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DockerHubConfig {
     /// DockerHub username for authentication.
     pub username: Option<String>,
@@ -49,7 +49,7 @@ pub struct DockerHubConfig {
 
 /// Full description source for DockerHub: either from a URL or a local file.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DockerHubFullDescription {
     /// Fetch full description content from a URL.
     pub from_url: Option<DockerHubFromUrl>,
@@ -59,7 +59,7 @@ pub struct DockerHubFullDescription {
 
 /// Fetch DockerHub full description content from a URL.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DockerHubFromUrl {
     /// URL to fetch the full description from.
     pub url: String,
@@ -69,7 +69,7 @@ pub struct DockerHubFromUrl {
 
 /// Read DockerHub full description content from a local file.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DockerHubFromFile {
     /// Path to the file containing the full description.
     pub path: String,

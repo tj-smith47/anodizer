@@ -116,7 +116,7 @@ impl MacOSSignNotarizeConfig {
 
 /// P12-certificate signing configuration for `rcodesign sign`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MacOSSignConfig {
     /// Path to .p12 certificate file or base64-encoded contents. Templates allowed.
     pub certificate: Option<String>,
@@ -150,7 +150,7 @@ impl MacOSSignConfig {
 
 /// App Store Connect API key configuration for `rcodesign notary-submit`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MacOSNotarizeApiConfig {
     /// App Store Connect API key issuer UUID. Templates allowed.
     pub issuer_id: Option<String>,
@@ -428,7 +428,7 @@ impl MacOSNativeSignNotarizeConfig {
 
 /// Keychain-based signing configuration for native `codesign`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MacOSNativeSignConfig {
     /// Keychain identity (e.g., "Developer ID Application: Name"). Templates allowed.
     pub identity: Option<String>,
@@ -442,7 +442,7 @@ pub struct MacOSNativeSignConfig {
 
 /// Native notarization configuration for `xcrun notarytool`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MacOSNativeNotarizeConfig {
     /// Notarytool stored credentials profile name. Templates allowed.
     pub profile_name: Option<String>,

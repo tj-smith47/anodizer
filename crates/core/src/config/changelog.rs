@@ -302,7 +302,7 @@ pub struct ChangelogDestination {
 
 /// AI-powered changelog enhancement configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ChangelogAiConfig {
     /// AI provider to use. Valid: "anthropic", "openai", "ollama".
     /// Empty disables the feature.
@@ -328,7 +328,7 @@ pub enum ChangelogAiPrompt {
 
 /// Structured prompt source: load from URL or file.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ChangelogAiPromptSource {
     /// Load prompt from a URL.
     pub from_url: Option<ContentFromUrl>,
@@ -372,7 +372,7 @@ impl ChangelogAiPromptSource {
 
 /// Load content from a URL with optional headers.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ContentFromUrl {
     /// URL to fetch (supports templates).
     pub url: Option<String>,
@@ -382,7 +382,7 @@ pub struct ContentFromUrl {
 
 /// Load content from a local file.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ContentFromFile {
     /// Path to the file (supports templates).
     pub path: Option<String>,

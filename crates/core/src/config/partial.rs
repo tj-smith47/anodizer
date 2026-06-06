@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PartialConfig {
     /// How to split builds: "os" (by OS, default) or "target" (by full triple).
     /// "os" groups all arch variants for the same OS into one split job.

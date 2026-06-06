@@ -107,7 +107,7 @@ pub struct MsiConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PkgConfig {
     /// Unique identifier for this PKG config.
     pub id: Option<String>,
@@ -206,7 +206,7 @@ pub struct NsisConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AppBundleConfig {
     /// Unique identifier for this app bundle config.
     pub id: Option<String>,
@@ -251,7 +251,7 @@ pub struct AppBundleConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FlatpakConfig {
     /// Unique identifier for this Flatpak config.
     pub id: Option<String>,

@@ -312,7 +312,7 @@ impl<'de> Deserialize<'de> for ArchiveConfig {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize, Default)]
-        #[serde(default)]
+        #[serde(default, deny_unknown_fields)]
         struct Raw {
             id: Option<String>,
             name_template: Option<String>,
@@ -398,7 +398,7 @@ impl<'de> Deserialize<'de> for FormatOverride {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize, Default)]
-        #[serde(default)]
+        #[serde(default, deny_unknown_fields)]
         struct Raw {
             os: String,
             formats: Option<Vec<String>>,
@@ -454,7 +454,7 @@ impl PartialEq<&str> for ArchiveFileSpec {
 /// and nFPM package contents. Previously duplicated as `ArchiveFileInfo` and
 /// `NfpmFileInfo`; now unified.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FileInfo {
     /// File owner name (e.g., "root").
     pub owner: Option<String>,
@@ -547,7 +547,7 @@ impl ExtraFileSpec {
 /// A file whose contents are rendered through the template engine before use.
 /// Used by `templated_extra_files` across multiple stages.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TemplatedExtraFile {
     /// Source template file path.
     pub src: String,
@@ -560,7 +560,7 @@ pub struct TemplatedExtraFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ChecksumConfig {
     /// Checksum filename template (default: "{{ ProjectName }}_{{ Version }}_checksums.txt").
     pub name_template: Option<String>,

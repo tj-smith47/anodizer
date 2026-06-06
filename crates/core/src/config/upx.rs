@@ -8,7 +8,7 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct UpxConfig {
     /// Unique identifier for this UPX config.
     pub id: Option<String>,

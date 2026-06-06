@@ -105,7 +105,7 @@ pub struct WingetConfig {
 
 /// WinGet package dependency.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct WingetDependency {
     /// WinGet package identifier of the dependency (e.g., "Publisher.App").
     pub package_identifier: String,

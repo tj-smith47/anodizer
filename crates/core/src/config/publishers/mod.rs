@@ -35,7 +35,7 @@ pub use schemastore::{SchemaEntry, SchemaMode, SchemastoreConfig};
 /// Shared repository configuration used by all git-based publishers
 /// (Homebrew, Scoop, Winget, Krew, Nix). A repository reference.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RepositoryConfig {
     /// Repository owner (GitHub user or organization).
     pub owner: Option<String>,
@@ -55,7 +55,7 @@ pub struct RepositoryConfig {
 
 /// Git-specific repository settings for SSH-based publishing.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct GitRepoConfig {
     /// Git URL (e.g. `ssh://git@github.com/owner/repo.git`).
     pub url: Option<String>,
@@ -67,7 +67,7 @@ pub struct GitRepoConfig {
 
 /// Pull request configuration for fork-based publisher workflows.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PullRequestConfig {
     /// Enable PR creation instead of direct push.
     pub enabled: Option<bool>,
@@ -81,7 +81,7 @@ pub struct PullRequestConfig {
 
 /// Target base for pull requests (upstream repo to PR against).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PullRequestBaseConfig {
     /// Owner of the upstream repository to PR against.
     pub owner: Option<String>,
@@ -94,7 +94,7 @@ pub struct PullRequestBaseConfig {
 /// Shared commit author configuration with optional GPG/SSH signing.
 /// Commit-author identity for publisher commits.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct CommitAuthorConfig {
     /// Git commit author display name.
     pub name: Option<String>,
@@ -135,7 +135,7 @@ impl CommitAuthorConfig {
 
 /// Commit signing configuration (GPG, x509, or SSH).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct CommitSigningConfig {
     /// Enable commit signing.
     pub enabled: Option<bool>,

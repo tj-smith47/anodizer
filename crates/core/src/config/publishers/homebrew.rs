@@ -91,7 +91,7 @@ pub struct HomebrewConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HomebrewDependency {
     /// Homebrew formula name of the dependency.
     pub name: String,
@@ -282,7 +282,7 @@ pub struct HomebrewCaskConfig {
 
 /// Structured URL configuration for Homebrew Cask downloads.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HomebrewCaskURL {
     /// URL template for the download.
     pub template: Option<String>,
@@ -305,7 +305,7 @@ pub struct HomebrewCaskURL {
 /// Structured uninstall/zap configuration for Homebrew Cask.
 /// Used for both `uninstall` and `zap` stanzas.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HomebrewCaskUninstall {
     /// Launch daemon/agent identifiers to stop.
     pub launchctl: Option<Vec<String>>,
@@ -321,7 +321,7 @@ pub struct HomebrewCaskUninstall {
 
 /// Pre/post install/uninstall hooks for Homebrew Cask.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HomebrewCaskHooks {
     /// Pre-install/uninstall hooks.
     pub pre: Option<HomebrewCaskHook>,
@@ -331,7 +331,7 @@ pub struct HomebrewCaskHooks {
 
 /// Individual hook for install/uninstall phases.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HomebrewCaskHook {
     /// Ruby code for preflight/postflight during install.
     pub install: Option<String>,
@@ -341,7 +341,7 @@ pub struct HomebrewCaskHook {
 
 /// Shell completion file paths for Homebrew Cask.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HomebrewCaskCompletions {
     /// Path to bash completion file.
     pub bash: Option<String>,
@@ -395,7 +395,7 @@ impl HomebrewCaskBinary {
 
 /// Cask dependency (on another cask or formula).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HomebrewCaskDependencyEntry {
     /// Dependent cask name.
     pub cask: Option<String>,
@@ -405,7 +405,7 @@ pub struct HomebrewCaskDependencyEntry {
 
 /// Cask conflict (with another cask or formula).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HomebrewCaskConflictEntry {
     /// Conflicting cask name.
     pub cask: Option<String>,

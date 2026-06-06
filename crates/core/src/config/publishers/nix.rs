@@ -78,7 +78,7 @@ pub struct NixConfig {
 
 /// Nix package dependency with optional OS restriction.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NixDependency {
     /// Nix attribute path for the dependency (e.g., "openssl", "pkgs.libgit2").
     pub name: String,

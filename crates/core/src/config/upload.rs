@@ -10,7 +10,7 @@ use super::{ExtraFileSpec, StringOrBool, deserialize_string_or_bool_opt};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct UploadConfig {
     /// Human-readable name for this upload config.
     pub name: Option<String>,

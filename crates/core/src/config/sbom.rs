@@ -8,7 +8,7 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SbomConfig {
     /// Unique identifier for this SBOM config (default: "default").
     pub id: Option<String>,

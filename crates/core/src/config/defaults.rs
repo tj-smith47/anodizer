@@ -36,7 +36,7 @@ use crate::packagers::{MakeselfConfig, SrpmConfig};
 /// homebrew taps / scoop buckets / etc.; the defaults side would stay
 /// single-struct and merge into the first per-crate entry by identity.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Defaults {
     // --- Build axis ---
     /// Default build settings applied to every crate's builds (deep-merged
@@ -120,7 +120,7 @@ pub struct Defaults {
 /// defaults; per-crate `publish.*` may be either a single struct or a list,
 /// reconciled by the merge engine.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PublishDefaults {
     /// Default Homebrew formula settings.
     pub homebrew: Option<HomebrewConfig>,

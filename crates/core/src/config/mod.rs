@@ -34,6 +34,7 @@ pub enum IncludeSpec {
 
 /// File path for a structured include.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct IncludeFilePath {
     /// Path to the include file (relative to the config file).
     pub path: String,
@@ -41,6 +42,7 @@ pub struct IncludeFilePath {
 
 /// URL configuration for a structured include.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct IncludeUrlConfig {
     /// URL to fetch. If it does not start with `http://` or `https://`,
     /// `https://raw.githubusercontent.com/` is prepended (GitHub shorthand).

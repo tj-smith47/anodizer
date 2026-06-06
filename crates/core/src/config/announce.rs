@@ -31,7 +31,7 @@ pub enum AnnounceGate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AnnounceConfig {
     /// Template-conditional skip: if rendered to "true", skip the entire announce stage.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -84,7 +84,7 @@ pub struct AnnounceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct BlueskyAnnounce {
     /// Enable Bluesky announcements (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -100,7 +100,7 @@ pub struct BlueskyAnnounce {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DiscourseAnnounce {
     /// Enable Discourse announcements (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -118,7 +118,7 @@ pub struct DiscourseAnnounce {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LinkedInAnnounce {
     /// Enable LinkedIn announcements. Requires LINKEDIN_ACCESS_TOKEN env var (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -128,7 +128,7 @@ pub struct LinkedInAnnounce {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OpenCollectiveAnnounce {
     /// Enable OpenCollective announcements. Requires OPENCOLLECTIVE_TOKEN env var (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -142,7 +142,7 @@ pub struct OpenCollectiveAnnounce {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TwitterAnnounce {
     /// Enable Twitter/X announcements. Requires TWITTER_CONSUMER_KEY, TWITTER_CONSUMER_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_TOKEN_SECRET env vars (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -152,7 +152,7 @@ pub struct TwitterAnnounce {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MastodonAnnounce {
     /// Enable Mastodon announcements. Requires `MASTODON_ACCESS_TOKEN` env var (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -164,7 +164,7 @@ pub struct MastodonAnnounce {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DiscordAnnounce {
     /// Enable Discord announcements (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -188,7 +188,7 @@ pub struct DiscordAnnounce {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct WebhookConfig {
     /// Enable generic webhook announcements (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -226,7 +226,7 @@ pub struct WebhookConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TelegramAnnounce {
     /// Enable Telegram announcements. Requires bot_token and chat_id (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -259,7 +259,7 @@ fn default_teams_title_template() -> Option<String> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TeamsAnnounce {
     /// Enable Microsoft Teams announcements (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -291,7 +291,7 @@ impl Default for TeamsAnnounce {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MattermostAnnounce {
     /// Enable Mattermost announcements (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -315,7 +315,7 @@ pub struct MattermostAnnounce {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct EmailAnnounce {
     /// Enable email announcements (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -369,7 +369,7 @@ pub enum EmailEncryption {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RedditAnnounce {
     /// Enable Reddit announcements. Requires REDDIT_SECRET and REDDIT_PASSWORD env vars (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -387,7 +387,7 @@ pub struct RedditAnnounce {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SlackAnnounce {
     /// Enable Slack announcements (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -430,6 +430,7 @@ pub struct SlackBlock {
 
 /// A Slack text composition object.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SlackTextObject {
     /// Text type: "plain_text" or "mrkdwn".
     #[serde(rename = "type")]

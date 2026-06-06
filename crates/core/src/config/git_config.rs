@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// and previous versions. This is separate from `TagConfig`, which controls
 /// version *bumping* logic.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct GitConfig {
     /// How to sort git tags when determining the latest version.
     ///

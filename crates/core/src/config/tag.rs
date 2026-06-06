@@ -8,7 +8,7 @@ use super::HookEntry;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TagConfig {
     /// Default version bump type when no conventional commit token is found: "major", "minor", "patch", or "none".
     pub default_bump: Option<String>,

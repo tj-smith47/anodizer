@@ -8,7 +8,7 @@ use super::{ExtraFileSpec, StringOrBool, TemplatedExtraFile, deserialize_string_
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PublisherConfig {
     /// Human-readable name for this publisher (used in logs).
     pub name: Option<String>,

@@ -379,7 +379,7 @@ pub struct BuildHooksConfig {
 ///
 /// Archive hooks use `before`/`after`; build hooks use `pre`/`post`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ArchiveHooksConfig {
     /// Commands to run before the archive step.
     pub before: Option<Vec<HookEntry>>,
