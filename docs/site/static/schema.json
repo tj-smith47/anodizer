@@ -3282,7 +3282,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ChangelogFilesConfig": {
       "description": "Changelog file-layout controls: which `CHANGELOG.md` files a release writes.\n\nNested under `changelog.files` to keep file-management keys distinct from the content-generation keys on [`ChangelogConfig`] (`use`, `format`, `groups`, `filters`, `paths`, `sort`, ...).",
@@ -3308,7 +3309,8 @@
             }
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ChangelogFilters": {
       "description": "Regex-based commit filters for the changelog stage.\n\nPatterns are NOT compile-validated at config-load — a malformed regex only surfaces when the changelog stage runs, which on a release pipeline is well past the point of cheap failure. Test patterns locally (`anodizer changelog --check` or any external regex tool) before committing config changes.",
@@ -3336,7 +3338,8 @@
             "type": "string"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ChangelogGroup": {
       "type": "object",
@@ -3374,7 +3377,8 @@
           "default": "",
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ChecksumConfig": {
       "type": "object",
@@ -11814,7 +11818,8 @@
             "type": "string"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "RuntimeHarvest": {
       "description": "Runtime-asset harvest hook for an AppImage config. The `command` template runs the freshly-built host-native binary to populate `dir`; the resulting directory is then bundled into the AppDir (and staged at a stable dist path so an archive `extra_files` glob can reuse it).",
