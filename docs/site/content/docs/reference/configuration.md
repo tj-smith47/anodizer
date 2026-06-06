@@ -303,7 +303,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `dmgs` | list of DmgConfig | — | macOS DMG disk image configurations for this crate. |
 | `docker_digest` | DockerDigestConfig | — | Docker image digest file configuration for this crate. |
 | `docker_manifests` | list of DockerManifestConfig | — | Docker multi-platform manifest configurations for this crate. |
-| `docker_v2` | list of DockerV2Config | — | Docker V2 image build configurations for this crate (canonical API: images+tags, annotations, build_args, sbom, disable). The legacy `docker:` block was removed; this is the only docker surface. |
+| `dockers_v2` | list of DockerV2Config | — | Docker V2 image build configurations for this crate (canonical API: images+tags, annotations, build_args, sbom, disable). The legacy `docker:` block was removed; this is the only docker surface. The `docker_v2:` spelling is still accepted via serde alias for back-compat. |
 | `flatpaks` | list of FlatpakConfig | — | Linux Flatpak bundle configurations for this crate. |
 | `msis` | list of MsiConfig | — | Windows MSI installer configurations for this crate. |
 | `name` | string | — | Crate name as published (must match the Cargo.toml package name). |
@@ -336,7 +336,7 @@ Multi-publisher fields are single-struct on both sides today: defaults supplies 
 | `cross` | CrossStrategy | — | Default cross-compilation strategy: auto, zigbuild, cross, or cargo. Mirrors `CrateConfig.cross` so the strategy can be hoisted to defaults. |
 | `dmgs` | DmgConfig | — | Default DMG settings applied to all crates. |
 | `docker_signs` | DockerSignConfig | — | Default Docker image signing settings. |
-| `docker_v2` | DockerV2Config | — | Default Docker (V2 API) image settings applied to all crates. |
+| `dockers_v2` | DockerV2Config | — | Default Docker (V2 API) image settings applied to all crates. The `docker_v2:` spelling is still accepted via serde alias for back-compat. |
 | `env` | list of string | — | Default environment variables (`KEY=VALUE` strings) hoisted across crates. |
 | `flatpaks` | FlatpakConfig | — | Default flatpak settings applied to all crates. |
 | `makeselves` | MakeselfConfig | — | Default makeself settings applied to all crates. |
@@ -899,7 +899,7 @@ List of `KEY=VALUE` strings. Order is preserved. Values are template-rendered at
 | `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
 | `skip` | list of string | `[]` | Pipeline stages to skip when releasing this workspace. Stage names match the CLI `--skip` flag (e.g., `announce`, `publish`). |
 
-## `crates[].docker_v2`
+## `crates[].dockers_v2`
 Docker V2 configuration — the canonical Docker build API.
 
 Notable surface: - `images` + `tags` (cleaner separation than a single `image_templates` list) - `annotations` map for OCI annotations (`--annotation`) - `build_args` map for build-time variables - `skip` as a [`StringOrBool`] template for conditional opt-out - `sbom` as a [`StringOrBool`] — when truthy, adds `--sbom=true` to buildx - `flags` for arbitrary extra `docker build` flags - `platforms` is the only target selector — no per-arch field overrides
@@ -912,7 +912,7 @@ Each value is template-expanded and forwarded verbatim to buildx (one argv token
 | `dockerfile` | string | — | Path to the Dockerfile relative to the project root. |
 | `extra_files` | list of string | — | Extra files to copy into the Docker build context. |
 | `flags` | list of string | — | Arbitrary extra flags passed to the docker build command. |
-| `hooks` | BuildHooksConfig | — | Pre/post hooks for this docker_v2 config. Each hook accepts the same `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks run after the staging directory is prepared but before `docker buildx build`; `post` hooks run after the image digest is captured. Hook commands, working directories, and env values are template-expanded; in addition to the standard template surface, hooks see:
+| `hooks` | BuildHooksConfig | — | Pre/post hooks for this dockers_v2 config. Each hook accepts the same `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks run after the staging directory is prepared but before `docker buildx build`; `post` hooks run after the image digest is captured. Hook commands, working directories, and env values are template-expanded; in addition to the standard template surface, hooks see:
 
 - `{{ Images }}` — list of `image:tag` references for this build. Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror a list exposure of the same field; `{{ Images \| join(sep=",") }}` reproduces a flat comma-separated string for legacy templates. - `{{ Dockerfile }}` — path to the rendered Dockerfile - `{{ ContextDir }}` — path to the buildx context staging directory - `{{ Digest }}` — image manifest digest (post hooks only) - `{{ BaseImage }}` / `{{ BaseImageDigest }}` — final-stage base image (the `BaseImage` / `BaseImageDigest` overlay) |
 | `id` | string | — | Unique identifier for this Docker V2 config. |
@@ -931,7 +931,7 @@ The default `"buildx"` invokes `docker buildx build` with the full set of BuildK
 **Linux-only.** The podman backend is restricted to Linux hosts. Configs setting `use: podman` on macOS or Windows fail at config-validation time with a clear error rather than blowing up later when `podman` is not on `PATH`. |
 
 ## `crates[].docker_manifests`
-Deprecated: prefer `docker_v2` (which produces multi-arch manifests via the `platforms:` field automatically). `DockerManifestConfig` is retained for back-compat with imported configs and for the niche case of stitching together manifest lists from images that were not built by `docker_v2` in the same run.
+Deprecated: prefer `dockers_v2` (which produces multi-arch manifests via the `platforms:` field automatically). `DockerManifestConfig` is retained for back-compat with imported configs and for the niche case of stitching together manifest lists from images that were not built by `dockers_v2` in the same run.
 
 The v1 docker / docker manifest pipes deprecated in favour of the v2 buildx flow. The rustdoc here is the load-bearing surface for the deprecation: it flows into the schemars-generated JSON Schema (consumed by IDEs / editor tooling) and rustdoc HTML, both of which are how downstream config authors discover that the v2 pipe is the preferred entry point.
 | Field | Type | Default | Description |

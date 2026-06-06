@@ -358,7 +358,7 @@ mod tests {
         Config {
             crates: vec![CrateConfig {
                 name: "svc".to_string(),
-                docker_v2: Some(vec![DockerV2Config::default()]),
+                dockers_v2: Some(vec![DockerV2Config::default()]),
                 ..CrateConfig::default()
             }],
             ..Config::default()

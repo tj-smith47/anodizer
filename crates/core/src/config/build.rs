@@ -156,8 +156,10 @@ pub struct CrateConfig {
     pub publish: Option<PublishConfig>,
     /// Docker V2 image build configurations for this crate (canonical API:
     /// images+tags, annotations, build_args, sbom, disable). The legacy
-    /// `docker:` block was removed; this is the only docker surface.
-    pub docker_v2: Option<Vec<DockerV2Config>>,
+    /// `docker:` block was removed; this is the only docker surface. The
+    /// `docker_v2:` spelling is still accepted via serde alias for back-compat.
+    #[serde(alias = "docker_v2")]
+    pub dockers_v2: Option<Vec<DockerV2Config>>,
     /// Docker image digest file configuration for this crate.
     pub docker_digest: Option<DockerDigestConfig>,
     /// Docker multi-platform manifest configurations for this crate.
@@ -229,7 +231,7 @@ impl Default for CrateConfig {
             checksum: None,
             release: None,
             publish: None,
-            docker_v2: None,
+            dockers_v2: None,
             docker_digest: None,
             docker_manifests: None,
             nfpms: None,

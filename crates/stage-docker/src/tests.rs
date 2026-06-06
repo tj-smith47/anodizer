@@ -1676,7 +1676,7 @@ fn test_docker_v2_dry_run_registers_artifacts() {
         name: "myapp".to_string(),
         path: ".".to_string(),
         tag_template: "v{{ .Version }}".to_string(),
-        docker_v2: Some(vec![v2_cfg]),
+        dockers_v2: Some(vec![v2_cfg]),
         ..Default::default()
     };
 
@@ -1752,7 +1752,7 @@ fn test_docker_v2_dry_run_with_hooks_does_not_panic() {
         name: "myapp".to_string(),
         path: ".".to_string(),
         tag_template: "v{{ .Version }}".to_string(),
-        docker_v2: Some(vec![v2_cfg]),
+        dockers_v2: Some(vec![v2_cfg]),
         ..Default::default()
     };
 
@@ -1810,7 +1810,7 @@ fn test_docker_v2_baseimage_template_var_visible_in_dry_run() {
         name: "myapp".to_string(),
         path: ".".to_string(),
         tag_template: "v{{ .Version }}".to_string(),
-        docker_v2: Some(vec![v2_cfg]),
+        dockers_v2: Some(vec![v2_cfg]),
         ..Default::default()
     };
 
@@ -1907,7 +1907,7 @@ fn dockerfile_template_renders_to_empty_skips_pipe() {
         name: "myapp".to_string(),
         path: ".".to_string(),
         tag_template: "v{{ .Version }}".to_string(),
-        docker_v2: Some(vec![v2_cfg]),
+        dockers_v2: Some(vec![v2_cfg]),
         ..Default::default()
     };
 
@@ -1968,7 +1968,7 @@ fn test_docker_v2_dry_run_multiple_images_and_tags() {
         name: "myapp".to_string(),
         path: ".".to_string(),
         tag_template: "v{{ .Version }}".to_string(),
-        docker_v2: Some(vec![v2_cfg]),
+        dockers_v2: Some(vec![v2_cfg]),
         ..Default::default()
     };
 
@@ -2027,7 +2027,7 @@ fn test_docker_v2_disable_skips_build() {
         name: "myapp".to_string(),
         path: ".".to_string(),
         tag_template: "v{{ .Version }}".to_string(),
-        docker_v2: Some(vec![v2_cfg]),
+        dockers_v2: Some(vec![v2_cfg]),
         ..Default::default()
     };
 
@@ -2088,7 +2088,7 @@ fn test_docker_v2_extra_files_staging_live() {
         name: "myapp".to_string(),
         path: ".".to_string(),
         tag_template: "v{{ .Version }}".to_string(),
-        docker_v2: Some(vec![v2_cfg]),
+        dockers_v2: Some(vec![v2_cfg]),
         ..Default::default()
     };
 
@@ -2128,7 +2128,7 @@ crates:
   - name: myapp
     path: "."
     tag_template: "v{{ .Version }}"
-    docker_v2:
+    dockers_v2:
       - dockerfile: Dockerfile
         images:
           - ghcr.io/owner/app
@@ -2142,7 +2142,7 @@ crates:
 "#;
     let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.crates.len(), 1);
-    let v2_configs = config.crates[0].docker_v2.as_ref().unwrap();
+    let v2_configs = config.crates[0].dockers_v2.as_ref().unwrap();
     assert_eq!(v2_configs.len(), 1);
     assert_eq!(v2_configs[0].dockerfile, "Dockerfile");
     assert_eq!(v2_configs[0].images, vec!["ghcr.io/owner/app"]);
@@ -2322,7 +2322,7 @@ fn crate_with_owner(name: &str, owner: Option<&str>) -> anodizer_core::config::C
         name: name.to_string(),
         path: ".".to_string(),
         release,
-        docker_v2: Some(vec![DockerV2Config {
+        dockers_v2: Some(vec![DockerV2Config {
             dockerfile: "Dockerfile".to_string(),
             ..Default::default()
         }]),
@@ -2501,7 +2501,7 @@ fn test_docker_v2_derived_image_default_reaches_rendered_tag() {
             }),
             ..ReleaseConfig::default()
         }),
-        docker_v2: Some(vec![v2_cfg]),
+        dockers_v2: Some(vec![v2_cfg]),
         ..Default::default()
     };
 
@@ -2697,7 +2697,7 @@ fn test_docker_v2_build_args_render_in_command() {
         name: "myapp".to_string(),
         path: ".".to_string(),
         tag_template: "v{{ .Version }}".to_string(),
-        docker_v2: Some(vec![v2_cfg]),
+        dockers_v2: Some(vec![v2_cfg]),
         ..Default::default()
     };
 
@@ -3619,7 +3619,7 @@ fn test_dockerstage_run_invokes_injected_buildx_probe_for_v2_crate() {
         name: "myapp".to_string(),
         path: ".".to_string(),
         tag_template: "v{{ .Version }}".to_string(),
-        docker_v2: Some(vec![v2_cfg]),
+        dockers_v2: Some(vec![v2_cfg]),
         ..Default::default()
     };
 
@@ -3694,7 +3694,7 @@ fn docker_v2_baseimage_unset_after_iteration() {
         name: "myapp".to_string(),
         path: ".".to_string(),
         tag_template: "v{{ .Version }}".to_string(),
-        docker_v2: Some(vec![v2_cfg]),
+        dockers_v2: Some(vec![v2_cfg]),
         ..Default::default()
     };
 
@@ -3767,7 +3767,7 @@ fn docker_v2_images_template_var_is_iterable_list() {
         name: "myapp".to_string(),
         path: ".".to_string(),
         tag_template: "v{{ .Version }}".to_string(),
-        docker_v2: Some(vec![v2_cfg]),
+        dockers_v2: Some(vec![v2_cfg]),
         ..Default::default()
     };
 
@@ -3884,7 +3884,7 @@ fn test_docker_v2_duplicate_id_bails() {
         name: "p".to_string(),
         path: ".".to_string(),
         tag_template: "v1.0.0".to_string(),
-        docker_v2: Some(vec![cfg_a, cfg_b]),
+        dockers_v2: Some(vec![cfg_a, cfg_b]),
         ..Default::default()
     }];
 
@@ -4043,7 +4043,7 @@ fn test_docker_manifest_skipped_if_already_pushed_by_v2_multiplatform() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             docker_manifests: Some(vec![manifest]),
             ..Default::default()
         }],
@@ -4100,7 +4100,7 @@ fn test_docker_v2_id_filter_propagates_to_artifact_metadata() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -4153,14 +4153,14 @@ fn test_docker_stage_filters_by_selected_crates() {
                 name: "in".to_string(),
                 path: ".".to_string(),
                 tag_template: "v1.0.0".to_string(),
-                docker_v2: Some(vec![make_v2("in")]),
+                dockers_v2: Some(vec![make_v2("in")]),
                 ..Default::default()
             },
             CrateConfig {
                 name: "out".to_string(),
                 path: ".".to_string(),
                 tag_template: "v1.0.0".to_string(),
-                docker_v2: Some(vec![make_v2("out")]),
+                dockers_v2: Some(vec![make_v2("out")]),
                 ..Default::default()
             },
         ],
@@ -4215,7 +4215,7 @@ fn test_docker_v2_skip_template_evaluating_to_true_skips_pipe() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -4268,7 +4268,7 @@ fn test_docker_v2_snapshot_multi_platform_splits_per_platform_tag_suffix() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -4331,7 +4331,7 @@ fn test_docker_v2_rendered_tags_empty_short_circuits_build() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -4396,7 +4396,7 @@ fn test_docker_v2_build_args_with_empty_key_or_value_are_filtered() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -4447,7 +4447,7 @@ fn test_docker_v2_invalid_build_arg_template_errors() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -4494,7 +4494,7 @@ fn test_docker_v2_invalid_image_template_errors() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -4541,7 +4541,7 @@ fn test_docker_v2_invalid_tag_template_errors() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -4588,7 +4588,7 @@ fn test_docker_v2_invalid_dockerfile_template_errors() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -4723,7 +4723,7 @@ fn test_docker_stage_no_crates_with_docker_config_short_circuits() {
             name: "no-docker".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: None,
+            dockers_v2: None,
             docker_manifests: None,
             ..Default::default()
         }],
@@ -4777,7 +4777,7 @@ fn test_docker_v2_skip_with_literal_false_proceeds() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -4832,7 +4832,7 @@ fn test_docker_v2_filter_empty_rendered_platforms() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -4890,7 +4890,7 @@ fn test_docker_v2_invalid_annotation_template_errors() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -4942,7 +4942,7 @@ fn test_docker_v2_invalid_label_template_errors() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -5007,7 +5007,7 @@ fn docker_v2_platforms_metadata_is_json_array() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -5082,7 +5082,7 @@ fn docker_v2_pre_hook_receives_full_var_set_without_digest() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -5136,7 +5136,7 @@ fn docker_v2_pre_hook_does_not_expose_digest() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -5205,7 +5205,7 @@ fn docker_v2_post_hook_receives_digest_in_dry_run() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -5265,7 +5265,7 @@ fn docker_v2_pre_hook_failure_aborts_build_without_docker_spawn() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()
@@ -5344,7 +5344,7 @@ fn docker_v2_post_hook_template_failure_aborts_stage() {
             name: "app".to_string(),
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
-            docker_v2: Some(vec![v2]),
+            dockers_v2: Some(vec![v2]),
             ..Default::default()
         }],
         ..Default::default()

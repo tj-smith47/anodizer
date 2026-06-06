@@ -62,7 +62,7 @@ impl Stage for super::DockerStage {
             .crates
             .iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .filter(|c| c.docker_v2.is_some() || c.docker_manifests.is_some())
+            .filter(|c| c.dockers_v2.is_some() || c.docker_manifests.is_some())
             .cloned()
             .collect();
 
@@ -72,7 +72,7 @@ impl Stage for super::DockerStage {
 
         validate_docker_v2_id_uniqueness(&crates)?;
 
-        if !dry_run && crates.iter().any(|c| c.docker_v2.is_some()) {
+        if !dry_run && crates.iter().any(|c| c.dockers_v2.is_some()) {
             run_buildx_probes(self, &log);
         }
 
@@ -109,7 +109,7 @@ impl Stage for super::DockerStage {
         let registry_owner = resolve_registry_owner(ctx, &crates);
 
         for krate in &crates {
-            let docker_v2_configs = match krate.docker_v2.as_ref() {
+            let docker_v2_configs = match krate.dockers_v2.as_ref() {
                 Some(cfgs) => cfgs.clone(),
                 None => Vec::new(),
             };
@@ -965,7 +965,7 @@ fn queue_v2_build_for_platforms(
 fn validate_docker_v2_id_uniqueness(crates: &[anodizer_core::config::CrateConfig]) -> Result<()> {
     let mut v2_ids: HashSet<String> = HashSet::new();
     for krate in crates {
-        if let Some(ref v2_cfgs) = krate.docker_v2 {
+        if let Some(ref v2_cfgs) = krate.dockers_v2 {
             for v2_cfg in v2_cfgs {
                 if let Some(ref id) = v2_cfg.id
                     && !v2_ids.insert(id.clone())

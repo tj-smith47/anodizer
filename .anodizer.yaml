@@ -259,7 +259,7 @@ crates:
       - binary: anodizer
         features: []
         no_default_features: false
-    docker_v2:
+    dockers_v2:
       - id: anodizer
         dockerfile: Dockerfile
         images:

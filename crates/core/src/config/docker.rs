@@ -97,7 +97,7 @@ pub struct DockerV2Config {
     /// When truthy, adds `--sbom=true` to buildx. Supports templates.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub sbom: Option<StringOrBool>,
-    /// Pre/post hooks for this docker_v2 config. Each hook accepts the same
+    /// Pre/post hooks for this dockers_v2 config. Each hook accepts the same
     /// `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks
     /// run after the staging directory is prepared but before `docker buildx
     /// build`; `post` hooks run after the image digest is captured. Hook
@@ -163,11 +163,11 @@ pub struct DockerDigestConfig {
 // DockerManifestConfig
 // ---------------------------------------------------------------------------
 
-/// Deprecated: prefer `docker_v2` (which produces multi-arch manifests via
+/// Deprecated: prefer `dockers_v2` (which produces multi-arch manifests via
 /// the `platforms:` field automatically). `DockerManifestConfig` is retained
 /// for back-compat with imported configs and for the niche case
 /// of stitching together manifest lists from images that were not built by
-/// `docker_v2` in the same run.
+/// `dockers_v2` in the same run.
 ///
 /// The v1 docker / docker
 /// manifest pipes deprecated in favour of the v2 buildx flow. The rustdoc

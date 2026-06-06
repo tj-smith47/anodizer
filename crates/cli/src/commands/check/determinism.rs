@@ -453,12 +453,12 @@ fn all_builds_prebuilt_in_repo(repo_root: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Probe the project's `docker_v2[*].use` field for a `"podman"` opt-in.
+/// Probe the project's `dockers_v2[*].use` field for a `"podman"` opt-in.
 ///
-/// Returns `Some("podman")` when any `docker_v2` entry under any crate
-/// (or the project-level `defaults.docker_v2`) sets `use: podman`,
+/// Returns `Some("podman")` when any `dockers_v2` entry under any crate
+/// (or the project-level `defaults.dockers_v2`) sets `use: podman`,
 /// `Some("buildx")` when only buildx is configured, and `None` when the
-/// config can't be loaded (missing / parse error) or no `docker_v2`
+/// config can't be loaded (missing / parse error) or no `dockers_v2`
 /// entries exist. The harness consults the hint to decide whether to
 /// short-circuit its `docker buildx`-based reproducibility probe.
 ///
@@ -470,12 +470,12 @@ fn detect_docker_backend_hint(repo_root: &std::path::Path) -> Option<String> {
     let mut saw_buildx = false;
     let mut iter: Vec<&Option<String>> = Vec::new();
     if let Some(ref defaults) = cfg.defaults
-        && let Some(ref v2) = defaults.docker_v2
+        && let Some(ref v2) = defaults.dockers_v2
     {
         iter.push(&v2.use_backend);
     }
     for c in &cfg.crates {
-        if let Some(ref v2s) = c.docker_v2 {
+        if let Some(ref v2s) = c.dockers_v2 {
             for v in v2s {
                 iter.push(&v.use_backend);
             }

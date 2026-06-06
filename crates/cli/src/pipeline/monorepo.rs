@@ -126,7 +126,7 @@ fn prefix_publisher_extras(crate_cfg: &mut anodizer_core::config::CrateConfig, d
         prefix_templated_extra_files(&mut ck.templated_extra_files, dir);
     }
     // Docker V2 build extras (Vec<String> of context files).
-    if let Some(ref mut dockers) = crate_cfg.docker_v2 {
+    if let Some(ref mut dockers) = crate_cfg.dockers_v2 {
         for d in dockers {
             if let Some(ref mut files) = d.extra_files {
                 for s in files {

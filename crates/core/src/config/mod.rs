@@ -1588,19 +1588,19 @@ pub fn apply_archive_legacy_aliases(_config: &mut Config) {
 /// Reject the legacy V1 `dockers:` block at config-load time with a
 /// clear migration error.
 ///
-/// anodizer is V2-only by design: it implements `docker_v2:` and the
+/// anodizer is V2-only by design: it implements `dockers_v2:` and the
 /// associated multi-arch buildx flow, but does not ship the V1
 /// `dockers: -> dockerfile + image_templates` pipe. Without this check the
 /// top-level `Config` struct's `deny_unknown_fields` would emit a generic
 /// "unknown field `dockers`" message that doesn't tell the user how to
-/// migrate. This explicit error names the field, points at `docker_v2:`,
+/// migrate. This explicit error names the field, points at `dockers_v2:`,
 /// and references the rationale.
 ///
 pub fn validate_no_docker_v1(raw_yaml: &serde_yaml_ng::Value) -> Result<(), String> {
     if raw_yaml.get("dockers").is_some() {
         return Err(
             "config: legacy GoReleaser `dockers:` block is not supported — anodizer ships \
-             docker_v2: only (multi-arch buildx flow). Port the config to `docker_v2:` per \
+             dockers_v2: only (multi-arch buildx flow). Port the config to `dockers_v2:` per \
              https://anodize.dev/docs/migration/docker.html."
                 .to_string(),
         );
@@ -1794,6 +1794,7 @@ pub(crate) fn legacy_disable_alias_warnings(raw_yaml: &serde_yaml_ng::Value) -> 
         "nsis",
         "dockerhub",
         "release",
+        "dockers_v2",
         "docker_v2",
         "changelog",
         "snapcrafts",
@@ -1913,12 +1914,12 @@ pub(crate) fn legacy_docker_retry_warnings(config: &Config) -> Vec<String> {
     let mut warnings = Vec::new();
 
     let scan_crate = |krate: &CrateConfig, prefix: &str, warnings: &mut Vec<String>| {
-        if let Some(ref v2) = krate.docker_v2 {
+        if let Some(ref v2) = krate.dockers_v2 {
             for (i, cfg) in v2.iter().enumerate() {
                 if cfg.retry.is_some() {
                     warnings.push(pipe_warning(
-                        &format!("{prefix}.docker_v2[{i}]"),
-                        "docker_v2",
+                        &format!("{prefix}.dockers_v2[{i}]"),
+                        "dockers_v2",
                     ));
                 }
             }
@@ -1952,10 +1953,10 @@ pub(crate) fn legacy_docker_retry_warnings(config: &Config) -> Vec<String> {
     }
 
     if let Some(ref defaults) = config.defaults
-        && let Some(ref v2) = defaults.docker_v2
+        && let Some(ref v2) = defaults.dockers_v2
         && v2.retry.is_some()
     {
-        warnings.push(pipe_warning("defaults.docker_v2", "docker_v2"));
+        warnings.push(pipe_warning("defaults.dockers_v2", "dockers_v2"));
     }
 
     warnings

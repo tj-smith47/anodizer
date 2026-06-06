@@ -1033,7 +1033,7 @@ crates:
     checksum:
       name_template: "checksums.txt"
       algorithm: sha256
-    docker_v2:
+    dockers_v2:
       - images:
           - "myregistry/test-project"
         tags:
@@ -3353,6 +3353,8 @@ crates:
     archives:
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}"
         formats: [tar.gz]
+    # Uses the `docker_v2:` back-compat alias (canonical is `dockers_v2:`) to
+    # prove the serde alias resolves through the real CLI config parse.
     docker_v2:
       - images:
           - "myregistry/test-project"

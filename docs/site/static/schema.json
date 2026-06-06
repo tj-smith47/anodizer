@@ -4247,8 +4247,8 @@
             "$ref": "#/definitions/DockerManifestConfig"
           }
         },
-        "docker_v2": {
-          "description": "Docker V2 image build configurations for this crate (canonical API: images+tags, annotations, build_args, sbom, disable). The legacy `docker:` block was removed; this is the only docker surface.",
+        "dockers_v2": {
+          "description": "Docker V2 image build configurations for this crate (canonical API: images+tags, annotations, build_args, sbom, disable). The legacy `docker:` block was removed; this is the only docker surface. The `docker_v2:` spelling is still accepted via serde alias for back-compat.",
           "default": null,
           "type": [
             "array",
@@ -4541,8 +4541,8 @@
             }
           ]
         },
-        "docker_v2": {
-          "description": "Default Docker (V2 API) image settings applied to all crates.",
+        "dockers_v2": {
+          "description": "Default Docker (V2 API) image settings applied to all crates. The `docker_v2:` spelling is still accepted via serde alias for back-compat.",
           "default": null,
           "anyOf": [
             {
@@ -5187,7 +5187,7 @@
       "additionalProperties": false
     },
     "DockerManifestConfig": {
-      "description": "Deprecated: prefer `docker_v2` (which produces multi-arch manifests via the `platforms:` field automatically). `DockerManifestConfig` is retained for back-compat with imported configs and for the niche case of stitching together manifest lists from images that were not built by `docker_v2` in the same run.\n\nThe v1 docker / docker manifest pipes deprecated in favour of the v2 buildx flow. The rustdoc here is the load-bearing surface for the deprecation: it flows into the schemars-generated JSON Schema (consumed by IDEs / editor tooling) and rustdoc HTML, both of which are how downstream config authors discover that the v2 pipe is the preferred entry point.",
+      "description": "Deprecated: prefer `dockers_v2` (which produces multi-arch manifests via the `platforms:` field automatically). `DockerManifestConfig` is retained for back-compat with imported configs and for the niche case of stitching together manifest lists from images that were not built by `dockers_v2` in the same run.\n\nThe v1 docker / docker manifest pipes deprecated in favour of the v2 buildx flow. The rustdoc here is the load-bearing surface for the deprecation: it flows into the schemars-generated JSON Schema (consumed by IDEs / editor tooling) and rustdoc HTML, both of which are how downstream config authors discover that the v2 pipe is the preferred entry point.",
       "type": "object",
       "properties": {
         "create_flags": {
@@ -5473,7 +5473,7 @@
           }
         },
         "hooks": {
-          "description": "Pre/post hooks for this docker_v2 config. Each hook accepts the same `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks run after the staging directory is prepared but before `docker buildx build`; `post` hooks run after the image digest is captured. Hook commands, working directories, and env values are template-expanded; in addition to the standard template surface, hooks see:\n\n- `{{ Images }}` — list of `image:tag` references for this build. Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror a list exposure of the same field; `{{ Images | join(sep=\",\") }}` reproduces a flat comma-separated string for legacy templates. - `{{ Dockerfile }}` — path to the rendered Dockerfile - `{{ ContextDir }}` — path to the buildx context staging directory - `{{ Digest }}` — image manifest digest (post hooks only) - `{{ BaseImage }}` / `{{ BaseImageDigest }}` — final-stage base image (the `BaseImage` / `BaseImageDigest` overlay)",
+          "description": "Pre/post hooks for this dockers_v2 config. Each hook accepts the same `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks run after the staging directory is prepared but before `docker buildx build`; `post` hooks run after the image digest is captured. Hook commands, working directories, and env values are template-expanded; in addition to the standard template surface, hooks see:\n\n- `{{ Images }}` — list of `image:tag` references for this build. Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror a list exposure of the same field; `{{ Images | join(sep=\",\") }}` reproduces a flat comma-separated string for legacy templates. - `{{ Dockerfile }}` — path to the rendered Dockerfile - `{{ ContextDir }}` — path to the buildx context staging directory - `{{ Digest }}` — image manifest digest (post hooks only) - `{{ BaseImage }}` / `{{ BaseImageDigest }}` — final-stage base image (the `BaseImage` / `BaseImageDigest` overlay)",
           "default": null,
           "anyOf": [
             {

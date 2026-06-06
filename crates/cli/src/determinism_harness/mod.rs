@@ -352,7 +352,7 @@ pub struct Harness {
     /// `anodize release --publish-only`.
     pub child_snapshot: bool,
     /// Backend hint forwarded from the CLI dispatcher's reading of the
-    /// project's `docker_v2[*].use` field. `Some("podman")` causes
+    /// project's `dockers_v2[*].use` field. `Some("podman")` causes
     /// [`Harness::run_docker_stage`] to short-circuit with an explanatory
     /// warning — the harness's reproducibility probe shells out to
     /// `docker buildx`, and BuildKit-only flags such as `--rewrite-timestamp`

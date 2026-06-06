@@ -550,12 +550,12 @@ fn extract_fields(props: &Map<String, Schema>) -> Vec<ConfigField> {
 /// `(qualified_section_name, parent_definition, field_name)`.
 ///
 /// Without this list, a consumer reading the configuration reference cannot
-/// see the field shape for the canonical Docker API (`crates[].docker_v2`),
+/// see the field shape for the canonical Docker API (`crates[].dockers_v2`),
 /// the per-crate publishers (`crates[].publish.<name>`), and similar
 /// per-crate publisher / packager sub-structs — they show up only as a type
 /// name in the parent table.
 const SECOND_LEVEL_SECTIONS: &[(&str, &str, &str)] = &[
-    ("crates[].docker_v2", "CrateConfig", "docker_v2"),
+    ("crates[].dockers_v2", "CrateConfig", "dockers_v2"),
     (
         "crates[].docker_manifests",
         "CrateConfig",

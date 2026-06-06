@@ -112,7 +112,7 @@ pub(crate) fn publish_to_mcp(ctx: &mut Context, log: &StageLogger) -> Result<Opt
 ///   manifest references. Ownership is decided by comparing the image
 ///   *repo* (the ref minus its `:tag`) so that an un-rendered
 ///   `{{ .Version }}` template in either the mcp identifier or the crate's
-///   `docker_v2[].images` never affects the match.
+///   `dockers_v2[].images` never affects the match.
 ///
 /// When the mcp manifest references no OCI package, every crate's pass is
 /// allowed through — the publisher's own skip-gate then decides whether it
@@ -138,7 +138,7 @@ fn mcp_image_owned_by_selected(ctx: &Context) -> bool {
     crate::util::all_crates(ctx)
         .iter()
         .filter(|c| selected.iter().any(|s| s == &c.name))
-        .filter_map(|c| c.docker_v2.as_ref())
+        .filter_map(|c| c.dockers_v2.as_ref())
         .flatten()
         .flat_map(|d| d.images.iter())
         .any(|img| mcp_repos.contains(&image_repo(img)))
@@ -372,7 +372,7 @@ pub(crate) fn render_server_json(ctx: &Context) -> Result<Option<ServerJson>> {
 /// Snapcraft, and DockerHub.
 fn fill_from_project_metadata(ctx: &Context, mcp: &mut McpConfig) {
     // The mcp block is top-level but runs on its owning crate's pass (the
-    // crate whose `docker_v2` image the manifest references); derive metadata
+    // crate whose `dockers_v2` image the manifest references); derive metadata
     // from THAT crate's `Cargo.toml`, falling back to the project primary
     // crate when no OCI package pins ownership.
     let owner = mcp_owning_crate_name(ctx);
@@ -421,7 +421,7 @@ fn mcp_owning_crate_name(ctx: &Context) -> Option<&str> {
                 .flat_map(|w| w.crates.iter()),
         )
         .find(|c| {
-            c.docker_v2
+            c.dockers_v2
                 .as_ref()
                 .into_iter()
                 .flatten()
@@ -718,10 +718,10 @@ fn truncate_response_snippet(scrubbed: &str) -> (std::borrow::Cow<'_, str>, &'st
 /// must carry an `io.modelcontextprotocol.server.name` **image config label**
 /// equal to the server name. Its own error text says "Add this to your
 /// Dockerfile: LABEL …", which under-serves anodizer users who build images
-/// through the `docker_v2:` block and have no hand-written `LABEL` line — and
-/// who would otherwise reach for `docker_v2.annotations`, which the validator
+/// through the `dockers_v2:` block and have no hand-written `LABEL` line — and
+/// who would otherwise reach for `dockers_v2.annotations`, which the validator
 /// ignores (it reads `configFile.Config.Labels`, populated only by
-/// `docker_v2.labels` / `--label`, not by OCI manifest annotations). Append
+/// `dockers_v2.labels` / `--label`, not by OCI manifest annotations). Append
 /// the anodizer-specific path so the rejection is fixable without spelunking
 /// the registry source.
 ///
@@ -733,7 +733,7 @@ fn oci_rejection_hint(response_body: &str, server_name: &str) -> String {
             " — the registry could not verify OCI image ownership: the published \
              image must carry the image config label \
              `io.modelcontextprotocol.server.name={server_name}`. Set it via \
-             `docker_v2.labels` (NOT `annotations`, which the registry ignores) \
+             `dockers_v2.labels` (NOT `annotations`, which the registry ignores) \
              or a Dockerfile `LABEL io.modelcontextprotocol.server.name=\"{server_name}\"`."
         )
     } else {

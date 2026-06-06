@@ -70,8 +70,10 @@ pub struct Defaults {
     pub makeselves: Option<MakeselfConfig>,
     /// Default SRPM settings applied to all crates.
     pub srpms: Option<SrpmConfig>,
-    /// Default Docker (V2 API) image settings applied to all crates.
-    pub docker_v2: Option<DockerV2Config>,
+    /// Default Docker (V2 API) image settings applied to all crates. The
+    /// `docker_v2:` spelling is still accepted via serde alias for back-compat.
+    #[serde(alias = "docker_v2")]
+    pub dockers_v2: Option<DockerV2Config>,
 
     // --- Publish axis ---
     /// Default publisher configurations (single-struct per publisher).

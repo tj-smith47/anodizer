@@ -188,7 +188,7 @@ fn apply_top_level_defaults(config: &mut Config, defaults: &Defaults) {
 ///   `skip`-bearing block as more single-struct fields are wired in).
 /// - **List append + merge-by-identity** via `merge_list_by_identity`:
 ///   `nfpm`, `snapcrafts`, `dmgs`, `pkgs`, `msis`, `nsis`, `app_bundles`,
-///   `flatpaks`, `docker_v2`. Each takes a single defaults entry and folds
+///   `flatpaks`, `dockers_v2`. Each takes a single defaults entry and folds
 ///   into the per-crate vec by identity key.
 /// - **Archives** via dedicated `merge_archives` (handles the
 ///   ArchivesConfig::Disabled / Configs split).
@@ -245,8 +245,8 @@ pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
         flatpak_identity,
     );
     merge_list_by_identity(
-        &mut crate_cfg.docker_v2,
-        defaults.docker_v2.as_ref(),
+        &mut crate_cfg.dockers_v2,
+        defaults.dockers_v2.as_ref(),
         docker_v2_identity,
     );
 

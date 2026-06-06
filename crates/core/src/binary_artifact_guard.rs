@@ -108,8 +108,8 @@ pub fn check(
 fn binary_requiring_surfaces(krate: &CrateConfig) -> Vec<&'static str> {
     let mut surfaces = Vec::new();
 
-    if has_entries(&krate.docker_v2) {
-        surfaces.push("docker_v2");
+    if has_entries(&krate.dockers_v2) {
+        surfaces.push("dockers_v2");
     }
     if has_entries(&krate.nfpms) {
         surfaces.push("nfpm");
@@ -175,7 +175,7 @@ fn binary_requiring_publishers(publish: &PublishConfig) -> Vec<&'static str> {
 }
 
 /// `true` when an optional list field carries at least one entry. A
-/// present-but-empty list (`docker_v2: []`) declares no surface and must
+/// present-but-empty list (`dockers_v2: []`) declares no surface and must
 /// not arm the guard.
 fn has_entries<T>(field: &Option<Vec<T>>) -> bool {
     field.as_ref().is_some_and(|v| !v.is_empty())
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn errors_when_binary_surface_configured_but_no_binary() {
         let mut krate = crate_named("svc");
-        krate.docker_v2 = Some(vec![DockerV2Config::default()]);
+        krate.dockers_v2 = Some(vec![DockerV2Config::default()]);
         krate.publish = Some(PublishConfig {
             scoop: Some(ScoopConfig::default()),
             ..PublishConfig::default()
@@ -254,7 +254,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("crate 'svc'"), "{err}");
-        assert!(err.contains("docker_v2"), "{err}");
+        assert!(err.contains("dockers_v2"), "{err}");
         assert!(err.contains("scoop"), "{err}");
         assert!(err.contains("no binary artifacts"), "{err}");
     }
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn ok_when_binary_surface_has_binary() {
         let mut krate = crate_named("svc");
-        krate.docker_v2 = Some(vec![DockerV2Config::default()]);
+        krate.dockers_v2 = Some(vec![DockerV2Config::default()]);
         let config = config_with(krate);
 
         let mut artifacts = ArtifactRegistry::new();
@@ -289,7 +289,7 @@ mod tests {
         // even with no raw Binary entry — the archive stage only emits one
         // when it had a binary to pack.
         let mut krate = crate_named("svc");
-        krate.docker_v2 = Some(vec![DockerV2Config::default()]);
+        krate.dockers_v2 = Some(vec![DockerV2Config::default()]);
         let config = config_with(krate);
 
         let mut artifacts = ArtifactRegistry::new();
@@ -308,10 +308,10 @@ mod tests {
 
     #[test]
     fn empty_surface_list_does_not_arm_guard() {
-        // `docker_v2: []` is present-but-empty: it declares no surface and
+        // `dockers_v2: []` is present-but-empty: it declares no surface and
         // must not fire even though the field is `Some`.
         let mut krate = crate_named("svc");
-        krate.docker_v2 = Some(vec![]);
+        krate.dockers_v2 = Some(vec![]);
         let config = config_with(krate);
 
         let mut artifacts = ArtifactRegistry::new();
@@ -325,7 +325,7 @@ mod tests {
         // The offending crate is configured but not selected; the guard
         // only checks in-scope crates.
         let mut bad = crate_named("svc");
-        bad.docker_v2 = Some(vec![DockerV2Config::default()]);
+        bad.dockers_v2 = Some(vec![DockerV2Config::default()]);
         let config = config_with(bad);
 
         let mut artifacts = ArtifactRegistry::new();
@@ -337,11 +337,11 @@ mod tests {
 
     #[test]
     fn skips_crate_absent_from_built_set() {
-        // The cfgd-csi-on-macOS case: the crate configures docker_v2 but had
+        // The cfgd-csi-on-macOS case: the crate configures dockers_v2 but had
         // no in-scope build target in this shard, so the build stage never
         // built it. It must NOT be this shard's responsibility — skip it.
         let mut krate = crate_named("cfgd-csi");
-        krate.docker_v2 = Some(vec![DockerV2Config::default()]);
+        krate.dockers_v2 = Some(vec![DockerV2Config::default()]);
         let config = config_with(krate);
 
         let artifacts = ArtifactRegistry::new();
@@ -356,7 +356,7 @@ mod tests {
         // The real mis-scope: the crate WAS built (present in the built set)
         // yet produced no binary artifact. The guard must still fire.
         let mut krate = crate_named("svc");
-        krate.docker_v2 = Some(vec![DockerV2Config::default()]);
+        krate.dockers_v2 = Some(vec![DockerV2Config::default()]);
         let config = config_with(krate);
 
         let mut artifacts = ArtifactRegistry::new();
@@ -465,7 +465,7 @@ mod tests {
         // Merge-mode call site passes `None`: every in-scope crate is checked,
         // preserving the original bail-on-no-binary behavior.
         let mut krate = crate_named("svc");
-        krate.docker_v2 = Some(vec![DockerV2Config::default()]);
+        krate.dockers_v2 = Some(vec![DockerV2Config::default()]);
         let config = config_with(krate);
 
         let mut artifacts = ArtifactRegistry::new();

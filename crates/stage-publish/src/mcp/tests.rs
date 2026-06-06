@@ -280,8 +280,8 @@ fn oci_annotation_rejection_appends_actionable_hint() {
     // The registry's OCI validator fails closed when the published image
     // lacks the `io.modelcontextprotocol.server.name` config label, returning
     // a body that names the label. The raw registry text only mentions a
-    // Dockerfile LABEL; anodizer must add the `docker_v2.labels` path so users
-    // who build images via the `docker_v2:` block know where to set it.
+    // Dockerfile LABEL; anodizer must add the `dockers_v2.labels` path so users
+    // who build images via the `dockers_v2:` block know where to set it.
     let _g = warn_once_lock();
     // Content-Length is the 161-byte body that follows the blank line — the
     // registry's verbatim "missing required annotation" text naming the label.
@@ -298,8 +298,8 @@ fn oci_annotation_rejection_appends_actionable_hint() {
         .expect_err("422 annotation rejection must surface as an error");
     let chain = format!("{err:#}");
     assert!(
-        chain.contains("docker_v2.labels"),
-        "error must point at docker_v2.labels remediation: {chain}"
+        chain.contains("dockers_v2.labels"),
+        "error must point at dockers_v2.labels remediation: {chain}"
     );
     assert!(
         chain.contains("io.github.test/server"),
@@ -330,7 +330,7 @@ fn oci_rejection_hint_is_empty_for_unrelated_bodies() {
         "io.github.test/server",
     );
     assert!(hint.contains("io.github.test/server"), "{hint}");
-    assert!(hint.contains("docker_v2.labels"), "{hint}");
+    assert!(hint.contains("dockers_v2.labels"), "{hint}");
 }
 
 // ---------------------------------------------------------------------------
@@ -873,12 +873,12 @@ fn owning_ctx(selected: Vec<&str>, mcp_identifier: &str) -> Context {
     config.crates = vec![
         CrateConfig {
             name: "cfgd-core".to_string(),
-            docker_v2: None,
+            dockers_v2: None,
             ..Default::default()
         },
         CrateConfig {
             name: "cfgd".to_string(),
-            docker_v2: docker_for("ghcr.io/tj-smith47/cfgd"),
+            dockers_v2: docker_for("ghcr.io/tj-smith47/cfgd"),
             ..Default::default()
         },
     ];

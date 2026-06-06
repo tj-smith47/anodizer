@@ -2943,13 +2943,13 @@ crates:
   - name: a
     path: "."
     tag_template: "v{{ .Version }}"
-    docker_v2:
+    dockers_v2:
       - images: [registry/img]
         tags: ["{{ .Version }}"]
         dockerfile: Dockerfile
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert!(config.crates[0].docker_v2.is_some());
+    assert!(config.crates[0].dockers_v2.is_some());
     // No `docker` field exists on CrateConfig anymore.
 }
 
@@ -5000,7 +5000,7 @@ crates:
   - name: a
     path: "."
     tag_template: "v{{ .Version }}"
-    docker_v2:
+    dockers_v2:
       - dockerfile: Dockerfile
         images: ["ghcr.io/owner/app"]
         tags: ["{{ .Version }}"]
@@ -6547,12 +6547,12 @@ crates:
   - name: a
     path: "."
     tag_template: "v{{ .Version }}"
-    docker_v2:
+    dockers_v2:
       - images: [ghcr.io/example/app]
         disable: true
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).expect("disable: alias must parse");
-    let docker = &config.crates[0].docker_v2.as_ref().unwrap()[0];
+    let docker = &config.crates[0].dockers_v2.as_ref().unwrap()[0];
     assert_eq!(docker.skip, Some(StringOrBool::Bool(true)));
 }
 
@@ -6950,8 +6950,8 @@ dockers:
     let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml).unwrap();
     let err = super::validate_no_docker_v1(&raw).unwrap_err();
     assert!(
-        err.contains("docker_v2") && err.contains("dockers"),
-        "expected migration message naming docker_v2 and dockers, got: {}",
+        err.contains("dockers_v2") && err.contains("dockers"),
+        "expected migration message naming dockers_v2 and dockers, got: {}",
         err
     );
 }
@@ -6964,11 +6964,11 @@ crates:
   - name: a
     path: "."
     tag_template: "v{{ .Version }}"
-docker_v2:
+dockers_v2:
   - images: [ghcr.io/example/app]
 "#;
     let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml).unwrap();
-    super::validate_no_docker_v1(&raw).expect("docker_v2 only must pass");
+    super::validate_no_docker_v1(&raw).expect("dockers_v2 only must pass");
 }
 
 // ---- F3: legacy archive/snapshot/build aliases ----
@@ -8046,7 +8046,7 @@ crates:
   - name: a
     path: "."
     tag_template: "v{{ .Version }}"
-    docker_v2:
+    dockers_v2:
       - dockerfile: Dockerfile
         images: ["ghcr.io/example/app"]
         retry:
@@ -8058,8 +8058,8 @@ crates:
     assert_eq!(warnings.len(), 1, "expected one warning, got: {warnings:?}");
     let msg = &warnings[0];
     assert!(msg.contains("DEPRECATION"));
-    assert!(msg.contains("crates[a].docker_v2[0]"));
-    assert!(msg.contains("docker_v2.retry"));
+    assert!(msg.contains("crates[a].dockers_v2[0]"));
+    assert!(msg.contains("dockers_v2.retry"));
     assert!(msg.contains("v2.15.3"));
     assert!(msg.contains("top-level `retry:`"));
 }
@@ -8087,6 +8087,8 @@ crates:
 
 #[test]
 fn legacy_docker_retry_no_warning_when_top_level_retry_only() {
+    // Uses the `docker_v2:` back-compat alias (canonical is `dockers_v2:`) so
+    // the serde alias stays covered alongside the canonical-key tests.
     let yaml = r#"
 project_name: test
 retry:
@@ -8112,7 +8114,7 @@ fn legacy_docker_retry_warns_in_workspaces_and_defaults() {
     let yaml = r#"
 project_name: test
 defaults:
-  docker_v2:
+  dockers_v2:
     dockerfile: Dockerfile
     images: ["ghcr.io/example/app"]
     retry:
@@ -8123,7 +8125,7 @@ workspaces:
       - name: nested
         path: ws1
         tag_template: "v{{ .Version }}"
-        docker_v2:
+        dockers_v2:
           - dockerfile: Dockerfile
             images: ["ghcr.io/example/app"]
             retry:
@@ -8136,11 +8138,11 @@ workspaces:
         2,
         "expected defaults + workspace warnings, got: {warnings:?}"
     );
-    assert!(warnings.iter().any(|w| w.contains("defaults.docker_v2")));
+    assert!(warnings.iter().any(|w| w.contains("defaults.dockers_v2")));
     assert!(
         warnings
             .iter()
-            .any(|w| w.contains("workspaces[ws1].crates[nested].docker_v2[0]"))
+            .any(|w| w.contains("workspaces[ws1].crates[nested].dockers_v2[0]"))
     );
 }
 
@@ -8170,7 +8172,7 @@ dockers:
     // Error must name both the legacy field and the v2 replacement so the
     // user does not need to consult the docs to find the new spelling.
     assert!(err.contains("dockers"), "missing legacy name: {err}");
-    assert!(err.contains("docker_v2"), "missing v2 pointer: {err}");
+    assert!(err.contains("dockers_v2"), "missing v2 pointer: {err}");
 }
 
 // ---- Row 4: furies: → gemfury: rename (v2.14) ----
@@ -8438,7 +8440,7 @@ crates:
 
 #[test]
 fn legacy_disable_alias_nested_defaults_installers_warn() {
-    // defaults.{msis,pkgs,nsis,docker_v2} all map to skip-with-disable-alias
+    // defaults.{msis,pkgs,nsis,dockers_v2} all map to skip-with-disable-alias
     // structs; one config exercises several blocks at the defaults axis.
     let warnings = disable_alias_warnings(
         r#"
@@ -8453,12 +8455,12 @@ defaults:
     disable: true
   makeselves:
     disable: true
-  docker_v2:
+  dockers_v2:
     disable: true
 "#,
     );
     assert_eq!(warnings.len(), 5, "{warnings:?}");
-    for block in ["msis", "pkgs", "nsis", "makeselves", "docker_v2"] {
+    for block in ["msis", "pkgs", "nsis", "makeselves", "dockers_v2"] {
         let needle = format!("defaults.{block}.disable");
         assert!(
             warnings.iter().any(|w| w.contains(&needle)),
@@ -8569,7 +8571,7 @@ fn legacy_disable_alias_skips_freeform_map_user_key() {
     // A user may legitimately name a key `disable` inside a free-form map
     // (`variables`, `build_args`, `labels`, …). The nearest named ancestor of
     // such a key is the map's own key — never an allow-listed block — so no
-    // warning fires. Includes `docker_v2[].build_args.disable`: `docker_v2` IS
+    // warning fires. Includes `dockers_v2[].build_args.disable`: `dockers_v2` IS
     // allow-listed, but the immediate enclosing block of the key is
     // `build_args`, so it is correctly skipped.
     let warnings = disable_alias_warnings(
@@ -8578,7 +8580,7 @@ project_name: test
 crates: []
 variables:
   disable: hello
-docker_v2:
+dockers_v2:
   - build_args:
       disable: "1"
 "#,

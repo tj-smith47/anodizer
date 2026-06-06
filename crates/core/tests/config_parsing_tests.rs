@@ -2790,7 +2790,7 @@ crates:
 
 #[test]
 fn test_parse_invalid_type_docker_v2_string() {
-    // `docker_v2:` is the only docker surface; a string-vs-list type
+    // `dockers_v2:` is the only docker surface; a string-vs-list type
     // mismatch must still be rejected.
     let yaml = r#"
 project_name: test
@@ -2798,7 +2798,7 @@ crates:
   - name: app
     path: "."
     tag_template: "v{{ version }}"
-    docker_v2: "not an array"
+    dockers_v2: "not an array"
 "#;
     let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
@@ -3671,7 +3671,7 @@ crates:
         commit_author:
           name: bot
           email: bot@example.com
-    docker_v2:
+    dockers_v2:
       - dockerfile: Dockerfile
         images:
           - "ghcr.io/org/app"
@@ -3784,8 +3784,8 @@ crates:
     assert_eq!(scoop_repo.name.as_deref(), Some("scoop-bucket"));
     assert_eq!(publish.cargo.as_ref().unwrap().index_timeout, Some(60));
 
-    // App docker_v2 ( : legacy `docker:` field dropped)
-    let docker = &app.docker_v2.as_ref().unwrap()[0];
+    // App dockers_v2 ( : legacy `docker:` field dropped)
+    let docker = &app.dockers_v2.as_ref().unwrap()[0];
     assert_eq!(docker.platforms.as_ref().unwrap().len(), 2);
     assert_eq!(docker.images, vec!["ghcr.io/org/app".to_string()]);
 

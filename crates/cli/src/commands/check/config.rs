@@ -523,7 +523,7 @@ fn check_cross_tooling(config: &Config, warnings: &mut Vec<String>) {
 }
 
 fn check_docker_tooling(config: &Config, warnings: &mut Vec<String>) {
-    let needs_docker = config.crates.iter().any(|c| c.docker_v2.is_some());
+    let needs_docker = config.crates.iter().any(|c| c.dockers_v2.is_some());
     if !needs_docker {
         return;
     }

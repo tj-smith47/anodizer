@@ -169,7 +169,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     //     historically; serde alias accepts both but collapses them on parse).
     //   * legacy V1 `dockers:` block — anodizer is V2-only by design;
     //     without this check `deny_unknown_fields` emits a generic
-    //     "unknown field" error that does not point at `docker_v2:`.
+    //     "unknown field" error that does not point at `dockers_v2:`.
     // Best-effort — YAML parse failures are reported by the typed loader below.
     if (ext == "yaml" || ext == "yml")
         && let Ok(raw) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&content)
