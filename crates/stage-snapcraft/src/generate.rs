@@ -138,7 +138,7 @@ pub fn generate_snap_yaml(
 
     // Build layouts section
     let layouts: BTreeMap<String, SnapcraftYamlLayout> = config
-        .layouts
+        .layout
         .as_ref()
         .map(|layout_map| {
             layout_map

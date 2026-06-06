@@ -61,7 +61,12 @@ pub struct AurConfig {
     pub directory: Option<String>,
     /// Skip this AUR config. Accepts bool or template string
     /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip).
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
+    #[serde(
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt",
+        default
+    )]
     pub skip: Option<StringOrBool>,
     /// Content for a .install file (post-install/pre-remove scripts).
     pub install: Option<String>,

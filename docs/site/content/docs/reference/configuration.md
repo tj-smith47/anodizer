@@ -210,7 +210,7 @@ Defaults to `[archive, binary, checksum]` when omitted. |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
-| `skip` | StringOrBool | — | Skip this config. |
+| `skip` | StringOrBool | — | Skip this config. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. |
 | `url_template` | string | — | Custom URL template for download URLs. |
 
@@ -654,7 +654,7 @@ The legacy `goos` spelling is accepted as a back-compat alias for `os` (folded a
 | `meta` | bool | — | Include metadata artifacts in published artifacts. |
 | `name` | string | — | Human-readable name for this publisher (used in logs). |
 | `signature` | bool | — | Include signatures in published artifacts. |
-| `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`). |
+| `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`). Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before publishing. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded. |
 
 ## `release`
@@ -718,7 +718,7 @@ All fields are optional in YAML; missing fields fall back to the defaults (10 at
 | `env` | list of string | — | Environment variables to pass to the command, as `KEY=VALUE` strings. Order is preserved. Values are template-rendered before being set. |
 | `id` | string | — | Unique identifier for this SBOM config (default: "default"). |
 | `ids` | list of string | — | Filter by artifact IDs (ignored if artifacts="source"). |
-| `skip` | StringOrBool | — | Skip this SBOM config. Accepts bool or template string. |
+| `skip` | StringOrBool | — | Skip this SBOM config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 
 ## `schemastore`
 Top-level `schemastore:` block. Shared fields here are defaults for every entry in `schemas`; a per-entry field overrides them (cascade).
@@ -922,7 +922,7 @@ Each value is template-expanded and forwarded verbatim to buildx (one argv token
 | `platforms` | list of string | — | Target platforms for multi-arch builds (e.g., ["linux/amd64", "linux/arm64"]). |
 | `retry` | DockerRetryConfig | — | Retry configuration for docker push operations. |
 | `sbom` | StringOrBool | — | When truthy, adds `--sbom=true` to buildx. Supports templates. |
-| `skip` | StringOrBool | — | When truthy, skip this docker build entirely. Supports templates. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs (the legacy `disable:` spelling). |
+| `skip` | StringOrBool | — | When truthy, skip this docker build entirely. Supports templates. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `tags` | list of string | `[]` | Tag suffixes (e.g., ["latest", "{{ Version }}"]). Each image is tagged with each tag. |
 | `use` | string | — | Docker backend for build commands: `"buildx"` (default) or `"podman"`.
 
@@ -952,7 +952,7 @@ After each docker image push, a digest file (containing the sha256 digest) is wr
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name_template` | string | — | Template for the digest artifact filename. Default: tag-based naming (e.g., "ghcr.io_owner_app_v1.0.0.digest"). |
-| `skip` | StringOrBool | — | When truthy, disable docker digest artifact creation. |
+| `skip` | StringOrBool | — | When truthy, disable docker digest artifact creation. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 
 ## `crates[].publish`
 | Field | Type | Default | Description |
@@ -1217,7 +1217,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
-| `skip` | StringOrBool | — | Skip this AUR config. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip). |
+| `skip` | StringOrBool | — | Skip this AUR config. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip). Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. Accepts bool or template string. |
 | `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
 
@@ -1254,7 +1254,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
-| `skip` | StringOrBool | — | Skip this config. |
+| `skip` | StringOrBool | — | Skip this config. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. |
 | `url_template` | string | — | Custom URL template for download URLs. |
 

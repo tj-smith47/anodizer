@@ -55,7 +55,12 @@ pub struct BlobConfig {
     pub ids: Option<Vec<String>>,
     /// Skip this blob config. Accepts bool or template string
     /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip).
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
+    #[serde(
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt",
+        default
+    )]
     pub skip: Option<StringOrBool>,
     /// Also upload metadata.json and artifacts.json.
     pub include_meta: Option<bool>,

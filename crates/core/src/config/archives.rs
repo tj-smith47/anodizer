@@ -567,7 +567,12 @@ pub struct ChecksumConfig {
     /// Hash algorithm: sha256, sha512, sha1, md5, crc32 (default: sha256).
     pub algorithm: Option<String>,
     /// Disable checksums. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
+    #[serde(
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt",
+        default
+    )]
     pub skip: Option<StringOrBool>,
     /// Extra files to include in the checksum file (beyond build artifacts).
     pub extra_files: Option<Vec<ExtraFileSpec>>,

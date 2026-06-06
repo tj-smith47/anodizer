@@ -166,7 +166,7 @@ mod tests {
             assumes: Some(vec!["snapd2.55".to_string()]),
             plugs: Some(BTreeMap::new()),
             apps: Some(apps),
-            layouts: Some(layouts),
+            layout: Some(layouts),
             hooks: Some(hooks),
             ..Default::default()
         }

@@ -27,7 +27,12 @@ pub struct SbomConfig {
     /// Filter by artifact IDs (ignored if artifacts="source").
     pub ids: Option<Vec<String>>,
     /// Skip this SBOM config. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
+    #[serde(
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt",
+        default
+    )]
     pub skip: Option<StringOrBool>,
 }
 

@@ -278,7 +278,12 @@ pub struct FlatpakConfig {
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
     /// Skip this Flatpak config. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
+    #[serde(
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt",
+        default
+    )]
     pub skip: Option<StringOrBool>,
 }
 

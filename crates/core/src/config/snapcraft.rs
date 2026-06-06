@@ -61,7 +61,11 @@ pub struct SnapcraftConfig {
     /// Application configurations defining daemons, commands, env vars.
     pub apps: Option<BTreeMap<String, SnapcraftApp>>,
     /// Directory mappings for sandbox accessibility.
-    pub layouts: Option<BTreeMap<String, SnapcraftLayout>>,
+    ///
+    /// Accepts the legacy plural `layouts:` spelling via serde alias for
+    /// back-compat with imported configs.
+    #[serde(alias = "layouts")]
+    pub layout: Option<BTreeMap<String, SnapcraftLayout>>,
     /// Additional static files to bundle (string shorthand or structured form).
     pub extra_files: Option<Vec<SnapcraftExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before bundling.
@@ -71,8 +75,7 @@ pub struct SnapcraftConfig {
     pub name_template: Option<String>,
     /// Skip this snapcraft config. Accepts bool or template string
     /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip).
-    /// Accepts the legacy `disable:` spelling via serde alias for back-compat
-    /// with imported configs (the legacy `disable:` spelling).
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
     #[serde(
         default,
         alias = "disable",

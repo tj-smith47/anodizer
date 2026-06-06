@@ -27,7 +27,12 @@ pub struct PublisherConfig {
     pub dir: Option<String>,
     /// Template-conditional skip: if rendered result is `"true"`, skip this publisher.
     /// Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`).
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
+    #[serde(
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt",
+        default
+    )]
     pub skip: Option<StringOrBool>,
     /// Include checksums in published artifacts.
     pub checksum: Option<bool>,

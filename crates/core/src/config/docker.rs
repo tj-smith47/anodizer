@@ -87,8 +87,7 @@ pub struct DockerV2Config {
     /// Arbitrary extra flags passed to the docker build command.
     pub flags: Option<Vec<String>>,
     /// When truthy, skip this docker build entirely. Supports templates.
-    /// Accepts the legacy `disable:` spelling via serde alias for back-compat
-    /// with imported configs (the legacy `disable:` spelling).
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
     #[serde(
         default,
         alias = "disable",
@@ -148,7 +147,12 @@ pub struct DockerV2Config {
 #[serde(default, deny_unknown_fields)]
 pub struct DockerDigestConfig {
     /// When truthy, disable docker digest artifact creation.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
+    #[serde(
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt",
+        default
+    )]
     pub skip: Option<StringOrBool>,
     /// Template for the digest artifact filename.
     /// Default: tag-based naming (e.g., "ghcr.io_owner_app_v1.0.0.digest").

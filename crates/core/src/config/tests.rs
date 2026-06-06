@@ -5184,6 +5184,100 @@ crates:
     assert!(pub_cfg.skip.is_none());
 }
 
+#[test]
+fn test_disable_alias_sets_skip_truthy() {
+    // GoReleaser spells the section toggle `disable:`; anodizer's canonical is
+    // `skip:`. The serde alias maps `disable:` onto `skip` with identical
+    // polarity (disable:true == skip:true). Prove it round-trips truthy on
+    // every aliased struct, and that the canonical `skip:` still works too.
+    let yaml = r#"
+project_name: test
+publishers:
+  - cmd: "echo hello"
+    disable: true
+sboms:
+  - artifacts: archive
+    disable: true
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    checksum:
+      disable: true
+    docker_digest:
+      disable: true
+    flatpaks:
+      - app_id: org.example.App
+        disable: true
+    blobs:
+      - provider: s3
+        bucket: my-bucket
+        disable: true
+    publish:
+      aur:
+        disable: true
+      aur_source:
+        disable: true
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+
+    let crate_cfg = &config.crates[0];
+    let publish = crate_cfg.publish.as_ref().unwrap();
+    let truthy: &[(&str, &Option<StringOrBool>)] = &[
+        ("publisher", &config.publishers.as_ref().unwrap()[0].skip),
+        ("sbom", &config.sboms[0].skip),
+        ("checksum", &crate_cfg.checksum.as_ref().unwrap().skip),
+        (
+            "docker_digest",
+            &crate_cfg.docker_digest.as_ref().unwrap().skip,
+        ),
+        ("flatpak", &crate_cfg.flatpaks.as_ref().unwrap()[0].skip),
+        ("blob", &crate_cfg.blobs.as_ref().unwrap()[0].skip),
+        ("aur", &publish.aur.as_ref().unwrap().skip),
+        ("aur_source", &publish.aur_source.as_ref().unwrap().skip),
+    ];
+    for (label, skip) in truthy {
+        assert!(
+            skip.as_ref().is_some_and(StringOrBool::as_bool),
+            "{label} `disable: true` should set skip truthy"
+        );
+    }
+}
+
+#[test]
+fn test_canonical_skip_still_parses_truthy() {
+    // The `disable:` alias must not clobber the canonical `skip:` spelling:
+    // prove `skip: true` still round-trips truthy on a couple of the structs.
+    let yaml = r#"
+project_name: test
+publishers:
+  - cmd: "echo hello"
+    skip: true
+sboms:
+  - artifacts: archive
+    skip: true
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(
+        config.publishers.as_ref().unwrap()[0]
+            .skip
+            .as_ref()
+            .is_some_and(StringOrBool::as_bool),
+        "publisher `skip: true` should set skip truthy"
+    );
+    assert!(
+        config.sboms[0]
+            .skip
+            .as_ref()
+            .is_some_and(StringOrBool::as_bool),
+        "sbom `skip: true` should set skip truthy"
+    );
+}
+
 // ---- skip_upload StringOrBool tests for publisher configs ----
 
 #[test]

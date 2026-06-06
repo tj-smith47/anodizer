@@ -1800,6 +1800,15 @@ pub(crate) fn legacy_disable_alias_warnings(raw_yaml: &serde_yaml_ng::Value) -> 
         "npms",
         "gemfury",
         "furies",
+        "publishers",
+        "sboms",
+        "aur",
+        "aur_source",
+        "aur_sources",
+        "blobs",
+        "docker_digest",
+        "checksum",
+        "flatpaks",
     ];
 
     fn disable_warning(path: &str) -> String {

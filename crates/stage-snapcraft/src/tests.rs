@@ -227,7 +227,7 @@ fn test_generate_snapcraft_yaml_with_layouts() {
 
     let cfg = SnapcraftConfig {
         name: Some("mysnap".to_string()),
-        layouts: Some(layouts),
+        layout: Some(layouts),
         summary: Some("Test snap".to_string()),
         description: Some("A test snap package".to_string()),
         ..Default::default()
@@ -1385,7 +1385,7 @@ crates:
     );
     assert_eq!(app.args.as_deref(), Some("--verbose"));
 
-    let layouts = snap.layouts.as_ref().unwrap();
+    let layouts = snap.layout.as_ref().unwrap();
     let layout = layouts.get("/usr/share/myapp").unwrap();
     assert_eq!(layout.bind.as_deref(), Some("$SNAP/usr/share/myapp"));
 
@@ -1400,6 +1400,60 @@ crates:
     assert_eq!(snap.skip, Some(StringOrBool::Bool(false)));
     assert_eq!(snap.replace, Some(true));
     assert_eq!(snap.mod_timestamp.as_deref(), Some("1704067200"));
+}
+
+#[test]
+fn test_config_parse_snapcraft_layout_canonical() {
+    // GoReleaser-style canonical singular `layout:` map parses into the field.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    snapcrafts:
+      - name: mysnap
+        layout:
+          /usr/share/myapp:
+            bind: $SNAP/usr/share/myapp
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml)
+        .unwrap_or_else(|e| panic!("failed to parse snapcraft `layout:` config: {e}"));
+    let snap = &config.crates[0].snapcrafts.as_ref().unwrap()[0];
+    let layout = snap
+        .layout
+        .as_ref()
+        .expect("layout map should be populated");
+    assert_eq!(
+        layout.get("/usr/share/myapp").unwrap().bind.as_deref(),
+        Some("$SNAP/usr/share/myapp")
+    );
+}
+
+#[test]
+fn test_config_parse_snapcraft_layouts_alias_backcompat() {
+    // Legacy plural `layouts:` spelling still parses via serde alias.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    snapcrafts:
+      - name: mysnap
+        layouts:
+          /etc/myapp:
+            symlink: $SNAP_DATA/etc/myapp
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml)
+        .unwrap_or_else(|e| panic!("failed to parse legacy `layouts:` alias config: {e}"));
+    let snap = &config.crates[0].snapcrafts.as_ref().unwrap()[0];
+    let layout = snap
+        .layout
+        .as_ref()
+        .expect("layouts alias should populate the layout field");
+    assert_eq!(
+        layout.get("/etc/myapp").unwrap().symlink.as_deref(),
+        Some("$SNAP_DATA/etc/myapp")
+    );
 }
 
 #[test]
@@ -2153,7 +2207,7 @@ fn test_generate_snap_yaml_layout_key_is_singular() {
         name: Some("mysnap".to_string()),
         summary: Some("Test snap".to_string()),
         description: Some("A test snap package".to_string()),
-        layouts: Some(layouts),
+        layout: Some(layouts),
         ..Default::default()
     };
     let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
