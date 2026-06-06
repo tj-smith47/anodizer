@@ -49,6 +49,7 @@ Coming from GoReleaser? It supports Rust too; anodizer is Rust-first. See the [m
 - macOS DMG disk images and PKG installers
 - Windows MSI and NSIS installers
 - Flatpak bundles
+- AppImage portable Linux applications
 - Makeself self-extracting archives
 - Source RPMs (.src.rpm)
 - Source archives with file filtering
@@ -59,6 +60,7 @@ Coming from GoReleaser? It supports Rust too; anodizer is Rust-first. See the [m
 - GPG and cosign signing for binaries, archives, checksums, Docker images, and SBOMs
 - Multiple independent signing configurations
 - Conditional signing via template expressions
+- Build provenance attestations (SLSA-style) for binaries and artifacts
 
 **Publish**
 - GitHub/GitLab/Gitea Releases with asset uploads, draft/prerelease detection, header/footer templates
@@ -70,6 +72,7 @@ Coming from GoReleaser? It supports Rust too; anodizer is Rust-first. See the [m
 - AUR PKGBUILD and .SRCINFO generation
 - Krew plugin manifest generation
 - Nix derivation generation
+- SchemaStore catalog registration for editor autocomplete of your config files
 - MCP registry server-manifest publishing (Model Context Protocol)
 - Docker multi-arch images via `docker buildx`
 - Blob storage uploads (S3, GCS, Azure)
@@ -90,6 +93,8 @@ Coming from GoReleaser? It supports Rust too; anodizer is Rust-first. See the [m
 - Monorepo support with independent workspaces
 - Auto-tagging from commit message directives
 - Reproducible builds with `mod_timestamp` and `builds_info`
+- Version-string file syncing (`version_files`) to keep docs, install scripts, and manifests in lockstep at tag time
+- Post-release verification with install smoke tests
 - JSON Schema for editor autocomplete and validation
 
 ## Installation
