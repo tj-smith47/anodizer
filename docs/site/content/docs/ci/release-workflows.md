@@ -664,14 +664,14 @@ tag mutation). Add the others as your strategy uses them:
 |---|---|
 | `contents: write` | Always (release creation, tag rollback, version_sync commits) |
 | `actions: read` | When the release job downloads artifacts from a sibling workflow (`from-artifact: anodizer-linux` in Strategy D, the cross-workflow artifact pattern, `--publish-only` consuming preserved-dist from a prior `determinism-check` run). The `actions/download-artifact@v4` action requires it for `merge-multiple: true` cross-workflow downloads |
-| `packages: write` | `docker_v2[]` (GHCR), GitHub Packages npm publishes |
+| `packages: write` | `dockers_v2[]` (GHCR), GitHub Packages npm publishes |
 | `id-token: write` | `mcp.auth.type: github-oidc`, cosign keyless, any OIDC-anchored publisher |
 
 ```yaml
 permissions:
   contents: write
   actions: read          # for cross-workflow artifact downloads
-  packages: write        # for ghcr.io docker_v2 pushes
+  packages: write        # for ghcr.io dockers_v2 pushes
   id-token: write        # for cosign keyless / mcp github-oidc
 ```
 

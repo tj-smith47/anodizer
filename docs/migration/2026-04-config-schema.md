@@ -45,8 +45,11 @@ CLI flag rename: `--skip=crates` → `--skip=cargo`.
 
 | Before | After |
 |---|---|
-| top-level `docker:` | `docker_v2:` |
-| `docker_v2[].skip_push: true` | `docker_v2[].skip: true` |
+| top-level `docker:` | `dockers_v2:` |
+| `dockers_v2[].skip_push: true` | `dockers_v2[].skip: true` |
+
+`dockers_v2:` is the canonical key (GoReleaser parity); the older `docker_v2:`
+spelling is still accepted as a back-compat alias.
 
 ## Snapcraft
 
@@ -73,7 +76,7 @@ The CLI crate keeps its own `publish:` block because it ships
 no other crate uses.
 
 For list-typed defaults (archives, nfpms, snapcrafts, dmgs, pkgs, msis,
-nsis, app_bundles, flatpaks, docker_v2): the defaults entry deep-merges
+nsis, app_bundles, flatpaks, dockers_v2): the defaults entry deep-merges
 into the per-crate entry that shares its identity key (`formats[0]` for
 archives, `id`/`name`/`package_name` for packagers). Per-crate entries
 without a matching identity stand alone; defaults entries without a match

@@ -29,6 +29,15 @@ anodizer check
 
 This validates your `.anodizer.yaml` against the schema — checks for missing fields, invalid target triples, dependency cycles, and more.
 
+Anodizer rejects unknown config keys, so a typo like `dockrs_v2:` or
+`fromats:` fails fast at load time instead of being silently ignored. Migrating
+from GoReleaser? Paste your config in as-is — anodizer accepts the GoReleaser
+field names `disable`, `docker_v2`, `layouts`, and `name_template` (snapshot) as
+back-compat aliases for their canonical anodizer spellings (`skip`,
+`dockers_v2`, `layout`, `version_template`). `disable` and `name_template` are
+deprecation-warned at load so you can migrate at your own pace; `docker_v2` and
+`layouts` are accepted silently.
+
 ## 4. Do a dry run
 
 ```bash

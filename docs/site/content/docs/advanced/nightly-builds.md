@@ -85,7 +85,7 @@ Publishers that **skip on nightly** by default:
 - `winget` — PR-based; nightly versions are rejected by automated review
 
 Publishers that **do not skip on nightly** (they accept clobber):
-- `dockerhub`, `docker_v2` — image tags like `nightly` or `edge` are conventional
+- `dockerhub`, `dockers_v2` — image tags like `nightly` or `edge` are conventional
 - `cloudsmith`, `artifactory` — private registries; republish is explicit via `republish: true`
 - `blob` — object storage; nightly assets overwrite by key
 - `mcp` — registry entry is idempotent

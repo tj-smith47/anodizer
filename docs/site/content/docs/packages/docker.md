@@ -1,14 +1,17 @@
 +++
 title = "Docker"
-description = "Build and push multi-arch Docker images via docker_v2"
+description = "Build and push multi-arch Docker images via dockers_v2"
 weight = 4
 template = "docs.html"
 +++
 
 Anodizer builds Docker images via `docker buildx`, producing multi-arch OCI
 image indexes in a single push. The canonical (and only) surface is per-crate
-`docker_v2:`. The legacy GoReleaser V1 `dockers:` block is rejected at
+`dockers_v2:`. The legacy GoReleaser V1 `dockers:` block is rejected at
 config-load time with a migration error pointing here.
+
+> The `docker_v2:` spelling is still accepted as a back-compat serde alias, so
+> existing configs keep working.
 
 ## Classification
 
@@ -17,13 +20,13 @@ stage).
 
 ## Placement
 
-`docker_v2:` is a **per-crate** field — it lives under `crates[].docker_v2`,
+`dockers_v2:` is a **per-crate** field — it lives under `crates[].dockers_v2`,
 not at the top level:
 
 ```yaml
 crates:
   - name: myapp
-    docker_v2:
+    dockers_v2:
       - id: myapp
         dockerfile: Dockerfile
         images:
@@ -36,8 +39,8 @@ crates:
           - linux/arm64
 ```
 
-Workspace-wide defaults can be set under `defaults.docker_v2:` (single struct,
-deep-merged into each crate's first `docker_v2[]` entry).
+Workspace-wide defaults can be set under `defaults.dockers_v2:` (single struct,
+deep-merged into each crate's first `dockers_v2[]` entry).
 
 ## Minimal config
 
@@ -48,7 +51,7 @@ So a typical project only declares the `dockerfile` and `tags`:
 ```yaml
 crates:
   - name: myapp
-    docker_v2:
+    dockers_v2:
       - dockerfile: Dockerfile
         tags: ["{{ Version }}", "latest"]
 ```
@@ -61,7 +64,7 @@ and the pipe emits no tags.
 ```yaml
 crates:
   - name: myapp
-    docker_v2:
+    dockers_v2:
       - dockerfile: Dockerfile
         images: ["docker.io/myorg/myapp"]   # override the ghcr.io default
         tags: ["{{ Version }}", "latest"]
@@ -72,7 +75,7 @@ crates:
 ```yaml
 crates:
   - name: myapp
-    docker_v2:
+    dockers_v2:
       - id: myapp                      # optional; unique handle (for --id filters)
         ids: [myapp]                    # optional; build-ID filter
         dockerfile: Dockerfile          # required; path to Dockerfile
@@ -101,7 +104,7 @@ crates:
           max_delay: "5m"
         flags:                          # optional; raw extra buildx flags
           - --provenance=false
-        skip: false                     # optional; bool or template (accepts `disable:` alias)
+        skip: false                     # optional; bool or template (accepts deprecation-warned `disable:` alias)
         sbom: true                      # optional; --sbom=true
         hooks:                          # optional; pre/post hooks
           pre:
@@ -128,8 +131,8 @@ before the release step. In `anodizer-action`, set `docker-registry` /
   `docker/setup-buildx-action@v3`.
 - **No legacy `dockers:`**: the top-level GoReleaser V1 `dockers:` block is
   rejected at config-load time with a clear migration error. Port to
-  `docker_v2:` (this page).
-- **`skip: true`** (or `disable: true` via back-compat alias) builds the
+  `dockers_v2:` (this page).
+- **`skip: true`** (or `disable: true` via deprecation-warned back-compat alias) builds the
   image locally but does not push.
 - **Platform strings**: use Docker platform notation (`linux/amd64`,
   `linux/arm64`), not Rust target triples.
@@ -146,7 +149,7 @@ Pushing the same `image:tag` to a registry overwrites the previous push.
 Re-running the docker stage with the same `images` / `tags` re-pushes the
 image. There is no `replace_existing_*` flag — registry semantics handle it.
 
-## docker_v2 config fields
+## dockers_v2 config fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -162,7 +165,7 @@ image. There is no `replace_existing_*` flag — registry semantics handle it.
 | `build_args` | map | none | `--build-arg KEY=VALUE` pairs |
 | `retry` | object | top-level `retry:` | Per-pipe retry config (deprecated; prefer top-level) |
 | `flags` | list | none | Arbitrary extra `docker buildx build` flags |
-| `skip` | bool/template | `false` | Skip the build. Accepts `disable:` alias |
+| `skip` | bool/template | `false` | Skip the build. Accepts deprecation-warned `disable:` alias |
 | `sbom` | bool/template | `false` | Add `--sbom=true` to buildx |
 | `hooks` | object | none | `pre:` / `post:` hooks; see Hooks below |
 | `use` | string | `buildx` | Backend: `buildx` or `podman` (Linux-only) |
@@ -172,7 +175,7 @@ image. There is no `replace_existing_*` flag — registry semantics handle it.
 ```yaml
 crates:
   - name: myapp
-    docker_v2:
+    dockers_v2:
       - dockerfile: Dockerfile
         images: ["ghcr.io/myorg/myapp"]
         tags: ["{{ Version }}"]
@@ -185,7 +188,7 @@ A single `docker buildx build --platform=linux/amd64,linux/arm64 --push ...`
 emits one multi-arch OCI image index — no separate
 [`docker_manifests[]`](./docker-manifests.md) entry is required.
 `docker_manifests[]` is retained only for the niche case of stitching together
-manifest lists from images that were not built by `docker_v2` in the same run.
+manifest lists from images that were not built by `dockers_v2` in the same run.
 
 ## Hooks
 
@@ -237,7 +240,7 @@ this image.
 Pass additional flags to `docker buildx build`:
 
 ```yaml
-docker_v2:
+dockers_v2:
   - dockerfile: Dockerfile
     images: ["ghcr.io/myorg/myapp"]
     tags: ["{{ Version }}"]
@@ -255,7 +258,7 @@ entry and cleaner to read.
 ```yaml
 crates:
   - name: myapp
-    docker_v2:
+    dockers_v2:
       - id: myapp
         dockerfile: Dockerfile
         images:

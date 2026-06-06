@@ -29,7 +29,7 @@ Docker build and push operations support configurable retry via the `retry` fiel
 ```yaml
 crates:
   - name: myapp
-    docker_v2:
+    dockers_v2:
       - dockerfile: Dockerfile
         images: ["ghcr.io/owner/myapp"]
         tags: ["{{ Version }}"]
@@ -48,7 +48,7 @@ crates:
 | `max_delay` | string | `5m` | Maximum delay cap for exponential backoff |
 
 The same retry config is available on:
-- `docker_v2[]` — Docker Buildx builds (canonical)
+- `dockers_v2[]` — Docker Buildx builds (canonical)
 - `docker_manifests[]` — Docker manifest creation and push (legacy stitching only)
 
 ### Duration format

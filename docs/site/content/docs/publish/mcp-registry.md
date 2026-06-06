@@ -55,12 +55,12 @@ This publishes anonymously (`auth.type: none`) to the default registry. For serv
 When `packages[].registry_type: oci`, the MCP manifest *references* an image
 but does not build one — anodize publishes the manifest, then MCP clients
 `docker pull` the image at the referenced coordinate (`ghcr.io/myorg/myapp:<ver>`).
-The image itself comes from `docker_v2:`:
+The image itself comes from `dockers_v2:`:
 
 ```yaml
 crates:
   - name: myapp
-    docker_v2:
+    dockers_v2:
       - dockerfile: Dockerfile
         images: ["ghcr.io/myorg/myapp"]
         tags: ["{{ Version }}", "latest"]
@@ -72,7 +72,7 @@ mcp:
   name: io.github.myorg/myapp
   packages:
     - registry_type: oci
-      identifier: ghcr.io/myorg/myapp     # matches docker_v2[].images
+      identifier: ghcr.io/myorg/myapp     # matches dockers_v2[].images
       transport:
         type: stdio
   auth:
@@ -82,7 +82,7 @@ mcp:
 > **Required OCI label.** The registry's OCI validator reads the image-config
 > label `io.modelcontextprotocol.server.name` (i.e. `Config.Labels`) and
 > **rejects the publish** if it is missing or does not equal `mcp.name`. It
-> MUST be set as a `docker_v2[].labels` entry — the registry **ignores**
+> MUST be set as a `dockers_v2[].labels` entry — the registry **ignores**
 > `annotations:`, so an annotation will not satisfy the check.
 
 The release-workflow permissions must cover both:
@@ -90,11 +90,11 @@ The release-workflow permissions must cover both:
 ```yaml
 permissions:
   contents: write
-  packages: write    # docker_v2 push to ghcr.io
+  packages: write    # dockers_v2 push to ghcr.io
   id-token: write    # mcp.auth.type: github-oidc
 ```
 
-See [Docker (`docker_v2:`)](../packages/docker.md) for the image build
+See [Docker (`dockers_v2:`)](../packages/docker.md) for the image build
 surface and the Dockerfile pattern that makes the container speak MCP over
 stdio out of the box (`ENTRYPOINT ["/usr/local/bin/myapp"] / CMD ["mcp"]`).
 
@@ -260,7 +260,7 @@ When `registry_type: oci`, the published manifest carries an empty `version` fie
 The OCI image referenced by `identifier` MUST carry the image-config label
 `io.modelcontextprotocol.server.name` set to the value of `mcp.name`. The
 registry's OCI validator reads `Config.Labels` and rejects the publish without
-it. Set it via `docker_v2[].labels` (NOT `annotations:`, which the registry
+it. Set it via `dockers_v2[].labels` (NOT `annotations:`, which the registry
 ignores) — see [Wiring the OCI image](#wiring-the-oci-image).
 
 ### Top-level transports

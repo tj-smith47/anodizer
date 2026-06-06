@@ -42,7 +42,7 @@ Most package-manager publishers skip on nightly runs to avoid polluting stable
 indexes. The following skip automatically: `homebrew`, `homebrew_casks`, `scoop`,
 `aur`, `aur_source`, `krew`, `nix`, `cargo`, `npm`, `chocolatey`, `winget`.
 
-Docker and private registry publishers (`dockerhub`, `docker_v2`, `cloudsmith`,
+Docker and private registry publishers (`dockerhub`, `dockers_v2`, `cloudsmith`,
 `artifactory`, `blob`, `mcp`) do not skip — they accept clobber by design.
 
 To override, set `skips_on_nightly: false` in the publisher block.

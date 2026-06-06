@@ -42,14 +42,14 @@ crates:
         slots: []                      # optional; shared interface slots
         assumes: []                    # optional; required snapd features
         apps: {}                       # optional; named app entries (auto-generated if omitted)
-        layouts: {}                    # optional; filesystem layout mappings
+        layout: {}                     # optional; filesystem layout mappings (accepts `layouts:` alias)
         extra_files: []                # optional; additional static files to bundle
         name_template: ""              # optional; output filename template
         publish: false                 # optional; upload to Snap Store after building
         channel_templates: []          # optional; store channels to release to
         replace: false                 # optional; remove archive artifacts, keep snap only
         mod_timestamp: ""             # optional; fixed timestamp for reproducible builds
-        disable: false                 # optional
+        skip: false                    # optional; accepts `disable:` alias (deprecation-warned)
 ```
 
 ## Authentication
@@ -90,14 +90,14 @@ Not applicable — once a snap revision is uploaded to the Snap Store, it cannot
 | `slots` | list | | Shared interface slots for other snaps. |
 | `assumes` | list | | Required snapd features or minimum versions. |
 | `apps` | map | auto | Named app entries. Auto-generates a default entry from the first binary if omitted. |
-| `layouts` | map | | Filesystem layout mappings for sandbox accessibility. |
+| `layout` | map | | Filesystem layout mappings for sandbox accessibility. The plural `layouts:` spelling is still accepted via serde alias. |
 | `extra_files` | list | | Additional static files to bundle in the snap. |
 | `name_template` | string | `<name>_<version>_<arch>.snap` | Output filename template. |
 | `publish` | bool | `false` | Upload to the Snap Store after building. |
 | `channel_templates` | list | | Store channels to release to (e.g. `edge`, `beta`, `stable`). |
 | `replace` | bool | `false` | Remove matching archive artifacts, keeping only the snap. |
 | `mod_timestamp` | string | | Fixed timestamp for reproducible builds (e.g. `{{ CommitTimestamp }}`). |
-| `disable` | bool | `false` | Skip this snapcraft config. |
+| `skip` | bool/template | `false` | Skip this snapcraft config. The GoReleaser `disable:` spelling is accepted as a deprecation-warned alias. |
 
 ### Confinement values
 
@@ -123,7 +123,7 @@ Each entry under `apps` describes an application exposed by the snap.
 
 When no `apps` map is provided, a default entry is generated using the first binary's name with the command `bin/<name>`.
 
-### Layout config (`layouts`)
+### Layout config (`layout`)
 
 | Field | Type | Description |
 |-------|------|-------------|

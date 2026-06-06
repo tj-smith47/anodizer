@@ -5,7 +5,7 @@ weight = 5
 template = "docs.html"
 +++
 
-Anodizer supports the `podman` backend as a swap-in alternative to `docker buildx` for both `docker_v2[]` image builds and `docker_manifests[]` manifest-list publication. Matches GoReleaser Pro's `podman` pipe parity.
+Anodizer supports the `podman` backend as a swap-in alternative to `docker buildx` for both `dockers_v2[]` image builds and `docker_manifests[]` manifest-list publication. Matches GoReleaser Pro's `podman` pipe parity.
 
 ## Linux-only
 
@@ -19,12 +19,12 @@ Error: podman backend is supported on Linux only (host OS: macos);
 
 ## Opt in
 
-Set `use: podman` on a `docker_v2[]` entry (build path) or a `docker_manifests[]` entry (manifest-list path):
+Set `use: podman` on a `dockers_v2[]` entry (build path) or a `docker_manifests[]` entry (manifest-list path):
 
 ```yaml
 crates:
   - name: myapp
-    docker_v2:
+    dockers_v2:
       - id: app-podman
         images: ["ghcr.io/myorg/myapp"]
         tags: ["{{ Version }}", "latest"]
@@ -75,7 +75,7 @@ Mirrors GoReleaser Pro's caveats verbatim:
 
 ## Determinism harness compatibility
 
-`anodizer check determinism` shells out to `docker buildx build --output=type=oci,rewrite-timestamp=true,...` for its byte-stability probe. Those flags are BuildKit-only and have no podman equivalent. When the project config has `use: podman` set on any `docker_v2[]` entry, the harness skips the docker stage with an explanatory warning:
+`anodizer check determinism` shells out to `docker buildx build --output=type=oci,rewrite-timestamp=true,...` for its byte-stability probe. Those flags are BuildKit-only and have no podman equivalent. When the project config has `use: podman` set on any `dockers_v2[]` entry, the harness skips the docker stage with an explanatory warning:
 
 ```text
 warn: docker stage requested but project config has `use: podman` (Linux-only);

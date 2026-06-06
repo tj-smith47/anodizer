@@ -179,21 +179,21 @@ others have full test coverage but no live secrets configured.
 
 Publishes an MCP server manifest to `https://registry.modelcontextprotocol.io`.
 The manifest points at `ghcr.io/tj-smith47/anodizer:<version>`, the multi-arch
-OCI image built by [`docker_v2:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml).
+OCI image built by [`dockers_v2:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml).
 The image's `ENTRYPOINT` runs the `anodizer` binary and `CMD` defaults to
 `mcp` (see [`Dockerfile`](https://github.com/tj-smith47/anodizer/blob/master/Dockerfile)),
 so consumers `docker run --rm -i ghcr.io/tj-smith47/anodizer:<ver>` and the
 container speaks MCP over stdio out of the box.
 
 The previous "blocked on `dockers:`" status reflected anodizer's lack of an
-OCI image; commit `41947cb` shipped both the `docker_v2:` block and the
+OCI image; commit `41947cb` shipped both the `dockers_v2:` block and the
 `Dockerfile` that unblocks it. The `mcp:` block no longer carries `skip: true`
 — the next release after this commit lands publishes the manifest live.
 
 | Key | Status | Notes |
 |---|---|---|
 | `mcp.name` | ✅ Ready | Wired in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`name: io.github.tj-smith47/anodizer`); next release publishes |
-| `mcp.packages[]` | ✅ Ready | Wired in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`packages[].registry_type: oci`, `identifier: ghcr.io/tj-smith47/anodizer`); image built by [`docker_v2:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) |
+| `mcp.packages[]` | ✅ Ready | Wired in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`packages[].registry_type: oci`, `identifier: ghcr.io/tj-smith47/anodizer`); image built by [`dockers_v2:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) |
 | `mcp.auth.type: github-oidc` | ✅ Ready | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (OIDC id-token branch); release workflow declares `id-token: write` and `packages: write` permissions |
 | `mcp.auth.type: none` | ✅ Verified (tests) | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (None branch) — unit-tested; private mirrors only |
 | `mcp.auth.type: github` | ✅ Verified (tests) | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (PAT exchange branch) — unit-tested; for non-GHA CI |
