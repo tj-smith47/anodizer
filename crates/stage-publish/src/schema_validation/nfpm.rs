@@ -74,6 +74,13 @@ impl PublisherSchemaValidator for NfpmSchemaValidator {
         // set. Both the build's `run` and the offline renderer resolve a crate
         // via `ctx.config.crates`, so a crate configured only under
         // `workspaces[].crates` is built by neither and validated by neither.
+        // The version that NAMED the produced packages: the global `Version`
+        // var the build's nfpm stage stamped into every crate's `version:`
+        // field (in snapshot, the `<base>-SNAPSHOT-<sha>` synthesized version).
+        // Captured before the per-crate scope below resets it to a bare,
+        // snapshot-label-stripped tag re-derivation.
+        let artifact_version = ctx.version();
+
         let selected =
             crate::publisher_helpers::effective_publish_crates(ctx, is_nfpm_per_crate_configured);
         for crate_name in &selected {
@@ -81,9 +88,11 @@ impl PublisherSchemaValidator for NfpmSchemaValidator {
                 continue;
             }
 
-            // Render + validate under THIS crate's own version (workspace
-            // per-crate independent-version mode renders each crate's nfpm
-            // `version` against its own version, not the first crate's).
+            // Validate under THIS crate's own name/tag scope so per-crate
+            // templated name/content fields resolve per crate, but render the
+            // `version:` from `artifact_version` (see
+            // `render_build_matched_nfpm_configs`) so it equals what the build
+            // stamped in every config mode.
             let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
                 let mut out = Vec::new();
                 // One rendered config per (config × target × format). An empty Vec
@@ -92,7 +101,8 @@ impl PublisherSchemaValidator for NfpmSchemaValidator {
                 // or no packaging-eligible artifact was built for the crate in
                 // this snapshot shard (the same shard-tolerance cases the build
                 // skips).
-                let configs = anodizer_stage_nfpm::nfpm_yaml_configs_for_crate(ctx, crate_name)?;
+                let configs =
+                    render_build_matched_nfpm_configs(ctx, crate_name, &artifact_version)?;
                 if configs.is_empty() {
                     log.verbose(&format!(
                         "nfpm: crate '{}' produced no nfpm config in this snapshot \
@@ -113,6 +123,36 @@ impl PublisherSchemaValidator for NfpmSchemaValidator {
 
         Ok(findings)
     }
+}
+
+/// Render `crate_name`'s nfpm configs exactly as the build stage stamped them.
+///
+/// The build's nfpm stage reads the global `Version` template var ONCE and
+/// feeds it to every crate's package `version:` — in snapshot/dry-run that is
+/// the artifact-naming `<base>-SNAPSHOT-<sha>` version. The surrounding
+/// [`with_validated_crate_scope`] re-derives a per-crate *bare* tag version
+/// (`resolve_crate_tag` strips the snapshot label and any monorepo prefix), so
+/// rendering straight through it would stamp `0.4.0` while the build stamped
+/// `0.4.0-SNAPSHOT-<sha>`, and the gated control cross-check would reject every
+/// snapshot package. Pin `Version`/`RawVersion` back to `artifact_version`
+/// (keeping the per-crate `Name`/`Tag`/`ProjectName` scope for templated
+/// name/content fields) so the rendered `version:` equals what was built —
+/// single-crate, workspace-lockstep, and per-crate-independent modes alike,
+/// since each mode's build read the same global `Version` this captures. A
+/// blank `artifact_version` leaves the scope's value untouched. Mirrors the
+/// binstall/nix `scope_artifact_version` cross-check, which solved the same
+/// "render the version that named the artifacts, not a tag re-derivation"
+/// problem.
+fn render_build_matched_nfpm_configs(
+    ctx: &mut Context,
+    crate_name: &str,
+    artifact_version: &str,
+) -> Result<Vec<anodizer_stage_nfpm::NfpmRenderedConfig>> {
+    if !artifact_version.trim().is_empty() {
+        ctx.template_vars_mut().set("Version", artifact_version);
+        ctx.template_vars_mut().set("RawVersion", artifact_version);
+    }
+    anodizer_stage_nfpm::nfpm_yaml_configs_for_crate(ctx, crate_name)
 }
 
 /// The control fields the gated layer asserts a built package carries, derived
@@ -231,10 +271,39 @@ fn expected_control(yaml: &str, format: &str) -> Result<ExpectedControl> {
         .unwrap_or_default();
     Ok(ExpectedControl {
         name: str_at("/name"),
-        version: str_at("/version").unwrap_or_default(),
+        version: expected_version(
+            &str_at("/version").unwrap_or_default(),
+            str_at("/prerelease").as_deref(),
+            str_at("/version_metadata").as_deref(),
+        ),
         arch,
         maintainer: str_at("/maintainer"),
     })
+}
+
+/// Compose the upstream-grammar version the built package is expected to carry
+/// from the nfpm config's separate `version` / `prerelease` / `version_metadata`
+/// fields, mirroring nfpm's own composition (`<version>~<prerelease>+<meta>`).
+/// The deb `epoch:` prefix and the trailing numeric `-release` revision are
+/// deliberately NOT appended — [`version_matches`] strips/tolerates those on the
+/// built side. Without folding in `prerelease`, a snapshot package (whose
+/// `~SNAPSHOT-<sha>` lives entirely in `prerelease`) would compare its full
+/// `0.4.0~SNAPSHOT-<sha>` against a bare `0.4.0` and spuriously fail.
+fn expected_version(
+    version: &str,
+    prerelease: Option<&str>,
+    version_metadata: Option<&str>,
+) -> String {
+    let mut out = version.to_string();
+    if let Some(pre) = prerelease.filter(|s| !s.is_empty()) {
+        out.push('~');
+        out.push_str(pre);
+    }
+    if let Some(meta) = version_metadata.filter(|s| !s.is_empty()) {
+        out.push('+');
+        out.push_str(meta);
+    }
+    out
 }
 
 /// Inspect a built `.deb`'s control fields via `dpkg-deb -f` and assert they
@@ -607,6 +676,167 @@ mod tests {
         ));
         // A longer core is not a revision match.
         assert!(!version_matches("1.0.0.5", "1.0.0"));
+    }
+
+    /// `expected_control` must fold the nfpm config's separate `prerelease`
+    /// (and `version_metadata`) fields into the expected version — not read the
+    /// bare `/version` alone. Regression for the snapshot bug: under `--snapshot`
+    /// the version core stays `0.4.0` and the `~SNAPSHOT-<sha>` lives entirely in
+    /// `prerelease`, so a `/version`-only expected (`0.4.0`) spuriously failed
+    /// against the built `1:0.4.0~SNAPSHOT-<sha>-1` deb / `0.4.0~SNAPSHOT_<sha>`
+    /// rpm. This drives the full production path (yaml → expected_control →
+    /// version_matches), unlike `version_matches_normalizes_nfpm_grammar` which
+    /// fed a pre-combined expected and so could not catch the dropped field.
+    #[test]
+    fn expected_control_folds_prerelease_for_snapshot_versions() {
+        let yaml = "name: cfgd\nversion: 0.4.0\nprerelease: SNAPSHOT-3d07f6c\narch: amd64\n";
+        let deb = expected_control(yaml, "deb").expect("deb expected_control");
+        assert_eq!(deb.version, "0.4.0~SNAPSHOT-3d07f6c");
+        assert!(
+            version_matches("1:0.4.0~SNAPSHOT-3d07f6c-1", &deb.version),
+            "built snapshot deb must match the prerelease-folded expected; got {:?}",
+            deb.version
+        );
+        let rpm = expected_control(yaml, "rpm").expect("rpm expected_control");
+        assert!(
+            version_matches("0.4.0~SNAPSHOT_3d07f6c", &rpm.version),
+            "built snapshot rpm must match the prerelease-folded expected; got {:?}",
+            rpm.version
+        );
+
+        // A release build (no prerelease) is unchanged: expected stays the bare
+        // core and still matches the deb epoch/release grammar.
+        let rel = expected_control("name: cfgd\nversion: 0.4.0\narch: amd64\n", "deb")
+            .expect("release expected_control");
+        assert_eq!(rel.version, "0.4.0");
+        assert!(version_matches("1:0.4.0-1", &rel.version));
+    }
+
+    /// The validator must render the nfpm `version:` under the SAME global
+    /// artifact version the build stamped — not the per-crate *bare* tag the
+    /// surrounding `with_validated_crate_scope` re-derives. The build's nfpm
+    /// stage reads the global `Version` (the snapshot `<base>-SNAPSHOT-<sha>`)
+    /// for every crate, while `resolve_crate_tag` yields the bare release tag
+    /// (`v0.4.0` → `0.4.0`), so without pinning the version back the validator
+    /// renders `0.4.0` against a built `1:0.4.0~SNAPSHOT-<sha>-1` deb and every
+    /// snapshot nfpm package spuriously fails the control cross-check (the cfgd
+    /// dogfood failure, 2026-06-06).
+    ///
+    /// This drives the REAL scope path (`with_validated_crate_scope` →
+    /// `render_build_matched_nfpm_configs`) with a production-faithful resolver
+    /// that returns the bare tag — unlike the other tests, which call
+    /// `nfpm_yaml_configs_for_crate` directly or pass
+    /// `test_current_version_resolver` (which returns the already-labeled
+    /// `ctx.version()` and so masked the bug).
+    #[test]
+    fn validate_renders_build_artifact_version_not_bare_tag_rederivation() {
+        let cfg = NfpmConfig {
+            package_name: Some("cfgd".to_string()),
+            formats: vec!["deb".to_string(), "rpm".to_string()],
+            ..every_option_nfpm_cfg()
+        };
+        let krate = nfpm_crate("cfgd", "v{{ .Version }}", cfg);
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .project_name("cfgd")
+            .crates(vec![krate])
+            .build();
+        scope_version(&mut ctx, "0.4.0-SNAPSHOT-b348321");
+        add_linux_binary(&mut ctx, "cfgd", "cfgd");
+
+        // What `resolve_crate_tag` returns at a tagged HEAD: the bare release
+        // tag with the monorepo prefix stripped — no snapshot label.
+        let bare_tag = |_: &Context, _: &CrateConfig| Some("0.4.0".to_string());
+
+        let artifact_version = ctx.version();
+        let configs = with_validated_crate_scope(&mut ctx, "cfgd", &bare_tag, |ctx| {
+            render_build_matched_nfpm_configs(ctx, "cfgd", &artifact_version)
+        })
+        .expect("render ok");
+
+        assert!(!configs.is_empty(), "expected rendered nfpm configs");
+        for c in &configs {
+            assert!(
+                c.yaml.contains("version: 0.4.0-SNAPSHOT-b348321"),
+                "validator must render the build's snapshot version, got:\n{}",
+                c.yaml
+            );
+            assert!(
+                !c.yaml.contains("version: 0.4.0\n"),
+                "validator must NOT render the bare tag version, got:\n{}",
+                c.yaml
+            );
+        }
+    }
+
+    /// Per-crate independent-version mode: each crate's pipeline runs under its
+    /// own global `Version` (the orchestration scopes it before the build), so
+    /// the validator must stamp each crate's OWN snapshot version with no
+    /// cross-crate bleed — even though the bare per-crate tag resolver strips
+    /// every snapshot label. Proves the fix in the third config mode the
+    /// lockstep cfgd capstone cannot exercise.
+    #[test]
+    fn validate_per_crate_independent_renders_each_own_snapshot_version() {
+        let alpha = nfpm_crate(
+            "alpha",
+            "alpha-v{{ .Version }}",
+            NfpmConfig {
+                package_name: Some("alpha".to_string()),
+                ..every_option_nfpm_cfg()
+            },
+        );
+        let beta = nfpm_crate(
+            "beta",
+            "beta-v{{ .Version }}",
+            NfpmConfig {
+                package_name: Some("beta".to_string()),
+                ..every_option_nfpm_cfg()
+            },
+        );
+
+        let mut ctx_a = TestContextBuilder::new()
+            .snapshot(true)
+            .project_name("alpha")
+            .crates(vec![alpha.clone(), beta.clone()])
+            .selected_crates(vec!["alpha".to_string()])
+            .build();
+        scope_version(&mut ctx_a, "1.2.0-SNAPSHOT-aaaaaaa");
+        add_linux_binary(&mut ctx_a, "alpha", "alpha");
+        let alpha_tag = |_: &Context, _: &CrateConfig| Some("1.2.0".to_string());
+        let av = ctx_a.version();
+        let configs_a = with_validated_crate_scope(&mut ctx_a, "alpha", &alpha_tag, |ctx| {
+            render_build_matched_nfpm_configs(ctx, "alpha", &av)
+        })
+        .expect("render ok");
+        assert!(
+            configs_a
+                .iter()
+                .all(|c| c.yaml.contains("version: 1.2.0-SNAPSHOT-aaaaaaa")),
+            "alpha must stamp its own snapshot version, got: {:?}",
+            configs_a.iter().map(|c| &c.yaml).collect::<Vec<_>>()
+        );
+
+        let mut ctx_b = TestContextBuilder::new()
+            .snapshot(true)
+            .project_name("beta")
+            .crates(vec![alpha, beta])
+            .selected_crates(vec!["beta".to_string()])
+            .build();
+        scope_version(&mut ctx_b, "0.5.0-SNAPSHOT-bbbbbbb");
+        add_linux_binary(&mut ctx_b, "beta", "beta");
+        let beta_tag = |_: &Context, _: &CrateConfig| Some("0.5.0".to_string());
+        let bv = ctx_b.version();
+        let configs_b = with_validated_crate_scope(&mut ctx_b, "beta", &beta_tag, |ctx| {
+            render_build_matched_nfpm_configs(ctx, "beta", &bv)
+        })
+        .expect("render ok");
+        assert!(
+            configs_b
+                .iter()
+                .all(|c| c.yaml.contains("version: 0.5.0-SNAPSHOT-bbbbbbb")),
+            "beta must stamp its own snapshot version (no alpha bleed), got: {:?}",
+            configs_b.iter().map(|c| &c.yaml).collect::<Vec<_>>()
+        );
     }
 
     /// (a) Single-crate, every option set: every rendered nfpm config must
