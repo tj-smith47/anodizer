@@ -214,6 +214,7 @@ impl WrapInDirectory {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ArchiveConfig {
     /// Unique identifier for cross-referencing this archive from other configs.
     /// Defaults to `"default"` so a parse->serialise->reparse round-trip is
@@ -380,6 +381,7 @@ impl<'de> Deserialize<'de> for ArchiveConfig {
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FormatOverride {
     /// Operating system this override applies to (e.g., "windows", "darwin", "linux").
     pub os: String,

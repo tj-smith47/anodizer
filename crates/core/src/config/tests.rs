@@ -7046,6 +7046,103 @@ crates:
 }
 
 #[test]
+fn test_archive_config_rejects_unknown_field() {
+    // ArchiveConfig carries an outer `#[serde(deny_unknown_fields)]` so the
+    // generated JSON schema emits `additionalProperties: false`; the inner
+    // `Raw` enforces the same strictness at runtime. A genuine typo (here a
+    // misspelled `name_template`) must hard-fail at parse time rather than be
+    // silently dropped.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives:
+      - id: typo
+        name_templat: "{{ .ProjectName }}"
+"#;
+    let err = serde_yaml_ng::from_str::<Config>(yaml).unwrap_err();
+    assert!(
+        err.to_string().contains("name_templat"),
+        "ArchiveConfig must reject the unknown `name_templat` field, got: {err}"
+    );
+}
+
+#[test]
+fn test_format_override_rejects_unknown_field() {
+    // FormatOverride's outer deny mirrors its inner `Raw` deny: an unknown key
+    // is rejected. The deprecated singular `format:` is still accepted (folded
+    // into `formats:`), but a typo like `formatz:` is not.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives:
+      - id: legacy
+        formats: [tar.gz]
+        format_overrides:
+          - os: windows
+            formatz: [zip]
+"#;
+    let err = serde_yaml_ng::from_str::<Config>(yaml).unwrap_err();
+    assert!(
+        err.to_string().contains("formatz"),
+        "FormatOverride must reject the unknown `formatz` field, got: {err}"
+    );
+}
+
+#[test]
+fn test_hooks_config_rejects_unknown_field() {
+    // HooksConfig now carries an outer `#[serde(deny_unknown_fields)]` (schema
+    // strictness); its inner `Raw` already denied unknown fields at runtime.
+    // The canonical `hooks:` and the deprecated `post:` aliases are both still
+    // accepted, but a typo like `hookz:` is rejected.
+    let yaml = r#"
+project_name: test
+before:
+  hookz:
+    - echo hi
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let err = serde_yaml_ng::from_str::<Config>(yaml).unwrap_err();
+    assert!(
+        err.to_string().contains("hookz"),
+        "HooksConfig must reject the unknown `hookz` field, got: {err}"
+    );
+}
+
+#[test]
+fn test_hooks_config_accepts_post_alias_after_outer_deny() {
+    // Adding the outer `deny_unknown_fields` to HooksConfig must NOT break the
+    // deprecated `post:` alias — the manual `Deserialize` (via the inner `Raw`)
+    // still folds `post:` into the canonical `hooks:`. The outer attr is inert
+    // for deserialization; the manual impl governs.
+    let yaml = r#"
+project_name: test
+after:
+  post:
+    - echo done
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml)
+        .expect("deprecated `post:` alias must still deserialize under outer deny");
+    let after = config.after.as_ref().expect("after block present");
+    let hooks = after.hooks.as_deref().expect("post: folded into hooks:");
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0], "echo done");
+    assert!(after.post.is_none(), "post: must be cleared after folding");
+}
+
+#[test]
 fn test_snapshot_name_template_alias_deserializes_as_version_template() {
     let yaml = r#"
 project_name: test

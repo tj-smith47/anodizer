@@ -1271,7 +1271,8 @@
             }
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ArchiveFileSpec": {
       "description": "Specifies a file to include in archives. Can be a simple glob string or a detailed object with src/dst/info fields for controlling archive placement and file metadata.\n\nNOTE: This is intentionally a separate type from [`ExtraFileSpec`] (used for checksum/release extra_files). `ArchiveFileSpec` needs `src`/`dst`/`info` fields for archive placement and file metadata (owner, group, mode, mtime), while `ExtraFileSpec` needs `glob`/`name_template` for checksumming and upload renaming. The fields and semantics are different enough that a unified type would be confusing.",
@@ -6012,7 +6013,8 @@
           "description": "Operating system this override applies to (e.g., \"windows\", \"darwin\", \"linux\").",
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "GemFuryConfig": {
       "description": "GemFury package registry publisher configuration.\n\nPushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`. Authenticates via HTTP Basic auth using the push token as the username (empty password) — the conventional Fury push surface.",
@@ -7336,7 +7338,8 @@
             "$ref": "#/definitions/HookEntry"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "HumanDuration": {
       "description": "A typed duration value parsed from a humantime-style string in YAML.\n\nAccepts `\"10m\"`, `\"15s\"`, `\"1h30m\"`, `\"500ms\"`, etc. Used by notarize timeouts so the schema is typed and validation catches malformed values at config-load time instead of during the notarize stage.",

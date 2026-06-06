@@ -18,6 +18,7 @@ use crate::artifact::ArtifactKind;
 /// and a deprecation warning is logged when both spellings appear in
 /// the same block (see [`HooksConfig::merge_hook_aliases`]).
 #[derive(Debug, Clone, PartialEq, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct HooksConfig {
     /// Commands to run when the block fires. The wire format accepts
     /// either `hooks:` (canonical) or the legacy
