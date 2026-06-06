@@ -112,7 +112,7 @@ pub fn validate_podman_flag_compat(flags: &[String]) -> Result<()> {
             .unwrap_or(flag.as_str());
         if BUILDX_ONLY_FLAGS.contains(&head) {
             anyhow::bail!(
-                "docker_v2 with `use: podman` is incompatible with buildx-only flag '{}'; \
+                "dockers_v2 with `use: podman` is incompatible with buildx-only flag '{}'; \
                  remove the flag or switch to `use: buildx`",
                 flag,
             );
@@ -388,7 +388,7 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
         validate_podman_flag_compat(flags)?;
         if sbom {
             anyhow::bail!(
-                "docker_v2 with `use: podman` cannot enable `sbom: true` \
+                "dockers_v2 with `use: podman` cannot enable `sbom: true` \
                  (buildx-only); set `sbom: false` or switch to `use: buildx`",
             );
         }
@@ -540,7 +540,7 @@ pub fn is_docker_v2_skipped(skip: &Option<StringOrBool>, ctx: &Context) -> Resul
         None => Ok(false),
         Some(d) => d
             .try_evaluates_to_true(|s| ctx.render_template(s))
-            .with_context(|| "docker_v2: render skip template"),
+            .with_context(|| "dockers_v2: render skip template"),
     }
 }
 
@@ -648,7 +648,7 @@ pub fn is_docker_v2_sbom_enabled(sbom: &Option<StringOrBool>, ctx: &Context) -> 
         None => Ok(true),
         Some(s) => s
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-            .with_context(|| "docker_v2: render sbom template"),
+            .with_context(|| "dockers_v2: render sbom template"),
     }
 }
 

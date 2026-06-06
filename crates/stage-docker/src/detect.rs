@@ -130,12 +130,12 @@ pub(crate) fn format_buildx_version_warning(probe: &BuildxVersionProbe) -> Optio
     match probe {
         BuildxVersionProbe::Available => None,
         BuildxVersionProbe::DockerMissing => Some(
-            "docker is not installed or not in PATH; docker_v2 configs require docker \
+            "docker is not installed or not in PATH; dockers_v2 configs require docker \
              with the buildx plugin"
                 .to_string(),
         ),
         BuildxVersionProbe::BuildxMissing { stderr } => Some(format!(
-            "docker buildx version probe failed; docker_v2 configs require the buildx \
+            "docker buildx version probe failed; dockers_v2 configs require the buildx \
              plugin to be installed. stderr: {}",
             stderr.trim()
         )),

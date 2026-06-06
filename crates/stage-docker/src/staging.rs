@@ -37,7 +37,7 @@ pub(crate) fn stage_artifacts_v2(
         let platform_dir = staging_dir.join(platform.replace('/', std::path::MAIN_SEPARATOR_STR));
         if !dry_run {
             fs::create_dir_all(&platform_dir).with_context(|| {
-                format!("docker_v2: create platform dir {}", platform_dir.display())
+                format!("dockers_v2: create platform dir {}", platform_dir.display())
             })?;
         }
 
@@ -86,7 +86,7 @@ pub(crate) fn stage_artifacts_v2(
                     ));
                     fs::copy(&artifact.path, &dest).with_context(|| {
                         format!(
-                            "docker_v2: copy {} to {}",
+                            "dockers_v2: copy {} to {}",
                             artifact.path.display(),
                             dest.display()
                         )

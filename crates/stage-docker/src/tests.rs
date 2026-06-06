@@ -3824,7 +3824,7 @@ fn docker_v2_post_hook_with_empty_digest_errors_loudly() {
 
     let result: anyhow::Result<String> = tag_digests.values().next().cloned().ok_or_else(|| {
         anyhow::anyhow!(
-            "docker_v2[test] crate myapp: post-hooks configured but no image digest captured \
+            "dockers_v2[test] crate myapp: post-hooks configured but no image digest captured \
                  (iidfile /tmp/staging/id.txt missing or empty after a successful build); \
                  this usually means buildx + multi-platform --push produced no iidfile — \
                  upgrade buildx or remove the post-hook"
@@ -3900,7 +3900,7 @@ fn test_docker_v2_duplicate_id_bails() {
 
     let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
     assert!(
-        err.contains("found 2 docker_v2 with the ID 'dup'"),
+        err.contains("found 2 dockers_v2 with the ID 'dup'"),
         "duplicate id must produce a clear error naming the duplicate, got: {err}"
     );
 }
@@ -5290,12 +5290,12 @@ fn docker_v2_pre_hook_failure_aborts_build_without_docker_spawn() {
     let res = DockerStage::new().run(&mut ctx);
     let err = res.expect_err("pre-hook failure must surface as a stage error");
     let msg = format!("{:#}", err);
-    // The hook runner labels failures `pre-docker_v2[<id>] hook: ...` (see
+    // The hook runner labels failures `pre-dockers_v2[<id>] hook: ...` (see
     // `crates/stage-docker/src/run.rs`'s `pre_label`). Pinning the prefix
     // ensures a regression that bypassed the early return and tripped a
     // docker-spawn error instead would fail the assertion.
     assert!(
-        msg.contains("pre-docker_v2"),
+        msg.contains("pre-dockers_v2"),
         "stage error must come from the failed pre-hook, got: {msg}"
     );
     // No image artifacts must have been registered for the aborted

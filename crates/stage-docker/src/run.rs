@@ -258,7 +258,7 @@ fn run_docker_post_hooks(
     for cph in config_post_hooks {
         let digest_val = config_first_digest.get(&cph.idx).cloned().ok_or_else(|| {
             anyhow::anyhow!(
-                "docker_v2[{}]: post-hooks configured but no image digest captured \
+                "dockers_v2[{}]: post-hooks configured but no image digest captured \
                  (iidfile id.txt missing or empty after a successful build); \
                  this usually means buildx + multi-platform --push produced no iidfile — \
                  upgrade buildx or remove the post-hook",
@@ -273,7 +273,7 @@ fn run_docker_post_hooks(
         hook_vars.set("BaseImage", &cph.base_image_name);
         hook_vars.set("BaseImageDigest", &cph.base_image_digest);
         let post_label = format!(
-            "post-docker_v2[{}]",
+            "post-dockers_v2[{}]",
             cph.id.as_deref().unwrap_or(&cph.idx.to_string())
         );
         run_hooks(
@@ -451,7 +451,7 @@ fn prepare_v2_config(
     // Check disable — skip when template evaluates to true.
     if is_docker_v2_skipped(&v2_cfg.skip, ctx)? {
         log.status(&format!(
-            "docker_v2[{}]: skipping config for crate {} (skip=true)",
+            "dockers_v2[{}]: skipping config for crate {} (skip=true)",
             idx, krate.name
         ));
         return Ok(());
@@ -477,13 +477,13 @@ fn prepare_v2_config(
     // template for emptiness — not the raw template.
     let rendered_dockerfile = ctx.render_template(&v2_cfg.dockerfile).with_context(|| {
         format!(
-            "docker_v2: render dockerfile path '{}' for crate {}",
+            "dockers_v2: render dockerfile path '{}' for crate {}",
             v2_cfg.dockerfile, krate.name
         )
     })?;
     if rendered_dockerfile.trim().is_empty() {
         log.status(&format!(
-            "docker_v2[{}]: skipping crate {} — dockerfile template rendered empty",
+            "dockers_v2[{}]: skipping crate {} — dockerfile template rendered empty",
             idx, krate.name
         ));
         return Ok(());
@@ -497,7 +497,7 @@ fn prepare_v2_config(
 
     if !dry_run {
         fs::create_dir_all(&staging_dir)
-            .with_context(|| format!("docker_v2: create staging dir {}", staging_dir.display()))?;
+            .with_context(|| format!("dockers_v2: create staging dir {}", staging_dir.display()))?;
     }
 
     // Stage artifacts using V2 layout (os/arch/name, multiple artifact types).
@@ -516,12 +516,12 @@ fn prepare_v2_config(
         &staging_dir,
         dry_run,
         log,
-        "docker_v2",
+        "dockers_v2",
     )?;
 
     if let Some(ref extra_files) = v2_cfg.extra_files {
-        warn_project_markers_in_extra_files(extra_files, log, "docker_v2");
-        stage_extra_files(extra_files, &staging_dir, dry_run, log, "docker_v2")?;
+        warn_project_markers_in_extra_files(extra_files, log, "dockers_v2");
+        stage_extra_files(extra_files, &staging_dir, dry_run, log, "dockers_v2")?;
     }
 
     // Resolve the Dockerfile's final-stage base image so the two template
@@ -536,7 +536,7 @@ fn prepare_v2_config(
             Ok(opt) => opt,
             Err(e) => {
                 log.warn(&format!(
-                    "docker_v2[{}]: could not parse base image from {}: {:#}",
+                    "dockers_v2[{}]: could not parse base image from {}: {:#}",
                     idx, rendered_dockerfile, e
                 ));
                 None
@@ -553,7 +553,7 @@ fn prepare_v2_config(
     for tag_tmpl in &v2_cfg.tags {
         let rendered = ctx.render_template(tag_tmpl).with_context(|| {
             format!(
-                "docker_v2: render tag template '{}' for crate {}",
+                "dockers_v2: render tag template '{}' for crate {}",
                 tag_tmpl, krate.name
             )
         })?;
@@ -567,7 +567,7 @@ fn prepare_v2_config(
     for img_tmpl in &v2_cfg.images {
         let rendered = ctx.render_template(img_tmpl).with_context(|| {
             format!(
-                "docker_v2: render image template '{}' for crate {}",
+                "dockers_v2: render image template '{}' for crate {}",
                 img_tmpl, krate.name
             )
         })?;
@@ -620,7 +620,7 @@ fn prepare_v2_config(
         hook_vars.set("Dockerfile", &rendered_dockerfile);
         hook_vars.set("ContextDir", &staging_str);
         let pre_label = format!(
-            "pre-docker_v2[{}]",
+            "pre-dockers_v2[{}]",
             v2_cfg.id.as_deref().unwrap_or(&idx.to_string())
         );
         if let Err(e) = run_hooks(
@@ -670,7 +670,7 @@ fn prepare_v2_config(
         hook_vars.set("ContextDir", &staging_str);
         hook_vars.set("Digest", "");
         let post_label = format!(
-            "post-docker_v2[{}]",
+            "post-dockers_v2[{}]",
             v2_cfg.id.as_deref().unwrap_or(&idx.to_string())
         );
         run_hooks(
@@ -737,7 +737,7 @@ fn queue_v2_build_for_platforms(
 
     if image_tags.is_empty() {
         log.warn(&format!(
-            "docker_v2[{}]: no image tags produced for crate {} (images or tags resolved to empty); skipping",
+            "dockers_v2[{}]: no image tags produced for crate {} (images or tags resolved to empty); skipping",
             idx, krate.name
         ));
         return Ok(());
@@ -775,7 +775,7 @@ fn queue_v2_build_for_platforms(
         Some("buildx") | Some("podman") | None => {}
         Some(other) => {
             anyhow::bail!(
-                "docker_v2[{}]: invalid `use: {}` for crate {} — expected `buildx` or `podman`",
+                "dockers_v2[{}]: invalid `use: {}` for crate {} — expected `buildx` or `podman`",
                 idx,
                 other,
                 krate.name
@@ -788,13 +788,13 @@ fn queue_v2_build_for_platforms(
         // points at the config index, not at a Command::new failure later.
         crate::command::enforce_podman_linux_only().with_context(|| {
             format!(
-                "docker_v2[{}]: `use: podman` for crate {} is not supported on this OS",
+                "dockers_v2[{}]: `use: podman` for crate {} is not supported on this OS",
                 idx, krate.name
             )
         })?;
         crate::command::validate_podman_flag_compat(&rendered_flags).with_context(|| {
             format!(
-                "docker_v2[{}]: incompatible flag with `use: podman` for crate {}",
+                "dockers_v2[{}]: incompatible flag with `use: podman` for crate {}",
                 idx, krate.name
             )
         })?;
@@ -809,7 +809,7 @@ fn queue_v2_build_for_platforms(
     };
     if is_podman && sbom_enabled {
         anyhow::bail!(
-            "docker_v2[{}]: `use: podman` for crate {} cannot enable `sbom: true` \
+            "dockers_v2[{}]: `use: podman` for crate {} cannot enable `sbom: true` \
              (buildx-only attestation); set `sbom: false` or switch to `use: buildx`",
             idx,
             krate.name
@@ -862,7 +862,7 @@ fn queue_v2_build_for_platforms(
     let (max_attempts, base_delay, max_delay) =
         resolve_retry_params(&v2_cfg.retry, &ctx.config.retry).with_context(|| {
             format!(
-                "docker_v2: invalid retry config for crate {} index {}",
+                "dockers_v2: invalid retry config for crate {} index {}",
                 krate.name, idx
             )
         })?;
@@ -971,7 +971,7 @@ fn validate_docker_v2_id_uniqueness(crates: &[anodizer_core::config::CrateConfig
                     && !v2_ids.insert(id.clone())
                 {
                     anyhow::bail!(
-                        "found 2 docker_v2 with the ID '{}', please fix your config",
+                        "found 2 dockers_v2 with the ID '{}', please fix your config",
                         id
                     );
                 }
@@ -1008,10 +1008,10 @@ fn render_v2_kv_map(
         for (key_tmpl, value_tmpl) in entries {
             let rendered_key = ctx
                 .render_template(key_tmpl)
-                .with_context(|| format!("docker_v2: render {} key '{}'", label, key_tmpl))?;
-            let rendered_value = ctx
-                .render_template(value_tmpl)
-                .with_context(|| format!("docker_v2: render {} value for '{}'", label, key_tmpl))?;
+                .with_context(|| format!("dockers_v2: render {} key '{}'", label, key_tmpl))?;
+            let rendered_value = ctx.render_template(value_tmpl).with_context(|| {
+                format!("dockers_v2: render {} value for '{}'", label, key_tmpl)
+            })?;
             if !rendered_key.is_empty() && !rendered_value.is_empty() {
                 out.push((rendered_key, rendered_value));
             }
@@ -1028,7 +1028,7 @@ fn render_v2_flag_list(ctx: &mut Context, flags: Option<&Vec<String>>) -> Result
         for flag_tmpl in flag_list {
             let rendered = ctx
                 .render_template(flag_tmpl)
-                .with_context(|| format!("docker_v2: render flag '{}'", flag_tmpl))?;
+                .with_context(|| format!("dockers_v2: render flag '{}'", flag_tmpl))?;
             if !rendered.is_empty() {
                 out.push(rendered);
             }
@@ -1080,7 +1080,7 @@ fn process_docker_manifest(
     // errors.
     if v2_multiplatform_tags.contains(&manifest_name) {
         log.status(&format!(
-            "docker: skipping manifest '{}' — already pushed as multi-arch by docker_v2",
+            "docker: skipping manifest '{}' — already pushed as multi-arch by dockers_v2",
             manifest_name
         ));
         return Ok(());
