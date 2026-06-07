@@ -1,0 +1,63 @@
+name: Determinism harness
+
+# Reusable byte-for-byte reproducibility gate. Builds the release twice per
+# shard in a hermetic worktree and fails if any produced artifact differs
+# between runs. Sharded by host/target so each shard byte-verifies the platform
+# it natively builds — the cross-platform coverage a single Linux job cannot
+# give. Called by release.yml (and invocable on its own via workflow_dispatch
+# of a caller) so the shard matrix lives in exactly one place.
+
+on:
+  workflow_call:
+    inputs:
+      head_sha:
+        description: Commit SHA to check out and byte-verify reproducibility against.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  shard:
+    name: Determinism (${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  shard: ubuntu-latest,   targets: '' }
+          - { os: macos-latest,   shard: macos-latest,     targets: '' }
+          - { os: windows-latest, shard: windows-x86_64,   targets: 'x86_64-pc-windows-msvc' }
+          - { os: windows-latest, shard: windows-aarch64,  targets: 'aarch64-pc-windows-msvc' }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.head_sha }}
+
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          determinism: 'true'
+          determinism-targets: ${{ matrix.targets }}
+          preserve-dist: 'true'
+          shard-label: ${{ matrix.shard }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+
+      - name: Upload dist artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.shard }}
+          path: preserved-dist/
+          if-no-files-found: error
+
+      - name: Upload determinism report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: determinism-${{ matrix.shard }}
+          path: |
+            dist/run-*/determinism.json
+            dist/run-*/drift-bins/**
+          if-no-files-found: warn

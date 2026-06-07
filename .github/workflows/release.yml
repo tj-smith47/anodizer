@@ -50,57 +50,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # Sharded byte-for-byte reproducibility gate, one shard per host/target.
+  # The shard matrix lives in the reusable determinism.yml so it is defined
+  # once; each shard uploads its preserved dist for the release job to consume.
   determinism-check:
-    name: Determinism Harness (${{ matrix.shard }})
+    name: Determinism
     needs: tag
     if: needs.tag.result == 'success' && needs.tag.outputs.tagged == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            shard: ubuntu-latest
-            targets: ''
-          - os: macos-latest
-            shard: macos-latest
-            targets: ''
-          - os: windows-latest
-            shard: windows-x86_64
-            targets: 'x86_64-pc-windows-msvc'
-          - os: windows-latest
-            shard: windows-aarch64
-            targets: 'aarch64-pc-windows-msvc'
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.tag.outputs.sha }}
-      - uses: tj-smith47/anodizer-action@v1
-        with:
-          determinism: true
-          determinism-targets: ${{ matrix.targets }}
-          preserve-dist: 'true'
-          shard-label: ${{ matrix.shard }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-
-      - name: Upload dist artifacts
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ matrix.shard }}
-          path: preserved-dist/
-          if-no-files-found: error
-
-      - name: Upload determinism report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: determinism-${{ matrix.shard }}
-          path: |
-            dist/run-*/determinism.json
-            dist/run-*/drift-bins/**
-          if-no-files-found: warn
+    uses: ./.github/workflows/determinism.yml
+    with:
+      head_sha: ${{ needs.tag.outputs.sha }}
+    secrets: inherit
 
   release:
     name: Publish Release

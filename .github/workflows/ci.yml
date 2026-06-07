@@ -110,19 +110,6 @@ jobs:
           from-artifact: anodizer-linux
           args: release --snapshot --single-target --clean --dry-run
 
-  determinism-linux:
-    name: Determinism (Linux)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: tj-smith47/anodizer-action@v1
-        with:
-          auto-install: true
-          determinism: true
-          determinism-runs: 2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-
   validate-readme:
     name: Validate README YAML
     runs-on: ubuntu-latest
