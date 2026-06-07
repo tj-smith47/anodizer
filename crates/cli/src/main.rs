@@ -228,6 +228,27 @@ fn init_tracing() {
 }
 
 fn main() {
+    // Windows' default main-thread stack is 1 MiB; Linux and macOS default
+    // to 8 MiB. anodizer's deepest call chains (recursive config/defaults
+    // merge, Tera template rendering, the release pipeline's nested stage
+    // dispatch) need more than 1 MiB, so the same binary that runs cleanly
+    // on Unix overflows the stack on Windows (STATUS_STACK_OVERFLOW,
+    // exit 0xC00000FD). Run the real entry point on a worker thread with a
+    // generous stack so every command behaves identically across platforms.
+    // `run` drives `std::process::exit` itself for all non-success paths, so
+    // a clean join means a successful fall-through; a panic on the worker is
+    // already printed by the default panic hook, and exiting 101 mirrors
+    // Rust's main-thread-panic behaviour.
+    let worker = std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(run)
+        .expect("spawn anodizer worker thread");
+    if worker.join().is_err() {
+        std::process::exit(101);
+    }
+}
+
+fn run() {
     enable_ci_colors();
     init_tracing();
 
