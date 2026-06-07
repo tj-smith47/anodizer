@@ -2039,6 +2039,17 @@ fn detect_bump_demoted(
     )
 }
 
+/// Whole-word (not substring) token match: a token counts only when it appears
+/// as a standalone whitespace-separated word, so a `#none` in prose
+/// (`"revert the #none commit"`) or a word like `#handsome` does not trigger it.
+/// Shared by [`has_explicit_bump_token`] and [`detect_bump_from_tokens`] so the
+/// two never drift on what "a token is present" means — their agreement is a
+/// correctness invariant (the explicit-token layer and the gate must see the
+/// same tokens).
+fn message_has_token(msg: &str, token: &str) -> bool {
+    msg.split(|c: char| c.is_whitespace()).any(|w| w == token)
+}
+
 /// Whether a message carries a standalone `#major`/`#minor`/`#patch` token that
 /// *drives* the bump. Those three are matched ahead of the conventional-commit
 /// layer in [`detect_bump_from_tokens`], so their presence always determines the
@@ -2050,11 +2061,7 @@ fn detect_bump_demoted(
 /// demotion passes through untouched. Whole-word match mirrors
 /// [`detect_bump_from_tokens`] (a token embedded in prose does not count).
 fn has_explicit_bump_token(messages: &[String], cfg: &ResolvedConfig) -> bool {
-    let has = |token: &str| {
-        messages
-            .iter()
-            .any(|m| m.split(|c: char| c.is_whitespace()).any(|w| w == token))
-    };
+    let has = |token: &str| messages.iter().any(|m| message_has_token(m, token));
     has(&cfg.major_string_token) || has(&cfg.minor_string_token) || has(&cfg.patch_string_token)
 }
 
@@ -2101,7 +2108,7 @@ fn demote_pre_major(
 ///    signal is `#none` skips the release.
 /// 4. `default_bump` fallback when nothing above matched (default `none`:
 ///    chore-only ranges no-op; set `patch`/`minor` to release every range).
-pub(crate) fn detect_bump_from_tokens(
+fn detect_bump_from_tokens(
     messages: &[String],
     major_token: &str,
     minor_token: &str,
@@ -2109,14 +2116,6 @@ pub(crate) fn detect_bump_from_tokens(
     none_token: &str,
     default_bump: &str,
 ) -> BumpKind {
-    // Whole-token (not substring) match: a commit body containing
-    // `"chore: revert #none commit"` in prose, or a word like `#handsome`,
-    // must NOT trigger the `#none` signal. Tokens are recognized only when
-    // they appear as a standalone whitespace-separated word.
-    let message_has_token = |msg: &str, token: &str| -> bool {
-        msg.split(|c: char| c.is_whitespace()).any(|w| w == token)
-    };
-
     let mut has_major = false;
     let mut has_minor = false;
     let mut has_patch = false;
