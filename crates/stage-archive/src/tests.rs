@@ -22,6 +22,13 @@ use crate::{
     formats_for_target, resolve_file_specs,
 };
 
+/// Forward-slash a host path for embedding into an `sh -c` hook command:
+/// `sh` mangles backslashes as escapes, so a Windows `C:\…` redirect/touch
+/// target must be fed as `C:/…` (msys `sh` opens it fine). No-op on unix.
+fn fwd(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 #[test]
 fn test_create_tar_gz() {
     let tmp = TempDir::new().unwrap();
@@ -4648,16 +4655,12 @@ fn run_with_hook_sentinels(
     let bin_path = crate_dir.join("myapp");
     fs::write(&bin_path, b"fake binary").unwrap();
 
-    // Use templated paths so {{ Format }} appears in the touch target —
-    // that's how we verify per-format firing.
-    let before_cmd = format!(
-        "touch {}.{{{{ Format }}}}",
-        before_sentinel.to_string_lossy()
-    );
-    let after_cmd = format!(
-        "touch {}.{{{{ Format }}}}",
-        after_sentinel.to_string_lossy()
-    );
+    // Templated paths so {{ Format }} lands in the touch target — that is how
+    // per-format firing is verified.
+    let before_p = fwd(before_sentinel);
+    let after_p = fwd(after_sentinel);
+    let before_cmd = format!("touch {before_p}.{{{{ Format }}}}");
+    let after_cmd = format!("touch {after_p}.{{{{ Format }}}}");
 
     let mut ctx = TestContextBuilder::new()
         .project_name("myapp")
@@ -4775,10 +4778,8 @@ fn archive_after_hook_sees_artifact_path() {
     let sentinel = tmp.path().join("SAW_ARTIFACT");
     // `.ArtifactPath` must be resolved to a non-empty value for the
     // after-hook so users can post-process the just-written archive.
-    let after_cmd = format!(
-        "test -n '{{{{ ArtifactPath }}}}' && touch {}",
-        sentinel.to_string_lossy()
-    );
+    let sentinel_p = fwd(&sentinel);
+    let after_cmd = format!("test -n '{{{{ ArtifactPath }}}}' && touch {sentinel_p}");
 
     let mut ctx = TestContextBuilder::new()
         .project_name("myapp")
@@ -4848,10 +4849,8 @@ fn archive_before_hook_sees_artifact_name() {
     // populated name the file is `myapp-1.0.0.tar.gz`; if it sees an empty
     // value the touch target collapses to the directory itself and no
     // archive-named file appears.
-    let before_cmd = format!(
-        "touch {}/{{{{ ArtifactName }}}}",
-        marker_dir.to_string_lossy()
-    );
+    let marker_p = fwd(&marker_dir);
+    let before_cmd = format!("touch {marker_p}/{{{{ ArtifactName }}}}");
 
     let mut ctx = TestContextBuilder::new()
         .project_name("myapp")
@@ -5045,7 +5044,11 @@ fn test_archive_templated_files_per_format() {
 // completions / manpages generation (mode A run-binary, B harvest, C copy)
 // ---------------------------------------------------------------------------
 
-use anodizer_core::config::{CompletionsConfig, ManpagesConfig};
+use anodizer_core::config::CompletionsConfig;
+// Manpage generation is exercised only on unix (the manpage fixtures and
+// their assertions are unix-gated), so this config type is in scope there.
+#[cfg(unix)]
+use anodizer_core::config::ManpagesConfig;
 use anodizer_core::context::{Context, ContextOptions};
 
 /// Build a minimal single-crate Context with one binary registered for the

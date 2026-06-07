@@ -452,9 +452,11 @@ mod tests {
         build_env: Option<&HashMap<String, String>>,
     ) -> Result<()> {
         let log = test_logger();
+        // sh -c mangles backslashes; feed it a forward-slash path so the redirect target resolves on Windows
+        let out = out_file.display().to_string().replace('\\', "/");
         let probe = keys
             .iter()
-            .map(|k| format!("echo {k}=${k} >> {}", out_file.display()))
+            .map(|k| format!("echo {k}=${k} >> {out}"))
             .collect::<Vec<_>>()
             .join("; ");
         let hooks = vec![HookEntry::Structured(StructuredHook {

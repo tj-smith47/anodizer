@@ -323,6 +323,12 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    // sh -c mangles backslashes; feed it a forward-slash path so the redirect
+    // target resolves on Windows (no-op on Linux where the path has none).
+    fn sh_path(p: &std::path::Path) -> String {
+        p.to_string_lossy().replace('\\', "/")
+    }
+
     // -----------------------------------------------------------------------
     // Stage-order invariants
     //
@@ -949,10 +955,7 @@ before_publish:
         };
         config.before_publish = Some(HooksConfig {
             hooks: Some(vec![HookEntry::Structured(StructuredHook {
-                cmd: format!(
-                    "echo {{{{ ArtifactPath }}}} >> {}",
-                    log_path.to_string_lossy()
-                ),
+                cmd: format!("echo {{{{ ArtifactPath }}}} >> {}", sh_path(&log_path)),
                 artifacts: Some(BeforePublishArtifactFilter::Archive),
                 ..Default::default()
             })]),
@@ -1012,10 +1015,7 @@ before_publish:
         };
         config.before_publish = Some(HooksConfig {
             hooks: Some(vec![HookEntry::Structured(StructuredHook {
-                cmd: format!(
-                    "echo {{{{ ArtifactID }}}} >> {}",
-                    log_path.to_string_lossy()
-                ),
+                cmd: format!("echo {{{{ ArtifactID }}}} >> {}", sh_path(&log_path)),
                 ids: Some(vec!["a".to_string()]),
                 ..Default::default()
             })]),
@@ -1073,7 +1073,7 @@ before_publish:
             hooks: Some(vec![HookEntry::Structured(StructuredHook {
                 cmd: format!(
                     "echo {{{{ ArtifactKind }}}}={{{{ ArtifactName }}}} >> {}",
-                    log_path.to_string_lossy()
+                    sh_path(&log_path)
                 ),
                 artifacts: Some(BeforePublishArtifactFilter::Archive),
                 ..Default::default()
@@ -1144,7 +1144,7 @@ before_publish:
             hooks: Some(vec![HookEntry::Structured(StructuredHook {
                 cmd: format!(
                     "printf '%s %s %s %s %s\\n' {{{{ ArtifactPath }}}} {{{{ ArtifactName }}}} {{{{ ArtifactExt }}}} {{{{ Os }}}} {{{{ Arch }}}} >> {}",
-                    log_path.to_string_lossy()
+                    sh_path(&log_path)
                 ),
                 ..Default::default()
             })]),
@@ -1217,7 +1217,7 @@ before_publish:
         // 2, it exits 1 — so the second artifact's iteration fails.
         let cmd = format!(
             r#"sh -c 'printf x >> {p}; if [ "$(wc -c < {p})" -ge 2 ]; then exit 1; fi'"#,
-            p = counter_path.to_string_lossy(),
+            p = sh_path(&counter_path),
         );
         config.before_publish = Some(HooksConfig {
             hooks: Some(vec![HookEntry::Structured(StructuredHook {
@@ -1283,10 +1283,7 @@ before_publish:
         };
         config.before_publish = Some(HooksConfig {
             hooks: Some(vec![HookEntry::Structured(StructuredHook {
-                cmd: format!(
-                    "echo {{{{ ArtifactKind }}}} >> {}",
-                    log_path.to_string_lossy()
-                ),
+                cmd: format!("echo {{{{ ArtifactKind }}}} >> {}", sh_path(&log_path)),
                 ..Default::default()
             })]),
             post: None,

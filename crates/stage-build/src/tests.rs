@@ -1363,8 +1363,10 @@ fn test_per_target_build_env_reaches_only_its_targets_hook() {
         let resolved = resolve_target_env(Some(&env), target, &log, false)
             .unwrap()
             .unwrap_or_default();
+        // sh -c mangles backslashes; feed it a forward-slash path so the redirect target resolves on Windows
+        let out_str = out.display().to_string().replace('\\', "/");
         let hooks = vec![HookEntry::Structured(StructuredHook {
-            cmd: format!("echo TARGET_TAG=$TARGET_TAG > {}", out.display()),
+            cmd: format!("echo TARGET_TAG=$TARGET_TAG > {out_str}"),
             ..Default::default()
         })];
         let vars = TemplateVars::new();

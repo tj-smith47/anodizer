@@ -450,14 +450,17 @@ edition = "2024"
         );
 
         // The modified list reflects only the in-scope manifest.
+        // modified paths use the host separator; compare slash-normalized.
+        let fwd = |m: &str| m.replace('\\', "/");
         assert!(
-            modified
-                .iter()
-                .any(|m| m.contains("group-a") && m.ends_with("app/Cargo.toml")),
+            modified.iter().any(|m| {
+                let m = fwd(m);
+                m.contains("group-a") && m.ends_with("app/Cargo.toml")
+            }),
             "group-a/app should be reported modified, got {modified:?}"
         );
         assert!(
-            !modified.iter().any(|m| m.contains("group-b")),
+            !modified.iter().any(|m| fwd(m).contains("group-b")),
             "no group-b manifest should be reported modified, got {modified:?}"
         );
     }
@@ -565,14 +568,17 @@ edition = "2024"
             "nested independent workspace's pin must NOT be rewritten (boundary-stop)"
         );
 
+        // modified paths use the host separator; compare slash-normalized.
+        let fwd = |m: &str| m.replace('\\', "/");
         assert!(
-            modified
-                .iter()
-                .any(|m| m.ends_with("app/Cargo.toml") && !m.contains("nested")),
+            modified.iter().any(|m| {
+                let m = fwd(m);
+                m.ends_with("app/Cargo.toml") && !m.contains("nested")
+            }),
             "root/app should be reported modified, got {modified:?}"
         );
         assert!(
-            !modified.iter().any(|m| m.contains("nested")),
+            !modified.iter().any(|m| fwd(m).contains("nested")),
             "no nested manifest should be reported modified, got {modified:?}"
         );
     }

@@ -1750,7 +1750,12 @@ crates:
     /// fires and returns it verbatim).
     #[test]
     fn test_absolutize_keeps_absolute_path() {
-        let absolute = PathBuf::from("/dist/windows/myapp_x64_setup.exe");
+        // is_absolute() is host-relative; use a host-absolute input so passthrough is exercised on every platform.
+        let absolute = if cfg!(windows) {
+            PathBuf::from(r"C:\dist\windows\myapp_x64_setup.exe")
+        } else {
+            PathBuf::from("/dist/windows/myapp_x64_setup.exe")
+        };
         let out = absolutize_output_path(absolute.clone());
         assert_eq!(out, absolute);
     }
