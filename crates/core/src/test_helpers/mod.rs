@@ -145,6 +145,7 @@ pub struct TestContextBuilder {
     env_overrides: Vec<(String, String)>,
     changelog_from: Option<String>,
     changelog_full_history: bool,
+    changelog_to: Option<String>,
     changelog_preview: bool,
 }
 
@@ -190,6 +191,7 @@ impl Default for TestContextBuilder {
             env_overrides: Vec::new(),
             changelog_from: None,
             changelog_full_history: false,
+            changelog_to: None,
             changelog_preview: false,
         }
     }
@@ -382,6 +384,13 @@ impl TestContextBuilder {
         self
     }
 
+    /// Set the explicit changelog upper bound (`changelog <from>..<to>`): the
+    /// changelog stage walks `<from>..<to>` instead of `<from>..HEAD`.
+    pub fn changelog_to(mut self, to: Option<&str>) -> Self {
+        self.changelog_to = to.map(str::to_string);
+        self
+    }
+
     /// Mark the run as the standalone `changelog --format release-notes`
     /// local preview: the changelog stage bypasses the snapshot-skip gate and
     /// the `github-native` branch, and `resolve_git_context` skips the
@@ -453,6 +462,7 @@ impl TestContextBuilder {
             allow_ai_failure: false,
             changelog_from: self.changelog_from,
             changelog_full_history: self.changelog_full_history,
+            changelog_to: self.changelog_to,
             changelog_preview: self.changelog_preview,
         };
 

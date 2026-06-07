@@ -58,8 +58,9 @@ pub(crate) fn fetch_github_commits_with_binary(
     // The Compare API returns a single JSON object (not a paginated array),
     // so we use `gh_api_get` instead of `gh_api_get_paginated` to avoid
     // corrupting the response by splitting on `]`.
+    let upper = ctx.options.changelog_to.as_deref().unwrap_or("HEAD");
     let (items, compare_files) = if let Some(tag) = prev_tag {
-        let endpoint = format!("/repos/{owner}/{repo}/compare/{tag}...HEAD");
+        let endpoint = format!("/repos/{owner}/{repo}/compare/{tag}...{upper}");
         let response = gh_api_get_with_binary(gh_binary, &endpoint, token)?;
         // Extract the "commits" array from the single compare object.
         let commits_arr = response

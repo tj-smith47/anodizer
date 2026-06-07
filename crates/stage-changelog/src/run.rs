@@ -692,11 +692,13 @@ fn resolve_scope(
 /// Fetch commits for a crate via the configured SCM backend, with
 /// fallback-to-git on transient SCM API failures (strict mode escalates
 /// to an error). Returns `(commits, logins_str)`.
+#[allow(clippy::too_many_arguments)]
 fn fetch_crate_commits(
     ctx: &mut Context,
     log: &StageLogger,
     use_source: &str,
     prev_tag: &Option<String>,
+    to: Option<&str>,
     scope: &anodizer_core::changelog_scope::ChangelogScope,
     crate_name: &str,
     workspace_root: &std::path::Path,
@@ -726,7 +728,7 @@ fn fetch_crate_commits(
 
     if scm_no_prev_tag {
         return Ok((
-            fetch_git_commits_scoped(workspace_root, prev_tag, scope, crate_name, log)?,
+            fetch_git_commits_scoped(workspace_root, prev_tag, to, scope, crate_name, log)?,
             String::new(),
         ));
     }
@@ -742,7 +744,7 @@ fn fetch_crate_commits(
                     ),
                 )?;
                 return Ok((
-                    fetch_git_commits_scoped(workspace_root, prev_tag, scope, crate_name, log)?,
+                    fetch_git_commits_scoped(workspace_root, prev_tag, to, scope, crate_name, log)?,
                     String::new(),
                 ));
             }
@@ -760,7 +762,7 @@ fn fetch_crate_commits(
                     ),
                 )?;
                 return Ok((
-                    fetch_git_commits_scoped(workspace_root, prev_tag, scope, crate_name, log)?,
+                    fetch_git_commits_scoped(workspace_root, prev_tag, to, scope, crate_name, log)?,
                     String::new(),
                 ));
             }
@@ -778,14 +780,14 @@ fn fetch_crate_commits(
                     ),
                 )?;
                 return Ok((
-                    fetch_git_commits_scoped(workspace_root, prev_tag, scope, crate_name, log)?,
+                    fetch_git_commits_scoped(workspace_root, prev_tag, to, scope, crate_name, log)?,
                     String::new(),
                 ));
             }
         }
     }
     Ok((
-        fetch_git_commits_scoped(workspace_root, prev_tag, scope, crate_name, log)?,
+        fetch_git_commits_scoped(workspace_root, prev_tag, to, scope, crate_name, log)?,
         String::new(),
     ))
 }
@@ -801,15 +803,16 @@ fn fetch_crate_commits(
 fn fetch_git_commits_scoped(
     workspace_root: &std::path::Path,
     prev_tag: &Option<String>,
+    to: Option<&str>,
     scope: &anodizer_core::changelog_scope::ChangelogScope,
     crate_name: &str,
     log: &StageLogger,
 ) -> Result<Vec<CommitInfo>> {
     let paths = scope.pathspecs();
     if scope.narrow.is_none() {
-        return fetch_git_commits(workspace_root, prev_tag, paths, crate_name, log);
+        return fetch_git_commits(workspace_root, prev_tag, to, paths, crate_name, log);
     }
-    crate::fetch::fetch_git_commits_narrowed(workspace_root, prev_tag, scope, crate_name, log)
+    crate::fetch::fetch_git_commits_narrowed(workspace_root, prev_tag, to, scope, crate_name, log)
 }
 
 /// Run the per-crate fetch → filter → sort → group → render pipeline
@@ -889,11 +892,16 @@ fn render_crate_changelog(
         );
     }
 
+    // The explicit upper bound (`changelog <from>..<to>` / single tag): bounds
+    // the commit walk at `<to>` instead of HEAD. `None` keeps the pending
+    // window running to HEAD. Cloned before the `&mut ctx` borrow below.
+    let changelog_to = ctx.options.changelog_to.clone();
     let (all_commit_infos, logins_str) = fetch_crate_commits(
         ctx,
         log,
         use_source,
         &prev_tag,
+        changelog_to.as_deref(),
         &scope,
         &crate_name,
         &scope_root,

@@ -239,6 +239,15 @@ pub struct ContextOptions {
     /// to the upper bound — distinguishing the explicit empty-from form from
     /// an omitted range (which still resolves to the last release tag).
     pub changelog_full_history: bool,
+    /// `changelog <from>..<to>` / `changelog <tag>`: an explicit UPPER bound
+    /// (range end) for changelog commit collection. When set, the changelog
+    /// stage walks `<from>..<to>` instead of `<from>..HEAD`, so commits AFTER
+    /// `<to>` are excluded. A dedicated option (rather than the always-populated
+    /// `Tag` template var) so the pending / snapshot window — where `Tag`
+    /// resolves to the latest EXISTING tag yet the range must still run to
+    /// HEAD — is never silently bounded to that tag. `None` keeps the upper
+    /// bound at `HEAD` (the pending window since the last release).
+    pub changelog_to: Option<String>,
     /// Marks the run as the standalone `changelog --format release-notes`
     /// LOCAL preview, NOT the `release`/`tag` pipeline. The standalone command
     /// is an inspection tool: it must render the pending window from local git
@@ -292,6 +301,7 @@ impl Default for ContextOptions {
             allow_ai_failure: false,
             changelog_from: None,
             changelog_full_history: false,
+            changelog_to: None,
             changelog_preview: false,
         }
     }

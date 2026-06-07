@@ -63,7 +63,7 @@ pub(crate) fn fetch_gitlab_commits(
     };
 
     let from_ref = prev_tag.as_deref().unwrap_or("");
-    let to_ref = "HEAD";
+    let to_ref = ctx.options.changelog_to.as_deref().unwrap_or("HEAD");
 
     let url = if from_ref.is_empty() {
         // No previous tag — list recent commits.

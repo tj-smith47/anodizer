@@ -285,6 +285,58 @@ pub fn get_all_commits_paths_with_files_in(
     Ok(parse_commit_output_with_files(&output))
 }
 
+/// All commits reachable from an arbitrary `rev` (not just `HEAD`), filtered to
+/// `paths`. Used by the changelog stage to bound a no-lower-bound range at an
+/// explicit upper ref (`changelog ..<tag>`): the range is then every ancestor
+/// of `<tag>`, excluding commits made after it.
+pub fn get_commits_reachable_paths_in(
+    cwd: &Path,
+    rev: &str,
+    paths: &[String],
+) -> Result<Vec<Commit>> {
+    let mut args = vec![
+        "-c".to_string(),
+        "log.showSignature=false".to_string(),
+        "log".to_string(),
+        "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".to_string(),
+        rev.to_string(),
+    ];
+    if !paths.is_empty() {
+        args.push("--".to_string());
+        for p in paths {
+            args.push(p.clone());
+        }
+    }
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = git_output_in(cwd, &arg_refs)?;
+    Ok(parse_commit_output(&output))
+}
+
+/// `--name-only` sibling of [`get_commits_reachable_paths_in`].
+pub fn get_commits_reachable_paths_with_files_in(
+    cwd: &Path,
+    rev: &str,
+    paths: &[String],
+) -> Result<Vec<CommitWithFiles>> {
+    let mut args = vec![
+        "-c".to_string(),
+        "log.showSignature=false".to_string(),
+        "log".to_string(),
+        "--name-only".to_string(),
+        "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".to_string(),
+        rev.to_string(),
+    ];
+    if !paths.is_empty() {
+        args.push("--".to_string());
+        for p in paths {
+            args.push(p.clone());
+        }
+    }
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = git_output_in(cwd, &arg_refs)?;
+    Ok(parse_commit_output_with_files(&output))
+}
+
 /// Get last N commit subjects.
 pub fn get_last_commit_messages(count: usize) -> Result<Vec<String>> {
     get_last_commit_messages_in(&cwd_or_dot(), count)

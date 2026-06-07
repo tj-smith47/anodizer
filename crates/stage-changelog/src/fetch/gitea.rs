@@ -42,9 +42,13 @@ pub(crate) fn fetch_gitea_commits(
 
     let (owner, repo) = detect_owner_repo()?;
 
+    let upper = ctx.options.changelog_to.as_deref().unwrap_or("HEAD");
     let url = if let Some(prev) = prev_tag {
         // Compare endpoint: GET /api/v1/repos/:owner/:repo/compare/:base...:head
-        format!("{}/repos/{}/{}/compare/{}...HEAD", api, owner, repo, prev)
+        format!(
+            "{}/repos/{}/{}/compare/{}...{}",
+            api, owner, repo, prev, upper
+        )
     } else {
         // No previous tag — list recent commits via the Commits API (not
         // /git/commits which returns a different JSON shape without the

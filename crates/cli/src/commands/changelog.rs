@@ -582,6 +582,14 @@ fn run_release_notes(
         // template var cannot signal "user asked for this").
         changelog_from: explicit_from.clone(),
         changelog_full_history: matches!(resolved.start, RangeStart::FullHistory),
+        // The explicit upper bound (`<from>..<to>` or a single tag's `to`),
+        // threaded into the stage's git-log range so commits AFTER `<to>` are
+        // excluded — mirroring how the json format passes `resolved.to` into
+        // `render_changelog_json`. `None` (omitted / open `<from>..`) keeps the
+        // upper bound at HEAD, preserving the pending window. Setting only the
+        // `Tag` template var (below) is insufficient: it drives header/footer
+        // text, not the commit-collection range.
+        changelog_to: resolved.to.clone(),
         // Standalone-command marker: render the pending window from local git
         // with no release-time preconditions (no checkout, no clean tree, no
         // `changelog.snapshot: true`, no token for github-native). The

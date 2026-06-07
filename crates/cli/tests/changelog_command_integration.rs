@@ -2346,3 +2346,176 @@ fn narrowed_aggregate_preserves_full_body_and_coauthor_and_drops_excluded() {
         rn.stdout
     );
 }
+
+// ---------------------------------------------------------------------------
+// Upper-bound honoring: an explicit `<from>..<to>` / single `<tag>` must NOT
+// leak commits made AFTER `<to>`. Regression for the release-notes path
+// rendering `<from>..HEAD` (dropping the upper bound) while json honored it.
+// ---------------------------------------------------------------------------
+
+/// A single-crate repo with three tags (v0.1.0/v0.2.0/v0.3.0) and one commit
+/// AFTER the latest tag, on HEAD. Commit subjects are distinct per inter-tag
+/// window so a range render can be checked for exactly which commits it spans.
+fn bounded_range_repo() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/app/src")).unwrap();
+    fs::write(
+        root.join("crates/app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.3.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/app/src/lib.rs"), "").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: bounded
+changelog: {}
+crates:
+  - name: app
+    path: crates/app
+    tag_template: "v{{ .Version }}"
+    version_sync:
+      enabled: true
+"#,
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    // v0.1.0..v0.2.0 window.
+    fs::write(root.join("crates/app/src/lib.rs"), "// a\n").unwrap();
+    git_add_commit(root, "feat: WINDOW_ONE change");
+    run_git(root, &["tag", "v0.2.0"]);
+    // v0.2.0..v0.3.0 window.
+    fs::write(root.join("crates/app/src/lib.rs"), "// b\n").unwrap();
+    git_add_commit(root, "feat: WINDOW_TWO change");
+    run_git(root, &["tag", "v0.3.0"]);
+    // After the latest tag, on HEAD — must never appear in a bounded range.
+    fs::write(root.join("crates/app/src/lib.rs"), "// c\n").unwrap();
+    git_add_commit(root, "feat: POST_TAG change");
+    tmp
+}
+
+/// `changelog <from>..<to> --format release-notes` must render exactly the
+/// `<from>..<to>` window: the in-range commit IS present and the post-`<to>`
+/// HEAD commit is ABSENT. Pins the bug where release-notes ignored `<to>` and
+/// rendered `<from>..HEAD`.
+#[test]
+fn release_notes_explicit_range_honors_upper_bound() {
+    let tmp = bounded_range_repo();
+    let root = tmp.path();
+    let r = changelog(root, &["-q", "v0.1.0..v0.2.0", "--format", "release-notes"]);
+    assert!(r.success, "range render failed: {}\n{}", r.stdout, r.stderr);
+    assert!(
+        r.stdout.contains("WINDOW_ONE change"),
+        "in-range commit (v0.1.0..v0.2.0) must be present:\n{}",
+        r.stdout
+    );
+    assert!(
+        !r.stdout.contains("WINDOW_TWO change"),
+        "v0.2.0..v0.3.0 commit is above the upper bound v0.2.0 and must be absent:\n{}",
+        r.stdout
+    );
+    assert!(
+        !r.stdout.contains("POST_TAG change"),
+        "post-v0.3.0 HEAD commit leaked past the upper bound v0.2.0 \
+         (release-notes ignored `<to>` and walked to HEAD):\n{}",
+        r.stdout
+    );
+}
+
+/// `changelog <tag> --format release-notes` resolves to `predecessor..<tag>`,
+/// so the post-`<tag>` HEAD commit must be ABSENT (same upper-bound bug as the
+/// explicit-range form).
+#[test]
+fn release_notes_single_tag_excludes_post_tag_commits() {
+    let tmp = bounded_range_repo();
+    let root = tmp.path();
+    let r = changelog(root, &["-q", "v0.3.0", "--format", "release-notes"]);
+    assert!(
+        r.success,
+        "single-tag render failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    // predecessor of v0.3.0 is v0.2.0, so the window is v0.2.0..v0.3.0.
+    assert!(
+        r.stdout.contains("WINDOW_TWO change"),
+        "the v0.2.0..v0.3.0 commit must be present for `changelog v0.3.0`:\n{}",
+        r.stdout
+    );
+    assert!(
+        !r.stdout.contains("POST_TAG change"),
+        "post-v0.3.0 HEAD commit leaked into `changelog v0.3.0` \
+         (single-tag upper bound v0.3.0 ignored, walked to HEAD):\n{}",
+        r.stdout
+    );
+    assert!(
+        !r.stdout.contains("WINDOW_ONE change"),
+        "the v0.1.0..v0.2.0 commit is below the lower bound (predecessor v0.2.0) \
+         and must be absent:\n{}",
+        r.stdout
+    );
+}
+
+/// An OPEN lower bound with an explicit upper bound (`..<to>`) walks only the
+/// ancestors of `<to>` — directly exercising `get_commits_reachable_paths_in`
+/// (the None-lower + Some-upper quadrant). The commit reachable from `<to>` IS
+/// present; the v0.2.0..v0.3.0 commit (above `<to>`) and the post-v0.3.0 HEAD
+/// commit are ABSENT, so the open-lower path bounds at `<to>`, never HEAD.
+#[test]
+fn release_notes_open_lower_bounded_upper_walks_ancestors_of_to() {
+    let tmp = bounded_range_repo();
+    let root = tmp.path();
+    let r = changelog(root, &["-q", "..v0.2.0", "--format", "release-notes"]);
+    assert!(
+        r.success,
+        "open-lower render failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    assert!(
+        r.stdout.contains("WINDOW_ONE change"),
+        "commit reachable from v0.2.0 must be present for `..v0.2.0`:\n{}",
+        r.stdout
+    );
+    assert!(
+        !r.stdout.contains("WINDOW_TWO change"),
+        "the v0.2.0..v0.3.0 commit is NOT an ancestor of v0.2.0 and must be absent:\n{}",
+        r.stdout
+    );
+    assert!(
+        !r.stdout.contains("POST_TAG change"),
+        "post-v0.3.0 HEAD commit is not an ancestor of v0.2.0 and must be absent \
+         (open-lower path walked to HEAD instead of bounding at v0.2.0):\n{}",
+        r.stdout
+    );
+}
+
+/// An OMITTED upper bound (`<from>..`, open-ended) must STAY "up to HEAD" — the
+/// pending window — so the fix doesn't regress the default path: the post-tag
+/// HEAD commit IS present here.
+#[test]
+fn release_notes_open_upper_bound_still_reaches_head() {
+    let tmp = bounded_range_repo();
+    let root = tmp.path();
+    let r = changelog(root, &["-q", "v0.2.0..", "--format", "release-notes"]);
+    assert!(
+        r.success,
+        "open-range render failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    assert!(
+        r.stdout.contains("POST_TAG change"),
+        "open upper bound `v0.2.0..` must still reach HEAD (pending window):\n{}",
+        r.stdout
+    );
+    assert!(
+        r.stdout.contains("WINDOW_TWO change"),
+        "the v0.2.0..v0.3.0 commit must be present in the open `v0.2.0..` range:\n{}",
+        r.stdout
+    );
+}

@@ -9,7 +9,8 @@ use anyhow::{Context as _, Result};
 
 use anodizer_core::git::{
     get_all_commits_paths_in, get_all_commits_paths_with_files_in, get_commits_between_paths_in,
-    get_commits_between_paths_with_files_in,
+    get_commits_between_paths_with_files_in, get_commits_reachable_paths_in,
+    get_commits_reachable_paths_with_files_in,
 };
 use anodizer_core::log::StageLogger;
 
@@ -201,17 +202,19 @@ pub(crate) fn should_preempt_scm_to_git(
 pub(crate) fn fetch_git_commits_narrowed(
     workspace_root: &std::path::Path,
     prev_tag: &Option<String>,
+    to: Option<&str>,
     scope: &anodizer_core::changelog_scope::ChangelogScope,
     crate_name: &str,
     log: &StageLogger,
 ) -> Result<Vec<CommitInfo>> {
     let paths = scope.pathspecs();
+    let upper = to.unwrap_or("HEAD");
     let pairs = match prev_tag {
-        Some(tag) => get_commits_between_paths_with_files_in(workspace_root, tag, "HEAD", paths)
+        Some(tag) => get_commits_between_paths_with_files_in(workspace_root, tag, upper, paths)
             .with_context(|| {
                 format!(
-                    "changelog: read git commits between {}..HEAD for crate '{}'",
-                    tag, crate_name
+                    "changelog: read git commits between {}..{} for crate '{}'",
+                    tag, upper, crate_name
                 )
             })?,
         None => {
@@ -219,9 +222,21 @@ pub(crate) fn fetch_git_commits_narrowed(
                 "no previous tag found for crate '{}', using all commits",
                 crate_name
             ));
-            get_all_commits_paths_with_files_in(workspace_root, paths).with_context(|| {
-                format!("changelog: read all git commits for crate '{}'", crate_name)
-            })?
+            // With an explicit upper bound and no lower bound, walk every
+            // ancestor of `<to>` (so commits AFTER it are excluded); otherwise
+            // all of HEAD's history.
+            match to {
+                Some(rev) => get_commits_reachable_paths_with_files_in(workspace_root, rev, paths)
+                    .with_context(|| {
+                        format!(
+                            "changelog: read git commits reachable from {} for crate '{}'",
+                            rev, crate_name
+                        )
+                    })?,
+                None => get_all_commits_paths_with_files_in(workspace_root, paths).with_context(
+                    || format!("changelog: read all git commits for crate '{}'", crate_name),
+                )?,
+            }
         }
     };
 
@@ -244,26 +259,41 @@ pub(crate) fn fetch_git_commits_narrowed(
 pub(crate) fn fetch_git_commits(
     workspace_root: &std::path::Path,
     prev_tag: &Option<String>,
+    to: Option<&str>,
     paths: &[String],
     crate_name: &str,
     log: &StageLogger,
 ) -> Result<Vec<CommitInfo>> {
+    let upper = to.unwrap_or("HEAD");
     let raw_commits = match prev_tag {
-        Some(tag) => get_commits_between_paths_in(workspace_root, tag, "HEAD", paths)
-            .with_context(|| {
+        Some(tag) => {
+            get_commits_between_paths_in(workspace_root, tag, upper, paths).with_context(|| {
                 format!(
-                    "changelog: read git commits between {}..HEAD for crate '{}'",
-                    tag, crate_name
+                    "changelog: read git commits between {}..{} for crate '{}'",
+                    tag, upper, crate_name
                 )
-            })?,
+            })?
+        }
         None => {
             log.status(&format!(
                 "no previous tag found for crate '{}', using all commits",
                 crate_name
             ));
-            get_all_commits_paths_in(workspace_root, paths).with_context(|| {
-                format!("changelog: read all git commits for crate '{}'", crate_name)
-            })?
+            // With an explicit upper bound and no lower bound, walk every
+            // ancestor of `<to>` (so commits AFTER it are excluded); otherwise
+            // all of HEAD's history.
+            match to {
+                Some(rev) => get_commits_reachable_paths_in(workspace_root, rev, paths)
+                    .with_context(|| {
+                        format!(
+                            "changelog: read git commits reachable from {} for crate '{}'",
+                            rev, crate_name
+                        )
+                    })?,
+                None => get_all_commits_paths_in(workspace_root, paths).with_context(|| {
+                    format!("changelog: read all git commits for crate '{}'", crate_name)
+                })?,
+            }
         }
     };
 
@@ -318,7 +348,7 @@ mod tests {
         let _cwd = CwdGuard::new(elsewhere.path()).expect("cwd guard");
 
         let log = StageLogger::new("changelog", Verbosity::Quiet);
-        let commits = fetch_git_commits(repo_path, &None, &[], "demo", &log)
+        let commits = fetch_git_commits(repo_path, &None, None, &[], "demo", &log)
             .expect("fetch reads the workspace_root repo despite a foreign cwd");
         assert!(
             commits
