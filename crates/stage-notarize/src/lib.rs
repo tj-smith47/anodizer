@@ -23,10 +23,11 @@ mod secret;
 use run::{run_cross_platform, run_native};
 use secret::refresh_artifact_checksums;
 
-// Exercised only by the `#[cfg(test)] tests` module below; importing them into
-// the parent scope under the same gate keeps `use super::*` resolving without
-// flagging the paths as unused in a non-test build.
-#[cfg(test)]
+// Exercised only by the unix-gated tests below (they fabricate an
+// `ExitStatus` via the unix-only `ExitStatusExt::from_raw`, and the retry
+// logic itself guards macOS-only notarization), so the import must carry the
+// same `unix` gate or it reads as unused on a Windows build.
+#[cfg(all(test, unix))]
 use retry::{is_retriable_notarize_output, run_with_retry};
 #[cfg(test)]
 use secret::matches_ids;

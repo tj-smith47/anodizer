@@ -21,7 +21,9 @@ use std::time::Duration;
 
 use crate::release_log;
 use anodizer_core::EnvSource;
-#[cfg(test)]
+// Only reachable through the unix-gated test shim below; the gate must match
+// or the import reads as unused on a Windows build.
+#[cfg(all(test, unix))]
 use anodizer_core::ProcessEnvSource;
 
 /// Async sleep callback signature used by [`check_github_rate_limit_with_sleep`].
@@ -87,7 +89,9 @@ fn github_api_base_from<E: EnvSource + ?Sized>(env: &E) -> String {
 /// Process-env-fed shim retained for the transport-failure test (which
 /// pins the `silently degrade on connect refused` contract through the
 /// default `ProcessEnvSource`).
-#[cfg(test)]
+// Test-only shim whose sole consumer is unix-gated; gating it the same way
+// keeps it from reading as dead code on a Windows build.
+#[cfg(all(test, unix))]
 pub(crate) async fn check_github_rate_limit(client: &reqwest::Client, token: &str, threshold: u64) {
     check_github_rate_limit_with_env(client, token, threshold, &ProcessEnvSource).await;
 }

@@ -5,7 +5,11 @@ use anodizer_core::config::{
     Config, CrateConfig, MetadataConfig, NpmConfig, NpmMode, StringOrBool,
 };
 use anodizer_core::test_helpers::TestContextBuilder;
-use anodizer_core::{PreflightCheck, Publisher, PublisherGroup, PublisherOutcome};
+use anodizer_core::{PreflightCheck, Publisher, PublisherGroup};
+// Inspected only by unix-gated tests here; the gate must match or the import
+// reads as unused on a Windows build.
+#[cfg(unix)]
+use anodizer_core::PublisherOutcome;
 
 use super::manifest::{
     PlatformBinary, collect_platform_binaries, npm_triple, render_package_json,

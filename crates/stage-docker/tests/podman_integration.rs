@@ -20,9 +20,13 @@
 //! flag through fails CI on every OS.
 
 use anodizer_stage_docker::{
-    DockerV2Spec, build_docker_v2_command, build_podman_push_commands, enforce_podman_linux_only,
-    resolve_backend, validate_podman_flag_compat,
+    build_podman_push_commands, enforce_podman_linux_only, resolve_backend,
+    validate_podman_flag_compat,
 };
+// Argv-shape assertions only run on linux (podman is linux-only), so the
+// builder surface they exercise is in scope solely for that target.
+#[cfg(target_os = "linux")]
+use anodizer_stage_docker::{DockerV2Spec, build_docker_v2_command};
 
 #[cfg(target_os = "linux")]
 #[test]
