@@ -65,6 +65,13 @@ pub fn prepend_monorepo_dir(path: &str, dir: &str) -> Option<String> {
     if Path::new(path).is_absolute() {
         return None;
     }
+    // `is_absolute()` is host-relative: a unix-rooted path (`/etc/passwd`) or a
+    // backslash-rooted one is NOT flagged absolute on Windows, so a leading
+    // separator must be treated as absolute on every host or it gets the
+    // monorepo dir wrongly prefixed.
+    if path.starts_with('/') || path.starts_with('\\') {
+        return None;
+    }
     // Windows-style drive paths (`C:\…`) are not flagged absolute on
     // unix; check the colon-on-second-char form too so cross-platform
     // configs survive the prefix pass.
@@ -100,6 +107,15 @@ mod tests {
     #[test]
     fn leaves_absolute_path() {
         assert_eq!(prepend_monorepo_dir("/etc/passwd", "sub1"), None);
+    }
+
+    #[test]
+    fn leaves_leading_separator_path_on_every_host() {
+        // `Path::is_absolute()` is host-relative (`/etc` and `\x` are not
+        // "absolute" on Windows), so the explicit leading-separator guard must
+        // catch both forms regardless of the host the suite runs on.
+        assert_eq!(prepend_monorepo_dir("/etc/passwd", "sub1"), None);
+        assert_eq!(prepend_monorepo_dir("\\rooted\\x", "sub1"), None);
     }
 
     #[test]

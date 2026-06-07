@@ -68,7 +68,11 @@ mod tests {
         unsafe {
             std::env::set_var("HOME", "/home/tester");
         }
-        assert_eq!(expand_tilde("~/x"), "/home/tester/x");
+        let expected = PathBuf::from("/home/tester")
+            .join("x")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(expand_tilde("~/x"), expected);
     }
 
     #[test]
@@ -116,6 +120,10 @@ mod tests {
                 None => std::env::remove_var("USERPROFILE"),
             }
         }
-        assert_eq!(got, "/Users/winuser/docs");
+        let expected = PathBuf::from("/Users/winuser")
+            .join("docs")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(got, expected);
     }
 }
