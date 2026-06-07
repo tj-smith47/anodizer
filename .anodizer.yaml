@@ -35,7 +35,9 @@ git:
 
 # Auto-tagging configuration (used by `anodizer tag`)
 tag:
-  default_bump: patch
+  # Conventional-commit contract: a range with no #token and no feat/fix/breaking
+  # marker (chore/docs/ci-only) produces no release. This is also the unset default.
+  default_bump: none
   # Pre-1.0: a breaking change keeps anodizer in 0.x (0.5.0 -> 0.6.0), not 1.0.0.
   # Reaching 1.0.0 is a deliberate act (#major token / custom_tag / manifest bump).
   bump_minor_pre_major: true

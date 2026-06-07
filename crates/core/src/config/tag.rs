@@ -10,7 +10,11 @@ use super::HookEntry;
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct TagConfig {
-    /// Default version bump type when no conventional commit token is found: "major", "minor", "patch", or "none".
+    /// Default bump when a commit range carries no explicit `#` token and no
+    /// conventional-commit marker: "major", "minor", "patch", or "none".
+    /// Defaults to "none" — a range of only chore/docs/style/refactor/test/
+    /// build/ci commits produces no release (the conventional-commit contract).
+    /// Set "patch"/"minor" to cut a release on every range regardless of type.
     pub default_bump: Option<String>,
     /// While the current major version is `0`, demote a conventional breaking
     /// change (`feat!:` / `BREAKING CHANGE`) from a major bump to a minor bump

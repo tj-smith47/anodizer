@@ -105,7 +105,7 @@ impl ResolvedConfig {
                 .default_bump
                 .clone()
                 .or_else(|| cfg.default_bump.clone())
-                .unwrap_or_else(|| "minor".to_string()),
+                .unwrap_or_else(|| "none".to_string()),
             bump_minor_pre_major: cfg.bump_minor_pre_major.unwrap_or(false),
             bump_patch_for_minor_pre_major: cfg.bump_patch_for_minor_pre_major.unwrap_or(false),
             tag_prefix: cfg.tag_prefix.clone().unwrap_or_else(|| "v".to_string()),
@@ -2087,19 +2087,20 @@ fn demote_pre_major(
 
 /// Core bump detection logic, separated for unit testing without needing the full config.
 ///
-/// Detection layers (applied in order):
-/// 1. Explicit tokens (`#major`, `#minor`, `#patch`, `#none`) — highest signal.
-///    `#none` always wins; `#major` > `#minor` > `#patch` among the rest.
-/// 2. Conventional-commit markers if no explicit token matched — `feat:` →
-///    minor, `fix:` / `perf:` / `revert:` → patch, any line containing
-///    `BREAKING CHANGE` or a `<type>!:` shorthand → major. A message that
+/// Resolution order (highest precedence first):
+/// 1. Explicit bump tokens `#major` > `#minor` > `#patch` — operator intent,
+///    always wins. `#none` is deliberately NOT in this layer.
+/// 2. Conventional-commit markers when no `#major`/`#minor`/`#patch` matched —
+///    a line containing `BREAKING CHANGE` or a `<type>!:` shorthand → major,
+///    `feat:` → minor, `fix:` / `perf:` / `revert:` → patch. A message that
 ///    starts with `chore:` / `docs:` / `style:` / `refactor:` / `test:` /
-///    `build:` / `ci:` is NOT release-worthy, so it contributes nothing.
-/// 3. `default_bump` fallback when neither a token nor a conventional
-///    marker matched. Configure `default_bump: none` to require every
-///    release-worthy commit to carry either a `#...` token or a
-///    conventional marker (prevents autotag from producing a patch bump
-///    over chore-only ranges).
+///    `build:` / `ci:` is NOT release-worthy, so it contributes nothing. A
+///    release-worthy marker beats `#none` (an explicit release signal
+///    overrides the veto).
+/// 3. `#none` — vetoes the `default_bump` fallback, so a range whose only
+///    signal is `#none` skips the release.
+/// 4. `default_bump` fallback when nothing above matched (default `none`:
+///    chore-only ranges no-op; set `patch`/`minor` to release every range).
 pub(crate) fn detect_bump_from_tokens(
     messages: &[String],
     major_token: &str,
@@ -2168,7 +2169,9 @@ pub(crate) fn detect_bump_from_tokens(
         "minor" => BumpKind::Minor,
         "patch" => BumpKind::Patch,
         "none" | "false" => BumpKind::None,
-        _ => BumpKind::Minor,
+        // An unrecognized default_bump value fails safe to no release rather
+        // than a surprise bump (the unset default is "none" — see line above).
+        _ => BumpKind::None,
     }
 }
 
@@ -3053,7 +3056,7 @@ mod tests {
             strict: false,
         };
         let resolved = ResolvedConfig::from_tag_config(&cfg, &opts);
-        assert_eq!(resolved.default_bump, "minor");
+        assert_eq!(resolved.default_bump, "none");
         assert_eq!(resolved.tag_prefix, "v");
         assert_eq!(resolved.tag_context, "repo");
         assert_eq!(resolved.branch_history, "compare");

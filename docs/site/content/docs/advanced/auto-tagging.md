@@ -174,13 +174,48 @@ Include these tokens in your commit messages to control version bumps:
 | `#patch` | Patch version bump (1.0.0 → 1.0.1) |
 | `#none` | Skip tagging |
 
-If no directive is found, the `default_bump` config (default: `minor`) is used.
+### Resolution order
+
+When more than one signal appears in a commit range, anodizer resolves the bump
+in this order (highest precedence first):
+
+| # | Signal | Beats | Notes |
+|---|--------|-------|-------|
+| 1 | Explicit token `#major` > `#minor` > `#patch` | everything | Literal operator intent — never lowered by the pre-1.0 demotion below. |
+| 2 | Conventional marker — `feat!`/`BREAKING CHANGE` → major, `feat` → minor, `fix`/`perf`/`revert` → patch | `#none`, `default_bump` | A release-worthy marker overrides `#none`. `chore`/`docs`/`style`/`refactor`/`test`/`build`/`ci` are not release-worthy and contribute nothing. |
+| 3 | `#none` | `default_bump` | Vetoes the fallback only — a range whose sole signal is `#none` skips. |
+| 4 | `default_bump` | — | Used when nothing above matched. Default `none`. |
+
+With `default_bump: none` (the default) a range of only chore/docs/ci commits
+produces **no** release — the conventional-commit contract. Set
+`default_bump: patch` (or `minor`) to cut a release on every range regardless of
+commit type.
+
+### Pre-1.0 demotion
+
+While the current major version is `0` the public API is unstable, so a
+*conventional* breaking change need not force `1.0.0`. Two opt-in toggles
+(SemVer "major version zero", mirroring release-please) lower an **inferred**
+bump:
+
+| Field | Effect while major is `0` | Default |
+|-------|---------------------------|---------|
+| `bump_minor_pre_major` | conventional major (`feat!`/`BREAKING CHANGE`) → minor (`0.5.0` → `0.6.0`, not `1.0.0`) | `false` |
+| `bump_patch_for_minor_pre_major` | conventional minor (`feat`) → patch (`0.5.0` → `0.5.1`) | `false` |
+
+The two axes are independent (no cascade). They apply **only** to bumps inferred
+from the conventional layer or the `default_bump` fallback — an explicit
+`#major`/`#minor` token, a `custom_tag`, or a manually-ahead `Cargo.toml`
+version is literal intent and always wins. Both toggles are inert once a tag
+reaches `1.x`. Reaching `1.0.0` is therefore a deliberate act: a `#major` token,
+a `custom_tag`, or a manifest bump.
 
 ## Config
 
 ```yaml
 tag:
-  default_bump: patch
+  default_bump: none         # none (default) | patch | minor | major
+  bump_minor_pre_major: true # pre-1.0: breaking → minor, not 1.0.0
   tag_prefix: "v"
   initial_version: "0.1.0"
   release_branches:
@@ -194,7 +229,9 @@ tag:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `default_bump` | string | `minor` | Default bump when no directive found |
+| `default_bump` | string | `none` | Bump when a range has no `#` token and no conventional marker. `none` = chore/docs/ci-only ranges no-op (conventional-commit contract); `patch`/`minor` = release every range |
+| `bump_minor_pre_major` | bool | `false` | While major is `0`, demote a conventional breaking change to a minor bump (`0.5.0` → `0.6.0`, not `1.0.0`) |
+| `bump_patch_for_minor_pre_major` | bool | `false` | While major is `0`, demote a conventional `feat` to a patch bump (`0.5.0` → `0.5.1`) |
 | `tag_prefix` | string | `v` | Prefix added to tags |
 | `initial_version` | string | `0.1.0` | Starting version when no tags exist |
 | `release_branches` | list | `["master", "main"]` | Branch patterns that trigger tags |
