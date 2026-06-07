@@ -17,6 +17,7 @@ jobs:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
         with:
+          from-branch: master
           args: release --nightly --no-preflight
         env:
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
