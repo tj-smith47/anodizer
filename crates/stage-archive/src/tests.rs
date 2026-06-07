@@ -5103,6 +5103,8 @@ fn read_only_archive(ctx: &Context) -> HashMap<String, Vec<u8>> {
     read_tar_entries(tar::Archive::new(dec))
 }
 
+// unix-only: writes + executes a `#!/bin/sh` fake binary (shebang + exec bit are no-ops on Windows).
+#[cfg(unix)]
 #[test]
 fn mode_a_generates_one_file_per_shell_and_bundles() {
     let tmp = TempDir::new().unwrap();
@@ -5166,6 +5168,8 @@ fn mode_a_generates_one_file_per_shell_and_bundles() {
     );
 }
 
+// unix-only: writes + executes a `#!/bin/sh` fake binary (shebang + exec bit are no-ops on Windows).
+#[cfg(unix)]
 #[test]
 fn mode_a_manpage_generates_and_bundles() {
     let tmp = TempDir::new().unwrap();
@@ -5343,6 +5347,8 @@ fn mode_a_no_host_native_artifact_errors() {
     );
 }
 
+// unix-only: writes + executes a `#!/bin/sh` fake binary (shebang + exec bit are no-ops on Windows).
+#[cfg(unix)]
 #[test]
 fn workspace_per_crate_completions_resolve_per_crate() {
     use anodizer_core::config::{ArchivesConfig, Config, CrateConfig};
@@ -5426,6 +5432,8 @@ fn workspace_per_crate_completions_resolve_per_crate() {
     }
 }
 
+// unix-only: writes + executes a `#!/bin/sh` fake binary (shebang + exec bit are no-ops on Windows).
+#[cfg(unix)]
 #[test]
 fn mode_a_shell_var_does_not_leak_into_manpage_or_archive_name() {
     // After mode-A completion generation binds `{{ .Shell }}` per shell, the
@@ -5510,6 +5518,8 @@ fn mode_a_shell_var_does_not_leak_into_manpage_or_archive_name() {
     );
 }
 
+// unix-only: writes + executes a `#!/bin/sh` fake binary (shebang + exec bit are no-ops on Windows).
+#[cfg(unix)]
 #[test]
 fn mode_a_artifact_path_does_not_leak_into_name_or_templated_files() {
     use anodizer_core::config::TemplateFileConfig;
