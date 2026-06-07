@@ -823,7 +823,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 &workspace_root_path,
                 &files_to_stage,
                 &format!(
-                    "chore: bump {} to {}{}",
+                    "chore(release): bump {} → {}{}",
                     path,
                     new_version,
                     skip_ci_suffix(cfg.skip_ci_on_bump)

@@ -27,8 +27,9 @@ use serde_json::Value as JsonValue;
 
 use crate::fetch::relative_filter;
 use crate::group::{
-    CommitInfo, GroupedCommits, apply_filters, apply_include_filters, extract_co_authors,
-    group_commits, parse_commit_message, sort_commits,
+    CommitInfo, GroupedCommits, apply_filters, apply_include_filters,
+    exclude_filters_with_version_sync, extract_co_authors, group_commits, parse_commit_message,
+    sort_commits,
 };
 
 /// Per-call rendering options for [`render_changelog_with_provider`].
@@ -697,11 +698,6 @@ fn group_section_commits(
         })
         .collect();
 
-    let exclude: Vec<String> = cfg
-        .filters
-        .as_ref()
-        .and_then(|f| f.exclude.clone())
-        .unwrap_or_default();
     let include: Vec<String> = cfg
         .filters
         .as_ref()
@@ -710,6 +706,11 @@ fn group_section_commits(
     infos = if !include.is_empty() {
         apply_include_filters(&infos, &include, &log)?
     } else {
+        // Shared with the release-notes path: user excludes + the version-sync
+        // bump auto-exclude. Previously this path re-derived only the raw
+        // `filters.exclude`, so the default `keep-a-changelog` / `json` formats
+        // and the committed CHANGELOG.md leaked anodizer's own bump commits.
+        let exclude = exclude_filters_with_version_sync(cfg.filters.as_ref());
         apply_filters(&infos, &exclude, &log)?
     };
 

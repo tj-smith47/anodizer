@@ -402,6 +402,12 @@ pub struct ChangelogFilters {
     pub exclude: Option<Vec<String>>,
     /// Regex patterns: only commits matching at least one of these are included.
     pub include: Option<Vec<String>>,
+    /// Exclude anodizer's own version-sync bump commits
+    /// (`chore(release): bump …`, optionally ` [skip ci]`) from the generated
+    /// changelog. They are release machinery, not user-facing changes, so this
+    /// defaults to `true`. Set `false` to keep them. No effect in include mode
+    /// (`include` already drops anything that does not match a pattern).
+    pub exclude_version_sync_commits: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]

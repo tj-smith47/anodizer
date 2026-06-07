@@ -485,6 +485,154 @@ fn release_notes_format_emits_grouped_bullets() {
     );
 }
 
+/// anodizer authors its own version-sync bump commits (`chore(release): bump
+/// …`). They are release machinery and must NOT appear in generated notes by
+/// default — even when the repo configures no `changelog.filters` block.
+#[test]
+fn release_notes_excludes_version_sync_bump_by_default() {
+    let tmp = single_crate_repo();
+    let root = tmp.path();
+    fs::write(root.join("crates/app/src/lib.rs"), "// bumped\n").unwrap();
+    git_add_commit(root, "chore(release): bump workspace → 0.2.0 [skip ci]");
+    // A Revert of a bump is a real correction, not machinery — it must be KEPT
+    // (the exclude pattern is anchored, so `Revert "chore(release): bump …"`
+    // does not match).
+    fs::write(root.join("crates/app/src/lib.rs"), "// reverted\n").unwrap();
+    git_add_commit(root, "Revert \"chore(release): bump workspace → 0.2.0\"");
+    let r = changelog(root, &["-q", "--format", "release-notes"]);
+    assert!(
+        r.success,
+        "release-notes failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    assert!(
+        r.stdout.contains("add a thing"),
+        "the real commit must still appear: {}",
+        r.stdout
+    );
+    assert!(
+        !r.stdout.contains("[skip ci]"),
+        "the version-sync bump commit (carrying [skip ci]) must be excluded: {}",
+        r.stdout
+    );
+    assert!(
+        r.stdout.contains("Revert"),
+        "a Revert of a bump is a real correction and must be kept: {}",
+        r.stdout
+    );
+}
+
+/// `changelog.filters.exclude_version_sync_commits: false` opts back in — the
+/// bump commit is kept in the generated notes.
+#[test]
+fn release_notes_keeps_version_sync_bump_when_opted_out() {
+    let tmp = single_crate_repo();
+    let root = tmp.path();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: single
+changelog:
+  filters:
+    exclude_version_sync_commits: false
+crates:
+  - name: app
+    path: crates/app
+    tag_template: "v{{ .Version }}"
+    version_sync:
+      enabled: true
+"#,
+    )
+    .unwrap();
+    git_add_commit(root, "chore: opt out of version-sync exclusion");
+    fs::write(root.join("crates/app/src/lib.rs"), "// bumped\n").unwrap();
+    git_add_commit(root, "chore(release): bump workspace → 0.2.0 [skip ci]");
+    let r = changelog(root, &["-q", "--format", "release-notes"]);
+    assert!(
+        r.success,
+        "release-notes failed: {}\n{}",
+        r.stdout, r.stderr
+    );
+    assert!(
+        r.stdout.contains("bump workspace"),
+        "opt-out must keep the version-sync bump commit: {}",
+        r.stdout
+    );
+}
+
+/// The exclusion must also apply to the DEFAULT `keep-a-changelog` format and to
+/// `--format json` — not just `release-notes`. These share the render path that
+/// previously re-derived filters without the version-sync auto-exclude, so the
+/// default `changelog` / `--write` / committed `CHANGELOG.md` leaked the bump.
+#[test]
+fn keep_a_changelog_and_json_also_exclude_version_sync_bump() {
+    let tmp = single_crate_repo();
+    let root = tmp.path();
+    fs::write(root.join("crates/app/src/lib.rs"), "// bumped\n").unwrap();
+    git_add_commit(root, "chore(release): bump workspace → 0.2.0 [skip ci]");
+
+    // Default format = keep-a-changelog (previews the [Unreleased] section).
+    let kac = changelog(root, &["-q"]);
+    assert!(kac.success, "kac failed: {}\n{}", kac.stdout, kac.stderr);
+    assert!(
+        kac.stdout.contains("add a thing"),
+        "kac must show the real commit: {}",
+        kac.stdout
+    );
+    assert!(
+        !kac.stdout.contains("[skip ci]"),
+        "kac must exclude the version-sync bump commit: {}",
+        kac.stdout
+    );
+
+    let json = changelog(root, &["-q", "--format", "json"]);
+    assert!(
+        json.success,
+        "json failed: {}\n{}",
+        json.stdout, json.stderr
+    );
+    assert!(
+        !json.stdout.contains("[skip ci]"),
+        "json must exclude the version-sync bump commit: {}",
+        json.stdout
+    );
+}
+
+/// anodizer's three bump-subject builders must all carry the `chore(release):
+/// bump ` prefix the auto-exclude matches. Drive a real `anodizer tag` through
+/// the single-crate version_sync path (the builder that used to emit
+/// `chore: bump … to …`) and confirm the written subject is matchable — a guard
+/// against the builders drifting away from `VERSION_SYNC_BUMP_PATTERN`.
+#[test]
+fn real_single_crate_tag_bump_subject_matches_exclude_prefix() {
+    let tmp = single_crate_repo();
+    let root = tmp.path();
+    // `--crate app` drives the single-crate version_sync bump-commit builder
+    // (the one that emitted `chore: bump … to …` before normalization).
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--crate", "app"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag failed: {}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let log = Command::new("git")
+        .current_dir(root)
+        .args(["log", "-1", "--format=%s"])
+        .output()
+        .unwrap();
+    let subject = String::from_utf8_lossy(&log.stdout);
+    let subject = subject.trim();
+    assert!(
+        subject.starts_with("chore(release): bump "),
+        "the single-crate version-sync bump subject must carry the auto-exclude \
+         prefix, got: {subject:?}"
+    );
+}
+
 /// Bare `changelog --format release-notes` (no positional, no `--snapshot`) with
 /// the last tag BEHIND HEAD must render the pending last-tag..HEAD window — the
 /// same set kac/json show for the identical state — with NO release-time guards:

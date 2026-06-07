@@ -1309,6 +1309,7 @@ fn test_integration_changelog_stage_with_real_git_repo() {
             filters: Some(ChangelogFilters {
                 exclude: Some(vec!["^docs:".to_string()]),
                 include: None,
+                exclude_version_sync_commits: None,
             }),
             groups: Some(vec![
                 ChangelogGroup {

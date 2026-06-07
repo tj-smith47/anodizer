@@ -3338,6 +3338,14 @@
             "type": "string"
           }
         },
+        "exclude_version_sync_commits": {
+          "description": "Exclude anodizer's own version-sync bump commits (`chore(release): bump …`, optionally ` [skip ci]`) from the generated changelog. They are release machinery, not user-facing changes, so this defaults to `true`. Set `false` to keep them. No effect in include mode (`include` already drops anything that does not match a pattern).",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "include": {
           "description": "Regex patterns: only commits matching at least one of these are included.",
           "default": null,

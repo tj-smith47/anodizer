@@ -6,7 +6,7 @@
 //! `sort_commits`) and the conventional-commit + Co-Authored-By regex parsers
 //! live here too, since they all operate on `CommitInfo`.
 
-use anodizer_core::config::ChangelogGroup;
+use anodizer_core::config::{ChangelogFilters, ChangelogGroup};
 use anyhow::Result;
 use regex::Regex;
 use std::sync::LazyLock;
@@ -118,6 +118,35 @@ pub(crate) fn extract_co_authors(message: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 // apply_filters
 // ---------------------------------------------------------------------------
+
+/// Subject prefix of the version-sync bump commit anodizer writes after a bump
+/// (`chore(release): bump workspace → …` / `chore(release): bump <crate> → …`,
+/// optionally ` [skip ci]`). Excluded from generated changelogs by default so
+/// the release machinery anodizer authors never leaks into the notes. Anchored
+/// on anodizer's exact prefix, so a hand-written commit — or a `Revert
+/// "chore(release): bump …"` — is not swept up.
+pub(crate) const VERSION_SYNC_BUMP_PATTERN: &str = r"^chore\(release\): bump ";
+
+/// The effective exclude set: the user's `changelog.filters.exclude` patterns,
+/// plus [`VERSION_SYNC_BUMP_PATTERN`] unless
+/// `changelog.filters.exclude_version_sync_commits` is `false`.
+///
+/// Centralized so every changelog surface — the `release-notes` stage path
+/// ([`crate::run`]) and the `keep-a-changelog` / `json` render paths
+/// ([`crate::render`]) — applies the same exclusion rather than re-deriving
+/// filters independently (they had drifted). Call only on the exclude path:
+/// include mode ignores the exclude set (the two are mutually exclusive), so
+/// the version-sync pattern is irrelevant there.
+pub(crate) fn exclude_filters_with_version_sync(filters: Option<&ChangelogFilters>) -> Vec<String> {
+    let mut exclude: Vec<String> = filters.and_then(|f| f.exclude.clone()).unwrap_or_default();
+    let exclude_version_sync = filters
+        .and_then(|f| f.exclude_version_sync_commits)
+        .unwrap_or(true);
+    if exclude_version_sync {
+        exclude.push(VERSION_SYNC_BUMP_PATTERN.to_string());
+    }
+    exclude
+}
 
 /// Filter out commits whose `raw_message` matches any of the exclude regex
 /// patterns. Returns a new `Vec` of commits that did NOT match any pattern.

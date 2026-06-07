@@ -19,7 +19,8 @@ use crate::fetch::{
     should_preempt_scm_to_git,
 };
 use crate::group::{
-    CommitInfo, GroupedCommits, apply_filters, apply_include_filters, group_commits, sort_commits,
+    CommitInfo, GroupedCommits, apply_filters, apply_include_filters,
+    exclude_filters_with_version_sync, group_commits, sort_commits,
 };
 use crate::render::{ChangelogRenderOpts, render_changelog_with_provider};
 
@@ -509,7 +510,10 @@ fn resolve_changelog_opts(
         None => String::new(),
     };
     let filters = cfg.and_then(|c| c.filters.as_ref());
-    let exclude_filters: Vec<String> = filters.and_then(|f| f.exclude.clone()).unwrap_or_default();
+    // The version-sync auto-exclude is folded in here (shared with the
+    // render-path) and is inert in include mode — `apply_filters` (exclude) only
+    // runs when `include_filters` is empty.
+    let exclude_filters: Vec<String> = exclude_filters_with_version_sync(filters);
     let include_filters: Vec<String> = filters.and_then(|f| f.include.clone()).unwrap_or_default();
     let raw_groups: Vec<ChangelogGroup> = cfg.and_then(|c| c.groups.clone()).unwrap_or_default();
     // Pre-render each group's title through the project's template context

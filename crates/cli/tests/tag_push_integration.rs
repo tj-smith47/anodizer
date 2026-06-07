@@ -558,7 +558,7 @@ fn crate_targeted_push_lands_bump_commit_atomically() {
 fn failed_version_sync_bump_commit_aborts_before_tagging() {
     // Safety guard: the single-crate version_sync path must propagate a bump
     // commit failure BEFORE creating the tag. A pre-commit hook that rejects
-    // the `chore: bump …` commit must abort the whole `tag` run — otherwise
+    // the `chore(release): bump …` commit must abort the whole `tag` run — otherwise
     // the tag would point at a commit whose Cargo.toml is NOT at the tagged
     // version (an orphan tag at a mismatched commit).
     let (work, bare) = per_crate_with_origin();
