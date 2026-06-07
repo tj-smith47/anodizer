@@ -444,3 +444,59 @@ fn per_crate_tag_dry_run_from_subdir_matches_root() {
 
     assert_tag_subdir_matches_root(root, "crates/cli");
 }
+
+/// Per-crate workspace mode: `bump_minor_pre_major` demotes a conventional
+/// breaking change to a minor for every crate still in 0.x. Proves the
+/// demotion is wired through the per-crate tagging path end-to-end, not just
+/// the lockstep helper.
+#[test]
+fn per_crate_bump_minor_pre_major_demotes_breaking_to_minor() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for name in ["core", "cli"] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.5.0\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: percrate\ntag:\n  bump_minor_pre_major: true\ncrates:\n  - name: core\n    path: crates/core\n    tag_template: \"core-v{{ .Version }}\"\n  - name: cli\n    path: crates/cli\n    tag_template: \"cli-v{{ .Version }}\"\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "chore: initial");
+    run_git(root, &["tag", "core-v0.5.0"]);
+    run_git(root, &["tag", "cli-v0.5.0"]);
+    // A breaking change touching both crate paths.
+    fs::write(root.join("crates/core/src/lib.rs"), "// break\n").unwrap();
+    fs::write(root.join("crates/cli/src/lib.rs"), "// break\n").unwrap();
+    git_add_commit(root, "feat!: redo the api");
+
+    let config = root.join(".anodizer.yaml");
+    let res = tag_dry_run_from(root, &config);
+    assert!(
+        res.success,
+        "per-crate tag --dry-run failed: {}",
+        res.stdout
+    );
+    // Pre-1.0 breaking demotes to minor: 0.5.0 -> 0.6.0, never 1.0.0.
+    assert!(
+        res.stdout.contains("0.6.0"),
+        "expected demoted 0.6.0 in per-crate preview, got:\n{}",
+        res.stdout
+    );
+    assert!(
+        !res.stdout.contains("1.0.0"),
+        "breaking change must not force 1.0.0 under bump_minor_pre_major; got:\n{}",
+        res.stdout
+    );
+}

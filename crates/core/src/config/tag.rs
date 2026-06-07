@@ -12,6 +12,19 @@ use super::HookEntry;
 pub struct TagConfig {
     /// Default version bump type when no conventional commit token is found: "major", "minor", "patch", or "none".
     pub default_bump: Option<String>,
+    /// While the current major version is `0`, demote a conventional breaking
+    /// change (`feat!:` / `BREAKING CHANGE`) from a major bump to a minor bump
+    /// (e.g. `0.5.0` → `0.6.0` instead of `1.0.0`). Honors the SemVer rule that
+    /// anything may change in the `0.y.z` range. An explicit `#major`/`#minor`
+    /// token, a `custom_tag`, or a manually-ahead `Cargo.toml` version always
+    /// wins over this demotion. No-op once a real tag reaches `1.x`. Default false.
+    pub bump_minor_pre_major: Option<bool>,
+    /// While the current major version is `0`, demote a conventional feature
+    /// (`feat:`) from a minor bump to a patch bump (e.g. `0.5.0` → `0.5.1`
+    /// instead of `0.6.0`). Independent of `bump_minor_pre_major`. An explicit
+    /// token / `custom_tag` / ahead `Cargo.toml` always wins. No-op at `1.x`.
+    /// Default false.
+    pub bump_patch_for_minor_pre_major: Option<bool>,
     /// Prefix prepended to version tags (e.g., "v" produces "v1.2.3").
     pub tag_prefix: Option<String>,
     /// Branch name patterns (supports wildcards) that trigger releases (default: ["master", "main"]).

@@ -36,6 +36,9 @@ git:
 # Auto-tagging configuration (used by `anodizer tag`)
 tag:
   default_bump: patch
+  # Pre-1.0: a breaking change keeps anodizer in 0.x (0.5.0 -> 0.6.0), not 1.0.0.
+  # Reaching 1.0.0 is a deliberate act (#major token / custom_tag / manifest bump).
+  bump_minor_pre_major: true
   tag_prefix: "v"
   release_branches:
     - main

@@ -78,6 +78,8 @@ fn resolve_tag_push_branch(
 #[derive(Clone)]
 struct ResolvedConfig {
     default_bump: String,
+    bump_minor_pre_major: bool,
+    bump_patch_for_minor_pre_major: bool,
     tag_prefix: String,
     release_branches: Vec<String>,
     custom_tag: Option<String>,
@@ -104,6 +106,8 @@ impl ResolvedConfig {
                 .clone()
                 .or_else(|| cfg.default_bump.clone())
                 .unwrap_or_else(|| "minor".to_string()),
+            bump_minor_pre_major: cfg.bump_minor_pre_major.unwrap_or(false),
+            bump_patch_for_minor_pre_major: cfg.bump_patch_for_minor_pre_major.unwrap_or(false),
             tag_prefix: cfg.tag_prefix.clone().unwrap_or_else(|| "v".to_string()),
             release_branches: cfg.release_branches.clone().unwrap_or_default(),
             custom_tag: opts.custom_tag.clone().or_else(|| cfg.custom_tag.clone()),
@@ -533,8 +537,8 @@ pub fn run(opts: TagOpts) -> Result<()> {
     )?;
     log.verbose(&format!("scanned {} commit message(s)", messages.len()));
 
-    // Detect bump
-    let bump = detect_bump(&messages, &cfg);
+    // Detect bump (with pre-major demotion applied to inferred bumps).
+    let bump = detect_bump_demoted(&messages, &cfg, prev_tag.as_deref());
     log.verbose(&format!("detected bump: {:?}", bump));
 
     // The current manifest version for this tagging unit: the workspace
@@ -1445,7 +1449,7 @@ fn compute_per_crate_tags(
             .unwrap_or_default();
             all_messages.extend(msgs);
         }
-        let bump = detect_bump(&all_messages, &group_cfg);
+        let bump = detect_bump_demoted(&all_messages, &group_cfg, prev_tag.as_deref());
 
         if bump == BumpKind::None {
             log.verbose(&format!(
@@ -2005,6 +2009,80 @@ fn detect_bump(messages: &[String], cfg: &ResolvedConfig) -> BumpKind {
         &cfg.none_string_token,
         &cfg.default_bump,
     )
+}
+
+/// Detect the bump, then apply pre-major demotion for an inferred bump.
+///
+/// A bump driven by an explicit `#major`/`#minor`/`#patch` token is operator
+/// intent and is returned untouched (see [`has_explicit_bump_token`]). A bump
+/// derived from the conventional-commit layer or the `default_bump` fallback is
+/// subject to [`demote_pre_major`] when the governing major (from `prev_tag`, or
+/// `0` when there is no prior tag) is still `0`. The demotion is computed here,
+/// once, so the lockstep-workspace and per-crate tagging paths share it.
+fn detect_bump_demoted(
+    messages: &[String],
+    cfg: &ResolvedConfig,
+    prev_tag: Option<&str>,
+) -> BumpKind {
+    let bump = detect_bump(messages, cfg);
+    if has_explicit_bump_token(messages, cfg) {
+        return bump;
+    }
+    let base_major = prev_tag
+        .and_then(|t| git::parse_semver_tag(t).ok())
+        .map_or(0, |sv| sv.major);
+    demote_pre_major(
+        bump,
+        base_major,
+        cfg.bump_minor_pre_major,
+        cfg.bump_patch_for_minor_pre_major,
+    )
+}
+
+/// Whether a message carries a standalone `#major`/`#minor`/`#patch` token that
+/// *drives* the bump. Those three are matched ahead of the conventional-commit
+/// layer in [`detect_bump_from_tokens`], so their presence always determines the
+/// result — the bump is explicit operator intent that pre-major demotion must
+/// not touch. `#none` is excluded on purpose: it is the lowest-priority token (a
+/// conventional marker overrides it), so a `#none` sharing a range with a
+/// `feat!:` does NOT drive the bump and must not block that breaking change's
+/// demotion; a `#none` that does win already yields `BumpKind::None`, which
+/// demotion passes through untouched. Whole-word match mirrors
+/// [`detect_bump_from_tokens`] (a token embedded in prose does not count).
+fn has_explicit_bump_token(messages: &[String], cfg: &ResolvedConfig) -> bool {
+    let has = |token: &str| {
+        messages
+            .iter()
+            .any(|m| m.split(|c: char| c.is_whitespace()).any(|w| w == token))
+    };
+    has(&cfg.major_string_token) || has(&cfg.minor_string_token) || has(&cfg.patch_string_token)
+}
+
+/// SemVer "major version zero" demotion (release-please's `bump-minor-pre-major`
+/// / `bump-patch-for-minor-pre-major`). While `base_major == 0` the public API
+/// is unstable, so an inferred breaking change need not force `1.0.0` and an
+/// inferred feature need not force a minor.
+///
+/// - `bump_minor_pre_major`: [`BumpKind::Major`] → [`BumpKind::Minor`]
+/// - `bump_patch_for_minor_pre_major`: [`BumpKind::Minor`] → [`BumpKind::Patch`]
+///
+/// The two axes are independent (a breaking change is governed by the first,
+/// a feature by the second — no cascade). Once `base_major >= 1` the project
+/// has committed to a stable API, so both toggles are inert.
+fn demote_pre_major(
+    bump: BumpKind,
+    base_major: u64,
+    bump_minor_pre_major: bool,
+    bump_patch_for_minor_pre_major: bool,
+) -> BumpKind {
+    if base_major != 0 {
+        return bump;
+    }
+    match bump {
+        BumpKind::Major if bump_minor_pre_major => BumpKind::Minor,
+        BumpKind::Minor if bump_patch_for_minor_pre_major => BumpKind::Patch,
+        other => other,
+    }
 }
 
 /// Core bump detection logic, separated for unit testing without needing the full config.
@@ -2682,6 +2760,205 @@ mod tests {
         assert_eq!(apply_bump(0, 0, 0, &BumpKind::Major), (1, 0, 0));
     }
 
+    // ---- pre-major demotion tests ----
+
+    /// `demote_pre_major` only touches an inferred Major/Minor while the
+    /// governing major is `0`, and the two axes never cascade.
+    #[test]
+    fn demote_pre_major_axes() {
+        // major == 0: each flag governs its own axis.
+        assert_eq!(
+            demote_pre_major(BumpKind::Major, 0, true, false),
+            BumpKind::Minor
+        );
+        assert_eq!(
+            demote_pre_major(BumpKind::Major, 0, false, false),
+            BumpKind::Major
+        );
+        assert_eq!(
+            demote_pre_major(BumpKind::Minor, 0, false, true),
+            BumpKind::Patch
+        );
+        assert_eq!(
+            demote_pre_major(BumpKind::Minor, 0, false, false),
+            BumpKind::Minor
+        );
+        // Both flags on: breaking → minor (NOT cascaded to patch), feat → patch.
+        assert_eq!(
+            demote_pre_major(BumpKind::Major, 0, true, true),
+            BumpKind::Minor
+        );
+        assert_eq!(
+            demote_pre_major(BumpKind::Minor, 0, true, true),
+            BumpKind::Patch
+        );
+        // Patch / None are never demoted.
+        assert_eq!(
+            demote_pre_major(BumpKind::Patch, 0, true, true),
+            BumpKind::Patch
+        );
+        assert_eq!(
+            demote_pre_major(BumpKind::None, 0, true, true),
+            BumpKind::None
+        );
+    }
+
+    /// Once a real tag reaches `1.x`, both toggles are inert.
+    #[test]
+    fn demote_pre_major_inert_at_one() {
+        assert_eq!(
+            demote_pre_major(BumpKind::Major, 1, true, true),
+            BumpKind::Major
+        );
+        assert_eq!(
+            demote_pre_major(BumpKind::Minor, 1, true, true),
+            BumpKind::Minor
+        );
+        assert_eq!(
+            demote_pre_major(BumpKind::Major, 2, true, false),
+            BumpKind::Major
+        );
+    }
+
+    fn cfg_with_pre_major(minor_pre_major: bool, patch_for_minor: bool) -> ResolvedConfig {
+        let tag_cfg = TagConfig {
+            bump_minor_pre_major: Some(minor_pre_major),
+            bump_patch_for_minor_pre_major: Some(patch_for_minor),
+            ..Default::default()
+        };
+        ResolvedConfig::from_tag_config(&tag_cfg, &push_opts(false, false))
+    }
+
+    #[test]
+    fn has_explicit_bump_token_whole_word_only() {
+        let cfg = cfg_with_pre_major(true, false);
+        assert!(has_explicit_bump_token(
+            &["chore: x #minor".to_string()],
+            &cfg
+        ));
+        assert!(has_explicit_bump_token(
+            &["release #major".to_string()],
+            &cfg
+        ));
+        // Conventional-only ranges carry no token.
+        assert!(!has_explicit_bump_token(
+            &["feat!: break".to_string()],
+            &cfg
+        ));
+        // A token embedded in a larger word is not a token.
+        assert!(!has_explicit_bump_token(
+            &["fix #minorbug".to_string()],
+            &cfg
+        ));
+    }
+
+    /// End-to-end precedence: an explicit token always wins; an inferred
+    /// breaking change demotes only while pre-1.0 and only when the flag is on.
+    #[test]
+    fn detect_bump_demoted_precedence() {
+        // feat! with bump_minor_pre_major on, base 0.x → Minor.
+        assert_eq!(
+            detect_bump_demoted(
+                &["feat!: break".to_string()],
+                &cfg_with_pre_major(true, false),
+                Some("v0.5.0")
+            ),
+            BumpKind::Minor
+        );
+        // Same input, flag off → Major (consensus default).
+        assert_eq!(
+            detect_bump_demoted(
+                &["feat!: break".to_string()],
+                &cfg_with_pre_major(false, false),
+                Some("v0.5.0")
+            ),
+            BumpKind::Major
+        );
+        // Explicit #major token wins over demotion even with the flag on.
+        assert_eq!(
+            detect_bump_demoted(
+                &["feat!: break".to_string(), "stabilize #major".to_string()],
+                &cfg_with_pre_major(true, false),
+                Some("v0.5.0"),
+            ),
+            BumpKind::Major
+        );
+        // Inert once the base tag is 1.x.
+        assert_eq!(
+            detect_bump_demoted(
+                &["feat!: break".to_string()],
+                &cfg_with_pre_major(true, false),
+                Some("v1.2.0")
+            ),
+            BumpKind::Major
+        );
+        // No prior tag is treated as pre-major (base major 0).
+        assert_eq!(
+            detect_bump_demoted(
+                &["feat!: break".to_string()],
+                &cfg_with_pre_major(true, false),
+                None
+            ),
+            BumpKind::Minor
+        );
+        // bump_patch_for_minor_pre_major: a plain feat demotes to patch pre-1.0.
+        assert_eq!(
+            detect_bump_demoted(
+                &["feat: thing".to_string()],
+                &cfg_with_pre_major(false, true),
+                Some("v0.5.0")
+            ),
+            BumpKind::Patch
+        );
+    }
+
+    /// A `#none` token is overridden by a conventional marker in the same range,
+    /// so it must NOT suppress that breaking change's pre-major demotion.
+    #[test]
+    fn detect_bump_demoted_none_token_does_not_block_demotion() {
+        // #none loses to feat!: -> the breaking change still demotes to Minor.
+        assert_eq!(
+            detect_bump_demoted(
+                &["feat!: break #none".to_string()],
+                &cfg_with_pre_major(true, false),
+                Some("v0.5.0")
+            ),
+            BumpKind::Minor
+        );
+        // A standalone #none (no conventional marker) still skips the bump.
+        assert_eq!(
+            detect_bump_demoted(
+                &["chore: housekeeping #none".to_string()],
+                &cfg_with_pre_major(true, false),
+                Some("v0.5.0")
+            ),
+            BumpKind::None
+        );
+    }
+
+    /// `has_explicit_bump_token` resolves the SAME configurable tokens as
+    /// `detect_bump_from_tokens`, so a custom major token still wins over
+    /// demotion under non-default token config.
+    #[test]
+    fn detect_bump_demoted_honors_custom_tokens() {
+        let tag_cfg = TagConfig {
+            major_string_token: Some("#breaking".to_string()),
+            bump_minor_pre_major: Some(true),
+            ..Default::default()
+        };
+        let cfg = ResolvedConfig::from_tag_config(&tag_cfg, &push_opts(false, false));
+        // Custom #breaking token drives Major and is not demoted.
+        assert_eq!(
+            detect_bump_demoted(&["rework #breaking".to_string()], &cfg, Some("v0.5.0")),
+            BumpKind::Major
+        );
+        // A conventional feat!: (no custom token) still demotes.
+        assert_eq!(
+            detect_bump_demoted(&["feat!: rework".to_string()], &cfg, Some("v0.5.0")),
+            BumpKind::Minor
+        );
+    }
+
     // ---- branch_matches tests ----
 
     #[test]
@@ -2822,6 +3099,8 @@ mod tests {
     fn test_resolved_config_full_config() {
         let cfg = TagConfig {
             default_bump: Some("patch".to_string()),
+            bump_minor_pre_major: None,
+            bump_patch_for_minor_pre_major: None,
             tag_prefix: Some("release-v".to_string()),
             release_branches: Some(vec!["main".to_string(), "release/.*".to_string()]),
             custom_tag: None,

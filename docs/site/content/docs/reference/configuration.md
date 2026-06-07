@@ -796,6 +796,8 @@ Top-level `schemastore:` block. Shared fields here are defaults for every entry 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `branch_history` | string | — | Branch history mode for determining the previous tag: "full" or "last". |
+| `bump_minor_pre_major` | bool | — | While the current major version is `0`, demote a conventional breaking change (`feat!:` / `BREAKING CHANGE`) from a major bump to a minor bump (e.g. `0.5.0` → `0.6.0` instead of `1.0.0`). Honors the SemVer rule that anything may change in the `0.y.z` range. An explicit `#major`/`#minor` token, a `custom_tag`, or a manually-ahead `Cargo.toml` version always wins over this demotion. No-op once a real tag reaches `1.x`. Default false. |
+| `bump_patch_for_minor_pre_major` | bool | — | While the current major version is `0`, demote a conventional feature (`feat:`) from a minor bump to a patch bump (e.g. `0.5.0` → `0.5.1` instead of `0.6.0`). Independent of `bump_minor_pre_major`. An explicit token / `custom_tag` / ahead `Cargo.toml` always wins. No-op at `1.x`. Default false. |
 | `custom_tag` | string | — | Custom version tag to use instead of auto-incrementing. |
 | `default_bump` | string | — | Default version bump type when no conventional commit token is found: "major", "minor", "patch", or "none". |
 | `force_without_changes` | bool | — | When true, create a new tag even if no commits have changed since the last tag. |
