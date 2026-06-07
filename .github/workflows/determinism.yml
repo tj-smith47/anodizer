@@ -46,7 +46,7 @@ jobs:
 
       - name: Upload dist artifacts
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.shard }}
           path: preserved-dist/
@@ -54,7 +54,7 @@ jobs:
 
       - name: Upload determinism report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: determinism-${{ matrix.shard }}
           path: |
