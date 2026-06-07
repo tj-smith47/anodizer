@@ -225,12 +225,7 @@ fn persist_update(
         "bundled changelog section for {} → {}",
         t.crate_name, t.to_version
     ));
-    let rel = update
-        .file_path
-        .strip_prefix(workspace_root)
-        .unwrap_or(update.file_path.as_path())
-        .to_string_lossy()
-        .into_owned();
+    let rel = rel_display(workspace_root, &update.file_path);
     if !written.contains(&rel) {
         written.push(rel);
     }
@@ -346,12 +341,7 @@ fn collect_refresh(
     let Some(update) = update else {
         return Ok(());
     };
-    let rel = update
-        .file_path
-        .strip_prefix(workspace_root)
-        .unwrap_or(update.file_path.as_path())
-        .to_string_lossy()
-        .into_owned();
+    let rel = rel_display(workspace_root, &update.file_path);
     if write {
         if let Some(parent) = update.file_path.parent() {
             std::fs::create_dir_all(parent)
@@ -375,6 +365,20 @@ fn collect_refresh(
         rendered_text: update.rendered_text,
     });
     Ok(())
+}
+
+/// Repo-relative path of `file_path` under `workspace_root`, forward-slashed.
+/// The value is shown to the user (preview `--- <path> ---` separators, the
+/// "refreshed" status line) and compared in tests, so it must read identically
+/// on every host rather than carrying the Windows `\` separator — matching the
+/// `/`-normalized repo-relative paths anodizer already emits in context.json
+/// and artifact rows.
+fn rel_display(workspace_root: &Path, file_path: &Path) -> String {
+    file_path
+        .strip_prefix(workspace_root)
+        .unwrap_or(file_path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 /// Extract the `## [Unreleased]` section (heading through the line before the
