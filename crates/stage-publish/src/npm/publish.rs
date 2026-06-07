@@ -101,7 +101,9 @@ pub fn assemble_postinstall_tarball(
 
     let tarball_name = format!("{}-{}.tgz", sanitize_tarball_basename(&pkg_name), version);
     let tarball_path = staging.path().join(&tarball_name);
-    pack_tarball(&pkg_dir, &tarball_path)?;
+    // Postinstall mode embeds no executable binary on disk (the launcher and
+    // postinstall are `.js`, handled by pack_tarball's `.js` → 0o755 rule).
+    pack_tarball(&pkg_dir, &tarball_path, &std::collections::BTreeSet::new())?;
 
     Ok(StagedTarball {
         _staging: staging,
@@ -127,15 +129,22 @@ pub fn assemble_optional_deps_tarball(
     fs::create_dir_all(&pkg_dir).context("npm: create package/ in staging dir")?;
 
     write_deterministic(&pkg_dir.join("package.json"), package_json.as_bytes())?;
+    // Capture each embedded entry's intended exec bit HERE (from the caller's
+    // mode, not the host fs) so pack_tarball can stamp 0o755 even on a Windows
+    // build host where `write_with_mode` can't set the on-disk exec bit.
+    let mut executables = std::collections::BTreeSet::new();
     for (name, bytes, mode) in embedded {
         write_with_mode(&pkg_dir.join(name), bytes, *mode)?;
+        if mode & 0o111 != 0 {
+            executables.insert(name.replace('\\', "/"));
+        }
     }
     copy_extra_files(cfg, &pkg_dir)?;
     render_templated_extra_files(ctx, cfg, &pkg_dir)?;
 
     let tarball_name = format!("{}-{}.tgz", sanitize_tarball_basename(pkg_name), version);
     let tarball_path = staging.path().join(&tarball_name);
-    pack_tarball(&pkg_dir, &tarball_path)?;
+    pack_tarball(&pkg_dir, &tarball_path, &executables)?;
 
     Ok(StagedTarball {
         _staging: staging,
@@ -385,22 +394,85 @@ fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
 
 /// Pack the `package/` directory into a `.tgz` with deterministic
 /// mtimes/modes (no subprocess).
-fn pack_tarball(pkg_dir: &Path, tarball_path: &Path) -> Result<()> {
+///
+/// Modes are assigned EXPLICITLY (not read from the on-disk file): every path
+/// in `executables` (relative to `pkg_dir`, forward-slash normalized) and every
+/// `.js` shim is `0o755`, all else `0o644`. This reproduces the staging writers'
+/// intended modes WITHOUT depending on the host filesystem — `write_with_mode`
+/// only sets the exec bit under `#[cfg(unix)]`, so a Windows build host would
+/// otherwise ship the embedded binary at `0o644`. Sorting the walk by relative
+/// path + zeroing mtime/uid/gid keeps the tarball byte-identical across runs and
+/// across build hosts.
+fn pack_tarball(
+    pkg_dir: &Path,
+    tarball_path: &Path,
+    executables: &std::collections::BTreeSet<String>,
+) -> Result<()> {
     use flate2::Compression;
     use flate2::write::GzEncoder;
+
+    // Recursively collect every regular file under `pkg_dir`, keyed by its
+    // forward-slash path relative to `pkg_dir`. Sorted below for determinism —
+    // `read_dir` order is filesystem-dependent.
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    collect_files(pkg_dir, pkg_dir, &mut files)?;
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+
     let f = fs::File::create(tarball_path)
         .with_context(|| format!("npm: create tarball {}", tarball_path.display()))?;
     let enc = GzEncoder::new(f, Compression::default());
     let mut builder = tar::Builder::new(enc);
-    builder.mode(tar::HeaderMode::Deterministic);
-    builder
-        .append_dir_all("package", pkg_dir)
-        .context("npm: append package/ to tarball")?;
+
+    for (rel, abs) in &files {
+        let bytes =
+            fs::read(abs).with_context(|| format!("npm: read staged file {}", abs.display()))?;
+        let mode = if executables.contains(rel) || rel.ends_with(".js") {
+            0o755
+        } else {
+            0o644
+        };
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mtime(0);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mode(mode);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, format!("package/{rel}"), &bytes[..])
+            .with_context(|| format!("npm: append package/{rel} to tarball"))?;
+    }
+
     builder
         .into_inner()
         .context("npm: finalize tar builder")?
         .finish()
         .context("npm: finalize gzip stream")?;
+    Ok(())
+}
+
+/// Recursively collect every regular file under `dir`, pushing
+/// `(relative-to-`base`-forward-slash path, absolute path)` pairs onto `out`.
+fn collect_files(base: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<()> {
+    for entry in
+        fs::read_dir(dir).with_context(|| format!("npm: read staging dir {}", dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("npm: read entry in {}", dir.display()))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("npm: stat {}", path.display()))?;
+        if file_type.is_dir() {
+            collect_files(base, &path, out)?;
+        } else if file_type.is_file() {
+            let rel = path
+                .strip_prefix(base)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.push((rel, path));
+        }
+    }
     Ok(())
 }
 
