@@ -1384,7 +1384,6 @@ crates: []
         }
     }
 
-    #[cfg(unix)]
     fn test_logger() -> anodizer_core::log::StageLogger {
         anodizer_core::log::StageLogger::new("notarize", anodizer_core::log::Verbosity::Quiet)
     }
