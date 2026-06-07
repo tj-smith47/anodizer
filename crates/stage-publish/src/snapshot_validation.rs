@@ -38,7 +38,32 @@ use crate::util;
 /// the matching cross-check. The first broken emission aborts with an
 /// actionable error.
 pub(crate) fn validate_snapshot_emissions(ctx: &mut Context, log: &StageLogger) -> Result<()> {
-    validate_snapshot_emissions_with_resolver(ctx, log, &resolve_crate_tag)
+    validate_snapshot_emissions_with_resolver(ctx, log, &resolve_crate_tag_or_snapshot)
+}
+
+/// Per-crate tag source for the emission-validate pass.
+///
+/// A real release (or its dry-run) tags every selected crate, so this defers to
+/// [`resolve_crate_tag`]. In SNAPSHOT mode there are no tags by design — the
+/// build stamps every crate with the global synthesized snapshot version
+/// (`<base>-SNAPSHOT-<sha>`, set on `Version` by `apply_snapshot_template_vars`)
+/// — so a tagless crate falls back to that version, the one the produced
+/// artifacts actually carry. Without this, a snapshot run of a binstall/nix/
+/// version-sync crate aborts the whole pipeline at `with_crate_scope`'s
+/// fail-loud tag guard (the determinism harness, which only ever builds an
+/// untagged HEAD in snapshot, can never complete a run otherwise).
+fn resolve_crate_tag_or_snapshot(ctx: &Context, crate_cfg: &CrateConfig) -> Option<String> {
+    resolve_crate_tag(ctx, crate_cfg).or_else(|| snapshot_version_fallback(ctx))
+}
+
+/// The global snapshot version to scope a tagless crate to, or `None` outside
+/// snapshot mode (a real release must resolve a real tag — never papered over).
+fn snapshot_version_fallback(ctx: &Context) -> Option<String> {
+    if !ctx.is_snapshot() {
+        return None;
+    }
+    let version = ctx.version();
+    (!version.trim().is_empty()).then_some(version)
 }
 
 /// Inner body of [`validate_snapshot_emissions`] with the per-crate tag source
@@ -761,6 +786,67 @@ mod tests {
         );
         let bs = cfg.binstall.clone().unwrap();
         validate_binstall(&ctx, &cfg, &bs, &log()).expect("correct pkg_url passes");
+    }
+
+    /// `snapshot_version_fallback` yields the global snapshot version ONLY in
+    /// snapshot mode; a real release returns `None` so the fail-loud tag guard
+    /// still protects it.
+    #[test]
+    fn snapshot_version_fallback_is_snapshot_only() {
+        let cfg = binstall_crate(BinstallConfig::default());
+
+        let snap = scoped_ctx(cfg.clone());
+        assert_eq!(snapshot_version_fallback(&snap).as_deref(), Some("1.0.0"));
+
+        let mut real = TestContextBuilder::new().crates(vec![cfg]).build();
+        real.template_vars_mut().set("Version", "1.0.0");
+        assert!(
+            snapshot_version_fallback(&real).is_none(),
+            "a real release must resolve a real tag, never fall back"
+        );
+    }
+
+    /// Regression (determinism harness): a binstall crate whose HEAD carries no
+    /// matching release tag — the only state the harness ever builds in snapshot
+    /// — must scope to the global snapshot version, not abort the whole run at
+    /// `with_crate_scope`'s fail-loud tag guard. The bare no-tag resolver
+    /// reproduces the harness failure; the snapshot fallback recovers it.
+    #[test]
+    fn snapshot_no_tag_crate_recovers_via_snapshot_fallback() {
+        let cfg = binstall_crate(BinstallConfig {
+            enabled: Some(true),
+            pkg_url: Some(
+                "https://github.com/o/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-{ target }.tar.gz"
+                    .to_string(),
+            ),
+            ..Default::default()
+        });
+        let make = || {
+            let mut ctx = scoped_ctx(cfg.clone());
+            add_archive(
+                &mut ctx,
+                "cfgd",
+                "x86_64-unknown-linux-gnu",
+                "cfgd-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
+            );
+            ctx
+        };
+
+        let mut ctx = make();
+        let err = validate_snapshot_emissions_with_resolver(&mut ctx, &log(), &|_, _| None)
+            .expect_err("a tagless crate with no fallback must fail loud");
+        assert!(
+            format!("{err}").contains("release tag"),
+            "the failure is the missing per-crate tag guard: {err}"
+        );
+
+        let mut ctx = make();
+        validate_snapshot_emissions_with_resolver(&mut ctx, &log(), &|c, _| {
+            snapshot_version_fallback(c)
+        })
+        .expect(
+            "snapshot fallback lets a tagless crate validate against its snapshot-version assets",
+        );
     }
 
     /// A top-level `pkg_url` with NO cargo-binstall `{ target }` token hardcodes
