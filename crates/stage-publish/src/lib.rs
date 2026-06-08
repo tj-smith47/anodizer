@@ -25,7 +25,7 @@ pub mod registry;
 pub mod rollback;
 pub mod rollback_only;
 pub mod run_summary;
-pub(crate) mod schema_validation;
+pub mod schema_validation;
 pub(crate) mod schemastore;
 pub mod scoop;
 pub(crate) mod scope;
@@ -48,6 +48,7 @@ pub mod testing;
 
 pub use dispatch::{DispatchOptions, dispatch};
 pub use registry::{configured_publishers, group_dispatch_order};
+pub use schema_validation::{TagResolver, validate_publisher_schemas};
 
 use anodizer_core::config::PublishConfig;
 use anodizer_core::context::{Context, RollbackMode};

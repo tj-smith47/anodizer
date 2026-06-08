@@ -26,6 +26,87 @@ use crate::{
     slack, teams, telegram, twitter, webhook,
 };
 
+/// Telegram's default message template. MarkdownV2 parse mode requires each
+/// dynamic value to pass through the `mdv2escape` filter and literal `!` to be
+/// backslash-escaped; the rendered output is byte-equivalent to the upstream
+/// `{{ print … | mdv2escape }}` Go-template form. Shared by `send` and
+/// `render_only` so the pre-publish guard exercises the exact default `send`
+/// would use. Pinned by `test_telegram_default_template_renders_without_tilde`.
+const TELEGRAM_DEFAULT_TEMPLATE: &str = "{{ ProjectName | mdv2escape }} {{ Tag | mdv2escape }} is out\\! Check it out at {{ ReleaseURL | mdv2escape }}";
+
+// ---------------------------------------------------------------------------
+// Rendered-value validators — shared by `send` and `render_only`
+//
+// Each validator runs the SAME check `send` performs on a post-render value,
+// with NO network call, so the pre-publish guard (`render_only`) rejects a
+// config whose template renders to an invalid value BEFORE any one-way
+// publisher fires. Both call sites delegate here so they cannot drift.
+// ---------------------------------------------------------------------------
+
+/// Validate (and parse) a rendered discord `color`: a base-10 integer in the
+/// 24-bit RGB space `0..=0xFFFFFF`. An empty/whitespace render is "unset"
+/// (`Ok(None)`), matching `send`'s skip-when-empty handling.
+fn validate_discord_color(rendered: &str) -> Result<Option<u32>> {
+    let trimmed = rendered.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let parsed = trimmed
+        .parse::<i64>()
+        .map_err(|e| anyhow::anyhow!("announce.discord: invalid color {trimmed:?}: {e}"))?;
+    if !(0..=0xFFFFFF).contains(&parsed) {
+        anyhow::bail!(
+            "announce.discord: color {parsed} out of range \
+                 (must be 0..=16777215, the 24-bit RGB space)"
+        );
+    }
+    Ok(Some(parsed as u32))
+}
+
+/// Validate a rendered webhook `endpoint_url`: parseable, http/https scheme,
+/// and a present host. Embedded userinfo is redacted from error messages so a
+/// `https://user:pass@host` template can't leak credentials into the chain.
+fn validate_webhook_endpoint_url(url: &str) -> Result<()> {
+    let safe_url = anodizer_core::redact::redact_url_credentials(url);
+    let parsed = reqwest::Url::parse(url).map_err(|e| {
+        anyhow::anyhow!("announce.webhook: endpoint_url {safe_url:?} is not a valid URL: {e}")
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        anyhow::bail!(
+            "announce.webhook: endpoint_url {safe_url:?} must use http or https \
+                 (got scheme {:?})",
+            parsed.scheme()
+        );
+    }
+    if parsed.host().is_none() {
+        anyhow::bail!("announce.webhook: endpoint_url {safe_url:?} must include a host");
+    }
+    Ok(())
+}
+
+/// Validate (and parse) a rendered telegram `message_thread_id` as `i64`. An
+/// empty/whitespace render is "unset" (`Ok(None)`), matching `send`.
+fn validate_telegram_thread_id(rendered: &str) -> Result<Option<i64>> {
+    let trimmed = rendered.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let parsed = trimmed.parse::<i64>().map_err(|e| {
+        anyhow::anyhow!("announce.telegram: invalid message_thread_id {trimmed:?}: {e}")
+    })?;
+    Ok(Some(parsed))
+}
+
+/// Validate a rendered email `from` address looks like an email (contains `@`).
+fn validate_email_from(from: &str) -> Result<()> {
+    if !from.contains('@') {
+        anyhow::bail!(
+            "announce.email: 'from' address {from:?} does not look like a valid email (missing @)"
+        );
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Announcer trait + dispatch helper
 // ---------------------------------------------------------------------------
@@ -46,6 +127,21 @@ trait Announcer: Sync {
         retry: &RetryPolicy,
         log: &StageLogger,
     ) -> Result<()>;
+
+    /// Render — but do not send — exactly the templates this announcer's
+    /// [`send`](Announcer::send) would render, so a broken template
+    /// (`{{ ReleaseURL }}` typo, undefined var, malformed Tera) surfaces as
+    /// an `Err` BEFORE any irreversible publisher fires.
+    ///
+    /// Reads ZERO credentials/env — only [`send`](Announcer::send) touches
+    /// the network and secrets — so the pre-publish guard runs on a CI box
+    /// without announce secrets. Each impl must render every template field
+    /// `send` renders (`message_template`, `title_template`, `enabled`,
+    /// `url`/`icon_url`, …); a field rendered by `send` but skipped here is a
+    /// hole in the guard. The default `Ok(())` is overridden per provider.
+    fn render_only(&self, _ctx: &mut Context, _announce: &AnnounceConfig) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Run a single announcer: skip when disabled, capture per-provider
@@ -80,7 +176,19 @@ pub(crate) fn dispatch_all_announcers(
     log: &StageLogger,
     errors: &mut Vec<String>,
 ) -> Result<()> {
-    let announcers: &[&dyn Announcer] = &[
+    for announcer in announcer_registry() {
+        run_announcer(*announcer, ctx, announce, retry_policy, log, errors)?;
+    }
+
+    Ok(())
+}
+
+/// The registered announcer set, in dispatch order. Single source of truth for
+/// both [`dispatch_all_announcers`] (which sends) and [`render_all_announcers`]
+/// (which only renders), so the pre-publish guard exercises exactly the set the
+/// real announce path would.
+fn announcer_registry() -> &'static [&'static dyn Announcer] {
+    &[
         &DiscordAnnouncer,
         &DiscourseAnnouncer,
         &SlackAnnouncer,
@@ -95,12 +203,29 @@ pub(crate) fn dispatch_all_announcers(
         &LinkedInAnnouncer,
         &OpenCollectiveAnnouncer,
         &EmailAnnouncer,
-    ];
+    ]
+}
 
-    for announcer in announcers {
-        run_announcer(*announcer, ctx, announce, retry_policy, log, errors)?;
+/// Dry-render every ENABLED announcer's templates, collecting a per-provider
+/// error (`"<provider>: <chain>"`) for any that fail to render. Sends nothing
+/// and reads no credentials — the pre-publish guard's announce half.
+///
+/// An announcer whose `enabled` template is falsy (or whose config block is
+/// absent) is skipped, matching the real dispatch loop, so the guard never
+/// flags a provider the live run would not touch.
+pub(crate) fn render_all_announcers(
+    ctx: &mut Context,
+    announce: &AnnounceConfig,
+    errors: &mut Vec<String>,
+) -> Result<()> {
+    for announcer in announcer_registry() {
+        if !announcer.enabled(ctx, announce)? {
+            continue;
+        }
+        if let Err(e) = announcer.render_only(ctx, announce) {
+            errors.push(format!("{}: {e:#}", announcer.name()));
+        }
     }
-
     Ok(())
 }
 
@@ -181,21 +306,7 @@ impl Announcer for DiscordAnnouncer {
         let color: Option<u32> = match cfg.color.as_deref() {
             Some(raw) => {
                 let rendered = ctx.render_template(raw)?;
-                let trimmed = rendered.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    let parsed = trimmed.parse::<i64>().map_err(|e| {
-                        anyhow::anyhow!("announce.discord: invalid color {trimmed:?}: {e}")
-                    })?;
-                    if !(0..=0xFFFFFF).contains(&parsed) {
-                        anyhow::bail!(
-                            "announce.discord: color {parsed} out of range \
-                                 (must be 0..=16777215, the 24-bit RGB space)"
-                        );
-                    }
-                    Some(parsed as u32)
-                }
+                validate_discord_color(&rendered)?
             }
             None => None,
         };
@@ -208,6 +319,22 @@ impl Announcer for DiscordAnnouncer {
         dispatch(ctx, "discord", &message, || {
             discord::send_discord(&url, &message, &opts, retry_policy)
         })
+    }
+    fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
+        let Some(cfg) = announce.discord.as_ref() else {
+            return Ok(());
+        };
+        if let Some(raw) = cfg.webhook_url.as_deref() {
+            ctx.render_template(raw)?;
+        }
+        render_message(ctx, cfg.message_template.as_deref())?;
+        ctx.render_template_opt(cfg.author.as_deref().or(Some(DEFAULT_DISPLAY_NAME)))?;
+        if let Some(raw) = cfg.color.as_deref() {
+            let rendered = ctx.render_template(raw)?;
+            validate_discord_color(&rendered)?;
+        }
+        ctx.render_template_opt(cfg.icon_url.as_deref())?;
+        Ok(())
     }
 }
 
@@ -279,6 +406,21 @@ impl Announcer for DiscourseAnnouncer {
             )
         })
     }
+    fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
+        let Some(cfg) = announce.discourse.as_ref() else {
+            return Ok(());
+        };
+        if let Some(raw) = cfg.server.as_deref() {
+            ctx.render_template(raw)?;
+        }
+        ctx.render_template(
+            cfg.title_template
+                .as_deref()
+                .unwrap_or("{{ ProjectName }} {{ Tag }} is out!"),
+        )?;
+        render_message(ctx, cfg.message_template.as_deref())?;
+        Ok(())
+    }
 }
 
 struct SlackAnnouncer;
@@ -345,6 +487,26 @@ impl Announcer for SlackAnnouncer {
             slack::send_slack(&url, &message, &opts, retry_policy)
         })
     }
+    fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
+        let Some(cfg) = announce.slack.as_ref() else {
+            return Ok(());
+        };
+        if let Some(raw) = cfg.webhook_url.as_deref() {
+            ctx.render_template(raw)?;
+        }
+        render_message(ctx, cfg.message_template.as_deref())?;
+        ctx.render_template_opt(cfg.channel.as_deref())?;
+        ctx.render_template_opt(cfg.username.as_deref().or(Some(DEFAULT_DISPLAY_NAME)))?;
+        ctx.render_template_opt(cfg.icon_emoji.as_deref())?;
+        ctx.render_template_opt(cfg.icon_url.as_deref())?;
+        if let Some(b) = cfg.blocks.as_ref() {
+            render_json_template(ctx, Some(&serde_json::to_value(b)?))?;
+        }
+        if let Some(a) = cfg.attachments.as_ref() {
+            render_json_template(ctx, Some(&serde_json::to_value(a)?))?;
+        }
+        Ok(())
+    }
 }
 
 struct WebhookAnnouncer;
@@ -378,24 +540,10 @@ impl Announcer for WebhookAnnouncer {
                 return Ok(());
             }
         };
-        // Strip embedded userinfo (`https://user:pass@host`) before
-        // the URL lands in any operator-facing error message — the
-        // raw template can carry inline credentials and the error
-        // chain is the easiest place for them to leak.
-        let safe_url = anodizer_core::redact::redact_url_credentials(&url);
-        let parsed = reqwest::Url::parse(&url).map_err(|e| {
-            anyhow::anyhow!("announce.webhook: endpoint_url {safe_url:?} is not a valid URL: {e}")
-        })?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            anyhow::bail!(
-                "announce.webhook: endpoint_url {safe_url:?} must use http or https \
-                     (got scheme {:?})",
-                parsed.scheme()
-            );
-        }
-        if parsed.host().is_none() {
-            anyhow::bail!("announce.webhook: endpoint_url {safe_url:?} must include a host");
-        }
+        // Strip embedded userinfo (`https://user:pass@host`) before the URL
+        // lands in any operator-facing error message — handled inside the
+        // shared validator, which the pre-publish guard also calls.
+        validate_webhook_endpoint_url(&url)?;
         // webhook uses a JSON-envelope
         // default distinct from the plain-text default used by other
         // providers; receivers expect a parseable JSON body.
@@ -456,6 +604,24 @@ impl Announcer for WebhookAnnouncer {
                 retry_policy,
             )
         })
+    }
+    fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
+        let Some(cfg) = announce.webhook.as_ref() else {
+            return Ok(());
+        };
+        if let Some(raw) = cfg.endpoint_url.as_deref() {
+            let url = ctx.render_template(raw)?;
+            validate_webhook_endpoint_url(&url)?;
+        }
+        ctx.render_template(
+            cfg.message_template
+                .as_deref()
+                .unwrap_or(WEBHOOK_DEFAULT_MESSAGE_TEMPLATE),
+        )?;
+        for (_, v) in cfg.headers.clone().unwrap_or_default() {
+            ctx.render_template(&v)?;
+        }
+        Ok(())
     }
 }
 
@@ -523,7 +689,6 @@ impl Announcer for TelegramAnnouncer {
         // is `{{ … }}`-only and copy-pastes cleanly into custom
         // user templates. Pinned by
         // `test_telegram_default_template_renders_without_tilde`.
-        const TELEGRAM_DEFAULT_TEMPLATE: &str = "{{ ProjectName | mdv2escape }} {{ Tag | mdv2escape }} is out\\! Check it out at {{ ReleaseURL | mdv2escape }}";
         let message = ctx.render_template(
             cfg.message_template
                 .as_deref()
@@ -548,18 +713,7 @@ impl Announcer for TelegramAnnouncer {
         let message_thread_id: Option<i64> = match cfg.message_thread_id.as_deref() {
             Some(raw) => {
                 let rendered = ctx.render_template(raw)?;
-                let trimmed = rendered.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.parse::<i64>().map_err(|e| {
-                        anyhow::anyhow!(
-                            "announce.telegram: invalid message_thread_id {:?}: {}",
-                            trimmed,
-                            e
-                        )
-                    })?)
-                }
+                validate_telegram_thread_id(&rendered)?
             }
             None => None,
         };
@@ -574,6 +728,33 @@ impl Announcer for TelegramAnnouncer {
                 retry_policy,
             )
         })
+    }
+    fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
+        let Some(cfg) = announce.telegram.as_ref() else {
+            return Ok(());
+        };
+        if let Some(raw) = cfg.bot_token.as_deref() {
+            ctx.render_template(raw)?;
+        }
+        if let Some(raw) = cfg.chat_id.as_deref() {
+            ctx.render_template(raw)?;
+        }
+        ctx.render_template(
+            cfg.message_template
+                .as_deref()
+                .unwrap_or(TELEGRAM_DEFAULT_TEMPLATE),
+        )?;
+        let parse_mode_raw = cfg.parse_mode.as_deref().unwrap_or("MarkdownV2");
+        let parse_mode_validated = match parse_mode_raw {
+            "MarkdownV2" | "HTML" => parse_mode_raw,
+            _ => "MarkdownV2",
+        };
+        ctx.render_template_opt(Some(parse_mode_validated))?;
+        if let Some(raw) = cfg.message_thread_id.as_deref() {
+            let rendered = ctx.render_template(raw)?;
+            validate_telegram_thread_id(&rendered)?;
+        }
+        Ok(())
     }
 }
 
@@ -629,6 +810,22 @@ impl Announcer for TeamsAnnouncer {
             teams::send_teams(&url, &message, &opts, retry_policy)
         })
     }
+    fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
+        let Some(cfg) = announce.teams.as_ref() else {
+            return Ok(());
+        };
+        if let Some(raw) = cfg.webhook_url.as_deref() {
+            ctx.render_template(raw)?;
+        }
+        render_message(ctx, cfg.message_template.as_deref())?;
+        ctx.render_template(
+            cfg.title_template
+                .as_deref()
+                .unwrap_or(anodizer_core::config::TEAMS_DEFAULT_TITLE_TEMPLATE),
+        )?;
+        ctx.render_template_opt(cfg.icon_url.as_deref())?;
+        Ok(())
+    }
 }
 
 struct MattermostAnnouncer;
@@ -683,7 +880,7 @@ impl Announcer for MattermostAnnouncer {
             ctx.render_template_opt(cfg.username.as_deref().or(Some(DEFAULT_DISPLAY_NAME)))?;
         let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
         let icon_emoji = ctx.render_template_opt(cfg.icon_emoji.as_deref())?;
-        // Default color to "#2D313E". We read
+        // Default color to "#2D313E". Reads
         // from `MattermostAnnounce.color` — anodizer always has, even
         // before a cross-pipe bug was fixed upstream
         // where mattermost mistakenly consulted `TeamsAnnounce.Color`.
@@ -707,6 +904,25 @@ impl Announcer for MattermostAnnouncer {
         dispatch(ctx, "mattermost", &message, || {
             mattermost::send_mattermost(&url, &message, &opts, retry_policy)
         })
+    }
+    fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
+        let Some(cfg) = announce.mattermost.as_ref() else {
+            return Ok(());
+        };
+        if let Some(raw) = cfg.webhook_url.as_deref() {
+            ctx.render_template(raw)?;
+        }
+        render_message(ctx, cfg.message_template.as_deref())?;
+        ctx.render_template_opt(cfg.channel.as_deref())?;
+        ctx.render_template_opt(cfg.username.as_deref().or(Some(DEFAULT_DISPLAY_NAME)))?;
+        ctx.render_template_opt(cfg.icon_url.as_deref())?;
+        ctx.render_template_opt(cfg.icon_emoji.as_deref())?;
+        ctx.render_template(
+            cfg.title_template
+                .as_deref()
+                .unwrap_or("{{ ProjectName }} {{ Tag }} is out!"),
+        )?;
+        Ok(())
     }
 }
 
@@ -787,6 +1003,27 @@ impl Announcer for RedditAnnouncer {
             )
         })
     }
+    fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
+        let Some(cfg) = announce.reddit.as_ref() else {
+            return Ok(());
+        };
+        if let Some(raw) = cfg.application_id.as_deref() {
+            ctx.render_template(raw)?;
+        }
+        if let Some(raw) = cfg.username.as_deref() {
+            ctx.render_template(raw)?;
+        }
+        if let Some(raw) = cfg.sub.as_deref() {
+            ctx.render_template(raw)?;
+        }
+        ctx.render_template(
+            cfg.title_template
+                .as_deref()
+                .unwrap_or("{{ ProjectName }} {{ Tag }} is out!"),
+        )?;
+        ctx.render_template(cfg.url_template.as_deref().unwrap_or("{{ ReleaseURL }}"))?;
+        Ok(())
+    }
 }
 
 struct TwitterAnnouncer;
@@ -837,6 +1074,13 @@ impl Announcer for TwitterAnnouncer {
                 retry_policy,
             )
         })
+    }
+    fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
+        let Some(cfg) = announce.twitter.as_ref() else {
+            return Ok(());
+        };
+        render_message(ctx, cfg.message_template.as_deref())?;
+        Ok(())
     }
 }
 
@@ -891,6 +1135,16 @@ impl Announcer for MastodonAnnouncer {
         dispatch(ctx, "mastodon", &message, || {
             mastodon::send_mastodon(&server, &access_token, &message, retry_policy)
         })
+    }
+    fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
+        let Some(cfg) = announce.mastodon.as_ref() else {
+            return Ok(());
+        };
+        if let Some(raw) = cfg.server.as_deref() {
+            ctx.render_template(raw)?;
+        }
+        render_message(ctx, cfg.message_template.as_deref())?;
+        Ok(())
     }
 }
 
@@ -947,6 +1201,19 @@ impl Announcer for BlueskyAnnouncer {
             )
         })
     }
+    fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
+        let Some(cfg) = announce.bluesky.as_ref() else {
+            return Ok(());
+        };
+        if let Some(raw) = cfg.username.as_deref() {
+            ctx.render_template(raw)?;
+        }
+        render_message(ctx, cfg.message_template.as_deref())?;
+        if let Some(raw) = cfg.pds_url.as_deref() {
+            ctx.render_template(raw)?;
+        }
+        Ok(())
+    }
 }
 
 struct LinkedInAnnouncer;
@@ -989,6 +1256,13 @@ impl Announcer for LinkedInAnnouncer {
         dispatch(ctx, "linkedin", &message, || {
             linkedin::send_linkedin(&access_token, &message, log, retry_policy)
         })
+    }
+    fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
+        let Some(cfg) = announce.linkedin.as_ref() else {
+            return Ok(());
+        };
+        render_message(ctx, cfg.message_template.as_deref())?;
+        Ok(())
     }
 }
 
@@ -1045,6 +1319,30 @@ impl Announcer for OpenCollectiveAnnouncer {
             opencollective::send_opencollective(&token, &slug, &title, &html, retry_policy)
         })
     }
+    fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
+        let Some(cfg) = announce.opencollective.as_ref() else {
+            return Ok(());
+        };
+        if let Some(raw) = cfg.slug.as_deref() {
+            let slug = ctx.render_template(raw)?;
+            // Mirror `send`: a non-empty slug must satisfy the format rules.
+            // An empty render is skip-when-empty in `send`, so don't reject it.
+            if !slug.is_empty() {
+                opencollective::validate_slug(&slug)?;
+            }
+        }
+        ctx.render_template(
+            cfg.title_template
+                .as_deref()
+                .unwrap_or(opencollective::DEFAULT_TITLE_TEMPLATE),
+        )?;
+        ctx.render_template(
+            cfg.message_template
+                .as_deref()
+                .unwrap_or(opencollective::DEFAULT_MESSAGE_TEMPLATE),
+        )?;
+        Ok(())
+    }
 }
 
 struct EmailAnnouncer;
@@ -1082,12 +1380,7 @@ impl Announcer for EmailAnnouncer {
             }
         };
 
-        if !from.contains('@') {
-            anyhow::bail!(
-                "announce.email: 'from' address {:?} does not look like a valid email (missing @)",
-                from
-            );
-        }
+        validate_email_from(&from)?;
 
         if cfg.to.is_empty() {
             ctx.strict_guard(log, "announce.email: missing to (recipient list)")?;
@@ -1159,6 +1452,26 @@ impl Announcer for EmailAnnouncer {
                 email::send_sendmail(&email_params)
             })?;
         }
+        Ok(())
+    }
+    fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
+        let Some(cfg) = announce.email.as_ref() else {
+            return Ok(());
+        };
+        if let Some(raw) = cfg.from.as_deref() {
+            let from = ctx.render_template(raw)?;
+            validate_email_from(&from)?;
+        }
+        ctx.render_template(
+            cfg.subject_template
+                .as_deref()
+                .unwrap_or("{{ ProjectName }} {{ Tag }} is out!"),
+        )?;
+        ctx.render_template(
+            cfg.message_template
+                .as_deref()
+                .unwrap_or("You can view details from: {{ ReleaseURL }}"),
+        )?;
         Ok(())
     }
 }

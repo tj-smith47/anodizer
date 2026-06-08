@@ -28,9 +28,11 @@ pub mod webhook;
 mod announcers;
 mod dispatch;
 mod helpers;
+pub mod render_check;
 mod run;
 
 #[cfg(test)]
 mod tests;
 
+pub use render_check::validate_announce_templates;
 pub use run::{AnnounceStage, emit_summary};

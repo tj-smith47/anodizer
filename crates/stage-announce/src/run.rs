@@ -51,6 +51,84 @@ pub(crate) fn evaluate_gate(report: Option<&PublishReport>, gate: AnnounceGate) 
     }
 }
 
+/// The outcome of evaluating the announce stage's three short-circuits.
+///
+/// A single evaluation drives both the proceed/skip decision and (for
+/// [`announce_body`]) the matching side effect — log line and, on the gate
+/// path, the `publish_report.announce_gated` mutation. Centralising the
+/// branches here is the single source of truth: [`announce_should_run`] (the
+/// pre-publish guard's question) and [`announce_body`] (the live path) both
+/// derive from it and so cannot drift.
+pub(crate) enum AnnounceDecision {
+    /// Every short-circuit passed; the stage dispatches announcers.
+    Proceed,
+    /// `announce.skip` rendered truthy.
+    SkipBySkipTemplate,
+    /// `announce.if` rendered falsy.
+    SkipByIfCondition,
+    /// The `gate_on` PublishReport gate fired. Carries the count of
+    /// required-publisher failures for the operator-facing log line.
+    GatedByReport { required_failures: usize },
+}
+
+/// Evaluate the three template/report short-circuits the real announce path
+/// applies — `announce.skip`, `announce.if`, and the `gate_on` PublishReport
+/// gate — in dispatch order, returning the first that fires (or
+/// [`AnnounceDecision::Proceed`]).
+///
+/// Read-only (never mutates `publish_report.announce_gated`); the caller owns
+/// any side effect. Both [`announce_body`] and [`announce_should_run`] derive
+/// from this so the live path and the pre-publish guard ask the same question.
+pub(crate) fn announce_decision(
+    ctx: &mut Context,
+    announce: &anodizer_core::config::AnnounceConfig,
+) -> Result<AnnounceDecision> {
+    if let Some(ref skip_val) = announce.skip {
+        let should_skip = skip_val
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| "announce: render skip template")?;
+        if should_skip {
+            return Ok(AnnounceDecision::SkipBySkipTemplate);
+        }
+    }
+
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        announce.if_condition.as_deref(),
+        "announce",
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        return Ok(AnnounceDecision::SkipByIfCondition);
+    }
+
+    if evaluate_gate(ctx.publish_report.as_ref(), announce.gate_on) {
+        let required_failures = ctx
+            .publish_report
+            .as_ref()
+            .map_or(0, |r| r.required_failures());
+        return Ok(AnnounceDecision::GatedByReport { required_failures });
+    }
+
+    Ok(AnnounceDecision::Proceed)
+}
+
+/// Whether the announce stage would dispatch any announcer for this run.
+///
+/// Thin bool projection of [`announce_decision`]: `true` ≡
+/// [`AnnounceDecision::Proceed`]. Read-only (never mutates
+/// `publish_report.announce_gated`) so the pre-publish render guard can ask
+/// the same question the live path answers, without side effects, and so
+/// never flags announcers a gate would skip.
+pub(crate) fn announce_should_run(
+    ctx: &mut Context,
+    announce: &anodizer_core::config::AnnounceConfig,
+) -> Result<bool> {
+    Ok(matches!(
+        announce_decision(ctx, announce)?,
+        AnnounceDecision::Proceed
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // AnnounceStage
 // ---------------------------------------------------------------------------
@@ -102,43 +180,34 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
         }
     };
 
-    // Evaluate template-conditional skip.
-    if let Some(ref skip_val) = announce.skip {
-        let should_skip = skip_val
-            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-            .with_context(|| "announce: render skip template")?;
-        if should_skip {
+    // Single source of truth for the skip/if/gate_on decision (shared with
+    // the pre-publish guard via `announce_should_run`). Only the
+    // side-effecting bits — the log line and, on the gate path, the
+    // `announce_gated` mutation — live here.
+    match announce_decision(ctx, &announce)? {
+        AnnounceDecision::Proceed => {}
+        AnnounceDecision::SkipBySkipTemplate => {
             log.status("announce.skip evaluated to true — skipping");
             return Ok(());
         }
-    }
-
-    // `announce.if:` conditional gate.
-    let proceed = anodizer_core::config::evaluate_if_condition(
-        announce.if_condition.as_deref(),
-        "announce",
-        |t| ctx.render_template(t),
-    )?;
-    if !proceed {
-        log.status("announce: skipped — `if` condition evaluated falsy");
-        return Ok(());
-    }
-
-    // PublishReport-driven gate: skip when configured required (or all)
-    // publishers didn't succeed. The flag on PublishReport lets the
-    // run-summary JSON expose the skip cleanly to CI.
-    let gate_on = announce.gate_on;
-    let report_ref = ctx.publish_report.as_ref();
-    if evaluate_gate(report_ref, gate_on) {
-        let required_failures = report_ref.map_or(0, |r| r.required_failures());
-        log.status(&format!(
-            "announce skipped via gate_on={gate_on:?}; publish_report has \
-                 {required_failures} required-failure(s)"
-        ));
-        if let Some(report_mut) = ctx.publish_report.as_mut() {
-            report_mut.announce_gated = true;
+        AnnounceDecision::SkipByIfCondition => {
+            log.status("announce: skipped — `if` condition evaluated falsy");
+            return Ok(());
         }
-        return Ok(());
+        AnnounceDecision::GatedByReport { required_failures } => {
+            // PublishReport-driven gate: configured required (or all)
+            // publishers didn't succeed. The flag on PublishReport lets the
+            // run-summary JSON expose the skip cleanly to CI.
+            let gate_on = announce.gate_on;
+            log.status(&format!(
+                "announce skipped via gate_on={gate_on:?}; publish_report has \
+                 {required_failures} required-failure(s)"
+            ));
+            if let Some(report_mut) = ctx.publish_report.as_mut() {
+                report_mut.announce_gated = true;
+            }
+            return Ok(());
+        }
     }
 
     let mut errors: Vec<String> = vec![];
@@ -612,7 +681,7 @@ mod summary_tests {
     fn emit_summary_writes_when_gate_would_fire() {
         // Mirrors the original `announce_stage_emits_summary_when_gate_fires`
         // intent: the summary must be emitted even when announce was
-        // gated off. We drive `AnnounceStage.run` first (which sets
+        // gated off. Drive `AnnounceStage.run` first (which sets
         // `announce_gated = true` via the gate path), then invoke
         // `emit_summary` — the order the pipeline layer enforces.
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -669,7 +738,7 @@ mod summary_tests {
         // Regression: a release that operator-skipped announce entirely
         // (`--skip=announce` in the pipeline) STILL gets a summary
         // write, because emit_summary lives on Pipeline rather than
-        // inside AnnounceStage. We model "AnnounceStage.run never
+        // inside AnnounceStage. Model "AnnounceStage.run never
         // invoked" by simply not calling it.
         let tmp = tempfile::tempdir().expect("tempdir");
         let summary_path = tmp.path().join("summary.json");

@@ -32,7 +32,7 @@ use serde_json::Value;
 /// [`anodizer_core::crate_scope::resolve_crate_tag`] (git-backed); tests inject
 /// a fixed-tag closure so the version dimension can be exercised without a git
 /// fixture.
-pub(crate) type TagResolver<'a> = &'a dyn Fn(&Context, &CrateConfig) -> Option<String>;
+pub type TagResolver<'a> = &'a dyn Fn(&Context, &CrateConfig) -> Option<String>;
 
 #[cfg(test)]
 mod acceptance;
@@ -304,7 +304,7 @@ fn validators() -> Vec<Box<dyn PublisherSchemaValidator>> {
 /// scoped to that crate's own version. Production callers pass
 /// [`anodizer_core::crate_scope::resolve_crate_tag`]; tests inject a fixed-tag
 /// closure.
-pub(crate) fn validate_publisher_schemas(
+pub fn validate_publisher_schemas(
     ctx: &mut Context,
     log: &StageLogger,
     resolve_tag: TagResolver<'_>,

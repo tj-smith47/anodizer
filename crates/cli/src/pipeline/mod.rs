@@ -428,4 +428,56 @@ mod tests {
         p.run(&mut ctx, &log)
             .expect("prebuilt binary satisfies the guard under --skip=build");
     }
+
+    /// A stage that always fails, standing in for `PrePublishGuardStage`
+    /// catching a broken template.
+    struct FailingGuardStage;
+    impl Stage for FailingGuardStage {
+        fn name(&self) -> &str {
+            "prepublish-guard"
+        }
+        fn run(&self, _ctx: &mut Context) -> Result<()> {
+            anyhow::bail!("prepublish-guard: broken template")
+        }
+    }
+
+    /// A spy standing in for `PublishStage`: flips a shared flag if its body
+    /// ever runs, so a test can assert the one-way-door publisher was never
+    /// reached.
+    struct SpyPublishStage(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl Stage for SpyPublishStage {
+        fn name(&self) -> &str {
+            "publish"
+        }
+        fn run(&self, _ctx: &mut Context) -> Result<()> {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// A failing `prepublish-guard` aborts the pipeline BEFORE `PublishStage`
+    /// (an irreversible one-way-door publisher) is ever invoked. This is the
+    /// load-bearing guarantee: a broken template must abort with no publisher
+    /// having fired.
+    #[test]
+    fn failing_prepublish_guard_aborts_before_publish_runs() {
+        let published = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut p = Pipeline::new();
+        p.add(Box::new(FailingGuardStage));
+        p.add(Box::new(SpyPublishStage(published.clone())));
+
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        let log = ctx.logger("pipeline-test");
+        let err = p
+            .run(&mut ctx, &log)
+            .expect_err("a failing prepublish-guard must abort the pipeline");
+        assert!(
+            err.to_string().contains("broken template"),
+            "abort surfaces the guard's error: {err}"
+        );
+        assert!(
+            !published.load(std::sync::atomic::Ordering::SeqCst),
+            "PublishStage must NOT run after the guard fails"
+        );
+    }
 }

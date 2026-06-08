@@ -69,6 +69,7 @@ dependencies = [
  "anodizer-stage-notarize",
  "anodizer-stage-nsis",
  "anodizer-stage-pkg",
+ "anodizer-stage-prepublish-guard",
  "anodizer-stage-publish",
  "anodizer-stage-release",
  "anodizer-stage-sbom",
@@ -376,6 +377,16 @@ dependencies = [
  "glob",
  "serde_yaml_ng",
  "tempfile",
+]
+
+[[package]]
+name = "anodizer-stage-prepublish-guard"
+version = "0.1.0"
+dependencies = [
+ "anodizer-core",
+ "anodizer-stage-announce",
+ "anodizer-stage-publish",
+ "anyhow",
 ]
 
 [[package]]
