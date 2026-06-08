@@ -89,11 +89,23 @@ fn guard_checks(
     // before this fn returns.
     let prior_strict = ctx.set_render_strict(true);
 
-    if let Err(e) = anodizer_stage_publish::validate_publisher_schemas(ctx, log, resolve_tag) {
+    // Guard only what will actually fire. A skipped stage publishes nothing, so
+    // a template it would have rendered is not a release-blocking defect — and
+    // some of those templates reference release-phase vars (`{{ ReleaseURL }}`)
+    // that are only set once the `release` stage runs. The determinism harness
+    // rebuilds with `--skip=release,publish,announce,...` (and NOT `--snapshot`
+    // on a tag-push run, so `is_snapshot()` is false here): gating each check on
+    // its stage keeps the guard a clean no-op there while still firing on a real
+    // release where none of these are skipped and `ReleaseURL` is populated.
+    if !ctx.should_skip("publish")
+        && let Err(e) = anodizer_stage_publish::validate_publisher_schemas(ctx, log, resolve_tag)
+    {
         errors.push(format!("{e:#}"));
     }
 
-    if let Err(e) = anodizer_stage_announce::validate_announce_templates(ctx, log) {
+    if !ctx.should_skip("announce")
+        && let Err(e) = anodizer_stage_announce::validate_announce_templates(ctx, log)
+    {
         errors.push(format!("{e:#}"));
     }
 
@@ -226,6 +238,44 @@ mod tests {
         PrePublishGuardStage
             .run(&mut ctx)
             .expect("nightly must be a no-op");
+    }
+
+    /// (7) Regression for the v0.6.0 determinism failure: the harness rebuilds
+    /// with `--skip=release,publish,announce` and (on a tag-push run) NOT
+    /// `--snapshot`, so neither the snapshot nor nightly skip fires. A broken
+    /// announce template whose announce stage is skipped must NOT abort — the
+    /// release stage that would populate the release URL is skipped too, so the
+    /// template is unrenderable yet nothing will dispatch it.
+    #[test]
+    fn skipped_stages_are_not_guarded_without_snapshot() {
+        let config = Config {
+            project_name: "widget".to_string(),
+            announce: Some(AnnounceConfig {
+                discord: Some(DiscordAnnounce {
+                    enabled: enabled(),
+                    // References a release-phase var the skipped release stage
+                    // never sets — exactly the harness failure mode.
+                    message_template: Some("{{ ReleaseURL }}".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let opts = ContextOptions {
+            skip_stages: vec![
+                "release".to_string(),
+                "publish".to_string(),
+                "announce".to_string(),
+            ],
+            ..ContextOptions::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        // Deliberately do NOT set the release URL: the release stage is skipped.
+        PrePublishGuardStage
+            .run(&mut ctx)
+            .expect("a skipped announce stage must not be guarded");
     }
 
     // ── Publisher manifest render (all three config modes) ────────────────
