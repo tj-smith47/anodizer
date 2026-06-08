@@ -969,7 +969,7 @@ fn schemastore_pr_body(applied: &[SchemaPlan]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodizer_core::config::{SchemaEntry, SchemastoreConfig};
+    use anodizer_core::config::{RepositoryConfig, SchemaEntry, SchemastoreConfig};
     use anodizer_core::test_helpers::TestContextBuilder;
 
     fn external_entry() -> SchemaEntry {
@@ -1713,5 +1713,444 @@ mod tests {
             }
             other => panic!("expected Schemastore extra, got {other:?}"),
         }
+    }
+
+    // ===================================================================
+    // I/O shell: the PUBLISH flow that touches git + the filesystem.
+    //
+    // These exercise the helpers `run_real` orchestrates — the file
+    // read/format/write seams, the upstream-sync git plumbing, and the
+    // pre-clone guards — against a local bare repo (no network). The
+    // pattern mirrors `util/pr.rs`: a `file://`-equivalent local git repo
+    // reached through `repository.git.url`, a failing `gh`/network surface
+    // forced by a non-resolvable upstream, and `StageLogger::with_capture`
+    // for status-line assertions. Tests that mutate `PATH`/process env run
+    // `#[serial]`.
+    // ===================================================================
+
+    use serial_test::serial;
+    use std::sync::OnceLock;
+
+    /// Quiet logger paired with an in-memory capture so the helper's status
+    /// lines can be asserted without a Context.
+    fn capturing_log() -> (StageLogger, anodizer_core::log::LogCapture) {
+        StageLogger::with_capture("schemastore", anodizer_core::log::Verbosity::Quiet)
+    }
+
+    fn quiet_log() -> StageLogger {
+        StageLogger::new("schemastore", anodizer_core::log::Verbosity::Quiet)
+    }
+
+    /// Give the process a git identity + disable interactive credential
+    /// prompts so the hardcoded `https://github.com/SchemaStore/...`
+    /// fetch in `sync_to_upstream` fails fast instead of hanging. Set once
+    /// per process. Mirrors `util/pr.rs::ensure_git_identity`.
+    fn ensure_git_identity() {
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            // SAFETY: runs exactly once per process under OnceLock; values
+            // are constants, not user input.
+            unsafe {
+                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
+                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
+                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
+                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
+                std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+            }
+        });
+    }
+
+    // --- read_local_vendor_schema --------------------------------------
+
+    #[test]
+    fn read_local_vendor_schema_reads_and_reformats_from_project_root() {
+        // A minified source schema under project_root must come back
+        // reformatted to SchemaStore's prettier defaults (2-space indent,
+        // trailing newline) — the exact bytes a publish would write.
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir_all(root.path().join("schemas")).unwrap();
+        let minified = r#"{"$schema":"https://json-schema.org/draft-07/schema#","type":"object"}"#;
+        std::fs::write(
+            root.path().join("schemas/cfgd-config.schema.json"),
+            minified,
+        )
+        .unwrap();
+
+        let formatted = read_local_vendor_schema(root.path(), &vendor_entry())
+            .expect("read + reformat vendor schema");
+        // Reformatted: pretty-printed, distinct from the minified source.
+        assert_ne!(formatted, minified, "must be reformatted, not echoed");
+        assert!(
+            formatted.ends_with("}\n"),
+            "SchemaStore formatting appends a trailing newline; got {formatted:?}"
+        );
+        assert!(
+            formatted.contains("\n  \"type\""),
+            "expected 2-space indented pretty output; got {formatted:?}"
+        );
+        // Byte-identical to the shared formatter, so the change-decision and
+        // the write path derive the same content.
+        assert_eq!(formatted, manifest::format_vendor_schema(minified).unwrap());
+    }
+
+    #[test]
+    fn read_local_vendor_schema_errors_when_schema_file_unset() {
+        // An entry with no `schema_file` cannot be vendored — the error
+        // must name the offending entry.
+        let root = tempfile::tempdir().expect("root");
+        let mut entry = vendor_entry();
+        entry.schema_file = None;
+        let err = read_local_vendor_schema(root.path(), &entry)
+            .expect_err("missing schema_file must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cfgd-config") && msg.contains("no schema_file"),
+            "expected an actionable no-schema_file error naming the entry; got {msg}"
+        );
+    }
+
+    #[test]
+    fn read_local_vendor_schema_errors_when_file_absent_on_disk() {
+        // `schema_file` set but the file is missing under project_root.
+        let root = tempfile::tempdir().expect("root");
+        let err = read_local_vendor_schema(root.path(), &vendor_entry())
+            .expect_err("absent file must error");
+        assert!(
+            err.to_string().contains("read schema_file"),
+            "expected a read-failure context; got {err}"
+        );
+    }
+
+    // --- read_cloned_vendor_file / read_cloned_jsonc -------------------
+
+    #[test]
+    fn read_cloned_vendor_file_returns_content_when_present_else_none() {
+        let repo = tempfile::tempdir().expect("repo");
+        let plan = plan_schema(&vendor_entry(), "cfgd machine config", false, None, None).unwrap();
+        // Absent upstream copy ⇒ None (which the decision reads as change-needed).
+        assert!(
+            read_cloned_vendor_file(repo.path(), &plan).is_none(),
+            "absent cloned vendor file must yield None"
+        );
+        // Seed the cloned tree at the plan's vendor path.
+        let rel = plan.vendor_path.as_ref().unwrap();
+        std::fs::create_dir_all(repo.path().join(rel).parent().unwrap()).unwrap();
+        std::fs::write(repo.path().join(rel), "UPSTREAM-COPY\n").unwrap();
+        assert_eq!(
+            read_cloned_vendor_file(repo.path(), &plan).as_deref(),
+            Some("UPSTREAM-COPY\n"),
+            "present cloned vendor file must be returned verbatim"
+        );
+    }
+
+    #[test]
+    fn read_cloned_vendor_file_none_for_external_plan_without_path() {
+        // An external plan has no vendor_path, so the read is short-circuited
+        // to None without touching the filesystem.
+        let repo = tempfile::tempdir().expect("repo");
+        let plan = plan_schema(&external_entry(), "Anodizer config", false, None, None).unwrap();
+        assert!(read_cloned_vendor_file(repo.path(), &plan).is_none());
+    }
+
+    #[test]
+    fn read_cloned_jsonc_returns_allowlist_when_present_else_none() {
+        let repo = tempfile::tempdir().expect("repo");
+        assert!(
+            read_cloned_jsonc(repo.path()).is_none(),
+            "absent schema-validation.jsonc must yield None"
+        );
+        let abs = repo.path().join(DIALECT_ALLOWLIST_PATH);
+        std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        std::fs::write(&abs, "{ \"highSchemaVersion\": [] }\n").unwrap();
+        assert_eq!(
+            read_cloned_jsonc(repo.path()).as_deref(),
+            Some("{ \"highSchemaVersion\": [] }\n")
+        );
+    }
+
+    // --- write_vendor_schema -------------------------------------------
+
+    #[test]
+    fn write_vendor_schema_creates_parent_dirs_and_writes_formatted_bytes() {
+        // The cloned repo has no `src/schemas/json/` dir yet — the writer
+        // must mkdir -p the parents and land the formatted bytes there.
+        let repo = tempfile::tempdir().expect("repo");
+        let entry = vendor_entry();
+        let plan = plan_schema(&entry, "cfgd machine config", false, None, None).unwrap();
+        let formatted =
+            manifest::format_vendor_schema(DRAFT07_SCHEMA).expect("format draft-07 schema");
+        let (log, cap) = capturing_log();
+
+        write_vendor_schema(repo.path(), &entry, &plan, &formatted, &log)
+            .expect("write vendor schema into a fresh clone");
+
+        let dest = repo.path().join("src/schemas/json/cfgd-config.json");
+        assert!(dest.exists(), "vendored file must be created at {dest:?}");
+        assert_eq!(
+            std::fs::read_to_string(&dest).unwrap(),
+            formatted,
+            "the written bytes must byte-equal the formatted schema"
+        );
+        let msgs: Vec<String> = cap.all_messages().into_iter().map(|(_, m)| m).collect();
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("vendored") && m.contains("src/schemas/json/cfgd-config.json")),
+            "expected a 'vendored … → path' status line; got {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn write_vendor_schema_allowlists_too_high_dialect_in_same_pr() {
+        // A 2020-12 schema must (a) be written AND (b) have its vendored
+        // filename appended to `highSchemaVersion` in the SAME clone, so
+        // SchemaStore CI accepts the high dialect. Seed an empty allowlist
+        // so we can observe the append.
+        let repo = tempfile::tempdir().expect("repo");
+        let allow_abs = repo.path().join(DIALECT_ALLOWLIST_PATH);
+        std::fs::create_dir_all(allow_abs.parent().unwrap()).unwrap();
+        std::fs::write(&allow_abs, "{\n  \"highSchemaVersion\": []\n}\n").unwrap();
+
+        let entry = vendor_entry();
+        let plan = plan_schema(&entry, "cfgd machine config", false, None, None).unwrap();
+        let formatted =
+            manifest::format_vendor_schema(DRAFT2020_SCHEMA).expect("format 2020-12 schema");
+        let (log, cap) = capturing_log();
+
+        write_vendor_schema(repo.path(), &entry, &plan, &formatted, &log)
+            .expect("write too-high vendor schema");
+
+        // The allowlist now contains the vendored filename WITH `.json`.
+        let updated = std::fs::read_to_string(&allow_abs).unwrap();
+        assert!(
+            super::super::scan::jsonc_array_contains(
+                &updated,
+                "highSchemaVersion",
+                "cfgd-config.json"
+            ),
+            "too-high dialect must allowlist its vendored basename; got {updated}"
+        );
+        let msgs: Vec<String> = cap.all_messages().into_iter().map(|(_, m)| m).collect();
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("allowlisted") && m.contains("cfgd-config.json")),
+            "expected an 'allowlisted … cfgd-config.json' status line; got {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn write_vendor_schema_ok_dialect_does_not_touch_allowlist() {
+        // A draft-07 schema is accepted unconditionally — the allowlist must
+        // be left exactly as found (no spurious append).
+        let repo = tempfile::tempdir().expect("repo");
+        let allow_abs = repo.path().join(DIALECT_ALLOWLIST_PATH);
+        std::fs::create_dir_all(allow_abs.parent().unwrap()).unwrap();
+        let original = "{\n  \"highSchemaVersion\": []\n}\n";
+        std::fs::write(&allow_abs, original).unwrap();
+
+        let entry = vendor_entry();
+        let plan = plan_schema(&entry, "cfgd machine config", false, None, None).unwrap();
+        let formatted = manifest::format_vendor_schema(DRAFT07_SCHEMA).unwrap();
+
+        write_vendor_schema(repo.path(), &entry, &plan, &formatted, &quiet_log())
+            .expect("write ok-dialect vendor schema");
+
+        assert_eq!(
+            std::fs::read_to_string(&allow_abs).unwrap(),
+            original,
+            "an OK dialect must not mutate the allowlist"
+        );
+    }
+
+    #[test]
+    fn write_vendor_schema_errors_when_plan_has_no_path() {
+        // An external plan reaching the writer is a bug; the writer guards
+        // it with an explicit error rather than panicking on the None path.
+        let repo = tempfile::tempdir().expect("repo");
+        let entry = external_entry();
+        let plan = plan_schema(&entry, "Anodizer config", false, None, None).unwrap();
+        let err = write_vendor_schema(repo.path(), &entry, &plan, "{}\n", &quiet_log())
+            .expect_err("external plan has no vendor path");
+        assert!(
+            err.to_string().contains("no path"),
+            "expected a 'no path' error; got {err}"
+        );
+    }
+
+    // --- raw_dialect (classifier off raw bytes) ------------------------
+
+    #[test]
+    fn raw_dialect_classifies_too_high_ok_and_unknown_from_schema_field() {
+        assert_eq!(raw_dialect(DRAFT2020_SCHEMA), Dialect::TooHigh);
+        assert_eq!(raw_dialect(DRAFT07_SCHEMA), Dialect::Ok);
+        // No `$schema` field ⇒ Unknown (caller skips the allowlist).
+        assert_eq!(raw_dialect(r#"{"type":"object"}"#), Dialect::Unknown);
+        // Malformed JSON also degrades to Unknown rather than panicking.
+        assert_eq!(raw_dialect("not json at all"), Dialect::Unknown);
+    }
+
+    // --- sync_to_upstream (git plumbing) -------------------------------
+    //
+    // Real contract: `git remote add upstream` is best-effort (`let _ =`,
+    // tolerating "already exists"), but the `git fetch` and `git reset
+    // --hard` steps are `?`-propagated. The fetch targets the hardcoded
+    // PUBLIC `github.com/SchemaStore/schemastore.git`, which a networked
+    // runner reaches WITHOUT auth — so against a real cloned fork the
+    // function SUCCEEDS (it does not error on "unreachable"; the upstream
+    // is reachable). The genuinely-erroring, hermetic path is a working
+    // dir that is not a git repo at all: `git fetch` then fails locally
+    // (no `.git`) before any network contact, and the error propagates.
+
+    #[test]
+    #[serial]
+    fn sync_to_upstream_propagates_fetch_error_in_a_non_repo_dir() {
+        // A dir with no `.git`: `git remote add upstream` fails (ignored,
+        // best-effort), then `git fetch --depth=1 upstream master` fails
+        // because the cwd is not a repository — purely local, no network —
+        // and the `?` surfaces it so `run_real` aborts before splicing.
+        ensure_git_identity();
+        let not_a_repo = tempfile::tempdir().expect("scratch dir");
+
+        let err = sync_to_upstream(not_a_repo.path(), &quiet_log())
+            .expect_err("git fetch in a non-repo dir must surface as an error");
+        assert!(
+            err.to_string().contains("git fetch upstream"),
+            "expected the fetch-upstream failure context (the `?`-propagated \
+             step); got {err}"
+        );
+    }
+
+    // --- run_real pre-clone guards (no network reached) ----------------
+
+    /// A schemastore config whose single effective schema is `external_entry`,
+    /// optionally carrying a `repository`. Drives `run_real` through its
+    /// guard ladder without ever reaching the network probe (which only
+    /// `run_publish`'s non-dry-run path hits).
+    fn schemastore_cfg(repo: Option<RepositoryConfig>) -> SchemastoreConfig {
+        SchemastoreConfig {
+            schemas: vec![external_entry()],
+            repository: repo,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn run_real_bails_on_empty_version_before_any_clone() {
+        // Version is the branch key (`schemastore-v<version>`); an empty one
+        // would collide release-to-release and defeat the duplicate-PR guard.
+        // `run_real` must bail BEFORE the irreversible clone/push.
+        let mut ctx = TestContextBuilder::new().populate_git_vars(false).build();
+        assert!(ctx.version().is_empty(), "precondition: empty Version");
+        let cfg = schemastore_cfg(Some(RepositoryConfig {
+            owner: Some("tj-smith47".into()),
+            name: Some("schemastore".into()),
+            ..Default::default()
+        }));
+        let effective = vec![(&cfg.schemas[0], "Anodizer config".to_string())];
+        let err = run_real(&mut ctx, &cfg, &effective, &quiet_log())
+            .expect_err("empty Version must abort run_real");
+        assert!(
+            err.to_string().contains("Version is empty"),
+            "expected the empty-Version guard; got {err}"
+        );
+    }
+
+    #[test]
+    fn run_real_bails_when_no_repository_fork_configured() {
+        // No `repository` ⇒ no fork to push the branch / open the PR.
+        let mut ctx = TestContextBuilder::new().build();
+        assert!(!ctx.version().is_empty(), "precondition: non-empty Version");
+        let cfg = schemastore_cfg(None);
+        let effective = vec![(&cfg.schemas[0], "Anodizer config".to_string())];
+        let err = run_real(&mut ctx, &cfg, &effective, &quiet_log())
+            .expect_err("missing repository must abort run_real");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no `repository`") && msg.contains("fork is required"),
+            "expected the no-fork guard; got {msg}"
+        );
+    }
+
+    #[test]
+    fn run_real_bails_when_repository_missing_owner_or_name() {
+        // A `repository` present but missing owner/name cannot resolve a
+        // clone target — the guard fires before the clone.
+        let mut ctx = TestContextBuilder::new().build();
+        let cfg = schemastore_cfg(Some(RepositoryConfig {
+            owner: Some("tj-smith47".into()),
+            name: None, // missing name
+            ..Default::default()
+        }));
+        let effective = vec![(&cfg.schemas[0], "Anodizer config".to_string())];
+        let err = run_real(&mut ctx, &cfg, &effective, &quiet_log())
+            .expect_err("missing repository name must abort run_real");
+        assert!(
+            err.to_string().contains("must set both `owner` and `name`"),
+            "expected the owner/name guard; got {err}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn run_real_aborts_when_fork_clone_fails() {
+        // Past the pre-clone guards, the first irreversible step is cloning
+        // the fork. A `repository.git.url` pointing at a path that is not a
+        // git repo makes `clone_repo` (SSH/local-path branch) fail — purely
+        // local, no network — so `run_real` aborts at the clone, BEFORE the
+        // live upstream sync / any splice / push / PR. This proves the clone
+        // seam's error gates the rest of the flow without depending on the
+        // (reachable, public) SchemaStore upstream or a push to a fixture.
+        ensure_git_identity();
+        let bogus = tempfile::tempdir().expect("scratch");
+        let bogus_url = bogus
+            .path()
+            .join("not-a-repo")
+            .to_string_lossy()
+            .into_owned();
+
+        let mut ctx = TestContextBuilder::new().build();
+        assert!(!ctx.version().is_empty(), "precondition: non-empty Version");
+        let cfg = schemastore_cfg(Some(RepositoryConfig {
+            owner: Some("tj-smith47".into()),
+            name: Some("schemastore".into()),
+            // Local-path "git url" that is not a repository ⇒ clone fails.
+            git: Some(anodizer_core::config::GitRepoConfig {
+                url: Some(bogus_url),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        let effective = vec![(&cfg.schemas[0], "Anodizer config".to_string())];
+        let err = run_real(&mut ctx, &cfg, &effective, &quiet_log())
+            .expect_err("a failed fork clone must abort run_real");
+        // The clone helper labels its failures with the publisher name; the
+        // abort must originate at the clone, not later in the flow.
+        assert!(
+            err.to_string().contains("schemastore"),
+            "expected the clone-failure error from the `schemastore` clone \
+             step; got {err}"
+        );
+    }
+
+    // --- commit / PR text builders -------------------------------------
+
+    #[test]
+    fn schemastore_branch_keys_on_version() {
+        assert_eq!(schemastore_branch("0.4.2"), "schemastore-v0.4.2");
+        assert_eq!(schemastore_branch("1.0.0-rc.1"), "schemastore-v1.0.0-rc.1");
+    }
+
+    #[test]
+    fn commit_msg_and_pr_title_name_every_applied_schema() {
+        let a = plan_schema(&external_entry(), "Anodizer config", false, None, None).unwrap();
+        let b = plan_schema(&vendor_entry(), "cfgd machine config", false, None, None).unwrap();
+        let applied = vec![a, b];
+        assert_eq!(
+            schemastore_commit_msg(&applied),
+            "Register/refresh Anodizer, cfgd-config"
+        );
+        assert_eq!(
+            schemastore_pr_title(&applied),
+            "Add/update Anodizer, cfgd-config schema(s)"
+        );
     }
 }
