@@ -1753,6 +1753,743 @@ mod tests {
             "status should survive redaction: {out}"
         );
     }
+
+    // -----------------------------------------------------------------
+    // Live HTTP path tests (scripted responder)
+    //
+    // The in-process responder records (method, path, body) for every
+    // request. Header capture is not available, so credential/checksum
+    // header assertions go through `resolve_http_credentials` directly
+    // (covered below) while the wire-shape assertions here pin method,
+    // path, uploaded body bytes, and retry count.
+    // -----------------------------------------------------------------
+
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+    use std::time::Duration;
+
+    fn fast_policy(max_attempts: u32) -> RetryPolicy {
+        RetryPolicy {
+            max_attempts,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        }
+    }
+
+    /// Build a throwaway file artifact on disk so `upload_single_artifact`
+    /// can hash + read it. Returns the tempdir guard (keep alive) and the
+    /// constructed `Artifact`.
+    fn file_artifact(contents: &[u8], name: &str) -> (tempfile::TempDir, Artifact) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        fs::write(&path, contents).unwrap();
+        let art = Artifact {
+            kind: ArtifactKind::Archive,
+            name: name.to_string(),
+            path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        };
+        (dir, art)
+    }
+
+    fn upload_ctx() -> Context {
+        Context::new(Config::default(), ContextOptions::default())
+    }
+
+    fn no_headers() -> HashMap<String, String> {
+        HashMap::new()
+    }
+
+    /// PUT upload to a 201-route: the responder records exactly one
+    /// request, with method PUT, the rendered path, and the file bytes as
+    /// the body.
+    #[test]
+    fn upload_put_sends_file_body_to_target() {
+        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/repo/myapp.tar.gz",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let (_dir, art) = file_artifact(b"payload-bytes", "myapp.tar.gz");
+        let ctx = upload_ctx();
+        let log = StageLogger::new("artifactory", Verbosity::Quiet);
+        let url = format!("http://{addr}/repo/myapp.tar.gz");
+        let custom = no_headers();
+        let client = build_reqwest_client(None, None, None).unwrap();
+        upload_single_artifact(
+            &client,
+            &UploadHeaders {
+                method: "PUT",
+                url: &url,
+                checksum_header: "X-Checksum-SHA256",
+                custom_headers: &custom,
+            },
+            &UploadAuth {
+                username: "",
+                password: "",
+            },
+            &art,
+            &ctx,
+            &fast_policy(3),
+            &log,
+        )
+        .expect("201 upload succeeds");
+
+        let entries = log_recorder.lock().unwrap();
+        assert_eq!(entries.len(), 1, "exactly one request: {entries:?}");
+        assert_eq!(entries[0].method, "PUT");
+        assert_eq!(entries[0].path, "/repo/myapp.tar.gz");
+        assert_eq!(
+            entries[0].body, "payload-bytes",
+            "the file bytes are the request body"
+        );
+    }
+
+    /// POST method routes the request as a POST (not PUT). Pins that the
+    /// configured method actually selects `client.post`.
+    #[test]
+    fn upload_post_uses_post_verb() {
+        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repo/app.bin",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let (_dir, art) = file_artifact(b"x", "app.bin");
+        let ctx = upload_ctx();
+        let log = StageLogger::new("artifactory", Verbosity::Quiet);
+        let url = format!("http://{addr}/repo/app.bin");
+        let custom = no_headers();
+        let client = build_reqwest_client(None, None, None).unwrap();
+        upload_single_artifact(
+            &client,
+            &UploadHeaders {
+                method: "POST",
+                url: &url,
+                checksum_header: "",
+                custom_headers: &custom,
+            },
+            &UploadAuth {
+                username: "",
+                password: "",
+            },
+            &art,
+            &ctx,
+            &fast_policy(1),
+            &log,
+        )
+        .expect("200 POST succeeds");
+        let entries = log_recorder.lock().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].method, "POST");
+    }
+
+    /// A 503 on the first attempt retries and the second attempt (200)
+    /// succeeds — exactly two requests reach the wire.
+    #[test]
+    fn upload_retries_5xx_then_succeeds() {
+        let (addr, log_recorder) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "PUT",
+                path_pattern: "/repo/r.tar.gz",
+                response: "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "PUT",
+                path_pattern: "/repo/r.tar.gz",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]);
+        let (_dir, art) = file_artifact(b"retry-body", "r.tar.gz");
+        let ctx = upload_ctx();
+        let log = StageLogger::new("artifactory", Verbosity::Quiet);
+        let url = format!("http://{addr}/repo/r.tar.gz");
+        let custom = no_headers();
+        let client = build_reqwest_client(None, None, None).unwrap();
+        upload_single_artifact(
+            &client,
+            &UploadHeaders {
+                method: "PUT",
+                url: &url,
+                checksum_header: "X-Checksum-SHA256",
+                custom_headers: &custom,
+            },
+            &UploadAuth {
+                username: "",
+                password: "",
+            },
+            &art,
+            &ctx,
+            &fast_policy(3),
+            &log,
+        )
+        .expect("retry recovers from 503");
+        let entries = log_recorder.lock().unwrap();
+        assert_eq!(entries.len(), 2, "one 503 + one 201 = two attempts");
+    }
+
+    /// 5xx on every attempt exhausts the retry budget and surfaces an
+    /// error naming the artifact, method, and status. The number of
+    /// requests equals `max_attempts`.
+    #[test]
+    fn upload_5xx_exhausts_retries_and_errors() {
+        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/repo/e.tar.gz",
+            response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let (_dir, art) = file_artifact(b"e", "e.tar.gz");
+        let ctx = upload_ctx();
+        let log = StageLogger::new("artifactory", Verbosity::Quiet);
+        let url = format!("http://{addr}/repo/e.tar.gz");
+        let custom = no_headers();
+        let client = build_reqwest_client(None, None, None).unwrap();
+        let err = upload_single_artifact(
+            &client,
+            &UploadHeaders {
+                method: "PUT",
+                url: &url,
+                checksum_header: "X-Checksum-SHA256",
+                custom_headers: &custom,
+            },
+            &UploadAuth {
+                username: "",
+                password: "",
+            },
+            &art,
+            &ctx,
+            &fast_policy(3),
+            &log,
+        )
+        .expect_err("persistent 500 must exhaust and error");
+        let chain = format!("{err:#}");
+        assert!(chain.contains("e.tar.gz"), "names artifact: {chain}");
+        assert!(chain.contains("500"), "carries upstream status: {chain}");
+
+        let entries = log_recorder.lock().unwrap();
+        assert_eq!(entries.len(), 3, "all three attempts hit the wire");
+    }
+
+    /// A 4xx (e.g. 403) fast-fails: no retry, exactly one request, and the
+    /// decoded Artifactory error envelope reaches the error message.
+    #[test]
+    fn upload_4xx_fast_fails_without_retry() {
+        let body = r#"{"errors":[{"status":403,"message":"forbidden path"}]}"#;
+        let resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_boxed_str(),
+        );
+        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/repo/f.tar.gz",
+            response: resp,
+            times: None,
+        }]);
+        let (_dir, art) = file_artifact(b"f", "f.tar.gz");
+        let ctx = upload_ctx();
+        let log = StageLogger::new("artifactory", Verbosity::Quiet);
+        let url = format!("http://{addr}/repo/f.tar.gz");
+        let custom = no_headers();
+        let client = build_reqwest_client(None, None, None).unwrap();
+        let err = upload_single_artifact(
+            &client,
+            &UploadHeaders {
+                method: "PUT",
+                url: &url,
+                checksum_header: "X-Checksum-SHA256",
+                custom_headers: &custom,
+            },
+            &UploadAuth {
+                username: "",
+                password: "",
+            },
+            &art,
+            &ctx,
+            &fast_policy(5),
+            &log,
+        )
+        .expect_err("403 must fast-fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("forbidden path"),
+            "decoded envelope message present: {chain}"
+        );
+        assert!(chain.contains("403"), "status present: {chain}");
+
+        let entries = log_recorder.lock().unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "4xx must NOT retry despite max_attempts=5: {entries:?}"
+        );
+    }
+
+    /// An unsupported HTTP method fails fast OUTSIDE the retry loop — no
+    /// request is ever sent.
+    #[test]
+    fn upload_rejects_unsupported_method() {
+        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/repo/x.tar.gz",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let (_dir, art) = file_artifact(b"x", "x.tar.gz");
+        let ctx = upload_ctx();
+        let log = StageLogger::new("artifactory", Verbosity::Quiet);
+        let url = format!("http://{addr}/repo/x.tar.gz");
+        let custom = no_headers();
+        let client = build_reqwest_client(None, None, None).unwrap();
+        let err = upload_single_artifact(
+            &client,
+            &UploadHeaders {
+                method: "DELETE",
+                url: &url,
+                checksum_header: "",
+                custom_headers: &custom,
+            },
+            &UploadAuth {
+                username: "",
+                password: "",
+            },
+            &art,
+            &ctx,
+            &fast_policy(3),
+            &log,
+        )
+        .expect_err("DELETE is not a supported upload method");
+        assert!(
+            err.to_string().contains("unsupported HTTP method"),
+            "unexpected: {err}"
+        );
+        assert!(
+            log_recorder.lock().unwrap().is_empty(),
+            "no request must reach the wire for a bad method"
+        );
+    }
+
+    /// A missing artifact file bails before any network activity.
+    #[test]
+    fn upload_missing_file_bails() {
+        let ctx = upload_ctx();
+        let log = StageLogger::new("artifactory", Verbosity::Quiet);
+        let art = Artifact {
+            kind: ArtifactKind::Archive,
+            name: "gone.tar.gz".to_string(),
+            path: PathBuf::from("/nonexistent/anodizer/gone.tar.gz"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        };
+        let custom = no_headers();
+        let client = build_reqwest_client(None, None, None).unwrap();
+        let err = upload_single_artifact(
+            &client,
+            &UploadHeaders {
+                method: "PUT",
+                url: "http://127.0.0.1:1/repo/gone.tar.gz",
+                checksum_header: "",
+                custom_headers: &custom,
+            },
+            &UploadAuth {
+                username: "",
+                password: "",
+            },
+            &art,
+            &ctx,
+            &fast_policy(1),
+            &log,
+        )
+        .expect_err("missing file must bail");
+        assert!(
+            err.to_string().contains("artifact file not found"),
+            "unexpected: {err}"
+        );
+    }
+
+    /// A directory passed as an artifact path is rejected (can't upload a
+    /// directory) before any network call.
+    #[test]
+    fn upload_directory_path_bails() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = upload_ctx();
+        let log = StageLogger::new("artifactory", Verbosity::Quiet);
+        let art = Artifact {
+            kind: ArtifactKind::Archive,
+            name: "adir".to_string(),
+            path: dir.path().to_path_buf(),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        };
+        let custom = no_headers();
+        let client = build_reqwest_client(None, None, None).unwrap();
+        let err = upload_single_artifact(
+            &client,
+            &UploadHeaders {
+                method: "PUT",
+                url: "http://127.0.0.1:1/repo/adir",
+                checksum_header: "",
+                custom_headers: &custom,
+            },
+            &UploadAuth {
+                username: "",
+                password: "",
+            },
+            &art,
+            &ctx,
+            &fast_policy(1),
+            &log,
+        )
+        .expect_err("directory upload must bail");
+        assert!(
+            err.to_string().contains("can't be a directory"),
+            "unexpected: {err}"
+        );
+    }
+
+    /// A custom header carrying broken template syntax fails fast (outside
+    /// the retry loop) rather than pushing an unrendered `{{ }}` literal
+    /// onto the wire.
+    #[test]
+    fn upload_bad_custom_header_template_fails_fast() {
+        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/repo/h.tar.gz",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let (_dir, art) = file_artifact(b"h", "h.tar.gz");
+        let ctx = upload_ctx();
+        let log = StageLogger::new("artifactory", Verbosity::Quiet);
+        let url = format!("http://{addr}/repo/h.tar.gz");
+        let mut custom = HashMap::new();
+        // Unknown filter is a hard render error (not undefined-var leniency).
+        custom.insert(
+            "X-Bad".to_string(),
+            "{{ ArtifactName | nonexistent_filter }}".to_string(),
+        );
+        let client = build_reqwest_client(None, None, None).unwrap();
+        let err = upload_single_artifact(
+            &client,
+            &UploadHeaders {
+                method: "PUT",
+                url: &url,
+                checksum_header: "",
+                custom_headers: &custom,
+            },
+            &UploadAuth {
+                username: "",
+                password: "",
+            },
+            &art,
+            &ctx,
+            &fast_policy(3),
+            &log,
+        )
+        .expect_err("bad header template must fail-fast");
+        assert!(
+            err.to_string().contains("custom header 'X-Bad'"),
+            "unexpected: {err}"
+        );
+        assert!(
+            log_recorder.lock().unwrap().is_empty(),
+            "render failure must abort before any request"
+        );
+    }
+
+    /// End-to-end through `publish_to_artifactory` in LIVE mode: the
+    /// per-entry name + ArtifactName rendering produces the correct PUT
+    /// path against the responder, exercising client build + render +
+    /// upload in one flow. Credentials come from config (so no env race).
+    #[test]
+    fn publish_live_uploads_artifact_to_responder() {
+        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/repo/live-app.tar.gz",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let dir = tempfile::tempdir().unwrap();
+        let art_path = dir.path().join("live-app.tar.gz");
+        fs::write(&art_path, b"live-bytes").unwrap();
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.retry = Some(anodizer_core::config::RetryConfig {
+            attempts: 2,
+            delay: anodizer_core::config::HumanDuration(Duration::from_millis(1)),
+            max_delay: anodizer_core::config::HumanDuration(Duration::from_millis(2)),
+        });
+        config.artifactories = Some(vec![ArtifactoryConfig {
+            name: Some("prod".to_string()),
+            target: Some(format!("http://{addr}/repo/")),
+            username: Some("deployer".to_string()),
+            password: Some("hunter2".to_string()),
+            ..Default::default()
+        }]);
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: "live-app.tar.gz".to_string(),
+            path: art_path,
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        let log = ctx.logger("artifactory");
+        publish_to_artifactory(&ctx, &log).expect("live publish succeeds");
+
+        let entries = log_recorder.lock().unwrap();
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].method, "PUT");
+        assert_eq!(entries[0].path, "/repo/live-app.tar.gz");
+        assert_eq!(entries[0].body, "live-bytes");
+    }
+
+    /// Live mode with no matching artifacts short-circuits without firing
+    /// any HTTP request (the "no matching artifacts" branch).
+    #[test]
+    fn publish_live_no_artifacts_makes_no_request() {
+        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/repo/whatever",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let mut config = Config::default();
+        config.artifactories = Some(vec![ArtifactoryConfig {
+            name: Some("prod".to_string()),
+            target: Some(format!("http://{addr}/repo/")),
+            username: Some("u".to_string()),
+            password: Some("p".to_string()),
+            ..Default::default()
+        }]);
+        let ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        let log = ctx.logger("artifactory");
+        publish_to_artifactory(&ctx, &log).expect("no artifacts is ok");
+        assert!(
+            log_recorder.lock().unwrap().is_empty(),
+            "no artifacts => no upload request"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // build_reqwest_client — mTLS + trusted-CA error/success paths
+    // -----------------------------------------------------------------
+
+    /// A non-existent client cert path surfaces a read error naming the
+    /// path (the `failed to read client cert` branch).
+    #[test]
+    fn build_client_missing_cert_file_errors() {
+        let err = build_reqwest_client(
+            Some("/nonexistent/anodizer/cert.pem"),
+            Some("/nonexistent/anodizer/key.pem"),
+            None,
+        )
+        .expect_err("missing cert file must error");
+        assert!(
+            err.to_string().contains("failed to read client cert"),
+            "unexpected: {err}"
+        );
+    }
+
+    /// A cert file that exists but holds garbage (not a PEM identity)
+    /// fails at `Identity::from_pem` with the identity-load message.
+    #[test]
+    fn build_client_bad_pem_identity_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("key.pem");
+        fs::write(&cert, b"not a real pem").unwrap();
+        fs::write(&key, b"also not a pem").unwrap();
+        let err = build_reqwest_client(
+            Some(cert.to_str().unwrap()),
+            Some(key.to_str().unwrap()),
+            None,
+        )
+        .expect_err("garbage PEM must fail identity load");
+        assert!(
+            err.to_string()
+                .contains("failed to load client certificate identity"),
+            "unexpected: {err}"
+        );
+    }
+
+    /// Only one of cert/key set is rejected as an incoherent mTLS pair.
+    #[test]
+    fn build_client_half_mtls_pair_errors() {
+        let err = build_reqwest_client(Some("/tmp/cert.pem"), None, None)
+            .expect_err("half mTLS pair must error");
+        assert!(
+            err.to_string().contains("must both be set"),
+            "unexpected: {err}"
+        );
+    }
+
+    /// A set-but-empty (whitespace) trusted-certificates bundle is
+    /// rejected with the copy-paste-accident guidance rather than
+    /// installing an empty trust store.
+    #[test]
+    fn build_client_empty_trusted_certs_errors() {
+        let err = build_reqwest_client(None, None, Some("   \n\t "))
+            .expect_err("blank CA bundle must error");
+        assert!(
+            err.to_string()
+                .contains("trusted_certificates is set but empty"),
+            "unexpected: {err}"
+        );
+    }
+
+    /// A non-blank trusted-certificates value that contains no parseable
+    /// PEM certificate is rejected with the truncation guidance.
+    #[test]
+    fn build_client_unparseable_trusted_certs_errors() {
+        let err = build_reqwest_client(None, None, Some("garbage-not-a-cert"))
+            .expect_err("unparseable CA bundle must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("trusted_certificates"),
+            "error must name the field: {msg}"
+        );
+    }
+
+    /// No mTLS and no CA bundle builds a plain client successfully — the
+    /// happy path through `build_reqwest_client`.
+    #[test]
+    fn build_client_plain_succeeds() {
+        assert!(build_reqwest_client(None, None, None).is_ok());
+    }
+
+    // -----------------------------------------------------------------
+    // Credential cascade via resolve_http_credentials (env override)
+    // -----------------------------------------------------------------
+
+    /// With no config credentials, the per-entry env vars
+    /// `ARTIFACTORY_PROD_USERNAME` / `_SECRET` resolve the basic-auth
+    /// pair. Confirms the prefix + uppercased-name env ladder.
+    #[test]
+    #[serial_test::serial]
+    fn credentials_resolve_from_named_env_vars() {
+        use anodizer_core::test_helpers::env::env_mutex;
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialised by env_mutex; paired set/remove below.
+        unsafe {
+            std::env::set_var("ARTIFACTORY_PROD_USERNAME", "envuser");
+            std::env::set_var("ARTIFACTORY_PROD_SECRET", "envsecret");
+        }
+        let ctx = upload_ctx();
+        let (u, p) = crate::http_upload::resolve_http_credentials(
+            &ctx,
+            &crate::http_upload::CredentialResolveSpec {
+                publisher: "artifactory",
+                entry_name: "prod",
+                config_username: None,
+                config_password: None,
+                env_prefix: "ARTIFACTORY",
+                anonymous_ok: false,
+            },
+        )
+        .expect("env creds resolve");
+        unsafe {
+            std::env::remove_var("ARTIFACTORY_PROD_USERNAME");
+            std::env::remove_var("ARTIFACTORY_PROD_SECRET");
+        }
+        assert_eq!(u, "envuser");
+        assert_eq!(p, "envsecret");
+    }
+
+    /// A hyphenated entry name is folded to `_` and upper-cased for the
+    /// env lookup, so `my-repo` reads `ARTIFACTORY_MY_REPO_SECRET`.
+    #[test]
+    #[serial_test::serial]
+    fn credentials_fold_hyphen_in_entry_name() {
+        use anodizer_core::test_helpers::env::env_mutex;
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialised by env_mutex; paired set/remove below.
+        unsafe {
+            std::env::set_var("ARTIFACTORY_MY_REPO_USERNAME", "hu");
+            std::env::set_var("ARTIFACTORY_MY_REPO_SECRET", "hp");
+        }
+        let ctx = upload_ctx();
+        let (u, p) = crate::http_upload::resolve_http_credentials(
+            &ctx,
+            &crate::http_upload::CredentialResolveSpec {
+                publisher: "artifactory",
+                entry_name: "my-repo",
+                config_username: None,
+                config_password: None,
+                env_prefix: "ARTIFACTORY",
+                anonymous_ok: false,
+            },
+        )
+        .expect("hyphen-folded env creds resolve");
+        unsafe {
+            std::env::remove_var("ARTIFACTORY_MY_REPO_USERNAME");
+            std::env::remove_var("ARTIFACTORY_MY_REPO_SECRET");
+        }
+        assert_eq!(u, "hu");
+        assert_eq!(p, "hp");
+    }
+
+    /// Anonymous resolution (no config, no env) is refused when
+    /// `anonymous_ok = false` — the live artifactory path's guard.
+    #[test]
+    #[serial_test::serial]
+    fn credentials_refuse_anonymous_when_required() {
+        use anodizer_core::test_helpers::env::env_mutex;
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialised; ensure no stale env leaks into the lookup.
+        unsafe {
+            std::env::remove_var("ARTIFACTORY_LONELY_USERNAME");
+            std::env::remove_var("ARTIFACTORY_LONELY_SECRET");
+        }
+        let ctx = upload_ctx();
+        let err = crate::http_upload::resolve_http_credentials(
+            &ctx,
+            &crate::http_upload::CredentialResolveSpec {
+                publisher: "artifactory",
+                entry_name: "lonely",
+                config_username: None,
+                config_password: None,
+                env_prefix: "ARTIFACTORY",
+                anonymous_ok: false,
+            },
+        )
+        .expect_err("anonymous must be refused");
+        assert!(
+            err.to_string().contains("anonymous upload is refused"),
+            "unexpected: {err}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1931,5 +2668,205 @@ mod publisher_tests {
             },
         );
         assert!(decode_artifactory_targets(&homebrew).is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // parallel_delete — live DELETE fan-out classification
+    // -----------------------------------------------------------------
+
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+
+    fn delete_client() -> reqwest::blocking::Client {
+        anodizer_core::http::blocking_client(std::time::Duration::from_secs(5)).expect("client")
+    }
+
+    /// A 2xx DELETE is counted as deleted and the request reaches the
+    /// wire as an actual HTTP DELETE.
+    #[test]
+    fn parallel_delete_2xx_counts_as_deleted() {
+        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "DELETE",
+            path_pattern: "/repo/gone.tar.gz",
+            response: "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let log = StageLogger::new("artifactory", Verbosity::Quiet);
+        let jobs = vec![RollbackJob {
+            url: format!("http://{addr}/repo/gone.tar.gz"),
+            basic_auth: Some(("u".to_string(), "p".to_string())),
+            bearer: None,
+        }];
+        let (deleted, absent, failed) = parallel_delete(&delete_client(), &jobs, &log);
+        assert_eq!((deleted, absent, failed), (1, 0, 0));
+
+        let entries = log_recorder.lock().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].method, "DELETE");
+        assert_eq!(entries[0].path, "/repo/gone.tar.gz");
+    }
+
+    /// A 404 DELETE classifies as already-absent (not failed), so a
+    /// re-run after a partial rollback doesn't print phantom failures.
+    #[test]
+    fn parallel_delete_404_counts_as_already_absent() {
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "DELETE",
+            path_pattern: "/repo/missing.tar.gz",
+            response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let log = StageLogger::new("artifactory", Verbosity::Quiet);
+        let jobs = vec![RollbackJob {
+            url: format!("http://{addr}/repo/missing.tar.gz"),
+            basic_auth: None,
+            bearer: Some("tok".to_string()),
+        }];
+        let (deleted, absent, failed) = parallel_delete(&delete_client(), &jobs, &log);
+        assert_eq!((deleted, absent, failed), (0, 1, 0));
+    }
+
+    /// A 5xx DELETE classifies as failed and emits an operator-facing
+    /// warn naming the URL.
+    #[test]
+    fn parallel_delete_5xx_counts_as_failed_and_warns() {
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "DELETE",
+            path_pattern: "/repo/boom.tar.gz",
+            response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let capture = anodizer_core::log::LogCapture::new();
+        let log =
+            StageLogger::new("artifactory", Verbosity::Quiet).with_capture_handle(capture.clone());
+        let url = format!("http://{addr}/repo/boom.tar.gz");
+        let jobs = vec![RollbackJob {
+            url: url.clone(),
+            basic_auth: Some(("u".to_string(), "p".to_string())),
+            bearer: None,
+        }];
+        let (deleted, absent, failed) = parallel_delete(&delete_client(), &jobs, &log);
+        assert_eq!((deleted, absent, failed), (0, 0, 1));
+        assert!(
+            capture
+                .warn_messages()
+                .iter()
+                .any(|m| m.contains("boom.tar.gz") && m.contains("manual cleanup")),
+            "expected failed-DELETE warn naming the URL; got: {:?}",
+            capture.warn_messages()
+        );
+    }
+
+    /// A transport error (connection refused — no responder listening)
+    /// counts as failed and emits a transport-error warn.
+    #[test]
+    fn parallel_delete_transport_error_counts_as_failed() {
+        let capture = anodizer_core::log::LogCapture::new();
+        let log =
+            StageLogger::new("artifactory", Verbosity::Quiet).with_capture_handle(capture.clone());
+        // Port 1 on loopback refuses connections.
+        let jobs = vec![RollbackJob {
+            url: "http://127.0.0.1:1/repo/unreachable.tar.gz".to_string(),
+            basic_auth: None,
+            bearer: Some("tok".to_string()),
+        }];
+        let (deleted, absent, failed) = parallel_delete(&delete_client(), &jobs, &log);
+        assert_eq!((deleted, absent, failed), (0, 0, 1));
+        assert!(
+            capture
+                .warn_messages()
+                .iter()
+                .any(|m| m.contains("transport error")),
+            "expected transport-error warn; got: {:?}",
+            capture.warn_messages()
+        );
+    }
+
+    /// A mixed batch larger than ROLLBACK_PARALLELISM exercises the
+    /// chunked fan-out and aggregates every bucket correctly.
+    #[test]
+    fn parallel_delete_mixed_batch_aggregates_all_buckets() {
+        let (addr, _log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/ok1",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/ok2",
+                response: "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/gone",
+                response: "HTTP/1.1 410 Gone\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/bad",
+                response: "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]);
+        let log = StageLogger::new("artifactory", Verbosity::Quiet);
+        let mk = |p: &str| RollbackJob {
+            url: format!("http://{addr}{p}"),
+            basic_auth: Some(("u".to_string(), "p".to_string())),
+            bearer: None,
+        };
+        // Five jobs > ROLLBACK_PARALLELISM (4) so the chunking loop runs
+        // more than once. `/ok1` repeated lands two deletes.
+        let jobs = vec![mk("/ok1"), mk("/ok2"), mk("/gone"), mk("/bad"), mk("/ok1")];
+        let (deleted, absent, failed) = parallel_delete(&delete_client(), &jobs, &log);
+        assert_eq!(deleted, 3, "ok1 + ok2 + ok1");
+        assert_eq!(absent, 1, "410 Gone");
+        assert_eq!(failed, 1, "403 Forbidden");
+    }
+
+    /// Full rollback through the Publisher trait: structured evidence
+    /// resolves per-entry basic auth and issues a live DELETE that the
+    /// responder records, then logs the summary line.
+    #[test]
+    fn rollback_issues_delete_for_recorded_url() {
+        use anodizer_core::config::{ArtifactoryConfig, Config};
+        use anodizer_core::context::ContextOptions;
+        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "DELETE",
+            path_pattern: "/repo/foo.tar.gz",
+            response: "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let url = format!("http://{addr}/repo/foo.tar.gz");
+
+        let mut config = Config::default();
+        config.artifactories = Some(vec![ArtifactoryConfig {
+            name: Some("prod".to_string()),
+            target: Some(format!("http://{addr}/repo/")),
+            username: Some("deployer".to_string()),
+            password: Some("hunter2".to_string()),
+            ..Default::default()
+        }]);
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        let mut evidence = PublishEvidence::new("artifactory");
+        evidence.artifact_paths = vec![std::path::PathBuf::from(&url)];
+        evidence.extra = encode_artifactory_targets(&[ArtifactoryTarget {
+            entry: "prod".to_string(),
+            url: url.clone(),
+        }]);
+
+        let p = ArtifactoryPublisher::new();
+        p.rollback(&mut ctx, &evidence).expect("rollback ok");
+
+        let entries = log_recorder.lock().unwrap();
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].method, "DELETE");
+        assert_eq!(entries[0].path, "/repo/foo.tar.gz");
     }
 }

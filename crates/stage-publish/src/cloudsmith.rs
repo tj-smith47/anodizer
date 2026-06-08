@@ -1819,6 +1819,942 @@ mod tests {
             classify_cloudsmith_package_response(body, "app_1.0.0_amd64.deb", "deadbeef").unwrap();
         assert_eq!(result, CloudsmithPackageState::SkipIdempotent);
     }
+
+    // ---- live 3-step upload path (scripted_responder) --------------------
+    //
+    // These tests redirect ALL Cloudsmith API traffic to an in-process TCP
+    // responder via the `ANODIZE_CLOUDSMITH_API_BASE` env seam, then drive a
+    // real `publish_to_cloudsmith` and assert on the recorded request log
+    // (method / path / body). Every one mutates the process env (the base
+    // override) so all are `#[serial_test::serial]` and hold the shared
+    // `env_mutex` across the publish call — `cloudsmith_api_base()` reads
+    // `std::env::var`, not `ctx.env_var`, so the override must live in the
+    // process env for the duration of the run.
+
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::env::env_mutex;
+    use anodizer_core::test_helpers::scripted_responder::{
+        RequestLog, ScriptedRoute, spawn_scripted_responder_with,
+    };
+    use anodizer_core::{MapEnvSource, config::RetryConfig};
+
+    /// A `retry:` block with millisecond delays so a 5xx-then-success test
+    /// retries without the default 10s base sleep stretching CI.
+    fn fast_retry_config() -> RetryConfig {
+        use anodizer_core::config::HumanDuration;
+        RetryConfig {
+            attempts: 3,
+            delay: HumanDuration(std::time::Duration::from_millis(1)),
+            max_delay: HumanDuration(std::time::Duration::from_millis(5)),
+        }
+    }
+
+    /// `HTTP/1.1 200` envelope wrapping a JSON body.
+    fn http_json(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    }
+
+    /// Static `204 No Content` for the S3 presigned upload (step 2).
+    const PRESIGNED_204: &str = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
+
+    /// md5 the bytes the same way production does, so a pre-check response
+    /// can be made to match (or deliberately not match) the local digest.
+    fn md5_hex_of(bytes: &[u8]) -> String {
+        use md5::Digest as _;
+        let mut h = md5::Md5::new();
+        h.update(bytes);
+        anodizer_core::hashing::hex_lower(&h.finalize())
+    }
+
+    /// Build a single-artifact Context whose token resolves from an injected
+    /// env source (no process-env mutation needed for the token — only the
+    /// API base override touches the process env, handled per-test).
+    fn ctx_with_one_artifact(
+        cfg: CloudSmithConfig,
+        base: &str,
+        kind: ArtifactKind,
+        art_name: &str,
+        path: PathBuf,
+        retry: Option<RetryConfig>,
+    ) -> Context {
+        let mut config = Config::default();
+        config.project_name = "app".to_string();
+        config.retry = retry;
+        config.cloudsmiths = Some(vec![cfg]);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.set_env_source(
+            MapEnvSource::new()
+                .with("CLOUDSMITH_TOKEN", "fake-token")
+                .with("ANODIZE_CLOUDSMITH_API_BASE", base),
+        );
+        ctx.artifacts.add(Artifact {
+            kind,
+            name: art_name.to_string(),
+            path,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        ctx
+    }
+
+    /// Convenience: count log entries whose `(method, path)` exactly match.
+    fn count_calls(log: &[RequestLog], method: &str, path: &str) -> usize {
+        log.iter()
+            .filter(|e| e.method == method && e.path == path)
+            .count()
+    }
+
+    /// A files/create JSON response pointing step 2 back at this responder.
+    fn files_create_ok(base: &str, id: &str) -> String {
+        http_json(&format!(
+            r#"{{"identifier":"{id}","upload_url":"{base}/s3-presigned/","upload_fields":{{"key":"v"}}}}"#
+        ))
+    }
+
+    /// End-to-end happy path for a `.deb`: files/create -> presigned ->
+    /// packages/upload/deb/. Asserts the step-3 URL routes to `/upload/deb/`,
+    /// the step-1 body carries the md5 + filename, the step-3 body carries
+    /// the files/create `identifier` and the configured `distribution`, and
+    /// the returned target captures the response `slug_perm`.
+    #[test]
+    #[serial_test::serial]
+    fn live_deb_full_three_step_records_slug_and_routes_deb() {
+        use anodizer_core::config::CloudSmithDistributions;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let art = tmp.path().join("app_1.0.0_amd64.deb");
+        std::fs::write(&art, b"deb-bytes").unwrap();
+        let md5 = md5_hex_of(b"deb-bytes");
+
+        let (addr, log) = spawn_scripted_responder_with(move |addr| {
+            let base = format!("http://{addr}");
+            vec![
+                ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/files/myorg/myrepo/",
+                    response: Box::leak(files_create_ok(&base, "id-1").into_boxed_str()),
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/s3-presigned/",
+                    response: PRESIGNED_204,
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/packages/myorg/myrepo/upload/deb/",
+                    response: Box::leak(http_json(r#"{"slug_perm":"deb-slug"}"#).into_boxed_str()),
+                    times: None,
+                },
+            ]
+        });
+        let base = format!("http://{addr}");
+
+        let mut distros: HashMap<String, CloudSmithDistributions> = HashMap::new();
+        distros.insert(
+            "deb".to_string(),
+            CloudSmithDistributions::Single("ubuntu/focal".to_string()),
+        );
+        let cfg = CloudSmithConfig {
+            organization: Some("myorg".to_string()),
+            repository: Some("myrepo".to_string()),
+            distributions: Some(distros),
+            republish: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        let ctx = ctx_with_one_artifact(
+            cfg,
+            &base,
+            ArtifactKind::LinuxPackage,
+            "app_1.0.0_amd64.deb",
+            art.clone(),
+            None,
+        );
+
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base) };
+        let result = publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
+        unsafe { std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE") };
+        drop(_g);
+
+        let uploaded = result.expect("happy-path upload");
+        assert_eq!(uploaded.len(), 1);
+        assert_eq!(uploaded[0].slug.as_deref(), Some("deb-slug"));
+        assert_eq!(uploaded[0].filename, "app_1.0.0_amd64.deb");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(
+            count_calls(&entries, "POST", "/files/myorg/myrepo/"),
+            1,
+            "exactly one files/create"
+        );
+        assert_eq!(
+            count_calls(&entries, "POST", "/packages/myorg/myrepo/upload/deb/"),
+            1,
+            "step 3 routed to /upload/deb/"
+        );
+        let create = entries
+            .iter()
+            .find(|e| e.path == "/files/myorg/myrepo/")
+            .unwrap();
+        assert!(
+            create.body.contains(&format!("\"md5_checksum\":\"{md5}\"")),
+            "files/create body carries local md5: {}",
+            create.body
+        );
+        assert!(
+            create.body.contains("\"filename\":\"app_1.0.0_amd64.deb\""),
+            "files/create body carries filename: {}",
+            create.body
+        );
+        let step3 = entries
+            .iter()
+            .find(|e| e.path == "/packages/myorg/myrepo/upload/deb/")
+            .unwrap();
+        assert!(
+            step3.body.contains("\"package_file\":\"id-1\""),
+            "step-3 body threads the files/create identifier: {}",
+            step3.body
+        );
+        assert!(
+            step3.body.contains("\"distribution\":\"ubuntu/focal\""),
+            "step-3 body carries the configured distribution: {}",
+            step3.body
+        );
+    }
+
+    /// Drive one artifact of `kind`/`art_name` through the 3-step flow with a
+    /// responder whose step-3 route is `expected_step3_path`. Returns the
+    /// captured request log so per-format tests can assert routing + body.
+    /// `republish=true` so the pre-check packages-list query is skipped and
+    /// the route table is exactly the 3 upload calls.
+    fn run_one_format(
+        art_name: &'static str,
+        kind: ArtifactKind,
+        expected_step3_path: &'static str,
+        extra_cfg: impl FnOnce(&mut CloudSmithConfig),
+    ) -> Vec<RequestLog> {
+        let tmp = tempfile::tempdir().unwrap();
+        let art = tmp.path().join(art_name);
+        std::fs::write(&art, b"bytes").unwrap();
+
+        let (addr, log) = spawn_scripted_responder_with(move |addr| {
+            let base = format!("http://{addr}");
+            vec![
+                ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/files/myorg/myrepo/",
+                    response: Box::leak(files_create_ok(&base, "id-f").into_boxed_str()),
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/s3-presigned/",
+                    response: PRESIGNED_204,
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "POST",
+                    path_pattern: expected_step3_path,
+                    response: Box::leak(http_json(r#"{"slug_perm":"s"}"#).into_boxed_str()),
+                    times: None,
+                },
+            ]
+        });
+        let base = format!("http://{addr}");
+
+        let mut cfg = CloudSmithConfig {
+            organization: Some("myorg".to_string()),
+            repository: Some("myrepo".to_string()),
+            // Match every format so the single artifact always passes the
+            // filter. `zip` is included so a non-package Archive (which
+            // `detect_format` slugs as `raw`) still clears the extension
+            // filter — there is no literal `.raw` extension to match on.
+            formats: Some(vec![
+                "deb".to_string(),
+                "rpm".to_string(),
+                "srpm".to_string(),
+                "apk".to_string(),
+                "zip".to_string(),
+            ]),
+            republish: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        extra_cfg(&mut cfg);
+        let ctx = ctx_with_one_artifact(cfg, &base, kind, art_name, art.clone(), None);
+
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base) };
+        let result = publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
+        unsafe { std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE") };
+        drop(_g);
+        result.expect("upload should succeed");
+        let entries = log.lock().unwrap();
+        entries.clone()
+    }
+
+    /// `.rpm` routes step 3 to `/upload/rpm/`.
+    #[test]
+    #[serial_test::serial]
+    fn live_rpm_routes_to_upload_rpm() {
+        let log = run_one_format(
+            "app-1.0.0.x86_64.rpm",
+            ArtifactKind::LinuxPackage,
+            "/packages/myorg/myrepo/upload/rpm/",
+            |_| {},
+        );
+        assert_eq!(
+            count_calls(&log, "POST", "/packages/myorg/myrepo/upload/rpm/"),
+            1,
+        );
+    }
+
+    /// `.src.rpm` is a distinct format slug: step 3 routes to `/upload/srpm/`,
+    /// NOT `/upload/rpm/` (the suffix overlap is resolved in `detect_format`).
+    #[test]
+    #[serial_test::serial]
+    fn live_src_rpm_routes_to_upload_srpm() {
+        let log = run_one_format(
+            "app-1.0.0.src.rpm",
+            ArtifactKind::LinuxPackage,
+            "/packages/myorg/myrepo/upload/srpm/",
+            |_| {},
+        );
+        assert_eq!(
+            count_calls(&log, "POST", "/packages/myorg/myrepo/upload/srpm/"),
+            1,
+        );
+        assert_eq!(
+            count_calls(&log, "POST", "/packages/myorg/myrepo/upload/rpm/"),
+            0,
+            "src.rpm must not route to the rpm slug",
+        );
+    }
+
+    /// `.apk` maps to the API-side `alpine` slug: step 3 -> `/upload/alpine/`.
+    #[test]
+    #[serial_test::serial]
+    fn live_apk_routes_to_upload_alpine() {
+        let log = run_one_format(
+            "app-1.0.0.apk",
+            ArtifactKind::LinuxPackage,
+            "/packages/myorg/myrepo/upload/alpine/",
+            |_| {},
+        );
+        assert_eq!(
+            count_calls(&log, "POST", "/packages/myorg/myrepo/upload/alpine/"),
+            1,
+        );
+    }
+
+    /// A non-package Archive (`.zip`) detects as the `raw` format and routes
+    /// step 3 to `/upload/raw/` (the `detect_format` fallback slug).
+    #[test]
+    #[serial_test::serial]
+    fn live_zip_archive_routes_to_upload_raw() {
+        let log = run_one_format(
+            "app-1.0.0.zip",
+            ArtifactKind::Archive,
+            "/packages/myorg/myrepo/upload/raw/",
+            |_| {},
+        );
+        assert_eq!(
+            count_calls(&log, "POST", "/packages/myorg/myrepo/upload/raw/"),
+            1,
+        );
+    }
+
+    /// `component:` is included in the step-3 body for `deb` (a
+    /// component-bearing format).
+    #[test]
+    #[serial_test::serial]
+    fn live_deb_includes_component_in_body() {
+        let log = run_one_format(
+            "app_1.0.0_amd64.deb",
+            ArtifactKind::LinuxPackage,
+            "/packages/myorg/myrepo/upload/deb/",
+            |cfg| cfg.component = Some("contrib".to_string()),
+        );
+        let step3 = log
+            .iter()
+            .find(|e| e.path == "/packages/myorg/myrepo/upload/deb/")
+            .unwrap();
+        assert!(
+            step3.body.contains("\"component\":\"contrib\""),
+            "deb step-3 body carries component: {}",
+            step3.body
+        );
+    }
+
+    /// `component:` is DROPPED from the step-3 body for `rpm` (rpm is not in
+    /// `COMPONENT_BEARING_FORMATS`); the upload still succeeds.
+    #[test]
+    #[serial_test::serial]
+    fn live_rpm_drops_component_from_body() {
+        let log = run_one_format(
+            "app-1.0.0.x86_64.rpm",
+            ArtifactKind::LinuxPackage,
+            "/packages/myorg/myrepo/upload/rpm/",
+            |cfg| cfg.component = Some("contrib".to_string()),
+        );
+        let step3 = log
+            .iter()
+            .find(|e| e.path == "/packages/myorg/myrepo/upload/rpm/")
+            .unwrap();
+        assert!(
+            !step3.body.contains("component"),
+            "rpm step-3 body must not carry a component: {}",
+            step3.body
+        );
+    }
+
+    /// `republish: true` puts `"republish": true` into the step-3 body so
+    /// Cloudsmith overwrites an existing package rather than 409ing.
+    #[test]
+    #[serial_test::serial]
+    fn live_republish_sets_republish_flag_in_body() {
+        let log = run_one_format(
+            "app_1.0.0_amd64.deb",
+            ArtifactKind::LinuxPackage,
+            "/packages/myorg/myrepo/upload/deb/",
+            |_| {},
+        );
+        let step3 = log
+            .iter()
+            .find(|e| e.path == "/packages/myorg/myrepo/upload/deb/")
+            .unwrap();
+        assert!(
+            step3.body.contains("\"republish\":true"),
+            "step-3 body carries republish flag: {}",
+            step3.body
+        );
+    }
+
+    /// Run a publish for a single `.deb` artifact against a caller-supplied
+    /// route table (built once the responder addr is known), returning the
+    /// publish `Result` and the request log. `cfg_mut` customizes the entry;
+    /// `retry` lets retry-path tests inject a fast policy.
+    #[allow(clippy::type_complexity)]
+    fn run_deb_with_routes<R>(
+        routes_fn: R,
+        cfg_mut: impl FnOnce(&mut CloudSmithConfig),
+        retry: Option<RetryConfig>,
+    ) -> (Result<Vec<CloudsmithTarget>>, Vec<RequestLog>)
+    where
+        R: FnOnce(&str) -> Vec<ScriptedRoute> + Send + 'static,
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let art = tmp.path().join("app_1.0.0_amd64.deb");
+        std::fs::write(&art, b"deb-bytes").unwrap();
+
+        let (addr, log) = spawn_scripted_responder_with(move |addr| {
+            let base = format!("http://{addr}");
+            routes_fn(&base)
+        });
+        let base = format!("http://{addr}");
+
+        let mut cfg = CloudSmithConfig {
+            organization: Some("myorg".to_string()),
+            repository: Some("myrepo".to_string()),
+            formats: Some(vec!["deb".to_string()]),
+            ..Default::default()
+        };
+        cfg_mut(&mut cfg);
+        let ctx = ctx_with_one_artifact(
+            cfg,
+            &base,
+            ArtifactKind::LinuxPackage,
+            "app_1.0.0_amd64.deb",
+            art.clone(),
+            retry,
+        );
+
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base) };
+        let result = publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
+        unsafe { std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE") };
+        drop(_g);
+        let entries = log.lock().unwrap().clone();
+        (result, entries)
+    }
+
+    /// The exact pre-check packages-list path reqwest produces for
+    /// `filename:app_1.0.0_amd64.deb` (the colon percent-encodes to `%3A`;
+    /// dots/underscores are unreserved). Routing the GET here lets the
+    /// republish=false pre-check be driven without a real Cloudsmith.
+    const PRECHECK_PATH: &str =
+        "/packages/myorg/myrepo/?query=filename%3Aapp_1.0.0_amd64.deb&page_size=100";
+
+    fn precheck_route(body: &'static str) -> ScriptedRoute {
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: PRECHECK_PATH,
+            response: Box::leak(http_json(body).into_boxed_str()),
+            times: None,
+        }
+    }
+
+    /// republish=false + a pre-check that reports the same md5 ⇒ the upload
+    /// is skipped (idempotent): no files/create, no step-3, empty targets.
+    #[test]
+    #[serial_test::serial]
+    fn live_precheck_skip_idempotent_when_md5_matches() {
+        let md5 = md5_hex_of(b"deb-bytes");
+        let body: &'static str = Box::leak(
+            format!(r#"[{{"filename":"app_1.0.0_amd64.deb","checksum_md5":"{md5}"}}]"#)
+                .into_boxed_str(),
+        );
+        let (result, log) =
+            run_deb_with_routes(move |_base| vec![precheck_route(body)], |_| {}, None);
+        let uploaded = result.expect("idempotent skip is success");
+        assert!(uploaded.is_empty(), "skip records no target: {uploaded:?}");
+        assert_eq!(
+            count_calls(&log, "POST", "/files/myorg/myrepo/"),
+            0,
+            "idempotent skip must not stage a file"
+        );
+        assert_eq!(count_calls(&log, "GET", PRECHECK_PATH), 1);
+    }
+
+    /// republish=false + a pre-check reporting a DIFFERENT md5 ⇒ bail with a
+    /// conflict error naming both md5s; nothing is uploaded.
+    #[test]
+    #[serial_test::serial]
+    fn live_precheck_bails_on_md5_mismatch() {
+        let (result, log) = run_deb_with_routes(
+            move |_base| {
+                vec![precheck_route(
+                    r#"[{"filename":"app_1.0.0_amd64.deb","checksum_md5":"00bad00remote"}]"#,
+                )]
+            },
+            |_| {},
+            None,
+        );
+        let err = result.expect_err("md5 mismatch must bail").to_string();
+        assert!(err.contains("different md5"), "conflict error: {err}");
+        assert!(err.contains("00bad00remote"), "names remote md5: {err}");
+        assert_eq!(
+            count_calls(&log, "POST", "/files/myorg/myrepo/"),
+            0,
+            "mismatch must not stage a file"
+        );
+    }
+
+    /// A files/create that 4xxs surfaces the HTTP status and the response
+    /// body in the error chain (and does not retry — 4xx fast-fails).
+    #[test]
+    #[serial_test::serial]
+    fn live_files_create_4xx_surfaces_body() {
+        let (result, log) = run_deb_with_routes(
+            move |_base| {
+                vec![ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/files/myorg/myrepo/",
+                    response: "HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: 24\r\n\r\n{\"detail\":\"bad md5 sum\"}",
+                    times: None,
+                }]
+            },
+            |cfg| cfg.republish = Some(StringOrBool::Bool(true)),
+            None,
+        );
+        let err = format!("{:#}", result.expect_err("4xx must error"));
+        assert!(err.contains("422"), "status in error: {err}");
+        assert!(err.contains("bad md5 sum"), "body in error: {err}");
+        assert_eq!(
+            count_calls(&log, "POST", "/files/myorg/myrepo/"),
+            1,
+            "4xx must NOT retry"
+        );
+    }
+
+    /// A files/create 200 whose JSON lacks `identifier` is a contract
+    /// violation: bail with a message naming the missing field + artifact.
+    #[test]
+    #[serial_test::serial]
+    fn live_files_create_missing_identifier_errors() {
+        let (result, _log) = run_deb_with_routes(
+            move |base| {
+                vec![ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/files/myorg/myrepo/",
+                    response: Box::leak(
+                        http_json(&format!(
+                            r#"{{"upload_url":"{base}/s3/","upload_fields":{{}}}}"#
+                        ))
+                        .into_boxed_str(),
+                    ),
+                    times: None,
+                }]
+            },
+            |cfg| cfg.republish = Some(StringOrBool::Bool(true)),
+            None,
+        );
+        let err = result
+            .expect_err("missing identifier must bail")
+            .to_string();
+        assert!(err.contains("identifier"), "names missing field: {err}");
+        assert!(err.contains("app_1.0.0_amd64.deb"), "names artifact: {err}");
+    }
+
+    /// A files/create 200 missing `upload_url` bails naming that field.
+    #[test]
+    #[serial_test::serial]
+    fn live_files_create_missing_upload_url_errors() {
+        let (result, _log) = run_deb_with_routes(
+            move |_base| {
+                vec![ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/files/myorg/myrepo/",
+                    response: Box::leak(
+                        http_json(r#"{"identifier":"id-1","upload_fields":{}}"#).into_boxed_str(),
+                    ),
+                    times: None,
+                }]
+            },
+            |cfg| cfg.republish = Some(StringOrBool::Bool(true)),
+            None,
+        );
+        let err = result
+            .expect_err("missing upload_url must bail")
+            .to_string();
+        assert!(err.contains("upload_url"), "names missing field: {err}");
+    }
+
+    /// A files/create that returns a 200 with a non-JSON body bails with the
+    /// "non-JSON body" diagnostic (the parse-context branch).
+    #[test]
+    #[serial_test::serial]
+    fn live_files_create_non_json_errors() {
+        let (result, _log) = run_deb_with_routes(
+            move |_base| {
+                vec![ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/files/myorg/myrepo/",
+                    response: "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nnot-jsn",
+                    times: None,
+                }]
+            },
+            |cfg| cfg.republish = Some(StringOrBool::Bool(true)),
+            None,
+        );
+        let err = result.expect_err("non-JSON must bail").to_string();
+        assert!(err.contains("non-JSON body"), "diagnostic: {err}");
+    }
+
+    /// A 5xx on files/create retries (fast policy, 2 attempts allowed) and
+    /// then succeeds on the 2nd attempt — the `times`-capped 500 route is
+    /// exhausted, so the unlimited 200 route serves attempt 2. Two recorded
+    /// files/create calls prove the retry actually happened.
+    #[test]
+    #[serial_test::serial]
+    fn live_files_create_5xx_then_success_retries() {
+        let (result, log) = run_deb_with_routes(
+            move |base| {
+                let base = base.to_string();
+                vec![
+                    // First attempt: 500 (capped to one hit).
+                    ScriptedRoute {
+                        method: "POST",
+                        path_pattern: "/files/myorg/myrepo/",
+                        response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 3\r\n\r\nerr",
+                        times: Some(1),
+                    },
+                    // Second attempt: the 500 route is spent, so this matches.
+                    ScriptedRoute {
+                        method: "POST",
+                        path_pattern: "/files/myorg/myrepo/",
+                        response: Box::leak(files_create_ok(&base, "id-r").into_boxed_str()),
+                        times: None,
+                    },
+                    ScriptedRoute {
+                        method: "POST",
+                        path_pattern: "/s3-presigned/",
+                        response: PRESIGNED_204,
+                        times: None,
+                    },
+                    ScriptedRoute {
+                        method: "POST",
+                        path_pattern: "/packages/myorg/myrepo/upload/deb/",
+                        response: Box::leak(http_json(r#"{"slug_perm":"s"}"#).into_boxed_str()),
+                        times: None,
+                    },
+                ]
+            },
+            |cfg| cfg.republish = Some(StringOrBool::Bool(true)),
+            Some(fast_retry_config()),
+        );
+        let uploaded = result.expect("retry then success");
+        assert_eq!(uploaded.len(), 1);
+        assert_eq!(
+            count_calls(&log, "POST", "/files/myorg/myrepo/"),
+            2,
+            "one 5xx + one success = two files/create attempts (retry fired)"
+        );
+    }
+
+    /// A missing artifact file bails before any HTTP call.
+    #[test]
+    #[serial_test::serial]
+    fn live_missing_artifact_file_bails() {
+        let (addr, log) = spawn_scripted_responder_with(|_| Vec::new());
+        let base = format!("http://{addr}");
+        let cfg = CloudSmithConfig {
+            organization: Some("myorg".to_string()),
+            repository: Some("myrepo".to_string()),
+            formats: Some(vec!["deb".to_string()]),
+            republish: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        // Point the artifact at a path that does not exist.
+        let ctx = ctx_with_one_artifact(
+            cfg,
+            &base,
+            ArtifactKind::LinuxPackage,
+            "app_1.0.0_amd64.deb",
+            PathBuf::from("/nonexistent/app_1.0.0_amd64.deb"),
+            None,
+        );
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base) };
+        let result = publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
+        unsafe { std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE") };
+        drop(_g);
+        let err = result.expect_err("missing file must bail").to_string();
+        assert!(err.contains("artifact file not found"), "{err}");
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "no HTTP call before the file check"
+        );
+    }
+
+    /// When no artifact matches the format filter, the publisher reports the
+    /// no-match status and returns an empty target list (no HTTP traffic).
+    #[test]
+    #[serial_test::serial]
+    fn live_no_matching_artifacts_is_noop() {
+        // A `.rpm` artifact but a `deb`-only filter ⇒ zero matches.
+        let log = {
+            let (addr, log) = spawn_scripted_responder_with(|_| Vec::new());
+            let base = format!("http://{addr}");
+            let cfg = CloudSmithConfig {
+                organization: Some("myorg".to_string()),
+                repository: Some("myrepo".to_string()),
+                formats: Some(vec!["deb".to_string()]),
+                ..Default::default()
+            };
+            let tmp = tempfile::tempdir().unwrap();
+            let art = tmp.path().join("app-1.0.0.x86_64.rpm");
+            std::fs::write(&art, b"x").unwrap();
+            let ctx = ctx_with_one_artifact(
+                cfg,
+                &base,
+                ArtifactKind::LinuxPackage,
+                "app-1.0.0.x86_64.rpm",
+                art.clone(),
+                None,
+            );
+            let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+            unsafe { std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base) };
+            let result =
+                publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
+            unsafe { std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE") };
+            drop(_g);
+            assert!(result.expect("no-match is ok").is_empty());
+            log
+        };
+        assert!(log.lock().unwrap().is_empty(), "no upload attempted");
+    }
+
+    /// step-3 response carrying only `slug` (not `slug_perm`) still captures
+    /// the slug into the recorded target (the `or_else` fallback key).
+    #[test]
+    #[serial_test::serial]
+    fn live_step3_slug_fallback_key() {
+        let (result, _log) = run_deb_with_routes(
+            move |base| {
+                let base = base.to_string();
+                vec![
+                    ScriptedRoute {
+                        method: "POST",
+                        path_pattern: "/files/myorg/myrepo/",
+                        response: Box::leak(files_create_ok(&base, "id-1").into_boxed_str()),
+                        times: None,
+                    },
+                    ScriptedRoute {
+                        method: "POST",
+                        path_pattern: "/s3-presigned/",
+                        response: PRESIGNED_204,
+                        times: None,
+                    },
+                    ScriptedRoute {
+                        method: "POST",
+                        path_pattern: "/packages/myorg/myrepo/upload/deb/",
+                        response: Box::leak(http_json(r#"{"slug":"plain-slug"}"#).into_boxed_str()),
+                        times: None,
+                    },
+                ]
+            },
+            |cfg| cfg.republish = Some(StringOrBool::Bool(true)),
+            None,
+        );
+        let uploaded = result.expect("upload ok");
+        assert_eq!(uploaded[0].slug.as_deref(), Some("plain-slug"));
+    }
+
+    /// step-3 response with no recognizable slug field still records the
+    /// target (slug = None) so the upload is counted; rollback degrades to
+    /// the warn-only path for it.
+    #[test]
+    #[serial_test::serial]
+    fn live_step3_no_slug_records_target_without_slug() {
+        let (result, _log) = run_deb_with_routes(
+            move |base| {
+                let base = base.to_string();
+                vec![
+                    ScriptedRoute {
+                        method: "POST",
+                        path_pattern: "/files/myorg/myrepo/",
+                        response: Box::leak(files_create_ok(&base, "id-1").into_boxed_str()),
+                        times: None,
+                    },
+                    ScriptedRoute {
+                        method: "POST",
+                        path_pattern: "/s3-presigned/",
+                        response: PRESIGNED_204,
+                        times: None,
+                    },
+                    ScriptedRoute {
+                        method: "POST",
+                        path_pattern: "/packages/myorg/myrepo/upload/deb/",
+                        response: Box::leak(http_json(r#"{"ok":true}"#).into_boxed_str()),
+                        times: None,
+                    },
+                ]
+            },
+            |cfg| cfg.republish = Some(StringOrBool::Bool(true)),
+            None,
+        );
+        let uploaded = result.expect("upload ok");
+        assert_eq!(uploaded.len(), 1);
+        assert!(uploaded[0].slug.is_none(), "no slug field ⇒ None");
+        assert_eq!(uploaded[0].filename, "app_1.0.0_amd64.deb");
+    }
+
+    /// Build the (files/create, presigned, conflicting-step3) routes plus two
+    /// sequenced pre-check GET routes: the FIRST GET (pre-check) returns `[]`
+    /// (NotFound → proceed to upload); the SECOND GET (post-409 re-query)
+    /// returns `recheck_body`. The step-3 route always 409s.
+    fn conflict_recovery_routes(base: &str, recheck_body: &'static str) -> Vec<ScriptedRoute> {
+        let base = base.to_string();
+        vec![
+            // Pre-check (republish=false): NotFound so the upload proceeds.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: PRECHECK_PATH,
+                response: Box::leak(http_json("[]").into_boxed_str()),
+                times: Some(1),
+            },
+            // Post-409 re-query: the recovery verdict.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: PRECHECK_PATH,
+                response: Box::leak(http_json(recheck_body).into_boxed_str()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/files/myorg/myrepo/",
+                response: Box::leak(files_create_ok(&base, "id-1").into_boxed_str()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/s3-presigned/",
+                response: PRESIGNED_204,
+                times: None,
+            },
+            // step-3 always conflicts (409). 4xx fast-fails (no retry), so a
+            // single capped response is enough.
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/packages/myorg/myrepo/upload/deb/",
+                response: "HTTP/1.1 409 Conflict\r\nContent-Length: 13\r\n\r\nalready there",
+                times: None,
+            },
+        ]
+    }
+
+    /// step-3 409 + a re-query showing the same md5 already landed (a
+    /// concurrent uploader won the race) ⇒ idempotent skip: Ok, no target
+    /// recorded, and the recovery re-query actually fired (2 GETs).
+    #[test]
+    #[serial_test::serial]
+    fn live_step3_409_recovers_as_idempotent_skip() {
+        let md5 = md5_hex_of(b"deb-bytes");
+        let recheck: &'static str = Box::leak(
+            format!(r#"[{{"filename":"app_1.0.0_amd64.deb","checksum_md5":"{md5}"}}]"#)
+                .into_boxed_str(),
+        );
+        let (result, log) = run_deb_with_routes(
+            move |base| conflict_recovery_routes(base, recheck),
+            |_| {},
+            Some(fast_retry_config()),
+        );
+        let uploaded = result.expect("409 with matching remote md5 ⇒ idempotent skip");
+        assert!(uploaded.is_empty(), "skip records no target: {uploaded:?}");
+        assert_eq!(
+            count_calls(&log, "GET", PRECHECK_PATH),
+            2,
+            "pre-check + post-409 recovery re-query"
+        );
+    }
+
+    /// step-3 409 + a re-query showing a DIFFERENT md5 ⇒ surface the conflict
+    /// (a concurrent uploader landed different bytes under our name).
+    #[test]
+    #[serial_test::serial]
+    fn live_step3_409_recovery_bails_on_md5_mismatch() {
+        let (result, _log) = run_deb_with_routes(
+            move |base| {
+                conflict_recovery_routes(
+                    base,
+                    r#"[{"filename":"app_1.0.0_amd64.deb","checksum_md5":"00different00"}]"#,
+                )
+            },
+            |_| {},
+            Some(fast_retry_config()),
+        );
+        let err = result
+            .expect_err("409 + different remote md5 must bail")
+            .to_string();
+        assert!(
+            err.contains("step-3 conflict"),
+            "names step-3 conflict: {err}"
+        );
+        assert!(err.contains("00different00"), "names remote md5: {err}");
+    }
+
+    /// step-3 409 + a re-query showing the package is NOT present (the 409 was
+    /// not a same-name race) ⇒ the original step-3 error re-propagates instead
+    /// of being silently swallowed.
+    #[test]
+    #[serial_test::serial]
+    fn live_step3_409_recovery_repropagates_when_not_found() {
+        let (result, _log) = run_deb_with_routes(
+            move |base| conflict_recovery_routes(base, "[]"),
+            |_| {},
+            Some(fast_retry_config()),
+        );
+        let err = format!("{:#}", result.expect_err("409 + still-absent must error"));
+        assert!(err.contains("409"), "original 409 status propagates: {err}");
+    }
 }
 
 #[cfg(test)]

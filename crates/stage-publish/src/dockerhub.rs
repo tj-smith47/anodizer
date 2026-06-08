@@ -1159,6 +1159,436 @@ dockerhub:
             "expected `<redacted>` marker in error chain: {chain}"
         );
     }
+
+    fn strict_ctx(config: Config) -> Context {
+        Context::new(
+            config,
+            ContextOptions {
+                strict: true,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// An image with a leading/trailing/consecutive slash has an empty
+    /// path segment and is rejected unconditionally (before dry-run, so
+    /// even config-test runs catch it). Pins the empty-segment `bail!`.
+    #[test]
+    fn test_dockerhub_rejects_empty_path_segment() {
+        let mut config = Config::default();
+        config.dockerhub = Some(vec![DockerHubConfig {
+            username: Some("testuser".to_string()),
+            images: Some(vec!["myorg//myapp".to_string()]),
+            description: Some("My app".to_string()),
+            ..Default::default()
+        }]);
+        let ctx = dry_run_ctx(config);
+        let log = ctx.logger("dockerhub");
+        let err = publish_to_dockerhub(&ctx, &log).unwrap_err();
+        assert!(
+            err.to_string().contains("empty path segment"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// An image with three slash-separated segments exceeds Docker Hub's
+    /// `namespace/repo` format and is rejected. Pins the
+    /// too-many-segments `bail!`.
+    #[test]
+    fn test_dockerhub_rejects_too_many_segments() {
+        let mut config = Config::default();
+        config.dockerhub = Some(vec![DockerHubConfig {
+            username: Some("testuser".to_string()),
+            images: Some(vec!["a/b/c".to_string()]),
+            description: Some("My app".to_string()),
+            ..Default::default()
+        }]);
+        let ctx = dry_run_ctx(config);
+        let log = ctx.logger("dockerhub");
+        let err = publish_to_dockerhub(&ctx, &log).unwrap_err();
+        assert!(
+            err.to_string().contains("too many path segments"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A bare image name (no namespace) maps to `library/` — which needs
+    /// Docker Inc permissions — so strict mode hard-fails via
+    /// `strict_guard`. Pins the strict branch of the bare-name guard
+    /// (non-strict only warns; this proves the `(strict mode)` bail).
+    #[test]
+    fn test_dockerhub_bare_name_fails_in_strict_mode() {
+        let mut config = Config::default();
+        config.dockerhub = Some(vec![DockerHubConfig {
+            username: Some("testuser".to_string()),
+            images: Some(vec!["barename".to_string()]),
+            description: Some("My app".to_string()),
+            ..Default::default()
+        }]);
+        let ctx = strict_ctx(config);
+        let log = ctx.logger("dockerhub");
+        let err = publish_to_dockerhub(&ctx, &log).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("library/") && msg.contains("strict mode"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// A templated image (`{{ .Env.NS }}/app`) is rendered before
+    /// validation — proving the image-render pass runs. The render falls
+    /// back to the process env (set under the mutex guard). Asserts the
+    /// dry-run intent log names the *rendered* image, not the raw
+    /// `{{ }}` form (which would also trip the empty-segment validator
+    /// if rendering were skipped).
+    #[test]
+    #[serial_test::serial]
+    fn test_dockerhub_renders_image_template_before_validation() {
+        use anodizer_core::test_helpers::env::env_mutex;
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialised by env_mutex; paired set/remove below.
+        unsafe { std::env::set_var("DOCKERHUB_TEST_NS", "myns") };
+
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut config = Config::default();
+        config.dockerhub = Some(vec![DockerHubConfig {
+            username: Some("testuser".to_string()),
+            images: Some(vec!["{{ .Env.DOCKERHUB_TEST_NS }}/app".to_string()]),
+            description: Some("My app".to_string()),
+            ..Default::default()
+        }]);
+        let mut ctx = dry_run_ctx(config);
+        ctx.with_log_capture(capture.clone());
+        let log = ctx.logger("dockerhub");
+        let result = publish_to_dockerhub(&ctx, &log);
+        unsafe { std::env::remove_var("DOCKERHUB_TEST_NS") };
+        result.expect("templated image renders + validates");
+        let msgs = capture.all_messages();
+        assert!(
+            msgs.iter().any(|(_, m)| m.contains("myns/app")),
+            "expected the rendered image in the dry-run intent log: {msgs:?}"
+        );
+    }
+
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+
+    /// `from_url` happy path: a single 200 returns the body verbatim and
+    /// the request reaches the server as a plain `GET /readme.md` (no
+    /// retry, exactly one hit). Pins the success branch of
+    /// `resolve_full_description`'s `from_url` arm — the existing tests
+    /// only cover the unreachable / retry / redaction failure modes.
+    #[test]
+    fn resolve_full_description_from_url_success_records_get() {
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/readme.md",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 17\r\n\r\n# Title\nbody text",
+            times: None,
+        }]);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let desc = DockerHubFullDescription {
+            from_file: None,
+            from_url: Some(DockerHubFromUrl {
+                url: format!("http://{addr}/readme.md"),
+                headers: None,
+            }),
+        };
+        let ctx = render_ctx();
+        let body =
+            resolve_full_description(&desc, &ctx, &client, &fast_policy()).expect("200 succeeds");
+        assert_eq!(body, "# Title\nbody text");
+        let entries = log.lock().expect("log");
+        assert_eq!(
+            entries.len(),
+            1,
+            "exactly one request, no retry: {entries:?}"
+        );
+        assert_eq!(entries[0].method, "GET");
+        assert_eq!(entries[0].path, "/readme.md");
+    }
+
+    /// A 4xx on the `from_url` GET fast-fails (SuccessClass::Strict routes
+    /// 4xx → Break) — the responder is hit exactly once, NOT
+    /// `max_attempts` times, and the error names the URL + status. Pins
+    /// the no-retry classification: a typo'd README URL must surface
+    /// immediately rather than after 3 attempts.
+    #[test]
+    fn resolve_full_description_from_url_4xx_fast_fails_no_retry() {
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/missing.md",
+            response: "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nnot found",
+            times: None,
+        }]);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let desc = DockerHubFullDescription {
+            from_file: None,
+            from_url: Some(DockerHubFromUrl {
+                url: format!("http://{addr}/missing.md"),
+                headers: None,
+            }),
+        };
+        let ctx = render_ctx();
+        let err =
+            resolve_full_description(&desc, &ctx, &client, &fast_policy()).expect_err("404 errors");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("404") || chain.contains("Not Found"),
+            "error chain should carry the 404 status: {chain}"
+        );
+        let entries = log.lock().expect("log");
+        assert_eq!(
+            entries.len(),
+            1,
+            "4xx must NOT retry under fast_policy (3 attempts): {entries:?}"
+        );
+    }
+
+    /// A 429 on `from_url` retries (SuccessClass::Strict routes 429 →
+    /// Continue, same as 5xx) — first 429, then 200 succeeds. Distinct
+    /// from the existing 503 test: 429 is the rate-limit case and shares
+    /// the retriable classification with 5xx.
+    #[test]
+    fn resolve_full_description_from_url_429_retries_then_succeeds() {
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/r.md",
+                response: "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\n\r\n",
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/r.md",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+                times: None,
+            },
+        ]);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let desc = DockerHubFullDescription {
+            from_file: None,
+            from_url: Some(DockerHubFromUrl {
+                url: format!("http://{addr}/r.md"),
+                headers: None,
+            }),
+        };
+        let ctx = render_ctx();
+        let body = resolve_full_description(&desc, &ctx, &client, &fast_policy())
+            .expect("429 retries then 200");
+        assert_eq!(body, "ok");
+        let entries = log.lock().expect("log");
+        assert_eq!(entries.len(), 2, "one 429 retry then success: {entries:?}");
+    }
+
+    /// The `from_url.url` is template-rendered through `ctx` before the
+    /// fetch, so `{{ .Env.OWNER }}`-style configs resolve. The render
+    /// path falls back to the process env, so the var is set under the
+    /// `env_mutex` guard; the rendered path (`/tj/README.md`) is the one
+    /// that must actually hit the wire (raw `{{ }}` would 404).
+    #[test]
+    #[serial_test::serial]
+    fn resolve_full_description_from_url_renders_template() {
+        use anodizer_core::test_helpers::env::env_mutex;
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialised by env_mutex; paired set/remove below.
+        unsafe { std::env::set_var("DOCKERHUB_TEST_OWNER", "tj") };
+
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/tj/README.md",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nrendered",
+            times: None,
+        }]);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let desc = DockerHubFullDescription {
+            from_file: None,
+            from_url: Some(DockerHubFromUrl {
+                url: format!("http://{addr}/{{{{ .Env.DOCKERHUB_TEST_OWNER }}}}/README.md"),
+                headers: None,
+            }),
+        };
+        let ctx = render_ctx();
+        let body = resolve_full_description(&desc, &ctx, &client, &fast_policy())
+            .expect("templated url resolves");
+        unsafe { std::env::remove_var("DOCKERHUB_TEST_OWNER") };
+        assert_eq!(body, "rendered");
+        let entries = log.lock().expect("log");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].path, "/tj/README.md",
+            "the rendered (not raw) path must hit the wire: {entries:?}"
+        );
+    }
+
+    /// A malformed template in `from_url.url` surfaces a render error
+    /// (the `with_context` wraps it with the `render full_description
+    /// from_url` label) BEFORE any network call. Pins the render-error
+    /// arm distinct from the fetch-error arm.
+    #[test]
+    fn resolve_full_description_from_url_template_render_error() {
+        let client = reqwest::blocking::Client::new();
+        let desc = DockerHubFullDescription {
+            from_file: None,
+            from_url: Some(DockerHubFromUrl {
+                // Unterminated tag — the template engine rejects it.
+                url: "http://example.invalid/{{ .Tag".to_string(),
+                headers: None,
+            }),
+        };
+        let ctx = render_ctx();
+        let err = resolve_full_description(&desc, &ctx, &client, &fast_policy())
+            .expect_err("bad template must error");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("render full_description from_url"),
+            "expected the render-context label, got: {chain}"
+        );
+    }
+
+    /// The `from_file.path` is also template-rendered: a
+    /// `{{ .Env.DOCS_DIR }}/README.md` config resolves the env var and
+    /// reads the file at the rendered path. Distinct from the existing
+    /// literal-path file test — this exercises the `render_template` call
+    /// on the from_file branch (which falls back to the process env).
+    #[test]
+    #[serial_test::serial]
+    fn resolve_full_description_from_file_renders_template_path() {
+        use anodizer_core::test_helpers::env::env_mutex;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let readme = dir.path().join("README.md");
+        std::fs::write(&readme, "# Templated path").expect("write");
+
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialised by env_mutex; paired set/remove below.
+        unsafe {
+            std::env::set_var(
+                "DOCKERHUB_TEST_DOCS_DIR",
+                dir.path().to_str().expect("path utf-8"),
+            )
+        };
+
+        let client = reqwest::blocking::Client::new();
+        let desc = DockerHubFullDescription {
+            from_file: Some(DockerHubFromFile {
+                path: "{{ .Env.DOCKERHUB_TEST_DOCS_DIR }}/README.md".to_string(),
+            }),
+            from_url: None,
+        };
+        let ctx = render_ctx();
+        let body =
+            resolve_full_description(&desc, &ctx, &client, &fast_policy()).expect("render + read");
+        unsafe { std::env::remove_var("DOCKERHUB_TEST_DOCS_DIR") };
+        assert_eq!(body, "# Templated path");
+    }
+
+    /// `from_file` takes precedence over `from_url` when both are set:
+    /// the file content is returned and the URL is NEVER fetched (the
+    /// responder records zero requests). Pins the documented precedence
+    /// — without it, a config with both set could silently prefer the
+    /// network source.
+    #[test]
+    fn resolve_full_description_from_file_wins_over_from_url() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let readme = dir.path().join("README.md");
+        std::fs::write(&readme, "from the file").expect("write");
+
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/never.md",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nfrom the url!",
+            times: None,
+        }]);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let desc = DockerHubFullDescription {
+            from_file: Some(DockerHubFromFile {
+                path: readme.to_str().expect("path utf-8").to_string(),
+            }),
+            from_url: Some(DockerHubFromUrl {
+                url: format!("http://{addr}/never.md"),
+                headers: None,
+            }),
+        };
+        let ctx = render_ctx();
+        let body = resolve_full_description(&desc, &ctx, &client, &fast_policy())
+            .expect("from_file precedence");
+        assert_eq!(body, "from the file");
+        let entries = log.lock().expect("log");
+        assert!(
+            entries.is_empty(),
+            "from_url must NOT be fetched when from_file is set: {entries:?}"
+        );
+    }
+
+    /// Custom `from_url.headers` are emitted on the wire. The scripted
+    /// responder doesn't capture headers, so this drives a raw inline
+    /// TCP listener that records the full request and asserts the
+    /// configured `X-Auth: secret-val` header arrives — pinning the
+    /// `if let Some(ref h) = headers` forwarding loop.
+    #[test]
+    fn resolve_full_description_from_url_forwards_headers() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (tx, rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                );
+                let _ = stream.flush();
+                let _ = tx.send(req);
+            }
+        });
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("X-Auth".to_string(), "secret-val".to_string());
+        let desc = DockerHubFullDescription {
+            from_file: None,
+            from_url: Some(DockerHubFromUrl {
+                url: format!("http://{addr}/h.md"),
+                headers: Some(headers),
+            }),
+        };
+        let ctx = render_ctx();
+        let body =
+            resolve_full_description(&desc, &ctx, &client, &fast_policy()).expect("with headers");
+        assert_eq!(body, "ok");
+        let req = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("captured request");
+        assert!(
+            req.to_lowercase().contains("x-auth: secret-val"),
+            "configured header must hit the wire: {req}"
+        );
+    }
 }
 
 #[cfg(test)]
