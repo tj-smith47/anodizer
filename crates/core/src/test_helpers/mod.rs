@@ -24,6 +24,7 @@
 
 pub mod artifact_set;
 pub mod env;
+pub mod fake_tool;
 pub mod https_responder;
 pub mod responder;
 pub mod scripted_responder;
