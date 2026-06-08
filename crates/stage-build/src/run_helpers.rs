@@ -2687,13 +2687,14 @@ mod run_exec_tests {
     }
 
     // -------------------------------------------------------------------------
-    // run_dry_run — pre/post hooks fire in dry-run too
+    // run_dry_run — neither the compiler nor hook bodies execute
     // -------------------------------------------------------------------------
 
-    /// In dry-run the compiler is never spawned, but pre/post hooks still run in
-    /// dry-run mode (their own dry_run=true). The artifact is registered.
+    /// In dry-run neither the compiler nor a hook's command body is executed
+    /// (run_dry_run passes dry_run=true through to run_hooks), yet the planned
+    /// artifact is still registered so downstream stages see the build output.
     #[test]
-    fn run_dry_run_invokes_hooks_in_dry_run_mode() {
+    fn run_dry_run_skips_compiler_and_hook_bodies_but_registers_artifact() {
         let tmp = tempfile::tempdir().unwrap();
         let dist = tmp.path().join("dist");
         std::fs::create_dir_all(&dist).unwrap();
