@@ -80,9 +80,9 @@ fn strip_ansi(s: &str) -> String {
 ///   `• release skipped`              (operator/mode `--skip`)
 ///   `• upx skipped (no binaries)`    (binary-dependent stage, no binaries)
 /// where the first body token IS the skipped stage and the rest is the
-/// reason. Both verdicts are emitted by `Pipeline::run` via `status(...)`
-/// (see `crates/cli/src/pipeline/mod.rs`), so they are the authoritative
-/// "this stage did not run" signal.
+/// reason. Both verdicts are emitted by `Pipeline::run` via `verbose(...)`
+/// (see `crates/cli/src/pipeline/mod.rs`), so callers must run with
+/// `--verbose`; they are the authoritative "this stage did not run" signal.
 ///
 /// We intentionally do NOT treat per-crate / per-config body notes such as
 /// `skipping build for crate 'X'` or `no gitlab config for crate 'y',
@@ -94,8 +94,9 @@ fn extract_skipped_stages(stderr: &str) -> std::collections::BTreeSet<String> {
         .lines()
         .filter_map(|line| {
             let line = strip_ansi(line);
-            // A pipeline skip renders `   • <stage> <verdict>` (the per-line
-            // stage tag is gone — format B); the stage is the first body token.
+            // A pipeline skip renders `• <stage> <verdict>` at the top level
+            // (the per-line stage tag is gone — format B); the stage is the
+            // first body token.
             let body = line.trim_start().strip_prefix("• ")?;
             let (stage, verdict) = body.split_once(' ')?;
             if is_stage_skip_message(verdict) {
@@ -174,6 +175,8 @@ fn release_snapshot_skips_publish_chain() {
         tmp.path(),
         &[
             "release",
+            // Skip lines are verbose-gated; assert_skip_matrix reads them.
+            "--verbose",
             "--snapshot",
             "--dry-run",
             // Skip the heavy artifact stages — the assertion is on the
@@ -217,6 +220,7 @@ fn release_prepare_skips_publish_release_announce() {
         tmp.path(),
         &[
             "release",
+            "--verbose",
             "--prepare",
             "--snapshot",
             "--dry-run",
@@ -257,6 +261,7 @@ fn release_prepare_only_alias_matches_prepare() {
         tmp.path(),
         &[
             "release",
+            "--verbose",
             "--prepare-only",
             "--snapshot",
             "--dry-run",

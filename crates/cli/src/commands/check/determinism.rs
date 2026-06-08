@@ -60,8 +60,13 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
     // logger; this dispatcher owns only the opening section header + the run
     // configuration summary (targets / stages / runs) as aligned `kv` rows.
     let log = StageLogger::new("check", Verbosity::Normal);
-    log.step("Checking", "determinism");
-    emit_run_summary(&log, targets.as_deref(), &stages, args.runs);
+    {
+        // Open a section so the run-configuration summary nests one level under
+        // the header; close it before the per-run output so the runs are
+        // siblings of the header, not nested under it.
+        let _summary = log.section("Checking", "determinism");
+        emit_run_summary(&log, targets.as_deref(), &stages, args.runs);
+    }
 
     // Seed the compile-time allow-list from the centralized
     // DeterminismState (single source of truth); the runtime allow-list

@@ -8,23 +8,22 @@
 //! Two visual registers, one source of truth — never hand-format a stage line:
 //!
 //! ```text
-//!  Checking determinism          ← SECTION HEADER (group / step)
-//!    • targets  aarch64-…         ← META key/value row     (kv)
-//!    • stages   build, sign       ← META key/value row     (kv)
-//!    • runs     2                 ← META key/value row     (kv)
-//!  Building binaries              ← SECTION HEADER
-//!    • compiling x86_64-…         ← DETAIL / info line     (detail / status)
-//!    ✓ x86_64-…    1.2 MiB         ← SUCCESS line           (success)
-//!    ✗ aarch64-…   build failed    ← FAILURE line           (failure)
+//! Checking determinism           ← SECTION HEADER (group / step)
+//!   • targets  aarch64-…          ← META key/value row     (kv)
+//!   • stages   build, sign        ← META key/value row     (kv)
+//!   • runs     2                  ← META key/value row     (kv)
+//! Building binaries               ← SECTION HEADER
+//!   • compiling x86_64-…          ← DETAIL / info line     (detail / status)
+//!   ✓ x86_64-…    1.2 MiB          ← SUCCESS line           (success)
+//!   ✗ aarch64-…   build failed     ← FAILURE line           (failure)
 //! ```
 //!
-//! - **Section headers** ([`StageLogger::step`] / [`StageLogger::group`]) put a
+//! - **Section headers** ([`StageLogger::group`] / [`StageLogger::section`]) put a
 //!   bold-green present-participle verb (the leading word of the stage's
-//!   [`stage_header`] phrase) right-aligned in a fixed 12-column gutter, then
-//!   one space, then the message. ONLY verbs live in this gutter — never a
-//!   lowercase key.
+//!   [`stage_header`] phrase) left-aligned at the section's nesting indent, then
+//!   one space, then the message.
 //! - **Body lines** ([`StageLogger::detail`] / [`success`] / [`failure`], plus
-//!   the retargeted [`StageLogger::status`]) sit at a 3-space body indent under
+//!   the retargeted [`StageLogger::status`]) sit one stop (two spaces) in from
 //!   their header, prefixed by a marker — `•` info (cyan), `✓` success (green),
 //!   `✗` failure (red) — one space, then the text.
 //! - **Key/value rows** ([`StageLogger::kv`]) are `•` detail lines whose
@@ -86,7 +85,7 @@ struct PendingHeader {
     /// [`stage_header`] phrase).
     verb: String,
     /// The remaining words of the phrase, printed after the verb (empty for a
-    /// single-word phrase, which renders a bare gutter verb).
+    /// single-word phrase, which renders a bare verb).
     msg: String,
     /// Whether this header has already been printed. A flushed entry stays on
     /// the stack (so the LIFO pop in [`SectionGuard::drop`] removes the right
@@ -117,8 +116,8 @@ static PENDING: Mutex<Vec<PendingHeader>> = Mutex::new(Vec::new());
 /// Called immediately before any method actually writes a visible body line,
 /// so the deferred headers appear above their first line in correct nesting
 /// order. A header renders at its own stored [`PendingHeader::depth`] — the
-/// 2-space-per-level indent, the right-aligned bold-green verb in the
-/// [`VERB_COLUMN`] gutter, then (if non-empty) one space and the message.
+/// 2-space-per-level indent, the left-aligned bold-green verb, then (if
+/// non-empty) one space and the message.
 ///
 /// No-op when nothing is pending (the common case once a section has already
 /// emitted its first line), so the per-body-line cost is one uncontended lock.
@@ -132,7 +131,7 @@ fn flush_pending() {
             continue;
         }
         let prefix = "  ".repeat(entry.depth);
-        let verb = format!("{:>VERB_COLUMN$}", entry.verb).green().bold();
+        let verb = entry.verb.green().bold();
         if entry.msg.is_empty() {
             eprintln!("{prefix}{verb}");
         } else {
@@ -142,20 +141,17 @@ fn flush_pending() {
     }
 }
 
-/// Width of the right-aligned verb column in [`StageLogger::step`],
-/// matching Cargo's `   Compiling foo` look (3 leading spaces + 9-char
-/// verb = a 12-column gutter before the message).
-const VERB_COLUMN: usize = 12;
-
-/// Indent (after any section nesting) of a body line — a [`StageLogger::detail`]
-/// / [`success`] / [`failure`] / [`kv`] row, or a status label. Three spaces
-/// place the marker column one stop in from the section header's text, so body
-/// lines read as subordinate to the header above them.
+/// Extra indent of a body line — a [`StageLogger::detail`] / [`success`] /
+/// [`failure`] / [`kv`] row, or a status label — beyond its section's nesting
+/// indent. Empty: an open section already adds one two-space level (the depth
+/// increment in [`StageLogger::section`]), which places body lines exactly one
+/// stop in from their left-aligned header. A non-empty value here would
+/// double-indent grouped bodies.
 ///
 /// [`success`]: StageLogger::success
 /// [`failure`]: StageLogger::failure
 /// [`kv`]: StageLogger::kv
-const BODY_INDENT: &str = "   ";
+const BODY_INDENT: &str = "";
 
 /// Marker for an info / detail body line (`•`). Rendered cyan.
 const MARKER_DETAIL: &str = "•";
@@ -168,20 +164,19 @@ const MARKER_FAILURE: &str = "✗";
 
 /// Map a pipeline stage name to its full Cargo-style header phrase
 /// (`"Building binaries"`, `"Signing artifacts"`, `"Publishing"`). Drives
-/// [`StageLogger::group`]'s deferred header: the leading verb is right-aligned
-/// into the [`VERB_COLUMN`] gutter (bold-green, matching `cargo`'s
-/// `   Compiling foo` look), and the remaining words form the message that
-/// follows. A single-word phrase (`"Publishing"`) renders just the gutter
-/// verb with no trailing message.
+/// [`StageLogger::group`]'s deferred header: the leading verb is bold-green and
+/// left-aligned at the section indent, and the remaining words form the message
+/// that follows. A single-word phrase (`"Publishing"`) renders just the verb
+/// with no trailing message.
 ///
 /// The phrase is a *readable description* of the work, not an echo of the
-/// stage name — `group("build")` reads `   Building binaries`, not
-/// `   Building build`. This keeps the continuous log scannable: a reader
+/// stage name — `group("build")` reads `Building binaries`, not
+/// `Building build`. This keeps the continuous log scannable: a reader
 /// sees what each section does, not the internal stage identifier.
 ///
 /// Falls back to `"Running <stage>"` for any stage without a bespoke
 /// phrase, so a newly-added stage still renders in the system vocabulary
-/// (`   Running myfancystage`) without a code change here.
+/// (`Running myfancystage`) without a code change here.
 pub fn stage_header(stage: &str) -> &'static str {
     match stage {
         "setup" => "Preparing release",
@@ -557,8 +552,8 @@ impl StageLogger {
         }
     }
 
-    /// Render a body line: the current section indent, the 3-space body
-    /// indent, a colored `marker`, one space, then `text`. The single source
+    /// Render a body line: the current section indent, a colored `marker`, one
+    /// space, then `text`. The single source
     /// of truth for the `•` / `✓` / `✗` body register so every marker line
     /// aligns byte-identically under its section header.
     fn render_body(marker: &str, text: &str) -> String {
@@ -676,9 +671,9 @@ impl StageLogger {
     /// left-padded to `key_width` so the values line up within a group, then
     /// the `value`. Shown at Normal and above.
     ///
-    /// Lowercase keys must never sit in the verb gutter (that column is for
-    /// bold capitalized verbs only), so meta rows render in the body
-    /// register. Callers that emit several rows pass the width of their
+    /// Lowercase keys never share the header register (reserved for bold
+    /// capitalized verbs), so meta rows render as body lines. Callers that emit
+    /// several rows pass the width of their
     /// widest key as `key_width` so the values share a column:
     ///
     /// ```rust,ignore
@@ -710,32 +705,12 @@ impl StageLogger {
         }
     }
 
-    /// Cargo-style status line: a capitalized, right-aligned, bold-green
-    /// `verb` in a fixed-width gutter followed by `msg`
-    /// (`   Building binaries`, `   Signing artifacts`). Shown at Normal and
-    /// above. Use for section/stage headers where there is a natural
-    /// verb; plain key-action lines stay on [`StageLogger::status`].
-    pub fn step(&self, verb: &str, msg: &str) {
-        if self.verbosity >= Verbosity::Normal {
-            eprintln!(
-                "{}{} {}",
-                indent(),
-                format!("{verb:>VERB_COLUMN$}").green().bold(),
-                msg
-            );
-        }
-        #[cfg(feature = "test-helpers")]
-        if let Some(cap) = &self.capture {
-            cap.record(LogLevel::Status, msg);
-        }
-    }
-
     /// Open a log section for stage `title`.
     ///
     /// The Cargo-style header (derived from [`stage_header`]: the phrase's
-    /// leading verb bold-green and right-aligned in the [`VERB_COLUMN`]
-    /// gutter, then one space and the remaining words — `   Building binaries`,
-    /// ` Publishing` for a single-word phrase) is *deferred*: it prints only
+    /// leading verb bold-green and left-aligned at the section indent, then one
+    /// space and the remaining words — `Building binaries`, `Publishing` for a
+    /// single-word phrase) is *deferred*: it prints only
     /// when this section emits its first real body line, matching GoReleaser
     /// (a section header appears only once the section has output). A stage
     /// that does nothing therefore prints no header at all — no bare
@@ -753,11 +728,22 @@ impl StageLogger {
     /// ```
     #[must_use = "the section stays open only while the guard is alive"]
     pub fn group(&self, title: &str) -> SectionGuard {
+        let (verb, msg) = self.split_header(title);
+        self.section(verb, msg)
+    }
+
+    /// Open a log section with an explicit `(verb, msg)` header, for callers
+    /// outside the pipeline's stage vocabulary (e.g. `check determinism`'s
+    /// `Checking determinism`). Same deferred-header + nesting semantics as
+    /// [`Self::group`], but the header words are supplied directly rather than
+    /// derived from [`stage_header`]. Body lines emitted while the returned
+    /// guard is alive nest one level (two spaces) beneath the header.
+    #[must_use = "the section stays open only while the guard is alive"]
+    pub fn section(&self, verb: &str, msg: &str) -> SectionGuard {
         // Defer the header: push it onto the pending stack at the CURRENT depth
         // (before incrementing) and print it only when this section actually
-        // emits a body line via `flush_pending`. A stage that does nothing
+        // emits a body line via `flush_pending`. A section that emits nothing
         // therefore prints no header at all.
-        let (verb, msg) = self.split_header(title);
         let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
         pending.push(PendingHeader {
             depth: SECTION_DEPTH.load(Ordering::Relaxed),
@@ -765,6 +751,7 @@ impl StageLogger {
             msg: msg.to_string(),
             flushed: false,
         });
+        drop(pending);
         // Track depth even at Quiet verbosity so any line that DOES print
         // (errors) indents correctly and the guard's decrement is balanced.
         SECTION_DEPTH.fetch_add(1, Ordering::Relaxed);
@@ -772,11 +759,11 @@ impl StageLogger {
     }
 
     /// Split a stage's [`stage_header`] phrase into the `(verb, message)`
-    /// pair [`Self::group`] feeds to [`Self::step`]. The verb is everything
+    /// pair [`Self::group`] feeds to [`Self::section`]. The verb is everything
     /// up to the first space; the message is the remainder (empty for a
-    /// single-word phrase, which renders as a bare gutter verb). An unknown
+    /// single-word phrase, which renders as a bare verb). An unknown
     /// stage (default `"Running"`) takes the stage name itself as the
-    /// message, so it reads `   Running myfancystage`.
+    /// message, so it reads `Running myfancystage`.
     fn split_header<'a>(&self, title: &'a str) -> (&'a str, &'a str) {
         let phrase = stage_header(title);
         match phrase.split_once(' ') {
@@ -1084,7 +1071,7 @@ mod tests {
     #[test]
     fn test_stage_header_splits_into_verb_and_message() {
         // A multi-word phrase splits on the FIRST space: the verb feeds the
-        // right-aligned gutter, the remainder is the section message.
+        // left-aligned header verb, the remainder is the section message.
         let log = StageLogger::new("build", Verbosity::Normal);
         assert_eq!(log.split_header("build"), ("Building", "binaries"));
         assert_eq!(log.split_header("sign"), ("Signing", "artifacts"));
@@ -1093,7 +1080,7 @@ mod tests {
 
     #[test]
     fn test_stage_header_single_word_renders_verb_only() {
-        // A known single-word phrase ("Publishing") renders just the gutter
+        // A known single-word phrase ("Publishing") renders just the verb
         // verb with an empty message — no stage-name echo.
         let log = StageLogger::new("publish", Verbosity::Normal);
         assert_eq!(log.split_header("publish"), ("Publishing", ""));
@@ -1407,8 +1394,8 @@ mod tests {
 
     #[test]
     fn test_body_markers_render_at_body_indent() {
-        // Body lines sit at the 3-space body indent (top level: no section
-        // nesting) behind a colored marker glyph. ANSI codes are stripped
+        // Body lines sit at the section indent (top level: flush, no nesting)
+        // behind a colored marker glyph. ANSI codes are stripped
         // for the assertion so the test pins the visible shape, not palette.
         let _guard = SECTION_TEST_LOCK.lock().unwrap();
         // SAFETY: single-threaded under SECTION_TEST_LOCK.
@@ -1432,17 +1419,16 @@ mod tests {
             }
             out
         };
-        assert_eq!(
-            strip(StageLogger::render_body(MARKER_DETAIL, "x")),
-            "   • x"
-        );
+        // At the top level (no open section) a body line renders flush; an open
+        // section adds the two-space-per-level nesting indent via `indent()`.
+        assert_eq!(strip(StageLogger::render_body(MARKER_DETAIL, "x")), "• x");
         assert_eq!(
             strip(StageLogger::render_body(MARKER_SUCCESS, "ok")),
-            "   ✓ ok"
+            "✓ ok"
         );
         assert_eq!(
             strip(StageLogger::render_body(MARKER_FAILURE, "bad")),
-            "   ✗ bad"
+            "✗ bad"
         );
     }
 
