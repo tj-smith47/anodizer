@@ -36,6 +36,23 @@ fn decode_dockerhub_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<
     }
 }
 
+/// Resolve the Docker Hub API base URL through an injected env source.
+///
+/// Honors the undocumented `ANODIZER_DOCKERHUB_API_BASE` override so unit
+/// tests can redirect the login / snapshot / PATCH calls to an in-process
+/// responder via a [`MapEnvSource`](anodizer_core::MapEnvSource); defaults
+/// to the canonical `https://hub.docker.com` in production where callers
+/// pass [`anodizer_core::ProcessEnvSource`] and the var is unset. A
+/// trailing `/` is stripped so the caller can append a `/`-prefixed suffix
+/// without producing a double slash. Mirrors the
+/// `ANODIZER_GITHUB_API_BASE` seam used by the GitHub release backend.
+fn dockerhub_api_base<E: anodizer_core::EnvSource + ?Sized>(env: &E) -> String {
+    env.var("ANODIZER_DOCKERHUB_API_BASE")
+        .unwrap_or_else(|| "https://hub.docker.com".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
 // ---------------------------------------------------------------------------
 // resolve_full_description
 // ---------------------------------------------------------------------------
@@ -164,6 +181,8 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
     // the retry policy is captured once per pipe).
     let policy = ctx.retry_policy();
 
+    let api_base = dockerhub_api_base(ctx.env_source());
+
     // JWT cache keyed by `(username, secret_env_name)`. When N entries
     // share the same login pair we authenticate once and reuse the
     // bearer across PATCHes — saves API calls AND reduces the number
@@ -231,7 +250,17 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         // metadata.description so a single source of truth covers every
         // dockerhub entry. Same fallback chain as homebrew (cask +
         // formula), MCP, scoop, krew, etc.
-        let description_owned: Option<String> = effective_description(entry, ctx);
+        // `description` is a templated field (GoReleaser dockerhub parity:
+        // "Templates: allowed"), so render the resolved value — whether it
+        // came from the entry or the metadata fallback — before it hits the
+        // wire.
+        let description_owned: Option<String> = match effective_description(entry, ctx) {
+            Some(d) => Some(
+                ctx.render_template(&d)
+                    .with_context(|| "dockerhub: render description")?,
+            ),
+            None => None,
+        };
         let short_desc: &str = description_owned.as_deref().unwrap_or("");
         // Docker Hub counts code points, not UTF-8 bytes, so emoji /
         // accented descriptions don't falsely trip the 100-char warning.
@@ -335,7 +364,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
                 SuccessClass::Strict,
                 |_| {
                     client
-                        .post("https://hub.docker.com/v2/users/login/")
+                        .post(format!("{api_base}/v2/users/login/"))
                         .json(&login_body)
                         .send()
                 },
@@ -368,10 +397,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
                 ("library", parts[0])
             };
 
-            let repo_url = format!(
-                "https://hub.docker.com/v2/repositories/{}/{}/",
-                namespace, name
-            );
+            let repo_url = format!("{}/v2/repositories/{}/{}/", api_base, namespace, name);
 
             // Snapshot the prior description + full_description BEFORE
             // mutating, so rollback can restore them. The GET uses the
@@ -534,16 +560,12 @@ fn restore_dockerhub_target_with_env<E: anodizer_core::EnvSource + ?Sized>(
         "username": &target.username,
         "password": password,
     });
+    let login_url = format!("{}/v2/users/login/", dockerhub_api_base(env));
     let (_, login_body_text) = retry_http_blocking(
         "dockerhub: rollback authenticate",
         policy,
         SuccessClass::Strict,
-        |_| {
-            client
-                .post("https://hub.docker.com/v2/users/login/")
-                .json(&login_body)
-                .send()
-        },
+        |_| client.post(&login_url).json(&login_body).send(),
         |status, body| {
             format!(
                 "dockerhub: rollback authentication failed (HTTP {status}): {}",
@@ -1598,6 +1620,867 @@ dockerhub:
         assert!(
             req.to_lowercase().contains("x-auth: secret-val"),
             "configured header must hit the wire: {req}"
+        );
+    }
+}
+
+/// Live-mode (`dry_run: false`) coverage for `publish_to_dockerhub` and
+/// `restore_dockerhub_target_with_env`. Every test redirects the
+/// hard-coded `https://hub.docker.com` host to an in-process scripted
+/// responder via the `ANODIZER_DOCKERHUB_API_BASE` env seam (mirroring
+/// the `ANODIZER_GITHUB_API_BASE` pattern used by the GitHub backend), so
+/// the login / snapshot-GET / PATCH request shapes — method, path, and
+/// JSON body — and the response→outcome mapping are asserted against
+/// recorded traffic. All HTTP-mock (local TCP, no subprocess) so they run
+/// and count on every platform: UNGATED.
+#[cfg(test)]
+mod live_http_tests {
+    use super::*;
+    use anodizer_core::config::{
+        Config, DockerHubConfig, DockerHubFromFile, HumanDuration, RetryConfig,
+    };
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+    use anodizer_core::{MapEnvSource, PublishEvidence, PublishEvidenceExtra, Publisher};
+    use std::time::Duration;
+
+    /// A 2-attempt, 1ms-backoff retry policy installed into the config so
+    /// `ctx.retry_policy()` (which `publish_to_dockerhub` reads internally,
+    /// non-injectably) doesn't inherit the 10-attempt / 10-second-delay
+    /// production default and stall the suite.
+    fn fast_retry() -> RetryConfig {
+        RetryConfig {
+            attempts: 2,
+            delay: HumanDuration(Duration::from_millis(1)),
+            max_delay: HumanDuration(Duration::from_millis(2)),
+        }
+    }
+
+    /// Build a live (non-dry-run) context whose env source carries the
+    /// `ANODIZER_DOCKERHUB_API_BASE` redirect plus `DOCKER_PASSWORD`, and
+    /// whose retry policy is fast. `strict` toggles the strict-guard
+    /// branches.
+    fn live_ctx(config: Config, api_base: &str, strict: bool) -> Context {
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                strict,
+                ..Default::default()
+            },
+        );
+        let mut env = MapEnvSource::new();
+        env.set("ANODIZER_DOCKERHUB_API_BASE", api_base.to_string());
+        env.set("DOCKER_PASSWORD", "s3cr3t-pat");
+        ctx.set_env_source(env);
+        ctx
+    }
+
+    fn entry(images: Vec<&str>, description: Option<&str>) -> DockerHubConfig {
+        DockerHubConfig {
+            username: Some("ci-bot".to_string()),
+            images: Some(images.into_iter().map(str::to_string).collect()),
+            description: description.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    /// Standard 3-route DockerHub flow for a single `myorg/myapp` image:
+    /// login → snapshot GET (returns the given prior description) → PATCH.
+    fn flow_routes(prior_short: &'static str, prior_full: &'static str) -> Vec<ScriptedRoute> {
+        let body =
+            format!("{{\"description\":\"{prior_short}\",\"full_description\":\"{prior_full}\"}}");
+        let snapshot: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {len}\r\n\r\n{body}",
+                len = body.len(),
+            )
+            .into_boxed_str(),
+        );
+        vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/v2/users/login/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 19\r\n\r\n{\"token\":\"jwt-abc\"}",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/v2/repositories/myorg/myapp/",
+                response: snapshot,
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/v2/repositories/myorg/myapp/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]
+    }
+
+    /// Full happy path: login authenticates, snapshot GET reads the prior
+    /// (differing) description, PATCH updates it. Asserts the exact login
+    /// body (username + password), the snapshot GET path, and the PATCH
+    /// body carrying the new `description`. Returns one mutated target.
+    #[test]
+    fn publish_live_full_flow_patches_description() {
+        let (addr, log) = spawn_scripted_responder(flow_routes("old short", "old full"));
+
+        let config = Config {
+            retry: Some(fast_retry()),
+            dockerhub: Some(vec![entry(vec!["myorg/myapp"], Some("brand new desc"))]),
+            ..Default::default()
+        };
+        let ctx = live_ctx(config, &format!("http://{addr}"), false);
+        let logger = ctx.logger("dockerhub");
+
+        let targets = publish_to_dockerhub(&ctx, &logger).expect("live publish succeeds");
+
+        assert_eq!(targets.len(), 1, "exactly one repo mutated");
+        let t = &targets[0];
+        assert_eq!(t.target, "myorg/myapp");
+        assert_eq!(t.namespace, "myorg");
+        assert_eq!(t.name, "myapp");
+        assert_eq!(t.username, "ci-bot");
+        assert_eq!(t.secret_env_var, "DOCKER_PASSWORD");
+        assert_eq!(
+            t.repo_url,
+            format!("http://{addr}/v2/repositories/myorg/myapp/")
+        );
+        assert_eq!(t.snapshot_description.as_deref(), Some("old short"));
+        assert_eq!(t.snapshot_full_description.as_deref(), Some("old full"));
+
+        let entries = log.lock().expect("log");
+        assert_eq!(entries.len(), 3, "login + snapshot + patch: {entries:?}");
+
+        assert_eq!(entries[0].method, "POST");
+        assert_eq!(entries[0].path, "/v2/users/login/");
+        let login: serde_json::Value =
+            serde_json::from_str(&entries[0].body).expect("login body is json");
+        assert_eq!(login["username"], "ci-bot");
+        assert_eq!(login["password"], "s3cr3t-pat");
+
+        assert_eq!(entries[1].method, "GET");
+        assert_eq!(entries[1].path, "/v2/repositories/myorg/myapp/");
+
+        assert_eq!(entries[2].method, "PATCH");
+        assert_eq!(entries[2].path, "/v2/repositories/myorg/myapp/");
+        let patch: serde_json::Value =
+            serde_json::from_str(&entries[2].body).expect("patch body is json");
+        assert_eq!(patch["description"], "brand new desc");
+        assert!(
+            patch.get("full_description").is_none(),
+            "no full_description configured → key omitted: {}",
+            entries[2].body
+        );
+    }
+
+    /// PATCH body carries BOTH `description` and `full_description` when a
+    /// `full_description.from_file` is configured. Pins that the resolved
+    /// file content lands verbatim in the `full_description` key.
+    #[test]
+    fn publish_live_patches_description_and_full_description() {
+        let (addr, log) = spawn_scripted_responder(flow_routes("", ""));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let readme = dir.path().join("README.md");
+        std::fs::write(&readme, "# Long README\nbody").expect("write");
+
+        let mut e = entry(vec!["myorg/myapp"], Some("short one"));
+        e.full_description = Some(DockerHubFullDescription {
+            from_file: Some(DockerHubFromFile {
+                path: readme.to_str().expect("utf-8").to_string(),
+            }),
+            from_url: None,
+        });
+        let config = Config {
+            retry: Some(fast_retry()),
+            dockerhub: Some(vec![e]),
+            ..Default::default()
+        };
+        let ctx = live_ctx(config, &format!("http://{addr}"), false);
+        let logger = ctx.logger("dockerhub");
+
+        let targets = publish_to_dockerhub(&ctx, &logger).expect("live publish succeeds");
+        assert_eq!(targets.len(), 1);
+
+        let entries = log.lock().expect("log");
+        let patch = entries
+            .iter()
+            .find(|e| e.method == "PATCH")
+            .expect("a PATCH was issued");
+        let body: serde_json::Value = serde_json::from_str(&patch.body).expect("patch body json");
+        assert_eq!(body["description"], "short one");
+        assert_eq!(body["full_description"], "# Long README\nbody");
+    }
+
+    /// The short description is template-rendered before the PATCH:
+    /// `{{ .ProjectName }}` resolves against the context. Pins that the
+    /// rendered (not raw) string hits the wire.
+    #[test]
+    fn publish_live_renders_description_template() {
+        let (addr, log) = spawn_scripted_responder(flow_routes("", ""));
+
+        let config = Config {
+            project_name: "anodizer".to_string(),
+            retry: Some(fast_retry()),
+            dockerhub: Some(vec![entry(
+                vec!["myorg/myapp"],
+                Some("Release tool for {{ .ProjectName }}"),
+            )]),
+            ..Default::default()
+        };
+        let ctx = live_ctx(config, &format!("http://{addr}"), false);
+        let logger = ctx.logger("dockerhub");
+
+        publish_to_dockerhub(&ctx, &logger).expect("publish");
+        let entries = log.lock().expect("log");
+        let patch = entries
+            .iter()
+            .find(|e| e.method == "PATCH")
+            .expect("PATCH issued");
+        let body: serde_json::Value = serde_json::from_str(&patch.body).expect("json");
+        assert_eq!(
+            body["description"], "Release tool for anodizer",
+            "the rendered description must hit the wire: {}",
+            patch.body
+        );
+    }
+
+    /// Idempotency: when the snapshot already matches the description we'd
+    /// send, NO PATCH is issued (only login + snapshot GET) and the run
+    /// records zero mutated targets.
+    #[test]
+    fn publish_live_skips_patch_when_unchanged() {
+        let (addr, log) = spawn_scripted_responder(flow_routes("already current", ""));
+
+        let config = Config {
+            retry: Some(fast_retry()),
+            dockerhub: Some(vec![entry(vec!["myorg/myapp"], Some("already current"))]),
+            ..Default::default()
+        };
+        let ctx = live_ctx(config, &format!("http://{addr}"), false);
+        let logger = ctx.logger("dockerhub");
+
+        let targets = publish_to_dockerhub(&ctx, &logger).expect("publish");
+        assert!(targets.is_empty(), "no-change run mutates nothing");
+
+        let entries = log.lock().expect("log");
+        assert!(
+            entries.iter().all(|e| e.method != "PATCH"),
+            "no PATCH when description is unchanged: {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|e| e.method == "GET"),
+            "snapshot GET still happens: {entries:?}"
+        );
+    }
+
+    /// A 401 on login fails the publish with an error naming the status.
+    /// The 4xx fast-fails (no retry): login is hit exactly once.
+    #[test]
+    fn publish_live_login_401_errors() {
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/v2/users/login/",
+            response: "HTTP/1.1 401 Unauthorized\r\nContent-Length: 13\r\n\r\nbad creds yo!",
+            times: None,
+        }]);
+
+        let config = Config {
+            retry: Some(fast_retry()),
+            dockerhub: Some(vec![entry(vec!["myorg/myapp"], Some("desc"))]),
+            ..Default::default()
+        };
+        let ctx = live_ctx(config, &format!("http://{addr}"), false);
+        let logger = ctx.logger("dockerhub");
+
+        let err = publish_to_dockerhub(&ctx, &logger).expect_err("401 login must error");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("authentication failed") && chain.contains("401"),
+            "error must name auth failure + status: {chain}"
+        );
+        let entries = log.lock().expect("log");
+        assert_eq!(
+            entries.iter().filter(|e| e.method == "POST").count(),
+            1,
+            "401 fast-fails — login not retried: {entries:?}"
+        );
+    }
+
+    /// A login response missing the `token` key errors with the
+    /// "no token in login response" message — the publish cannot proceed
+    /// without a bearer.
+    #[test]
+    fn publish_live_login_missing_token_errors() {
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/v2/users/login/",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\n{\"detail\":\"x\"}",
+            times: None,
+        }]);
+
+        let config = Config {
+            retry: Some(fast_retry()),
+            dockerhub: Some(vec![entry(vec!["myorg/myapp"], Some("desc"))]),
+            ..Default::default()
+        };
+        let ctx = live_ctx(config, &format!("http://{addr}"), false);
+        let logger = ctx.logger("dockerhub");
+
+        let err = publish_to_dockerhub(&ctx, &logger).expect_err("missing token errors");
+        assert!(
+            format!("{err:#}").contains("no token in login response"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// A 5xx on the snapshot GET retries then exhausts → the publish
+    /// errors. The snapshot GET is attempted `attempts` (2) times under
+    /// the fast policy, proving 5xx is retriable on the snapshot path.
+    #[test]
+    fn publish_live_snapshot_5xx_retries_then_errors() {
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/v2/users/login/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 19\r\n\r\n{\"token\":\"jwt-abc\"}",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/v2/repositories/myorg/myapp/",
+                response: "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]);
+
+        let config = Config {
+            retry: Some(fast_retry()),
+            dockerhub: Some(vec![entry(vec!["myorg/myapp"], Some("desc"))]),
+            ..Default::default()
+        };
+        let ctx = live_ctx(config, &format!("http://{addr}"), false);
+        let logger = ctx.logger("dockerhub");
+
+        let err = publish_to_dockerhub(&ctx, &logger).expect_err("snapshot 5xx exhausts");
+        assert!(
+            format!("{err:#}").contains("snapshot"),
+            "error must name the snapshot phase: {err:#}"
+        );
+        let entries = log.lock().expect("log");
+        assert_eq!(
+            entries.iter().filter(|e| e.method == "GET").count(),
+            2,
+            "503 snapshot retried up to attempts=2: {entries:?}"
+        );
+    }
+
+    /// A 500 on the PATCH (after a successful login + snapshot) fails the
+    /// publish with an error naming the PATCH + status. Pins the PATCH
+    /// error-mapping arm distinct from login/snapshot failures.
+    #[test]
+    fn publish_live_patch_500_errors() {
+        let (addr, _log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/v2/users/login/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 19\r\n\r\n{\"token\":\"jwt-abc\"}",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/v2/repositories/myorg/myapp/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/v2/repositories/myorg/myapp/",
+                response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]);
+
+        let config = Config {
+            retry: Some(fast_retry()),
+            dockerhub: Some(vec![entry(vec!["myorg/myapp"], Some("desc"))]),
+            ..Default::default()
+        };
+        let ctx = live_ctx(config, &format!("http://{addr}"), false);
+        let logger = ctx.logger("dockerhub");
+
+        let err = publish_to_dockerhub(&ctx, &logger).expect_err("patch 500 errors");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("PATCH") && chain.contains("500"),
+            "error must name PATCH + status: {chain}"
+        );
+    }
+
+    /// The JWT is cached across two entries that share the same
+    /// `(username, secret_env)` pair: login happens exactly ONCE even
+    /// though two distinct repos are PATCHed. Pins the `jwt_cache` reuse.
+    #[test]
+    fn publish_live_reuses_jwt_across_entries() {
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/v2/users/login/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 19\r\n\r\n{\"token\":\"jwt-abc\"}",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/v2/repositories/myorg/app1/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/v2/repositories/myorg/app1/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/v2/repositories/myorg/app2/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/v2/repositories/myorg/app2/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]);
+
+        let config = Config {
+            retry: Some(fast_retry()),
+            dockerhub: Some(vec![
+                entry(vec!["myorg/app1"], Some("desc one")),
+                entry(vec!["myorg/app2"], Some("desc two")),
+            ]),
+            ..Default::default()
+        };
+        let ctx = live_ctx(config, &format!("http://{addr}"), false);
+        let logger = ctx.logger("dockerhub");
+
+        let targets = publish_to_dockerhub(&ctx, &logger).expect("publish");
+        assert_eq!(targets.len(), 2, "both repos mutated");
+
+        let entries = log.lock().expect("log");
+        assert_eq!(
+            entries.iter().filter(|e| e.method == "POST").count(),
+            1,
+            "shared (user, secret) pair → exactly one login: {entries:?}"
+        );
+        assert_eq!(
+            entries.iter().filter(|e| e.method == "PATCH").count(),
+            2,
+            "one PATCH per repo: {entries:?}"
+        );
+    }
+
+    /// A bare image name (no namespace) in NON-strict mode warns but
+    /// proceeds: the PATCH targets the `library/<name>` repo path. Pins
+    /// the non-strict branch of the bare-name guard plus the
+    /// `("library", parts[0])` namespace-derivation fallback.
+    #[test]
+    fn publish_live_bare_name_maps_to_library_namespace() {
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/v2/users/login/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 19\r\n\r\n{\"token\":\"jwt-abc\"}",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/v2/repositories/library/solo/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/v2/repositories/library/solo/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]);
+
+        let config = Config {
+            retry: Some(fast_retry()),
+            dockerhub: Some(vec![entry(vec!["solo"], Some("desc"))]),
+            ..Default::default()
+        };
+        // Non-strict: the bare-name guard warns instead of bailing.
+        let ctx = live_ctx(config, &format!("http://{addr}"), false);
+        let logger = ctx.logger("dockerhub");
+
+        let targets = publish_to_dockerhub(&ctx, &logger).expect("non-strict bare name proceeds");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].namespace, "library");
+        assert_eq!(targets[0].name, "solo");
+
+        let entries = log.lock().expect("log");
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "PATCH" && e.path == "/v2/repositories/library/solo/"),
+            "PATCH targets library/<name>: {entries:?}"
+        );
+    }
+
+    /// `DockerhubPublisher::run` (the trait entry point) end-to-end:
+    /// drives the live flow and asserts the returned `PublishEvidence`
+    /// carries the mutated repo in `artifact_paths` + `primary_ref` and
+    /// the typed `Dockerhub` extra with one target.
+    #[test]
+    fn publisher_run_emits_evidence_for_mutated_repo() {
+        let (addr, _log) = spawn_scripted_responder(flow_routes("old", "old full"));
+
+        let config = Config {
+            retry: Some(fast_retry()),
+            dockerhub: Some(vec![entry(vec!["myorg/myapp"], Some("new desc"))]),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(config, &format!("http://{addr}"), false);
+
+        let p = DockerhubPublisher::new();
+        let evidence = p.run(&mut ctx).expect("run succeeds");
+
+        let expected = format!("http://{addr}/v2/repositories/myorg/myapp/");
+        assert_eq!(evidence.artifact_paths.len(), 1);
+        assert_eq!(evidence.artifact_paths[0].display().to_string(), expected);
+        assert_eq!(evidence.primary_ref.as_deref(), Some(expected.as_str()));
+        match &evidence.extra {
+            PublishEvidenceExtra::Dockerhub(d) => {
+                assert_eq!(d.dockerhub_targets.len(), 1);
+                assert_eq!(d.dockerhub_targets[0].target, "myorg/myapp");
+            }
+            other => panic!("expected Dockerhub extra, got {other:?}"),
+        }
+    }
+
+    /// `run` with no mutation (dry-run) emits empty evidence: no
+    /// artifact_paths, no primary_ref, `Empty` extra. Pins that dry-run /
+    /// skip paths do not leak phantom targets.
+    #[test]
+    fn publisher_run_dry_run_emits_empty_evidence() {
+        let config = Config {
+            dockerhub: Some(vec![entry(vec!["myorg/myapp"], Some("desc"))]),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+
+        let p = DockerhubPublisher::new();
+        let evidence = p.run(&mut ctx).expect("dry-run run succeeds");
+        assert!(evidence.artifact_paths.is_empty());
+        assert!(evidence.primary_ref.is_none());
+        assert!(matches!(evidence.extra, PublishEvidenceExtra::Empty));
+    }
+
+    /// `restore_dockerhub_target_with_env` live happy path: re-authenticates
+    /// (login body carries the re-resolved password) and PATCHes the
+    /// snapshot back. Asserts the rollback PATCH body restores BOTH
+    /// `description` and `full_description`.
+    #[test]
+    fn restore_live_reauths_and_patches_snapshot_back() {
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/v2/users/login/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n{\"token\":\"jwt-back\"}",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/v2/repositories/myorg/myapp/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]);
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = fast_retry().to_policy();
+        let target = DockerhubTarget {
+            target: "myorg/myapp".into(),
+            repo_url: format!("http://{addr}/v2/repositories/myorg/myapp/"),
+            namespace: "myorg".into(),
+            name: "myapp".into(),
+            username: "ci-bot".into(),
+            secret_env_var: "DOCKER_PASSWORD".into(),
+            snapshot_description: Some("prior short".into()),
+            snapshot_full_description: Some("# Prior README".into()),
+        };
+        let mut env = MapEnvSource::new();
+        env.set("ANODIZER_DOCKERHUB_API_BASE", format!("http://{addr}"));
+        env.set("DOCKER_PASSWORD", "rollback-pat");
+
+        restore_dockerhub_target_with_env(&client, &policy, &target, &env)
+            .expect("rollback restores snapshot");
+
+        let entries = log.lock().expect("log");
+        assert_eq!(entries.len(), 2, "login + patch: {entries:?}");
+        assert_eq!(entries[0].method, "POST");
+        assert_eq!(entries[0].path, "/v2/users/login/");
+        let login: serde_json::Value = serde_json::from_str(&entries[0].body).expect("login json");
+        assert_eq!(login["username"], "ci-bot");
+        assert_eq!(login["password"], "rollback-pat");
+
+        assert_eq!(entries[1].method, "PATCH");
+        assert_eq!(entries[1].path, "/v2/repositories/myorg/myapp/");
+        let patch: serde_json::Value = serde_json::from_str(&entries[1].body).expect("patch json");
+        assert_eq!(patch["description"], "prior short");
+        assert_eq!(patch["full_description"], "# Prior README");
+    }
+
+    /// Rollback login 403 surfaces an error naming the rollback-auth
+    /// failure + status, so `DockerhubPublisher::rollback` can count it as
+    /// a failure rather than silently dropping the restore.
+    #[test]
+    fn restore_live_login_403_errors() {
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/v2/users/login/",
+            response: "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = fast_retry().to_policy();
+        let target = DockerhubTarget {
+            target: "myorg/myapp".into(),
+            repo_url: format!("http://{addr}/v2/repositories/myorg/myapp/"),
+            namespace: "myorg".into(),
+            name: "myapp".into(),
+            username: "ci-bot".into(),
+            secret_env_var: "DOCKER_PASSWORD".into(),
+            snapshot_description: Some("prior".into()),
+            snapshot_full_description: None,
+        };
+        let mut env = MapEnvSource::new();
+        env.set("ANODIZER_DOCKERHUB_API_BASE", format!("http://{addr}"));
+        env.set("DOCKER_PASSWORD", "pw");
+
+        let err = restore_dockerhub_target_with_env(&client, &policy, &target, &env)
+            .expect_err("403 rollback login errors");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("rollback authentication failed") && chain.contains("403"),
+            "error must name rollback auth + status: {chain}"
+        );
+    }
+
+    /// `DockerhubPublisher::rollback` end-to-end over recorded evidence:
+    /// re-authenticates and restores each target, logging the restored
+    /// count. Pins the trait rollback loop (decode → per-target restore →
+    /// status tally) against the live responder.
+    #[test]
+    fn publisher_rollback_restores_recorded_targets() {
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/v2/users/login/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n{\"token\":\"jwt-back\"}",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/v2/repositories/myorg/myapp/",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]);
+
+        let capture = anodizer_core::log::LogCapture::new();
+        let config = Config {
+            retry: Some(fast_retry()),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        let mut env = MapEnvSource::new();
+        env.set("ANODIZER_DOCKERHUB_API_BASE", format!("http://{addr}"));
+        env.set("DOCKER_PASSWORD", "rollback-pat");
+        ctx.set_env_source(env);
+        ctx.with_log_capture(capture.clone());
+
+        let mut evidence = PublishEvidence::new("dockerhub");
+        evidence.extra =
+            PublishEvidenceExtra::Dockerhub(anodizer_core::publish_evidence::DockerhubExtra {
+                dockerhub_targets: vec![DockerhubTarget {
+                    target: "myorg/myapp".into(),
+                    repo_url: format!("http://{addr}/v2/repositories/myorg/myapp/"),
+                    namespace: "myorg".into(),
+                    name: "myapp".into(),
+                    username: "ci-bot".into(),
+                    secret_env_var: "DOCKER_PASSWORD".into(),
+                    snapshot_description: Some("prior short".into()),
+                    snapshot_full_description: None,
+                }],
+            });
+
+        let p = DockerhubPublisher::new();
+        p.rollback(&mut ctx, &evidence).expect("rollback succeeds");
+
+        let entries = log.lock().expect("log");
+        assert!(
+            entries.iter().any(|e| e.method == "PATCH"),
+            "rollback issued a PATCH: {entries:?}"
+        );
+        let statuses = capture.all_messages();
+        assert!(
+            statuses
+                .iter()
+                .any(|(_, m)| m.contains("restored 1 description")),
+            "rollback tally must report 1 restored: {statuses:?}"
+        );
+    }
+
+    /// `DockerhubPublisher::rollback` counts a failed restore (missing env
+    /// var) as a failure and continues — the tally reports `1 failure(s)`
+    /// and a per-target warn names the env var. Pins the warn-don't-abort
+    /// rollback contract.
+    #[test]
+    fn publisher_rollback_counts_failure_when_env_missing() {
+        let capture = anodizer_core::log::LogCapture::new();
+        let config = Config {
+            retry: Some(fast_retry()),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        // Env source deliberately omits DOCKER_PASSWORD so restore fails.
+        ctx.set_env_source(MapEnvSource::new());
+        ctx.with_log_capture(capture.clone());
+
+        let mut evidence = PublishEvidence::new("dockerhub");
+        evidence.extra =
+            PublishEvidenceExtra::Dockerhub(anodizer_core::publish_evidence::DockerhubExtra {
+                dockerhub_targets: vec![DockerhubTarget {
+                    target: "myorg/myapp".into(),
+                    repo_url: "http://127.0.0.1:1/unreachable".into(),
+                    namespace: "myorg".into(),
+                    name: "myapp".into(),
+                    username: "ci-bot".into(),
+                    secret_env_var: "DOCKER_PASSWORD".into(),
+                    snapshot_description: Some("prior".into()),
+                    snapshot_full_description: None,
+                }],
+            });
+
+        let p = DockerhubPublisher::new();
+        p.rollback(&mut ctx, &evidence)
+            .expect("rollback never aborts");
+
+        let warns = capture.warn_messages();
+        assert!(
+            warns
+                .iter()
+                .any(|m| m.contains("failed to restore") && m.contains("DOCKER_PASSWORD")),
+            "a per-target failure warn must name the env var: {warns:?}"
+        );
+        let statuses = capture.all_messages();
+        assert!(
+            statuses
+                .iter()
+                .any(|(_, m)| m.contains("0 description(s), 1 failure(s)")),
+            "tally must report 1 failure: {statuses:?}"
+        );
+    }
+
+    /// Live mode with a missing secret env var hard-fails authentication
+    /// BEFORE any login round-trip (the env lookup precedes the POST).
+    /// Pins the `environment variable '<X>' not set` bail on the publish
+    /// path (distinct from the dry-run warn).
+    #[test]
+    fn publish_live_missing_secret_env_errors() {
+        let (addr, log) = spawn_scripted_responder(flow_routes("", ""));
+
+        let config = Config {
+            retry: Some(fast_retry()),
+            dockerhub: Some(vec![entry(vec!["myorg/myapp"], Some("desc"))]),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        // API base redirected, but DOCKER_PASSWORD intentionally absent.
+        let mut env = MapEnvSource::new();
+        env.set("ANODIZER_DOCKERHUB_API_BASE", format!("http://{addr}"));
+        ctx.set_env_source(env);
+        let logger = ctx.logger("dockerhub");
+
+        let err = publish_to_dockerhub(&ctx, &logger).expect_err("missing secret errors");
+        assert!(
+            format!("{err:#}").contains("'DOCKER_PASSWORD' not set"),
+            "unexpected error: {err:#}"
+        );
+        let entries = log.lock().expect("log");
+        assert!(
+            entries.is_empty(),
+            "no HTTP call before the secret lookup: {entries:?}"
+        );
+    }
+
+    /// Strict mode + both descriptions empty → the publish bails via
+    /// `strict_guard` BEFORE authenticating. Pins the strict branch of the
+    /// "both description and full_description are empty" guard. The
+    /// responder records zero traffic.
+    #[test]
+    fn publish_live_strict_empty_descriptions_bails_before_auth() {
+        let (addr, log) = spawn_scripted_responder(flow_routes("", ""));
+
+        // No per-entry description, no metadata fallback → both empty.
+        let config = Config {
+            retry: Some(fast_retry()),
+            dockerhub: Some(vec![entry(vec!["myorg/myapp"], None)]),
+            ..Default::default()
+        };
+        let ctx = live_ctx(config, &format!("http://{addr}"), true);
+        let logger = ctx.logger("dockerhub");
+
+        let err = publish_to_dockerhub(&ctx, &logger).expect_err("strict empty-desc bails");
+        assert!(
+            format!("{err:#}").contains("both description and full_description are empty"),
+            "unexpected error: {err:#}"
+        );
+        let entries = log.lock().expect("log");
+        assert!(
+            entries.is_empty(),
+            "strict bail precedes any HTTP call: {entries:?}"
         );
     }
 }
