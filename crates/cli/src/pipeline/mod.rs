@@ -182,12 +182,13 @@ impl Pipeline {
             // note sits inside the stage's own group (one section per
             // stage in CI) rather than ungrouped after the last endgroup.
             if ctx.should_skip(name) {
-                // Open the section silently (no present-participle verb header)
-                // so the skip reads as one neutral line under the stage's own
-                // tag instead of the contradictory `Announcing announce` ->
-                // `[announce] skipped` pair.
-                let _section = log.group_silent(name);
-                log.status_as(name, &"skipped".yellow().to_string());
+                // No section: a skipped stage has no header to announce (the
+                // header is deferred until a real body line, which a skip is
+                // not), so emit the one neutral skip line at the current
+                // (top) level — `• <name> skipped` reads flat, not nested
+                // under a non-existent verb header. The stage name is the
+                // line's subject (the per-line `[stage]` tag is gone).
+                log.status(&format!("{name} {}", "skipped".yellow()));
                 continue;
             }
 
@@ -199,8 +200,7 @@ impl Pipeline {
             // individual stages (e.g., archive, upx) where it fires AFTER the stage
             // confirms it has work to do.
             if BINARY_DEPENDENT_STAGES.contains(&name) && !has_binaries {
-                let _section = log.group_silent(name);
-                log.status_as(name, &"(no binaries, skipped)".yellow().to_string());
+                log.status(&format!("{name} {}", "skipped (no binaries)".yellow()));
                 continue;
             }
 
@@ -259,12 +259,9 @@ impl Pipeline {
                     }
                 }
                 Err(e) => {
-                    // Tag the failure line to the failing stage (not the
-                    // pipeline-level `release` logger) so it reads
-                    // `[<name>] Error: … failed` inside `::group::<name>`
-                    // rather than bleeding `[release]` into the stage's
-                    // own section.
-                    log.error_as(name, &format!("{} failed: {}", name, e));
+                    // The message names the failing stage; the section header
+                    // already scopes it inside `::group::<name>`.
+                    log.error(&format!("{name} failed: {e}"));
                     return Err(e);
                 }
             }

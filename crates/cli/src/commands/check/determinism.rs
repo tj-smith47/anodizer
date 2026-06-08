@@ -16,7 +16,7 @@ use anodizer_cli::CheckDeterminismArgs;
 use anodizer_core::{
     AllowList, AllowListEntry, DeterminismState,
     git::{head_commit_hash_in, head_commit_timestamp_in, head_is_at_tag, resolve_snapshot_sde},
-    log::{render_error, render_note},
+    log::{StageLogger, Verbosity, render_error, render_note},
 };
 use anyhow::{Context, Result};
 
@@ -55,6 +55,13 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
             commit_short(&commit)
         ))
     });
+
+    // The harness emits its own per-stage warnings/notes through the shared
+    // logger; this dispatcher owns only the opening section header + the run
+    // configuration summary (targets / stages / runs) as aligned `kv` rows.
+    let log = StageLogger::new("check", Verbosity::Normal);
+    log.step("Checking", "determinism");
+    emit_run_summary(&log, targets.as_deref(), &stages, args.runs);
 
     // Seed the compile-time allow-list from the centralized
     // DeterminismState (single source of truth); the runtime allow-list
@@ -193,14 +200,11 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
             // Printing here makes the offset hint (e.g. `first diff at
             // offset 0x130`) visible directly in CI logs (90-day
             // retention), surviving even when the run's artifacts expire.
-            match &d.differing_bytes_summary {
-                Some(summary) => {
-                    eprintln!("  - {}: {} | {:?}", d.artifact, summary, d.hashes);
-                }
-                None => {
-                    eprintln!("  - {}: {:?}", d.artifact, d.hashes);
-                }
-            }
+            let detail = match &d.differing_bytes_summary {
+                Some(summary) => format!("{}: {} | {:?}", d.artifact, summary, d.hashes),
+                None => format!("{}: {:?}", d.artifact, d.hashes),
+            };
+            log.failure(&detail);
         }
         // Use the conventional process::exit so the gate is observable
         // from CI even if a caller wraps the binary in a script.
@@ -316,6 +320,28 @@ fn parse_targets(s: Option<&str>) -> Result<Option<Vec<String>>, String> {
 /// in the default `dist/run-<short>/determinism.json` path.
 fn commit_short(commit: &str) -> String {
     commit.get(..7).unwrap_or(commit).to_string()
+}
+
+/// Emit the run-configuration summary beneath the `Checking determinism`
+/// header as aligned `kv` detail rows (targets / stages / runs). `targets`
+/// is `None` when the operator did not pass `--targets` (the harness resolves
+/// the project's full target list), rendered as `all (from config)` so the
+/// row is never blank.
+fn emit_run_summary(log: &StageLogger, targets: Option<&[String]>, stages: &[StageId], runs: u32) {
+    // Pad every key to the widest so the value column lines up across rows.
+    const KEY_WIDTH: usize = "targets".len();
+    let targets_value = match targets {
+        Some(t) if !t.is_empty() => t.join(", "),
+        _ => "all (from config)".to_string(),
+    };
+    let stages_value = stages
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    log.kv("targets", &targets_value, KEY_WIDTH);
+    log.kv("stages", &stages_value, KEY_WIDTH);
+    log.kv("runs", &runs.to_string(), KEY_WIDTH);
 }
 
 /// Resolve the harness's `child_snapshot` flag.

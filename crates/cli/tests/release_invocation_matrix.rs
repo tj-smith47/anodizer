@@ -74,34 +74,31 @@ fn strip_ansi(s: &str) -> String {
 
 /// Collect the stage names the Pipeline reported as skipped.
 ///
-/// The output refactor moved the stage name out of the message and into
-/// the `[<stage>]` tag that `StageLogger` prepends to every line. A
-/// pipeline-level stage skip therefore looks like one of:
-///   `[release] skipped`              (operator/mode `--skip`)
-///   `[upx] (no binaries, skipped)`   (binary-dependent stage, no binaries)
-/// where the bracketed tag IS the skipped stage and the message is the
-/// reason. Both verdicts are emitted by `Pipeline::run` via
-/// `status_as(name, ...)` (see `crates/cli/src/pipeline/mod.rs`), so they
-/// are the authoritative "this stage did not run" signal.
+/// A pipeline-level stage skip renders as a `• <stage> <verdict>` body line
+/// (format B — there is no per-line `[<stage>]` tag; the stage name leads the
+/// body):
+///   `• release skipped`              (operator/mode `--skip`)
+///   `• upx skipped (no binaries)`    (binary-dependent stage, no binaries)
+/// where the first body token IS the skipped stage and the rest is the
+/// reason. Both verdicts are emitted by `Pipeline::run` via `status(...)`
+/// (see `crates/cli/src/pipeline/mod.rs`), so they are the authoritative
+/// "this stage did not run" signal.
 ///
 /// We intentionally do NOT treat per-crate / per-config body notes such as
-/// `[build] skipping build for crate 'X'` or `[release] no gitlab config
-/// for crate 'y', skipping` as a stage skip: those are progress lines
-/// emitted inside a running stage, not the stage's own pipeline-level
-/// verdict. Matching only the two exact strings below keeps the
-/// distinction precise.
+/// `skipping build for crate 'X'` or `no gitlab config for crate 'y',
+/// skipping` as a stage skip: those are progress lines emitted inside a
+/// running stage, not the stage's own pipeline-level verdict. Matching
+/// only the two exact strings below keeps the distinction precise.
 fn extract_skipped_stages(stderr: &str) -> std::collections::BTreeSet<String> {
     stderr
         .lines()
         .filter_map(|line| {
             let line = strip_ansi(line);
-            let trimmed = line.trim_start();
-            // Require the `[<stage>] ` tag — a skip is always tagged.
-            let inner = trimmed.strip_prefix('[')?;
-            let close = inner.find(']')?;
-            let stage = inner[..close].trim();
-            let msg = inner[close + 1..].trim();
-            if is_stage_skip_message(msg) {
+            // A pipeline skip renders `   • <stage> <verdict>` (the per-line
+            // stage tag is gone — format B); the stage is the first body token.
+            let body = line.trim_start().strip_prefix("• ")?;
+            let (stage, verdict) = body.split_once(' ')?;
+            if is_stage_skip_message(verdict) {
                 Some(stage.to_string())
             } else {
                 None
@@ -110,13 +107,13 @@ fn extract_skipped_stages(stderr: &str) -> std::collections::BTreeSet<String> {
         .collect()
 }
 
-/// True when `msg` (the text after the `[<stage>]` tag) is a stage's own
-/// pipeline-level skip verdict rather than a mid-stage progress note.
-/// Only the two exact verdicts `Pipeline::run` emits qualify; matching a
-/// looser `ends_with("skipping")` would wrongly capture per-crate body
-/// notes (e.g. `[release] no gitlab config ..., skipping`) as a stage skip.
-fn is_stage_skip_message(msg: &str) -> bool {
-    msg == "skipped" || msg == "(no binaries, skipped)"
+/// True when `verdict` (the body text after the `• <stage> ` prefix) is a
+/// stage's own pipeline-level skip verdict rather than a mid-stage progress
+/// note. Only the two exact verdicts `Pipeline::run` emits qualify; matching
+/// a looser `ends_with("skipping")` would wrongly capture per-crate body
+/// notes (e.g. `no gitlab config ..., skipping`) as a stage skip.
+fn is_stage_skip_message(verdict: &str) -> bool {
+    verdict == "skipped" || verdict == "skipped (no binaries)"
 }
 
 /// Bootstrap a fixture cargo+git repo with the minimal anodizer config.

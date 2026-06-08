@@ -767,27 +767,25 @@ fn test_release_prepare_matches_explicit_skip() {
     // We extract the set of stages the pipeline reported as skipped.
     //
     // The output refactor moved the stage name out of the message and into
-    // the `[<stage>]` tag that StageLogger prepends. A pipeline-level skip
-    // now reads `[<stage>] skipped` (operator/mode `--skip`) or
-    // `[<stage>] (no binaries, skipped)` (binary-dependent stage with no
-    // binaries) — both emitted by `Pipeline::run` via `status_as`. The
-    // skipped stage is the bracketed tag; the message is the reason. We
-    // return the unbracketed tag so the assertions below can match
-    // `release` / `publish` / `announce` directly.
+    // the per-line stage tag (now gone — format B). A pipeline-level skip
+    // now reads `   • <stage> skipped` (operator/mode `--skip`) or
+    // `   • <stage> skipped (no binaries)` (binary-dependent stage with no
+    // binaries) — both emitted by `Pipeline::run` via `status`. The stage
+    // name is the first whitespace-delimited token of the body; the rest is
+    // the verdict. We return the stage token so the assertions below can
+    // match `release` / `publish` / `announce` directly.
     //
-    // Per-crate / per-config body notes (e.g. `[release] no gitlab config
-    // ..., skipping`) are progress lines inside a running stage, not a
-    // stage skip, so only the two exact verdict strings qualify.
+    // Per-crate / per-config body notes (e.g. `no gitlab config ...,
+    // skipping`) are progress lines inside a running stage, not a stage
+    // skip, so only the two exact verdict strings qualify.
     fn extract_skipped_stages(stderr: &str) -> std::collections::BTreeSet<String> {
         stderr
             .lines()
             .filter_map(|line| {
                 let line = strip_ansi(line);
-                let inner = line.trim_start().strip_prefix('[')?;
-                let close = inner.find(']')?;
-                let stage = inner[..close].trim();
-                let msg = inner[close + 1..].trim();
-                if msg == "skipped" || msg == "(no binaries, skipped)" {
+                let body = line.trim_start().strip_prefix("• ")?;
+                let (stage, verdict) = body.split_once(' ')?;
+                if verdict == "skipped" || verdict == "skipped (no binaries)" {
                     Some(stage.to_string())
                 } else {
                     None
@@ -3640,10 +3638,11 @@ crates:
         stderr
     );
 
-    // Verify sign stage ran in dry-run
+    // Verify sign stage ran in dry-run. The section header reads
+    // "Signing artifacts" (a readable phrase, not a stage-name echo).
     assert!(
-        stderr.contains("sign"),
-        "stderr should mention sign stage, got:\n{}",
+        stderr.contains("Signing"),
+        "stderr should mention the sign stage header, got:\n{}",
         stderr
     );
 
