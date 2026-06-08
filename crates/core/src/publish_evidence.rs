@@ -213,6 +213,32 @@ pub struct DockerhubExtra {
     pub dockerhub_targets: Vec<DockerhubTargetSnapshot>,
 }
 
+/// One crate whose `cargo publish` SUCCEEDED during this run, recorded
+/// at the moment of success so rollback can yank exactly what went live.
+///
+/// `version` is the per-crate version actually published (workspaces with
+/// mixed cadences publish different versions per crate). `registry` /
+/// `index` mirror the `publish.cargo.registry` / `publish.cargo.index`
+/// the publish used so the yank targets the SAME registry — both are
+/// operator-public identifiers (a registry name, an index URL), never
+/// credential bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CargoYankTargetSnapshot {
+    pub name: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CargoExtra {
+    pub cargo_yank_targets: Vec<CargoYankTargetSnapshot>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactoryTargetSnapshot {
@@ -427,6 +453,7 @@ pub enum PublishEvidenceExtra {
     AurSource(AurSourceExtra),
     Mcp(McpExtra),
     Dockerhub(DockerhubExtra),
+    Cargo(CargoExtra),
     Artifactory(ArtifactoryExtra),
     Cloudsmith(CloudsmithExtra),
     Blob(BlobExtra),
@@ -538,6 +565,45 @@ mod tests {
         let s = serde_json::to_string(&e).expect("serialize");
         let back: PublishEvidence = serde_json::from_str(&s).expect("deserialize");
         assert_eq!(e, back);
+    }
+
+    #[test]
+    fn cargo_extra_roundtrips_and_omits_none_registry_index() {
+        let mut e = PublishEvidence::new("cargo");
+        e.extra = PublishEvidenceExtra::Cargo(CargoExtra {
+            cargo_yank_targets: vec![
+                CargoYankTargetSnapshot {
+                    name: "crate-a".into(),
+                    version: "1.0.0".into(),
+                    registry: Some("my-registry".into()),
+                    index: None,
+                },
+                CargoYankTargetSnapshot {
+                    name: "crate-b".into(),
+                    version: "2.0.0".into(),
+                    registry: None,
+                    index: None,
+                },
+            ],
+        });
+
+        let s = serde_json::to_string(&e).expect("serialize");
+        // None registry/index are omitted; the variant key is the typed shape.
+        assert!(
+            s.contains("cargo_yank_targets"),
+            "wire carries variant key: {s}"
+        );
+        assert!(s.contains("my-registry"), "registry preserved: {s}");
+        assert!(
+            !s.contains("\"index\""),
+            "None index omitted on the wire: {s}"
+        );
+
+        let back: PublishEvidence = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(e, back);
+        // Untagged disjointness: a Cargo payload decodes to the Cargo
+        // variant, not an earlier `*_targets` variant.
+        assert!(matches!(back.extra, PublishEvidenceExtra::Cargo(_)));
     }
 
     #[test]

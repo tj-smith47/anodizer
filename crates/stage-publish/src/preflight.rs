@@ -500,11 +500,15 @@ impl CheckerFactory for RealCheckerFactory {
 /// `ctx.determinism.compile_time_allowlist` when the local gpg binary
 /// lacks `--faked-system-time` support.
 pub fn run_preflight(ctx: &mut Context, log: &StageLogger) -> Result<PreflightReport> {
-    run_preflight_with_factory_and_gpg_probe(
+    // Production entry point: wires the REAL `cargo publish --dry-run` spawn
+    // for the publish-simulation preflight.
+    let dry_run_runner = |krate: &str| run_cargo_dry_run(krate, log);
+    run_preflight_inner(
         ctx,
         log,
         &RealCheckerFactory,
         anodizer_core::signing::gpg_supports_faked_system_time,
+        &dry_run_runner,
     )
 }
 
@@ -512,27 +516,62 @@ pub fn run_preflight(ctx: &mut Context, log: &StageLogger) -> Result<PreflightRe
 /// tests can drive the orchestration without spawning HTTP servers. Uses
 /// the real gpg probe; tests that need to drive the probe use
 /// [`run_preflight_with_factory_and_gpg_probe`] instead.
+///
+/// The publish-simulation dry-run runner is a NO-OP here: this seam exists for
+/// publisher-state / rollback-scope / gpg-probe tests, none of which configure
+/// real workspace crates, so spawning `cargo publish --dry-run` would only
+/// produce spurious "package ID did not match" noise. Tests that target the
+/// simulation drive [`run_cargo_publish_simulation_with`] directly with an
+/// injected index query + runner.
 pub fn run_preflight_with_factory(
     ctx: &mut Context,
     log: &StageLogger,
     factory: &dyn CheckerFactory,
 ) -> Result<PreflightReport> {
-    run_preflight_with_factory_and_gpg_probe(
+    run_preflight_inner(
         ctx,
         log,
         factory,
         anodizer_core::signing::gpg_supports_faked_system_time,
+        &noop_dry_run_runner,
     )
 }
 
 /// Like [`run_preflight_with_factory`] but with the gpg `--faked-system-time`
 /// capability probe also injected. Tests pass a closure returning the
 /// canned support state without spawning a real `gpg` subprocess.
+///
+/// Uses the NO-OP dry-run runner for the same reason as
+/// [`run_preflight_with_factory`] — these are publisher/probe tests, not
+/// publish-simulation tests.
 pub fn run_preflight_with_factory_and_gpg_probe(
     ctx: &mut Context,
     log: &StageLogger,
     factory: &dyn CheckerFactory,
     gpg_probe: fn() -> bool,
+) -> Result<PreflightReport> {
+    run_preflight_inner(ctx, log, factory, gpg_probe, &noop_dry_run_runner)
+}
+
+/// A dry-run runner that never spawns and always reports the simulation
+/// unavailable, so the caller degrades to the index-only partial-publish
+/// check (which contributes no blocker on a clean/single-crate fixture).
+/// Used by every preflight seam except the production [`run_preflight`].
+fn noop_dry_run_runner(_krate: &str) -> DryRunOutcome {
+    DryRunOutcome::Unavailable("dry-run simulation disabled in this preflight path".into())
+}
+
+/// The single orchestrator behind every `run_preflight*` entry point. Threads
+/// the checker factory, gpg probe, AND the publish-simulation dry-run runner so
+/// each is independently injectable. Production wires the real implementations;
+/// tests wire stubs (no-op runner by default — see the `*_with_factory*`
+/// wrappers).
+fn run_preflight_inner(
+    ctx: &mut Context,
+    log: &StageLogger,
+    factory: &dyn CheckerFactory,
+    gpg_probe: fn() -> bool,
+    dry_run_runner: &DryRunRunner<'_>,
 ) -> Result<PreflightReport> {
     let mut report = PreflightReport::new();
     let policy = ctx.retry_policy();
@@ -638,7 +677,410 @@ pub fn run_preflight_with_factory_and_gpg_probe(
 
     run_gpg_capability_probe(ctx, &mut report, gpg_probe);
 
+    run_cargo_publish_simulation(ctx, log, &mut report, factory, dry_run_runner);
+
     Ok(report)
+}
+
+// ---------------------------------------------------------------------------
+// crates.io publish-simulation preflight
+// ---------------------------------------------------------------------------
+
+/// Outcome of simulating one crate's `cargo publish --dry-run`.
+#[derive(Debug, PartialEq, Eq)]
+enum DryRunOutcome {
+    /// The dry-run compiled and packaged cleanly.
+    Ok,
+    /// A verify/compile error — a dependent cannot build against the version
+    /// of its dependency that the registry would resolve. Carries the matched
+    /// stderr line so the abort message points the operator at the cause.
+    CompileError(String),
+    /// `cargo` resolved a sibling crate that is itself in the to-publish set
+    /// but not yet on the registry. Benign during a real publish (cargo
+    /// publishes siblings first), so it must NOT abort.
+    BenignSiblingMissing(String),
+    /// The dry-run could not run for an environmental reason (cargo absent,
+    /// spawn failure). The caller degrades to the partial-publish check rather
+    /// than failing the release on infrastructure.
+    Unavailable(String),
+}
+
+/// Pluggable index-state query for the partial-publish check. Production wires
+/// [`CargoCratesIo`]; tests inject a closure returning canned states without a
+/// network round-trip.
+type IndexQuery<'a> = dyn Fn(&str, &str) -> PublisherState + 'a;
+
+/// Pluggable `cargo publish --dry-run` runner. Production wires
+/// [`run_cargo_dry_run`] (a real spawn); tests inject a closure or drive the
+/// real spawn against a PATH-injected `cargo` stub.
+type DryRunRunner<'a> = dyn Fn(&str) -> DryRunOutcome + 'a;
+
+/// Simulate the crates.io publish BEFORE the irreversible cargo publisher
+/// fires, aborting (via report blockers) when the workspace cannot publish
+/// consistently at the target version.
+///
+/// Gated to a real release: snapshot / nightly / dry-run runs skip entirely
+/// (they never reach crates.io, and the determinism harness rebuilds under
+/// `--snapshot` must not spawn cargo or hit the network here).
+///
+/// Applies the real-release gate, then delegates to
+/// [`run_cargo_publish_simulation_with`].
+///
+/// Both side-effecting seams are injected by the caller (the `run_preflight*`
+/// entry points), so no test path ever hits the network or spawns cargo here:
+/// - the partial-publish index query routes through the supplied
+///   [`CheckerFactory`] — production uses [`RealCheckerFactory`] (a real
+///   sparse-index GET); tests inject a mock factory returning canned states;
+/// - the dry-run runner is the real `cargo publish --dry-run` spawn in
+///   production and [`noop_dry_run_runner`] in every test seam.
+fn run_cargo_publish_simulation(
+    ctx: &mut Context,
+    log: &StageLogger,
+    report: &mut PreflightReport,
+    factory: &dyn CheckerFactory,
+    dry_run_runner: &DryRunRunner<'_>,
+) {
+    // Gated to a REAL release that actually reaches crates.io. Snapshot /
+    // nightly / dry-run never publish (and the determinism harness rebuilds
+    // under `--snapshot --skip=...,publish`), and a skipped publish stage has
+    // no irreversible door to guard — mirror the prepublish-guard gating.
+    if ctx.is_snapshot() || ctx.is_nightly() || ctx.is_dry_run() || ctx.should_skip("publish") {
+        return;
+    }
+
+    let policy = ctx.retry_policy();
+    let checker = factory.cargo(policy);
+    let index_query = |krate: &str, version: &str| checker.check(krate, version);
+
+    run_cargo_publish_simulation_with(ctx, log, report, &index_query, dry_run_runner);
+}
+
+/// [`run_cargo_publish_simulation`] with the index query and dry-run runner
+/// injected so tests can drive both checks without a network round-trip or a
+/// real `cargo` (beyond a PATH-injected stub). Does NOT re-apply the
+/// snapshot/nightly/dry-run gate — the production wrapper owns that so tests
+/// can exercise the logic directly.
+fn run_cargo_publish_simulation_with(
+    ctx: &mut Context,
+    log: &StageLogger,
+    report: &mut PreflightReport,
+    index_query: &IndexQuery<'_>,
+    dry_run_runner: &DryRunRunner<'_>,
+) {
+    // Resolve the to-publish set via the same publish-graph derivation the
+    // real cargo publisher uses, so the preflight can never disagree about
+    // which crates publish or in what order.
+    let selected = ctx.options.selected_crates.clone();
+    let plan = match crate::cargo::cargo_publish_plan(ctx, &selected, log) {
+        Ok(p) => p,
+        Err(e) => {
+            // A render failure in `skip:`/`if:` would also break the real
+            // publish; surface it as a blocker rather than silently skipping.
+            report
+                .blockers
+                .push(format!("cargo publish-simulation: {e:#}"));
+            return;
+        }
+    };
+
+    if plan.order.is_empty() {
+        return;
+    }
+
+    let to_publish: Vec<(String, String)> = plan
+        .order
+        .iter()
+        .map(|name| {
+            let version = plan
+                .versions
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| ctx.version());
+            (name.clone(), version)
+        })
+        .collect();
+
+    // ---- (1) partial-publish abort (cheap, HTTP-only) --------------------
+    if check_partial_publish(&to_publish, index_query, log, report) {
+        // A mixed index state (or an Unknown transport error) already pushed a
+        // blocker; the dependent build can't be simulated meaningfully against
+        // an inconsistent registry, so stop here.
+        return;
+    }
+
+    // ---- (2) cargo publish --dry-run, dependency order -------------------
+    simulate_dry_run_publishes(&to_publish, index_query, dry_run_runner, log, report);
+}
+
+/// (1) PARTIAL-PUBLISH ABORT.
+///
+/// Query each to-be-published crate's already-published state at its target
+/// version and classify the set:
+/// - MIXED (≥1 Published AND ≥1 Clean at the same V) → push a blocker naming
+///   an example of each, and return `true` (caller stops). crates.io versions
+///   are immutable, so a half-published version can never complete.
+/// - any Unknown (transport error) → push a blocker (don't silently pass) and
+///   return `true`.
+/// - all-Clean → fresh release; return `false` (proceed to dry-run).
+/// - all-Published → idempotent (the real publish would skip cargo); return
+///   `false` (nothing to simulate, no abort).
+///
+/// Returns `true` when a blocker was pushed and the caller should stop.
+fn check_partial_publish(
+    to_publish: &[(String, String)],
+    index_query: &IndexQuery<'_>,
+    log: &StageLogger,
+    report: &mut PreflightReport,
+) -> bool {
+    let mut first_published: Option<(String, String)> = None;
+    let mut first_clean: Option<(String, String)> = None;
+
+    for (name, version) in to_publish {
+        log.verbose(&format!(
+            "publish-sim: checking crates.io state for '{name}@{version}'"
+        ));
+        match index_query(name, version) {
+            PublisherState::Published => {
+                if first_published.is_none() {
+                    first_published = Some((name.clone(), version.clone()));
+                }
+            }
+            PublisherState::Clean => {
+                if first_clean.is_none() {
+                    first_clean = Some((name.clone(), version.clone()));
+                }
+            }
+            PublisherState::Unknown { reason } => {
+                report.blockers.push(format!(
+                    "cargo publish-simulation: could not determine crates.io state for \
+                     '{name}@{version}' ({reason}); refusing to start a release that may \
+                     partially publish — retry once the registry is reachable"
+                ));
+                return true;
+            }
+            // crates.io never yields InModeration / PRPending; treat any other
+            // state conservatively as "present" so a mixed set still aborts.
+            other => {
+                log.verbose(&format!(
+                    "publish-sim: '{name}@{version}' reported {other}; treating as published"
+                ));
+                if first_published.is_none() {
+                    first_published = Some((name.clone(), version.clone()));
+                }
+            }
+        }
+    }
+
+    match (first_published, first_clean) {
+        (Some((pub_name, pub_ver)), Some((clean_name, clean_ver))) => {
+            report.blockers.push(format!(
+                "crates.io version {pub_ver} is partially published ({pub_name}@{pub_ver} \
+                 exists, {clean_name}@{clean_ver} does not); crates.io versions are \
+                 immutable, so this release cannot complete consistently — bump to a new \
+                 version"
+            ));
+            true
+        }
+        // all-Published → idempotent skip; all-Clean → fresh; either proceeds.
+        _ => false,
+    }
+}
+
+/// (2) `cargo publish --dry-run` simulation in dependency order.
+///
+/// For each still-Clean crate (skipping any already-Published — the real
+/// publish would skip those), run the dry-run and classify:
+/// - [`DryRunOutcome::Ok`] → continue.
+/// - [`DryRunOutcome::CompileError`] → push a blocker and stop: a dependent
+///   cannot build against the dependency version the registry resolves (the
+///   `probe_dir` failure mode).
+/// - [`DryRunOutcome::BenignSiblingMissing`] → continue: cargo couldn't find a
+///   sibling that is itself in the to-publish set and will be published first.
+/// - [`DryRunOutcome::Unavailable`] → warn and fall back to check (1) (already
+///   run) rather than hard-failing the release on infrastructure.
+fn simulate_dry_run_publishes(
+    to_publish: &[(String, String)],
+    index_query: &IndexQuery<'_>,
+    dry_run_runner: &DryRunRunner<'_>,
+    log: &StageLogger,
+    report: &mut PreflightReport,
+) {
+    let in_set: std::collections::HashSet<&str> =
+        to_publish.iter().map(|(n, _)| n.as_str()).collect();
+
+    for (name, version) in to_publish {
+        // Skip crates already on the registry — the real publish skips them,
+        // and `cargo publish --dry-run` would refuse an existing version.
+        if matches!(index_query(name, version), PublisherState::Published) {
+            continue;
+        }
+
+        log.verbose(&format!("publish-sim: cargo publish --dry-run -p {name}"));
+        match dry_run_runner(name) {
+            DryRunOutcome::Ok => {}
+            DryRunOutcome::BenignSiblingMissing(detail) => {
+                // Benign ONLY when the unresolved crate is itself in the
+                // to-publish set (a sibling the real publish lands first). A
+                // missing crate that is NOT in the set is a genuine resolution
+                // failure that would also break the real publish — abort.
+                if in_set.iter().any(|sib| detail.contains(sib)) {
+                    log.verbose(&format!(
+                        "publish-sim: '{name}' dry-run resolved a not-yet-published sibling \
+                         ({detail}); benign — the real publish orders siblings first"
+                    ));
+                } else {
+                    report.blockers.push(format!(
+                        "cargo publish-simulation: `cargo publish --dry-run -p {name}` could \
+                         not resolve a dependency ({detail}); it is not a workspace crate this \
+                         release publishes, so the real publish would fail the same way — fix \
+                         the dependency before releasing"
+                    ));
+                    return;
+                }
+            }
+            DryRunOutcome::CompileError(detail) => {
+                report.blockers.push(format!(
+                    "cargo publish-simulation: `cargo publish --dry-run -p {name}` failed to \
+                     build ({detail}); a published dependency is missing API this crate needs, \
+                     so the real publish would fire the irreversible cargo publisher and then \
+                     fail mid-release — bump to a new version or fix the dependency"
+                ));
+                return;
+            }
+            DryRunOutcome::Unavailable(detail) => {
+                log.warn(&format!(
+                    "publish-sim: skipping `cargo publish --dry-run -p {name}` ({detail}); \
+                     relying on the partial-publish index check alone"
+                ));
+            }
+        }
+    }
+}
+
+/// Spawn `cargo publish --dry-run -p <crate>` and classify the result.
+///
+/// Best-effort: a spawn failure (cargo absent / not executable) yields
+/// [`DryRunOutcome::Unavailable`] so the caller degrades gracefully rather
+/// than failing the release on a missing toolchain.
+fn run_cargo_dry_run(crate_name: &str, log: &StageLogger) -> DryRunOutcome {
+    use std::process::Command;
+
+    let output = Command::new("cargo")
+        .args(["publish", "--dry-run", "-p", crate_name])
+        .output();
+
+    let output = match output {
+        Ok(o) => o,
+        Err(e) => return DryRunOutcome::Unavailable(format!("spawn cargo: {e}")),
+    };
+
+    if output.status.success() {
+        return DryRunOutcome::Ok;
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    log.verbose(&format!(
+        "publish-sim: `cargo publish --dry-run -p {crate_name}` exited non-zero:\n{}",
+        anodizer_core::redact::redact_bearer_tokens(stderr.trim_end())
+    ));
+    classify_dry_run_stderr(&stderr)
+}
+
+/// Classify a failed `cargo publish --dry-run` stderr into a [`DryRunOutcome`].
+///
+/// - A "did not match any packages" / "package ID specification" line means
+///   `-p <crate>` didn't resolve to a workspace member in THIS context (a
+///   degenerate/test invocation, never a real release) → [`DryRunOutcome::Unavailable`].
+/// - A "no matching package" / "failed to select a version" line naming a
+///   crate is treated as a (potentially benign) missing-sibling signal: the
+///   caller decides benign-vs-blocker by checking whether the named crate is
+///   in the to-publish set.
+/// - A compile/verify error (`error[E…]`, "cannot find …", "could not
+///   compile") is a hard [`DryRunOutcome::CompileError`].
+/// - Anything else non-zero is conservatively a `CompileError` (an unexpected
+///   verify failure should abort, not pass) — except a pure registry/network
+///   complaint, which degrades to `Unavailable`.
+fn classify_dry_run_stderr(stderr: &str) -> DryRunOutcome {
+    let lower = stderr.to_ascii_lowercase();
+
+    // Invocation/environment artifact: the crate named by `-p` is not a
+    // resolvable workspace member in THIS context (e.g. a synthetic test
+    // fixture, or a sparse checkout). In a real release the crate IS a
+    // workspace member, so this string only appears in degenerate contexts —
+    // treat it as Unavailable (warn + fall back to the index check), never a
+    // hard blocker.
+    if lower.contains("did not match any packages") || lower.contains("package id specification") {
+        return DryRunOutcome::Unavailable(first_nonempty_line(stderr));
+    }
+
+    // Missing-package signal (a dependency cargo could not resolve on the
+    // registry). Carry the offending line; the caller distinguishes a
+    // to-publish sibling (benign) from a genuinely-absent external dep.
+    if lower.contains("no matching package")
+        || lower.contains("failed to select a version")
+        || lower.contains("could not find")
+    {
+        let line = first_line_matching(
+            stderr,
+            &["no matching package", "failed to select", "could not find"],
+        );
+        return DryRunOutcome::BenignSiblingMissing(line);
+    }
+
+    // Compile / verify failure — the dependent can't build against its
+    // published dependency (the probe_dir case).
+    if lower.contains("error[e")
+        || lower.contains("cannot find function")
+        || lower.contains("cannot find ")
+        || lower.contains("could not compile")
+        || lower.contains("unresolved import")
+    {
+        let line = first_line_matching(
+            stderr,
+            &[
+                "error[e",
+                "cannot find",
+                "could not compile",
+                "unresolved import",
+            ],
+        );
+        return DryRunOutcome::CompileError(line);
+    }
+
+    // Pure registry/network failure → environmental, not a code problem.
+    if lower.contains("failed to download")
+        || lower.contains("network failure")
+        || lower.contains("spurious network error")
+        || lower.contains("error: failed to get successful http response")
+    {
+        return DryRunOutcome::Unavailable(first_nonempty_line(stderr));
+    }
+
+    // Unknown non-zero exit: conservatively treat as a compile/verify failure
+    // so a real problem aborts rather than slipping past the gate.
+    DryRunOutcome::CompileError(first_nonempty_line(stderr))
+}
+
+/// First stderr line containing any of `needles` (case-insensitive), trimmed.
+/// Falls back to the first non-empty line.
+fn first_line_matching(stderr: &str, needles: &[&str]) -> String {
+    for line in stderr.lines() {
+        let lower = line.to_ascii_lowercase();
+        if needles.iter().any(|n| lower.contains(n)) {
+            return line.trim().to_string();
+        }
+    }
+    first_nonempty_line(stderr)
+}
+
+/// First non-empty, trimmed stderr line (or a placeholder when stderr is bare).
+fn first_nonempty_line(stderr: &str) -> String {
+    stderr
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("non-zero exit, no diagnostic")
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -1815,5 +2257,499 @@ mod tests {
                 .any(|(n, _)| n == "gpg-signature.asc"),
             "no gpg-signature.asc allowlist entry when only cosign is configured"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // crates.io publish-simulation preflight (task #25)
+    // -----------------------------------------------------------------------
+    mod publish_simulation {
+        use super::super::*;
+        use anodizer_core::config::{CargoPublishConfig, CrateConfig, PublishConfig};
+        use anodizer_core::context::Context;
+        use anodizer_core::log::{StageLogger, Verbosity};
+        use anodizer_core::preflight::{PreflightReport, PublisherState};
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        fn quiet_log() -> StageLogger {
+            StageLogger::new("publish-sim-test", Verbosity::Normal)
+        }
+
+        /// A checker factory whose `.cargo()` checker panics if ever invoked —
+        /// proves the real-release gate short-circuits before the index query
+        /// (or the dry-run runner) is touched.
+        struct PanicFactory;
+
+        struct PanicChecker;
+        impl PreflightChecker for PanicChecker {
+            fn publisher_name(&self) -> &str {
+                "cargo"
+            }
+            fn check(&self, _package: &str, _version: &str) -> PublisherState {
+                panic!("gated-out simulation must never query the index")
+            }
+        }
+
+        impl CheckerFactory for PanicFactory {
+            fn cargo(&self, _policy: RetryPolicy) -> Box<dyn PreflightChecker> {
+                Box::new(PanicChecker)
+            }
+            fn chocolatey(&self, _src: String, _p: RetryPolicy) -> Box<dyn PreflightChecker> {
+                Box::new(PanicChecker)
+            }
+            fn winget(&self, _t: Option<String>, _p: RetryPolicy) -> Box<dyn PreflightChecker> {
+                Box::new(PanicChecker)
+            }
+            fn aur(&self, _p: RetryPolicy) -> Box<dyn PreflightChecker> {
+                Box::new(PanicChecker)
+            }
+        }
+
+        /// A dry-run runner that panics if invoked — paired with [`PanicFactory`]
+        /// so a gated-out simulation proves it spawns nothing.
+        fn panic_runner(_krate: &str) -> DryRunOutcome {
+            panic!("gated-out simulation must never spawn cargo")
+        }
+
+        /// A cargo-eligible crate with the given workspace-internal deps.
+        fn cargo_crate(name: &str, deps: &[&str]) -> CrateConfig {
+            CrateConfig {
+                name: name.to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
+                publish: Some(PublishConfig {
+                    cargo: Some(CargoPublishConfig::default()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn two_crate_ctx() -> Context {
+            TestContextBuilder::new()
+                .crates(vec![
+                    cargo_crate("anodizer-stage-blob", &["anodizer-core"]),
+                    cargo_crate("anodizer-core", &[]),
+                ])
+                .build()
+        }
+
+        // ---- (1) partial-publish abort ----------------------------------
+
+        #[test]
+        fn partial_publish_mixed_state_aborts() {
+            let mut ctx = two_crate_ctx();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            // core already on the index, stage-blob not — the exact poison.
+            let index = |krate: &str, _v: &str| {
+                if krate == "anodizer-core" {
+                    PublisherState::Published
+                } else {
+                    PublisherState::Clean
+                }
+            };
+            // Dry-run must never run once partial-publish aborts.
+            let dry = |krate: &str| -> DryRunOutcome {
+                panic!("dry-run must not run on a mixed index state (ran for {krate})")
+            };
+            run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
+
+            assert_eq!(report.blockers.len(), 1, "exactly one partial blocker");
+            let b = &report.blockers[0];
+            assert!(b.contains("partially published"), "blocker: {b}");
+            assert!(
+                b.contains("anodizer-core"),
+                "names the published crate: {b}"
+            );
+            assert!(
+                b.contains("anodizer-stage-blob"),
+                "names the clean crate: {b}"
+            );
+            assert!(b.contains("bump to a new version"), "actionable: {b}");
+        }
+
+        #[test]
+        fn all_clean_proceeds_no_blocker() {
+            let mut ctx = two_crate_ctx();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            let index = |_krate: &str, _v: &str| PublisherState::Clean;
+            // All clean → dry-run runs for both, all succeed.
+            let dry = |_krate: &str| DryRunOutcome::Ok;
+            run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
+            assert!(
+                report.blockers.is_empty(),
+                "all-clean must not block: {:?}",
+                report.blockers
+            );
+        }
+
+        #[test]
+        fn all_published_idempotent_proceeds_no_blocker() {
+            let mut ctx = two_crate_ctx();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            let index = |_krate: &str, _v: &str| PublisherState::Published;
+            // Every crate already published → dry-run must be skipped entirely.
+            let dry = |krate: &str| -> DryRunOutcome {
+                panic!("dry-run must skip already-published crates (ran for {krate})")
+            };
+            run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
+            assert!(
+                report.blockers.is_empty(),
+                "all-published is idempotent, must not block: {:?}",
+                report.blockers
+            );
+        }
+
+        #[test]
+        fn unknown_transport_error_is_surfaced_not_silently_passed() {
+            let mut ctx = two_crate_ctx();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            let index = |krate: &str, _v: &str| {
+                if krate == "anodizer-core" {
+                    PublisherState::Unknown {
+                        reason: "connection reset".into(),
+                    }
+                } else {
+                    PublisherState::Clean
+                }
+            };
+            let dry = |_krate: &str| DryRunOutcome::Ok;
+            run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
+            assert_eq!(report.blockers.len(), 1, "Unknown surfaces a blocker");
+            let b = &report.blockers[0];
+            assert!(b.contains("could not determine crates.io state"), "{b}");
+            assert!(b.contains("connection reset"), "carries the reason: {b}");
+        }
+
+        // ---- (2) dry-run classification ---------------------------------
+
+        #[test]
+        fn dry_run_compile_error_aborts() {
+            let mut ctx = two_crate_ctx();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            let index = |_krate: &str, _v: &str| PublisherState::Clean;
+            let dry = |krate: &str| {
+                if krate == "anodizer-stage-blob" {
+                    DryRunOutcome::CompileError(
+                        "error[E0425]: cannot find function `probe_dir`".into(),
+                    )
+                } else {
+                    DryRunOutcome::Ok
+                }
+            };
+            run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
+            assert_eq!(report.blockers.len(), 1, "compile error aborts");
+            let b = &report.blockers[0];
+            assert!(b.contains("failed to build"), "{b}");
+            assert!(
+                b.contains("probe_dir"),
+                "carries the compiler diagnostic: {b}"
+            );
+            assert!(b.contains("anodizer-stage-blob"), "names the crate: {b}");
+        }
+
+        #[test]
+        fn dry_run_missing_sibling_in_set_is_benign() {
+            let mut ctx = two_crate_ctx();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            let index = |_krate: &str, _v: &str| PublisherState::Clean;
+            // stage-blob can't resolve anodizer-core (a sibling published first
+            // in the real run) — benign, must NOT abort.
+            let dry = |krate: &str| {
+                if krate == "anodizer-stage-blob" {
+                    DryRunOutcome::BenignSiblingMissing(
+                        "no matching package named `anodizer-core` found".into(),
+                    )
+                } else {
+                    DryRunOutcome::Ok
+                }
+            };
+            run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
+            assert!(
+                report.blockers.is_empty(),
+                "missing in-set sibling is benign: {:?}",
+                report.blockers
+            );
+        }
+
+        #[test]
+        fn dry_run_missing_external_dep_aborts() {
+            let mut ctx = two_crate_ctx();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            let index = |_krate: &str, _v: &str| PublisherState::Clean;
+            // A missing crate that is NOT in the to-publish set is a real
+            // resolution failure that would also break the real publish.
+            let dry = |krate: &str| {
+                if krate == "anodizer-stage-blob" {
+                    DryRunOutcome::BenignSiblingMissing(
+                        "no matching package named `some-external-crate` found".into(),
+                    )
+                } else {
+                    DryRunOutcome::Ok
+                }
+            };
+            run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
+            assert_eq!(report.blockers.len(), 1, "missing external dep aborts");
+            assert!(
+                report.blockers[0].contains("could not resolve a dependency"),
+                "{}",
+                report.blockers[0]
+            );
+        }
+
+        #[test]
+        fn dry_run_unavailable_falls_back_to_index_check_no_block() {
+            let mut ctx = two_crate_ctx();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            let index = |_krate: &str, _v: &str| PublisherState::Clean;
+            // cargo unavailable → warn + fall back to (1), which already passed.
+            let dry = |_krate: &str| DryRunOutcome::Unavailable("cargo not on PATH".into());
+            run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
+            assert!(
+                report.blockers.is_empty(),
+                "infrastructure failure must not hard-fail the release: {:?}",
+                report.blockers
+            );
+        }
+
+        // ---- gating ------------------------------------------------------
+
+        #[test]
+        fn snapshot_skips_simulation_entirely() {
+            let mut ctx = TestContextBuilder::new()
+                .crates(vec![cargo_crate("anodizer-core", &[])])
+                .snapshot(true)
+                .build();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            // The wrapper owns the gate; PanicFactory + panic_runner prove it
+            // never queries the index or spawns cargo under snapshot.
+            run_cargo_publish_simulation(&mut ctx, &log, &mut report, &PanicFactory, &panic_runner);
+            assert!(report.blockers.is_empty());
+        }
+
+        #[test]
+        fn dry_run_mode_skips_simulation_entirely() {
+            let mut ctx = TestContextBuilder::new()
+                .crates(vec![cargo_crate("anodizer-core", &[])])
+                .dry_run(true)
+                .build();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            run_cargo_publish_simulation(&mut ctx, &log, &mut report, &PanicFactory, &panic_runner);
+            assert!(report.blockers.is_empty());
+        }
+
+        #[test]
+        fn nightly_skips_simulation_entirely() {
+            let mut ctx = TestContextBuilder::new()
+                .crates(vec![cargo_crate("anodizer-core", &[])])
+                .build();
+            ctx.options.nightly = true;
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            run_cargo_publish_simulation(&mut ctx, &log, &mut report, &PanicFactory, &panic_runner);
+            assert!(report.blockers.is_empty());
+        }
+
+        #[test]
+        fn skipped_publish_stage_skips_simulation_entirely() {
+            let mut ctx = TestContextBuilder::new()
+                .crates(vec![cargo_crate("anodizer-core", &[])])
+                .skip_stages(vec!["publish".to_string()])
+                .build();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            run_cargo_publish_simulation(&mut ctx, &log, &mut report, &PanicFactory, &panic_runner);
+            assert!(report.blockers.is_empty());
+        }
+
+        /// Regression: `run_preflight_with_factory` (the test seam used by the
+        /// rollback-scope / publisher-state tests) must NOT spawn cargo or hit
+        /// the network for a configured cargo crate. The injected factory
+        /// reports the crate Clean; the default no-op dry-run runner contributes
+        /// no blocker. A single-crate Clean config cannot be a partial publish,
+        /// so the simulation adds ZERO blockers — exactly what the rollback-scope
+        /// tests assume.
+        #[test]
+        fn factory_seam_runs_no_op_dry_runner_no_spurious_blocker() {
+            use anodizer_core::config::{Config, CrateConfig, PublishConfig};
+            use anodizer_core::context::{Context, ContextOptions};
+
+            let crate_cfg = CrateConfig {
+                name: "mytool".to_string(),
+                publish: Some(PublishConfig {
+                    cargo: Some(CargoPublishConfig::default()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let config = Config {
+                project_name: "mytool".to_string(),
+                crates: vec![crate_cfg],
+                ..Default::default()
+            };
+            let mut ctx = Context::new(config, ContextOptions::default());
+            ctx.template_vars_mut().set("Version", "1.0.0");
+            let log = quiet_log();
+
+            // A factory reporting the cargo crate Clean (no network).
+            let factory = super::CannedFactory {
+                cargo_state: PublisherState::Clean,
+                choco_state: PublisherState::Clean,
+                winget_state: PublisherState::Clean,
+                aur_state: PublisherState::Clean,
+            };
+            let report = run_preflight_with_factory(&mut ctx, &log, &factory).expect("ok");
+            assert!(
+                report.blockers.is_empty(),
+                "factory seam must not produce a simulation blocker: {:?}",
+                report.blockers
+            );
+        }
+
+        // ---- classify_dry_run_stderr unit coverage ----------------------
+
+        #[test]
+        fn classify_stderr_compile_error() {
+            let out = classify_dry_run_stderr(
+                "   Compiling anodizer-stage-blob v0.6.0\nerror[E0425]: cannot find function `probe_dir` in module `path_util`\n",
+            );
+            match out {
+                DryRunOutcome::CompileError(line) => {
+                    assert!(line.contains("E0425"), "line: {line}")
+                }
+                other => panic!("expected CompileError, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn classify_stderr_no_matching_package() {
+            let out = classify_dry_run_stderr(
+                "error: failed to verify package tarball\n\nCaused by:\n  no matching package named `anodizer-core` found\n",
+            );
+            match out {
+                DryRunOutcome::BenignSiblingMissing(line) => {
+                    assert!(line.contains("anodizer-core"), "line: {line}")
+                }
+                other => panic!("expected BenignSiblingMissing, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn classify_stderr_network_failure_is_unavailable() {
+            let out = classify_dry_run_stderr(
+                "error: failed to download from registry\nCaused by:\n  spurious network error\n",
+            );
+            assert!(
+                matches!(out, DryRunOutcome::Unavailable(_)),
+                "network failure → Unavailable, got {out:?}"
+            );
+        }
+
+        #[test]
+        fn classify_stderr_unknown_nonzero_is_compile_error_conservative() {
+            let out = classify_dry_run_stderr("error: something unexpected went wrong\n");
+            assert!(
+                matches!(out, DryRunOutcome::CompileError(_)),
+                "unknown non-zero conservatively aborts, got {out:?}"
+            );
+        }
+
+        #[test]
+        fn classify_stderr_package_id_mismatch_is_unavailable_not_blocker() {
+            // The exact string a degenerate/test invocation produces when `-p`
+            // names a crate that is not a workspace member here. Must NOT be a
+            // CompileError blocker — in a real release the crate IS a member.
+            let out = classify_dry_run_stderr(
+                "error: package ID specification `mytool` did not match any packages\n",
+            );
+            assert!(
+                matches!(out, DryRunOutcome::Unavailable(_)),
+                "package-ID mismatch → Unavailable (env artifact), got {out:?}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FakeToolDir-driven `cargo publish --dry-run` spawn coverage.
+    //
+    // Stubs `cargo` on PATH and drives the REAL spawn in `run_cargo_dry_run`,
+    // asserting the argv shape and outcome classification end-to-end.
+    // -----------------------------------------------------------------------
+    #[cfg(unix)]
+    mod publish_simulation_spawn {
+        use super::super::*;
+        use anodizer_core::log::{StageLogger, Verbosity};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+        fn quiet_log() -> StageLogger {
+            StageLogger::new("publish-sim-spawn-test", Verbosity::Normal)
+        }
+
+        #[test]
+        #[serial_test::serial]
+        fn dry_run_exit_zero_is_ok_and_argv_is_publish_dry_run() {
+            let fake = FakeToolDir::new();
+            fake.tool("cargo").exit(0).install();
+            let _guard = fake.activate();
+
+            let out = run_cargo_dry_run("anodizer-core", &quiet_log());
+            assert_eq!(out, DryRunOutcome::Ok);
+
+            let calls = fake.calls("cargo");
+            assert_eq!(calls.len(), 1, "cargo invoked exactly once");
+            assert_eq!(
+                calls[0],
+                vec!["publish", "--dry-run", "-p", "anodizer-core"],
+                "argv must be `cargo publish --dry-run -p <crate>`"
+            );
+        }
+
+        #[test]
+        #[serial_test::serial]
+        fn dry_run_compile_error_on_stderr_aborts() {
+            let fake = FakeToolDir::new();
+            fake.tool("cargo")
+                .exit(101)
+                .stderr("error[E0425]: cannot find function `probe_dir` in this scope")
+                .install();
+            let _guard = fake.activate();
+
+            let out = run_cargo_dry_run("anodizer-stage-blob", &quiet_log());
+            match out {
+                DryRunOutcome::CompileError(line) => {
+                    assert!(line.contains("probe_dir"), "line: {line}")
+                }
+                other => panic!("expected CompileError, got {other:?}"),
+            }
+        }
+
+        #[test]
+        #[serial_test::serial]
+        fn dry_run_missing_sibling_on_stderr_is_benign_signal() {
+            let fake = FakeToolDir::new();
+            fake.tool("cargo")
+                .exit(101)
+                .stderr("error: no matching package named `anodizer-core` found")
+                .install();
+            let _guard = fake.activate();
+
+            let out = run_cargo_dry_run("anodizer-stage-blob", &quiet_log());
+            match out {
+                DryRunOutcome::BenignSiblingMissing(line) => {
+                    assert!(line.contains("anodizer-core"), "line: {line}")
+                }
+                other => panic!("expected BenignSiblingMissing, got {other:?}"),
+            }
+        }
     }
 }

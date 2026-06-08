@@ -882,47 +882,6 @@ fn find_workspace_root_manifest(start: &std::path::Path) -> Option<std::path::Pa
     None
 }
 
-/// Read the `[package].name` literal from a crate's Cargo.toml. Returns
-/// `None` when the manifest is missing, unreadable, or the name field
-/// is absent / template-derived (the simple line scan can only resolve
-/// quoted literals).
-///
-/// Used by the rollback path so the registry/index lookup also tolerates
-/// configs where `CrateConfig.name` differs from the published
-/// `[package].name` — without this, the yank command would target the
-/// default registry (crates.io) for the mismatched crate, leaving the
-/// real registry with a live package.
-fn read_cargo_toml_name(crate_path: &str) -> Option<String> {
-    let manifest = std::path::Path::new(crate_path).join("Cargo.toml");
-    let content = std::fs::read_to_string(&manifest).ok()?;
-    let mut in_package = false;
-    for line in content.lines() {
-        let trimmed_full = line.trim();
-        if trimmed_full.starts_with('#') {
-            continue;
-        }
-        if trimmed_full == "[package]" {
-            in_package = true;
-            continue;
-        }
-        if trimmed_full.starts_with('[') {
-            if in_package {
-                break;
-            }
-            continue;
-        }
-        if in_package && let Some(rest) = strip_key_prefix(trimmed_full, "name") {
-            let rest = rest.trim_start().strip_prefix('=').unwrap_or("").trim();
-            if let Some(after) = rest.strip_prefix('"')
-                && let Some(end) = after.find('"')
-            {
-                return Some(after[..end].to_string());
-            }
-        }
-    }
-    None
-}
-
 /// Read the published version for a crate at `crate_path`.
 ///
 /// Resolves three Cargo.toml shapes:
@@ -961,28 +920,45 @@ fn read_cargo_toml_version(crate_path: &str) -> Option<String> {
     }
 }
 
-pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogger) -> Result<()> {
-    // Defensive guard: the `--skip=cargo` gate lives in the
-    // dispatcher in `lib.rs::PublishStage::run` so every publisher emits its
-    // skip log uniformly. Re-checking here protects future direct callers
-    // (tests, CLI sub-commands) from accidentally bypassing the gate. No log
-    // is emitted on this path — the dispatcher already logged it.
-    if ctx.should_skip("cargo") {
-        return Ok(());
-    }
-    // When a crate depends on another crate in the same workspace that
-    // isn't yet on crates.io, `cargo publish` for the dependent will fail
-    // with "no matching package named X found" because cargo verifies path
-    // deps against the registry. Walk depends_on transitively so we publish
-    // the dependency chain in topological order, not just the caller's
-    // --crate selection. Already-published versions are skipped below via
-    // the is_already_published check, so including extra crates is safe.
-    // Build the full crate universe — top-level + all workspaces — so
-    // expand_with_transitive_deps can find deps that live in a DIFFERENT
-    // workspace. After workspace overlay, config.crates only contains the
-    // overlaid workspace's crates, but a crate's depends_on may reference
-    // crates in other workspaces (e.g. cfgd depends on cfgd-core which
-    // lives in its own workspace).
+/// The eligible cargo-publish set, resolved once and shared between the
+/// real publisher and the publish-simulation preflight.
+///
+/// Holds everything both consumers need so the topological/eligibility
+/// derivation lives in exactly one place:
+/// - `order` — crate names in dependency-first publish order.
+/// - `cfgs` — per-crate resolved `publish.cargo` block (post `skip:`/`if:`).
+/// - `versions` — per-crate resolved version (each crate's own Cargo.toml
+///   `[package].version`, falling back to the release version), since
+///   mixed-cadence workspaces publish different versions per crate.
+/// - `all_crates` — the full crate universe (top-level + workspace overlay)
+///   the plan was derived from, reused by callers that need `depends_on`.
+pub(crate) struct CargoPublishPlan {
+    pub order: Vec<String>,
+    pub cfgs: HashMap<String, CargoPublishConfig>,
+    pub versions: HashMap<String, String>,
+    pub all_crates: Vec<CrateConfig>,
+}
+
+/// Resolve the cargo-publish set: the crates that a real release WOULD
+/// publish at their target versions, in dependency-first order.
+///
+/// Reuses the exact eligibility rules the publisher applies — `publish.cargo`
+/// presence, the peer `skip:` template, the `if:` condition, and the
+/// `--crate` selection (expanded transitively via `expand_with_transitive_deps`)
+/// — then orders the survivors with [`topological_sort`]. This is the single
+/// source of truth for "what would be published"; the publish-simulation
+/// preflight and [`publish_to_cargo_with`] both consume it so they can never
+/// disagree about the set or its order.
+///
+/// `log` receives the same per-crate `skip:`/`if:` status lines the publisher
+/// emits, so resolving the plan twice (preflight + publish) is idempotent in
+/// behaviour but produces those lines once per resolution; callers that only
+/// want the set (the preflight) pass a quiet/verbose logger.
+pub(crate) fn cargo_publish_plan(
+    ctx: &mut Context,
+    selected: &[String],
+    log: &StageLogger,
+) -> Result<CargoPublishPlan> {
     let all_crates: Vec<CrateConfig> = crate::util::all_crates(ctx);
 
     let expanded_selection: Vec<String> = if selected.is_empty() {
@@ -993,12 +969,7 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
     let selected_set: std::collections::HashSet<&str> =
         expanded_selection.iter().map(|s| s.as_str()).collect();
 
-    // Resolve the per-crate `publish.cargo` block to a (selected, cfg) pair.
-    // - None       → publisher omitted; not eligible.
-    // - Some(cfg)  → eligible unless `cfg.skip` evaluates truthy.
-    // Templated `skip:` is honored here so the same render-once pass populates
-    // both the eligibility list and the per-crate timeout/flag lookups.
-    let cargo_cfgs: HashMap<String, CargoPublishConfig> = {
+    let cfgs: HashMap<String, CargoPublishConfig> = {
         let mut m = HashMap::new();
         for c in &all_crates {
             let Some(ref publish) = c.publish else {
@@ -1007,7 +978,6 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
             let Some(ref cargo_cfg) = publish.cargo else {
                 continue;
             };
-            // Honor the peer-publisher `skip:` field.
             if let Some(ref d) = cargo_cfg.skip {
                 let off = d
                     .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
@@ -1034,19 +1004,94 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
         m
     };
 
-    // Collect (name, depends_on) for crates with cargo publishing eligible,
-    // filtered to the expanded selection when non-empty.
     let publishable: Vec<(String, Vec<String>)> = all_crates
         .iter()
         .filter(|c| selected.is_empty() || selected_set.contains(c.name.as_str()))
-        .filter(|c| cargo_cfgs.contains_key(&c.name))
+        .filter(|c| cfgs.contains_key(&c.name))
         .map(|c| {
             let deps = c.depends_on.clone().unwrap_or_default();
             (c.name.clone(), deps)
         })
         .collect();
 
-    if publishable.is_empty() {
+    let order = topological_sort(&publishable);
+
+    let release_version = ctx.version();
+    let versions: HashMap<String, String> = all_crates
+        .iter()
+        .filter(|c| order.iter().any(|n| n == &c.name))
+        .map(|c| {
+            let v = read_cargo_toml_version(&c.path).unwrap_or_else(|| release_version.clone());
+            (c.name.clone(), v)
+        })
+        .collect();
+
+    Ok(CargoPublishPlan {
+        order,
+        cfgs,
+        versions,
+        all_crates,
+    })
+}
+
+/// Publish every eligible crate, in topological order, recording each
+/// crate's published identity into `record` AT THE MOMENT its
+/// `cargo publish` succeeds.
+///
+/// `record` is the authoritative rollback source: the publisher's
+/// `rollback()` yanks exactly the crates appended here, so a publish that
+/// succeeds on crate A then fails on crate B (returning `Err`) still
+/// leaves A in `record` for the unwind. Crates skipped as
+/// already-published — or by `skip:` / `if:` — are intentionally NOT
+/// recorded: this run didn't publish them, so yanking them would revert a
+/// prior run's (or someone else's) live release.
+pub fn publish_to_cargo(
+    ctx: &mut Context,
+    selected: &[String],
+    log: &StageLogger,
+    record: &mut Vec<CargoYankTarget>,
+) -> Result<()> {
+    publish_to_cargo_with(ctx, selected, log, record, is_already_published)
+}
+
+/// Test seam for [`publish_to_cargo`]: identical behaviour, but the
+/// crates.io already-published idempotency check is injected. Production
+/// passes [`is_already_published`] (a real sparse-index GET); tests pass a
+/// stub so the partial-failure rollback path can be exercised without a
+/// network round-trip. The signature mirrors `is_already_published`
+/// `(name, version, policy) -> Result<Option<cksum>>`.
+fn publish_to_cargo_with(
+    ctx: &mut Context,
+    selected: &[String],
+    log: &StageLogger,
+    record: &mut Vec<CargoYankTarget>,
+    already_published_check: impl Fn(
+        &str,
+        &str,
+        &anodizer_core::retry::RetryPolicy,
+    ) -> Result<Option<String>>,
+) -> Result<()> {
+    // Defensive guard: the `--skip=cargo` gate lives in the
+    // dispatcher in `lib.rs::PublishStage::run` so every publisher emits its
+    // skip log uniformly. Re-checking here protects future direct callers
+    // (tests, CLI sub-commands) from accidentally bypassing the gate. No log
+    // is emitted on this path — the dispatcher already logged it.
+    if ctx.should_skip("cargo") {
+        return Ok(());
+    }
+    // Resolve the eligible publish set once — transitive-dep expansion,
+    // `skip:`/`if:` gating, and topological ordering all live in
+    // `cargo_publish_plan`, shared with the publish-simulation preflight so the
+    // two can never disagree about which crates publish or in what order.
+    let plan = cargo_publish_plan(ctx, selected, log)?;
+    let CargoPublishPlan {
+        order: sorted_names,
+        cfgs: cargo_cfgs,
+        versions: crate_versions,
+        all_crates,
+    } = plan;
+
+    if sorted_names.is_empty() {
         // The publisher wrapper (`CargoPublisher::run`) emits the canonical
         // operator-facing warn for the no-eligible-crates path; this
         // branch is unreachable in normal dispatch because the wrapper
@@ -1054,8 +1099,6 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
         // (tests, direct CLI sub-commands) still exit cleanly.
         return Ok(());
     }
-
-    let sorted_names = topological_sort(&publishable);
 
     // Build a quick lookup: name → depends_on
     let deps_map: HashMap<String, Vec<String>> = all_crates
@@ -1072,17 +1115,12 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
         return Ok(());
     }
 
-    let version = ctx.version();
-
     // Single retry policy resolved from the top-level `retry:` block; reused
     // for every crate's index-check GET. Mirrors the per-pipe-invocation
     // pattern used by artifactory/cloudsmith.
     let retry_policy = ctx.retry_policy();
 
-    // Build a lookup from crate name → path so we can read each crate's
-    // actual Cargo.toml version for the already-published check. Transitive
-    // deps may have a DIFFERENT version than the release tag (e.g. cfgd-core
-    // is at 0.2.2 while cfgd releases 0.3.2).
+    // Path lookup for the wait-for-workspace-deps manifest scan below.
     let crate_paths: HashMap<String, String> = all_crates
         .iter()
         .map(|c| (c.name.clone(), c.path.clone()))
@@ -1090,12 +1128,10 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
 
     for (i, name) in sorted_names.iter().enumerate() {
         log.status(&run_per_crate_start_message(name));
-        // Read the crate's actual version from its Cargo.toml, falling back
-        // to the global release version if the path isn't found or parse fails.
-        let crate_version = crate_paths
-            .get(name)
-            .and_then(|path| read_cargo_toml_version(path))
-            .unwrap_or_else(|| version.clone());
+        // Per-crate resolved version (own Cargo.toml `[package].version`,
+        // falling back to the release version) — sourced from the plan so the
+        // already-published check uses the same version the preflight queried.
+        let crate_version = crate_versions.get(name).cloned().unwrap_or_default();
 
         // Idempotency: if this version already exists on crates.io, skip.
         // crates.io versions are immutable once published, so presence on
@@ -1109,7 +1145,7 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
         let already_published = if crate_version.is_empty() {
             false
         } else {
-            match is_already_published(name, &crate_version, &retry_policy) {
+            match already_published_check(name, &crate_version, &retry_policy) {
                 Ok(Some(_)) => true,
                 Ok(None) => false,
                 Err(e) => {
@@ -1184,6 +1220,34 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
         )?;
 
         log.status(&format!("published crate '{}'", name));
+
+        // Record the published identity NOW, at the instant of success, so
+        // a later crate's failure can still drive rollback to yank this
+        // one. Registry/index come from the same `publish.cargo` block the
+        // publish used, so the yank targets the matching registry. The
+        // version is the per-crate resolved version (workspaces with mixed
+        // cadences publish different versions per crate).
+        //
+        // An empty resolved version (manifest unparseable AND the release
+        // version blank) cannot be yanked: `cargo yank --version "" <name>`
+        // is rejected by cargo, so recording it would manufacture a yank
+        // that always fails. Skip the record and warn loudly — better an
+        // explicit "you must yank this by hand" than a silent under-yank
+        // that masquerades as a successful rollback.
+        if crate_version.is_empty() {
+            log.warn(&format!(
+                "cargo: published '{name}' with no resolvable version; it CANNOT be \
+                 auto-yanked on rollback — verify and `cargo yank` it manually if a \
+                 later crate fails this run"
+            ));
+        } else {
+            record.push(CargoYankTarget {
+                name: name.clone(),
+                version: crate_version.clone(),
+                registry: cargo_cfg.and_then(|c| c.registry.clone()),
+                index: cargo_cfg.and_then(|c| c.index.clone()),
+            });
+        }
 
         // If there are later crates that depend on this one, wait for the index.
         let has_dependents = sorted_names[i + 1..].iter().any(|later| {
@@ -1302,6 +1366,14 @@ impl anodizer_core::Publisher for CargoPublisher {
         true
     }
 
+    fn programmatic_rollback_on_failure(&self, evidence: &anodizer_core::PublishEvidence) -> bool {
+        // A failed cargo run that already pushed one or more crates to
+        // crates.io recorded them here; rollback must yank them even
+        // though the overall outcome is `Failed`. An empty record means
+        // nothing went live — keep the failure inert.
+        !decode_cargo_yank_targets(&evidence.extra).is_empty()
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let selected = ctx.options.selected_crates.clone();
@@ -1322,8 +1394,15 @@ impl anodizer_core::Publisher for CargoPublisher {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
             return Ok(anodizer_core::PublishEvidence::new("cargo"));
         }
-        publish_to_cargo(ctx, &selected, &log)?;
-        log.status(&run_done_message(eligible));
+        // `record` accumulates one entry per crate whose `cargo publish`
+        // actually succeeds. On the failure path we still build evidence
+        // from whatever was published before the bail and stash it on the
+        // context so dispatch can hand it to rollback — otherwise a
+        // partial multi-crate publish would leave the succeeded crates
+        // live with nothing to yank.
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+        let publish_result = publish_to_cargo(ctx, &selected, &log, &mut record);
+
         let mut evidence = anodizer_core::PublishEvidence::new("cargo");
         if let Some(primary) = first_published_crate(ctx) {
             evidence.primary_ref = Some(format!(
@@ -1332,8 +1411,20 @@ impl anodizer_core::Publisher for CargoPublisher {
                 version = primary.version
             ));
         }
-        evidence.artifact_paths = collect_local_crate_paths(ctx);
-        Ok(evidence)
+        evidence.extra = encode_cargo_yank_targets(&record);
+
+        match publish_result {
+            Ok(()) => {
+                log.status(&run_done_message(eligible));
+                Ok(evidence)
+            }
+            Err(e) => {
+                // Stash the partial evidence BEFORE propagating so the
+                // dispatcher's `Err` arm can recover it for rollback.
+                ctx.record_pending_evidence(evidence);
+                Err(e)
+            }
+        }
     }
 
     fn rollback(
@@ -1342,90 +1433,71 @@ impl anodizer_core::Publisher for CargoPublisher {
         evidence: &anodizer_core::PublishEvidence,
     ) -> anyhow::Result<()> {
         let log = ctx.logger("publish");
-        if evidence.artifact_paths.is_empty() {
-            log.warn(
-                "cargo: no .crate paths recorded in evidence; yank skipped, verify crates.io manually",
-            );
+        // Yank from the authoritative record built at publish time: each
+        // entry is a crate whose `cargo publish` actually SUCCEEDED this
+        // run, with the per-crate version and the registry/index the
+        // publish used. This is correct even when the local `.crate`
+        // files are gone (workspace cleaned, different CI job, run died
+        // before packaging) — the old disk-scan rollback yanked NOTHING in
+        // that case, leaving succeeded crates live.
+        let targets = decode_cargo_yank_targets(&evidence.extra);
+        if targets.is_empty() {
+            // Nothing was published this run — a clean no-op, not a
+            // failure to recover. (Verbose, not a scary warn: an empty
+            // record is the normal shape when the failing publisher never
+            // reached its first successful `cargo publish`.)
+            log.verbose("cargo: no crates published this run; rollback is a no-op");
             return Ok(());
         }
         let mut yanked = 0usize;
         let mut failed = 0usize;
-        // Pre-resolve per-crate registry/index so the yank command targets
-        // the same registry the publish path used. Unconditionally yanking
-        // from crates.io (`cargo yank` with no flags) was wrong for any
-        // crate published with `publish.cargo.registry: <name>` or
-        // `publish.cargo.index: <url>` — the wrong registry got the yank
-        // request, leaving the real one with a live package.
-        //
-        // Keyed under BOTH the CrateConfig name AND the Cargo.toml
-        // `[package].name`. The .crate filename carries the latter, but
-        // a config that uses `name: "foo"` for a crate whose
-        // `[package].name = "foo-rs"` would otherwise miss the lookup
-        // and yank from crates.io by default — silently routing the
-        // yank to the wrong registry. Same-key collisions are fine
-        // because they map to the same registry tuple.
-        let all_crates = crate::util::all_crates(ctx);
-        let mut registry_for: std::collections::HashMap<String, (Option<String>, Option<String>)> =
-            std::collections::HashMap::new();
-        for c in &all_crates {
-            let Some(cargo_cfg) = c.publish.as_ref().and_then(|p| p.cargo.as_ref()) else {
-                continue;
-            };
-            let entry = (cargo_cfg.registry.clone(), cargo_cfg.index.clone());
-            registry_for.insert(c.name.clone(), entry.clone());
-            if let Some(pkg_name) = read_cargo_toml_name(&c.path)
-                && pkg_name != c.name
-            {
-                registry_for.insert(pkg_name, entry);
-            }
-        }
         if ctx.is_dry_run() {
             log.status(&format!(
                 "(dry-run) would yank {} crate(s) from their configured registries",
-                evidence.artifact_paths.len()
+                targets.len()
             ));
             return Ok(());
         }
-        for path in &evidence.artifact_paths {
-            // .crate paths are <name>-<version>.crate; parse name/version.
+        for t in &targets {
             // crates.io versions are immutable, so `cargo yank` is the
             // strongest unwind available; the version slot stays burned
             // and any consumer that already resolved against it keeps
             // working. Operators must still bump to recover.
-            if let Some((name, version)) = parse_crate_name_version(path) {
-                let (registry, index) = registry_for.get(&name).cloned().unwrap_or((None, None));
-                let mut args: Vec<String> = vec![
-                    "yank".into(),
-                    "--version".into(),
-                    version.clone(),
-                    name.clone(),
-                ];
-                if let Some(ref r) = registry {
-                    args.push("--registry".into());
-                    args.push(r.clone());
-                }
-                if let Some(ref idx) = index {
-                    args.push("--index".into());
-                    args.push(idx.clone());
-                }
-                let target = registry
-                    .as_deref()
-                    .or(index.as_deref())
-                    .unwrap_or("crates.io");
-                log.status(&format!("cargo: yank {} {} ({})", name, version, target));
-                let output = Command::new("cargo").args(&args).output()?;
-                if output.status.success() {
-                    yanked += 1;
-                } else {
-                    failed += 1;
-                    log.warn(&format!(
-                        "cargo yank failed for {} {} on {}: {}",
-                        name,
-                        version,
-                        target,
-                        String::from_utf8_lossy(&output.stderr),
-                    ));
-                }
+            let mut args: Vec<String> = vec![
+                "yank".into(),
+                "--version".into(),
+                t.version.clone(),
+                t.name.clone(),
+            ];
+            if let Some(ref r) = t.registry {
+                args.push("--registry".into());
+                args.push(r.clone());
+            }
+            if let Some(ref idx) = t.index {
+                args.push("--index".into());
+                args.push(idx.clone());
+            }
+            let target = t
+                .registry
+                .as_deref()
+                .or(t.index.as_deref())
+                .unwrap_or("crates.io");
+            log.status(&format!(
+                "cargo: yank {} {} ({})",
+                t.name, t.version, target
+            ));
+            let output = Command::new("cargo").args(&args).output()?;
+            if output.status.success() {
+                yanked += 1;
+            } else {
+                failed += 1;
+                log.warn(&format!(
+                    "cargo yank failed for {} {} on {}: {}",
+                    t.name,
+                    t.version,
+                    target,
+                    String::from_utf8_lossy(&output.stderr),
+                ));
             }
         }
         log.status(&format!(
@@ -1488,88 +1560,32 @@ fn first_published_crate(ctx: &Context) -> Option<PublishedCrateRef> {
     Some(PublishedCrateRef { name, version })
 }
 
-/// Build the expected `.crate` archive path for a crate published by
-/// `cargo package` / `cargo publish`.
-///
-/// Cargo writes to `<target_dir>/package/<name>-<version>.crate`. When
-/// the per-crate `publish.cargo.target_dir` is set, cargo respects it;
-/// otherwise cargo uses `<project_root>/target/`. We compute the
-/// predicted location so [`collect_local_crate_paths`] can probe the
-/// filesystem deterministically — the helper is split out so it can be
-/// unit-tested without spinning up a full publish fixture.
-fn expected_crate_path(
-    project_root: &std::path::Path,
-    target_dir: Option<&std::path::Path>,
-    name: &str,
-    version: &str,
-) -> std::path::PathBuf {
-    let base = match target_dir {
-        Some(td) => td.to_path_buf(),
-        None => project_root.join("target"),
-    };
-    base.join("package").join(format!("{name}-{version}.crate"))
+/// Authoritative per-crate record of a `cargo publish` that SUCCEEDED
+/// during this run. Aliased to the core-owned snapshot so the evidence
+/// schema lives in [`anodizer_core::publish_evidence`] and no
+/// credential-shaped field can land in it.
+pub(crate) type CargoYankTarget = anodizer_core::publish_evidence::CargoYankTargetSnapshot;
+
+/// Encode the recorded yank targets into the typed
+/// [`PublishEvidenceExtra::Cargo`] variant.
+pub(crate) fn encode_cargo_yank_targets(
+    targets: &[CargoYankTarget],
+) -> anodizer_core::PublishEvidenceExtra {
+    anodizer_core::PublishEvidenceExtra::Cargo(anodizer_core::publish_evidence::CargoExtra {
+        cargo_yank_targets: targets.to_vec(),
+    })
 }
 
-/// Enumeration of locally-produced `.crate` archive paths used by
-/// rollback. Walks `ctx.config.crates` (plus workspace crates) for every
-/// crate with `publish.cargo` configured, computes the predicted
-/// `cargo package` output location via [`expected_crate_path`], and
-/// returns those that exist on disk. Missing files are filtered out so
-/// rollback's per-path yank loop never trips on a stale path.
-///
-/// The crate version comes from the crate's own `Cargo.toml` so
-/// workspaces with mixed cadences (e.g. `cfgd-core@0.2.2` while
-/// `cfgd@0.3.2`) yank the correct slot per crate. Falls back to the
-/// run's release version when the manifest can't be parsed.
-fn collect_local_crate_paths(ctx: &Context) -> Vec<std::path::PathBuf> {
-    let release_version = ctx.version();
-    let project_root = ctx
-        .options
-        .project_root
-        .clone()
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-
-    let mut out = Vec::new();
-    for c in crate::util::all_crates(ctx) {
-        let Some(ref publish) = c.publish else {
-            continue;
-        };
-        let Some(ref cargo_cfg) = publish.cargo else {
-            continue;
-        };
-        let version = read_cargo_toml_version(&c.path).unwrap_or_else(|| release_version.clone());
-        if version.is_empty() {
-            continue;
-        }
-        let path = expected_crate_path(
-            &project_root,
-            cargo_cfg.target_dir.as_deref(),
-            &c.name,
-            &version,
-        );
-        if path.exists() {
-            out.push(path);
-        }
+/// Decode the typed Cargo variant into the recorded yank targets.
+/// Returns an empty vec for any other variant — rollback then treats the
+/// run as "nothing published this run" and no-ops cleanly.
+pub(crate) fn decode_cargo_yank_targets(
+    extra: &anodizer_core::PublishEvidenceExtra,
+) -> Vec<CargoYankTarget> {
+    match extra {
+        anodizer_core::PublishEvidenceExtra::Cargo(c) => c.cargo_yank_targets.clone(),
+        _ => Vec::new(),
     }
-    out
-}
-
-/// Parse `name-1.2.3.crate` (or any `<name>-<version>` stem) into its
-/// component parts. Crate names may contain `-`, and versions may carry
-/// prerelease suffixes (`0.2.1-rc.1`) or build metadata (`0.2.1+build.5`)
-/// that include additional `-` characters — so we scan for the FIRST
-/// `-<digit>` boundary: everything before is the name, everything from
-/// the digit onward is the version. This handles hyphenated names,
-/// prereleases, build metadata, and snapshot suffixes uniformly.
-fn parse_crate_name_version(path: &std::path::Path) -> Option<(String, String)> {
-    let stem = path.file_stem()?.to_str()?;
-    let bytes = stem.as_bytes();
-    for i in 0..bytes.len().saturating_sub(1) {
-        if bytes[i] == b'-' && bytes[i + 1].is_ascii_digit() {
-            return Some((stem[..i].to_string(), stem[i + 1..].to_string()));
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1581,7 +1597,6 @@ mod publisher_tests {
     use super::*;
     use anodizer_core::test_helpers::TestContextBuilder;
     use anodizer_core::{PreflightCheck, Publisher, PublisherGroup};
-    use std::path::Path;
 
     #[test]
     fn cargo_publisher_classification() {
@@ -1637,124 +1652,6 @@ mod publisher_tests {
             p.preflight(&ctx).expect("preflight ok"),
             PreflightCheck::Pass
         ));
-    }
-
-    #[test]
-    fn parse_crate_name_version_handles_hyphenated_names() {
-        assert_eq!(
-            parse_crate_name_version(Path::new("anodizer-core-0.2.1.crate")),
-            Some(("anodizer-core".to_string(), "0.2.1".to_string()))
-        );
-    }
-
-    #[test]
-    fn parse_crate_name_version_handles_prerelease() {
-        assert_eq!(
-            parse_crate_name_version(Path::new("anodizer-core-0.2.1-rc.1.crate")),
-            Some(("anodizer-core".to_string(), "0.2.1-rc.1".to_string()))
-        );
-    }
-
-    #[test]
-    fn parse_crate_name_version_handles_build_metadata() {
-        assert_eq!(
-            parse_crate_name_version(Path::new("foo-0.2.1+build.5.crate")),
-            Some(("foo".to_string(), "0.2.1+build.5".to_string()))
-        );
-    }
-
-    #[test]
-    fn parse_crate_name_version_handles_snapshot_suffix() {
-        assert_eq!(
-            parse_crate_name_version(Path::new("anodizer-0.2.1-SNAPSHOT-abc.crate")),
-            Some(("anodizer".to_string(), "0.2.1-SNAPSHOT-abc".to_string()))
-        );
-    }
-
-    #[test]
-    fn parse_crate_name_version_rejects_non_versioned_stems() {
-        // No `-<digit>` boundary anywhere in the stem.
-        assert_eq!(
-            parse_crate_name_version(Path::new("anodizer-core.crate")),
-            None
-        );
-        assert_eq!(parse_crate_name_version(Path::new("plain-package")), None);
-    }
-
-    #[test]
-    fn expected_crate_path_uses_project_root_target_when_unset() {
-        let p = expected_crate_path(Path::new("/repo"), None, "anodizer-core", "0.2.1");
-        assert_eq!(
-            p,
-            std::path::PathBuf::from("/repo/target/package/anodizer-core-0.2.1.crate")
-        );
-    }
-
-    #[test]
-    fn expected_crate_path_uses_configured_target_dir() {
-        let p = expected_crate_path(
-            Path::new("/repo"),
-            Some(Path::new("/custom-target")),
-            "foo",
-            "1.2.3-rc.1",
-        );
-        assert_eq!(
-            p,
-            std::path::PathBuf::from("/custom-target/package/foo-1.2.3-rc.1.crate")
-        );
-    }
-
-    #[test]
-    fn collect_local_crate_paths_finds_published_crates() {
-        use anodizer_core::config::{CargoPublishConfig, CrateConfig, PublishConfig};
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let project_root = tmp.path().to_path_buf();
-
-        // Create the crate's source dir with a Cargo.toml so
-        // read_cargo_toml_version returns a concrete version.
-        let crate_dir = project_root.join("crates/anodizer-core");
-        std::fs::create_dir_all(&crate_dir).expect("mkdir crate");
-        std::fs::write(
-            crate_dir.join("Cargo.toml"),
-            "[package]\nname = \"anodizer-core\"\nversion = \"0.2.1\"\n",
-        )
-        .expect("write Cargo.toml");
-
-        // Create the predicted .crate emission so the path probe hits.
-        let pkg_dir = project_root.join("target/package");
-        std::fs::create_dir_all(&pkg_dir).expect("mkdir pkg");
-        let crate_path = pkg_dir.join("anodizer-core-0.2.1.crate");
-        std::fs::write(&crate_path, b"fake").expect("write .crate");
-
-        // Second crate is configured but has NO .crate file on disk;
-        // the walker must filter it out (missing path => not surfaced).
-        let crate_cfg = CrateConfig {
-            name: "anodizer-core".to_string(),
-            path: crate_dir.display().to_string(),
-            publish: Some(PublishConfig {
-                cargo: Some(CargoPublishConfig::default()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let other = CrateConfig {
-            name: "anodizer-missing".to_string(),
-            path: "nonexistent".to_string(),
-            publish: Some(PublishConfig {
-                cargo: Some(CargoPublishConfig::default()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        let ctx = TestContextBuilder::new()
-            .project_root(project_root.clone())
-            .crates(vec![crate_cfg, other])
-            .build();
-
-        let paths = collect_local_crate_paths(&ctx);
-        assert_eq!(paths, vec![crate_path]);
     }
 
     #[test]
@@ -2952,65 +2849,6 @@ features = ["extra"]
     }
 
     // -----------------------------------------------------------------------
-    // expected_crate_path / parse_crate_name_version — predicted .crate path
-    // and round-trip parsing used by the rollback (yank) path.
-    // -----------------------------------------------------------------------
-
-    /// With no per-crate `target_dir`, the predicted `.crate` path lands
-    /// under `<project_root>/target/package/<name>-<version>.crate`.
-    #[test]
-    fn expected_crate_path_defaults_to_project_target() {
-        let root = std::path::Path::new("/repo");
-        let p = expected_crate_path(root, None, "cfgd-core", "0.4.0");
-        assert_eq!(
-            p,
-            std::path::PathBuf::from("/repo/target/package/cfgd-core-0.4.0.crate")
-        );
-    }
-
-    /// An explicit `target_dir` overrides the default `target/` base.
-    #[test]
-    fn expected_crate_path_honors_explicit_target_dir() {
-        let root = std::path::Path::new("/repo");
-        let td = std::path::Path::new("/custom/out");
-        let p = expected_crate_path(root, Some(td), "myapp", "1.2.3");
-        assert_eq!(
-            p,
-            std::path::PathBuf::from("/custom/out/package/myapp-1.2.3.crate")
-        );
-    }
-
-    /// `parse_crate_name_version` splits at the first `-<digit>` boundary, so
-    /// a hyphenated crate name keeps its hyphens and only the version is split
-    /// off.
-    #[test]
-    fn parse_crate_name_version_splits_hyphenated_name() {
-        let path = std::path::Path::new("dist/cfgd-core-0.4.0.crate");
-        assert_eq!(
-            parse_crate_name_version(path),
-            Some(("cfgd-core".to_string(), "0.4.0".to_string()))
-        );
-    }
-
-    /// Prerelease and build-metadata suffixes (which contain extra `-`)
-    /// stay attached to the version, not the name.
-    #[test]
-    fn parse_crate_name_version_keeps_prerelease_suffix_in_version() {
-        let path = std::path::Path::new("anodizer-0.2.1-rc.1.crate");
-        assert_eq!(
-            parse_crate_name_version(path),
-            Some(("anodizer".to_string(), "0.2.1-rc.1".to_string()))
-        );
-    }
-
-    /// A stem with no `-<digit>` boundary yields `None`.
-    #[test]
-    fn parse_crate_name_version_returns_none_without_version_boundary() {
-        let path = std::path::Path::new("noversion.crate");
-        assert_eq!(parse_crate_name_version(path), None);
-    }
-
-    // -----------------------------------------------------------------------
     // Operator-facing log message helpers.
     // -----------------------------------------------------------------------
 
@@ -3121,42 +2959,6 @@ features = ["extra"]
             scan_section_version(body, "[package]"),
             CargoVersionRef::Literal("4.5.6".to_string())
         );
-    }
-
-    // -----------------------------------------------------------------------
-    // read_cargo_toml_name — [package].name literal extraction.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn read_cargo_toml_name_reads_package_name() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            dir.path().join("Cargo.toml"),
-            "[package]\nname = \"cfgd-core\"\nversion = \"1.0.0\"\n",
-        )
-        .unwrap();
-        assert_eq!(
-            read_cargo_toml_name(dir.path().to_str().unwrap()),
-            Some("cfgd-core".to_string())
-        );
-    }
-
-    /// Name in a non-`[package]` section is not picked up; absence yields None.
-    #[test]
-    fn read_cargo_toml_name_ignores_name_outside_package() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            dir.path().join("Cargo.toml"),
-            "[package]\nversion = \"1.0.0\"\n[dependencies]\nname = \"not-the-package\"\n",
-        )
-        .unwrap();
-        assert_eq!(read_cargo_toml_name(dir.path().to_str().unwrap()), None);
-    }
-
-    #[test]
-    fn read_cargo_toml_name_returns_none_for_missing_manifest() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        assert_eq!(read_cargo_toml_name(dir.path().to_str().unwrap()), None);
     }
 
     // -----------------------------------------------------------------------
@@ -3271,7 +3073,8 @@ features = ["extra"]
     fn dry_run_publish_order(ctx: &mut Context) -> Vec<String> {
         let (log, cap) = StageLogger::with_capture("publish-test", Verbosity::Normal);
         let selected = ctx.options.selected_crates.clone();
-        publish_to_cargo(ctx, &selected, &log).expect("dry-run publish must succeed");
+        let mut record = Vec::new();
+        publish_to_cargo(ctx, &selected, &log, &mut record).expect("dry-run publish must succeed");
         // Each crate emits `run_per_crate_start_message(name)` exactly once,
         // in topological order, before its `(dry-run) would run` line.
         cap.all_messages()
@@ -3475,7 +3278,8 @@ features = ["extra"]
             .build();
         let (log, cap) = StageLogger::with_capture("publish-test", Verbosity::Normal);
         let selected = ctx.options.selected_crates.clone();
-        publish_to_cargo(&mut ctx, &selected, &log).expect("dry-run ok");
+        let mut record = Vec::new();
+        publish_to_cargo(&mut ctx, &selected, &log, &mut record).expect("dry-run ok");
         let dry_line = cap
             .all_messages()
             .into_iter()
@@ -3577,6 +3381,310 @@ features = ["extra"]
         assert_eq!(
             n, PUBLISH_PROPAGATION_RETRIES,
             "must retry the full budget before surfacing"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Partial-publish rollback: a multi-crate publish that succeeds on crate A
+// then fails on crate B must record A (and only A) so rollback yanks the
+// crate that actually went live — even when the local `.crate` files are
+// gone. These tests stub `cargo` on PATH so the publish loop and the
+// rollback yank loop exercise the real spawn surface without a network
+// round-trip.
+// ---------------------------------------------------------------------------
+#[cfg(all(test, unix))]
+mod partial_rollback_tests {
+    use super::*;
+    use anodizer_core::Publisher;
+    use anodizer_core::config::{CargoPublishConfig, CrateConfig, PublishConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use serial_test::serial;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    /// Write a crate source dir with a `[package]` manifest pinning
+    /// `version`, returning the dir path for use as `CrateConfig.path`.
+    fn write_crate_dir(root: &Path, name: &str, version: &str) -> String {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).expect("mkdir crate");
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"{version}\"\n"),
+        )
+        .expect("write Cargo.toml");
+        dir.display().to_string()
+    }
+
+    /// Install a `cargo` shell stub on PATH that appends each invocation's
+    /// argv (one line per call) to `argv_log` and chooses its exit code by
+    /// argv: a `cargo publish -p <fail_crate>` exits 1; every other call
+    /// (other publishes, `cargo yank`) exits 0. Returns a PATH value with
+    /// the stub dir prepended; the caller installs it under a `#[serial]`
+    /// guard and restores the prior value.
+    fn install_cargo_stub(dir: &Path, argv_log: &Path, fail_crate: &str) -> String {
+        let stub = dir.join("cargo");
+        let script = format!(
+            "#!/bin/sh\n\
+             printf '%s\\n' \"$*\" >> '{log}'\n\
+             if [ \"$1\" = publish ]; then\n\
+             for a in \"$@\"; do\n\
+             if [ \"$a\" = '{fail}' ]; then exit 1; fi\n\
+             done\n\
+             fi\n\
+             exit 0\n",
+            log = argv_log.display(),
+            fail = fail_crate,
+        );
+        std::fs::write(&stub, script).expect("write cargo stub");
+        let mut perms = std::fs::metadata(&stub).expect("stat stub").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&stub, perms).expect("chmod stub");
+        let prev = std::env::var("PATH").unwrap_or_default();
+        format!("{}:{}", dir.display(), prev)
+    }
+
+    /// Read the stub's recorded argv lines (empty vec when the stub never
+    /// ran / the log was never created).
+    fn read_argv_log(path: &Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Always-not-published injection: drives the publish loop straight to
+    /// the `cargo publish` spawn without a sparse-index GET.
+    fn never_published(
+        _name: &str,
+        _version: &str,
+        _policy: &anodizer_core::retry::RetryPolicy,
+    ) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    fn cargo_crate(name: &str, path: &str, deps: &[&str], cfg: CargoPublishConfig) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: path.to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
+            publish: Some(PublishConfig {
+                cargo: Some(cfg),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// crate-a publishes; crate-b (which depends on a, so a goes first)
+    /// fails. The success record must contain ONLY crate-a, with its
+    /// per-crate version and configured registry — never crate-b
+    /// (publish failed) or any skipped/never-published crate.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn partial_publish_records_only_succeeded_crate() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path_a = write_crate_dir(tmp.path(), "crate-a", "1.0.0");
+        let path_b = write_crate_dir(tmp.path(), "crate-b", "2.0.0");
+        let argv_log = tmp.path().join("argv.log");
+
+        // crate-a: skip its post-publish index poll (it has a dependent),
+        // and pin a registry so the recorded snapshot carries it.
+        let cfg_a = CargoPublishConfig {
+            index_timeout: Some(0),
+            registry: Some("my-registry".to_string()),
+            ..Default::default()
+        };
+        // crate-b depends on crate-a → topological order publishes a first.
+        let crate_a = cargo_crate("crate-a", &path_a, &[], cfg_a);
+        let crate_b = cargo_crate(
+            "crate-b",
+            &path_b,
+            &["crate-a"],
+            CargoPublishConfig::default(),
+        );
+
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![crate_a, crate_b])
+            .selected_crates(vec!["crate-b".to_string()])
+            .build();
+
+        let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "crate-b");
+        let prev_path = std::env::var("PATH").ok();
+        // SAFETY: env mutation is single-threaded within this serial group.
+        unsafe { std::env::set_var("PATH", &new_path) };
+        let result = publish_to_cargo_with(
+            &mut ctx,
+            &["crate-b".to_string()],
+            &log,
+            &mut record,
+            never_published,
+        );
+        // SAFETY: restore PATH within the same serial group.
+        unsafe {
+            match prev_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+
+        assert!(result.is_err(), "crate-b's publish failure must surface");
+
+        // The stub must have seen BOTH publishes (a succeeds, b fails).
+        let argv = read_argv_log(&argv_log);
+        assert!(
+            argv.iter()
+                .any(|l| l.contains("publish") && l.contains("crate-a")),
+            "stub should have run crate-a's publish: {argv:?}"
+        );
+        assert!(
+            argv.iter()
+                .any(|l| l.contains("publish") && l.contains("crate-b")),
+            "stub should have run crate-b's publish: {argv:?}"
+        );
+
+        // Record holds crate-a only, with its version + registry.
+        assert_eq!(
+            record.len(),
+            1,
+            "only the succeeded crate is recorded: {record:?}"
+        );
+        let rec = &record[0];
+        assert_eq!(rec.name, "crate-a");
+        assert_eq!(rec.version, "1.0.0");
+        assert_eq!(rec.registry.as_deref(), Some("my-registry"));
+        assert!(rec.index.is_none());
+    }
+
+    /// End-to-end through the Publisher trait: the failed `run` stashes the
+    /// partial evidence on the context (crate-a only); `rollback` reads it
+    /// and issues exactly one `cargo yank` — for crate-a, on its configured
+    /// registry — and never touches crate-b (never published).
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn run_failure_then_rollback_yanks_only_succeeded_crate() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path_a = write_crate_dir(tmp.path(), "crate-a", "1.0.0");
+        let path_b = write_crate_dir(tmp.path(), "crate-b", "2.0.0");
+        let argv_log = tmp.path().join("argv.log");
+
+        let cfg_a = CargoPublishConfig {
+            index_timeout: Some(0),
+            registry: Some("my-registry".to_string()),
+            ..Default::default()
+        };
+        let crate_a = cargo_crate("crate-a", &path_a, &[], cfg_a);
+        let crate_b = cargo_crate(
+            "crate-b",
+            &path_b,
+            &["crate-a"],
+            CargoPublishConfig::default(),
+        );
+
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![crate_a, crate_b])
+            .selected_crates(vec!["crate-b".to_string()])
+            .build();
+
+        // Build the evidence the failed publish would record, exactly as
+        // `CargoPublisher::run` does, by driving the injected publish loop
+        // and encoding whatever it recorded before the bail.
+        let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "crate-b");
+        let prev_path = std::env::var("PATH").ok();
+        // SAFETY: env mutation is single-threaded within this serial group.
+        unsafe { std::env::set_var("PATH", &new_path) };
+
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+        let publish_result = publish_to_cargo_with(
+            &mut ctx,
+            &["crate-b".to_string()],
+            &log,
+            &mut record,
+            never_published,
+        );
+        assert!(publish_result.is_err(), "crate-b failure surfaces");
+
+        let mut evidence = anodizer_core::PublishEvidence::new("cargo");
+        evidence.extra = encode_cargo_yank_targets(&record);
+
+        // Wipe the publish argv before rollback so we assert only on the
+        // yank invocations the rollback issues.
+        std::fs::write(&argv_log, b"").expect("truncate argv log");
+
+        let publisher = CargoPublisher::new();
+        let rb = publisher.rollback(&mut ctx, &evidence);
+
+        // SAFETY: restore PATH within the same serial group.
+        unsafe {
+            match prev_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        rb.expect("rollback ok");
+
+        let yanks: Vec<String> = read_argv_log(&argv_log)
+            .into_iter()
+            .filter(|l| l.starts_with("yank"))
+            .collect();
+        assert_eq!(yanks.len(), 1, "exactly one crate is yanked: {yanks:?}");
+        let line = &yanks[0];
+        assert!(
+            line.contains("--version 1.0.0"),
+            "yank carries the version: {line}"
+        );
+        assert!(line.contains("crate-a"), "yank targets crate-a: {line}");
+        assert!(
+            line.contains("--registry my-registry"),
+            "yank targets the registry: {line}"
+        );
+        assert!(
+            !line.contains("crate-b"),
+            "crate-b was never published; must not be yanked: {line}"
+        );
+    }
+
+    /// Empty record (the publisher failed before its first successful
+    /// publish, or nothing was eligible): rollback is a clean no-op — it
+    /// spawns no `cargo` and returns Ok, rather than emitting a scary warn.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn rollback_is_clean_noop_when_nothing_published() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let argv_log = tmp.path().join("argv.log");
+
+        let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+        let mut evidence = anodizer_core::PublishEvidence::new("cargo");
+        evidence.extra = encode_cargo_yank_targets(&[]);
+
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "none");
+        let prev_path = std::env::var("PATH").ok();
+        // SAFETY: env mutation is single-threaded within this serial group.
+        unsafe { std::env::set_var("PATH", &new_path) };
+
+        let publisher = CargoPublisher::new();
+        let rb = publisher.rollback(&mut ctx, &evidence);
+
+        // SAFETY: restore PATH within the same serial group.
+        unsafe {
+            match prev_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        rb.expect("rollback no-op ok");
+
+        assert!(
+            read_argv_log(&argv_log).is_empty(),
+            "no-op rollback must not spawn cargo"
         );
     }
 }

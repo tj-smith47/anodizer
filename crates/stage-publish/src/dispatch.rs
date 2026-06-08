@@ -122,9 +122,11 @@ pub fn dispatch(
                     None,
                 )
             } else {
-                // Drain any stale override before invoking `run` so a
-                // prior publisher cannot bleed its outcome forward.
+                // Drain any stale override / partial evidence before
+                // invoking `run` so a prior publisher cannot bleed its
+                // outcome or evidence forward.
                 let _ = ctx.take_pending_outcome();
+                let _ = ctx.take_pending_evidence();
                 match p.run(ctx) {
                     Ok(evidence) => {
                         // If `run` recorded an outcome override (e.g.
@@ -135,9 +137,19 @@ pub fn dispatch(
                         let outcome = ctx
                             .take_pending_outcome()
                             .unwrap_or(PublisherOutcome::Succeeded);
+                        // A successful run owns its return value; any stale
+                        // partial-evidence slot is irrelevant.
+                        let _ = ctx.take_pending_evidence();
                         (outcome, Some(evidence))
                     }
-                    Err(err) => (PublisherOutcome::Failed(format!("{err:#}")), None),
+                    // A failing run may have done irreversible work before
+                    // bailing (e.g. cargo published crate A then failed on
+                    // crate B). Recover the partial evidence it stashed so
+                    // rollback can unwind what actually went live.
+                    Err(err) => (
+                        PublisherOutcome::Failed(format!("{err:#}")),
+                        ctx.take_pending_evidence(),
+                    ),
                 }
             };
             let failed = matches!(outcome, PublisherOutcome::Failed(_));
@@ -469,6 +481,76 @@ mod tests {
                 other => panic!("{label}: expected Failed, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn dispatch_recovers_partial_evidence_from_failed_run() {
+        // A publisher that did irreversible work for some items and then
+        // failed stashes the partial evidence on the context before
+        // returning `Err`. Dispatch must recover it into the failed row so
+        // the rollback path has something to act on — without this, a
+        // partial multi-crate cargo publish would leave the succeeded
+        // crates live with no recorded yank target.
+        use anodizer_core::PublishEvidence;
+
+        struct PartialFailPublisher;
+        impl Publisher for PartialFailPublisher {
+            fn name(&self) -> &str {
+                "partial"
+            }
+            fn group(&self) -> PublisherGroup {
+                PublisherGroup::Submitter
+            }
+            fn required(&self) -> bool {
+                true
+            }
+            fn skips_on_nightly(&self) -> bool {
+                false
+            }
+            fn run(&self, ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
+                let mut ev = PublishEvidence::new("partial");
+                ev.primary_ref = Some("https://crates.io/crates/crate-a/1.0.0".into());
+                ctx.record_pending_evidence(ev);
+                anyhow::bail!("crate-b failed after crate-a succeeded")
+            }
+            fn rollback(
+                &self,
+                _ctx: &mut Context,
+                _evidence: &PublishEvidence,
+            ) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut ctx = Context::test_fixture();
+        let publishers: Vec<Box<dyn Publisher>> = vec![Box::new(PartialFailPublisher)];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        let entry = report
+            .results
+            .iter()
+            .find(|r| r.name == "partial")
+            .expect("partial entry present");
+        assert!(
+            matches!(entry.outcome, PublisherOutcome::Failed(_)),
+            "run failed, so the row is Failed: {:?}",
+            entry.outcome
+        );
+        let ev = entry
+            .evidence
+            .as_ref()
+            .expect("failed row must carry the partial evidence the run stashed");
+        assert_eq!(
+            ev.primary_ref.as_deref(),
+            Some("https://crates.io/crates/crate-a/1.0.0"),
+            "the partial evidence (crate-a) must survive into the report row"
+        );
+        // The slot is single-shot — drained by the recovery.
+        assert!(
+            ctx.take_pending_evidence().is_none(),
+            "pending evidence must be consumed, not left to bleed forward"
+        );
     }
 
     #[test]

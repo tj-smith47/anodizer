@@ -113,6 +113,26 @@ pub trait Publisher: Send + Sync {
     /// nightly clobber is either disruptive (homebrew taps, scoop buckets,
     /// AUR, krew-index, nix overlays) or outright forbidden by registry policy.
     fn skips_on_nightly(&self) -> bool;
+
+    /// Whether a *failed* run of this publisher still has a real,
+    /// programmatic rollback to perform against `evidence`.
+    ///
+    /// Default `false`: a publisher's failure leaves nothing to undo (or
+    /// only an informational, human-driven unwind). The orchestration
+    /// rolls back **succeeded** Assets/Manager publishers; a failed
+    /// Submitter is normally inert.
+    ///
+    /// The cargo publisher is the exception. A multi-crate `cargo publish`
+    /// can succeed on crate A, go live on crates.io, then fail on crate B
+    /// — leaving A published under a *failed* Submitter row. cargo records
+    /// the succeeded crates in `evidence` and overrides this to `true`
+    /// when that set is non-empty, so the rollback path yanks A even
+    /// though the publisher's overall outcome is `Failed`. Returning
+    /// `false` for an empty record keeps a clean failure (nothing went
+    /// live) from arming the rollback machinery for no reason.
+    fn programmatic_rollback_on_failure(&self, _evidence: &PublishEvidence) -> bool {
+        false
+    }
 }
 
 /// The exact warn message a publisher emits when `rollback()` is invoked

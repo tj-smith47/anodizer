@@ -25,9 +25,11 @@ pub enum RollbackMode {
     /// half-published state before deciding.
     None,
     /// Run best-effort rollback for every reversible publisher whose
-    /// evidence is present in the report. Irreversible publishers
+    /// evidence is present in the report. Most irreversible publishers
     /// (chocolatey moderation, winget PRs, AUR) are never rolled back —
-    /// the Submitter gate is the only protection.
+    /// the Submitter gate is their only protection. The exception is
+    /// cargo: a partial multi-crate publish that left live crates records
+    /// them and gets those crates yanked even on a failed run.
     #[default]
     BestEffort,
 }
@@ -378,6 +380,19 @@ pub struct Context {
     /// `succeeded`. The slot is single-shot: any unread value is
     /// cleared at the start of every `run` call.
     pub pending_outcome: Option<crate::PublisherOutcome>,
+    /// Partial [`PublishEvidence`] published by `Publisher::run` BEFORE it
+    /// returned `Err`, so a publisher that did irreversible work for the
+    /// first N items and then failed on item N+1 can still hand the
+    /// rollback path the authoritative record of what actually went live.
+    ///
+    /// The cargo publisher is the motivating case: a multi-crate publish
+    /// that succeeds on crate A then fails on crate B must yank A. On the
+    /// `Ok` path `run` returns its evidence directly; on the `Err` path
+    /// dispatch consumes this slot via [`Context::take_pending_evidence`]
+    /// and records it on the failed publisher's report row so rollback has
+    /// something to act on. Single-shot — drained at the start of every
+    /// `run` and cleared on the `Ok` path.
+    pub pending_evidence: Option<crate::PublishEvidence>,
     /// Distinct set of crate names the build stage actually built — i.e.
     /// those that had at least one in-scope build (or `copy_from`) job after
     /// target resolution. `None` until [`BuildStage`] runs (e.g. merge mode,
@@ -439,6 +454,7 @@ impl Context {
             publish_report: None,
             determinism: None,
             pending_outcome: None,
+            pending_evidence: None,
             built_crate_names: None,
             env_source: Arc::new(ProcessEnvSource),
             #[cfg(feature = "test-helpers")]
@@ -510,6 +526,21 @@ impl Context {
     /// is empty after this call.
     pub fn take_pending_outcome(&mut self) -> Option<crate::PublisherOutcome> {
         self.pending_outcome.take()
+    }
+
+    /// Publisher-side recorder: stash the partial evidence accumulated
+    /// before a failing `run` returns `Err`, so dispatch can attach it to
+    /// the failed report row and rollback has the authoritative record of
+    /// what went live. See [`Context::pending_evidence`].
+    pub fn record_pending_evidence(&mut self, evidence: crate::PublishEvidence) {
+        self.pending_evidence = Some(evidence);
+    }
+
+    /// Dispatch-side consumer: take the partial evidence (if any) a
+    /// publisher recorded before failing. Single-shot — empty after this
+    /// call.
+    pub fn take_pending_evidence(&mut self) -> Option<crate::PublishEvidence> {
+        self.pending_evidence.take()
     }
 
     /// Borrow the publisher dispatch report set by `PublishStage::run`,
