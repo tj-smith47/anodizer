@@ -1254,4 +1254,964 @@ mod tests {
             "error must include an actionable hint, got: {chain}"
         );
     }
+
+    // -- HTTP release flow against the scripted responder -------------------
+    //
+    // The flat `spawn_oneshot_http_responder` above serves responses in
+    // arrival order regardless of URL; it cannot assert WHICH endpoint each
+    // call hit. These tests instead use the route-aware
+    // `spawn_scripted_responder`, point `GiteaCtx.api_url` at
+    // `http://{addr}`, and assert on the recorded request log: the exact
+    // method/path/body of every create, find, update, upload, list, and
+    // delete call the backend issues against Gitea's `/api/v1/...` surface.
+
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+
+    /// Build a fast retry policy for the HTTP-flow tests (millisecond
+    /// backoff so a retried 5xx doesn't stall the suite).
+    fn fast_policy(max_attempts: u32) -> RetryPolicy {
+        RetryPolicy {
+            max_attempts,
+            base_delay: std::time::Duration::from_millis(1),
+            max_delay: std::time::Duration::from_millis(2),
+        }
+    }
+
+    /// Build a reqwest client with a short timeout for the HTTP-flow tests.
+    fn test_client() -> Client {
+        Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("client")
+    }
+
+    /// Wrap a JSON body in a `200 OK` response with the right
+    /// `Content-Length`. Leaks because the responder needs `&'static str`.
+    fn http_json(status: &str, body: String) -> &'static str {
+        let len = body.len();
+        Box::leak(
+            format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n\r\n{body}"
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    // -- gitea_create_release: create path (no existing release) ------------
+
+    /// With no existing release on the first listing page, the backend
+    /// POSTs to `.../releases` with the full create payload and parses the
+    /// numeric `id` out of the 201 response.
+    #[tokio::test]
+    async fn create_release_posts_when_absent() {
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/myorg/myrepo/releases?page=1&limit=50",
+                response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/myorg/myrepo/releases",
+                response: http_json("201 Created", serde_json::json!({"id": 99}).to_string()),
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(2);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "myorg",
+            repo: "myrepo",
+            policy: &policy,
+        };
+        let spec = GiteaReleaseSpec {
+            tag: "v1.0.0",
+            commit: "deadbeef",
+            name: "Release v1.0.0",
+            body: "the body",
+            draft: true,
+            prerelease: true,
+            release_mode: "replace",
+        };
+
+        let id = gitea_create_release(&ctx, &spec)
+            .await
+            .expect("create should succeed");
+        assert_eq!(id, 99, "release id parsed from POST 201 response");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 2, "one GET list + one POST create");
+        assert_eq!(entries[0].method, "GET");
+        assert_eq!(entries[1].method, "POST");
+        assert_eq!(
+            entries[1].path, "/api/v1/repos/myorg/myrepo/releases",
+            "create POSTs to the un-suffixed releases endpoint"
+        );
+        let payload: serde_json::Value =
+            serde_json::from_str(&entries[1].body).expect("POST body is JSON");
+        assert_eq!(payload["tag_name"], "v1.0.0");
+        assert_eq!(payload["target_commitish"], "deadbeef");
+        assert_eq!(payload["name"], "Release v1.0.0");
+        assert_eq!(payload["body"], "the body");
+        assert_eq!(payload["draft"], true);
+        assert_eq!(payload["prerelease"], true);
+    }
+
+    /// A 422 from the create POST surfaces as an error (not a retry —
+    /// `max_attempts: 1` proves the 4xx is fast-failed) and carries the
+    /// gitea create-release context.
+    #[tokio::test]
+    async fn create_release_surfaces_422() {
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+                response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases",
+                response: http_json(
+                    "422 Unprocessable Entity",
+                    serde_json::json!({"message": "tag already exists"}).to_string(),
+                ),
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(1);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+        let spec = GiteaReleaseSpec {
+            tag: "v1.0.0",
+            commit: "abc",
+            name: "rel",
+            body: "b",
+            draft: false,
+            prerelease: false,
+            release_mode: "replace",
+        };
+
+        let err = gitea_create_release(&ctx, &spec)
+            .await
+            .expect_err("422 must surface as an error");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("create release failed (HTTP 422"),
+            "error must name the failing create call + status, got: {chain}"
+        );
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 2, "GET list + single POST (no retry on 4xx)");
+    }
+
+    /// A 503 on the POST create retries through `retry_http_async` and then
+    /// succeeds on the second attempt; the request log records both POSTs.
+    #[tokio::test]
+    async fn create_release_retries_5xx_on_post() {
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+                response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases",
+                response: "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases",
+                response: http_json("201 Created", serde_json::json!({"id": 7}).to_string()),
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(3);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+        let spec = GiteaReleaseSpec {
+            tag: "v1.0.0",
+            commit: "abc",
+            name: "rel",
+            body: "b",
+            draft: false,
+            prerelease: false,
+            release_mode: "replace",
+        };
+
+        let id = gitea_create_release(&ctx, &spec)
+            .await
+            .expect("create should succeed after 5xx retry");
+        assert_eq!(id, 7);
+        let entries = log.lock().unwrap();
+        let posts = entries.iter().filter(|e| e.method == "POST").count();
+        assert_eq!(posts, 2, "503 POST retried once, then 201");
+    }
+
+    /// The create-response JSON missing an `id` field surfaces an
+    /// explicit parse error rather than silently returning 0.
+    #[tokio::test]
+    async fn create_release_missing_id_errors() {
+        let (addr, _log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+                response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases",
+                response: http_json(
+                    "201 Created",
+                    serde_json::json!({"name": "rel"}).to_string(),
+                ),
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(1);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+        let spec = GiteaReleaseSpec {
+            tag: "v1.0.0",
+            commit: "abc",
+            name: "rel",
+            body: "b",
+            draft: false,
+            prerelease: false,
+            release_mode: "replace",
+        };
+
+        let err = gitea_create_release(&ctx, &spec)
+            .await
+            .expect_err("missing id must error");
+        assert!(
+            format!("{err:#}").contains("missing 'id' field"),
+            "error must name the missing id field, got: {err:#}"
+        );
+    }
+
+    // -- gitea_create_release: update path (existing release) ---------------
+
+    /// When a release with the tag already exists, the backend PATCHes its
+    /// numeric id and returns that id — no POST create is issued. The
+    /// `replace` mode sends the new body verbatim.
+    #[tokio::test]
+    async fn update_release_patches_existing_replace_mode() {
+        let existing = serde_json::json!([
+            {"id": 5, "tag_name": "v1.0.0", "body": "old body"}
+        ])
+        .to_string();
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+                response: http_json("200 OK", existing),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/api/v1/repos/o/r/releases/5",
+                response: http_json("200 OK", serde_json::json!({"id": 5}).to_string()),
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(2);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+        let spec = GiteaReleaseSpec {
+            tag: "v1.0.0",
+            commit: "abc",
+            name: "rel",
+            body: "new body",
+            draft: false,
+            prerelease: false,
+            release_mode: "replace",
+        };
+
+        let id = gitea_create_release(&ctx, &spec)
+            .await
+            .expect("update should succeed");
+        assert_eq!(id, 5, "returns the existing release id");
+
+        let entries = log.lock().unwrap();
+        assert!(
+            entries.iter().all(|e| e.method != "POST"),
+            "existing release must be PATCHed, never POSTed"
+        );
+        let patch = entries
+            .iter()
+            .find(|e| e.method == "PATCH")
+            .expect("a PATCH was issued");
+        assert_eq!(patch.path, "/api/v1/repos/o/r/releases/5");
+        let payload: serde_json::Value =
+            serde_json::from_str(&patch.body).expect("PATCH body is JSON");
+        assert_eq!(
+            payload["body"], "new body",
+            "replace mode sends the new body verbatim"
+        );
+    }
+
+    /// The `append` release mode composes the existing body and the new
+    /// body into the PATCH payload (existing first, blank line, new).
+    #[tokio::test]
+    async fn update_release_append_mode_composes_body() {
+        let existing = serde_json::json!([
+            {"id": 8, "tag_name": "v2.0.0", "body": "EXISTING"}
+        ])
+        .to_string();
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+                response: http_json("200 OK", existing),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/api/v1/repos/o/r/releases/8",
+                response: http_json("200 OK", serde_json::json!({"id": 8}).to_string()),
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(2);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+        let spec = GiteaReleaseSpec {
+            tag: "v2.0.0",
+            commit: "abc",
+            name: "rel",
+            body: "ADDED",
+            draft: false,
+            prerelease: false,
+            release_mode: "append",
+        };
+
+        gitea_create_release(&ctx, &spec)
+            .await
+            .expect("update should succeed");
+
+        let entries = log.lock().unwrap();
+        let patch = entries
+            .iter()
+            .find(|e| e.method == "PATCH")
+            .expect("a PATCH was issued");
+        let payload: serde_json::Value =
+            serde_json::from_str(&patch.body).expect("PATCH body is JSON");
+        assert_eq!(
+            payload["body"], "EXISTING\n\nADDED",
+            "append mode joins existing + new with a blank line"
+        );
+    }
+
+    /// A 503 on the PATCH update retries and then succeeds.
+    #[tokio::test]
+    async fn update_release_retries_5xx_on_patch() {
+        let existing = serde_json::json!([
+            {"id": 3, "tag_name": "v1.0.0", "body": null}
+        ])
+        .to_string();
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+                response: http_json("200 OK", existing),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/api/v1/repos/o/r/releases/3",
+                response: "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/api/v1/repos/o/r/releases/3",
+                response: http_json("200 OK", serde_json::json!({"id": 3}).to_string()),
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(3);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+        let spec = GiteaReleaseSpec {
+            tag: "v1.0.0",
+            commit: "abc",
+            name: "rel",
+            body: "b",
+            draft: false,
+            prerelease: false,
+            release_mode: "replace",
+        };
+
+        let id = gitea_create_release(&ctx, &spec)
+            .await
+            .expect("update should succeed after 5xx retry");
+        assert_eq!(id, 3);
+        let entries = log.lock().unwrap();
+        let patches = entries.iter().filter(|e| e.method == "PATCH").count();
+        assert_eq!(patches, 2, "503 PATCH retried once, then 200");
+    }
+
+    // -- find_release_by_tag: pagination ------------------------------------
+
+    /// A full first page (50 entries) that does not contain the tag forces
+    /// a second GET; the match on page 2 returns its id + body without a
+    /// third page request.
+    #[tokio::test]
+    async fn find_release_paginates_to_second_page() {
+        let mut page1: Vec<serde_json::Value> = Vec::new();
+        for i in 0..50u64 {
+            page1.push(serde_json::json!({
+                "id": 1000 + i,
+                "tag_name": format!("other-{i}"),
+                "body": null,
+            }));
+        }
+        let page1_body = serde_json::Value::Array(page1).to_string();
+        let page2_body = serde_json::json!([
+            {"id": 4242, "tag_name": "v9.9.9", "body": "found me"}
+        ])
+        .to_string();
+
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+                response: http_json("200 OK", page1_body),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases?page=2&limit=50",
+                response: http_json("200 OK", page2_body),
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(2);
+        let api_url = format!("http://{addr}");
+        let found = find_release_by_tag(&client, &api_url, "o", "r", "v9.9.9", &policy)
+            .await
+            .expect("listing should succeed");
+        assert_eq!(
+            found,
+            Some((4242, Some("found me".to_string()))),
+            "tag matched on page 2 returns its id + body"
+        );
+
+        let entries = log.lock().unwrap();
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "/api/v1/repos/o/r/releases?page=1&limit=50",
+                "/api/v1/repos/o/r/releases?page=2&limit=50",
+            ],
+            "exactly two pages fetched, in order"
+        );
+    }
+
+    /// A short first page (fewer than `PAGE_SIZE` entries) with no match
+    /// stops pagination and returns `None` — no second page is requested.
+    #[tokio::test]
+    async fn find_release_short_page_stops_and_returns_none() {
+        let body = serde_json::json!([
+            {"id": 1, "tag_name": "v0.1.0", "body": null}
+        ])
+        .to_string();
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+            response: http_json("200 OK", body),
+            times: None,
+        }]);
+
+        let client = test_client();
+        let policy = fast_policy(2);
+        let api_url = format!("http://{addr}");
+        let found = find_release_by_tag(&client, &api_url, "o", "r", "v2.0.0", &policy)
+            .await
+            .expect("listing should succeed");
+        assert_eq!(found, None, "tag absent on a short page => None");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "a short first page must not trigger a second GET"
+        );
+    }
+
+    /// A matched release object missing its `id` field surfaces an explicit
+    /// error from the listing parse rather than a silent skip.
+    #[tokio::test]
+    async fn find_release_missing_id_errors() {
+        let body = serde_json::json!([
+            {"tag_name": "v1.0.0", "body": "no id here"}
+        ])
+        .to_string();
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+            response: http_json("200 OK", body),
+            times: None,
+        }]);
+
+        let client = test_client();
+        let policy = fast_policy(1);
+        let api_url = format!("http://{addr}");
+        let err = find_release_by_tag(&client, &api_url, "o", "r", "v1.0.0", &policy)
+            .await
+            .expect_err("matched-but-id-less release must error");
+        assert!(
+            format!("{err:#}").contains("release missing 'id' field"),
+            "got: {err:#}"
+        );
+    }
+
+    // -- gitea_upload_asset -------------------------------------------------
+
+    /// Uploading an asset POSTs the file bytes (multipart) to
+    /// `.../releases/{id}/assets?name={file}` and the request body carries
+    /// the multipart `attachment` part + the file contents.
+    #[tokio::test]
+    async fn upload_asset_posts_multipart_to_assets_endpoint() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("anodizer-x86_64.tar.gz");
+        tokio::fs::write(&file, b"ARTIFACT-BYTES")
+            .await
+            .expect("write fixture");
+
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/api/v1/repos/o/r/releases/77/assets?name=anodizer-x86_64.tar.gz",
+            response: http_json("201 Created", serde_json::json!({"id": 1}).to_string()),
+            times: None,
+        }]);
+
+        let client = test_client();
+        let policy = fast_policy(2);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+        let asset = GiteaAssetSpec {
+            file_path: &file,
+            file_name: "anodizer-x86_64.tar.gz",
+        };
+
+        gitea_upload_asset(&ctx, 77, &asset)
+            .await
+            .expect("upload should succeed");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 1, "exactly one upload POST");
+        assert_eq!(entries[0].method, "POST");
+        assert_eq!(
+            entries[0].path, "/api/v1/repos/o/r/releases/77/assets?name=anodizer-x86_64.tar.gz",
+            "name is carried in the query string, release id in the path"
+        );
+        assert!(
+            entries[0].body.contains("name=\"attachment\""),
+            "multipart body uses the `attachment` form field, got: {}",
+            entries[0].body
+        );
+        assert!(
+            entries[0].body.contains("ARTIFACT-BYTES"),
+            "multipart body carries the file contents"
+        );
+    }
+
+    /// A 503 on the asset POST retries (rebuilding the move-only multipart
+    /// form per attempt) and then succeeds.
+    #[tokio::test]
+    async fn upload_asset_retries_5xx() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("a.bin");
+        tokio::fs::write(&file, b"xyz")
+            .await
+            .expect("write fixture");
+
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases/1/assets?name=a.bin",
+                response: "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n",
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases/1/assets?name=a.bin",
+                response: http_json("201 Created", serde_json::json!({"id": 2}).to_string()),
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(3);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+        let asset = GiteaAssetSpec {
+            file_path: &file,
+            file_name: "a.bin",
+        };
+
+        gitea_upload_asset(&ctx, 1, &asset)
+            .await
+            .expect("upload should succeed after 5xx retry");
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 2, "502 upload retried once, then 201");
+    }
+
+    /// A 4xx on the asset POST surfaces an error naming the asset, the
+    /// release id, and the status.
+    #[tokio::test]
+    async fn upload_asset_surfaces_4xx() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("a.bin");
+        tokio::fs::write(&file, b"xyz")
+            .await
+            .expect("write fixture");
+
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/api/v1/repos/o/r/releases/4/assets?name=a.bin",
+            response: http_json(
+                "400 Bad Request",
+                serde_json::json!({"message": "bad asset"}).to_string(),
+            ),
+            times: None,
+        }]);
+
+        let client = test_client();
+        let policy = fast_policy(1);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+        let asset = GiteaAssetSpec {
+            file_path: &file,
+            file_name: "a.bin",
+        };
+
+        let err = gitea_upload_asset(&ctx, 4, &asset)
+            .await
+            .expect_err("400 must surface");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("upload asset 'a.bin' to release 4 failed (HTTP 400"),
+            "error must name asset + release + status, got: {chain}"
+        );
+    }
+
+    // -- gitea_delete_asset_by_name -----------------------------------------
+
+    /// Deleting by name lists the release's assets, matches the name, then
+    /// DELETEs `.../assets/{asset_id}` and returns `true`.
+    #[tokio::test]
+    async fn delete_asset_by_name_lists_then_deletes() {
+        let assets = serde_json::json!([
+            {"id": 11, "name": "other.bin", "size": 1},
+            {"id": 22, "name": "target.bin", "size": 2}
+        ])
+        .to_string();
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases/9/assets",
+                response: http_json("200 OK", assets),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/api/v1/repos/o/r/releases/9/assets/22",
+                response: "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(2);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+
+        let deleted = gitea_delete_asset_by_name(&ctx, 9, "target.bin")
+            .await
+            .expect("delete should succeed");
+        assert!(deleted, "matching asset reported as deleted");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 2, "one list GET + one DELETE");
+        assert_eq!(entries[0].method, "GET");
+        assert_eq!(entries[1].method, "DELETE");
+        assert_eq!(
+            entries[1].path, "/api/v1/repos/o/r/releases/9/assets/22",
+            "DELETE targets the matched asset's numeric id, not its name"
+        );
+    }
+
+    /// When no listed asset matches the name, the backend issues no DELETE
+    /// and returns `false`.
+    #[tokio::test]
+    async fn delete_asset_by_name_absent_returns_false() {
+        let assets = serde_json::json!([
+            {"id": 11, "name": "other.bin", "size": 1}
+        ])
+        .to_string();
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases/9/assets",
+            response: http_json("200 OK", assets),
+            times: None,
+        }]);
+
+        let client = test_client();
+        let policy = fast_policy(2);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+
+        let deleted = gitea_delete_asset_by_name(&ctx, 9, "missing.bin")
+            .await
+            .expect("listing should succeed");
+        assert!(!deleted, "no match => false");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 1, "only the list GET, no DELETE");
+        assert!(entries.iter().all(|e| e.method != "DELETE"));
+    }
+
+    /// A 503 on the asset-list GET retries before the delete proceeds.
+    #[tokio::test]
+    async fn delete_asset_by_name_retries_5xx_on_list() {
+        let assets = serde_json::json!([
+            {"id": 33, "name": "t.bin", "size": 1}
+        ])
+        .to_string();
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases/2/assets",
+                response: "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases/2/assets",
+                response: http_json("200 OK", assets),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/api/v1/repos/o/r/releases/2/assets/33",
+                response: "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(3);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+
+        let deleted = gitea_delete_asset_by_name(&ctx, 2, "t.bin")
+            .await
+            .expect("delete should succeed after list retry");
+        assert!(deleted);
+        let entries = log.lock().unwrap();
+        let gets = entries.iter().filter(|e| e.method == "GET").count();
+        assert_eq!(gets, 2, "503 list GET retried once before the DELETE");
+        assert_eq!(entries.iter().filter(|e| e.method == "DELETE").count(), 1);
+    }
+
+    // -- gitea_find_asset_size ----------------------------------------------
+
+    /// The size probe returns the matched asset's `size` field.
+    #[tokio::test]
+    async fn find_asset_size_returns_matched_size() {
+        let assets = serde_json::json!([
+            {"id": 1, "name": "a.bin", "size": 10},
+            {"id": 2, "name": "b.bin", "size": 4096}
+        ])
+        .to_string();
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases/5/assets",
+            response: http_json("200 OK", assets),
+            times: None,
+        }]);
+
+        let client = test_client();
+        let policy = fast_policy(2);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+
+        let size = gitea_find_asset_size(&ctx, 5, "b.bin")
+            .await
+            .expect("probe should succeed");
+        assert_eq!(size, Some(4096), "returns the matched asset's byte size");
+    }
+
+    /// The size probe returns `None` when no asset matches the name.
+    #[tokio::test]
+    async fn find_asset_size_absent_returns_none() {
+        let assets = serde_json::json!([
+            {"id": 1, "name": "a.bin", "size": 10}
+        ])
+        .to_string();
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases/5/assets",
+            response: http_json("200 OK", assets),
+            times: None,
+        }]);
+
+        let client = test_client();
+        let policy = fast_policy(2);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+
+        let size = gitea_find_asset_size(&ctx, 5, "missing.bin")
+            .await
+            .expect("probe should succeed");
+        assert_eq!(size, None, "no name match => None");
+    }
+
+    /// A non-numeric / absent `size` field on the matched asset is treated
+    /// as "unknown size" (`None`), which the caller maps to
+    /// delete-and-reupload.
+    #[tokio::test]
+    async fn find_asset_size_non_numeric_size_is_none() {
+        let assets = serde_json::json!([
+            {"id": 1, "name": "a.bin", "size": "not-a-number"}
+        ])
+        .to_string();
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases/5/assets",
+            response: http_json("200 OK", assets),
+            times: None,
+        }]);
+
+        let client = test_client();
+        let policy = fast_policy(2);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+
+        let size = gitea_find_asset_size(&ctx, 5, "a.bin")
+            .await
+            .expect("probe should succeed");
+        assert_eq!(
+            size, None,
+            "matched-but-unparseable size falls through to None"
+        );
+    }
 }

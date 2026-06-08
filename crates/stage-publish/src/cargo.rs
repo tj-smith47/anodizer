@@ -3200,4 +3200,383 @@ features = ["extra"]
         .unwrap();
         assert_eq!(find_workspace_root_manifest(root.path()), None);
     }
+
+    // -----------------------------------------------------------------------
+    // publish_to_cargo — end-to-end orchestration in dry-run mode.
+    //
+    // Dry-run takes the early `ctx.is_dry_run()` branch: it builds the same
+    // expanded selection, eligibility map (skip/if gating), and topological
+    // `sorted_names` the live path uses, then emits per-crate start +
+    // `(dry-run) would run: <cmd>` status lines instead of shelling out. The
+    // captured status stream is therefore a faithful witness of the ordering
+    // and gating decisions WITHOUT any network or subprocess. Covers all
+    // three config modes — single-crate, workspace-lockstep, workspace
+    // per-crate — for the publish-graph walk.
+    // -----------------------------------------------------------------------
+
+    use anodizer_core::config::{PublishConfig, WorkspaceConfig};
+    // `Verbosity` / `LogLevel` are not in the file-level imports `super::*`
+    // re-exports; `StageLogger` is, but an explicit re-import of a glob item
+    // is permitted (explicit binding wins, same resolved path — no conflict).
+    use anodizer_core::log::{LogLevel, StageLogger, Verbosity};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    /// A crate with a `publish.cargo` block (eligible for the cargo
+    /// publisher) plus the given workspace-internal `depends_on` edges.
+    fn cargo_crate(name: &str, deps: &[&str]) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
+            publish: Some(PublishConfig {
+                cargo: Some(CargoPublishConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// A crate with the given `publish.cargo` config (so `skip:` / `if:`
+    /// can be exercised) and `depends_on` edges.
+    fn cargo_crate_with_cfg(name: &str, deps: &[&str], cfg: CargoPublishConfig) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
+            publish: Some(PublishConfig {
+                cargo: Some(cfg),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// A crate with NO `publish.cargo` block — present in the config (so it
+    /// participates in `depends_on` resolution) but not eligible to publish.
+    fn plain_crate(name: &str, deps: &[&str]) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
+            ..Default::default()
+        }
+    }
+
+    /// Run `publish_to_cargo` in dry-run mode with a capturing logger and
+    /// return the ordered list of crate names whose per-crate-start line was
+    /// emitted — i.e. the order `publish_to_cargo` walked the publish graph.
+    fn dry_run_publish_order(ctx: &mut Context) -> Vec<String> {
+        let (log, cap) = StageLogger::with_capture("publish-test", Verbosity::Normal);
+        let selected = ctx.options.selected_crates.clone();
+        publish_to_cargo(ctx, &selected, &log).expect("dry-run publish must succeed");
+        // Each crate emits `run_per_crate_start_message(name)` exactly once,
+        // in topological order, before its `(dry-run) would run` line.
+        cap.all_messages()
+            .into_iter()
+            .filter(|(lvl, _)| *lvl == LogLevel::Status)
+            .filter_map(|(_, m)| {
+                m.strip_prefix("cargo: starting per-crate publish for '")
+                    .and_then(|rest| rest.strip_suffix('\''))
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    /// Single-crate mode: one eligible crate with no deps publishes itself
+    /// and only itself. The expanded selection is exactly `[the crate]`.
+    #[test]
+    fn publish_to_cargo_single_crate_mode_publishes_the_one_crate() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![cargo_crate("solo", &[])])
+            .selected_crates(vec!["solo".to_string()])
+            .dry_run(true)
+            .build();
+        assert_eq!(dry_run_publish_order(&mut ctx), vec!["solo"]);
+    }
+
+    /// Workspace-lockstep mode: every crate lives under top-level
+    /// `crates:` and a single `--crate cfgd` selection expands transitively
+    /// to its dependency chain, published dependencies-first.
+    #[test]
+    fn publish_to_cargo_lockstep_orders_dependency_before_dependent() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                cargo_crate("cfgd", &["cfgd-core"]),
+                cargo_crate("cfgd-core", &[]),
+            ])
+            // Select only the leaf binary; the dependency must be pulled in
+            // by expand_with_transitive_deps and published FIRST.
+            .selected_crates(vec!["cfgd".to_string()])
+            .dry_run(true)
+            .build();
+        assert_eq!(dry_run_publish_order(&mut ctx), vec!["cfgd-core", "cfgd"]);
+    }
+
+    /// Workspace-lockstep, three-level chain: a→b→c must publish c, b, a in
+    /// strict topological order regardless of declaration order.
+    #[test]
+    fn publish_to_cargo_lockstep_orders_three_level_chain() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                cargo_crate("a", &["b"]),
+                cargo_crate("b", &["c"]),
+                cargo_crate("c", &[]),
+            ])
+            .selected_crates(vec!["a".to_string()])
+            .dry_run(true)
+            .build();
+        assert_eq!(dry_run_publish_order(&mut ctx), vec!["c", "b", "a"]);
+    }
+
+    /// Workspace per-crate mode: crates live under `workspaces:` (NOT
+    /// top-level `crates:`). `all_crates` overlays the workspace members,
+    /// and a cross-member dep is still ordered dependency-first.
+    #[test]
+    fn publish_to_cargo_per_crate_workspace_orders_across_members() {
+        let core_ws = WorkspaceConfig {
+            name: "core-ws".to_string(),
+            crates: vec![cargo_crate("cfgd-core", &[])],
+            ..Default::default()
+        };
+        let app_ws = WorkspaceConfig {
+            name: "app-ws".to_string(),
+            crates: vec![cargo_crate("cfgd", &["cfgd-core"])],
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .workspaces(vec![core_ws, app_ws])
+            .selected_crates(vec!["cfgd".to_string()])
+            .dry_run(true)
+            .build();
+        // cfgd-core lives in a DIFFERENT workspace than cfgd, yet the cross-
+        // workspace depends_on edge still forces it published first.
+        assert_eq!(dry_run_publish_order(&mut ctx), vec!["cfgd-core", "cfgd"]);
+    }
+
+    /// A dependency without its own `publish.cargo` block is pulled into the
+    /// graph for ordering but is itself NOT published — only cargo-eligible
+    /// crates appear in the emitted order, and the eligible dependent still
+    /// publishes.
+    #[test]
+    fn publish_to_cargo_skips_dep_lacking_cargo_block() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                cargo_crate("app", &["helper"]),
+                plain_crate("helper", &[]),
+            ])
+            .selected_crates(vec!["app".to_string()])
+            .dry_run(true)
+            .build();
+        // `helper` has no publish.cargo → not in cargo_cfgs → filtered out of
+        // `publishable`; only `app` is published.
+        assert_eq!(dry_run_publish_order(&mut ctx), vec!["app"]);
+    }
+
+    /// `publish.cargo.skip: true` removes the crate from the eligible set
+    /// even though it carries a cargo block — the other eligible crate still
+    /// publishes.
+    #[test]
+    fn publish_to_cargo_honors_skip_true() {
+        let skipped = cargo_crate_with_cfg(
+            "skipme",
+            &[],
+            CargoPublishConfig {
+                skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
+                ..Default::default()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![skipped, cargo_crate("keepme", &[])])
+            .selected_crates(vec!["skipme".to_string(), "keepme".to_string()])
+            .dry_run(true)
+            .build();
+        assert_eq!(dry_run_publish_order(&mut ctx), vec!["keepme"]);
+    }
+
+    /// `publish.cargo.if: "false"` (a falsy `if` condition) gates the crate
+    /// out of the eligible set — the live path renders the template and
+    /// drops the crate when it evaluates falsy.
+    #[test]
+    fn publish_to_cargo_honors_falsy_if_condition() {
+        let gated = cargo_crate_with_cfg(
+            "gated",
+            &[],
+            CargoPublishConfig {
+                if_condition: Some("false".to_string()),
+                ..Default::default()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![gated, cargo_crate("open", &[])])
+            .selected_crates(vec!["gated".to_string(), "open".to_string()])
+            .dry_run(true)
+            .build();
+        assert_eq!(dry_run_publish_order(&mut ctx), vec!["open"]);
+    }
+
+    /// `if: "true"` keeps the crate eligible — the truthy branch of the
+    /// `if` gate is the complement of the falsy test above.
+    #[test]
+    fn publish_to_cargo_keeps_crate_when_if_condition_truthy() {
+        let gated = cargo_crate_with_cfg(
+            "gated",
+            &[],
+            CargoPublishConfig {
+                if_condition: Some("true".to_string()),
+                ..Default::default()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![gated])
+            .selected_crates(vec!["gated".to_string()])
+            .dry_run(true)
+            .build();
+        assert_eq!(dry_run_publish_order(&mut ctx), vec!["gated"]);
+    }
+
+    /// The `--skip=cargo` stage gate short-circuits `publish_to_cargo`
+    /// before any per-crate work: no crate-start lines are emitted even
+    /// though an eligible crate is selected.
+    #[test]
+    fn publish_to_cargo_short_circuits_when_stage_skipped() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![cargo_crate("solo", &[])])
+            .selected_crates(vec!["solo".to_string()])
+            .skip_stages(vec!["cargo".to_string()])
+            .dry_run(true)
+            .build();
+        assert!(
+            dry_run_publish_order(&mut ctx).is_empty(),
+            "--skip=cargo must publish nothing"
+        );
+    }
+
+    /// The dry-run command line for each crate reflects its per-crate
+    /// `publish.cargo` config (here `--no-verify` + the implicit
+    /// `--allow-dirty`), proving the cfg→argv wiring survives the
+    /// orchestration, not just the unit `publish_command` call.
+    #[test]
+    fn publish_to_cargo_dry_run_emits_configured_flags() {
+        let crate_cfg = cargo_crate_with_cfg(
+            "flagged",
+            &[],
+            CargoPublishConfig {
+                no_verify: Some(true),
+                ..Default::default()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_cfg])
+            .selected_crates(vec!["flagged".to_string()])
+            .dry_run(true)
+            .build();
+        let (log, cap) = StageLogger::with_capture("publish-test", Verbosity::Normal);
+        let selected = ctx.options.selected_crates.clone();
+        publish_to_cargo(&mut ctx, &selected, &log).expect("dry-run ok");
+        let dry_line = cap
+            .all_messages()
+            .into_iter()
+            .find_map(|(_, m)| m.strip_prefix("(dry-run) would run: ").map(str::to_string))
+            .expect("dry-run command line emitted");
+        assert!(
+            dry_line.contains("cargo publish -p flagged"),
+            "missing publish target: {dry_line}"
+        );
+        assert!(
+            dry_line.contains("--no-verify"),
+            "configured --no-verify not threaded into dry-run cmd: {dry_line}"
+        );
+        assert!(
+            dry_line.contains("--allow-dirty"),
+            "implicit --allow-dirty missing: {dry_line}"
+        );
+    }
+
+    /// Diamond graph (d depends on b and c, both depend on a) publishes `a`
+    /// first and `d` last; the two middle crates appear in the
+    /// deterministic alphabetical seed order the topo-sort guarantees.
+    #[test]
+    fn publish_to_cargo_orders_diamond_dependency_graph() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                cargo_crate("d", &["b", "c"]),
+                cargo_crate("b", &["a"]),
+                cargo_crate("c", &["a"]),
+                cargo_crate("a", &[]),
+            ])
+            .selected_crates(vec!["d".to_string()])
+            .dry_run(true)
+            .build();
+        let order = dry_run_publish_order(&mut ctx);
+        assert_eq!(order.first().map(String::as_str), Some("a"), "root first");
+        assert_eq!(order.last().map(String::as_str), Some("d"), "sink last");
+        // b and c are independent middles — deterministic alpha seed order.
+        assert_eq!(order, vec!["a", "b", "c", "d"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // run_cargo_publish_with_retry — exhaustion path (all retries fail).
+    //
+    // The recovery + fast-fail paths are covered above; this pins the third
+    // arm: a propagation-style failure that NEVER clears must retry the full
+    // PUBLISH_PROPAGATION_RETRIES budget, then surface the last failure.
+    // -----------------------------------------------------------------------
+
+    /// A stub that emits a propagation-style stderr on EVERY invocation must
+    /// be retried exactly `PUBLISH_PROPAGATION_RETRIES` times (initial + the
+    /// rest) and then surface the failure — never loop forever, never
+    /// succeed.
+    #[cfg(unix)]
+    #[test]
+    fn run_cargo_publish_with_retry_exhausts_then_surfaces() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let counter = tmp.path().join("counter");
+        let stub = tmp.path().join("cargo");
+        // Always fail with a propagation-shaped stderr; bump the counter so
+        // we can assert the exact attempt count.
+        let script = format!(
+            "#!/bin/sh\n\
+             n=$(cat {counter} 2>/dev/null || echo 0)\n\
+             n=$((n+1))\n\
+             echo $n > {counter}\n\
+             echo 'error: no matching package named `dep` found' >&2\n\
+             exit 101\n",
+            counter = counter.display(),
+        );
+        std::fs::write(&stub, script).expect("write stub");
+
+        // Route through `sh` to dodge the ETXTBSY race (see the recovery
+        // test above for the rationale).
+        let cmd = vec![
+            "sh".to_string(),
+            stub.display().to_string(),
+            "publish".to_string(),
+        ];
+        let log = StageLogger::new("publish-test", Verbosity::Normal);
+        let err = run_cargo_publish_with_retry(
+            &cmd,
+            "stub publish",
+            &log,
+            std::time::Duration::from_millis(1),
+        )
+        .expect_err("persistent propagation failure must surface after exhaustion");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("no matching package") || chain.contains("exit code"),
+            "expected last failure in chain: {chain}"
+        );
+
+        let n: u32 = std::fs::read_to_string(&counter)
+            .expect("counter")
+            .trim()
+            .parse()
+            .expect("u32");
+        assert_eq!(
+            n, PUBLISH_PROPAGATION_RETRIES,
+            "must retry the full budget before surfacing"
+        );
+    }
 }

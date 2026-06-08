@@ -5524,3 +5524,892 @@ use: podman
     let cfg: DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(cfg.use_backend.as_deref(), Some("podman"));
 }
+
+// ===========================================================================
+// run.rs orchestration coverage
+//
+// These tests drive the docker-stage orchestration logic (template rendering,
+// build-context resolution, label/build-arg/flag assembly, manifest pinning,
+// skip/empty evaluation, strict-guard / podman / sbom bail paths, combined
+// digest file emission) WITHOUT spawning docker. Two entry styles are used:
+//
+//   1. `DockerStage::new().run(&mut ctx)` in `dry_run: true` — exercises the
+//      full prepare -> queue path up to (but never through) the buildx spawn,
+//      asserting the artifacts / metadata / errors the orchestration derives.
+//   2. Direct calls to the `pub(crate)` run helpers (`render_v2_kv_map`,
+//      `render_v2_flag_list`, `build_manifest_create_cmd`,
+//      `process_docker_manifest`, `validate_docker_v2_id_uniqueness`,
+//      `write_combined_digest_file`, `insert_platforms_meta`) — asserting the
+//      exact derived list / command / file contents.
+// ===========================================================================
+
+use super::run::{
+    build_manifest_create_cmd, insert_platforms_meta, process_docker_manifest, render_v2_flag_list,
+    render_v2_kv_map, validate_docker_v2_id_uniqueness, write_combined_digest_file,
+};
+
+/// A `StageLogger` plus its capture handle, for asserting emitted warn/status
+/// lines. Mirrors the `with_capture` test-helper pattern used elsewhere.
+fn capturing_logger() -> (
+    anodizer_core::log::StageLogger,
+    anodizer_core::log::LogCapture,
+) {
+    anodizer_core::log::StageLogger::with_capture("docker", anodizer_core::log::Verbosity::Normal)
+}
+
+/// Build a `DockerImageV2` artifact carrying a `tag` (and optional `digest`)
+/// metadata entry, as `prepare_v2_config` would register one.
+fn v2_image_artifact(tag: &str, digest: Option<&str>) -> anodizer_core::artifact::Artifact {
+    use anodizer_core::artifact::Artifact;
+    let mut metadata = HashMap::new();
+    metadata.insert("tag".to_string(), tag.to_string());
+    if let Some(d) = digest {
+        metadata.insert("digest".to_string(), d.to_string());
+    }
+    Artifact {
+        kind: ArtifactKind::DockerImageV2,
+        name: tag.to_string(),
+        path: PathBuf::from(tag),
+        target: None,
+        crate_name: "app".to_string(),
+        metadata,
+        size: None,
+    }
+}
+
+/// A dry-run `Context` with `Version` / `Tag` template vars pre-set and the
+/// given crates installed.
+fn dry_run_ctx_with_crates(
+    crates: Vec<anodizer_core::config::CrateConfig>,
+) -> anodizer_core::context::Context {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+    let mut config = Config::default();
+    config.project_name = "app".to_string();
+    config.crates = crates;
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx
+}
+
+// ---------------------------------------------------------------------------
+// render_v2_kv_map — label / build-arg / annotation template assembly
+// ---------------------------------------------------------------------------
+
+#[test]
+fn render_v2_kv_map_renders_templates_and_sorts_by_key() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+
+    let mut map = HashMap::new();
+    map.insert(
+        "org.opencontainers.image.version".to_string(),
+        "{{ .Version }}".to_string(),
+    );
+    map.insert("vendor".to_string(), "acme".to_string());
+
+    let out = render_v2_kv_map(&mut ctx, Some(&map), "label").unwrap();
+    // Sorted by rendered key; `org...` sorts before `vendor`.
+    assert_eq!(
+        out,
+        vec![
+            (
+                "org.opencontainers.image.version".to_string(),
+                "1.0.0".to_string()
+            ),
+            ("vendor".to_string(), "acme".to_string()),
+        ],
+    );
+}
+
+#[test]
+fn render_v2_kv_map_drops_pairs_with_empty_key_or_value() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    ctx.template_vars_mut().set("Maybe", "");
+
+    let mut map = HashMap::new();
+    // Empty rendered value -> dropped.
+    map.insert("keep_empty_value".to_string(), "{{ .Maybe }}".to_string());
+    // Empty rendered key -> dropped.
+    map.insert("{{ .Maybe }}".to_string(), "static".to_string());
+    // Fully-populated -> retained.
+    map.insert("good".to_string(), "value".to_string());
+
+    let out = render_v2_kv_map(&mut ctx, Some(&map), "build_arg").unwrap();
+    assert_eq!(out, vec![("good".to_string(), "value".to_string())]);
+}
+
+#[test]
+fn render_v2_kv_map_none_input_is_empty() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    assert!(
+        render_v2_kv_map(&mut ctx, None, "annotation")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// render_v2_flag_list — extra-flag template assembly
+// ---------------------------------------------------------------------------
+
+#[test]
+fn render_v2_flag_list_renders_and_drops_empties_preserving_order() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Empty", "");
+
+    let flags = vec![
+        "--label=tag={{ .Tag }}".to_string(),
+        "{{ .Empty }}".to_string(), // renders empty -> dropped
+        "--no-cache".to_string(),
+    ];
+    let out = render_v2_flag_list(&mut ctx, Some(&flags)).unwrap();
+    // Order preserved (unlike the kv map, flag lists are not sorted), empty dropped.
+    assert_eq!(
+        out,
+        vec!["--label=tag=v1.0.0".to_string(), "--no-cache".to_string()]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// insert_platforms_meta — Platforms JSON-array metadata
+// ---------------------------------------------------------------------------
+
+#[test]
+fn insert_platforms_meta_encodes_json_array() {
+    let mut meta: HashMap<String, String> = HashMap::new();
+    insert_platforms_meta(
+        &mut meta,
+        &["linux/amd64".to_string(), "linux/arm64".to_string()],
+    )
+    .unwrap();
+    assert_eq!(
+        meta.get("Platforms").unwrap(),
+        r#"["linux/amd64","linux/arm64"]"#,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// validate_docker_v2_id_uniqueness — duplicate-ID hard error
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validate_docker_v2_id_uniqueness_rejects_duplicate_ids() {
+    use anodizer_core::config::{CrateConfig, DockerV2Config};
+    let dup = |id: &str| DockerV2Config {
+        id: Some(id.to_string()),
+        dockerfile: "Dockerfile".to_string(),
+        ..Default::default()
+    };
+    let crates = vec![
+        CrateConfig {
+            name: "a".to_string(),
+            dockers_v2: Some(vec![dup("shared")]),
+            ..Default::default()
+        },
+        CrateConfig {
+            name: "b".to_string(),
+            dockers_v2: Some(vec![dup("shared")]),
+            ..Default::default()
+        },
+    ];
+    let err = validate_docker_v2_id_uniqueness(&crates).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("found 2 dockers_v2 with the ID 'shared'"),
+        "got: {err}",
+    );
+}
+
+#[test]
+fn validate_docker_v2_id_uniqueness_allows_distinct_and_none_ids() {
+    use anodizer_core::config::{CrateConfig, DockerV2Config};
+    let crates = vec![CrateConfig {
+        name: "a".to_string(),
+        dockers_v2: Some(vec![
+            DockerV2Config {
+                id: Some("one".to_string()),
+                ..Default::default()
+            },
+            DockerV2Config {
+                id: Some("two".to_string()),
+                ..Default::default()
+            },
+            DockerV2Config {
+                id: None,
+                ..Default::default()
+            },
+        ]),
+        ..Default::default()
+    }];
+    assert!(validate_docker_v2_id_uniqueness(&crates).is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// build_manifest_create_cmd — digest pinning + did-you-mean spell-check
+// ---------------------------------------------------------------------------
+
+#[test]
+fn build_manifest_create_cmd_pins_known_image_to_digest() {
+    let (log, _cap) = capturing_logger();
+    let artifacts = vec![v2_image_artifact(
+        "ghcr.io/owner/app:1.0.0-amd64",
+        Some("sha256:deadbeef"),
+    )];
+    let cmd = build_manifest_create_cmd(
+        &log,
+        "docker",
+        "ghcr.io/owner/app:1.0.0",
+        &["ghcr.io/owner/app:1.0.0-amd64".to_string()],
+        &["--amend".to_string()],
+        &artifacts,
+    );
+    assert_eq!(
+        cmd,
+        vec![
+            "docker".to_string(),
+            "manifest".to_string(),
+            "create".to_string(),
+            "ghcr.io/owner/app:1.0.0".to_string(),
+            "ghcr.io/owner/app:1.0.0-amd64@sha256:deadbeef".to_string(),
+            "--amend".to_string(),
+        ],
+    );
+}
+
+#[test]
+fn build_manifest_create_cmd_emits_did_you_mean_for_near_miss() {
+    let (log, cap) = capturing_logger();
+    // A known image differs from the requested one by a single char.
+    let artifacts = vec![v2_image_artifact("ghcr.io/owner/app:1.0.0-amd64", None)];
+    let cmd = build_manifest_create_cmd(
+        &log,
+        "docker",
+        "ghcr.io/owner/app:1.0.0",
+        &["ghcr.io/owner/app:1.0.0-amd65".to_string()], // typo: amd65
+        &[],
+        &artifacts,
+    );
+    // No digest available -> bare tag reference pushed.
+    assert_eq!(cmd.last().unwrap(), "ghcr.io/owner/app:1.0.0-amd65");
+    assert!(
+        cap.warn_messages()
+            .iter()
+            .any(|m| m.contains("did you mean") && m.contains("amd64")),
+        "expected did-you-mean warning, got: {:?}",
+        cap.warn_messages(),
+    );
+}
+
+#[test]
+fn build_manifest_create_cmd_warns_no_digest_when_no_near_match() {
+    let (log, cap) = capturing_logger();
+    let cmd = build_manifest_create_cmd(
+        &log,
+        "docker",
+        "ghcr.io/owner/app:1.0.0",
+        &["ghcr.io/owner/app:1.0.0-amd64".to_string()],
+        &[],
+        &[], // no known images at all
+    );
+    assert_eq!(cmd.last().unwrap(), "ghcr.io/owner/app:1.0.0-amd64");
+    assert!(
+        cap.warn_messages()
+            .iter()
+            .any(|m| m.contains("no digest found for")),
+        "expected no-digest warning, got: {:?}",
+        cap.warn_messages(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// process_docker_manifest — render, skip, empty-image error (dry-run, no spawn)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn process_docker_manifest_empty_image_templates_is_hard_error() {
+    use anodizer_core::config::{CrateConfig, DockerManifestConfig};
+    let (log, _cap) = capturing_logger();
+    let mut ctx = dry_run_ctx_with_crates(vec![]);
+    let krate = CrateConfig {
+        name: "app".to_string(),
+        ..Default::default()
+    };
+    let cfg = DockerManifestConfig {
+        name_template: "ghcr.io/owner/app:{{ .Version }}".to_string(),
+        image_templates: vec![],
+        id: Some("empty-mani".to_string()),
+        ..Default::default()
+    };
+    let mut artifacts = Vec::new();
+    let err = process_docker_manifest(
+        &mut ctx,
+        &log,
+        &krate,
+        0,
+        &cfg,
+        &std::collections::HashSet::new(),
+        &HashMap::new(),
+        true,
+        &mut artifacts,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("docker manifest 'empty-mani': image_templates must not be empty"),
+        "got: {err}",
+    );
+}
+
+#[test]
+fn process_docker_manifest_skips_when_already_pushed_as_multiarch() {
+    use anodizer_core::config::{CrateConfig, DockerManifestConfig};
+    let (log, cap) = capturing_logger();
+    let mut ctx = dry_run_ctx_with_crates(vec![]);
+    let krate = CrateConfig {
+        name: "app".to_string(),
+        ..Default::default()
+    };
+    let cfg = DockerManifestConfig {
+        name_template: "ghcr.io/owner/app:{{ .Version }}".to_string(),
+        image_templates: vec!["ghcr.io/owner/app:{{ .Version }}-amd64".to_string()],
+        ..Default::default()
+    };
+    // docker_v2 already pushed this exact manifest name as a multi-arch list.
+    let mut already = std::collections::HashSet::new();
+    already.insert("ghcr.io/owner/app:1.0.0".to_string());
+
+    let mut artifacts = Vec::new();
+    process_docker_manifest(
+        &mut ctx,
+        &log,
+        &krate,
+        0,
+        &cfg,
+        &already,
+        &HashMap::new(),
+        true,
+        &mut artifacts,
+    )
+    .unwrap();
+
+    // No artifact registered, and a skip status emitted.
+    assert!(
+        artifacts.is_empty(),
+        "skipped manifest must register no artifact"
+    );
+    assert!(
+        cap.all_messages()
+            .iter()
+            .any(|(_, m)| m.contains("already pushed as multi-arch")),
+        "expected skip status, got: {:?}",
+        cap.all_messages(),
+    );
+}
+
+#[test]
+fn process_docker_manifest_dry_run_renders_name_and_images_into_artifact() {
+    use anodizer_core::config::{CrateConfig, DockerManifestConfig};
+    let (log, _cap) = capturing_logger();
+    let mut ctx = dry_run_ctx_with_crates(vec![]);
+    let krate = CrateConfig {
+        name: "app".to_string(),
+        ..Default::default()
+    };
+    let cfg = DockerManifestConfig {
+        name_template: "ghcr.io/owner/app:{{ .Version }}".to_string(),
+        image_templates: vec![
+            "ghcr.io/owner/app:{{ .Version }}-amd64".to_string(),
+            "{{ .Empty }}".to_string(), // renders empty -> skipped
+            "ghcr.io/owner/app:{{ .Version }}-arm64".to_string(),
+        ],
+        id: Some("multi".to_string()),
+        ..Default::default()
+    };
+    ctx.template_vars_mut().set("Empty", "");
+
+    let mut artifacts = Vec::new();
+    process_docker_manifest(
+        &mut ctx,
+        &log,
+        &krate,
+        0,
+        &cfg,
+        &std::collections::HashSet::new(),
+        &HashMap::new(),
+        true, // dry-run -> never spawns docker
+        &mut artifacts,
+    )
+    .unwrap();
+
+    assert_eq!(artifacts.len(), 1);
+    let a = &artifacts[0];
+    assert_eq!(a.kind, ArtifactKind::DockerManifest);
+    assert_eq!(
+        a.metadata.get("manifest").unwrap(),
+        "ghcr.io/owner/app:1.0.0"
+    );
+    // Empty image template dropped; remaining two joined.
+    assert_eq!(
+        a.metadata.get("images").unwrap(),
+        "ghcr.io/owner/app:1.0.0-amd64,ghcr.io/owner/app:1.0.0-arm64",
+    );
+    assert_eq!(a.metadata.get("id").unwrap(), "multi");
+}
+
+// ---------------------------------------------------------------------------
+// write_combined_digest_file — sorted `<hex>  <name>` emission
+// ---------------------------------------------------------------------------
+
+#[test]
+fn write_combined_digest_file_writes_sorted_stripped_lines() {
+    use anodizer_core::artifact::Artifact;
+    let (log, _cap) = capturing_logger();
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path();
+    let mut ctx = dry_run_ctx_with_crates(vec![]);
+
+    let mk = |tag: &str, digest: &str| {
+        let mut meta = HashMap::new();
+        meta.insert("tag".to_string(), tag.to_string());
+        meta.insert("digest".to_string(), digest.to_string());
+        Artifact {
+            kind: ArtifactKind::DockerImageV2,
+            name: tag.to_string(),
+            path: PathBuf::from(tag),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: meta,
+            size: None,
+        }
+    };
+    let artifacts = vec![
+        mk("ghcr.io/owner/app:zeta", "sha256:bbbb"),
+        mk("ghcr.io/owner/app:alpha", "sha256:aaaa"),
+    ];
+
+    write_combined_digest_file(&mut ctx, &log, dist, &artifacts).unwrap();
+
+    let contents = fs::read_to_string(dist.join("digests.txt")).unwrap();
+    // `sha256:` stripped, lines sorted lexicographically (aaaa before bbbb).
+    assert_eq!(
+        contents,
+        "aaaa  ghcr.io/owner/app:alpha\nbbbb  ghcr.io/owner/app:zeta\n",
+    );
+}
+
+#[test]
+fn write_combined_digest_file_honors_name_template_and_dedups() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{CrateConfig, DockerDigestConfig};
+    let (log, _cap) = capturing_logger();
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path();
+
+    let krate = CrateConfig {
+        name: "app".to_string(),
+        docker_digest: Some(DockerDigestConfig {
+            name_template: Some("checksums-{{ .Version }}.txt".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = dry_run_ctx_with_crates(vec![krate]);
+
+    let mut meta = HashMap::new();
+    meta.insert("tag".to_string(), "ghcr.io/owner/app:1.0.0".to_string());
+    meta.insert("digest".to_string(), "sha256:cafe".to_string());
+    let dup = Artifact {
+        kind: ArtifactKind::DockerImageV2,
+        name: "ghcr.io/owner/app:1.0.0".to_string(),
+        path: PathBuf::from("ghcr.io/owner/app:1.0.0"),
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: meta,
+        size: None,
+    };
+    // Two identical lines -> dedup to one.
+    let artifacts = vec![dup.clone(), dup];
+
+    write_combined_digest_file(&mut ctx, &log, dist, &artifacts).unwrap();
+
+    let contents = fs::read_to_string(dist.join("checksums-1.0.0.txt")).unwrap();
+    assert_eq!(contents, "cafe  ghcr.io/owner/app:1.0.0\n");
+}
+
+#[test]
+fn write_combined_digest_file_no_digests_writes_nothing() {
+    use anodizer_core::artifact::Artifact;
+    let (log, _cap) = capturing_logger();
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path();
+    let mut ctx = dry_run_ctx_with_crates(vec![]);
+
+    // Artifact carries a tag but NO digest -> no line, no file.
+    let mut meta = HashMap::new();
+    meta.insert("tag".to_string(), "ghcr.io/owner/app:1.0.0".to_string());
+    let artifacts = vec![Artifact {
+        kind: ArtifactKind::DockerImageV2,
+        name: "x".to_string(),
+        path: PathBuf::from("x"),
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: meta,
+        size: None,
+    }];
+
+    write_combined_digest_file(&mut ctx, &log, dist, &artifacts).unwrap();
+    assert!(!dist.join("digests.txt").exists());
+}
+
+// ---------------------------------------------------------------------------
+// prepare_v2_config / queue_v2_build_for_platforms via Stage::run (dry-run)
+// Orchestration up to (never through) the buildx spawn.
+// ---------------------------------------------------------------------------
+
+/// Build a single-crate dry-run `Context` carrying one docker_v2 config, with
+/// a real on-disk Dockerfile so `copy_dockerfile` / base-image resolution run.
+fn dry_run_ctx_one_v2(
+    tmp: &TempDir,
+    v2: anodizer_core::config::DockerV2Config,
+    snapshot: bool,
+) -> anodizer_core::context::Context {
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+    let mut v2 = v2;
+    if v2.dockerfile.is_empty() {
+        v2.dockerfile = dockerfile.to_string_lossy().into_owned();
+    }
+    let mut config = Config::default();
+    config.project_name = "app".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "app".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        dockers_v2: Some(vec![v2]),
+        ..Default::default()
+    }];
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            snapshot,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut()
+        .set("IsSnapshot", if snapshot { "true" } else { "false" });
+    ctx
+}
+
+#[test]
+fn prepare_v2_skips_config_when_skip_template_truthy() {
+    use anodizer_core::config::{DockerV2Config, StringOrBool};
+    let tmp = TempDir::new().unwrap();
+    let v2 = DockerV2Config {
+        images: vec!["ghcr.io/owner/app".to_string()],
+        tags: vec!["{{ .Tag }}".to_string()],
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        skip: Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
+        ..Default::default()
+    };
+    let mut ctx = dry_run_ctx_one_v2(&tmp, v2, /*snapshot=*/ true);
+    DockerStage::new().run(&mut ctx).unwrap();
+    // skip rendered "true" -> no image artifacts at all.
+    assert!(
+        ctx.artifacts
+            .by_kind(ArtifactKind::DockerImageV2)
+            .is_empty()
+    );
+}
+
+#[test]
+fn prepare_v2_renders_image_cross_product_into_dry_run_artifacts() {
+    use anodizer_core::config::DockerV2Config;
+    let tmp = TempDir::new().unwrap();
+    let v2 = DockerV2Config {
+        images: vec![
+            "ghcr.io/owner/app".to_string(),
+            "docker.io/owner/app".to_string(),
+        ],
+        tags: vec!["{{ .Tag }}".to_string(), "latest".to_string()],
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+    let mut ctx = dry_run_ctx_one_v2(&tmp, v2, false);
+    DockerStage::new().run(&mut ctx).unwrap();
+
+    let tags: std::collections::HashSet<String> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::DockerImageV2)
+        .iter()
+        .map(|a| a.metadata.get("tag").unwrap().clone())
+        .collect();
+    // 2 images x 2 tags = 4 references.
+    let expected: std::collections::HashSet<String> = [
+        "ghcr.io/owner/app:v1.0.0",
+        "ghcr.io/owner/app:latest",
+        "docker.io/owner/app:v1.0.0",
+        "docker.io/owner/app:latest",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    assert_eq!(tags, expected);
+}
+
+#[test]
+fn prepare_v2_snapshot_multiplatform_appends_arch_suffix_per_platform() {
+    use anodizer_core::config::DockerV2Config;
+    let tmp = TempDir::new().unwrap();
+    let v2 = DockerV2Config {
+        images: vec!["ghcr.io/owner/app".to_string()],
+        tags: vec!["{{ .Tag }}".to_string()],
+        platforms: Some(vec!["linux/amd64".to_string(), "linux/arm64".to_string()]),
+        ..Default::default()
+    };
+    // snapshot + >1 platform -> split into per-platform builds with arch suffix.
+    let mut ctx = dry_run_ctx_one_v2(&tmp, v2, /*snapshot=*/ true);
+    DockerStage::new().run(&mut ctx).unwrap();
+
+    let tags: std::collections::HashSet<String> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::DockerImageV2)
+        .iter()
+        .map(|a| a.metadata.get("tag").unwrap().clone())
+        .collect();
+    assert!(
+        tags.contains("ghcr.io/owner/app:v1.0.0-amd64"),
+        "got {tags:?}"
+    );
+    assert!(
+        tags.contains("ghcr.io/owner/app:v1.0.0-arm64"),
+        "got {tags:?}"
+    );
+}
+
+#[test]
+fn prepare_v2_dockerfile_template_rendering_empty_skips_pipe() {
+    use anodizer_core::config::DockerV2Config;
+    let tmp = TempDir::new().unwrap();
+    // dockerfile renders empty during release (not snapshot) -> short-circuit.
+    let v2 = DockerV2Config {
+        dockerfile: "{{ if .IsSnapshot }}Dockerfile{{ end }}".to_string(),
+        images: vec!["ghcr.io/owner/app".to_string()],
+        tags: vec!["{{ .Tag }}".to_string()],
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+    let mut ctx = dry_run_ctx_one_v2(&tmp, v2, /*snapshot=*/ false);
+    DockerStage::new().run(&mut ctx).unwrap();
+    assert!(
+        ctx.artifacts
+            .by_kind(ArtifactKind::DockerImageV2)
+            .is_empty()
+    );
+}
+
+#[test]
+fn prepare_v2_invalid_use_backend_bails_with_config_index() {
+    use anodizer_core::config::DockerV2Config;
+    let tmp = TempDir::new().unwrap();
+    let v2 = DockerV2Config {
+        images: vec!["ghcr.io/owner/app".to_string()],
+        tags: vec!["{{ .Tag }}".to_string()],
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        use_backend: Some("containerd".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = dry_run_ctx_one_v2(&tmp, v2, false);
+    let err = DockerStage::new().run(&mut ctx).unwrap_err();
+    assert!(
+        err.to_string().contains("invalid `use: containerd`"),
+        "got: {err}",
+    );
+}
+
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore)]
+fn prepare_v2_podman_with_sbom_true_bails() {
+    use anodizer_core::config::{DockerV2Config, StringOrBool};
+    let tmp = TempDir::new().unwrap();
+    let v2 = DockerV2Config {
+        images: vec!["ghcr.io/owner/app".to_string()],
+        tags: vec!["{{ .Tag }}".to_string()],
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        use_backend: Some("podman".to_string()),
+        sbom: Some(StringOrBool::Bool(true)),
+        ..Default::default()
+    };
+    // Non-snapshot so sbom is evaluated (snapshot forces it off).
+    let mut ctx = dry_run_ctx_one_v2(&tmp, v2, false);
+    let err = DockerStage::new().run(&mut ctx).unwrap_err();
+    assert!(
+        err.to_string().contains("cannot enable `sbom: true`"),
+        "got: {err}",
+    );
+}
+
+#[test]
+fn prepare_v2_labels_build_args_flags_reach_dry_run_command_log() {
+    use anodizer_core::config::DockerV2Config;
+    let tmp = TempDir::new().unwrap();
+    let mut labels = HashMap::new();
+    labels.insert("org.label".to_string(), "{{ .Tag }}".to_string());
+    let mut build_args = HashMap::new();
+    build_args.insert("VERSION".to_string(), "{{ .Version }}".to_string());
+    let v2 = DockerV2Config {
+        images: vec!["ghcr.io/owner/app".to_string()],
+        tags: vec!["{{ .Tag }}".to_string()],
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        labels: Some(labels),
+        build_args: Some(build_args),
+        flags: Some(vec!["--no-cache".to_string()]),
+        ..Default::default()
+    };
+    // Use a capturing logger by swapping the stage logger via the ctx capture.
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+    let mut v2 = v2;
+    v2.dockerfile = dockerfile.to_string_lossy().into_owned();
+    let mut config = Config::default();
+    config.project_name = "app".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "app".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        dockers_v2: Some(vec![v2]),
+        ..Default::default()
+    }];
+    let (cap, mut ctx) = {
+        let cap = anodizer_core::log::LogCapture::new();
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.with_log_capture(cap.clone());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        (cap, ctx)
+    };
+
+    DockerStage::new().run(&mut ctx).unwrap();
+
+    let joined: String = cap
+        .all_messages()
+        .iter()
+        .map(|(_, m)| m.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let cmd_line = joined
+        .lines()
+        .find(|l| l.contains("(dry-run) would run:"))
+        .unwrap_or_else(|| panic!("no dry-run command logged in:\n{joined}"));
+    assert!(cmd_line.contains("--label"), "label missing: {cmd_line}");
+    assert!(
+        cmd_line.contains("org.label=v1.0.0"),
+        "rendered label missing: {cmd_line}"
+    );
+    assert!(
+        cmd_line.contains("--build-arg"),
+        "build-arg missing: {cmd_line}"
+    );
+    assert!(
+        cmd_line.contains("VERSION=1.0.0"),
+        "rendered build-arg missing: {cmd_line}"
+    );
+    assert!(cmd_line.contains("--no-cache"), "flag missing: {cmd_line}");
+}
+
+// ---------------------------------------------------------------------------
+// Workspace per-crate mode — docker participates per crate, each with its own
+// derived `images` default (ghcr.io/{owner}/{crate}).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn workspace_per_crate_docker_renders_distinct_image_per_crate() {
+    use anodizer_core::config::{
+        Config, CrateConfig, DockerV2Config, ReleaseConfig, ScmRepoConfig,
+    };
+    use anodizer_core::context::{Context, ContextOptions};
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+    let df = dockerfile.to_string_lossy().into_owned();
+
+    let mk_crate = |name: &str| CrateConfig {
+        name: name.to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        release: Some(ReleaseConfig {
+            github: Some(ScmRepoConfig {
+                owner: "acme".to_string(),
+                name: name.to_string(),
+            }),
+            ..ReleaseConfig::default()
+        }),
+        dockers_v2: Some(vec![DockerV2Config {
+            // No `images:` -> per-crate ghcr.io/acme/{crate} default fills it.
+            id: Some(format!("{name}-v2")),
+            tags: vec!["{{ .Tag }}".to_string()],
+            dockerfile: df.clone(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "ws".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![mk_crate("svc-a"), mk_crate("svc-b")];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    DockerStage::new().run(&mut ctx).unwrap();
+
+    let tags: std::collections::HashSet<String> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::DockerImageV2)
+        .iter()
+        .map(|a| a.metadata.get("tag").unwrap().clone())
+        .collect();
+    // Each crate derived its own ghcr.io/acme/{crate} image independently.
+    assert!(tags.contains("ghcr.io/acme/svc-a:v1.0.0"), "got {tags:?}");
+    assert!(tags.contains("ghcr.io/acme/svc-b:v1.0.0"), "got {tags:?}");
+}
