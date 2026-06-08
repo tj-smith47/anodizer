@@ -18,8 +18,14 @@ pub enum PublisherGroup {
     Manager,
     /// Writes to a third-party submission queue, an immutable registry
     /// slot, or a channel position we cannot reclaim. Gated behind the
-    /// Submitter gate; rollback is informational only
-    /// (cargo, chocolatey, winget, snapcraft, upstream-AUR force-push).
+    /// Submitter gate. Rollback is informational-only for most members
+    /// (chocolatey, winget, snapcraft, upstream-AUR force-push), with one
+    /// exception: **cargo** has a real programmatic rollback. A multi-crate
+    /// `cargo publish` that succeeds on crate A then fails on crate B
+    /// records A and opts in via
+    /// [`Publisher::programmatic_rollback_on_failure`](crate::Publisher::programmatic_rollback_on_failure),
+    /// so the rollback path issues `cargo yank` for A even though the row's
+    /// outcome is `Failed`.
     Submitter,
 }
 

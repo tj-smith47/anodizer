@@ -4,8 +4,11 @@
 //! state) or falls through to `<dist>/run-<id>/report.json` (the original
 //! end-of-pipeline snapshot written by the run-summary task) and
 //! re-invokes each `Publisher`'s rollback for every `Succeeded` or
-//! `RollbackFailed` Assets/Manager entry. Writes the updated state back
-//! to `<dist>/run-<id>/rollback.json`.
+//! `RollbackFailed` Assets/Manager entry — PLUS any `Failed` /
+//! `RollbackFailed` Submitter that opts in via
+//! [`Publisher::programmatic_rollback_on_failure`] (cargo, whose
+//! partial multi-crate publish left live crates to yank). Writes the
+//! updated state back to `<dist>/run-<id>/rollback.json`.
 //!
 //! Re-invoking `--rollback-only` against the same `run_id` is idempotent:
 //! `RolledBack` entries from a prior replay are naturally filtered out
@@ -19,9 +22,10 @@
 //! rollback.
 //!
 //! No new publishing happens — the registry is loaded only to find the
-//! matching `Publisher` impl per `result.name`. Submitter publishers and
-//! entries that already terminated as `Failed`, `RolledBack`,
-//! `Skipped(_)`, `PublishedNoRollback`, etc. are left untouched.
+//! matching `Publisher` impl per `result.name`. Entries that already
+//! terminated as `RolledBack`, `Skipped(_)`, `PublishedNoRollback`, etc.
+//! are left untouched, as are `Failed` Submitter entries that do NOT opt
+//! into a programmatic rollback (every Submitter except cargo).
 //!
 //! The on-disk reports at `<dist>/run-<id>/report.json` and
 //! `<dist>/run-<id>/rollback.json` share the same schema — `serde_json`
@@ -199,28 +203,45 @@ pub(crate) fn run_with_publishers(
     })?;
 
     // Re-attempt rollback for every Succeeded or RollbackFailed entry in
-    // the Assets / Manager groups. Submitter publishers have no
-    // programmatic rollback (warn-only) so they are skipped here too,
-    // mirroring the live `rollback::run` policy.
+    // the Assets / Manager groups, mirroring the live `rollback::run`
+    // policy. ALSO replay a *failed* required Submitter (cargo) that
+    // pushed crates to crates.io and opts in via
+    // `Publisher::programmatic_rollback_on_failure` — its yank may never
+    // have run live (e.g. the original run used `--rollback=none`), and it
+    // is idempotent, so re-issuing it is safe. Every other Submitter has
+    // no programmatic rollback (warn-only) and is skipped.
     let target_indices: Vec<usize> = report
         .results
         .iter()
         .enumerate()
         .filter_map(|(i, r)| {
-            if !matches!(r.group, PublisherGroup::Assets | PublisherGroup::Manager) {
-                return None;
-            }
-            match r.outcome {
-                PublisherOutcome::Succeeded | PublisherOutcome::RollbackFailed(_) => Some(i),
-                _ => None,
+            let asset_or_manager =
+                matches!(r.group, PublisherGroup::Assets | PublisherGroup::Manager)
+                    && matches!(
+                        r.outcome,
+                        PublisherOutcome::Succeeded | PublisherOutcome::RollbackFailed(_)
+                    );
+            let failed_submitter_with_rollback = r.group == PublisherGroup::Submitter
+                && matches!(
+                    r.outcome,
+                    PublisherOutcome::Failed(_) | PublisherOutcome::RollbackFailed(_)
+                )
+                && r.evidence.as_ref().is_some_and(|ev| {
+                    publishers
+                        .iter()
+                        .find(|p| p.name() == r.name)
+                        .is_some_and(|p| p.programmatic_rollback_on_failure(ev))
+                });
+            if asset_or_manager || failed_submitter_with_rollback {
+                Some(i)
+            } else {
+                None
             }
         })
         .collect();
 
     if target_indices.is_empty() {
-        log.warn(
-            "rollback-only: no Succeeded or RollbackFailed entries in prior report; nothing to do",
-        );
+        log.warn("rollback-only: no rollback-eligible entries in prior report; nothing to do");
     } else {
         log.status(&format!(
             "rollback-only: dispatching {} target(s)",
@@ -284,11 +305,20 @@ pub(crate) fn run_with_publishers(
             continue;
         }
 
+        // A failed Submitter (cargo) keeps its `Failed` outcome on a
+        // SUCCESSFUL yank — the original release failed and must not be
+        // reported as a clean `RolledBack`. A yank FAILURE still
+        // transitions to `RollbackFailed` (a live crate we could not
+        // pull). See the matching logic in `rollback::run`.
+        let was_failure = matches!(report.results[i].outcome, PublisherOutcome::Failed(_));
+
         log.status(&format!("rollback-only: invoking '{}'", name));
         match publisher.rollback(ctx, &evidence) {
             Ok(()) => {
                 rolled_back += 1;
-                report.results[i].outcome = PublisherOutcome::RolledBack;
+                if !was_failure {
+                    report.results[i].outcome = PublisherOutcome::RolledBack;
+                }
             }
             Err(err) => {
                 let msg = format!("{:#}", err);

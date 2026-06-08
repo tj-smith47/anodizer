@@ -1,13 +1,24 @@
-//! Best-effort rollback dispatch for Assets/Manager publishers.
+//! Best-effort rollback dispatch.
 //!
-//! Invoked from `PublishStage::run` after `dispatch()` returns when any
-//! required Assets/Manager publisher failed AND
-//! `ctx.options.rollback_mode != Some(RollbackMode::None)`. The set of
-//! rollback targets is every Assets/Manager publisher that successfully
-//! published (`PublisherOutcome::Succeeded`); Submitter publishers and
-//! already-failed publishers are skipped. Each rollback step is
-//! independent: a step's failure becomes `RollbackFailed(err)` on its
-//! `PublisherResult`, but the next step still runs.
+//! Invoked from `PublishStage::run` after `dispatch()` returns when a
+//! rollback trigger fires AND
+//! `ctx.options.rollback_mode != Some(RollbackMode::None)`. Two kinds of
+//! target are reverted:
+//!
+//! - every Assets/Manager publisher that successfully published
+//!   (`PublisherOutcome::Succeeded`) — reverted via its API delete / PR
+//!   close, transitioning the row to `RolledBack`;
+//! - a *failed* required Submitter (cargo) that already pushed crates to
+//!   crates.io and opts in via
+//!   [`Publisher::programmatic_rollback_on_failure`] — its recorded crates
+//!   are yanked. The row KEEPS its `Failed` outcome on a successful yank
+//!   (the release genuinely failed); only a yank failure moves it to
+//!   `RollbackFailed`.
+//!
+//! Submitter rollback is informational-only for every other publisher, so
+//! they are skipped. Each rollback step is independent: a step's failure
+//! becomes `RollbackFailed(err)` on its `PublisherResult`, but the next
+//! step still runs.
 
 use anodizer_core::context::{Context, RollbackMode};
 use anodizer_core::{PublishReport, Publisher, PublisherGroup, PublisherOutcome};
@@ -43,21 +54,35 @@ pub fn run(
         .iter()
         .enumerate()
         .filter_map(|(i, r)| {
-            if !matches!(r.group, PublisherGroup::Assets | PublisherGroup::Manager) {
-                return None;
+            // No evidence -> nothing to roll back, for every branch below.
+            let evidence = r.evidence.as_ref()?;
+            // Standard path: a succeeded Assets/Manager publisher is
+            // reverted via its API delete / PR close.
+            let asset_or_manager_succeeded =
+                matches!(r.group, PublisherGroup::Assets | PublisherGroup::Manager)
+                    && matches!(r.outcome, PublisherOutcome::Succeeded);
+            // Cargo path: a *failed* required Submitter that already pushed
+            // crates to crates.io still has a real programmatic yank to run
+            // (see Publisher::programmatic_rollback_on_failure). Submitter
+            // rollback is informational-only for every other publisher, so
+            // this branch fires only when the publisher opts in for the
+            // recorded evidence.
+            let failed_submitter_with_rollback = matches!(r.outcome, PublisherOutcome::Failed(_))
+                && r.group == PublisherGroup::Submitter
+                && publishers
+                    .iter()
+                    .find(|p| p.name() == r.name)
+                    .is_some_and(|p| p.programmatic_rollback_on_failure(evidence));
+            if asset_or_manager_succeeded || failed_submitter_with_rollback {
+                Some(i)
+            } else {
+                None
             }
-            if !matches!(r.outcome, PublisherOutcome::Succeeded) {
-                return None;
-            }
-            // No evidence -> nothing to roll back; defensive guard
-            // (the dispatcher always writes evidence for Succeeded).
-            r.evidence.as_ref()?;
-            Some(i)
         })
         .collect();
 
     if target_indices.is_empty() {
-        log.status("rollback: no Assets/Manager rollback targets recorded");
+        log.status("rollback: no rollback targets recorded");
         return;
     }
 
@@ -111,11 +136,22 @@ pub fn run(
             continue;
         }
 
+        // A failed Submitter (cargo) keeps its `Failed` outcome on a
+        // SUCCESSFUL yank: the release genuinely failed (crate B never
+        // went live) and reporting `RolledBack` would mask that. Only a
+        // succeeded-then-reverted Assets/Manager publisher transitions to
+        // `RolledBack`. A yank FAILURE still transitions to
+        // `RollbackFailed` for both — a crate is live we could not pull,
+        // which is the manual-intervention signal.
+        let was_failure = matches!(report.results[i].outcome, PublisherOutcome::Failed(_));
+
         log.status(&format!("rollback: invoking '{}'", name_owned));
         match publisher.rollback(ctx, &evidence_owned) {
             Ok(()) => {
                 rolled_back += 1;
-                report.results[i].outcome = PublisherOutcome::RolledBack;
+                if !was_failure {
+                    report.results[i].outcome = PublisherOutcome::RolledBack;
+                }
             }
             Err(err) => {
                 failed += 1;
