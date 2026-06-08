@@ -398,8 +398,15 @@ pub fn resolve_git_context(
             match latest_tag {
                 Some(t) => t,
                 None => {
-                    if ctx.options.snapshot {
-                        log.warn("no git tags found, defaulting to v0.0.0 (snapshot mode).");
+                    if ctx.options.snapshot || ctx.options.nightly {
+                        let mode = if ctx.options.nightly {
+                            "nightly"
+                        } else {
+                            "snapshot"
+                        };
+                        log.warn(&format!(
+                            "no git tags found, defaulting to v0.0.0 ({mode} mode)."
+                        ));
                         "v0.0.0".to_string()
                     } else if ctx.options.dry_run {
                         log.warn("no git tags found, defaulting to v0.0.0 (dry-run mode).");
@@ -420,6 +427,7 @@ pub fn resolve_git_context(
         if !is_synthetic_tag
             && let Ok(false) = git::tag_points_at_head(&tag)
             && !ctx.options.snapshot
+            && !ctx.options.nightly
             && !ctx.options.changelog_preview
         {
             let head = git::get_short_commit().unwrap_or_else(|_| "unknown".to_string());
@@ -435,7 +443,11 @@ pub fn resolve_git_context(
                 // Validate dirty working tree: error in non-snapshot/non-dry-run mode,
                 // a dirty-tree check. The standalone `changelog` preview skips
                 // it too — a local inspection must not require a clean tree.
-                if git_info.dirty && !ctx.options.snapshot && !ctx.options.changelog_preview {
+                if git_info.dirty
+                    && !ctx.options.snapshot
+                    && !ctx.options.nightly
+                    && !ctx.options.changelog_preview
+                {
                     if ctx.options.dry_run {
                         log.warn("git is in a dirty state; run `git status` to see what changed.");
                     } else {
@@ -489,9 +501,14 @@ pub fn resolve_git_context(
                 ctx.populate_git_vars();
             }
             Err(e) => {
-                if ctx.options.snapshot {
+                if ctx.options.snapshot || ctx.options.nightly {
+                    let mode = if ctx.options.nightly {
+                        "nightly"
+                    } else {
+                        "snapshot"
+                    };
                     log.warn(&format!(
-                        "could not detect git info in snapshot mode, using defaults: {e}"
+                        "could not detect git info in {mode} mode, using defaults: {e}"
                     ));
                     ctx.git_info = Some(git::GitInfo {
                         tag: tag.clone(),
@@ -510,7 +527,7 @@ pub fn resolve_git_context(
                         commit_timestamp: String::new(),
                         previous_tag: None,
                         remote_url: String::new(),
-                        summary: "snapshot".to_string(),
+                        summary: mode.to_string(),
                         tag_subject: String::new(),
                         tag_contents: String::new(),
                         tag_body: String::new(),
