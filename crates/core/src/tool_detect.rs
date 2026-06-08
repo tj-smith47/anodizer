@@ -26,6 +26,7 @@ use std::process::Command;
 pub fn tool_available(name: &str) -> io::Result<bool> {
     Command::new(name)
         .arg("--version")
+        .current_dir(crate::path_util::probe_dir())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -42,7 +43,10 @@ pub fn tool_available(name: &str) -> io::Result<bool> {
 ///   callers can log why the probe itself failed at trace level rather
 ///   than collapsing every failure to "tool missing".
 pub fn tool_version(name: &str) -> io::Result<Option<String>> {
-    let output = Command::new(name).arg("--version").output()?;
+    let output = Command::new(name)
+        .arg("--version")
+        .current_dir(crate::path_util::probe_dir())
+        .output()?;
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(Some(stdout.lines().next().unwrap_or("").trim().to_string()))
@@ -62,6 +66,7 @@ pub fn tool_version(name: &str) -> io::Result<Option<String>> {
 pub fn tool_runs_with_args(name: &str, args: &[&str]) -> bool {
     Command::new(name)
         .args(args)
+        .current_dir(crate::path_util::probe_dir())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()

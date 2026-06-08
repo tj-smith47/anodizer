@@ -2651,8 +2651,11 @@ fn test_rustup_target_add_failure_is_hard_error() {
     let result = ensure_targets_installed(&ctx, std::slice::from_ref(&bogus_target), &log, false);
 
     // Detect rustup presence by attempting the same probe the helper uses.
+    // Pin cwd: a peer test that deletes the process-global cwd would otherwise
+    // make this forked probe fail spuriously and silently skip the assertion.
     let rustup_present = std::process::Command::new("rustup")
         .arg("--version")
+        .current_dir(anodizer_core::path_util::probe_dir())
         .output()
         .is_ok();
     if rustup_present {

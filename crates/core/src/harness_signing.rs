@@ -162,6 +162,7 @@ mod path_tests {
 fn provision_cosign(tmpdir: &Path) -> Result<String> {
     if Command::new("cosign")
         .arg("version")
+        .current_dir(crate::path_util::probe_dir())
         .output()
         .map(|o| !o.status.success())
         .unwrap_or(true)
@@ -199,6 +200,7 @@ fn provision_cosign(tmpdir: &Path) -> Result<String> {
 fn provision_gpg(tmpdir: &Path, sde: i64) -> Result<(PathBuf, String, PathBuf)> {
     if Command::new("gpg")
         .arg("--version")
+        .current_dir(crate::path_util::probe_dir())
         .output()
         .map(|o| !o.status.success())
         .unwrap_or(true)

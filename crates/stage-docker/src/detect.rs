@@ -163,7 +163,12 @@ where
 /// `module-boundaries.md` allow-list stays accurate.
 pub(crate) fn probe_buildx_version() -> BuildxVersionProbe {
     // Capability probe: no context env injection needed (reads version only).
-    let output = Command::new("docker").args(["buildx", "version"]).output();
+    // Pin the cwd to a guaranteed-existing dir so the probe survives an
+    // inherited cwd that was removed (see `path_util::probe_dir`).
+    let output = Command::new("docker")
+        .args(["buildx", "version"])
+        .current_dir(anodizer_core::path_util::probe_dir())
+        .output();
     match output {
         Err(_) => BuildxVersionProbe::DockerMissing,
         Ok(o) if o.status.success() => BuildxVersionProbe::Available,

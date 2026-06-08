@@ -2381,6 +2381,9 @@ mod tests {
 
         let output = std::process::Command::new("cargo")
             .arg("--version")
+            // Pin cwd: a peer test that deletes the process-global cwd would
+            // otherwise make this forked `cargo --version` abort on getcwd.
+            .current_dir(anodizer_core::path_util::probe_dir())
             .output()
             .expect("cargo --version must succeed");
         let version_str = String::from_utf8_lossy(&output.stdout);

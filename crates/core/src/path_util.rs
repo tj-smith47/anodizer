@@ -19,6 +19,20 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// A guaranteed-to-exist working directory for cwd-agnostic subprocess probes.
+///
+/// Detection probes like `rustc -vV`, `<tool> --version`, and
+/// `docker buildx version` read nothing relative to the working directory, but
+/// the spawned process still calls `getcwd()` at startup and aborts ("Could
+/// not locate working directory") if the *inherited* cwd has been removed.
+/// Tests that swap the process-global cwd into a tempdir and tear it down can
+/// leave exactly that state, and a rotated/cleaned scratch dir can do so in
+/// production. Pinning such probes to this directory makes them independent of
+/// the inherited cwd. Returns the system temp dir, which always exists.
+pub fn probe_dir() -> PathBuf {
+    std::env::temp_dir()
+}
+
 /// Expand a leading `~` into the user's home directory.
 ///
 /// `~` is rewritten only when it appears at the very start of `path` AND is

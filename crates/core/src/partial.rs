@@ -184,6 +184,10 @@ pub fn resolve_partial_target_with_env<E: EnvSource + ?Sized>(
 fn run_rustc_vv() -> Result<String> {
     let mut cmd = std::process::Command::new("rustc");
     cmd.args(["-vV"]);
+    // `rustc -vV` reads nothing relative to the cwd, but rustc still calls
+    // getcwd() at startup and aborts if the inherited cwd was removed; pin it
+    // to a guaranteed-existing dir so host detection is cwd-independent.
+    cmd.current_dir(crate::path_util::probe_dir());
     tracing::debug!(args = ?cmd.get_args(), "spawning rustc -vV for host/version detection");
     let output = cmd.output().context("failed to run `rustc -vV`")?;
 
@@ -735,6 +739,30 @@ mod tests {
         let host = detect_host_target().unwrap();
         assert!(!host.is_empty());
         // Should contain at least one hyphen (target triple format)
+        assert!(host.contains('-'), "host triple should contain '-': {host}");
+    }
+
+    /// Regression: host detection must survive an inherited working directory
+    /// that has been removed. A peer test swapping the process-global cwd into
+    /// a tempdir and tearing it down used to make `rustc -vV` abort with
+    /// "Could not locate working directory"; `run_rustc_vv` now pins its spawn
+    /// to a guaranteed-existing dir, so detection no longer depends on the cwd.
+    #[test]
+    #[serial]
+    fn detect_host_target_survives_deleted_cwd() {
+        let original = std::env::current_dir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        std::env::set_current_dir(scratch.path()).unwrap();
+        // Remove the directory the process cwd now points at, mimicking a peer
+        // test that dropped its tempdir while we hold its path as cwd.
+        scratch.close().unwrap();
+
+        let result = detect_host_target();
+
+        // Restore a valid cwd before asserting so a failure can't cascade.
+        std::env::set_current_dir(&original).unwrap();
+
+        let host = result.expect("host detection must succeed despite a deleted cwd");
         assert!(host.contains('-'), "host triple should contain '-': {host}");
     }
 

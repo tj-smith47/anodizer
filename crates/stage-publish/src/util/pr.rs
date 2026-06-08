@@ -81,6 +81,7 @@ fn sync_fork(
 fn gh_is_available() -> bool {
     Command::new("gh")
         .arg("--version")
+        .current_dir(anodizer_core::path_util::probe_dir())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()

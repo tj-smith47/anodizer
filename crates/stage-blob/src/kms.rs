@@ -88,6 +88,7 @@ pub(crate) fn preflight_kms_cli(provider: KmsProvider) -> Result<()> {
     };
     std::process::Command::new(tool)
         .arg("--version")
+        .current_dir(anodizer_core::path_util::probe_dir())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()

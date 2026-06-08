@@ -19,6 +19,7 @@ use std::process::Command;
 pub fn buildx_available() -> io::Result<bool> {
     Command::new("docker")
         .args(["buildx", "version"])
+        .current_dir(crate::path_util::probe_dir())
         .output()
         .map(|o| o.status.success())
 }

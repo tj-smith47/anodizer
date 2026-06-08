@@ -131,6 +131,7 @@ pub fn build_smoke_argv(job: &SmokeJob) -> Vec<String> {
 pub fn docker_available() -> bool {
     Command::new("docker")
         .arg("version")
+        .current_dir(anodizer_core::path_util::probe_dir())
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
