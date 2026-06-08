@@ -1,0 +1,19 @@
+# Force LF line endings for all text files. Without this, a Windows runner's
+# core.autocrlf rewrites text to CRLF in `git archive` output, so the source
+# tarball (and snapshot fixtures) diverge byte-for-byte from the Linux/macOS
+# shards and the sharded determinism + publish-only hash-verify rejects them.
+* text=auto eol=lf
+
+# Binary types — never touch.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.zip  binary
+*.gz   binary
+*.tar  binary
+*.tgz  binary
+*.pdf  binary
+*.woff binary
+*.woff2 binary
