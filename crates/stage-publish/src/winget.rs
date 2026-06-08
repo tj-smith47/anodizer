@@ -3351,4 +3351,1004 @@ license-file = "LICENSE.txt"
             ""
         );
     }
+
+    // =====================================================================
+    // LIVE push + PR flow — drives `publish_to_winget` / `submit_winget_pr`
+    // against a local bare git repo (no network), forcing the GitHub REST
+    // API PR transport by installing a failing `gh` stub and pointing
+    // `ANODIZER_GITHUB_API_BASE` at an in-process scripted responder.
+    //
+    // Pattern mirrors `krew.rs`'s PrDirect harness. The winget PR path
+    // threads submission through the *process* env (`util::maybe_submit_pr`
+    // / `submit_pr_via_gh_with_opts`, not the `_with_env` siblings), so the
+    // responder address is set in the process env under the env mutex that
+    // the `gh`-absent `PathGuard` already holds. Each test mutates PATH +
+    // process env, so each is `#[serial]`.
+    // =====================================================================
+    mod live_pr {
+        use super::*;
+        use anodizer_core::config::{
+            Config, GitRepoConfig, PublishConfig, PullRequestBaseConfig, PullRequestConfig,
+            RepositoryConfig,
+        };
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use anodizer_core::test_helpers::scripted_responder::{
+            ScriptedRoute, spawn_scripted_responder,
+        };
+        use serial_test::serial;
+        use std::collections::HashMap;
+        use std::path::Path;
+        use std::process::Command;
+        use std::sync::OnceLock;
+
+        fn quiet() -> StageLogger {
+            StageLogger::new("publish", Verbosity::Quiet)
+        }
+
+        /// Give the test process a git identity + non-interactive credential
+        /// behaviour so the publish path's `git commit` works on a bare CI
+        /// runner. One-shot per process.
+        fn ensure_git_identity() {
+            static INIT: OnceLock<()> = OnceLock::new();
+            INIT.get_or_init(|| {
+                // SAFETY: runs once per process under OnceLock; constants only.
+                unsafe {
+                    std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
+                    std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
+                    std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
+                    std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
+                    std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+                }
+            });
+        }
+
+        fn git_ok(dir: &Path, args: &[&str]) {
+            let st = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+            assert!(st.success(), "git {args:?} failed");
+        }
+
+        fn git_stdout(dir: &Path, args: &[&str]) -> String {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+            assert!(out.status.success(), "git {args:?} failed: {out:?}");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+
+        /// Build a bare "winget-pkgs fork" repo with one commit on `main`
+        /// (the branch the publish path's `--depth=1` clone defaults to).
+        /// Returns `(bare_path_string, _bare_holder)`. The live publish
+        /// clones this, writes the 3-file manifest set, commits a versioned
+        /// branch, and pushes it back here.
+        fn init_bare_fork() -> (String, tempfile::TempDir) {
+            ensure_git_identity();
+            let bare = tempfile::tempdir().expect("bare tempdir");
+            let seed = tempfile::tempdir().expect("seed tempdir");
+            git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+            git_ok(seed.path(), &["init", "-b", "main"]);
+            git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
+            git_ok(seed.path(), &["config", "user.name", "Test"]);
+            git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
+            std::fs::write(seed.path().join("README"), "winget-pkgs\n").unwrap();
+            git_ok(seed.path(), &["add", "README"]);
+            git_ok(seed.path(), &["commit", "-m", "seed"]);
+            assert!(
+                Command::new("git")
+                    .args(["remote", "add", "origin"])
+                    .arg(bare.path())
+                    .current_dir(seed.path())
+                    .status()
+                    .expect("remote add")
+                    .success()
+            );
+            git_ok(seed.path(), &["push", "-u", "origin", "main"]);
+            (bare.path().to_string_lossy().into_owned(), bare)
+        }
+
+        /// A `gh` stub that exits non-zero on `--version` so
+        /// `gh_is_available()` is false → the PR transport falls to the API
+        /// path. Returns the on-disk stub holder + the PATH guard (which
+        /// also holds the env mutex for the test's lifetime).
+        fn gh_absent() -> (
+            FakeToolDir,
+            anodizer_core::test_helpers::fake_tool::PathGuard,
+        ) {
+            let tools = FakeToolDir::new();
+            tools.tool("gh").exit(1).install();
+            let guard = tools.activate();
+            (tools, guard)
+        }
+
+        /// A SUCCEEDING `gh` stub: exits 0 for both `gh --version` (so
+        /// `gh_is_available()` is true → the PR transport takes the
+        /// `gh pr create` CLI arm, NOT the reqwest API) and the subsequent
+        /// `gh pr create`. The canonical-fallback / base-override winget PR
+        /// path (`submit_pr_via_gh_with_opts`) resolves its token from the
+        /// *env* (`ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN`) — which these
+        /// tests do not set — so without a real `gh` it would classify as
+        /// `NoneAvailable` and never touch any transport. The success stub
+        /// is what exercises the real CLI submission. Returns the holder
+        /// (for `.calls("gh")` argv assertions) + the PATH guard (holds the
+        /// env mutex for the `#[serial]` test).
+        fn gh_present() -> (
+            FakeToolDir,
+            anodizer_core::test_helpers::fake_tool::PathGuard,
+        ) {
+            let tools = FakeToolDir::new();
+            tools
+                .tool("gh")
+                .stdout("https://github.com/microsoft/winget-pkgs/pull/1\n")
+                .exit(0)
+                .install();
+            let guard = tools.activate();
+            (tools, guard)
+        }
+
+        /// Set `ANODIZER_GITHUB_API_BASE` in the *process* env. Safe without
+        /// re-locking the env mutex: the caller already holds it via the
+        /// `gh_absent()` `PathGuard` for the whole `#[serial]` test.
+        fn set_api_base(addr: &std::net::SocketAddr) {
+            // SAFETY: env mutex is held by the live `PathGuard` from `gh_absent()`.
+            unsafe { std::env::set_var("ANODIZER_GITHUB_API_BASE", format!("http://{addr}")) };
+        }
+        fn clear_api_base() {
+            // SAFETY: same mutex still held by the `PathGuard`.
+            unsafe { std::env::remove_var("ANODIZER_GITHUB_API_BASE") };
+        }
+
+        /// Return the value that immediately follows `flag` in a recorded
+        /// `gh` argv (e.g. the `microsoft/winget-pkgs` after `--repo`), or
+        /// `None` if the flag is absent or has no following token.
+        fn gh_arg(argv: &[String], flag: &str) -> Option<String> {
+            argv.iter()
+                .position(|a| a == flag)
+                .and_then(|i| argv.get(i + 1))
+                .cloned()
+        }
+
+        /// Register a Windows zip archive (carrying the `url` / `sha256` /
+        /// `format` metadata the installer manifest reads) for `crate_name`.
+        fn add_windows_zip(ctx: &mut Context, crate_name: &str, sha: &str) {
+            let target = "x86_64-pc-windows-msvc";
+            let mut meta = HashMap::new();
+            meta.insert(
+                "url".to_string(),
+                format!(
+                    "https://github.com/acme/widget/releases/download/v1.0.0/{crate_name}-{target}.zip"
+                ),
+            );
+            meta.insert("sha256".to_string(), sha.to_string());
+            meta.insert("format".to_string(), "zip".to_string());
+            ctx.artifacts.add(anodizer_core::artifact::Artifact {
+                kind: anodizer_core::artifact::ArtifactKind::Archive,
+                path: std::path::PathBuf::from(format!("/dist/{crate_name}-{target}.zip")),
+                name: format!("{crate_name}-{target}.zip"),
+                target: Some(target.to_string()),
+                crate_name: crate_name.to_string(),
+                metadata: meta,
+                size: None,
+            });
+            let mut bin_meta = HashMap::new();
+            bin_meta.insert("binary".to_string(), crate_name.to_string());
+            ctx.artifacts.add(anodizer_core::artifact::Artifact {
+                kind: anodizer_core::artifact::ArtifactKind::Binary,
+                path: std::path::PathBuf::from(format!("/dist/{crate_name}.exe")),
+                name: format!("{crate_name}.exe"),
+                target: Some(target.to_string()),
+                crate_name: crate_name.to_string(),
+                metadata: bin_meta,
+                size: None,
+            });
+        }
+
+        /// A crate whose winget block clones from the local bare repo
+        /// (`git.url`) and PRs same-repo (no cross-repo fork-sync), forcing
+        /// the API transport when `gh` is absent. `pull_request.enabled` is
+        /// true so the `maybe_submit_pr` path (not the canonical
+        /// `microsoft/winget-pkgs` fallback) is taken; with no `base`, the
+        /// upstream == the fork, so the PR is same-repo.
+        fn live_winget_crate(crate_name: &str, bare_url: &str) -> CrateConfig {
+            CrateConfig {
+                name: crate_name.to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    winget: Some(WingetConfig {
+                        publisher: Some("AcmeCo".to_string()),
+                        short_description: Some("Manage widgets".to_string()),
+                        license: Some("MIT".to_string()),
+                        repository: Some(RepositoryConfig {
+                            owner: Some("fork-owner".to_string()),
+                            name: Some("winget-pkgs".to_string()),
+                            token: Some("ghp_test".to_string()),
+                            git: Some(GitRepoConfig {
+                                url: Some(bare_url.to_string()),
+                                ssh_command: None,
+                                private_key: None,
+                            }),
+                            pull_request: Some(PullRequestConfig {
+                                enabled: Some(true),
+                                base: None,
+                                draft: None,
+                                body: None,
+                            }),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn build_ctx(crates: Vec<CrateConfig>, version: &str) -> Context {
+            let config = Config {
+                crates,
+                ..Default::default()
+            };
+            let mut ctx = Context::new(config, ContextOptions::default());
+            ctx.template_vars_mut().set("Version", version);
+            ctx.template_vars_mut().set("RawVersion", version);
+            ctx.template_vars_mut().set("Tag", &format!("v{version}"));
+            ctx
+        }
+
+        /// The on-disk manifest path the publish path computes for an
+        /// auto-`path` package: `manifests/<l>/<Pub>/<Pkg>/<Version>/`.
+        fn manifest_show(bare: &Path, branch: &str, file: &str) -> String {
+            git_stdout(bare, &["show", &format!("{branch}:{file}")])
+        }
+
+        /// FULL single-crate live publish: clone the (local) fork, write the
+        /// 3-file manifest set under `manifests/a/AcmeCo/widget/1.0.0/`,
+        /// commit the `AcmeCo.widget-1.0.0` branch, push it to the bare repo,
+        /// then submit the PR via the API transport. Asserts BOTH real side
+        /// effects:
+        ///   (1) the bare repo gained the versioned branch carrying the three
+        ///       manifest files at the right winget path, the version /
+        ///       installer manifests carrying the crate's real sha256 +
+        ///       PackageIdentifier, and
+        ///   (2) the PR-create POST reached the responder at the same-repo
+        ///       `/repos/fork-owner/winget-pkgs/pulls` with head = fork:branch.
+        #[test]
+        #[serial]
+        fn publish_pushes_three_manifests_and_opens_pr() {
+            let (_tools, _guard) = gh_absent();
+            let (bare_url, bare) = init_bare_fork();
+            let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: Some(1),
+            }]);
+            set_api_base(&addr);
+
+            let c = live_winget_crate("widget", &bare_url);
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            let sha = "c".repeat(64);
+            add_windows_zip(&mut ctx, "widget", &sha);
+
+            publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
+
+            // (1) The versioned branch landed in the bare repo.
+            let branch = "AcmeCo.widget-1.0.0";
+            let branches = git_stdout(bare.path(), &["branch", "--list"]);
+            assert!(
+                branches.contains(branch),
+                "publish must push the versioned branch; bare branches:\n{branches}"
+            );
+
+            // The 3-file manifest set landed at the canonical winget path.
+            let dir = "manifests/a/AcmeCo/widget/1.0.0";
+            let ver = manifest_show(bare.path(), branch, &format!("{dir}/AcmeCo.widget.yaml"));
+            assert!(
+                ver.contains("PackageIdentifier: AcmeCo.widget")
+                    && ver.contains("PackageVersion: 1.0.0")
+                    && ver.contains("ManifestType: version"),
+                "version manifest content wrong:\n{ver}"
+            );
+            let inst = manifest_show(
+                bare.path(),
+                branch,
+                &format!("{dir}/AcmeCo.widget.installer.yaml"),
+            );
+            assert!(
+                inst.contains(&format!("InstallerSha256: {}", sha.to_uppercase()))
+                    || inst.contains(&format!("InstallerSha256: {sha}")),
+                "installer manifest must carry the crate's real sha256; got:\n{inst}"
+            );
+            assert!(
+                inst.contains("Architecture: x64"),
+                "amd64 must map to winget x64 in the pushed manifest:\n{inst}"
+            );
+            let locale = manifest_show(
+                bare.path(),
+                branch,
+                &format!("{dir}/AcmeCo.widget.locale.en-US.yaml"),
+            );
+            assert!(
+                locale.contains("ShortDescription: Manage widgets")
+                    && locale.contains("ManifestType: defaultLocale"),
+                "locale manifest content wrong:\n{locale}"
+            );
+
+            // (2) The PR-create POST hit the same-repo upstream slug with the
+            //     fork:branch head.
+            let entries = req_log.lock().unwrap();
+            assert_eq!(entries.len(), 1, "exactly one PR-create POST expected");
+            assert_eq!(entries[0].path, "/repos/fork-owner/winget-pkgs/pulls");
+            let payload: serde_json::Value =
+                serde_json::from_str(&entries[0].body).expect("JSON body");
+            assert_eq!(
+                payload["head"], "fork-owner:AcmeCo.widget-1.0.0",
+                "head must be fork-owner:<package_id>-<version>"
+            );
+            assert_eq!(
+                payload["base"], "main",
+                "base branch must be the fork default"
+            );
+            drop(entries);
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// A custom `commit_msg_template` referencing `{{ PackageIdentifier }}`
+        /// / `{{ Version }}` must be rendered into the pushed commit's
+        /// subject. Pins `render_winget_commit_msg` end-to-end through the
+        /// push (the in-process render test only proves the string; this
+        /// proves it reaches the actual git commit).
+        #[test]
+        #[serial]
+        fn publish_renders_custom_commit_message_into_pushed_commit() {
+            let (_tools, _guard) = gh_absent();
+            let (bare_url, bare) = init_bare_fork();
+            let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+            set_api_base(&addr);
+
+            let mut c = live_winget_crate("widget", &bare_url);
+            if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut()) {
+                w.commit_msg_template =
+                    Some("Bump {{ PackageIdentifier }} to {{ Version }}".to_string());
+            }
+            let mut ctx = build_ctx(vec![c], "2.5.0");
+            add_windows_zip(&mut ctx, "widget", &"d".repeat(64));
+
+            publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
+
+            let subject = git_stdout(
+                bare.path(),
+                &["log", "-1", "--format=%s", "AcmeCo.widget-2.5.0"],
+            );
+            assert_eq!(
+                subject, "Bump AcmeCo.widget to 2.5.0",
+                "pushed commit subject must carry the rendered custom template"
+            );
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// The PR-already-exists path: the API transport returns 422 "already
+        /// exists" and the publisher records a `PendingValidation` override
+        /// (so the dispatch summary tells the truth instead of `succeeded`).
+        /// The branch push still happened first.
+        #[test]
+        #[serial]
+        fn publish_already_exists_records_pending_validation() {
+            let (_tools, _guard) = gh_absent();
+            let (bare_url, bare) = init_bare_fork();
+            let body = "{\"message\":\"Validation Failed\",\"errors\":[{\"message\":\"A pull request already exists for fork-owner:AcmeCo.widget-1.0.0.\"}]}";
+            let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+                response: Box::leak(
+                    format!(
+                        "HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .into_boxed_str(),
+                ),
+                times: Some(1),
+            }]);
+            set_api_base(&addr);
+
+            let c = live_winget_crate("widget", &bare_url);
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            add_windows_zip(&mut ctx, "widget", &"e".repeat(64));
+
+            publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
+
+            // The branch push happened before the PR call.
+            let branches = git_stdout(bare.path(), &["branch", "--list"]);
+            assert!(
+                branches.contains("AcmeCo.widget-1.0.0"),
+                "branch push must precede the PR call:\n{branches}"
+            );
+            let pending = ctx.take_pending_outcome();
+            assert!(
+                matches!(
+                    pending,
+                    Some(anodizer_core::PublisherOutcome::PendingValidation)
+                ),
+                "422 already-exists must record PendingValidation, got {pending:?}"
+            );
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// A non-success, non-422 HTTP status from the PR-create POST must be
+        /// surfaced as a `Failed` outcome (silent-fail would let dispatch
+        /// record `succeeded`). The branch still pushed.
+        #[test]
+        #[serial]
+        fn publish_pr_http_error_records_failed_outcome() {
+            let (_tools, _guard) = gh_absent();
+            let (bare_url, bare) = init_bare_fork();
+            let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+                response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 3\r\n\r\nboo",
+                times: Some(1),
+            }]);
+            set_api_base(&addr);
+
+            let c = live_winget_crate("widget", &bare_url);
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            add_windows_zip(&mut ctx, "widget", &"f".repeat(64));
+
+            publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish returns Ok");
+
+            let pending = ctx.take_pending_outcome();
+            assert!(
+                matches!(pending, Some(anodizer_core::PublisherOutcome::Failed(_))),
+                "a 500 from PR-create must record Failed, got {pending:?}"
+            );
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// Idempotent re-publish: a second publish of the identical manifest
+        /// onto the same branch finds the remote tree already matching, so
+        /// `commit_and_push_with_opts` reports `NoChanges` and nothing is
+        /// re-pushed. Proves the publish path does not blindly force a commit.
+        #[test]
+        #[serial]
+        fn publish_idempotent_second_run_no_changes() {
+            let (_tools, _guard) = gh_absent();
+            let (bare_url, bare) = init_bare_fork();
+            let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+            set_api_base(&addr);
+
+            let sha = "1".repeat(64);
+            let build = || {
+                let c = live_winget_crate("widget", &bare_url);
+                let mut ctx = build_ctx(vec![c], "1.0.0");
+                add_windows_zip(&mut ctx, "widget", &sha);
+                ctx
+            };
+
+            let mut ctx1 = build();
+            publish_to_winget(&mut ctx1, "widget", &quiet()).expect("first publish");
+            let head1 = git_stdout(bare.path(), &["rev-parse", "AcmeCo.widget-1.0.0"]);
+
+            let mut ctx2 = build();
+            publish_to_winget(&mut ctx2, "widget", &quiet()).expect("second publish");
+            let head2 = git_stdout(bare.path(), &["rev-parse", "AcmeCo.widget-1.0.0"]);
+            assert_eq!(
+                head1, head2,
+                "re-publishing the identical manifest must not advance the branch tip"
+            );
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// Workspace per-crate mode: two winget crates sharing one bare fork
+        /// must each land their OWN 3-file manifest set under their OWN
+        /// `<package_id>` path on their OWN `<package_id>-<version>` branch —
+        /// proving per-crate name/package-id/branch resolution is not
+        /// clobbered by a sibling.
+        #[test]
+        #[serial]
+        fn publish_workspace_per_crate_distinct_branches_and_paths() {
+            let (_tools, _guard) = gh_absent();
+            let (bare_url, bare) = init_bare_fork();
+            let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+            set_api_base(&addr);
+
+            let alpha = live_winget_crate("alpha", &bare_url);
+            let beta = live_winget_crate("beta", &bare_url);
+            let mut ctx = build_ctx(vec![alpha, beta], "3.1.0");
+            add_windows_zip(&mut ctx, "alpha", &"a".repeat(64));
+            add_windows_zip(&mut ctx, "beta", &"b".repeat(64));
+
+            publish_to_winget(&mut ctx, "alpha", &quiet()).expect("publish alpha");
+            publish_to_winget(&mut ctx, "beta", &quiet()).expect("publish beta");
+
+            let branches = git_stdout(bare.path(), &["branch", "--list"]);
+            assert!(
+                branches.contains("AcmeCo.alpha-3.1.0"),
+                "alpha branch missing; got:\n{branches}"
+            );
+            assert!(
+                branches.contains("AcmeCo.beta-3.1.0"),
+                "beta branch missing; got:\n{branches}"
+            );
+            // Each branch carries only its own package's manifest path.
+            let alpha_ver = manifest_show(
+                bare.path(),
+                "AcmeCo.alpha-3.1.0",
+                "manifests/a/AcmeCo/alpha/3.1.0/AcmeCo.alpha.yaml",
+            );
+            assert!(
+                alpha_ver.contains("PackageIdentifier: AcmeCo.alpha")
+                    && alpha_ver.contains("PackageVersion: 3.1.0"),
+                "alpha manifest wrong:\n{alpha_ver}"
+            );
+            let beta_ver = manifest_show(
+                bare.path(),
+                "AcmeCo.beta-3.1.0",
+                "manifests/a/AcmeCo/beta/3.1.0/AcmeCo.beta.yaml",
+            );
+            assert!(
+                beta_ver.contains("PackageIdentifier: AcmeCo.beta"),
+                "beta manifest wrong:\n{beta_ver}"
+            );
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// The canonical-upstream fallback: with `pull_request.enabled` unset,
+        /// `submit_winget_pr` submits the PR against `microsoft/winget-pkgs`
+        /// (the live winget index) via the `gh pr create` CLI, head =
+        /// fork:branch. The branch still lands in the local bare fork.
+        ///
+        /// Transport reality: this arm calls `submit_pr_via_gh_with_opts`,
+        /// which dispatches via `classify_pr_transport(gh_is_available(),
+        /// token.is_some())` and resolves its token from the ENV, not the
+        /// config. With a succeeding `gh` stub on PATH the transport is the
+        /// CLI (`gh pr create ... --repo microsoft/winget-pkgs`), so the PR
+        /// shape is asserted from the recorded `gh` argv — there is no
+        /// reqwest API POST on this path. The default-branch GET still fires
+        /// (it runs before the transport match) and feeds `--base`.
+        #[test]
+        #[serial]
+        fn publish_without_pr_config_targets_microsoft_winget_pkgs() {
+            let (tools, _guard) = gh_present();
+            let (bare_url, bare) = init_bare_fork();
+            // `submit_pr_via_gh_with_opts` resolves the upstream default
+            // branch via this GET (token-less, but the request still fires)
+            // before invoking `gh pr create`; it feeds `--base`.
+            let (addr, _req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/microsoft/winget-pkgs",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 27\r\n\r\n{\"default_branch\":\"master\"}",
+                times: Some(1),
+            }]);
+            set_api_base(&addr);
+
+            let mut c = live_winget_crate("widget", &bare_url);
+            // Drop the pull_request block so the canonical-fallback arm runs.
+            if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut())
+                && let Some(r) = w.repository.as_mut()
+            {
+                r.pull_request = None;
+            }
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            add_windows_zip(&mut ctx, "widget", &"9".repeat(64));
+
+            publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
+
+            let branches = git_stdout(bare.path(), &["branch", "--list"]);
+            assert!(
+                branches.contains("AcmeCo.widget-1.0.0"),
+                "branch must still push to the fork:\n{branches}"
+            );
+
+            // The PR was submitted via the `gh pr create` CLI; find that
+            // invocation (the first recorded `gh` call is `--version` from
+            // `gh_is_available()`).
+            let gh_calls = tools.calls("gh");
+            let pr_create = gh_calls
+                .iter()
+                .find(|argv| argv.first().map(String::as_str) == Some("pr"))
+                .expect("a `gh pr create` invocation must be recorded");
+            assert_eq!(
+                &pr_create[0..2],
+                &["pr".to_string(), "create".to_string()],
+                "must be `gh pr create`; got: {pr_create:?}"
+            );
+            assert_eq!(
+                gh_arg(pr_create, "--repo").as_deref(),
+                Some("microsoft/winget-pkgs"),
+                "PR must target the canonical winget index; got: {pr_create:?}"
+            );
+            assert_eq!(
+                gh_arg(pr_create, "--head").as_deref(),
+                Some("fork-owner:AcmeCo.widget-1.0.0"),
+                "head must be fork:<package_id>-<version>; got: {pr_create:?}"
+            );
+            // `--base` is the upstream default branch the GET resolved.
+            assert_eq!(
+                gh_arg(pr_create, "--base").as_deref(),
+                Some("master"),
+                "base must be the resolved upstream default branch; got: {pr_create:?}"
+            );
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// A configured `pull_request.base` overrides the canonical upstream:
+        /// the `gh pr create` invocation must target the configured mirror
+        /// slug (`acme/winget-mirror`), not `microsoft/winget-pkgs`. Exercises
+        /// `submit_winget_pr`'s `has_pr_config=false` + explicit-base arm
+        /// (base set but `enabled` unset), which submits via the `gh` CLI
+        /// (token resolved from env, absent here, so a succeeding `gh` stub
+        /// drives the real transport — there is no reqwest API POST on this
+        /// path). The default-branch GET fires against the OVERRIDDEN slug
+        /// and feeds `--base`.
+        #[test]
+        #[serial]
+        fn publish_honors_pull_request_base_override() {
+            let (tools, _guard) = gh_present();
+            let (bare_url, bare) = init_bare_fork();
+            let (addr, _req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/acme/winget-mirror",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 27\r\n\r\n{\"default_branch\":\"master\"}",
+                times: Some(1),
+            }]);
+            set_api_base(&addr);
+
+            let mut c = live_winget_crate("widget", &bare_url);
+            if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut())
+                && let Some(r) = w.repository.as_mut()
+            {
+                // base set, enabled left unset → canonical-fallback arm picks
+                // up the explicit base slug instead of microsoft/winget-pkgs.
+                r.pull_request = Some(PullRequestConfig {
+                    enabled: None,
+                    base: Some(PullRequestBaseConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("winget-mirror".to_string()),
+                        branch: None,
+                    }),
+                    draft: None,
+                    body: None,
+                });
+            }
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            add_windows_zip(&mut ctx, "widget", &"7".repeat(64));
+
+            publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
+
+            // The PR was submitted via `gh pr create` against the OVERRIDDEN
+            // slug. The first recorded `gh` call is `--version`.
+            let gh_calls = tools.calls("gh");
+            let pr_create = gh_calls
+                .iter()
+                .find(|argv| argv.first().map(String::as_str) == Some("pr"))
+                .expect("a `gh pr create` invocation must be recorded");
+            assert_eq!(
+                gh_arg(pr_create, "--repo").as_deref(),
+                Some("acme/winget-mirror"),
+                "PR must target the configured base override, not microsoft; got: {pr_create:?}"
+            );
+            assert_eq!(
+                gh_arg(pr_create, "--head").as_deref(),
+                Some("fork-owner:AcmeCo.widget-1.0.0"),
+                "head must be fork:<package_id>-<version>; got: {pr_create:?}"
+            );
+            assert_eq!(
+                gh_arg(pr_create, "--base").as_deref(),
+                Some("master"),
+                "base must be the overridden upstream's resolved default branch; got: {pr_create:?}"
+            );
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// A custom `path` override redirects the written manifests away from
+        /// the auto `manifests/<l>/<Pub>/<Pkg>/<Version>/` layout to the
+        /// operator-chosen subtree. The pushed branch must carry the manifest
+        /// files under that path, proving `write_winget_manifests_to_disk`'s
+        /// path-override branch runs through the real push.
+        #[test]
+        #[serial]
+        fn publish_honors_path_override() {
+            let (_tools, _guard) = gh_absent();
+            let (bare_url, bare) = init_bare_fork();
+            let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+            set_api_base(&addr);
+
+            let mut c = live_winget_crate("widget", &bare_url);
+            if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut()) {
+                w.path = Some("custom/manifests/here".to_string());
+            }
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            add_windows_zip(&mut ctx, "widget", &"3".repeat(64));
+
+            publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
+
+            let ver = manifest_show(
+                bare.path(),
+                "AcmeCo.widget-1.0.0",
+                "custom/manifests/here/AcmeCo.widget.yaml",
+            );
+            assert!(
+                ver.contains("PackageIdentifier: AcmeCo.widget"),
+                "manifest must land under the custom path override:\n{ver}"
+            );
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// A `skip_upload: true` short-circuits `publish_to_winget` BEFORE any
+        /// clone/push: the bare fork gains no new branch and no PR POST fires.
+        /// Proves the skip gate guards the whole side-effecting flow.
+        #[test]
+        #[serial]
+        fn publish_skip_upload_true_performs_no_side_effects() {
+            let (_tools, _guard) = gh_absent();
+            let (bare_url, bare) = init_bare_fork();
+            let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+            set_api_base(&addr);
+
+            let mut c = live_winget_crate("widget", &bare_url);
+            if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut()) {
+                w.skip_upload = Some(anodizer_core::config::StringOrBool::Bool(true));
+            }
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            add_windows_zip(&mut ctx, "widget", &"5".repeat(64));
+
+            publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
+
+            let branches = git_stdout(bare.path(), &["branch", "--list"]);
+            assert!(
+                !branches.contains("AcmeCo.widget-1.0.0"),
+                "skip_upload must push no branch; got:\n{branches}"
+            );
+            assert!(
+                req_log.lock().unwrap().is_empty(),
+                "skip_upload must fire no PR POST"
+            );
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// Dry-run mode short-circuits AFTER identity resolution but BEFORE
+        /// clone/push/PR: no branch, no POST. Pins the `ctx.is_dry_run()`
+        /// guard in `publish_to_winget`.
+        #[test]
+        #[serial]
+        fn publish_dry_run_performs_no_side_effects() {
+            let (_tools, _guard) = gh_absent();
+            let (bare_url, bare) = init_bare_fork();
+            let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+            set_api_base(&addr);
+
+            let c = live_winget_crate("widget", &bare_url);
+            let config = Config {
+                crates: vec![c],
+                ..Default::default()
+            };
+            let mut ctx = Context::new(
+                config,
+                ContextOptions {
+                    dry_run: true,
+                    ..Default::default()
+                },
+            );
+            ctx.template_vars_mut().set("Version", "1.0.0");
+            ctx.template_vars_mut().set("RawVersion", "1.0.0");
+            ctx.template_vars_mut().set("Tag", "v1.0.0");
+            add_windows_zip(&mut ctx, "widget", &"2".repeat(64));
+
+            publish_to_winget(&mut ctx, "widget", &quiet()).expect("dry-run ok");
+
+            let branches = git_stdout(bare.path(), &["branch", "--list"]);
+            assert!(
+                !branches.contains("AcmeCo.widget-1.0.0"),
+                "dry-run must push no branch; got:\n{branches}"
+            );
+            assert!(
+                req_log.lock().unwrap().is_empty(),
+                "dry-run must fire no PR POST"
+            );
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// A windows archive missing its `sha256` metadata must hard-fail the
+        /// publish BEFORE any push: a manifest with `InstallerSha256: ''` is
+        /// rejected by winget validation, so anodizer must error rather than
+        /// push it. Pins `build_archive_installer`'s sha256 guard through the
+        /// live entrypoint, and confirms no branch leaked to the fork.
+        #[test]
+        #[serial]
+        fn publish_missing_sha256_errors_before_push() {
+            let (_tools, _guard) = gh_absent();
+            let (bare_url, bare) = init_bare_fork();
+            let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+            set_api_base(&addr);
+
+            let c = live_winget_crate("widget", &bare_url);
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            // Archive with NO sha256 metadata.
+            let target = "x86_64-pc-windows-msvc";
+            let mut meta = HashMap::new();
+            meta.insert("format".to_string(), "zip".to_string());
+            meta.insert(
+                "url".to_string(),
+                "https://example.com/widget.zip".to_string(),
+            );
+            ctx.artifacts.add(anodizer_core::artifact::Artifact {
+                kind: anodizer_core::artifact::ArtifactKind::Archive,
+                path: std::path::PathBuf::from("/dist/widget.zip"),
+                name: "widget.zip".to_string(),
+                target: Some(target.to_string()),
+                crate_name: "widget".to_string(),
+                metadata: meta,
+                size: None,
+            });
+
+            let err = publish_to_winget(&mut ctx, "widget", &quiet())
+                .expect_err("missing sha256 must bail");
+            assert!(
+                format!("{err:#}").contains("no sha256"),
+                "error must name the missing sha256; got: {err:#}"
+            );
+            // No branch / PR side effect leaked.
+            let branches = git_stdout(bare.path(), &["branch", "--list"]);
+            assert!(
+                !branches.contains("AcmeCo.widget-1.0.0"),
+                "a sha256 bail must leave no pushed branch:\n{branches}"
+            );
+            assert!(
+                req_log.lock().unwrap().is_empty(),
+                "a sha256 bail must fire no PR POST"
+            );
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// No Windows artifact at all → the publish bails with the
+        /// "no Windows archive or binary artifact" error before any push.
+        /// Pins `collect_winget_installers`'s empty guard through the live
+        /// entrypoint.
+        #[test]
+        #[serial]
+        fn publish_no_windows_artifact_errors_before_push() {
+            let (_tools, _guard) = gh_absent();
+            let (bare_url, bare) = init_bare_fork();
+            let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+            set_api_base(&addr);
+
+            let c = live_winget_crate("widget", &bare_url);
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            // A LINUX archive only — not a winget Windows installer.
+            let mut meta = HashMap::new();
+            meta.insert("format".to_string(), "tar.gz".to_string());
+            meta.insert("sha256".to_string(), "a".repeat(64));
+            ctx.artifacts.add(anodizer_core::artifact::Artifact {
+                kind: anodizer_core::artifact::ArtifactKind::Archive,
+                path: std::path::PathBuf::from("/dist/widget-linux.tar.gz"),
+                name: "widget-linux.tar.gz".to_string(),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "widget".to_string(),
+                metadata: meta,
+                size: None,
+            });
+
+            let err = publish_to_winget(&mut ctx, "widget", &quiet())
+                .expect_err("no windows artifact must bail");
+            assert!(
+                format!("{err:#}").contains("no Windows archive or binary artifact"),
+                "got: {err:#}"
+            );
+            assert!(
+                req_log.lock().unwrap().is_empty(),
+                "an artifact bail must fire no PR POST"
+            );
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// `update_existing_pr` is a no-op for the API transport (it cannot
+        /// force-push without a working tree), so an existing-PR 422 still
+        /// records `PendingValidation` even with the flag set, and the
+        /// publisher warns that `gh` CLI is required for in-place updates.
+        /// The branch push still happened. Pins the API-transport arm of the
+        /// `update_existing_pr` semantics.
+        #[test]
+        #[serial]
+        fn publish_update_existing_pr_via_api_is_noop_records_pending() {
+            let (_tools, _guard) = gh_absent();
+            let (bare_url, bare) = init_bare_fork();
+            let body = "{\"message\":\"Validation Failed\",\"errors\":[{\"message\":\"A pull request already exists for fork-owner:AcmeCo.widget-1.0.0.\"}]}";
+            let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+                response: Box::leak(
+                    format!(
+                        "HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .into_boxed_str(),
+                ),
+                times: Some(1),
+            }]);
+            set_api_base(&addr);
+
+            let mut c = live_winget_crate("widget", &bare_url);
+            if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut()) {
+                w.update_existing_pr = Some(anodizer_core::config::StringOrBool::Bool(true));
+            }
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            add_windows_zip(&mut ctx, "widget", &"8".repeat(64));
+
+            publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
+
+            let pending = ctx.take_pending_outcome();
+            assert!(
+                matches!(
+                    pending,
+                    Some(anodizer_core::PublisherOutcome::PendingValidation)
+                ),
+                "update_existing_pr over the API transport must still record \
+                 PendingValidation on a 422, got {pending:?}"
+            );
+            clear_api_base();
+            drop(bare);
+        }
+    }
 }
