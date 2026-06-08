@@ -226,6 +226,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "serial_test",
  "tempfile",
  "tokio",
 ]
@@ -545,8 +546,10 @@ dependencies = [
  "anyhow",
  "flate2",
  "object",
+ "serde_json",
  "serde_yaml_ng",
  "tar",
+ "tempfile",
  "tokio",
  "xz2",
  "zstd",

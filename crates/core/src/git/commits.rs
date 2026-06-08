@@ -1982,4 +1982,658 @@ mod tests {
             "Co-Authored-By trailer dropped for idx>0 commit: {body:?}"
         );
     }
+
+    // ---- parse_commit_output: the single wire-format record decoder ----
+
+    #[test]
+    fn parse_commit_output_empty_input_yields_no_commits() {
+        assert!(parse_commit_output("").is_empty());
+    }
+
+    #[test]
+    fn parse_commit_output_decodes_all_six_fields() {
+        // %H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e for a single commit.
+        let raw =
+            "abc123def\x1fabc123d\x1ffeat: add thing\x1fAlice\x1falice@x.com\x1fbody text\x1e";
+        let commits = parse_commit_output(raw);
+        assert_eq!(commits.len(), 1);
+        let c = &commits[0];
+        assert_eq!(c.hash, "abc123def");
+        assert_eq!(c.short_hash, "abc123d");
+        assert_eq!(c.message, "feat: add thing");
+        assert_eq!(c.author_name, "Alice");
+        assert_eq!(c.author_email, "alice@x.com");
+        assert_eq!(c.body, "body text");
+    }
+
+    #[test]
+    fn parse_commit_output_trims_hash_and_body_but_keeps_inner_subject() {
+        // Per the decoder: hash and body are trimmed; the subject (field 2)
+        // is taken verbatim. A leading-newline body must come back trimmed.
+        let raw = "  abc  \x1fabc\x1ffix: keep  spaces\x1ft\x1ft@t\x1f\n\nbody\n\x1e";
+        let commits = parse_commit_output(raw);
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].hash, "abc", "hash is trimmed");
+        assert_eq!(commits[0].message, "fix: keep  spaces", "subject verbatim");
+        assert_eq!(commits[0].body, "body", "body is trimmed");
+    }
+
+    #[test]
+    fn parse_commit_output_absent_body_field_defaults_to_empty() {
+        // Exactly 5 fields (no %b segment) is still a valid record; body == "".
+        let raw = "h\x1fh\x1fsubject\x1fname\x1fmail\x1e";
+        let commits = parse_commit_output(raw);
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].body, "");
+        assert_eq!(commits[0].message, "subject");
+    }
+
+    #[test]
+    fn parse_commit_output_skips_records_with_too_few_fields() {
+        // A record with <5 unit-separated fields is malformed and dropped,
+        // while a well-formed sibling record in the same stream survives.
+        let raw = "only\x1ftwo\x1e\
+                   h\x1fh\x1fgood: subject\x1fn\x1fe\x1fbody\x1e";
+        let commits = parse_commit_output(raw);
+        assert_eq!(commits.len(), 1, "malformed record dropped, good one kept");
+        assert_eq!(commits[0].message, "good: subject");
+    }
+
+    #[test]
+    fn parse_commit_output_multiline_body_survives_record_separator_split() {
+        // Two commits separated by \x1e; the first body spans newlines and
+        // carries a trailer — the \x1e (not \n) split keeps it intact.
+        let raw = "h1\x1fh1\x1ffeat: A\x1fA\x1fa@x\x1fline one\nline two\n\nCo-Authored-By: B <b@x>\x1e\
+                   h0\x1fh0\x1ffix: B\x1fB\x1fb@x\x1f\x1e";
+        let commits = parse_commit_output(raw);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].message, "feat: A");
+        assert!(commits[0].body.contains("line one\nline two"));
+        assert!(commits[0].body.contains("Co-Authored-By: B <b@x>"));
+        assert_eq!(commits[1].message, "fix: B");
+        assert_eq!(commits[1].body, "");
+    }
+
+    // ---- short_commit_str: pure SHA truncation ----
+
+    #[test]
+    fn short_commit_str_truncates_long_sha_to_seven() {
+        assert_eq!(short_commit_str("abcdef0123456789"), "abcdef0");
+        assert_eq!(short_commit_str("abcdef0123456789").len(), SHORT_COMMIT_LEN);
+    }
+
+    #[test]
+    fn short_commit_str_returns_shorter_or_equal_input_unchanged() {
+        assert_eq!(short_commit_str("abc"), "abc", "shorter than 7 unchanged");
+        assert_eq!(
+            short_commit_str("abcdefg"),
+            "abcdefg",
+            "exactly 7 unchanged"
+        );
+        assert_eq!(short_commit_str(""), "", "empty stays empty");
+    }
+
+    // ---- real-repo fixture helpers for the shelling functions ----
+
+    /// Run a git command in `dir` with a pinned identity, asserting success.
+    fn g(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "Ada")
+            .env("GIT_AUTHOR_EMAIL", "ada@x.com")
+            .env("GIT_COMMITTER_NAME", "Ada")
+            .env("GIT_COMMITTER_EMAIL", "ada@x.com")
+            .env("GIT_AUTHOR_DATE", "1715000000 +0000")
+            .env("GIT_COMMITTER_DATE", "1715000000 +0000")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// `git init -b master` + identity config; no commits yet.
+    fn init_bare_repo(dir: &Path) {
+        g(dir, &["init", "-b", "master"]);
+        g(dir, &["config", "user.email", "ada@x.com"]);
+        g(dir, &["config", "user.name", "Ada"]);
+    }
+
+    /// Write `path`=`content`, stage all, commit with `subject`.
+    fn commit_file(dir: &Path, path: &str, content: &str, subject: &str) {
+        let full = dir.join(path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(full, content).unwrap();
+        g(dir, &["add", "."]);
+        g(dir, &["commit", "-m", subject]);
+    }
+
+    // ---- get_commits_between_in / paths variants ----
+
+    #[test]
+    fn get_commits_between_in_returns_only_post_base_commits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "initial");
+        let base = get_head_commit_in(dir).unwrap();
+        commit_file(dir, "a", "1", "feat: one");
+        commit_file(dir, "a", "2", "fix: two");
+
+        let commits = get_commits_between_in(dir, &base, "HEAD", None).unwrap();
+        assert_eq!(commits.len(), 2, "two commits sit above base");
+        // git log default is newest-first.
+        assert_eq!(commits[0].message, "fix: two");
+        assert_eq!(commits[1].message, "feat: one");
+        assert_eq!(commits[1].author_name, "Ada");
+        assert_eq!(commits[1].author_email, "ada@x.com");
+    }
+
+    #[test]
+    fn get_commits_between_in_path_filter_excludes_untouched_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "base", "0", "initial");
+        let base = get_head_commit_in(dir).unwrap();
+        commit_file(dir, "src/lib.rs", "1", "feat: touch lib");
+        commit_file(dir, "docs/readme", "2", "docs: touch docs only");
+
+        // Filter to src/ — only the lib commit should be reported.
+        let commits = get_commits_between_in(dir, &base, "HEAD", Some("src")).unwrap();
+        assert_eq!(commits.len(), 1, "only the src-touching commit survives");
+        assert_eq!(commits[0].message, "feat: touch lib");
+    }
+
+    #[test]
+    fn get_commits_between_paths_in_unions_multiple_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "base", "0", "initial");
+        let base = get_head_commit_in(dir).unwrap();
+        commit_file(dir, "a/x", "1", "feat: a");
+        commit_file(dir, "b/y", "2", "feat: b");
+        commit_file(dir, "c/z", "3", "feat: c");
+
+        // Two paths -> union of commits touching either a/ or b/.
+        let commits =
+            get_commits_between_paths_in(dir, &base, "HEAD", &["a".into(), "b".into()]).unwrap();
+        let subjects: Vec<&str> = commits.iter().map(|c| c.message.as_str()).collect();
+        assert_eq!(
+            commits.len(),
+            2,
+            "a and b touched, c excluded: {subjects:?}"
+        );
+        assert!(subjects.contains(&"feat: a"));
+        assert!(subjects.contains(&"feat: b"));
+        assert!(!subjects.contains(&"feat: c"));
+    }
+
+    // ---- get_all_commits_* ----
+
+    #[test]
+    fn get_all_commits_in_returns_every_commit_on_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "first");
+        commit_file(dir, "a", "1", "second");
+        commit_file(dir, "a", "2", "third");
+
+        let commits = get_all_commits_in(dir, None).unwrap();
+        assert_eq!(commits.len(), 3);
+        assert_eq!(commits[0].message, "third", "newest-first");
+        assert_eq!(commits[2].message, "first");
+    }
+
+    #[test]
+    fn get_all_commits_paths_in_filters_to_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "keep/x", "0", "feat: keep");
+        commit_file(dir, "drop/y", "1", "feat: drop");
+
+        let commits = get_all_commits_paths_in(dir, &["keep".into()]).unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].message, "feat: keep");
+    }
+
+    #[test]
+    fn get_all_commits_paths_with_files_in_pairs_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "crates/core/lib.rs", "0", "feat: core");
+
+        let pairs = get_all_commits_paths_with_files_in(dir, &[]).unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].commit.message, "feat: core");
+        assert_eq!(pairs[0].files, vec!["crates/core/lib.rs".to_string()]);
+    }
+
+    // ---- get_commits_reachable_paths_in: bound at an explicit ref ----
+
+    #[test]
+    fn get_commits_reachable_paths_in_stops_at_the_given_rev() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "first");
+        commit_file(dir, "a", "1", "second");
+        let mid = get_head_commit_in(dir).unwrap();
+        commit_file(dir, "a", "2", "third-after-mid");
+
+        // Reachable from `mid` excludes the commit made after it.
+        let commits = get_commits_reachable_paths_in(dir, &mid, &[]).unwrap();
+        let subjects: Vec<&str> = commits.iter().map(|c| c.message.as_str()).collect();
+        assert_eq!(commits.len(), 2, "only ancestors of mid: {subjects:?}");
+        assert!(subjects.contains(&"first"));
+        assert!(subjects.contains(&"second"));
+        assert!(!subjects.contains(&"third-after-mid"));
+    }
+
+    #[test]
+    fn get_commits_reachable_paths_with_files_in_pairs_touched_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "src/main.rs", "0", "feat: main");
+        let head = get_head_commit_in(dir).unwrap();
+
+        let pairs = get_commits_reachable_paths_with_files_in(dir, &head, &[]).unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].commit.message, "feat: main");
+        assert_eq!(pairs[0].files, vec!["src/main.rs".to_string()]);
+    }
+
+    // ---- subject-only message helpers ----
+
+    #[test]
+    fn get_last_commit_messages_in_returns_n_subjects_newest_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "one");
+        commit_file(dir, "a", "1", "two");
+        commit_file(dir, "a", "2", "three");
+
+        let msgs = get_last_commit_messages_in(dir, 2).unwrap();
+        assert_eq!(msgs, vec!["three".to_string(), "two".to_string()]);
+    }
+
+    #[test]
+    fn get_commit_messages_between_in_lists_post_base_subjects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "initial");
+        let base = get_head_commit_in(dir).unwrap();
+        commit_file(dir, "a", "1", "feat: x");
+        commit_file(dir, "a", "2", "fix: y");
+
+        let msgs = get_commit_messages_between_in(dir, &base, "HEAD").unwrap();
+        assert_eq!(msgs, vec!["fix: y".to_string(), "feat: x".to_string()]);
+    }
+
+    #[test]
+    fn get_last_commit_messages_path_in_filters_to_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "keep/a", "0", "feat: keep");
+        commit_file(dir, "other/b", "1", "feat: other");
+
+        let msgs = get_last_commit_messages_path_in(dir, 10, "keep").unwrap();
+        assert_eq!(msgs, vec!["feat: keep".to_string()]);
+    }
+
+    #[test]
+    fn get_commit_messages_between_path_in_filters_range_and_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "base", "0", "initial");
+        let base = get_head_commit_in(dir).unwrap();
+        commit_file(dir, "src/x", "1", "feat: src");
+        commit_file(dir, "doc/y", "2", "docs: doc");
+
+        let msgs = get_commit_messages_between_path_in(dir, &base, "HEAD", "src").unwrap();
+        assert_eq!(msgs, vec!["feat: src".to_string()]);
+    }
+
+    // ---- diff / change-detection helpers ----
+
+    #[test]
+    fn has_changes_since_in_detects_path_touched_after_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "watched", "0", "initial");
+        g(dir, &["tag", "v1.0.0"]);
+        // No change yet -> false.
+        assert!(!has_changes_since_in(dir, "v1.0.0", "watched").unwrap());
+        commit_file(dir, "watched", "1", "feat: change watched");
+        // Now changed -> true.
+        assert!(has_changes_since_in(dir, "v1.0.0", "watched").unwrap());
+        // A different, untouched path -> false.
+        assert!(!has_changes_since_in(dir, "v1.0.0", "unrelated").unwrap());
+    }
+
+    #[test]
+    fn paths_changed_since_tag_in_true_when_any_path_changed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "initial");
+        g(dir, &["tag", "v1.0.0"]);
+        commit_file(dir, "b", "1", "feat: add b");
+
+        // b changed; checking [a, b] -> true (b matched).
+        assert!(paths_changed_since_tag_in(dir, "v1.0.0", &["a", "b"]).unwrap());
+        // Only a (unchanged) -> false.
+        assert!(!paths_changed_since_tag_in(dir, "v1.0.0", &["a"]).unwrap());
+    }
+
+    #[test]
+    fn paths_changed_since_tag_in_returns_false_when_git_fails() {
+        // Non-existent tag makes `git diff` fail; the helper maps that to
+        // Ok(false) rather than bubbling an error.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "initial");
+        assert!(!paths_changed_since_tag_in(dir, "nope-no-such-tag", &["a"]).unwrap());
+    }
+
+    // ---- rev resolution helpers ----
+
+    #[test]
+    fn head_commit_hash_in_matches_rev_parse_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "initial");
+        let expected = get_head_commit_in(dir).unwrap();
+        assert_eq!(head_commit_hash_in(dir).unwrap(), expected);
+    }
+
+    #[test]
+    fn head_commit_hash_in_errors_on_non_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No git init -> rev-parse HEAD fails.
+        assert!(head_commit_hash_in(tmp.path()).is_err());
+    }
+
+    #[test]
+    fn rev_parse_in_resolves_branch_to_full_sha() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "initial");
+        let head = get_head_commit_in(dir).unwrap();
+        assert_eq!(rev_parse_in(dir, "master").unwrap(), head);
+    }
+
+    #[test]
+    fn rev_verify_commit_in_accepts_commit_rejects_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "initial");
+        let head = get_head_commit_in(dir).unwrap();
+        assert_eq!(rev_verify_commit_in(dir, "HEAD").unwrap(), head);
+        // A made-up ref must not verify.
+        assert!(rev_verify_commit_in(dir, "deadbeefdeadbeef").is_err());
+    }
+
+    #[test]
+    fn commits_between_in_lists_shas_above_base_and_empty_at_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "initial");
+        let base = get_head_commit_in(dir).unwrap();
+        commit_file(dir, "a", "1", "second");
+        let head = get_head_commit_in(dir).unwrap();
+
+        let shas = commits_between_in(dir, &base).unwrap();
+        assert_eq!(
+            shas,
+            vec![head.clone()],
+            "exactly the one commit above base"
+        );
+        // sha IS HEAD -> empty range.
+        assert!(commits_between_in(dir, &head).unwrap().is_empty());
+    }
+
+    #[test]
+    fn commit_subject_in_returns_single_commit_subject() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "feat: only-subject\n\nignored body");
+        let head = get_head_commit_in(dir).unwrap();
+        assert_eq!(commit_subject_in(dir, &head).unwrap(), "feat: only-subject");
+    }
+
+    #[test]
+    fn head_commit_timestamp_in_returns_pinned_committer_epoch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        // Pinned GIT_COMMITTER_DATE in `g` is 1715000000 +0000.
+        commit_file(dir, "a", "0", "initial");
+        assert_eq!(head_commit_timestamp_in(dir).unwrap(), 1_715_000_000);
+    }
+
+    // ---- log_subjects_for_range ----
+
+    #[test]
+    fn log_subjects_for_range_returns_full_bodies_for_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "watched", "0", "feat: A\n\nbody of A");
+        commit_file(dir, "watched", "1", "fix: B");
+
+        let bodies = log_subjects_for_range(dir, "HEAD", "watched").unwrap();
+        assert_eq!(bodies.len(), 2);
+        // %B is subject+body; newest-first.
+        assert!(bodies[0].starts_with("fix: B"));
+        assert!(bodies[1].contains("feat: A") && bodies[1].contains("body of A"));
+    }
+
+    #[test]
+    fn log_subjects_for_range_returns_empty_when_range_invalid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "initial");
+        // A range referencing a non-existent ref makes git fail; the helper
+        // maps that to an empty Vec, not an error.
+        let bodies = log_subjects_for_range(dir, "no-such-ref..HEAD", "a").unwrap();
+        assert!(bodies.is_empty());
+    }
+
+    // ---- add_path_in + commit_in ----
+
+    #[test]
+    fn add_path_in_then_commit_in_creates_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "seed", "0", "initial");
+        std::fs::write(dir.join("new.txt"), "hello").unwrap();
+
+        add_path_in(dir, std::path::Path::new("new.txt")).unwrap();
+        commit_in(dir, "feat: add new.txt", false).unwrap();
+
+        let subject = String::from_utf8(
+            Command::new("git")
+                .args(["log", "-1", "--pretty=%s"])
+                .current_dir(dir)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        assert_eq!(subject, "feat: add new.txt");
+    }
+
+    #[test]
+    fn add_path_in_errors_on_missing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        let err = add_path_in(dir, std::path::Path::new("does-not-exist")).unwrap_err();
+        assert!(
+            err.to_string().contains("git add"),
+            "error must name the failing git add: {err}"
+        );
+    }
+
+    // ---- reset_hard_in ----
+
+    #[test]
+    fn reset_hard_in_moves_head_and_restores_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "first", "first");
+        let target = get_head_commit_in(dir).unwrap();
+        commit_file(dir, "a", "second", "second");
+        assert_ne!(get_head_commit_in(dir).unwrap(), target);
+
+        reset_hard_in(dir, &target).unwrap();
+        assert_eq!(get_head_commit_in(dir).unwrap(), target, "HEAD moved back");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a")).unwrap(),
+            "first",
+            "working tree restored to target content"
+        );
+    }
+
+    // ---- push_branch_in error path (no remote) ----
+
+    #[test]
+    fn push_branch_in_bails_without_origin_remote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "initial");
+        let err = push_branch_in(dir, "master").unwrap_err();
+        assert!(
+            err.to_string().contains("no 'origin' remote"),
+            "missing-remote bail must be explicit: {err}"
+        );
+    }
+
+    // ---- resolve_rollback_identity / read_git_identity ----
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_rollback_identity_inherits_when_repo_has_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir); // sets user.name + user.email
+
+        // Clear any inherited GIT_AUTHOR_*/COMMITTER_* env so the resolver
+        // falls through to reading the repo config (which IS configured).
+        struct EnvGuard(Vec<(&'static str, Option<String>)>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                for (k, v) in &self.0 {
+                    match v {
+                        Some(val) => unsafe { std::env::set_var(k, val) },
+                        None => unsafe { std::env::remove_var(k) },
+                    }
+                }
+            }
+        }
+        let keys = [
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+        ];
+        let _g = EnvGuard(keys.iter().map(|k| (*k, std::env::var(k).ok())).collect());
+        for k in keys {
+            unsafe { std::env::remove_var(k) };
+        }
+
+        // Repo has user.name + user.email -> inherit (empty identity).
+        let id = resolve_rollback_identity(dir);
+        assert!(
+            id.name.is_none() && id.email.is_none(),
+            "configured repo identity must be inherited, not overridden: {id:?}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_rollback_identity_synthesizes_when_no_identity_anywhere() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // init WITHOUT configuring user.name / user.email.
+        g(dir, &["init", "-b", "master"]);
+
+        struct EnvGuard(Vec<(&'static str, Option<String>)>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                for (k, v) in &self.0 {
+                    match v {
+                        Some(val) => unsafe { std::env::set_var(k, val) },
+                        None => unsafe { std::env::remove_var(k) },
+                    }
+                }
+            }
+        }
+        let keys = [
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+        ];
+        let _g = EnvGuard(keys.iter().map(|k| (*k, std::env::var(k).ok())).collect());
+        for k in keys {
+            unsafe { std::env::remove_var(k) };
+        }
+
+        // Best-effort: global git config may still supply an identity on the
+        // host. Only assert the synthetic path when the repo truly has none.
+        let (n, e) = read_git_identity(dir);
+        if n.is_none() || e.is_none() {
+            let id = resolve_rollback_identity(dir);
+            assert_eq!(id.name.as_deref(), Some("anodize-rollback"));
+            assert!(
+                id.email
+                    .as_deref()
+                    .unwrap_or("")
+                    .starts_with("anodize-rollback@"),
+                "synthetic identity required when no config present: {id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_git_identity_reads_configured_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        g(dir, &["init", "-b", "master"]);
+        g(dir, &["config", "user.name", "Configured Name"]);
+        g(dir, &["config", "user.email", "configured@x.com"]);
+
+        let (name, email) = read_git_identity(dir);
+        assert_eq!(name.as_deref(), Some("Configured Name"));
+        assert_eq!(email.as_deref(), Some("configured@x.com"));
+    }
 }

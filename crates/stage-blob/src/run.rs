@@ -629,3 +629,337 @@ impl BlobStage {
         Ok((targets, Some(exec)))
     }
 }
+
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{BlobConfig, Config, CrateConfig, StringOrBool};
+    use anodizer_core::context::ContextOptions;
+
+    /// One crate carrying one blob config — the single-crate shape.
+    fn config_with_blob(crate_name: &str, blob: BlobConfig) -> Config {
+        Config {
+            project_name: "demo".to_string(),
+            crates: vec![CrateConfig {
+                name: crate_name.to_string(),
+                path: ".".to_string(),
+                blobs: Some(vec![blob]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// A dry-run context over `config` with the template vars the default
+    /// `directory:` (`{{ ProjectName }}/{{ Tag }}`) needs.
+    fn dry_run_ctx(config: Config) -> Context {
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "demo");
+        ctx.template_vars_mut().set("IsSnapshot", "false");
+        ctx
+    }
+
+    fn add_archive(ctx: &mut Context, crate_name: &str, path: &str) {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: String::new(),
+            path: PathBuf::from(path),
+            target: None,
+            crate_name: crate_name.to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+    }
+
+    // -------------------------------------------------------------------
+    // validate_only — config-validation entry point. Empty required fields
+    // bail before any store is built.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn validate_only_bails_on_empty_provider() {
+        let cfg = BlobConfig {
+            provider: String::new(),
+            bucket: "b".to_string(),
+            ..Default::default()
+        };
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let err = validate_only(&cfg, &ctx).expect_err("empty provider must bail");
+        assert!(
+            err.to_string().contains("provider is required"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_only_bails_on_empty_bucket() {
+        let cfg = BlobConfig {
+            provider: "s3".to_string(),
+            bucket: String::new(),
+            ..Default::default()
+        };
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let err = validate_only(&cfg, &ctx).expect_err("empty bucket must bail");
+        assert!(err.to_string().contains("bucket is required"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_only_rejects_unknown_provider_after_render() {
+        // A bogus literal provider must be caught by Provider::parse inside
+        // validate_only, naming the bad value and the valid set.
+        let cfg = BlobConfig {
+            provider: "gss".to_string(),
+            bucket: "b".to_string(),
+            ..Default::default()
+        };
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let err = validate_only(&cfg, &ctx).expect_err("bad provider must bail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("gss") && msg.contains("s3"),
+            "error must name the bad value and the valid set; got: {msg}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // run_report pre-flight — a literal (non-templated) provider typo must
+    // fail FAST, before any store build or upload, as a catastrophic Err
+    // bubbling out of Stage::run.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn literal_provider_typo_fails_preflight() {
+        let cfg = BlobConfig {
+            provider: "azureblob".to_string(), // typo: valid is "azblob"
+            bucket: "b".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = dry_run_ctx(config_with_blob("c", cfg));
+        add_archive(&mut ctx, "c", "dist/c-v1.0.0.tar.gz");
+        let err = BlobStage
+            .run(&mut ctx)
+            .expect_err("provider typo must bail");
+        assert!(
+            err.to_string().contains("azureblob"),
+            "preflight error must name the offending provider; got: {err}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // skip / if gates — a skipped or falsy-`if` blob config produces no
+    // jobs and no publish-report entry (no work attempted).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn skip_true_produces_no_publish_report_entry() {
+        let cfg = BlobConfig {
+            provider: "s3".to_string(),
+            bucket: "b".to_string(),
+            skip: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        let mut ctx = dry_run_ctx(config_with_blob("c", cfg));
+        add_archive(&mut ctx, "c", "dist/c.tar.gz");
+        BlobStage.run(&mut ctx).expect("skipped config is Ok");
+        assert!(
+            ctx.publish_report.is_none(),
+            "a skipped blob config attempts no work → no report entry"
+        );
+    }
+
+    #[test]
+    fn if_condition_falsy_skips_config() {
+        // `if: "{{ false }}"` → the config is gated out before any store
+        // build; no work, no report entry.
+        let cfg = BlobConfig {
+            provider: "s3".to_string(),
+            bucket: "b".to_string(),
+            if_condition: Some("{{ IsSnapshot }}".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = dry_run_ctx(config_with_blob("c", cfg));
+        // IsSnapshot=false (set by dry_run_ctx) → condition falsy → skipped.
+        add_archive(&mut ctx, "c", "dist/c.tar.gz");
+        BlobStage.run(&mut ctx).expect("falsy-if config is Ok");
+        assert!(
+            ctx.publish_report.is_none(),
+            "falsy `if` gates the config out → no work attempted"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // snapshot skip — `--snapshot` runs short-circuit the whole stage.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn snapshot_run_skips_stage_entirely() {
+        let cfg = BlobConfig {
+            provider: "s3".to_string(),
+            bucket: "b".to_string(),
+            ..Default::default()
+        };
+        let opts = ContextOptions {
+            snapshot: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config_with_blob("c", cfg), opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "demo");
+        ctx.template_vars_mut().set("IsSnapshot", "true");
+        add_archive(&mut ctx, "c", "dist/c.tar.gz");
+
+        BlobStage.run(&mut ctx).expect("snapshot run is Ok");
+        assert!(
+            ctx.publish_report.is_none(),
+            "snapshot short-circuits the blob stage before any job is built"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // selected_crates filtering — only the selected crate's blob config is
+    // considered (workspace per-crate selection).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn selected_crates_excludes_unselected_blob_configs() {
+        // Two crates, each with a blob config — but only `alpha` is selected.
+        // `beta` carries a provider TYPO that would bail preflight if it were
+        // considered. Selecting `alpha` only must let the run succeed,
+        // proving `beta` was filtered out before preflight.
+        let config = Config {
+            project_name: "demo".to_string(),
+            crates: vec![
+                CrateConfig {
+                    name: "alpha".to_string(),
+                    path: ".".to_string(),
+                    blobs: Some(vec![BlobConfig {
+                        provider: "s3".to_string(),
+                        bucket: "a".to_string(),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+                CrateConfig {
+                    name: "beta".to_string(),
+                    path: ".".to_string(),
+                    blobs: Some(vec![BlobConfig {
+                        provider: "BOGUS".to_string(),
+                        bucket: "b".to_string(),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let opts = ContextOptions {
+            dry_run: true,
+            selected_crates: vec!["alpha".to_string()],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "demo");
+        ctx.template_vars_mut().set("IsSnapshot", "false");
+        add_archive(&mut ctx, "alpha", "dist/alpha.tar.gz");
+
+        BlobStage
+            .run(&mut ctx)
+            .expect("only the selected (valid) crate is considered");
+    }
+
+    // -------------------------------------------------------------------
+    // KMS scheme mismatch — caught in the serial prep phase before any
+    // upload (gcpkms:// against an s3 bucket). This is a per-job
+    // catastrophic Err that bubbles out of Stage::run.
+    //
+    // Uses a NON-dry-run ctx: the KMS validate-match runs in the store-build
+    // path, which dry-run skips. No real store/network is reached because
+    // validate_kms_provider_match bails first.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn kms_scheme_mismatch_bails_before_upload() {
+        let cfg = BlobConfig {
+            provider: "s3".to_string(),
+            bucket: "b".to_string(),
+            kms_key: Some("gcpkms://projects/p/locations/l/keyRings/k/cryptKeys/c".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config_with_blob("c", cfg), ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "demo");
+        ctx.template_vars_mut().set("IsSnapshot", "false");
+        add_archive(&mut ctx, "c", "dist/c.tar.gz");
+
+        let err = BlobStage
+            .run(&mut ctx)
+            .expect_err("gcpkms:// on an s3 bucket must bail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not compatible") && msg.contains("awskms://"),
+            "KMS mismatch must surface the scheme gate before upload; got: {msg}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // No-files path — a blob config whose crate has no artifacts attempts
+    // no upload and records no report entry (warn-and-continue).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn no_files_to_upload_records_no_entry() {
+        let cfg = BlobConfig {
+            provider: "s3".to_string(),
+            bucket: "b".to_string(),
+            ..Default::default()
+        };
+        // No artifacts added for crate "c" → upload_items empty → warn + skip.
+        let mut ctx = dry_run_ctx(config_with_blob("c", cfg));
+        BlobStage.run(&mut ctx).expect("no-files run is Ok");
+        assert!(
+            ctx.publish_report.is_none(),
+            "no files → no job built → no publish-report entry"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Dry-run remote-path assembly — the dry-run branch logs the assembled
+    // provider://bucket/directory/key for each file WITHOUT building a
+    // store. We assert the captured log lines carry the templated target
+    // (region/endpoint/custom directory all rendered).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn dry_run_logs_templated_remote_target() {
+        let capture = anodizer_core::log::LogCapture::new();
+        let cfg = BlobConfig {
+            provider: "s3".to_string(),
+            bucket: "{{ ProjectName }}-releases".to_string(),
+            directory: Some("artifacts/{{ Tag }}".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = dry_run_ctx(config_with_blob("c", cfg));
+        ctx.with_log_capture(capture.clone());
+        add_archive(&mut ctx, "c", "dist/myapp-v1.0.0.tar.gz");
+
+        BlobStage.run(&mut ctx).expect("dry-run is Ok");
+
+        let lines: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        assert!(
+            lines.iter().any(|l| l.contains("[dry-run]")
+                && l.contains("demo-releases/artifacts/v1.0.0/myapp-v1.0.0.tar.gz")),
+            "dry-run must log the templated bucket+directory+key target; got: {lines:?}"
+        );
+        assert!(
+            ctx.publish_report.is_none(),
+            "dry-run uploads nothing → no publish-report entry"
+        );
+    }
+}

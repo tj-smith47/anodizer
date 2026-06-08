@@ -268,3 +268,425 @@ pub(crate) fn encrypt_with_kms(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    // -------------------------------------------------------------------
+    // validate_kms_provider_match — scheme↔provider compatibility gate.
+    // Accepted: S3↔Aws, S3↔ServerSide, Gcs↔Gcp, AzBlob↔Azure. Every other
+    // pairing must bail with a message naming the expected scheme so the
+    // misconfig surfaces at config-validate, not deep in the upload phase.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn validate_match_accepts_each_native_pairing() {
+        assert!(
+            validate_kms_provider_match(Provider::S3, KmsProvider::Aws, "awskms://k").is_ok(),
+            "s3 + awskms:// is the native AWS client-side pairing"
+        );
+        assert!(
+            validate_kms_provider_match(Provider::S3, KmsProvider::ServerSide, "arn:aws:...")
+                .is_ok(),
+            "s3 + plain ARN is SSE-KMS server-side, accepted on S3"
+        );
+        assert!(
+            validate_kms_provider_match(Provider::Gcs, KmsProvider::Gcp, "gcpkms://k").is_ok(),
+            "gcs + gcpkms:// is the native GCP pairing"
+        );
+        assert!(
+            validate_kms_provider_match(Provider::AzBlob, KmsProvider::Azure, "azurekeyvault://k")
+                .is_ok(),
+            "azblob + azurekeyvault:// is the native Azure pairing"
+        );
+    }
+
+    #[test]
+    fn validate_match_rejects_serverside_on_non_s3() {
+        // Plain ARN (ServerSide) is only honored on S3 — GCS/Azure object_store
+        // backends don't surface SSE-KMS through canned headers.
+        let err = validate_kms_provider_match(Provider::Gcs, KmsProvider::ServerSide, "plain-key")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("not compatible") && err.contains("gcpkms://"),
+            "GCS + plain ARN must reject and name the expected gcpkms:// scheme; got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_match_rejects_cross_cloud_scheme() {
+        // awskms:// against a GCS bucket: wrong cloud entirely. Error must
+        // echo the offending key and the expected scheme for the provider.
+        let err = validate_kms_provider_match(Provider::Gcs, KmsProvider::Aws, "awskms://oops")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("awskms://oops"),
+            "error should echo the offending kms_key; got: {err}"
+        );
+        assert!(
+            err.contains("gcpkms://"),
+            "error should name the scheme the provider expects; got: {err}"
+        );
+
+        let err = validate_kms_provider_match(Provider::AzBlob, KmsProvider::Gcp, "gcpkms://k")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("azurekeyvault://"),
+            "azblob mismatch must name azurekeyvault://; got: {err}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // preflight_kms_cli — ServerSide is a no-op (no CLI needed); a missing
+    // client-side CLI must surface as an error before fan-out.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn preflight_serverside_is_noop() {
+        // ServerSide returns Ok without probing any binary — SSE-KMS happens
+        // at the S3 transport level, no CLI to verify.
+        assert!(preflight_kms_cli(KmsProvider::ServerSide).is_ok());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn preflight_errors_when_cli_missing() {
+        // Replace PATH with an empty temp dir (not *prepend* — that would
+        // leave a host-installed `aws` reachable later in PATH and flake).
+        // The probe spawn must then fail and surface the "not found on PATH"
+        // context. PATH is restored after the body regardless of outcome.
+        let empty = tempfile::TempDir::new().expect("temp dir");
+        let _lock = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prior = std::env::var_os("PATH");
+        // SAFETY: serialised by the env mutex held above; restored below.
+        unsafe { std::env::set_var("PATH", empty.path()) };
+
+        let result = preflight_kms_cli(KmsProvider::Aws);
+
+        // SAFETY: same mutex still held; restore the original PATH.
+        match prior {
+            Some(p) => unsafe { std::env::set_var("PATH", p) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+
+        let err = result.expect_err("missing aws CLI must surface as an error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("aws") && msg.contains("PATH"),
+            "missing-CLI error must name the tool and PATH; got: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn preflight_errors_on_nonzero_version_exit() {
+        // A present-but-broken CLI (exits nonzero on --version) must also be
+        // rejected — repaired/installed wording, not the not-found wording.
+        let tools = FakeToolDir::new();
+        tools.tool("gcloud").exit(3).install();
+        let _guard = tools.activate();
+        let err = preflight_kms_cli(KmsProvider::Gcp)
+            .expect_err("gcloud --version exit 3 must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("gcloud") && msg.contains("exited"),
+            "nonzero-version error must name the tool and the bad exit; got: {msg}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // run_kms_cli_with_stdin — central spawn/write/wait helper. Asserts the
+    // exact argv reaches the tool, stdin is piped through, stdout is
+    // returned on success, and a nonzero exit surfaces stderr.
+    // -------------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial]
+    fn run_kms_cli_passes_argv_and_returns_stdout() {
+        let tools = FakeToolDir::new();
+        tools.tool("aws").stdout("SIGNED-OUTPUT").install();
+        let _guard = tools.activate();
+
+        let out = run_kms_cli_with_stdin(
+            "aws",
+            &["kms", "encrypt", "--key-id", "abc"],
+            b"plaintext",
+            "aws kms encrypt",
+        )
+        .expect("stubbed aws exits 0");
+        assert_eq!(out, b"SIGNED-OUTPUT", "stdout of the CLI must be returned");
+
+        let calls = tools.calls("aws");
+        assert_eq!(calls.len(), 1, "exactly one spawn");
+        assert_eq!(
+            calls[0],
+            vec!["kms", "encrypt", "--key-id", "abc"],
+            "argv must reach the tool verbatim and in order"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn run_kms_cli_surfaces_stderr_on_failure() {
+        let tools = FakeToolDir::new();
+        tools
+            .tool("gcloud")
+            .stderr("PERMISSION_DENIED: no kms access")
+            .exit(1)
+            .install();
+        let _guard = tools.activate();
+
+        let err = run_kms_cli_with_stdin("gcloud", &["kms", "encrypt"], b"x", "gcloud kms encrypt")
+            .expect_err("nonzero exit must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("PERMISSION_DENIED") && msg.contains("gcloud kms encrypt"),
+            "failure must surface the CLI stderr and the label; got: {msg}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // encrypt_with_kms — per-provider client-side encryption. Each arm
+    // strips the scheme, builds the right argv, and decodes the response.
+    // Stubs emit canned tool output; we assert the argv AND the decoded
+    // ciphertext.
+    // -------------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial]
+    fn encrypt_aws_strips_scheme_decodes_b64_ciphertext() {
+        // aws kms encrypt returns JSON {"CiphertextBlob": "<base64>"}; the
+        // helper must parse it and base64-decode to raw bytes. The key id
+        // passed to --key-id must have the awskms:// scheme (and leading
+        // slashes) stripped.
+        let secret = b"\x01\x02\x03ciphertext";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(secret);
+        let json = format!("{{\"CiphertextBlob\":\"{b64}\"}}");
+
+        let tools = FakeToolDir::new();
+        tools.tool("aws").stdout(json).install();
+        let _guard = tools.activate();
+
+        let out = encrypt_with_kms(
+            b"plaintext-data",
+            "awskms:///arn:aws:kms:us-east-1:1:key/abc",
+            KmsProvider::Aws,
+        )
+        .expect("aws encrypt happy path");
+        assert_eq!(
+            out, secret,
+            "decoded CiphertextBlob must be returned as raw bytes"
+        );
+
+        let argv = &tools.calls("aws")[0];
+        assert_eq!(&argv[0..2], &["kms", "encrypt"], "kms encrypt subcommand");
+        let kid = argv_value(argv, "--key-id");
+        assert_eq!(
+            kid, "arn:aws:kms:us-east-1:1:key/abc",
+            "--key-id must have awskms:// scheme and leading slashes stripped"
+        );
+        assert_eq!(
+            argv_value(argv, "--plaintext"),
+            "fileb:///dev/stdin",
+            "plaintext is fed via fileb:///dev/stdin (the piped stdin)"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn encrypt_aws_errors_on_malformed_json() {
+        // Non-JSON tool output must produce a parse error, not a panic.
+        let tools = FakeToolDir::new();
+        tools.tool("aws").stdout("not json at all").install();
+        let _guard = tools.activate();
+
+        let err = encrypt_with_kms(b"data", "awskms://k", KmsProvider::Aws)
+            .expect_err("malformed JSON must error");
+        assert!(
+            format!("{err:#}").contains("parse aws kms encrypt JSON"),
+            "error must name the JSON parse failure; got: {err:#}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn encrypt_aws_errors_when_ciphertext_field_missing() {
+        // Valid JSON but no CiphertextBlob field — the contract requires it.
+        let tools = FakeToolDir::new();
+        tools.tool("aws").stdout("{\"Other\":\"x\"}").install();
+        let _guard = tools.activate();
+
+        let err = encrypt_with_kms(b"data", "awskms://k", KmsProvider::Aws)
+            .expect_err("missing CiphertextBlob must error");
+        assert!(
+            format!("{err:#}").contains("CiphertextBlob"),
+            "error must name the missing field; got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn encrypt_aws_rejects_wrong_scheme() {
+        // encrypt_with_kms(Aws, ...) requires the awskms:// prefix on the key.
+        // A bare key with KmsProvider::Aws is a programming error and must
+        // bail before any spawn.
+        let err = encrypt_with_kms(b"data", "plain-key", KmsProvider::Aws)
+            .expect_err("Aws arm requires awskms:// scheme");
+        assert!(
+            format!("{err:#}").contains("awskms://"),
+            "error must name the expected scheme; got: {err:#}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn encrypt_gcp_strips_scheme_passes_resource_returns_raw_stdout() {
+        // gcloud writes raw ciphertext bytes straight to stdout; the helper
+        // returns them unchanged. --key must receive the gcpkms://-stripped
+        // resource path, and the stdin/stdout files must be "-".
+        let raw = "RAW-GCLOUD-CIPHERTEXT";
+        let tools = FakeToolDir::new();
+        tools.tool("gcloud").stdout(raw).install();
+        let _guard = tools.activate();
+
+        let resource = "projects/p/locations/global/keyRings/kr/cryptKeys/k";
+        let out = encrypt_with_kms(
+            b"plaintext",
+            &format!("gcpkms://{resource}"),
+            KmsProvider::Gcp,
+        )
+        .expect("gcp encrypt happy path");
+        assert_eq!(
+            out,
+            raw.as_bytes(),
+            "gcloud raw stdout is the ciphertext, returned unchanged"
+        );
+
+        let argv = &tools.calls("gcloud")[0];
+        assert_eq!(&argv[0..2], &["kms", "encrypt"], "kms encrypt subcommand");
+        assert_eq!(
+            argv_value(argv, "--key"),
+            resource,
+            "--key must be the gcpkms://-stripped resource path"
+        );
+        assert_eq!(
+            argv_value(argv, "--plaintext-file"),
+            "-",
+            "plaintext read from stdin"
+        );
+        assert_eq!(
+            argv_value(argv, "--ciphertext-file"),
+            "-",
+            "ciphertext written to stdout"
+        );
+    }
+
+    #[test]
+    fn encrypt_gcp_rejects_wrong_scheme() {
+        let err = encrypt_with_kms(b"data", "awskms://k", KmsProvider::Gcp)
+            .expect_err("Gcp arm requires gcpkms:// scheme");
+        assert!(
+            format!("{err:#}").contains("gcpkms://"),
+            "error must name the expected scheme; got: {err:#}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn encrypt_azure_parses_vault_and_key_builds_argv() {
+        // azurekeyvault://VAULT/keys/NAME[/version] — the helper splits the
+        // path, base64url-encodes the plaintext into --value, and decodes
+        // the {"result":"<base64url>"} response. Asserts vault/name argv +
+        // the decoded ciphertext.
+        let secret = b"\xaa\xbbazure-ciphertext";
+        let result_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret);
+        let json = format!("{{\"result\":\"{result_b64}\"}}");
+
+        let tools = FakeToolDir::new();
+        tools.tool("az").stdout(json).install();
+        let _guard = tools.activate();
+
+        let plaintext = b"sensitive";
+        let out = encrypt_with_kms(
+            plaintext,
+            "azurekeyvault://my-vault/keys/my-key/v2",
+            KmsProvider::Azure,
+        )
+        .expect("azure encrypt happy path");
+        assert_eq!(
+            out, secret,
+            "decoded url-safe result must be the returned ciphertext"
+        );
+
+        let argv = &tools.calls("az")[0];
+        assert_eq!(
+            &argv[0..3],
+            &["keyvault", "key", "encrypt"],
+            "az keyvault key encrypt subcommand"
+        );
+        assert_eq!(
+            argv_value(argv, "--vault-name"),
+            "my-vault",
+            "vault name parsed from the URL host segment"
+        );
+        assert_eq!(
+            argv_value(argv, "--name"),
+            "my-key/v2",
+            "key name is everything after vault/keys/ (incl. version)"
+        );
+        assert_eq!(
+            argv_value(argv, "--value"),
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(plaintext),
+            "plaintext is base64url-encoded into --value (az has no stdin path)"
+        );
+        assert_eq!(argv_value(argv, "--algorithm"), "RSA-OAEP-256");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn encrypt_azure_surfaces_cli_failure_stderr() {
+        let tools = FakeToolDir::new();
+        tools
+            .tool("az")
+            .stderr("Forbidden: key not found")
+            .exit(1)
+            .install();
+        let _guard = tools.activate();
+
+        let err = encrypt_with_kms(b"data", "azurekeyvault://v/keys/k", KmsProvider::Azure)
+            .expect_err("az nonzero exit must error");
+        assert!(
+            format!("{err:#}").contains("Forbidden: key not found"),
+            "az failure must surface the CLI stderr; got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn encrypt_azure_rejects_wrong_scheme() {
+        let err = encrypt_with_kms(b"data", "gcpkms://k", KmsProvider::Azure)
+            .expect_err("Azure arm requires azurekeyvault:// scheme");
+        assert!(
+            format!("{err:#}").contains("azurekeyvault://"),
+            "error must name the expected scheme; got: {err:#}"
+        );
+    }
+
+    // -- test helpers --------------------------------------------------
+
+    /// Return the argv element immediately following `flag`.
+    fn argv_value(argv: &[String], flag: &str) -> String {
+        let i = argv
+            .iter()
+            .position(|a| a == flag)
+            .unwrap_or_else(|| panic!("flag {flag} not in argv {argv:?}"));
+        argv.get(i + 1)
+            .unwrap_or_else(|| panic!("no value after {flag} in {argv:?}"))
+            .clone()
+    }
+}
