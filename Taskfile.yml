@@ -148,13 +148,13 @@ tasks:
   coverage:check:
     desc: Run workspace test coverage and write cobertura.xml. No branch switching, no push.
     cmds:
-      - cargo llvm-cov --cobertura --output-path cobertura.xml
+      - cargo llvm-cov nextest --cobertura --output-path cobertura.xml
       - 'echo "Coverage (line, cobertura): $(bash .claude/scripts/coverage-percent.sh cobertura.xml)"'
 
   coverage:publish:
     desc: Run workspace test coverage and publish the badge update to origin/badges. Switches branches via the badge script; CI only.
     cmds:
-      - cargo llvm-cov --cobertura --output-path cobertura.xml
+      - cargo llvm-cov nextest --cobertura --output-path cobertura.xml
       - bash .claude/scripts/coverage-percent.sh cobertura.xml
       - bash .claude/scripts/publish-coverage.sh cobertura.xml
 
