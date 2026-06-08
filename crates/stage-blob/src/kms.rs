@@ -272,6 +272,9 @@ pub(crate) fn encrypt_with_kms(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Used only by the unix-gated PATH-stub tests below; the gate must match
+    // or the import reads as unused on a Windows build.
+    #[cfg(unix)]
     use anodizer_core::test_helpers::fake_tool::FakeToolDir;
 
     // -------------------------------------------------------------------
@@ -384,6 +387,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn preflight_errors_on_nonzero_version_exit() {
@@ -407,6 +411,7 @@ mod tests {
     // returned on success, and a nonzero exit surfaces stderr.
     // -------------------------------------------------------------------
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn run_kms_cli_passes_argv_and_returns_stdout() {
@@ -432,6 +437,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn run_kms_cli_surfaces_stderr_on_failure() {
@@ -459,6 +465,7 @@ mod tests {
     // ciphertext.
     // -------------------------------------------------------------------
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn encrypt_aws_strips_scheme_decodes_b64_ciphertext() {
@@ -499,6 +506,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn encrypt_aws_errors_on_malformed_json() {
@@ -515,6 +523,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn encrypt_aws_errors_when_ciphertext_field_missing() {
@@ -544,6 +553,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn encrypt_gcp_strips_scheme_passes_resource_returns_raw_stdout() {
@@ -597,6 +607,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn encrypt_azure_parses_vault_and_key_builds_argv() {
@@ -648,6 +659,7 @@ mod tests {
         assert_eq!(argv_value(argv, "--algorithm"), "RSA-OAEP-256");
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn encrypt_azure_surfaces_cli_failure_stderr() {
@@ -680,6 +692,7 @@ mod tests {
     // -- test helpers --------------------------------------------------
 
     /// Return the argv element immediately following `flag`.
+    #[cfg(unix)]
     fn argv_value(argv: &[String], flag: &str) -> String {
         let i = argv
             .iter()

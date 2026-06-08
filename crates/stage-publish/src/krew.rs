@@ -2246,6 +2246,7 @@ mod tests {
     ///       manifest file with the crate's real sha256, and
     ///   (2) the PR-create POST reached the responder at the same-repo
     ///       `/repos/fork-owner/krew-index/pulls` with head = fork:branch.
+    #[cfg(unix)]
     #[test]
     #[serial]
     fn publish_to_krew_pr_direct_pushes_branch_and_opens_pr() {
@@ -2317,6 +2318,7 @@ mod tests {
     /// `PendingValidation` override (so the dispatch summary tells the
     /// truth instead of reporting `succeeded`). The branch push still
     /// happened, so `pushed` is true.
+    #[cfg(unix)]
     #[test]
     #[serial]
     fn publish_to_krew_pr_direct_already_exists_records_pending() {

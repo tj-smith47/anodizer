@@ -3402,9 +3402,10 @@ license-file = "LICENSE.txt"
     // =====================================================================
     mod live_pr {
         use super::*;
+        #[cfg(unix)]
+        use anodizer_core::config::PullRequestBaseConfig;
         use anodizer_core::config::{
-            Config, GitRepoConfig, PublishConfig, PullRequestBaseConfig, PullRequestConfig,
-            RepositoryConfig,
+            Config, GitRepoConfig, PublishConfig, PullRequestConfig, RepositoryConfig,
         };
         use anodizer_core::context::{Context, ContextOptions};
         use anodizer_core::log::{StageLogger, Verbosity};
@@ -3513,6 +3514,7 @@ license-file = "LICENSE.txt"
         /// is what exercises the real CLI submission. Returns the holder
         /// (for `.calls("gh")` argv assertions) + the PATH guard (holds the
         /// env mutex for the `#[serial]` test).
+        #[cfg(unix)]
         fn gh_present() -> (
             FakeToolDir,
             anodizer_core::test_helpers::fake_tool::PathGuard,
@@ -3542,6 +3544,7 @@ license-file = "LICENSE.txt"
         /// Return the value that immediately follows `flag` in a recorded
         /// `gh` argv (e.g. the `microsoft/winget-pkgs` after `--repo`), or
         /// `None` if the flag is absent or has no following token.
+        #[cfg(unix)]
         fn gh_arg(argv: &[String], flag: &str) -> Option<String> {
             argv.iter()
                 .position(|a| a == flag)
@@ -3654,6 +3657,7 @@ license-file = "LICENSE.txt"
         ///       PackageIdentifier, and
         ///   (2) the PR-create POST reached the responder at the same-repo
         ///       `/repos/fork-owner/winget-pkgs/pulls` with head = fork:branch.
+        #[cfg(unix)]
         #[test]
         #[serial]
         fn publish_pushes_three_manifests_and_opens_pr() {
@@ -3780,6 +3784,7 @@ license-file = "LICENSE.txt"
         /// exists" and the publisher records a `PendingValidation` override
         /// (so the dispatch summary tells the truth instead of `succeeded`).
         /// The branch push still happened first.
+        #[cfg(unix)]
         #[test]
         #[serial]
         fn publish_already_exists_records_pending_validation() {
@@ -3969,6 +3974,7 @@ license-file = "LICENSE.txt"
         /// shape is asserted from the recorded `gh` argv — there is no
         /// reqwest API POST on this path. The default-branch GET still fires
         /// (it runs before the transport match) and feeds `--base`.
+        #[cfg(unix)]
         #[test]
         #[serial]
         fn publish_without_pr_config_targets_microsoft_winget_pkgs() {
@@ -4045,6 +4051,7 @@ license-file = "LICENSE.txt"
         /// drives the real transport — there is no reqwest API POST on this
         /// path). The default-branch GET fires against the OVERRIDDEN slug
         /// and feeds `--base`.
+        #[cfg(unix)]
         #[test]
         #[serial]
         fn publish_honors_pull_request_base_override() {
@@ -4343,6 +4350,7 @@ license-file = "LICENSE.txt"
         /// publisher warns that `gh` CLI is required for in-place updates.
         /// The branch push still happened. Pins the API-transport arm of the
         /// `update_existing_pr` semantics.
+        #[cfg(unix)]
         #[test]
         #[serial]
         fn publish_update_existing_pr_via_api_is_noop_records_pending() {

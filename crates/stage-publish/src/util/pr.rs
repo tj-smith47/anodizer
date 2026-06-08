@@ -686,22 +686,32 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::maybe_submit_pr_with_env;
     use super::{
         PrOrigin, PrSpec, PrTransport, Upstream, classify_pr_transport, create_pr_via_api_with_env,
-        maybe_submit_pr, maybe_submit_pr_with_env, sync_fork,
+        maybe_submit_pr, sync_fork,
     };
     use anodizer_core::MapEnvSource;
     use anodizer_core::PublisherOutcome;
+    #[cfg(unix)]
+    use anodizer_core::config::PullRequestBaseConfig;
     use anodizer_core::config::{
-        HomebrewCaskConfig, KrewConfig, PullRequestBaseConfig, PullRequestConfig, RepositoryConfig,
-        StringOrBool, WingetConfig,
+        HomebrewCaskConfig, KrewConfig, PullRequestConfig, RepositoryConfig, StringOrBool,
+        WingetConfig,
     };
     use anodizer_core::log::{StageLogger, Verbosity};
+    // Consumed only by the unix-gated `gh_absent_path` helper below; the gate
+    // must match or the import reads as unused on a Windows build.
+    #[cfg(unix)]
     use anodizer_core::test_helpers::fake_tool::FakeToolDir;
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
     use anodizer_core::test_helpers::scripted_responder::{
         ScriptedRoute, spawn_scripted_responder,
     };
+    // `#[serial]` appears only on the unix-gated PATH-stub tests below; the
+    // gate must match or the import reads as unused on a Windows build.
+    #[cfg(unix)]
     use serial_test::serial;
     use std::path::Path;
     use std::process::Command;
@@ -1447,6 +1457,7 @@ mod tests {
     /// `gh_is_available()` reports false, then prepend it to `PATH`.
     /// Returns the guard (restores `PATH` + releases the env mutex on
     /// drop) plus the `FakeToolDir` holder (keeps the stub on disk).
+    #[cfg(unix)]
     fn gh_absent_path() -> (
         FakeToolDir,
         anodizer_core::test_helpers::fake_tool::PathGuard,
@@ -1467,6 +1478,7 @@ mod tests {
     ///      `/repos/upstream-owner/upstream-repo/pulls` with the correct
     ///      head/base — proving the cross-repo upstream resolution flows
     ///      through to the request, not the fork's own slug.
+    #[cfg(unix)]
     #[test]
     #[serial]
     fn maybe_submit_pr_cross_repo_force_pushes_and_targets_upstream() {
@@ -1561,6 +1573,7 @@ mod tests {
     /// as a side effect — yet the PR is still created, targeting the fork's
     /// own slug. Pins the `is_cross_repo` guard AND that the non-cross-repo
     /// path still reaches the transport with the fork as upstream.
+    #[cfg(unix)]
     #[test]
     #[serial]
     fn maybe_submit_pr_same_repo_skips_sync_but_still_creates_pr() {
@@ -1631,6 +1644,7 @@ mod tests {
     /// `maybe_submit_pr_with_env` flow (same-repo, hermetic gh-absent
     /// transport) and asserts the emitted request reflects both config
     /// fields — the config-to-request wiring, not just the return value.
+    #[cfg(unix)]
     #[test]
     #[serial]
     fn maybe_submit_pr_applies_body_override_and_draft_flag() {
@@ -1695,6 +1709,7 @@ mod tests {
     /// back to `ANODIZER_GITHUB_TOKEN` from the env source. With gh absent
     /// and that var present, the API transport is selected and the PR is
     /// created — proving env-based token resolution reaches the transport.
+    #[cfg(unix)]
     #[test]
     #[serial]
     fn maybe_submit_pr_resolves_token_from_env_when_repo_token_absent() {
@@ -1759,6 +1774,7 @@ mod tests {
     /// `NoneAvailable` => the function MUST surface `Failed`, never a
     /// silent `None` that dispatch would record as `succeeded`. End-to-end
     /// proof of the silent-skip contract at the orchestration boundary.
+    #[cfg(unix)]
     #[test]
     #[serial]
     fn maybe_submit_pr_no_gh_no_token_returns_failed() {
