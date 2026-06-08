@@ -1475,3 +1475,865 @@ impl Announcer for EmailAnnouncer {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::MapEnvSource;
+    use anodizer_core::config::{
+        Config, DiscordAnnounce, DiscourseAnnounce, EmailAnnounce, MastodonAnnounce,
+        MattermostAnnounce, SlackAnnounce, StringOrBool, TeamsAnnounce, TelegramAnnounce,
+        WebhookConfig,
+    };
+    use anodizer_core::context::ContextOptions;
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+    use std::time::Duration;
+
+    /// A retry policy that fails after one attempt so error-path tests don't
+    /// sleep through three retries against a 4xx/5xx responder.
+    fn no_retry() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(5),
+        }
+    }
+
+    /// Build a live (non-dry-run) Context with the supplied announce config,
+    /// an empty injected env source (so process-env leakage can't satisfy a
+    /// credential assertion), and the standard Tag / ReleaseURL template vars.
+    fn live_ctx(announce: AnnounceConfig, env: &[(&str, &str)]) -> Context {
+        let config = Config {
+            project_name: "myapp".to_string(),
+            announce: Some(announce),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut src = MapEnvSource::new();
+        for (k, v) in env {
+            src = src.with(*k, *v);
+        }
+        ctx.set_env_source(src);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
+        );
+        ctx
+    }
+
+    /// Build a non-live Context (no env / no network) for `enabled` and
+    /// `render_only` unit tests.
+    fn render_ctx(announce: AnnounceConfig) -> Context {
+        let config = Config {
+            project_name: "myapp".to_string(),
+            announce: Some(announce),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.set_env_source(MapEnvSource::new());
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
+        );
+        ctx
+    }
+
+    fn ok_route(path: &'static str) -> ScriptedRoute {
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: path,
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+            times: None,
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Rendered-value validators (validate_discord_color,
+    // validate_webhook_endpoint_url, validate_telegram_thread_id,
+    // validate_email_from)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn discord_color_empty_render_is_unset() {
+        assert_eq!(validate_discord_color("   ").unwrap(), None);
+        assert_eq!(validate_discord_color("").unwrap(), None);
+    }
+
+    #[test]
+    fn discord_color_parses_in_range_value() {
+        assert_eq!(
+            validate_discord_color(" 16711680 ").unwrap(),
+            Some(16711680)
+        );
+    }
+
+    #[test]
+    fn discord_color_rejects_out_of_range() {
+        let err = validate_discord_color("16777216").unwrap_err().to_string();
+        assert!(err.contains("out of range"), "{err}");
+    }
+
+    #[test]
+    fn discord_color_rejects_non_integer() {
+        let err = validate_discord_color("#ff0000").unwrap_err().to_string();
+        assert!(err.contains("invalid color"), "{err}");
+    }
+
+    #[test]
+    fn webhook_endpoint_url_rejects_non_http_scheme() {
+        let err = validate_webhook_endpoint_url("ftp://example.com/hook")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must use http or https"), "{err}");
+    }
+
+    #[test]
+    fn webhook_endpoint_url_redacts_credentials_in_error() {
+        // A relative URL has no host; the error must not echo the password.
+        let err = validate_webhook_endpoint_url("https://user:hunter2@")
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("hunter2"), "password leaked: {err}");
+    }
+
+    #[test]
+    fn webhook_endpoint_url_accepts_plain_https() {
+        assert!(validate_webhook_endpoint_url("https://example.com/hook").is_ok());
+    }
+
+    #[test]
+    fn telegram_thread_id_empty_is_unset() {
+        assert_eq!(validate_telegram_thread_id("  ").unwrap(), None);
+    }
+
+    #[test]
+    fn telegram_thread_id_parses_negative_i64() {
+        assert_eq!(validate_telegram_thread_id("-42").unwrap(), Some(-42));
+    }
+
+    #[test]
+    fn telegram_thread_id_rejects_non_integer() {
+        let err = validate_telegram_thread_id("abc").unwrap_err().to_string();
+        assert!(err.contains("invalid message_thread_id"), "{err}");
+    }
+
+    #[test]
+    fn email_from_rejects_missing_at_sign() {
+        let err = validate_email_from("not-an-email").unwrap_err().to_string();
+        assert!(err.contains("missing @"), "{err}");
+    }
+
+    // ------------------------------------------------------------------
+    // enabled() evaluation across providers
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn enabled_false_when_config_block_absent() {
+        let announce = AnnounceConfig::default();
+        let mut ctx = render_ctx(announce.clone());
+        assert!(!DiscordAnnouncer.enabled(&mut ctx, &announce).unwrap());
+        assert!(!SlackAnnouncer.enabled(&mut ctx, &announce).unwrap());
+        assert!(!EmailAnnouncer.enabled(&mut ctx, &announce).unwrap());
+    }
+
+    #[test]
+    fn enabled_respects_bool_flag() {
+        let announce = AnnounceConfig {
+            discord: Some(DiscordAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some("http://x/y".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = render_ctx(announce.clone());
+        assert!(DiscordAnnouncer.enabled(&mut ctx, &announce).unwrap());
+    }
+
+    #[test]
+    fn enabled_renders_template_to_truthy() {
+        // The `enabled` string must be rendered through the template engine,
+        // not compared raw: a var that renders to "true" enables the provider.
+        let announce = AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::String("{{ AnnounceOn }}".to_string())),
+                webhook_url: Some("http://x/y".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = render_ctx(announce.clone());
+        ctx.template_vars_mut().set("AnnounceOn", "true");
+        assert!(SlackAnnouncer.enabled(&mut ctx, &announce).unwrap());
+    }
+
+    #[test]
+    fn enabled_template_falsy_disables() {
+        let announce = AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::String("{{ AnnounceOn }}".to_string())),
+                webhook_url: Some("http://x/y".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = render_ctx(announce.clone());
+        ctx.template_vars_mut().set("AnnounceOn", "false");
+        assert!(!SlackAnnouncer.enabled(&mut ctx, &announce).unwrap());
+    }
+
+    #[test]
+    fn enabled_propagates_template_error() {
+        let announce = AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::String("{{ NoSuchVar }}".to_string())),
+                webhook_url: Some("http://x/y".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = render_ctx(announce.clone());
+        assert!(SlackAnnouncer.enabled(&mut ctx, &announce).is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // run_announcer / dispatch loop
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn run_announcer_skips_when_disabled() {
+        // A disabled announcer with a bogus URL must never reach `send`
+        // (no panic from the `.invalid` host, no error collected).
+        let announce = AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::Bool(false)),
+                webhook_url: Some("http://127.0.0.1:1/never".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let log = ctx.logger("announce");
+        let mut errors = vec![];
+        run_announcer(
+            &SlackAnnouncer,
+            &mut ctx,
+            &announce,
+            &no_retry(),
+            &log,
+            &mut errors,
+        )
+        .unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn run_announcer_collects_send_error_with_provider_prefix() {
+        // Point slack at a 500 responder: `send` fails, and the error must
+        // be collected (not propagated) and prefixed with the provider name.
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/hook",
+            response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 4\r\n\r\nboom",
+            times: None,
+        }]);
+        let announce = AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some(format!("http://{addr}/hook")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let log = ctx.logger("announce");
+        let mut errors = vec![];
+        run_announcer(
+            &SlackAnnouncer,
+            &mut ctx,
+            &announce,
+            &no_retry(),
+            &log,
+            &mut errors,
+        )
+        .unwrap();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("slack: "), "{}", errors[0]);
+    }
+
+    #[test]
+    fn run_announcer_propagates_enabled_template_error() {
+        let announce = AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::String("{{ NoSuchVar }}".to_string())),
+                webhook_url: Some("http://x/y".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let log = ctx.logger("announce");
+        let mut errors = vec![];
+        // enabled() errors must bubble up as the function's Err, not be
+        // collected into the per-provider errors vec.
+        assert!(
+            run_announcer(
+                &SlackAnnouncer,
+                &mut ctx,
+                &announce,
+                &no_retry(),
+                &log,
+                &mut errors
+            )
+            .is_err()
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn dispatch_all_collects_errors_from_two_failing_providers() {
+        // Slack (500) and Teams (500) both fail; discord is disabled and
+        // must not appear. The dispatch loop continues past the first
+        // failure and collects both, in registry order (discord before
+        // slack before teams).
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/hook",
+            response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let url = format!("http://{addr}/hook");
+        let announce = AnnounceConfig {
+            discord: Some(DiscordAnnounce {
+                enabled: Some(StringOrBool::Bool(false)),
+                webhook_url: Some(url.clone()),
+                ..Default::default()
+            }),
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some(url.clone()),
+                ..Default::default()
+            }),
+            teams: Some(TeamsAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some(url.clone()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let log = ctx.logger("announce");
+        let mut errors = vec![];
+        dispatch_all_announcers(&mut ctx, &announce, &no_retry(), &log, &mut errors).unwrap();
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors[0].starts_with("slack: "), "{}", errors[0]);
+        assert!(errors[1].starts_with("teams: "), "{}", errors[1]);
+    }
+
+    // ------------------------------------------------------------------
+    // Live send() request-body assertions (the major uncovered surface)
+    // ------------------------------------------------------------------
+
+    /// Slack `send` resolves `webhook_url`, renders the message, and POSTs the
+    /// slack JSON envelope with channel/username overrides wired in.
+    #[test]
+    fn slack_send_posts_rendered_message_and_channel() {
+        let (addr, log) = spawn_scripted_responder(vec![ok_route("/services/T000")]);
+        let announce = AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some(format!("http://{addr}/services/T000")),
+                message_template: Some("{{ ProjectName }} {{ Tag }} released!".to_string()),
+                channel: Some("release-{{ Tag }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let logger = ctx.logger("announce");
+        SlackAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap();
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "/services/T000");
+        let body: serde_json::Value = serde_json::from_str(&entries[0].body).unwrap();
+        assert_eq!(body["text"], "myapp v1.0.0 released!");
+        assert_eq!(body["channel"], "release-v1.0.0");
+    }
+
+    /// Slack falls back to the `SLACK_WEBHOOK` env var when `webhook_url` is
+    /// absent.
+    #[test]
+    fn slack_send_uses_slack_webhook_env_fallback() {
+        let (addr, log) = spawn_scripted_responder(vec![ok_route("/env-hook")]);
+        let announce = AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let env_url = format!("http://{addr}/env-hook");
+        let mut ctx = live_ctx(announce.clone(), &[("SLACK_WEBHOOK", &env_url)]);
+        let logger = ctx.logger("announce");
+        SlackAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap();
+        assert_eq!(log.lock().unwrap()[0].path, "/env-hook");
+    }
+
+    /// Discord `send` defaults the author to the brand display name and POSTs
+    /// an embed envelope (not a plain `content` field).
+    #[test]
+    fn discord_send_posts_embed_with_default_author() {
+        let (addr, log) = spawn_scripted_responder(vec![ok_route("/hook")]);
+        let announce = AnnounceConfig {
+            discord: Some(DiscordAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some(format!("http://{addr}/hook")),
+                message_template: Some("{{ Tag }} is live".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let logger = ctx.logger("announce");
+        DiscordAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap();
+        let entries = log.lock().unwrap();
+        let body: serde_json::Value = serde_json::from_str(&entries[0].body).unwrap();
+        assert!(body.get("content").is_none(), "{body}");
+        let embed = &body["embeds"][0];
+        assert_eq!(embed["description"], "v1.0.0 is live");
+        assert_eq!(embed["author"]["name"], DEFAULT_DISPLAY_NAME);
+    }
+
+    /// Discord builds the webhook URL from `DISCORD_WEBHOOK_ID` /
+    /// `DISCORD_WEBHOOK_TOKEN` against the `DISCORD_API` base, percent-encoding
+    /// the id/token path segments.
+    #[test]
+    fn discord_send_builds_url_from_id_token_env() {
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/webhooks/wid/wtok",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+            times: None,
+        }]);
+        let announce = AnnounceConfig {
+            discord: Some(DiscordAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let base = format!("http://{addr}");
+        let mut ctx = live_ctx(
+            announce.clone(),
+            &[
+                ("DISCORD_API", &base),
+                ("DISCORD_WEBHOOK_ID", "wid"),
+                ("DISCORD_WEBHOOK_TOKEN", "wtok"),
+            ],
+        );
+        let logger = ctx.logger("announce");
+        DiscordAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap();
+        assert_eq!(log.lock().unwrap()[0].path, "/webhooks/wid/wtok");
+    }
+
+    /// Discord rejects a `color` template that renders out of the 24-bit range
+    /// before any send fires.
+    #[test]
+    fn discord_send_rejects_invalid_color() {
+        let announce = AnnounceConfig {
+            discord: Some(DiscordAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some("http://127.0.0.1:1/x".to_string()),
+                color: Some("99999999".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let logger = ctx.logger("announce");
+        let err = DiscordAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("out of range"), "{err}");
+    }
+
+    /// Teams `send` resolves the webhook, renders the default title, and POSTs
+    /// the adaptive-card envelope carrying the message text.
+    #[test]
+    fn teams_send_posts_card_with_message() {
+        let (addr, log) = spawn_scripted_responder(vec![ok_route("/teams")]);
+        let announce = AnnounceConfig {
+            teams: Some(TeamsAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some(format!("http://{addr}/teams")),
+                message_template: Some("{{ ProjectName }} shipped".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let logger = ctx.logger("announce");
+        TeamsAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap();
+        let entries = log.lock().unwrap();
+        assert_eq!(entries[0].path, "/teams");
+        assert!(
+            entries[0].body.contains("myapp shipped"),
+            "message in card: {}",
+            entries[0].body
+        );
+    }
+
+    /// Mattermost `send` renders the `channel` template (anodizer-additive UX)
+    /// and POSTs it in the payload.
+    #[test]
+    fn mattermost_send_renders_channel_template() {
+        let (addr, log) = spawn_scripted_responder(vec![ok_route("/mm")]);
+        let announce = AnnounceConfig {
+            mattermost: Some(MattermostAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some(format!("http://{addr}/mm")),
+                channel: Some("rel-{{ Tag }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let logger = ctx.logger("announce");
+        MattermostAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&log.lock().unwrap()[0].body).unwrap();
+        assert_eq!(body["channel"], "rel-v1.0.0");
+    }
+
+    /// Webhook `send` renders a templated custom header (exercising the
+    /// per-header render loop) and POSTs the rendered message body. The
+    /// responder log captures method/path/body, so the body is asserted
+    /// directly; the header render path runs without panicking.
+    #[test]
+    fn webhook_send_renders_headers_and_posts_message_body() {
+        let (addr, log) = spawn_scripted_responder(vec![ok_route("/wh")]);
+        let mut headers = HashMap::new();
+        headers.insert("X-Release-Tag".to_string(), "tag-{{ Tag }}".to_string());
+        let announce = AnnounceConfig {
+            webhook: Some(WebhookConfig {
+                enabled: Some(StringOrBool::Bool(true)),
+                endpoint_url: Some(format!("http://{addr}/wh")),
+                headers: Some(headers),
+                content_type: None,
+                message_template: Some("body-{{ Tag }}".to_string()),
+                skip_tls_verify: None,
+                expected_status_codes: vec![],
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let logger = ctx.logger("announce");
+        WebhookAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap();
+        let entries = log.lock().unwrap();
+        assert_eq!(entries[0].path, "/wh");
+        assert_eq!(entries[0].body, "body-v1.0.0");
+    }
+
+    /// Webhook `send` honors a non-default `expected_status_codes` list: a 202
+    /// response that would normally be unexpected is accepted.
+    #[test]
+    fn webhook_send_accepts_configured_expected_status() {
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/wh",
+            response: "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let announce = AnnounceConfig {
+            webhook: Some(WebhookConfig {
+                enabled: Some(StringOrBool::Bool(true)),
+                endpoint_url: Some(format!("http://{addr}/wh")),
+                headers: None,
+                content_type: None,
+                message_template: Some("hi".to_string()),
+                skip_tls_verify: None,
+                expected_status_codes: vec![202],
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let logger = ctx.logger("announce");
+        WebhookAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap();
+    }
+
+    /// Webhook `send` rejects a rendered endpoint with a non-http scheme
+    /// before firing.
+    #[test]
+    fn webhook_send_rejects_bad_scheme() {
+        let announce = AnnounceConfig {
+            webhook: Some(WebhookConfig {
+                enabled: Some(StringOrBool::Bool(true)),
+                endpoint_url: Some("ftp://host/x".to_string()),
+                headers: None,
+                content_type: None,
+                message_template: None,
+                skip_tls_verify: None,
+                expected_status_codes: vec![],
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let logger = ctx.logger("announce");
+        let err = WebhookAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must use http or https"), "{err}");
+    }
+
+    /// Discourse `send` POSTs to `<server>/posts.json` with the API-key header
+    /// and a category id wired in.
+    #[test]
+    fn discourse_send_posts_to_posts_json() {
+        let (addr, log) = spawn_scripted_responder(vec![ok_route("/posts.json")]);
+        let announce = AnnounceConfig {
+            discourse: Some(DiscourseAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                server: Some(format!("http://{addr}")),
+                category_id: Some(5),
+                username: None,
+                title_template: None,
+                message_template: Some("body {{ Tag }}".to_string()),
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[("DISCOURSE_API_KEY", "k")]);
+        let logger = ctx.logger("announce");
+        DiscourseAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap();
+        let entries = log.lock().unwrap();
+        assert_eq!(entries[0].path, "/posts.json");
+        assert!(
+            entries[0].body.contains("body v1.0.0"),
+            "{}",
+            entries[0].body
+        );
+    }
+
+    /// Discourse `send` hard-bails (regardless of strict mode) when
+    /// `category_id` is configured as zero — a config error, not
+    /// skip-when-empty.
+    #[test]
+    fn discourse_send_rejects_zero_category_id() {
+        let announce = AnnounceConfig {
+            discourse: Some(DiscourseAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                server: Some("http://127.0.0.1:1".to_string()),
+                category_id: Some(0),
+                username: None,
+                title_template: None,
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[("DISCOURSE_API_KEY", "k")]);
+        let logger = ctx.logger("announce");
+        let err = DiscourseAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("category_id must be non-zero"), "{err}");
+    }
+
+    /// Telegram `send` warn-and-skips in normal mode when `chat_id` is absent:
+    /// no network call, Ok result (skip-when-empty UX), even though bot_token
+    /// is present.
+    #[test]
+    fn telegram_send_missing_chat_id_warn_and_skips() {
+        // Non-strict mode: a missing chat_id warns and skips cleanly — no
+        // network call, Ok result.
+        let announce = AnnounceConfig {
+            telegram: Some(TelegramAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                bot_token: Some("123:ABC".to_string()),
+                chat_id: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let logger = ctx.logger("announce");
+        TelegramAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .expect("missing chat_id must skip cleanly in normal mode");
+    }
+
+    /// Mastodon `send` fail-fasts when MASTODON_CLIENT_ID is unset even though
+    /// MASTODON_ACCESS_TOKEN is present (all three OAuth fields are required).
+    #[test]
+    fn mastodon_send_requires_all_three_credentials() {
+        let announce = AnnounceConfig {
+            mastodon: Some(MastodonAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                server: Some("https://mastodon.example".to_string()),
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[("MASTODON_ACCESS_TOKEN", "tok")]);
+        let logger = ctx.logger("announce");
+        let err = MastodonAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("MASTODON_CLIENT_ID"), "{err}");
+    }
+
+    /// Email `send` routes through SMTP when a host is configured, and bails
+    /// when the SMTP username is missing (host present, no username).
+    #[test]
+    fn email_send_smtp_requires_username() {
+        let announce = AnnounceConfig {
+            email: Some(EmailAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                host: Some("smtp.example.com".to_string()),
+                from: Some("rel@example.com".to_string()),
+                to: vec!["dev@example.com".to_string()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let logger = ctx.logger("announce");
+        let err = EmailAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("SMTP username is required"), "{err}");
+    }
+
+    /// Email `send` hard-bails on a malformed `from` (no `@`) even in normal
+    /// mode — it's a config error, not skip-when-empty.
+    #[test]
+    fn email_send_rejects_malformed_from() {
+        let announce = AnnounceConfig {
+            email: Some(EmailAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                from: Some("noatsign".to_string()),
+                to: vec!["dev@example.com".to_string()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let logger = ctx.logger("announce");
+        let err = EmailAnnouncer
+            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("missing @"), "{err}");
+    }
+
+    // ------------------------------------------------------------------
+    // render_only / render_all_announcers (the pre-publish guard)
+    // ------------------------------------------------------------------
+
+    /// A broken `message_template` (undefined var) surfaces from
+    /// `render_only` as an Err without any network call.
+    #[test]
+    fn render_only_surfaces_broken_message_template() {
+        let announce = AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some("http://x/y".to_string()),
+                message_template: Some("{{ NoSuchVar }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = render_ctx(announce.clone());
+        assert!(SlackAnnouncer.render_only(&mut ctx, &announce).is_err());
+    }
+
+    /// `render_only` runs the SAME color validator `send` does: an
+    /// out-of-range color template is caught by the guard.
+    #[test]
+    fn render_only_validates_discord_color() {
+        let announce = AnnounceConfig {
+            discord: Some(DiscordAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some("http://x/y".to_string()),
+                color: Some("{{ 16777216 }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = render_ctx(announce.clone());
+        let err = DiscordAnnouncer
+            .render_only(&mut ctx, &announce)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("out of range"), "{err}");
+    }
+
+    /// `render_all_announcers` skips a disabled announcer's render entirely:
+    /// a disabled slack with a broken template must NOT surface an error,
+    /// matching the live dispatch loop's skip behavior.
+    #[test]
+    fn render_all_skips_disabled_announcer() {
+        let announce = AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::Bool(false)),
+                webhook_url: Some("http://x/y".to_string()),
+                message_template: Some("{{ NoSuchVar }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = render_ctx(announce.clone());
+        let mut errors = vec![];
+        render_all_announcers(&mut ctx, &announce, &mut errors).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    /// `render_all_announcers` collects a per-provider error (prefixed with
+    /// the provider name) for an ENABLED announcer whose template is broken.
+    #[test]
+    fn render_all_collects_enabled_provider_render_error() {
+        let announce = AnnounceConfig {
+            webhook: Some(WebhookConfig {
+                enabled: Some(StringOrBool::Bool(true)),
+                endpoint_url: Some("{{ NoSuchVar }}".to_string()),
+                headers: None,
+                content_type: None,
+                message_template: None,
+                skip_tls_verify: None,
+                expected_status_codes: vec![],
+            }),
+            ..Default::default()
+        };
+        let mut ctx = render_ctx(announce.clone());
+        let mut errors = vec![];
+        render_all_announcers(&mut ctx, &announce, &mut errors).unwrap();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("webhook: "), "{}", errors[0]);
+    }
+}

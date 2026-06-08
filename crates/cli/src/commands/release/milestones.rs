@@ -962,4 +962,293 @@ mod tests {
             "expected 3 connections (503 retry GET, 200 GET, 200 PUT)"
         );
     }
+
+    // ---- resolve_milestone_repo — owner/name resolution logic ----------
+    //
+    // This is the multi-crate grouping core: it must prefer an explicit
+    // `milestones.repo`, else a crate release block matching the active SCM
+    // (ctx.token_type), else any crate's release block as fallback, else
+    // ("",""). The git-remote final fallback is exercised only when every
+    // crate path is empty AND a remote exists; the configs below all
+    // resolve before reaching that probe so the tests are hermetic.
+
+    fn release_with(
+        github: Option<(&str, &str)>,
+        gitlab: Option<(&str, &str)>,
+        gitea: Option<(&str, &str)>,
+    ) -> ReleaseConfig {
+        let mk = |p: (&str, &str)| ScmRepoConfig {
+            owner: p.0.to_string(),
+            name: p.1.to_string(),
+        };
+        ReleaseConfig {
+            github: github.map(mk),
+            gitlab: gitlab.map(mk),
+            gitea: gitea.map(mk),
+            ..Default::default()
+        }
+    }
+
+    fn crate_with(release: ReleaseConfig) -> CrateConfig {
+        CrateConfig {
+            release: Some(release),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_repo_prefers_explicit_milestone_repo_over_crates() {
+        // An explicit `milestones.repo` wins even when crate release blocks
+        // would resolve to something else.
+        let config = Config {
+            crates: vec![crate_with(release_with(
+                Some(("crateowner", "cratename")),
+                None,
+                None,
+            ))],
+            ..Default::default()
+        };
+        let cfg = MilestoneConfig {
+            repo: Some(ScmRepoConfig {
+                owner: "explicit".into(),
+                name: "override".into(),
+            }),
+            ..Default::default()
+        };
+        let (owner, name) = resolve_milestone_repo(&cfg, &config, ScmTokenType::GitHub);
+        assert_eq!((owner.as_str(), name.as_str()), ("explicit", "override"));
+    }
+
+    #[test]
+    fn resolve_repo_explicit_with_empty_fields_falls_through_to_crates() {
+        // A `repo` block present but with empty owner/name must NOT short-
+        // circuit — it falls through to crate resolution.
+        let config = Config {
+            crates: vec![crate_with(release_with(
+                Some(("cowner", "cname")),
+                None,
+                None,
+            ))],
+            ..Default::default()
+        };
+        let cfg = MilestoneConfig {
+            repo: Some(ScmRepoConfig {
+                owner: String::new(),
+                name: String::new(),
+            }),
+            ..Default::default()
+        };
+        let (owner, name) = resolve_milestone_repo(&cfg, &config, ScmTokenType::GitHub);
+        assert_eq!((owner.as_str(), name.as_str()), ("cowner", "cname"));
+    }
+
+    #[test]
+    fn resolve_repo_picks_block_matching_active_token_type() {
+        // A crate carrying both GitHub and GitLab blocks; the active
+        // token_type decides which one is chosen.
+        let config = Config {
+            crates: vec![crate_with(release_with(
+                Some(("ghowner", "ghrepo")),
+                Some(("globwner", "glrepo")),
+                None,
+            ))],
+            ..Default::default()
+        };
+        let cfg = MilestoneConfig::default();
+
+        let (o, n) = resolve_milestone_repo(&cfg, &config, ScmTokenType::GitLab);
+        assert_eq!(
+            (o.as_str(), n.as_str()),
+            ("globwner", "glrepo"),
+            "GitLab run must pick the gitlab block"
+        );
+
+        let (o, n) = resolve_milestone_repo(&cfg, &config, ScmTokenType::GitHub);
+        assert_eq!(
+            (o.as_str(), n.as_str()),
+            ("ghowner", "ghrepo"),
+            "GitHub run must pick the github block"
+        );
+    }
+
+    #[test]
+    fn resolve_repo_falls_back_to_any_block_when_active_provider_absent() {
+        // Active provider is Gitea, but the only crate has just a GitHub
+        // block. The fallback (any provider) must surface it rather than
+        // returning empty.
+        let config = Config {
+            crates: vec![crate_with(release_with(
+                Some(("ghowner", "ghrepo")),
+                None,
+                None,
+            ))],
+            ..Default::default()
+        };
+        let cfg = MilestoneConfig::default();
+        let (o, n) = resolve_milestone_repo(&cfg, &config, ScmTokenType::Gitea);
+        assert_eq!((o.as_str(), n.as_str()), ("ghowner", "ghrepo"));
+    }
+
+    #[test]
+    fn resolve_repo_matching_provider_in_later_crate_beats_earlier_fallback() {
+        // crate[0] has only a github block (becomes the fallback); crate[1]
+        // has the gitlab block matching the active GitLab run. The matching
+        // block must win over the earlier fallback — proving the single-pass
+        // loop prefers a provider match found later over an any-provider
+        // match found earlier.
+        let config = Config {
+            crates: vec![
+                crate_with(release_with(
+                    Some(("fallback_owner", "fallback_repo")),
+                    None,
+                    None,
+                )),
+                crate_with(release_with(
+                    None,
+                    Some(("match_owner", "match_repo")),
+                    None,
+                )),
+            ],
+            ..Default::default()
+        };
+        let cfg = MilestoneConfig::default();
+        let (o, n) = resolve_milestone_repo(&cfg, &config, ScmTokenType::GitLab);
+        assert_eq!(
+            (o.as_str(), n.as_str()),
+            ("match_owner", "match_repo"),
+            "a provider-matching block in a later crate must beat an earlier any-provider fallback"
+        );
+    }
+
+    #[test]
+    fn resolve_repo_fallback_uses_first_crate_with_any_block() {
+        // Active provider is Gitea, no crate has a gitea block. crate[0] has
+        // no release at all (skipped), crate[1] github, crate[2] gitlab. The
+        // fallback must latch onto crate[1]'s github (first-any), not crate[2].
+        let config = Config {
+            crates: vec![
+                CrateConfig::default(),
+                crate_with(release_with(
+                    Some(("first_any_owner", "first_any_repo")),
+                    None,
+                    None,
+                )),
+                crate_with(release_with(
+                    None,
+                    Some(("later_owner", "later_repo")),
+                    None,
+                )),
+            ],
+            ..Default::default()
+        };
+        let cfg = MilestoneConfig::default();
+        let (o, n) = resolve_milestone_repo(&cfg, &config, ScmTokenType::Gitea);
+        assert_eq!(
+            (o.as_str(), n.as_str()),
+            ("first_any_owner", "first_any_repo")
+        );
+    }
+
+    #[test]
+    fn resolve_repo_empty_block_fields_propagate_as_empty() {
+        // A crate whose preferred (matching) block exists but has empty
+        // owner/name returns those empty strings directly — the caller
+        // (resolve_milestone_for_close) treats that as unresolvable. This
+        // is the seam config_with_empty_release_block() relies on.
+        let config = Config {
+            crates: vec![crate_with(release_with(Some(("", "")), None, None))],
+            ..Default::default()
+        };
+        let cfg = MilestoneConfig::default();
+        let (o, n) = resolve_milestone_repo(&cfg, &config, ScmTokenType::GitHub);
+        assert_eq!((o.as_str(), n.as_str()), ("", ""));
+    }
+
+    // ---- resolve_milestone_api_url — base-URL normalization ------------
+
+    fn config_with_gitlab_api(api: Option<&str>) -> Config {
+        Config {
+            gitlab_urls: Some(anodizer_core::config::GitLabUrlsConfig {
+                api: api.map(String::from),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn config_with_gitea_api(api: Option<&str>) -> Config {
+        Config {
+            gitea_urls: Some(anodizer_core::config::GiteaUrlsConfig {
+                api: api.map(String::from),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn api_url_none_when_no_overrides_configured() {
+        let cfg = MilestoneConfig::default();
+        assert!(resolve_milestone_api_url(&cfg, &Config::default()).is_none());
+    }
+
+    #[test]
+    fn api_url_strips_trailing_slash_from_gitlab() {
+        let cfg = MilestoneConfig::default();
+        let url = resolve_milestone_api_url(
+            &cfg,
+            &config_with_gitlab_api(Some("https://gitlab.example.com/api/v4/")),
+        );
+        assert_eq!(url.as_deref(), Some("https://gitlab.example.com/api/v4"));
+    }
+
+    #[test]
+    fn api_url_strips_multiple_trailing_slashes() {
+        let cfg = MilestoneConfig::default();
+        let url = resolve_milestone_api_url(
+            &cfg,
+            &config_with_gitlab_api(Some("https://gl.example.com/api/v4///")),
+        );
+        assert_eq!(url.as_deref(), Some("https://gl.example.com/api/v4"));
+    }
+
+    #[test]
+    fn api_url_prefers_gitlab_over_gitea_when_both_set() {
+        let cfg = MilestoneConfig::default();
+        let config = Config {
+            gitlab_urls: Some(anodizer_core::config::GitLabUrlsConfig {
+                api: Some("https://gl.example.com/api/v4".into()),
+                ..Default::default()
+            }),
+            gitea_urls: Some(anodizer_core::config::GiteaUrlsConfig {
+                api: Some("https://gitea.example.com/api/v1".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let url = resolve_milestone_api_url(&cfg, &config);
+        assert_eq!(
+            url.as_deref(),
+            Some("https://gl.example.com/api/v4"),
+            "gitlab_urls.api takes precedence over gitea_urls.api"
+        );
+    }
+
+    #[test]
+    fn api_url_falls_back_to_gitea_when_gitlab_absent() {
+        let cfg = MilestoneConfig::default();
+        let url = resolve_milestone_api_url(
+            &cfg,
+            &config_with_gitea_api(Some("https://gitea.example.com/api/v1/")),
+        );
+        assert_eq!(url.as_deref(), Some("https://gitea.example.com/api/v1"));
+    }
+
+    #[test]
+    fn api_url_none_when_urls_block_present_but_api_field_empty() {
+        // A gitlab_urls block with `api: None` must not short-circuit to a
+        // bogus base — it returns None so the caller defaults to the public host.
+        let cfg = MilestoneConfig::default();
+        assert!(resolve_milestone_api_url(&cfg, &config_with_gitlab_api(None)).is_none());
+    }
 }

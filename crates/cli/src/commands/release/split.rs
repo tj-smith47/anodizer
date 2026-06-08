@@ -1571,4 +1571,386 @@ mod tests {
             err
         );
     }
+
+    // -----------------------------------------------------------------
+    // redact_secret_env_vars — pure secret-scrubbing transform
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn redact_replaces_secret_suffix_values_keeps_keys() {
+        let mut env = HashMap::new();
+        env.insert("GITHUB_TOKEN".to_string(), "ghp_abc".to_string());
+        env.insert("DEPLOY_SECRET".to_string(), "s3cr3t".to_string());
+        env.insert("DB_PASSWORD".to_string(), "hunter2".to_string());
+        env.insert("SIGNING_KEY".to_string(), "k".to_string());
+        env.insert("GPG_PASSPHRASE".to_string(), "p".to_string());
+        env.insert("SOME_API_KEY".to_string(), "ak".to_string());
+
+        let out = redact_secret_env_vars(&env);
+
+        // Every secret-suffixed key survives (diagnosability) but its value is masked.
+        for key in [
+            "GITHUB_TOKEN",
+            "DEPLOY_SECRET",
+            "DB_PASSWORD",
+            "SIGNING_KEY",
+            "GPG_PASSPHRASE",
+            "SOME_API_KEY",
+        ] {
+            assert_eq!(
+                out.get(key).map(String::as_str),
+                Some("[redacted]"),
+                "key {key} must be redacted but present"
+            );
+        }
+    }
+
+    #[test]
+    fn redact_masks_substring_hints_case_insensitively() {
+        let mut env = HashMap::new();
+        // lowercase + mixed case must still trip the uppercase-normalized match
+        env.insert("aws_credential".to_string(), "v".to_string());
+        env.insert("MyApiKeyThing".to_string(), "v".to_string());
+        let out = redact_secret_env_vars(&env);
+        assert_eq!(out.get("aws_credential").unwrap(), "[redacted]");
+        assert_eq!(out.get("MyApiKeyThing").unwrap(), "[redacted]");
+    }
+
+    #[test]
+    fn redact_leaves_non_secret_values_intact() {
+        let mut env = HashMap::new();
+        env.insert("ANODIZER_OS".to_string(), "linux".to_string());
+        env.insert("CARGO_TERM_COLOR".to_string(), "always".to_string());
+        let out = redact_secret_env_vars(&env);
+        assert_eq!(out.get("ANODIZER_OS").unwrap(), "linux");
+        assert_eq!(out.get("CARGO_TERM_COLOR").unwrap(), "always");
+    }
+
+    #[test]
+    fn redact_leaves_empty_secret_values_empty() {
+        // An empty secret stays empty (not "[redacted]") so a downstream
+        // `.Env.X` template still renders empty — the value carried no secret.
+        let mut env = HashMap::new();
+        env.insert("GITHUB_TOKEN".to_string(), String::new());
+        let out = redact_secret_env_vars(&env);
+        assert_eq!(out.get("GITHUB_TOKEN").unwrap(), "");
+    }
+
+    // -----------------------------------------------------------------
+    // artifact_to_split — Artifact -> SplitArtifact projection
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn artifact_to_split_projects_all_fields() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        let mut metadata = HashMap::new();
+        metadata.insert("Format".to_string(), "tar.gz".to_string());
+        let art = Artifact {
+            kind: ArtifactKind::Archive,
+            name: "myapp.tar.gz".to_string(),
+            path: PathBuf::from("/dist/linux/myapp.tar.gz"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata,
+            size: Some(4096),
+        };
+
+        let split = artifact_to_split(&art);
+
+        assert_eq!(split.name, "myapp.tar.gz");
+        assert_eq!(split.path, "/dist/linux/myapp.tar.gz");
+        // os/arch derive from the target triple via map_target.
+        assert_eq!(split.os.as_deref(), Some("linux"));
+        assert_eq!(split.arch.as_deref(), Some("amd64"));
+        assert_eq!(split.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+        assert_eq!(split.kind, "archive");
+        assert_eq!(split.crate_name, "myapp");
+        // metadata flows into `extra` as JSON strings.
+        assert_eq!(
+            split.extra.get("Format").and_then(|v| v.as_str()),
+            Some("tar.gz")
+        );
+        // split/merge writer never tracks sha256; size flows through.
+        assert!(split.sha256.is_none());
+        assert_eq!(split.size, Some(4096));
+    }
+
+    #[test]
+    fn artifact_to_split_no_target_yields_no_os_arch() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        let art = Artifact {
+            kind: ArtifactKind::Metadata,
+            name: "checksums.txt".to_string(),
+            path: PathBuf::from("/dist/checksums.txt"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        };
+        let split = artifact_to_split(&art);
+        assert!(split.os.is_none(), "no target → no os");
+        assert!(split.arch.is_none(), "no target → no arch");
+        assert!(split.target.is_none());
+        assert_eq!(split.kind, "metadata");
+        assert!(split.extra.is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // build_matrix — edge cases beyond the existing os/target dedup tests
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn build_matrix_empty_targets_yields_empty_include() {
+        let matrix = build_matrix(&[], "os");
+        assert_eq!(matrix.split_by, "os");
+        assert!(matrix.include.is_empty());
+    }
+
+    #[test]
+    fn build_matrix_single_target_os_mode() {
+        let matrix = build_matrix(&["aarch64-apple-darwin".to_string()], "os");
+        assert_eq!(matrix.include.len(), 1);
+        assert_eq!(matrix.include[0].target, "darwin");
+        assert_eq!(matrix.include[0].runner, "macos-latest");
+    }
+
+    #[test]
+    fn build_matrix_target_mode_preserves_full_triples_and_order() {
+        // target mode keeps each distinct triple as-is, in input order.
+        let targets = vec![
+            "x86_64-pc-windows-msvc".to_string(),
+            "x86_64-unknown-linux-gnu".to_string(),
+        ];
+        let matrix = build_matrix(&targets, "target");
+        assert_eq!(matrix.split_by, "target");
+        assert_eq!(matrix.include[0].target, "x86_64-pc-windows-msvc");
+        assert_eq!(matrix.include[0].runner, "windows-latest");
+        assert_eq!(matrix.include[1].target, "x86_64-unknown-linux-gnu");
+        assert_eq!(matrix.include[1].runner, "ubuntu-latest");
+    }
+
+    #[test]
+    fn build_matrix_unknown_os_falls_back_to_ubuntu_runner() {
+        // A cross-compile triple whose OS map_target can't classify must
+        // still produce an entry, defaulting to the ubuntu cross runner.
+        let matrix = build_matrix(&["wasm32-unknown-unknown".to_string()], "os");
+        assert_eq!(matrix.include.len(), 1);
+        assert_eq!(matrix.include[0].target, "unknown");
+        assert_eq!(matrix.include[0].runner, "ubuntu-latest");
+    }
+
+    // -----------------------------------------------------------------
+    // load_legacy_artifacts via the public loader's fallback branch
+    // -----------------------------------------------------------------
+
+    fn write_legacy_artifacts(dist: &Path, subdir: Option<&str>, body: &str) {
+        let dir = match subdir {
+            Some(s) => {
+                let d = dist.join(s);
+                std::fs::create_dir_all(&d).unwrap();
+                d
+            }
+            None => dist.to_path_buf(),
+        };
+        std::fs::write(dir.join("artifacts.json"), body).unwrap();
+    }
+
+    #[test]
+    fn loader_falls_back_to_legacy_artifacts_json() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        // Two legacy shards, each one binary, distinct paths.
+        write_legacy_artifacts(
+            dist,
+            Some("linux"),
+            r#"{"artifacts":[{"kind":"binary","path":"/dist/linux/app","target":"x86_64-unknown-linux-gnu","crate_name":"app"}]}"#,
+        );
+        write_legacy_artifacts(
+            dist,
+            Some("darwin"),
+            r#"{"artifacts":[{"kind":"binary","path":"/dist/darwin/app","target":"x86_64-apple-darwin","crate_name":"app"}]}"#,
+        );
+
+        let mut ctx = make_bare_context();
+        let outcome = load_split_contexts_into(&mut ctx, dist, &null_logger()).unwrap();
+        assert_eq!(
+            outcome,
+            SplitLoadOutcome::Legacy,
+            "no context.json present → legacy fallback"
+        );
+        let paths: Vec<String> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .map(|a| a.path.to_string_lossy().into_owned())
+            .collect();
+        assert!(paths.contains(&"/dist/linux/app".to_string()));
+        assert!(paths.contains(&"/dist/darwin/app".to_string()));
+        assert_eq!(paths.len(), 2);
+    }
+
+    #[test]
+    fn legacy_loader_dedups_repeated_paths_across_shards() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        // Same path claimed by two legacy shards — legacy path silently
+        // dedups (HashSet) rather than erroring like the modern path.
+        let body = r#"{"artifacts":[{"kind":"binary","path":"/dist/app","target":"x86_64-unknown-linux-gnu","crate_name":"app"}]}"#;
+        write_legacy_artifacts(dist, Some("a"), body);
+        write_legacy_artifacts(dist, Some("b"), body);
+
+        let mut ctx = make_bare_context();
+        let outcome = load_split_contexts_into(&mut ctx, dist, &null_logger()).unwrap();
+        assert_eq!(outcome, SplitLoadOutcome::Legacy);
+        assert_eq!(
+            ctx.artifacts.all().len(),
+            1,
+            "duplicate legacy path must be deduplicated, not double-counted"
+        );
+    }
+
+    #[test]
+    fn legacy_loader_errors_on_unknown_kind() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        write_legacy_artifacts(
+            dist,
+            Some("linux"),
+            r#"{"artifacts":[{"kind":"not_a_kind","path":"/dist/x","target":null,"crate_name":"app"}]}"#,
+        );
+        let mut ctx = make_bare_context();
+        let err = load_split_contexts_into(&mut ctx, dist, &null_logger())
+            .expect_err("legacy loader must reject an unknown artifact kind");
+        assert!(
+            err.to_string().contains("unknown artifact kind"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn loader_errors_when_dist_has_neither_format() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut ctx = make_bare_context();
+        let err = load_split_contexts_into(&mut ctx, tmp.path(), &null_logger())
+            .expect_err("empty dist must error directing the user to --split");
+        assert!(
+            err.to_string()
+                .contains("no context.json or artifacts.json"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn modern_loader_skips_unknown_kind_but_loads_the_rest() {
+        // The modern (context.json) path WARNS-and-skips an unknown kind
+        // rather than erroring (unlike legacy), so a forward-compat shard
+        // from a newer producer still merges its recognized artifacts.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        let good = dist.join("good");
+        std::fs::write(&good, b"x").unwrap();
+        let known = SplitArtifact {
+            name: "good".to_string(),
+            path: good.to_string_lossy().into_owned(),
+            os: Some("linux".to_string()),
+            arch: Some("amd64".to_string()),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            kind: "binary".to_string(),
+            type_s: "binary".to_string(),
+            crate_name: "app".to_string(),
+            extra: BTreeMap::new(),
+            sha256: None,
+            size: None,
+        };
+        let mut unknown = known.clone();
+        unknown.kind = "future_kind".to_string();
+        unknown.path = "/dist/future".to_string(); // never read (skipped before fs check)
+
+        write_split_context_full(dist, "linux", "linux", vec![unknown, known]);
+
+        let mut ctx = make_bare_context();
+        let outcome = load_split_contexts_into(&mut ctx, dist, &null_logger()).unwrap();
+        assert_eq!(outcome, SplitLoadOutcome::Modern);
+        assert_eq!(
+            ctx.artifacts.all().len(),
+            1,
+            "unknown kind skipped, known kind loaded"
+        );
+        assert_eq!(ctx.artifacts.all()[0].crate_name, "app");
+    }
+
+    #[test]
+    fn modern_loader_rehydrates_template_and_env_vars_from_first_shard() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        let dir = dist.join("linux");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sc = SplitContext {
+            partial_target: "linux".to_string(),
+            template_vars: BTreeMap::from([("Tag".to_string(), "v2.3.4".to_string())]),
+            env_vars: BTreeMap::from([("ANODIZER_OS".to_string(), "linux".to_string())]),
+            git_tag: Some("v2.3.4".to_string()),
+            git_commit: None,
+            git_branch: None,
+            artifacts: vec![],
+        };
+        std::fs::write(
+            dir.join("context.json"),
+            serde_json::to_string(&sc).unwrap(),
+        )
+        .unwrap();
+
+        let mut ctx = make_bare_context();
+        load_split_contexts_into(&mut ctx, dist, &null_logger()).unwrap();
+        assert_eq!(
+            ctx.template_vars().get("Tag").map(String::as_str),
+            Some("v2.3.4"),
+            "loader must restore template vars from the first shard"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // multi-crate (workspace per-crate) collect_build_targets path
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn collect_build_targets_unions_distinct_targets_across_crates() {
+        use anodizer_core::config::BuildConfig;
+        let config = Config {
+            project_name: "ws".to_string(),
+            crates: vec![
+                CrateConfig {
+                    name: "a".to_string(),
+                    path: "crates/a".to_string(),
+                    builds: Some(vec![BuildConfig {
+                        binary: Some("a".to_string()),
+                        targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+                CrateConfig {
+                    name: "b".to_string(),
+                    path: "crates/b".to_string(),
+                    builds: Some(vec![BuildConfig {
+                        binary: Some("b".to_string()),
+                        targets: Some(vec!["aarch64-apple-darwin".to_string()]),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let ctx = Context::new(
+            config.clone(),
+            anodizer_core::context::ContextOptions::default(),
+        );
+        let targets = collect_build_targets(&config, &ctx);
+        assert!(targets.contains(&"x86_64-unknown-linux-gnu".to_string()));
+        assert!(targets.contains(&"aarch64-apple-darwin".to_string()));
+        assert_eq!(targets.len(), 2, "distinct per-crate targets must union");
+    }
 }

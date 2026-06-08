@@ -1530,4 +1530,623 @@ crates:
         assert_eq!(srpm.prerelease.as_deref(), Some("rc1"));
         assert_eq!(srpm.version_metadata.as_deref(), Some("g1234abc"));
     }
+
+    // -------------------------------------------------------------------
+    // Live `rpmbuild` execution path (PATH-stub harness)
+    //
+    // `SrpmStage::run` shells out to a hard-coded `Command::new("rpmbuild")`
+    // (no configurable `cmd:` field), so these tests prepend a stub dir to
+    // `PATH` via `FakeToolDir::activate` and are therefore `#[serial]`. The
+    // stub records its argv and `.creates()` the `.src.rpm` rpmbuild would
+    // emit into `SRPMS/`, where the stage's glob picks it up. Gated `unix`
+    // because the stub harness's `.creates()`/`.script()` are unix-only.
+    // -------------------------------------------------------------------
+
+    #[cfg(all(test, unix))]
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    /// A prepared srpm job: a dist tempdir, one `SourceArchive` artifact on
+    /// disk, and a `Context` whose `Version` template var and `project_name`
+    /// are set. Mirrors how the real pipeline reaches the srpm stage (source
+    /// stage already ran and registered the archive).
+    #[cfg(all(test, unix))]
+    struct SrpmFixture {
+        _tmp: tempfile::TempDir,
+        dist: std::path::PathBuf,
+    }
+
+    #[cfg(all(test, unix))]
+    impl SrpmFixture {
+        /// `version` flows into the `Version` template var (what the stage
+        /// reads), `project_name` is the default package name, and a single
+        /// `SourceArchive` named `<archive_name>` is written under `dist/` and
+        /// registered so the stage finds exactly one source archive.
+        fn ctx(&self, project_name: &str, version: &str, archive_name: &str) -> Context {
+            let archive_path = self.dist.join(archive_name);
+            std::fs::create_dir_all(&self.dist).unwrap();
+            std::fs::write(&archive_path, b"fake-source-tarball").unwrap();
+
+            let config = anodizer_core::config::Config {
+                project_name: project_name.to_string(),
+                dist: self.dist.clone(),
+                ..Default::default()
+            };
+            let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+            ctx.template_vars_mut().set("Version", version);
+            ctx.template_vars_mut().set("ProjectName", project_name);
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::SourceArchive,
+                name: archive_name.to_string(),
+                path: archive_path,
+                target: None,
+                crate_name: project_name.to_string(),
+                metadata: HashMap::new(),
+                size: None,
+            });
+            ctx
+        }
+
+        fn new() -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let dist = tmp.path().join("dist");
+            Self { _tmp: tmp, dist }
+        }
+
+        /// Absolute path of the `.src.rpm` the stub must create in `SRPMS/`
+        /// for the stage's glob to discover it.
+        fn srpms_output(&self, file_name: &str) -> std::path::PathBuf {
+            self.dist.join("rpmbuild").join("SRPMS").join(file_name)
+        }
+    }
+
+    /// Install an `rpmbuild` stub that creates the given `.src.rpm` in
+    /// `SRPMS/` and exits 0. Returns the harness; caller holds the PATH guard
+    /// and asserts on `tools.calls("rpmbuild")`.
+    #[cfg(all(test, unix))]
+    fn stub_rpmbuild_ok(fx: &SrpmFixture, srpms_file: &str) -> FakeToolDir {
+        let tools = FakeToolDir::new();
+        tools
+            .tool("rpmbuild")
+            .creates(
+                fx.srpms_output(srpms_file).to_string_lossy().into_owned(),
+                "fake-srpm-bytes",
+            )
+            .install();
+        tools
+    }
+
+    /// Happy path: the stage shells out to `rpmbuild` exactly once, copies the
+    /// produced `.src.rpm` to `dist/<filename>`, and registers a `SourceRpm`
+    /// artifact with the canonical `format`/`ext` metadata.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_live_run_invokes_rpmbuild_and_registers_artifact() {
+        let fx = SrpmFixture::new();
+        let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            ..Default::default()
+        });
+
+        let tools = stub_rpmbuild_ok(&fx, "myapp-1.0.0-1.src.rpm");
+        let _g = tools.activate();
+
+        SrpmStage
+            .run(&mut ctx)
+            .expect("live srpm run should succeed");
+
+        assert_eq!(tools.call_count("rpmbuild"), 1);
+
+        // Default filename template → `<PackageName>-<Version>.src.rpm`.
+        let out = fx.dist.join("myapp-1.0.0.src.rpm");
+        assert!(out.exists(), "src.rpm not copied to {}", out.display());
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "fake-srpm-bytes");
+
+        let made: Vec<&Artifact> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::SourceRpm)
+            .collect();
+        assert_eq!(made.len(), 1, "exactly one SourceRpm artifact");
+        assert_eq!(made[0].name, "myapp-1.0.0.src.rpm");
+        assert_eq!(made[0].path, out);
+        assert_eq!(made[0].crate_name, "myapp");
+        assert_eq!(
+            made[0].metadata.get("format").map(String::as_str),
+            Some("src.rpm")
+        );
+        assert_eq!(
+            made[0].metadata.get("ext").map(String::as_str),
+            Some(".src.rpm")
+        );
+    }
+
+    /// The rpmbuild argv (sans signing) is `-bs --define "_topdir <dir>"
+    /// <spec_dest>`, where `<dir>` is `dist/rpmbuild` and `<spec_dest>` is the
+    /// spec copied into `SPECS/`. No `--sign` when no signature is configured.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_live_run_argv_shape_unsigned() {
+        let fx = SrpmFixture::new();
+        let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            ..Default::default()
+        });
+
+        let tools = stub_rpmbuild_ok(&fx, "myapp-1.0.0-1.src.rpm");
+        let _g = tools.activate();
+
+        SrpmStage.run(&mut ctx).expect("run should succeed");
+
+        let argv = &tools.calls("rpmbuild")[0];
+        assert_eq!(argv[0], "-bs");
+        assert_eq!(argv[1], "--define");
+        let topdir = fx.dist.join("rpmbuild");
+        assert_eq!(argv[2], format!("_topdir {}", topdir.display()));
+        // Final positional is the spec copied into SPECS/.
+        let spec_dest = topdir.join("SPECS").join("myapp.spec");
+        assert_eq!(argv.last().unwrap(), &spec_dest.to_string_lossy());
+        // Unsigned: no `--sign` / `_gpg_name`.
+        assert!(
+            !argv.iter().any(|a| a == "--sign"),
+            "unconfigured signing must not pass --sign; got {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a.starts_with("_gpg_name")),
+            "unconfigured signing must not pass _gpg_name; got {argv:?}"
+        );
+    }
+
+    /// Before invoking rpmbuild the stage stages inputs into the rpmbuild
+    /// tree: the spec is written to `dist/<pkg>.srpms.spec` AND copied to
+    /// `SPECS/<pkg>.spec`, and the source archive is copied into `SOURCES/`
+    /// under the (here unchanged, clean-version) source name.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_live_run_stages_spec_and_source_into_rpmbuild_tree() {
+        let fx = SrpmFixture::new();
+        let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            summary: Some("staged".to_string()),
+            ..Default::default()
+        });
+
+        let tools = stub_rpmbuild_ok(&fx, "myapp-1.0.0-1.src.rpm");
+        let _g = tools.activate();
+
+        SrpmStage.run(&mut ctx).expect("run should succeed");
+
+        // The user-facing spec dropped at dist/<pkg>.srpms.spec.
+        let dist_spec = fx.dist.join("myapp.srpms.spec");
+        let body = std::fs::read_to_string(&dist_spec).expect("dist spec written");
+        assert!(body.contains("Name:           myapp"), "got:\n{body}");
+        assert!(body.contains("Summary:        staged"), "got:\n{body}");
+
+        // The same spec is mirrored into SPECS/ for rpmbuild.
+        let specs_copy = fx.dist.join("rpmbuild").join("SPECS").join("myapp.spec");
+        assert_eq!(std::fs::read_to_string(&specs_copy).unwrap(), body);
+
+        // The source archive is copied into SOURCES/ under its (clean) name.
+        let sources_copy = fx
+            .dist
+            .join("rpmbuild")
+            .join("SOURCES")
+            .join("myapp-1.0.0-source.tar.gz");
+        assert_eq!(
+            std::fs::read_to_string(&sources_copy).unwrap(),
+            "fake-source-tarball"
+        );
+    }
+
+    /// Tool failure surfaces: rpmbuild exits 1 with stderr `boom`; the stage
+    /// bubbles an error carrying the exit code and the stderr tail, and
+    /// registers NO artifact.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_live_run_tool_failure_surfaces_stderr() {
+        let fx = SrpmFixture::new();
+        let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            ..Default::default()
+        });
+
+        let tools = FakeToolDir::new();
+        tools.tool("rpmbuild").exit(1).stderr("boom").install();
+        let _g = tools.activate();
+
+        let err = SrpmStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(
+            err.contains("exit code: 1"),
+            "error must carry the exit code; got: {err}"
+        );
+        assert!(
+            err.contains("boom"),
+            "error must carry the stderr tail; got: {err}"
+        );
+        assert!(
+            ctx.artifacts
+                .all()
+                .iter()
+                .all(|a| a.kind != ArtifactKind::SourceRpm),
+            "failed rpmbuild must not register a SourceRpm artifact"
+        );
+    }
+
+    /// rpmbuild exits 0 but produces no `.src.rpm` in `SRPMS/`: the stage
+    /// detects the empty glob and bails rather than registering a phantom
+    /// artifact.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_live_run_missing_output_bails() {
+        let fx = SrpmFixture::new();
+        let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            ..Default::default()
+        });
+
+        // Exits 0 but does NOT `.creates()` any SRPMS/*.src.rpm.
+        let tools = FakeToolDir::new();
+        tools.tool("rpmbuild").install();
+        let _g = tools.activate();
+
+        let err = SrpmStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(
+            err.contains("no .src.rpm found"),
+            "missing output must bail with a glob-miss error; got: {err}"
+        );
+    }
+
+    /// With a configured signature `key_file`, the argv gains `--sign` and a
+    /// `_gpg_name <key_file>` define, and the inline `key_passphrase` is
+    /// exported as `GPG_PASSPHRASE` to the rpmbuild process.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_live_run_signing_wires_sign_and_gpg_name() {
+        let fx = SrpmFixture::new();
+        let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            signature: Some(anodizer_core::config::NfpmSignatureConfig {
+                key_file: Some("release.gpg".to_string()),
+                key_passphrase: Some("s3cret".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        // The stub echoes its $GPG_PASSPHRASE into the created file so we can
+        // confirm the env var crossed the spawn boundary.
+        let srpms_file = "myapp-1.0.0-1.src.rpm";
+        let tools = FakeToolDir::new();
+        tools
+            .tool("rpmbuild")
+            .script(format!(
+                "printf '%s' \"$GPG_PASSPHRASE\" > {}",
+                fx.srpms_output(srpms_file).display()
+            ))
+            .install();
+        let _g = tools.activate();
+
+        SrpmStage.run(&mut ctx).expect("signed run should succeed");
+
+        let argv = &tools.calls("rpmbuild")[0];
+        assert!(argv.iter().any(|a| a == "--sign"), "got {argv:?}");
+        assert!(
+            argv.iter().any(|a| a == "_gpg_name release.gpg"),
+            "signing must pass `_gpg_name <key_file>`; got {argv:?}"
+        );
+        // GPG_PASSPHRASE reached the process env.
+        let out = fx.dist.join("myapp-1.0.0.src.rpm");
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "s3cret");
+    }
+
+    /// When `key_passphrase` is omitted the stage falls back to the
+    /// `SRPM_PASSPHRASE` env var (read via the injected `EnvSource`), exporting
+    /// it as `GPG_PASSPHRASE`.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_live_run_signing_falls_back_to_srpm_passphrase_env() {
+        let fx = SrpmFixture::new();
+        let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
+        ctx.set_env_source(
+            anodizer_core::env_source::MapEnvSource::new().with("SRPM_PASSPHRASE", "from-env"),
+        );
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            signature: Some(anodizer_core::config::NfpmSignatureConfig {
+                key_file: Some("release.gpg".to_string()),
+                key_passphrase: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let srpms_file = "myapp-1.0.0-1.src.rpm";
+        let tools = FakeToolDir::new();
+        tools
+            .tool("rpmbuild")
+            .script(format!(
+                "printf '%s' \"$GPG_PASSPHRASE\" > {}",
+                fx.srpms_output(srpms_file).display()
+            ))
+            .install();
+        let _g = tools.activate();
+
+        SrpmStage.run(&mut ctx).expect("signed run should succeed");
+
+        let out = fx.dist.join("myapp-1.0.0.src.rpm");
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap(),
+            "from-env",
+            "SRPM_PASSPHRASE must be exported as GPG_PASSPHRASE"
+        );
+    }
+
+    /// `--skip=sign` clears the signature config even when one is present: the
+    /// rpmbuild argv carries no `--sign`/`_gpg_name`, so a release run that
+    /// globally skips signing does not attempt to GPG-sign the SRPM.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_live_run_skip_sign_clears_signature() {
+        let fx = SrpmFixture::new();
+        let archive = "myapp-1.0.0-source.tar.gz";
+        let archive_path = fx.dist.join(archive);
+        std::fs::create_dir_all(&fx.dist).unwrap();
+        std::fs::write(&archive_path, b"fake-source-tarball").unwrap();
+        let config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            dist: fx.dist.clone(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            anodizer_core::context::ContextOptions {
+                skip_stages: vec!["sign".to_string()],
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::SourceArchive,
+            name: archive.to_string(),
+            path: archive_path,
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            signature: Some(anodizer_core::config::NfpmSignatureConfig {
+                key_file: Some("release.gpg".to_string()),
+                key_passphrase: Some("s3cret".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let tools = stub_rpmbuild_ok(&fx, "myapp-1.0.0-1.src.rpm");
+        let _g = tools.activate();
+
+        SrpmStage.run(&mut ctx).expect("run should succeed");
+
+        let argv = &tools.calls("rpmbuild")[0];
+        assert!(
+            !argv.iter().any(|a| a == "--sign"),
+            "skip=sign must drop --sign; got {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a.starts_with("_gpg_name")),
+            "skip=sign must drop _gpg_name; got {argv:?}"
+        );
+    }
+
+    /// A custom `file_name_template` (without a `.src.rpm` suffix) is rendered
+    /// and the stage appends `.src.rpm`, and that exact name reaches both the
+    /// copied output file and the registered artifact.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_live_run_custom_filename_template_gets_suffix() {
+        let fx = SrpmFixture::new();
+        let mut ctx = fx.ctx("myapp", "2.3.4", "myapp-2.3.4-source.tar.gz");
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            // No `.src.rpm` suffix → stage must append it.
+            file_name_template: Some("{{ PackageName }}_{{ Version }}_custom".to_string()),
+            ..Default::default()
+        });
+
+        let tools = stub_rpmbuild_ok(&fx, "myapp-2.3.4-1.src.rpm");
+        let _g = tools.activate();
+
+        SrpmStage.run(&mut ctx).expect("run should succeed");
+
+        let out = fx.dist.join("myapp_2.3.4_custom.src.rpm");
+        assert!(
+            out.exists(),
+            "custom-named src.rpm missing at {}",
+            out.display()
+        );
+        let made: Vec<&Artifact> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::SourceRpm)
+            .collect();
+        assert_eq!(made.len(), 1);
+        assert_eq!(made[0].name, "myapp_2.3.4_custom.src.rpm");
+    }
+
+    /// A snapshot/prerelease version (`0.5.0-rc.1`) is sanitized for the RPM
+    /// `Version:` grammar in the output filename: the registered artifact name
+    /// carries `0.5.0~rc.1`, never the illegal `-`. Drives the scoped
+    /// rpm-safe-version filename render through the live stage.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_live_run_prerelease_version_sanitized_in_output_name() {
+        let fx = SrpmFixture::new();
+        let mut ctx = fx.ctx("myapp", "0.5.0-rc.1", "myapp-0.5.0-rc.1-source.tar.gz");
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            ..Default::default()
+        });
+
+        let tools = stub_rpmbuild_ok(&fx, "myapp-0.5.0~rc.1-1.src.rpm");
+        let _g = tools.activate();
+
+        SrpmStage.run(&mut ctx).expect("run should succeed");
+
+        let out = fx.dist.join("myapp-0.5.0~rc.1.src.rpm");
+        assert!(
+            out.exists(),
+            "sanitized-name src.rpm missing at {}",
+            out.display()
+        );
+        assert!(
+            !out.to_string_lossy().contains("0.5.0-rc"),
+            "output name must not carry the illegal `-` version"
+        );
+        // The global Version var is restored to the raw value for downstream
+        // stages (announce/publish run after srpm).
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("0.5.0-rc.1"),
+            "raw Version var must survive the scoped rpm-safe render"
+        );
+        let made: Vec<&Artifact> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::SourceRpm)
+            .collect();
+        assert_eq!(made[0].name, "myapp-0.5.0~rc.1.src.rpm");
+    }
+
+    /// `package_name` is template-rendered before it reaches the `.src.rpm`
+    /// filename and the spec's `Name:` field. A `{{ ProjectName }}` reference
+    /// resolves rather than reaching the artifact as a literal template string.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_live_run_renders_package_name_template() {
+        let fx = SrpmFixture::new();
+        let mut ctx = fx.ctx("acme", "1.0.0", "acme-1.0.0-source.tar.gz");
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            package_name: Some("{{ ProjectName }}-tools".to_string()),
+            ..Default::default()
+        });
+
+        let tools = stub_rpmbuild_ok(&fx, "acme-tools-1.0.0-1.src.rpm");
+        let _g = tools.activate();
+
+        SrpmStage.run(&mut ctx).expect("run should succeed");
+
+        // Rendered package name reaches the spec `Name:` and the spec path.
+        let dist_spec = fx.dist.join("acme-tools.srpms.spec");
+        let body = std::fs::read_to_string(&dist_spec).expect("spec written under rendered name");
+        assert!(body.contains("Name:           acme-tools"), "got:\n{body}");
+
+        let made: Vec<&Artifact> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::SourceRpm)
+            .collect();
+        assert_eq!(made[0].name, "acme-tools-1.0.0.src.rpm");
+    }
+
+    /// A user-supplied `spec_file:` template is read from disk and rendered
+    /// with the srpm template vars (`PackageName`, rpm-safe `Version`,
+    /// `Summary`), then driven through rpmbuild — the auto-gen path is bypassed.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_live_run_renders_user_spec_file() {
+        let fx = SrpmFixture::new();
+        let spec_template = fx.dist.join("template.spec");
+        std::fs::create_dir_all(&fx.dist).unwrap();
+        std::fs::write(
+            &spec_template,
+            "Name: {{ PackageName }}\nVersion: {{ Version }}\nSummary: {{ Summary }}\n",
+        )
+        .unwrap();
+
+        let mut ctx = fx.ctx("myapp", "0.5.0-rc.1", "myapp-0.5.0-rc.1-source.tar.gz");
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            spec_file: Some(spec_template.to_string_lossy().into_owned()),
+            summary: Some("user spec".to_string()),
+            ..Default::default()
+        });
+
+        let tools = stub_rpmbuild_ok(&fx, "myapp-0.5.0~rc.1-1.src.rpm");
+        let _g = tools.activate();
+
+        SrpmStage.run(&mut ctx).expect("run should succeed");
+
+        let dist_spec = fx.dist.join("myapp.srpms.spec");
+        let body = std::fs::read_to_string(&dist_spec).expect("rendered user spec written");
+        assert!(body.contains("Name: myapp"), "got:\n{body}");
+        // The rpm-safe Version is scoped in for the user-spec render.
+        assert!(
+            body.contains("Version: 0.5.0~rc.1"),
+            "user spec must render the rpm-safe Version; got:\n{body}"
+        );
+        assert!(body.contains("Summary: user spec"), "got:\n{body}");
+        // Raw Version restored for downstream stages.
+        assert_eq!(
+            ctx.template_vars().get("Version").map(String::as_str),
+            Some("0.5.0-rc.1")
+        );
+    }
+
+    /// Dry-run never shells out to rpmbuild and registers no artifact, but
+    /// reports the filename it would have produced.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_dry_run_does_not_invoke_rpmbuild() {
+        let fx = SrpmFixture::new();
+        let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
+        ctx.options.dry_run = true;
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            ..Default::default()
+        });
+
+        let tools = FakeToolDir::new();
+        tools.tool("rpmbuild").install();
+        let _g = tools.activate();
+
+        SrpmStage.run(&mut ctx).expect("dry-run should succeed");
+
+        assert!(
+            !tools.was_called("rpmbuild"),
+            "dry-run must not shell out to rpmbuild"
+        );
+        assert!(
+            ctx.artifacts
+                .all()
+                .iter()
+                .all(|a| a.kind != ArtifactKind::SourceRpm),
+            "dry-run must not register a SourceRpm artifact"
+        );
+    }
 }
