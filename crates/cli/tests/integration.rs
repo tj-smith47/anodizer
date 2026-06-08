@@ -768,12 +768,12 @@ fn test_release_prepare_matches_explicit_skip() {
     //
     // The output refactor moved the stage name out of the message and into
     // the per-line stage tag (now gone — format B). A pipeline-level skip
-    // now reads `• <stage> skipped` (operator/mode `--skip`) or
-    // `• <stage> skipped (no binaries)` (binary-dependent stage with no
-    // binaries) — both emitted by `Pipeline::run` via `verbose`, so the run
-    // must pass `--verbose`. The stage name is the first whitespace-delimited
-    // token of the body; the rest is the verdict. We return the stage token so
-    // the assertions below can match `release` / `publish` / `announce`.
+    // now reads `   • <stage> skipped` (operator/mode `--skip`) or
+    // `   • <stage> skipped (no binaries)` (binary-dependent stage with no
+    // binaries) — both emitted by `Pipeline::run` via `status`. The stage
+    // name is the first whitespace-delimited token of the body; the rest is
+    // the verdict. We return the stage token so the assertions below can
+    // match `release` / `publish` / `announce` directly.
     //
     // Per-crate / per-config body notes (e.g. `no gitlab config ...,
     // skipping`) are progress lines inside a running stage, not a stage
@@ -797,8 +797,6 @@ fn test_release_prepare_matches_explicit_skip() {
     fn run_release(tmp: &Path, extra_args: &[&str]) -> std::process::Output {
         let mut args: Vec<&str> = vec![
             "release",
-            // Skip lines are verbose-gated; the skip-set comparison reads them.
-            "--verbose",
             "--snapshot",
             "--dry-run",
             // Skip everything heavy so the test stays fast — these stages
@@ -1783,8 +1781,6 @@ crates:
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
-            // Skip lines are verbose-gated; this test reads them from stderr.
-            "--verbose",
             "--dry-run",
             "--skip=build,archive,checksum,release,publish,docker,sign,announce,changelog,nfpm",
             "--timeout",
@@ -3190,8 +3186,6 @@ fn test_e2e_skip_archive_and_checksum() {
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
-            // Skip lines are verbose-gated; this test reads them from stderr.
-            "--verbose",
             "--snapshot",
             "--skip=archive,checksum,release,publish,docker,sign,announce,changelog,nfpm",
             "--timeout",

@@ -178,13 +178,17 @@ impl Pipeline {
 
         for stage in &self.stages {
             let name = stage.name();
-            // Operator-skipped stage: a no-op produces no output, matching the
-            // deferred-header rule where a stage that does nothing prints no
-            // header. The skip note is verbose-only so the default log shows
-            // only stages that did work (a release skips many stages — those
-            // lines are noise at the default level); `-v` surfaces them.
+            // Operator-skipped stage: still open its section so the skip
+            // note sits inside the stage's own group (one section per
+            // stage in CI) rather than ungrouped after the last endgroup.
             if ctx.should_skip(name) {
-                log.verbose(&format!("{name} {}", "skipped".yellow()));
+                // No section: a skipped stage has no header to announce (the
+                // header is deferred until a real body line, which a skip is
+                // not), so emit the one neutral skip line at the current
+                // (top) level — `• <name> skipped` reads flat, not nested
+                // under a non-existent verb header. The stage name is the
+                // line's subject (the per-line `[stage]` tag is gone).
+                log.status(&format!("{name} {}", "skipped".yellow()));
                 continue;
             }
 
@@ -196,7 +200,7 @@ impl Pipeline {
             // individual stages (e.g., archive, upx) where it fires AFTER the stage
             // confirms it has work to do.
             if BINARY_DEPENDENT_STAGES.contains(&name) && !has_binaries {
-                log.verbose(&format!("{name} {}", "skipped (no binaries)".yellow()));
+                log.status(&format!("{name} {}", "skipped (no binaries)".yellow()));
                 continue;
             }
 
