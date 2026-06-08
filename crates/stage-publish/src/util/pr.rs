@@ -1861,12 +1861,10 @@ mod tests {
         assert_eq!(payload["draft"], true);
     }
 
-    /// The token is sent as an `Authorization: token <tok>` header. The
-    /// scripted responder records the request body but not headers, so
-    /// this instead pins that a custom (non-default) base branch and
-    /// `draft=false` round-trip into the payload — complementing the
+    /// Pins that a custom (non-default) base branch and `draft=false`
+    /// round-trip into the emitted request payload — complementing the
     /// draft=true case above so both branches of the bool are covered in
-    /// the emitted request, not just the return value.
+    /// the request body, not just the return value.
     #[test]
     fn create_pr_via_api_serialises_non_draft_payload() {
         let (addr, log_handle) = spawn_scripted_responder(vec![ScriptedRoute {

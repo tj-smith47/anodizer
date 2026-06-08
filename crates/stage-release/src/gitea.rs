@@ -1005,25 +1005,18 @@ mod tests {
 
     #[test]
     fn gitea_auth_header_format() {
-        // Verify the Authorization header uses the `token {value}` format.
-        let token = "my-gitea-token";
-        let expected_header = format!("token {}", token);
+        // A normal token forms a valid `token <value>` Authorization header, so
+        // the client builds.
+        assert!(build_gitea_client("my-gitea-token", false).is_ok());
 
-        // Build the client and verify the default headers contain the correct auth.
-        let client = build_gitea_client(token, false).unwrap();
-
-        // We can't directly inspect reqwest's default headers, but we can verify
-        // the format by testing the construction doesn't fail with the token format.
-        // The real verification is that the header value "token my-gitea-token" is valid.
-        let header_value = reqwest::header::HeaderValue::from_str(&expected_header).unwrap();
-        assert_eq!(
-            header_value.to_str().unwrap(),
-            "token my-gitea-token",
-            "Gitea auth header must use 'token {{value}}' format"
+        // A token carrying a control character cannot form a valid header value;
+        // build_gitea_client must surface that as an error (with its context)
+        // rather than panic on the internal HeaderValue::from_str.
+        let err = build_gitea_client("bad\ntoken", false).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("invalid token value"),
+            "a control-char token must surface the Authorization header error: {err:#}"
         );
-
-        // Ensure client was built successfully (implies headers are valid)
-        drop(client);
     }
 
     // -- gitea_create_release retry behaviour (P1.4) -------------------------
