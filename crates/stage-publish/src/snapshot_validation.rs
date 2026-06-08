@@ -38,6 +38,23 @@ use crate::util;
 /// the matching cross-check. The first broken emission aborts with an
 /// actionable error.
 pub(crate) fn validate_snapshot_emissions(ctx: &mut Context, log: &StageLogger) -> Result<()> {
+    // A target-restricted build (`--targets=`, used by the sharded determinism
+    // harness so each runner only validates the targets it can natively build)
+    // intentionally produces a SUBSET of the configured targets' artifacts.
+    // Cross-platform publishers (homebrew, nix, scoop, …) aggregate assets
+    // across every target, so their emissions cannot be cross-checked against a
+    // by-construction-incomplete asset set: nix finds no Linux/Darwin archive, a
+    // homebrew formula is missing platforms, etc. Step aside rather than fail on
+    // the partial set — exactly as the harness skips produce-stages that don't
+    // belong to a shard. A full (non-sharded) `--snapshot` / `--dry-run` still
+    // exercises emission-validate end-to-end.
+    if ctx.options.partial_target.is_some() {
+        log.status(
+            "emission-validate: skipped — build is target-restricted (--targets); \
+             cross-platform emission checks require the full artifact set",
+        );
+        return Ok(());
+    }
     validate_snapshot_emissions_with_resolver(ctx, log, &resolve_crate_tag_or_snapshot)
 }
 
@@ -1329,6 +1346,37 @@ mod tests {
         let mut ctx = scoped_ctx(cfg.clone());
         // No `add_archive` calls — the crate produced nothing this shard.
         validate_nix(&mut ctx, &cfg, &log()).expect("zero produced archives must skip, not bail");
+    }
+
+    /// A target-restricted build (`--targets=`, the sharded determinism harness)
+    /// must SKIP the whole emission-validate pass. The partial asset set cannot
+    /// satisfy a cross-platform publisher, so validating it always fails — the
+    /// exact failure that broke the v0.6.0 macOS + windows-aarch64 shards
+    /// (`nix: no Linux/Darwin archive`, `schema-validate publisher 'homebrew'`).
+    /// Here a deliberately-broken nix url would fail outside a restricted build;
+    /// with `partial_target` set the pass steps aside before reaching it.
+    #[test]
+    fn target_restricted_build_skips_whole_emission_validate() {
+        use anodizer_core::partial::PartialTarget;
+        let mut cfg = nix_crate();
+        if let Some(nc) = cfg.publish.as_mut().and_then(|p| p.nix.as_mut()) {
+            nc.url_template = Some(
+                "https://github.com/o/cfgd/releases/download/v{{ version }}/cfgd-{{ arch }}-WRONG.tar.gz"
+                    .to_string(),
+            );
+        }
+        let mut ctx = scoped_ctx(cfg.clone());
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-unknown-linux-gnu",
+            "cfgd-linux-amd64.tar.gz",
+        );
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+        ]));
+        validate_snapshot_emissions(&mut ctx, &log())
+            .expect("target-restricted build must skip emission-validate, not fail");
     }
 
     /// Per-crate mode: two nix-configured crates share one snapshot run, but only
