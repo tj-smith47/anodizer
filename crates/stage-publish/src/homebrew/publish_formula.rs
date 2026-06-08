@@ -943,6 +943,8 @@ mod tests {
     use anodizer_core::context::{Context, ContextOptions};
     use anodizer_core::log::{StageLogger, Verbosity};
     use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_core::test_helpers::fake_tool::{FakeToolDir, PathGuard};
+    use serial_test::serial;
     use std::collections::HashMap;
     use std::path::Path;
     use std::process::Command;
@@ -956,6 +958,23 @@ mod tests {
 
     fn quiet_log() -> StageLogger {
         StageLogger::new("homebrew-test", Verbosity::Quiet)
+    }
+
+    /// Install a `gh` stub that exits non-zero on `--version` so the PR
+    /// transport's `gh_is_available()` probe reports false, then prepend it
+    /// to `PATH`. This makes the PR submission path deterministic (it routes
+    /// to the gh-absent / token-driven fallback instead of a LIVE
+    /// `gh pr create` against github.com on a host that has a real,
+    /// authenticated `gh` in PATH). Returns the `FakeToolDir` holder (keeps
+    /// the stub on disk) plus the `PathGuard` (restores `PATH` + releases the
+    /// env mutex on drop) — both must be held for the test's duration. Tests
+    /// using this MUST be `#[serial]` because the guard mutates process
+    /// `PATH`. Mirrors `util/pr.rs::gh_absent_path`.
+    fn gh_absent() -> (FakeToolDir, PathGuard) {
+        let tools = FakeToolDir::new();
+        tools.tool("gh").exit(1).install();
+        let guard = tools.activate();
+        (tools, guard)
     }
 
     /// Give the test process a git identity + non-interactive credential
@@ -1665,14 +1684,20 @@ mod tests {
     }
 
     /// PR path: with `pull_request.enabled = true` (same-repo), the publisher
-    /// still commits+pushes the formula to the tap AND attempts a PR. Because
-    /// neither `gh` nor a token is reliably available in the unit-test
-    /// environment, the PR transport fails and the outcome is recorded — but
-    /// the formula push (the irreversible-but-here-reversible local effect)
-    /// must have landed regardless. Asserts the formula is on the tap and the
-    /// publisher reported a push.
+    /// still commits+pushes the formula to the tap AND attempts a PR. The
+    /// formula push (the local effect) must land regardless of the PR outcome.
+    ///
+    /// Hermetic by construction: a failing `gh` stub forces the PR transport's
+    /// `gh_is_available()` probe to false, and no token is configured, so the
+    /// PR submission resolves to the `NoneAvailable` fallback IN-PROCESS — it
+    /// never issues a live `gh pr create` / GitHub API call against
+    /// `myorg/homebrew-tap`. Holds the `PathGuard` for the whole test and is
+    /// `#[serial]` because it mutates process `PATH` (the env mutex serializes
+    /// it against the `util/pr.rs` gh-stub tests).
     #[test]
+    #[serial]
     fn publish_to_homebrew_pr_enabled_still_pushes_formula() {
+        let (_tools, _guard) = gh_absent();
         let (bare_url, bare) = make_bare_tap("main");
         let mut hb = hb_cfg_local(&bare_url, "main");
         if let Some(repo) = hb.repository.as_mut() {
@@ -1680,8 +1705,9 @@ mod tests {
                 enabled: Some(true),
                 ..Default::default()
             });
-            // No token configured → API transport can't authenticate; the PR
-            // attempt fails but the push already happened.
+            // No token configured: with `gh` stubbed absent too, the PR
+            // transport has neither path and resolves to NoneAvailable
+            // in-process (no network), yet the push already happened.
         }
         let mut ctx = single_crate_ctx(
             hb,
