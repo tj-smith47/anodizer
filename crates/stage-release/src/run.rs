@@ -185,6 +185,16 @@ fn release_one_crate(
 
     warn_tag_override_divergence(ctx, release_cfg, &tag, &crate_cfg.name, log);
 
+    // Derive a default `ReleaseURL` from the SCM repo + tag BEFORE the
+    // dry-run / backend branches. Without it, any path that never reaches
+    // the authoritative `html_url` (dry-run, snapshot, `--publish-only`
+    // consuming an already-published release, a backend that returns
+    // `None`) leaves `ReleaseURL` unset, and the announce / webhook / email
+    // stages then fail to render `{{ ReleaseURL }}` (`Variable 'ReleaseURL'
+    // not found in context`). The authoritative URL from the create path
+    // still overwrites this default at the end of `release_one_crate`.
+    ensure_release_url(ctx, release_cfg, &tag, &crate_cfg.name)?;
+
     let release_name = resolve_release_name(ctx, release_cfg, &crate_cfg.name)?;
 
     let flags = resolve_release_flags(ctx, release_cfg, &crate_name, &tag)?;
@@ -273,6 +283,51 @@ fn warn_tag_override_divergence(
             tag, pushed_tag, crate_name
         ));
     }
+}
+
+/// Set a default `ReleaseURL` template var derived from the active SCM
+/// repo + tag when one is not already present.
+///
+/// `ReleaseURL` is fully derivable from `(provider, download_base, owner,
+/// repo, tag)` — the same inputs [`compose_release_url`] uses for the live
+/// create path. Deriving it up front guarantees announce / webhook / email
+/// templates can always render `{{ ReleaseURL }}`, even on paths that never
+/// hit the create backend (dry-run, snapshot, `--publish-only` against an
+/// already-published release, or a backend returning `None`).
+///
+/// No-op when:
+/// - `ReleaseURL` is already set to a non-empty value (the authoritative
+///   `html_url` from a prior crate's create, or a re-entry), or
+/// - the crate has no resolvable `<provider>` repo block (nothing to derive
+///   an owner/repo from) — the live path would also produce no URL here, so
+///   leaving it unset matches existing behavior rather than inventing a URL
+///   against an unconfigured repo.
+fn ensure_release_url(
+    ctx: &mut Context,
+    release_cfg: &anodizer_core::config::ReleaseConfig,
+    tag: &str,
+    crate_name: &str,
+) -> Result<()> {
+    if ctx
+        .template_vars()
+        .get("ReleaseURL")
+        .is_some_and(|u| !u.is_empty())
+    {
+        return Ok(());
+    }
+    let Some(repo) = resolve_release_repo(release_cfg, ctx.token_type, ctx)? else {
+        return Ok(());
+    };
+    if repo.owner.is_empty() && repo.name.is_empty() {
+        return Ok(());
+    }
+    let download_base = dry_run_download_base(ctx);
+    let url = compose_release_url(ctx.token_type, &download_base, &repo.owner, &repo.name, tag);
+    ctx.set_release_url(&url);
+    ctx.logger("release").verbose(&format!(
+        "release: derived default ReleaseURL '{url}' for crate '{crate_name}'"
+    ));
+    Ok(())
 }
 
 /// Render the release name from the configured name_template.
@@ -984,6 +1039,72 @@ mod tests {
 
     fn quiet_log() -> StageLogger {
         StageLogger::new("test", Verbosity::Quiet)
+    }
+
+    #[test]
+    fn ensure_release_url_derives_default_from_repo_and_tag_when_unset() {
+        // The announce/webhook/email failure mode: a path that never reaches
+        // the create backend (dry-run / snapshot / publish-only against an
+        // already-published release) must still leave a renderable
+        // `{{ ReleaseURL }}` in context, derived from the GitHub repo + tag.
+        let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+        assert!(
+            ctx.template_vars().get("ReleaseURL").is_none(),
+            "precondition: ReleaseURL starts unset"
+        );
+        let release_cfg = ReleaseConfig {
+            github: Some(anodizer_core::config::ScmRepoConfig {
+                owner: "tj-smith47".to_string(),
+                name: "anodizer".to_string(),
+            }),
+            ..Default::default()
+        };
+        ensure_release_url(&mut ctx, &release_cfg, "v1.0.0", "anodizer")
+            .expect("ensure_release_url returns Ok");
+        assert_eq!(
+            ctx.template_vars().get("ReleaseURL").map(String::as_str),
+            Some("https://github.com/tj-smith47/anodizer/releases/tag/v1.0.0"),
+            "ReleaseURL must be derived from owner/repo/tag"
+        );
+    }
+
+    #[test]
+    fn ensure_release_url_preserves_authoritative_url_already_set() {
+        // The create path's authoritative `html_url` must NOT be clobbered by
+        // the derived default when both run (the derive guard fires first, the
+        // create overwrite fires last — but a re-entry must respect the set value).
+        let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+        ctx.set_release_url(
+            "https://github.com/tj-smith47/anodizer/releases/tag/v1.0.0-authoritative",
+        );
+        let release_cfg = ReleaseConfig {
+            github: Some(anodizer_core::config::ScmRepoConfig {
+                owner: "tj-smith47".to_string(),
+                name: "anodizer".to_string(),
+            }),
+            ..Default::default()
+        };
+        ensure_release_url(&mut ctx, &release_cfg, "v1.0.0", "anodizer")
+            .expect("ensure_release_url returns Ok");
+        assert_eq!(
+            ctx.template_vars().get("ReleaseURL").map(String::as_str),
+            Some("https://github.com/tj-smith47/anodizer/releases/tag/v1.0.0-authoritative"),
+            "an already-set ReleaseURL must be preserved"
+        );
+    }
+
+    #[test]
+    fn ensure_release_url_noop_when_no_repo_block_configured() {
+        // No `release.github` block → nothing to derive an owner/repo from;
+        // leave ReleaseURL unset rather than invent a URL against no repo.
+        let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+        let release_cfg = ReleaseConfig::default();
+        ensure_release_url(&mut ctx, &release_cfg, "v1.0.0", "demo")
+            .expect("ensure_release_url returns Ok");
+        assert!(
+            ctx.template_vars().get("ReleaseURL").is_none(),
+            "no repo block → ReleaseURL stays unset"
+        );
     }
 
     #[test]

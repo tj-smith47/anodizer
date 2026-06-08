@@ -702,42 +702,67 @@ fn map_head_tags_to_crates(
         return Ok(Vec::new());
     }
     log.verbose(&format!("tags at HEAD: {}", head_tags.join(", ")));
+    Ok(select_crates_for_tags(&head_tags, all_known_crates, log))
+}
 
+/// Map a concrete list of tags to the set of crates they select, in
+/// first-seen order, deduped by name.
+///
+/// Split out of [`map_head_tags_to_crates`] so the selection logic — the
+/// lockstep tie-tier expansion that the whole `--publish-only` fix turns on
+/// — is unit-testable without a git fixture. The only thing the wrapper adds
+/// is reading `git::get_tags_at_head()`; everything that decides WHICH crates
+/// a tag selects lives here.
+fn select_crates_for_tags(
+    head_tags: &[String],
+    all_known_crates: &[CrateConfig],
+    log: &StageLogger,
+) -> Vec<String> {
     let mut selected: Vec<String> = Vec::new();
-    for tag in &head_tags {
-        match resolve_tag_to_crate(tag, all_known_crates) {
-            Some(c) if !selected.contains(&c.name) => {
+    for tag in head_tags {
+        let matches = resolve_tag_to_crates(tag, all_known_crates);
+        if matches.is_empty() {
+            log.verbose(&format!(
+                "tag '{}' does not match any configured crate — skipping",
+                tag
+            ));
+            continue;
+        }
+        for c in matches {
+            if !selected.contains(&c.name) {
                 selected.push(c.name.clone());
                 log.verbose(&format!("tag '{}' → crate '{}'", tag, c.name));
             }
-            Some(_) => {}
-            None => {
-                log.verbose(&format!(
-                    "tag '{}' does not match any configured crate — skipping",
-                    tag
-                ));
-            }
         }
     }
-
-    Ok(selected)
+    selected
 }
 
-/// Resolve a single tag to a crate by longest-matching `tag_template` prefix.
+/// Resolve a single tag to EVERY crate sharing the longest-matching
+/// `tag_template` prefix tier.
 ///
-/// Returns `Some(crate)` when the tag's prefix matches one of the configured
-/// crates and the remainder is a numeric version (so `v1.0` matches but
-/// `vendor-branch` would not). Prefers the longest matching prefix so a more
-/// specific crate (`core-v`) wins over a shorter sibling (`v`).
+/// In a lockstep workspace every crate carries the SAME `tag_template`
+/// (e.g. `v{{ Version }}`), so a single pushed tag (`v1.0.0`) legitimately
+/// means "release ALL crates", not just the first-declared one. The
+/// singular resolver returned only the first match, which silently dropped
+/// every sibling crate — including a binary/artifact-publishing crate whose
+/// `publish:` block (scoop / chocolatey / winget / aur / nix) then never ran
+/// because the publish stage's effective-crate set was scoped to the wrong
+/// (first-declared, publisher-less) crate. Returning the whole tie-tier keeps
+/// the bin crate in the selection so its publishers fire.
 ///
-/// Returns `None` for tags that don't match any configured crate — these are
-/// silently ignored at the caller (e.g. nightly build tags coexist with
-/// release tags without aborting the pipeline).
-pub(crate) fn resolve_tag_to_crate<'a>(
+/// "Tier" = the set of crates whose extracted prefix has the maximum length
+/// among all crates matching `tag`. A more specific crate (`core-v`, length 6)
+/// still wins exclusively over a shorter sibling (`v`, length 1) — the
+/// per-crate INDEPENDENT-tag workspace mode is unchanged, because distinct
+/// tags at HEAD each resolve to their own single longest-prefix crate.
+/// Declaration order within the winning tier is preserved.
+pub(crate) fn resolve_tag_to_crates<'a>(
     tag: &str,
     crates: &'a [CrateConfig],
-) -> Option<&'a CrateConfig> {
-    let mut best: Option<(&CrateConfig, usize)> = None;
+) -> Vec<&'a CrateConfig> {
+    let mut best_len: Option<usize> = None;
+    let mut matched: Vec<(&CrateConfig, usize)> = Vec::new();
     for c in crates {
         if let Some(prefix) = git::extract_tag_prefix(&c.tag_template)
             && tag.starts_with(&prefix)
@@ -747,12 +772,21 @@ pub(crate) fn resolve_tag_to_crate<'a>(
                 .split('.')
                 .next()
                 .is_some_and(|s| !s.is_empty() && s.chars().all(|ch| ch.is_ascii_digit()));
-            if is_version && best.as_ref().is_none_or(|(_, len)| prefix.len() > *len) {
-                best = Some((c, prefix.len()));
+            if is_version {
+                let len = prefix.len();
+                best_len = Some(best_len.map_or(len, |b| b.max(len)));
+                matched.push((c, len));
             }
         }
     }
-    best.map(|(c, _)| c)
+    let Some(best) = best_len else {
+        return Vec::new();
+    };
+    matched
+        .into_iter()
+        .filter(|(_, len)| *len == best)
+        .map(|(c, _)| c)
+        .collect()
 }
 
 /// Merge CLI / workspace / snapshot-implied skip stages into one list.
@@ -2882,6 +2916,55 @@ mod tests {
     }
 
     #[test]
+    fn map_head_tags_lockstep_shared_template_selects_every_crate() {
+        // Lockstep workspace: every crate shares `v{{ Version }}`, so the
+        // single pushed tag `v1.0.0` matches them all with an equal-length
+        // prefix. The publisher-owning binary crate is declared LAST, after a
+        // library crate with no publisher block — the exact shape of
+        // anodizer's own `.anodizer.yaml` (anodizer-core first, the `anodizer`
+        // bin with scoop/chocolatey/winget/aur/nix last). Selecting only the
+        // first-declared crate silently dropped the bin crate, no-op'ing every
+        // artifact publisher. The whole tier must be selected.
+        let all = vec![
+            make_crate_with_template("anodizer-core", "crates/core", "v{{ .Version }}"),
+            make_crate_with_template(
+                "anodizer-stage-build",
+                "crates/stage-build",
+                "v{{ .Version }}",
+            ),
+            make_crate_with_template("anodizer", "crates/cli", "v{{ .Version }}"),
+        ];
+        let head_tags = vec!["v1.0.0".to_string()];
+        let selected = run_tag_mapping(&all, &head_tags);
+        assert!(
+            selected.contains(&"anodizer".to_string()),
+            "the publisher-owning bin crate must be selected; got: {selected:?}"
+        );
+        assert_eq!(
+            selected.len(),
+            3,
+            "every lockstep crate sharing the tag must be selected; got: {selected:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_tag_to_crates_longer_prefix_tier_wins_exclusively() {
+        // Distinct per-crate tags (independent-version workspace mode) must
+        // NOT regress: a `core-v` crate (prefix len 6) wins exclusively over a
+        // `v` sibling (len 1) for the tag `core-v0.5.0`, because the shorter
+        // prefix is a different tier — only the longest-prefix tier is returned.
+        let crates = vec![
+            make_crate_with_template("app", ".", "v{{ .Version }}"),
+            make_crate_with_template("core", "crates/core", "core-v{{ .Version }}"),
+        ];
+        let names: Vec<&str> = resolve_tag_to_crates("core-v0.5.0", &crates)
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["core"], "only the longest-prefix tier matches");
+    }
+
+    #[test]
     fn map_head_tags_unrecognized_tag_is_ignored() {
         let crates = vec![make_crate_with_template("app", ".", "v{{ .Version }}")];
         let head_tags = vec!["nightly-20260527".to_string(), "v2.0.0".to_string()];
@@ -2898,17 +2981,14 @@ mod tests {
         assert!(selected.is_empty(), "no tags → no-op, empty selection");
     }
 
-    /// Helper: run the tag→crate mapping logic without spawning git.
+    /// Helper: drive the PRODUCTION tag→crate selection (the inner half of
+    /// `map_head_tags_to_crates`, split out so the only thing it omits is the
+    /// `git::get_tags_at_head()` read). Tests pass a fixed tag list the way
+    /// the wrapper would after reading HEAD, so a regression in the real
+    /// selection wiring — not a parallel mirror — is what fails.
     fn run_tag_mapping(crates: &[CrateConfig], head_tags: &[String]) -> Vec<String> {
-        let mut selected: Vec<String> = Vec::new();
-        for tag in head_tags {
-            if let Some(c) = resolve_tag_to_crate(tag, crates)
-                && !selected.contains(&c.name)
-            {
-                selected.push(c.name.clone());
-            }
-        }
-        selected
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        select_crates_for_tags(head_tags, crates, &log)
     }
 
     fn make_crate_with_template(name: &str, path: &str, template: &str) -> CrateConfig {
@@ -3010,5 +3090,246 @@ mod tests {
             Some(root),
             "project_root must flow through build_context_options into ContextOptions"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_strict_vs_allowlist
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_strict_alone_is_ok() {
+        let opts = ReleaseOpts {
+            strict: true,
+            ..base_release_opts()
+        };
+        assert!(validate_strict_vs_allowlist(&opts).is_ok());
+    }
+
+    #[test]
+    fn validate_strict_with_allowlist_is_mutually_exclusive_error() {
+        let opts = ReleaseOpts {
+            strict: true,
+            allow_nondeterministic: vec!["sbom=flaky".to_string()],
+            ..base_release_opts()
+        };
+        let err = validate_strict_vs_allowlist(&opts).unwrap_err().to_string();
+        assert!(
+            err.contains("mutually exclusive"),
+            "must reject --strict + --allow-nondeterministic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_allowlist_without_strict_is_ok() {
+        let opts = ReleaseOpts {
+            strict: false,
+            allow_nondeterministic: vec!["sbom=flaky".to_string()],
+            ..base_release_opts()
+        };
+        assert!(validate_strict_vs_allowlist(&opts).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_rollback_mode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_rollback_mode_none_keyword() {
+        assert_eq!(
+            parse_rollback_mode(Some("none")).unwrap(),
+            Some(RollbackMode::None)
+        );
+    }
+
+    #[test]
+    fn parse_rollback_mode_best_effort_keyword() {
+        assert_eq!(
+            parse_rollback_mode(Some("best-effort")).unwrap(),
+            Some(RollbackMode::BestEffort)
+        );
+    }
+
+    #[test]
+    fn parse_rollback_mode_unset_is_none_option() {
+        assert_eq!(parse_rollback_mode(None).unwrap(), None);
+    }
+
+    #[test]
+    fn parse_rollback_mode_invalid_lists_accepted_values() {
+        let err = parse_rollback_mode(Some("yolo")).unwrap_err().to_string();
+        assert!(err.contains("invalid --rollback value: yolo"));
+        assert!(
+            err.contains("none, best-effort"),
+            "error must enumerate accepted values, got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_allow_nondeterministic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_allow_nondeterministic_splits_name_and_reason() {
+        let got = parse_allow_nondeterministic(&["sbom=upstream timestamp".to_string()]).unwrap();
+        assert_eq!(
+            got,
+            vec![("sbom".to_string(), "upstream timestamp".to_string())]
+        );
+    }
+
+    #[test]
+    fn parse_allow_nondeterministic_preserves_equals_in_reason() {
+        // Only the FIRST `=` splits name from reason.
+        let got = parse_allow_nondeterministic(&["docker=a=b reason".to_string()]).unwrap();
+        assert_eq!(got, vec![("docker".to_string(), "a=b reason".to_string())]);
+    }
+
+    #[test]
+    fn parse_allow_nondeterministic_missing_equals_errors() {
+        let err = parse_allow_nondeterministic(&["sbom".to_string()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be NAME=REASON"));
+    }
+
+    #[test]
+    fn parse_allow_nondeterministic_empty_reason_errors() {
+        let err = parse_allow_nondeterministic(&["sbom=   ".to_string()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("reason cannot be empty"));
+    }
+
+    #[test]
+    fn parse_allow_nondeterministic_empty_input_yields_empty_vec() {
+        assert!(parse_allow_nondeterministic(&[]).unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_skip_stages
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compute_skip_stages_merges_workspace_skip_without_duplicates() {
+        let got = compute_skip_stages(
+            vec!["docker".to_string()],
+            &["docker".to_string(), "msi".to_string()],
+            false,
+        );
+        assert_eq!(got, vec!["docker".to_string(), "msi".to_string()]);
+    }
+
+    #[test]
+    fn compute_skip_stages_snapshot_adds_upload_stages_and_announce() {
+        let got = compute_skip_stages(vec![], &[], true);
+        for stage in ["publish", "snapcraft-publish", "blob", "announce"] {
+            assert!(
+                got.contains(&stage.to_string()),
+                "snapshot must auto-skip {stage}, got: {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compute_skip_stages_skipping_publish_implies_announce() {
+        let got = compute_skip_stages(vec!["publish".to_string()], &[], false);
+        assert!(
+            got.contains(&"announce".to_string()),
+            "skipping publish must imply skipping announce, got: {got:?}"
+        );
+    }
+
+    #[test]
+    fn compute_skip_stages_no_signals_is_passthrough() {
+        let got = compute_skip_stages(vec!["msi".to_string()], &[], false);
+        assert_eq!(got, vec!["msi".to_string()]);
+    }
+
+    // -----------------------------------------------------------------------
+    // flatten_known_crates
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn flatten_known_crates_unions_top_level_and_workspace_crates() {
+        let config = Config {
+            crates: vec![make_crate("top", None)],
+            workspaces: Some(vec![WorkspaceConfig {
+                crates: vec![make_crate("ws_a", None), make_crate("ws_b", None)],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let names: Vec<String> = flatten_known_crates(&config)
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, vec!["top", "ws_a", "ws_b"]);
+    }
+
+    #[test]
+    fn flatten_known_crates_dedupes_by_name_keeping_top_level() {
+        let config = Config {
+            crates: vec![make_crate("dup", None)],
+            workspaces: Some(vec![WorkspaceConfig {
+                crates: vec![make_crate("dup", None), make_crate("unique", None)],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let names: Vec<String> = flatten_known_crates(&config)
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, vec!["dup", "unique"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_tag_to_crates (lockstep tie-tier + per-crate prefix resolution)
+    // -----------------------------------------------------------------------
+
+    fn tagged_crate(name: &str, template: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: template.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Map a resolved tie-tier to its crate names for assertion.
+    fn resolved_names<'a>(tag: &str, crates: &'a [CrateConfig]) -> Vec<&'a str> {
+        resolve_tag_to_crates(tag, crates)
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn resolve_tag_to_crate_single_crate_v_prefix() {
+        let crates = vec![tagged_crate("app", "v{{ .Version }}")];
+        assert_eq!(resolved_names("v1.2.3", &crates), vec!["app"]);
+    }
+
+    #[test]
+    fn resolve_tag_to_crate_longest_prefix_wins_over_sibling() {
+        // `core-v` must win over the shorter `v` for tag `core-v0.1.0`.
+        let crates = vec![
+            tagged_crate("base", "v{{ .Version }}"),
+            tagged_crate("core", "core-v{{ .Version }}"),
+        ];
+        assert_eq!(resolved_names("core-v0.1.0", &crates), vec!["core"]);
+    }
+
+    #[test]
+    fn resolve_tag_to_crate_non_numeric_remainder_does_not_match() {
+        let crates = vec![tagged_crate("app", "v{{ .Version }}")];
+        // `vendor-branch` shares the `v` prefix but the remainder isn't a version.
+        assert!(resolve_tag_to_crates("vendor-branch", &crates).is_empty());
+    }
+
+    #[test]
+    fn resolve_tag_to_crate_unmatched_prefix_is_none() {
+        let crates = vec![tagged_crate("core", "core-v{{ .Version }}")];
+        assert!(resolve_tag_to_crates("cli-v1.0.0", &crates).is_empty());
     }
 }

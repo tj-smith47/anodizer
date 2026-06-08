@@ -7,8 +7,9 @@ use anyhow::{Context as _, Result};
 
 /// Module-level logger for warnings emitted from helpers (and async upload
 /// retry loops) that don't have runtime access to the stage's
-/// `ctx.logger("release")`. Routes through StageLogger for consistent `[release]`
-/// framing.
+/// `ctx.logger("release")`. Carries the `release` stage context so these
+/// lines render under the release section header (the per-line tag is gone —
+/// format B), keeping them consistent with the rest of the stage's output.
 pub(crate) fn release_log() -> StageLogger {
     StageLogger::new("release", Verbosity::Normal)
 }
@@ -226,6 +227,13 @@ pub(crate) fn resolve_release_repo(
 }
 
 /// Compose the public release HTML URL for the active SCM provider.
+///
+/// GitLab omits the `/{owner}` segment when `owner` is empty (a top-level
+/// project with no namespace), matching the authoritative
+/// [`gitlab::gitlab_release_url`] path. Without this, an empty owner would
+/// emit a double-slash `{base}//{repo}/-/releases/{tag}` that diverges from
+/// the URL the live create returns. GitHub / Gitea always include the owner
+/// segment, mirroring their authoritative composers.
 pub(crate) fn compose_release_url(
     token_type: ScmTokenType,
     download_base: &str,
@@ -239,7 +247,11 @@ pub(crate) fn compose_release_url(
             format!("{}/{}/{}/releases/tag/{}", base, owner, repo, tag)
         }
         ScmTokenType::GitLab => {
-            format!("{}/{}/{}/-/releases/{}", base, owner, repo, tag)
+            if owner.is_empty() {
+                format!("{}/{}/-/releases/{}", base, repo, tag)
+            } else {
+                format!("{}/{}/{}/-/releases/{}", base, owner, repo, tag)
+            }
         }
     }
 }

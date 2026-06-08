@@ -18,7 +18,8 @@ use super::release_body::{
     resolve_make_latest, resolve_release_tag,
 };
 use super::{
-    populate_artifact_download_urls, populate_checksums_var, retry_upload, should_mark_prerelease,
+    compose_release_url, populate_artifact_download_urls, populate_checksums_var, retry_upload,
+    should_mark_prerelease,
 };
 
 #[test]
@@ -5505,4 +5506,50 @@ fn test_dry_run_replace_existing_artifacts_cli_or_config_or() {
     ctx.options.replace_existing_artifacts = true;
 
     assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn compose_release_url_gitlab_empty_owner_omits_owner_segment() {
+    // A top-level GitLab project with no namespace: the authoritative
+    // `gitlab_release_url` drops the owner segment, so the derived default
+    // must too — otherwise `ensure_release_url` would emit a double-slash
+    // `https://gitlab.com//project/-/releases/v1.0.0` that diverges from the
+    // URL the live create returns.
+    let url = compose_release_url(
+        ScmTokenType::GitLab,
+        "https://gitlab.com",
+        "",
+        "project",
+        "v1.0.0",
+    );
+    assert_eq!(url, "https://gitlab.com/project/-/releases/v1.0.0");
+}
+
+#[test]
+fn compose_release_url_gitlab_with_owner_includes_owner_segment() {
+    let url = compose_release_url(
+        ScmTokenType::GitLab,
+        "https://gitlab.com",
+        "group",
+        "project",
+        "v1.0.0",
+    );
+    assert_eq!(url, "https://gitlab.com/group/project/-/releases/v1.0.0");
+}
+
+#[test]
+fn compose_release_url_github_always_includes_owner_segment() {
+    // GitHub format is unchanged: owner is always present, matching the
+    // authoritative backend composer (`{base}/{owner}/{repo}/releases/tag/{tag}`).
+    let url = compose_release_url(
+        ScmTokenType::GitHub,
+        "https://github.com",
+        "tj-smith47",
+        "anodizer",
+        "v1.0.0",
+    );
+    assert_eq!(
+        url,
+        "https://github.com/tj-smith47/anodizer/releases/tag/v1.0.0"
+    );
 }

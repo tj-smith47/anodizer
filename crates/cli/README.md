@@ -25,16 +25,17 @@ See [What works (with proof)](https://tj-smith47.github.io/anodizer/dogfooding/)
 
 ## Why anodizer?
 
-Built for the Rust release workflow, end to end:
+Your release is a Cargo workspace — not a bag of loose binaries. anodizer is built that way from the ground up.
 
-- **Workspace-native.** Per-crate release cadences, per-crate tags, a tag resolver, and cross-crate version syncing — single crates and monorepos use the same config.
-- **Cargo- and lockfile-aware versioning.** `anodizer tag` and `anodizer bump` edit `Cargo.toml` + `Cargo.lock`, commit, tag, and push the bump and tag atomically — no orphaned commits, no hand-rolled `git push`.
-- **crates.io, ordered correctly.** Dependency-aware publish ordering with sparse-index polling (`wait_for_workspace_deps`), so workspace crates publish in the right order instead of racing propagation.
-- **Reproducible by default — and verified.** Deterministic artifacts out of the box, plus a determinism harness (`anodizer check determinism`) that rebuilds and byte-compares to prove it.
-- **Zero-config cross-compilation.** musl, glibc, Windows, and macOS targets via `cargo-zigbuild` or `cross` — no per-target toolchain wrangling.
-- **Rust-ecosystem niceties.** Generated crate READMEs, `cargo-binstall` metadata derived from your config, and a GitHub Action that can build straight from a branch.
+- **It speaks Cargo.** Per-crate release cadences, per-crate tags, and a tag resolver let a single crate and a thirty-crate monorepo share one config. `anodizer tag` and `anodizer bump` rewrite `Cargo.toml` *and* `Cargo.lock`, then commit, tag, and push atomically — no orphaned bump commit, no hand-rolled `git push`, no lockfile drift.
+- **crates.io, published in the right order.** Dependency-aware ordering with sparse-index polling holds each crate until the ones it depends on have propagated — so a workspace publish never races itself into a transient "version not found."
+- **Cross-compiles without the toolchain tax.** musl, glibc, Windows, and macOS from one machine via `cargo-zigbuild` or `cross`. No `rustup target add` rituals, no per-target CI shards to babysit.
+- **Reproducible — and it proves it.** Deterministic artifacts by default, then `anodizer check determinism` rebuilds them and byte-compares. "Reproducible" becomes a fact your CI enforces, not a claim in your release notes.
+- **Signing and attestation are first-class.** cosign + GPG for binaries, archives, checksums, and images, plus SLSA-style build provenance — wired in a few lines, not bolted on after a CVE scare.
 
-Coming from GoReleaser? It supports Rust too; anodizer is Rust-first. See the [migration guide](https://tj-smith47.github.io/anodizer/migration/goreleaser/).
+Then the long tail that Rust authors actually hit: generated per-crate READMEs, `cargo-binstall` metadata derived straight from your config (no hand-maintained `pkg-url` that 404s), `version_files` to pin your docs and install scripts to the released version, and post-release install smoke tests that catch a broken artifact before your users do.
+
+Already know GoReleaser? anodizer's `{{ .Field }}` template syntax will feel right at home. Moving from cargo-dist, release-plz, or cargo-release? The [migration guides](https://tj-smith47.github.io/anodizer/migration/) map your setup straight over.
 
 ## Features
 
@@ -95,7 +96,7 @@ Coming from GoReleaser? It supports Rust too; anodizer is Rust-first. See the [m
 - Monorepo support with independent workspaces
 - Auto-tagging from commit message directives
 - Reproducible builds with `mod_timestamp` and `builds_info`
-- Version-string file syncing (`version_files`) to keep docs, install scripts, and manifests in lockstep at tag time
+- Version-string file syncing (`version_files`) to keep docs, scripts, and manifests in lockstep at tag
 - Post-release verification with install smoke tests
 - JSON Schema for editor autocomplete and validation
 
