@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-06-08
-
 Changes since `v0.5.0`. Will be cut as the next release.
 
 ### Features
@@ -139,5 +137,4 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.6.0...HEAD
-[0.6.0]: https://github.com/tj-smith47/anodizer/compare/v0.5.0...v0.6.0
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.5.0...HEAD
