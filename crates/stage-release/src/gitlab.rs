@@ -1579,7 +1579,7 @@ mod tests {
     // `%2F` (e.g. `myorg/myproj` -> `myorg%2Fmyproj`); tags keep their dots.
 
     use anodizer_core::test_helpers::scripted_responder::{
-        ScriptedRoute, spawn_scripted_responder,
+        ScriptedRoute, spawn_scripted_responder, spawn_scripted_responder_on,
     };
 
     /// Build a fast retry policy for the HTTP-flow tests (millisecond
@@ -2528,6 +2528,767 @@ mod tests {
         assert!(
             detect_pre_v17_gitlab_with_env(&client, &api_url, &env).await,
             "an unreachable/failed /version probe defaults to pre-v17"
+        );
+    }
+
+    /// A `/version` 200 whose JSON lacks a string `version` field cannot be
+    /// parsed into a major number, so the detector falls through to the
+    /// conservative pre-v17 default (`true`) rather than panicking.
+    #[tokio::test]
+    async fn detect_pre_v17_unparseable_version_field_defaults_true() {
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/version",
+            // `version` is a number, not the expected string — `as_str()`
+            // yields None, so the body-parse branch defaults to pre-v17.
+            response: http_json("200 OK", serde_json::json!({"version": 17}).to_string()),
+            times: None,
+        }]);
+        let client = test_client();
+        let api_url = format!("http://{addr}");
+        let env = MapEnvSource::new();
+
+        assert!(
+            detect_pre_v17_gitlab_with_env(&client, &api_url, &env).await,
+            "a 200 /version with a non-string version field defaults to pre-v17"
+        );
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 1, "exactly one /version GET was issued");
+    }
+
+    // -- gitlab_create_release: POST create error closure -------------------
+
+    /// A 404 GET probe routes to the create POST; when that POST returns a
+    /// 4xx the create-error closure formats the failing message (asset of
+    /// line range 349-354) — the error names the create call and carries the
+    /// HTTP status, and `max_attempts: 1` proves the 4xx fast-fails.
+    #[tokio::test]
+    async fn create_release_post_4xx_surfaces_error() {
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0",
+                response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/projects/o%2Fr/releases",
+                response: http_json(
+                    "400 Bad Request",
+                    serde_json::json!({"message": "tag_name already exists"}).to_string(),
+                ),
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(1);
+        let api_url = format!("http://{addr}");
+        let ctx = GitlabCtx {
+            client: &client,
+            api_url: &api_url,
+            project_id: "o/r",
+            policy: &policy,
+        };
+        let spec = GitlabReleaseSpec {
+            tag: "v1.0.0",
+            name: "n",
+            body: "b",
+            commit: "abc",
+            release_mode: "replace",
+        };
+
+        let err = gitlab_create_release(&ctx, &spec)
+            .await
+            .expect_err("create POST 400 must surface");
+        assert!(
+            format!("{err:#}").contains("create release failed (HTTP 400"),
+            "error must name the create call + status, got: {err:#}"
+        );
+        let entries = log.lock().unwrap();
+        let posts = entries.iter().filter(|e| e.method == "POST").count();
+        assert_eq!(posts, 1, "a 4xx create POST fast-fails (no retry)");
+    }
+
+    // -- gitlab_upload_asset: project-uploads POST error closure ------------
+
+    /// A 4xx on the project-uploads POST formats the multipart-upload error
+    /// closure (asset of line range 713-724): the error names the failing
+    /// upload + status and no version probe / link POST is attempted.
+    #[tokio::test]
+    async fn upload_asset_project_uploads_4xx_surfaces_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("a.bin");
+        tokio::fs::write(&file, b"xyz")
+            .await
+            .expect("write fixture");
+
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/projects/o%2Fr/uploads",
+            response: http_json(
+                "413 Payload Too Large",
+                serde_json::json!({"message": "too big"}).to_string(),
+            ),
+            times: None,
+        }]);
+
+        let client = test_client();
+        let policy = fast_policy(1);
+        let api_url = format!("http://{addr}");
+        let ctx = GitlabCtx {
+            client: &client,
+            api_url: &api_url,
+            project_id: "o/r",
+            policy: &policy,
+        };
+        let asset = GitlabAssetSpec {
+            file_path: &file,
+            file_name: "a.bin",
+        };
+        let download_url = format!("http://{addr}");
+
+        let err = gitlab_upload_asset(&ctx, "v1.0.0", &asset, None, &download_url, false)
+            .await
+            .expect_err("413 project-uploads POST must surface");
+        assert!(
+            format!("{err:#}").contains("project upload 'a.bin' failed (HTTP 413"),
+            "error must name the upload + status, got: {err:#}"
+        );
+        let entries = log.lock().unwrap();
+        assert!(
+            entries.iter().all(|e| e.path != "/version"),
+            "a failed upload must not proceed to the version probe / link POST"
+        );
+    }
+
+    // -- gitlab_upload_asset: replace path — list-links failure -------------
+
+    /// When the link POST 422s and `replace_existing` is true, the backend
+    /// lists existing links; if that list GET fails (4xx), the list-error
+    /// closure fires and the function bails with the ORIGINAL link-conflict
+    /// status (asset of line range 472-535 Err arm), never issuing a DELETE.
+    #[tokio::test]
+    async fn upload_asset_replace_list_links_failure_bails_with_original_status() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("a.bin");
+        tokio::fs::write(&file, b"xyz")
+            .await
+            .expect("write fixture");
+
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "PUT",
+                path_pattern: "/projects/o%2Fr/packages/generic/p/1.0.0/a.bin",
+                response: http_json("201 Created", "{}".to_string()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/version",
+                response: http_json(
+                    "200 OK",
+                    serde_json::json!({"version": "17.0.0"}).to_string(),
+                ),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+                response: http_json(
+                    "422 Unprocessable Entity",
+                    serde_json::json!({"message": "already exists"}).to_string(),
+                ),
+                times: None,
+            },
+            // The list GET fails with a 4xx so the Err arm reports the
+            // original 422 conflict.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+                response: http_json(
+                    "403 Forbidden",
+                    serde_json::json!({"message": "no access"}).to_string(),
+                ),
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(1);
+        let api_url = format!("http://{addr}");
+        let ctx = GitlabCtx {
+            client: &client,
+            api_url: &api_url,
+            project_id: "o/r",
+            policy: &policy,
+        };
+        let asset = GitlabAssetSpec {
+            file_path: &file,
+            file_name: "a.bin",
+        };
+        let pkg = GitlabPackageRegistrySpec {
+            project_name: "p",
+            version: "1.0.0",
+        };
+
+        let err = gitlab_upload_asset(&ctx, "v1.0.0", &asset, Some(&pkg), "https://x", true)
+            .await
+            .expect_err("a failed link-list must bail");
+        assert!(
+            format!("{err:#}").contains("create release link for 'a.bin' failed (HTTP 422"),
+            "the bail reports the ORIGINAL conflict status, got: {err:#}"
+        );
+        let entries = log.lock().unwrap();
+        assert!(
+            entries.iter().all(|e| e.method != "DELETE"),
+            "a failed link-list must not proceed to DELETE"
+        );
+    }
+
+    /// When replace_existing is true and the listed links contain NO entry
+    /// matching the asset name, no DELETE fires but the POST is still retried
+    /// (asset of line range 523-535 retry-after-delete closure). The retry
+    /// then succeeds.
+    #[tokio::test]
+    async fn upload_asset_replace_no_matching_link_retries_post() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("a.bin");
+        tokio::fs::write(&file, b"xyz")
+            .await
+            .expect("write fixture");
+
+        let other_links = serde_json::json!([{"id": 1, "name": "other.bin"}]).to_string();
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "PUT",
+                path_pattern: "/projects/o%2Fr/packages/generic/p/1.0.0/a.bin",
+                response: http_json("201 Created", "{}".to_string()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/version",
+                response: http_json(
+                    "200 OK",
+                    serde_json::json!({"version": "17.0.0"}).to_string(),
+                ),
+                times: None,
+            },
+            // First link POST conflicts (422)...
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+                response: http_json(
+                    "422 Unprocessable Entity",
+                    serde_json::json!({"message": "already exists"}).to_string(),
+                ),
+                times: Some(1),
+            },
+            // ...list returns only a non-matching link (no DELETE)...
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+                response: http_json("200 OK", other_links),
+                times: None,
+            },
+            // ...retry POST succeeds.
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+                response: http_json("201 Created", serde_json::json!({"id": 9}).to_string()),
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(2);
+        let api_url = format!("http://{addr}");
+        let ctx = GitlabCtx {
+            client: &client,
+            api_url: &api_url,
+            project_id: "o/r",
+            policy: &policy,
+        };
+        let asset = GitlabAssetSpec {
+            file_path: &file,
+            file_name: "a.bin",
+        };
+        let pkg = GitlabPackageRegistrySpec {
+            project_name: "p",
+            version: "1.0.0",
+        };
+
+        gitlab_upload_asset(&ctx, "v1.0.0", &asset, Some(&pkg), "https://x", true)
+            .await
+            .expect("retry POST after a no-match list should succeed");
+        let entries = log.lock().unwrap();
+        assert!(
+            entries.iter().all(|e| e.method != "DELETE"),
+            "no name match => no DELETE, but the POST is still retried"
+        );
+        let posts = entries
+            .iter()
+            .filter(|e| e.method == "POST" && e.path.ends_with("/assets/links"))
+            .count();
+        assert_eq!(posts, 2, "the conflicting POST is retried exactly once");
+    }
+
+    // -- run_gitlab_backend orchestration -----------------------------------
+    //
+    // These drive the production orchestrator (token resolution, URL
+    // resolution, create-release, parallel upload loop, html_url
+    // composition) against the scripted responder. The Context is built
+    // with token_type=GitLab so `resolve_release_repo` reads
+    // `release.gitlab`, and `gitlab_urls.{api,download}` point at the
+    // loopback so every API call is observable. Mirrors github::backend's
+    // `run_github_backend` end-to-end tests.
+
+    use anodizer_core::config::{
+        CrateConfig, GitLabUrlsConfig, ReleaseConfig, RetryConfig, ScmRepoConfig,
+    };
+    use anodizer_core::context::Context;
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::scm::ScmTokenType;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    /// Build a GitLab-flavoured Context: token_type=GitLab, a fast retry
+    /// policy, and `gitlab_urls.{api,download}` pointed at the loopback so
+    /// every API call routes through the scripted responder.
+    fn build_gitlab_ctx(api_base: &str, use_pkg_registry: bool) -> Context {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("demo")
+            .tag("v1.0.0")
+            .commit("deadbeef")
+            .token(Some("glpat-test".to_string()))
+            .build();
+        ctx.token_type = ScmTokenType::GitLab;
+        ctx.config.gitlab_urls = Some(GitLabUrlsConfig {
+            api: Some(api_base.to_string()),
+            download: Some(api_base.to_string()),
+            skip_tls_verify: None,
+            use_package_registry: Some(use_pkg_registry),
+            use_job_token: None,
+        });
+        ctx.config.retry = Some(RetryConfig {
+            attempts: 3,
+            delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(1)),
+            max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(2)),
+        });
+        ctx
+    }
+
+    /// A `CrateConfig` whose `release.gitlab` points at owner=o, name=r.
+    fn build_gitlab_crate_cfg() -> CrateConfig {
+        let mut crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            ..Default::default()
+        };
+        crate_cfg.release = Some(ReleaseConfig {
+            gitlab: Some(ScmRepoConfig {
+                owner: "o".to_string(),
+                name: "r".to_string(),
+            }),
+            mode: Some("replace".to_string()),
+            ..Default::default()
+        });
+        crate_cfg
+    }
+
+    fn default_gitlab_spec() -> GitlabBackendSpec<'static> {
+        GitlabBackendSpec {
+            tag: "v1.0.0",
+            release_name: "Release v1.0.0",
+            release_body: "the body",
+            release_mode: "replace",
+            skip_upload: false,
+            replace_existing_draft: false,
+            use_existing_draft: false,
+            replace_existing_artifacts: false,
+        }
+    }
+
+    /// End-to-end: a fresh release (404 GET probe → POST create) plus one
+    /// package-registry asset upload. Asserts the success payload
+    /// `(html_url, download, owner, repo)` and that the create POST + the
+    /// registry PUT + the link POST all hit the loopback.
+    #[test]
+    fn run_backend_creates_release_and_uploads_one_asset() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let artifact = dir.path().join("demo.tar.gz");
+        std::fs::write(&artifact, b"PAYLOAD").expect("write artifact");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0",
+                response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/projects/o%2Fr/releases",
+                response: http_json(
+                    "201 Created",
+                    serde_json::json!({"tag_name": "v1.0.0"}).to_string(),
+                ),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PUT",
+                path_pattern: "/projects/o%2Fr/packages/generic/demo/1.0.0/demo.tar.gz",
+                response: http_json("201 Created", "{}".to_string()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/version",
+                response: http_json(
+                    "200 OK",
+                    serde_json::json!({"version": "17.0.0"}).to_string(),
+                ),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+                response: http_json("201 Created", serde_json::json!({"id": 1}).to_string()),
+                times: None,
+            },
+        ];
+        let (_addr, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let api_base = format!("http://{addr}");
+        let ctx = build_gitlab_ctx(&api_base, true);
+        let crate_cfg = build_gitlab_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("glpat-test".to_string());
+        let env = GitlabBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let artifacts = vec![(artifact, Some("demo.tar.gz".to_string()))];
+
+        let out = run_gitlab_backend(
+            &env,
+            &crate_cfg,
+            release_cfg,
+            &default_gitlab_spec(),
+            &artifacts,
+        )
+        .expect("run_gitlab_backend should succeed")
+        .expect("returns Some on success");
+        let (html_url, download, owner, repo) = out;
+        assert_eq!(owner, "o");
+        assert_eq!(repo, "r");
+        assert_eq!(
+            download, api_base,
+            "download base echoes gitlab_urls.download"
+        );
+        assert_eq!(
+            html_url,
+            format!("{api_base}/o/r/-/releases/v1.0.0"),
+            "html_url composes from download base + owner/repo/-/releases/tag"
+        );
+
+        let entries = log.lock().unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path == "/projects/o%2Fr/releases"),
+            "the create POST hit the loopback"
+        );
+        let put = entries
+            .iter()
+            .find(|e| e.method == "PUT")
+            .expect("the package-registry PUT was issued");
+        assert!(
+            put.body.contains("PAYLOAD"),
+            "the registry PUT carried the artifact bytes"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path.ends_with("/assets/links")),
+            "the release-link POST was issued"
+        );
+    }
+
+    /// With `skip_upload` set, the orchestrator creates the release but
+    /// issues no upload calls (no PUT / no /version / no assets/links).
+    #[test]
+    fn run_backend_skip_upload_creates_release_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let artifact = dir.path().join("demo.tar.gz");
+        std::fs::write(&artifact, b"PAYLOAD").expect("write artifact");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0",
+                response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/projects/o%2Fr/releases",
+                response: http_json(
+                    "201 Created",
+                    serde_json::json!({"tag_name": "v1.0.0"}).to_string(),
+                ),
+                times: None,
+            },
+        ];
+        let (_addr, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let api_base = format!("http://{addr}");
+        let ctx = build_gitlab_ctx(&api_base, true);
+        let crate_cfg = build_gitlab_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("glpat-test".to_string());
+        let env = GitlabBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let mut spec = default_gitlab_spec();
+        spec.skip_upload = true;
+        let artifacts = vec![(artifact, Some("demo.tar.gz".to_string()))];
+
+        run_gitlab_backend(&env, &crate_cfg, release_cfg, &spec, &artifacts)
+            .expect("run_gitlab_backend should succeed")
+            .expect("returns Some");
+
+        let entries = log.lock().unwrap();
+        assert!(
+            entries
+                .iter()
+                .all(|e| e.method != "PUT" && e.path != "/version"),
+            "skip_upload must issue no upload calls, got: {:?}",
+            entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+        );
+    }
+
+    /// GitLab has no draft releases, so `replace_existing_draft` /
+    /// `use_existing_draft` are no-ops that only emit a warning. With both set
+    /// the orchestrator still creates the release and uploads the asset (the
+    /// draft flags change nothing about the issued HTTP calls).
+    #[test]
+    fn run_backend_draft_flags_warn_but_create_proceeds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let artifact = dir.path().join("demo.tar.gz");
+        std::fs::write(&artifact, b"PAYLOAD").expect("write artifact");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0",
+                response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/projects/o%2Fr/releases",
+                response: http_json(
+                    "201 Created",
+                    serde_json::json!({"tag_name": "v1.0.0"}).to_string(),
+                ),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PUT",
+                path_pattern: "/projects/o%2Fr/packages/generic/demo/1.0.0/demo.tar.gz",
+                response: http_json("201 Created", "{}".to_string()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/version",
+                response: http_json(
+                    "200 OK",
+                    serde_json::json!({"version": "17.0.0"}).to_string(),
+                ),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+                response: http_json("201 Created", serde_json::json!({"id": 1}).to_string()),
+                times: None,
+            },
+        ];
+        let (_addr, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let api_base = format!("http://{addr}");
+        let ctx = build_gitlab_ctx(&api_base, true);
+        let crate_cfg = build_gitlab_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("glpat-test".to_string());
+        let env = GitlabBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let mut spec = default_gitlab_spec();
+        spec.replace_existing_draft = true;
+        spec.use_existing_draft = true;
+        let artifacts = vec![(artifact, Some("demo.tar.gz".to_string()))];
+
+        run_gitlab_backend(&env, &crate_cfg, release_cfg, &spec, &artifacts)
+            .expect("draft flags must not abort the backend")
+            .expect("returns Some");
+
+        let entries = log.lock().unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path == "/projects/o%2Fr/releases"),
+            "the release is still created despite the no-op draft flags"
+        );
+        assert!(
+            entries.iter().any(|e| e.method == "PUT"),
+            "the asset upload still proceeds"
+        );
+    }
+
+    /// A missing GitLab token short-circuits before any HTTP call with an
+    /// actionable bail naming GITLAB_TOKEN.
+    #[test]
+    fn run_backend_missing_token_bails() {
+        let ctx = build_gitlab_ctx("http://unused.invalid", false);
+        let crate_cfg = build_gitlab_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token: Option<String> = None;
+        let env = GitlabBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let artifacts: Vec<(std::path::PathBuf, Option<String>)> = Vec::new();
+
+        let err = run_gitlab_backend(
+            &env,
+            &crate_cfg,
+            release_cfg,
+            &default_gitlab_spec(),
+            &artifacts,
+        )
+        .expect_err("a missing token must bail");
+        assert!(
+            format!("{err:#}").contains("GITLAB_TOKEN"),
+            "bail must name the missing env var, got: {err:#}"
+        );
+    }
+
+    /// A crate without any `release.gitlab`/`release.github` config returns
+    /// `Ok(None)` (the caller `continue`s) rather than erroring.
+    #[test]
+    fn run_backend_no_gitlab_config_returns_none() {
+        let ctx = build_gitlab_ctx("http://unused.invalid", false);
+        let mut crate_cfg = build_gitlab_crate_cfg();
+        // Strip the release config so resolve_release_repo yields None.
+        crate_cfg.release = Some(ReleaseConfig {
+            mode: Some("replace".to_string()),
+            ..Default::default()
+        });
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("glpat-test".to_string());
+        let env = GitlabBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let artifacts: Vec<(std::path::PathBuf, Option<String>)> = Vec::new();
+
+        let out = run_gitlab_backend(
+            &env,
+            &crate_cfg,
+            release_cfg,
+            &default_gitlab_spec(),
+            &artifacts,
+        )
+        .expect("no-config is not an error");
+        assert!(out.is_none(), "absent gitlab config => Ok(None)");
+    }
+
+    /// A missing artifact file (path does not exist) aborts the upload loop
+    /// with a "files are missing" error AFTER the release is created.
+    #[test]
+    fn run_backend_missing_artifact_file_errors() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0",
+                response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/projects/o%2Fr/releases",
+                response: http_json(
+                    "201 Created",
+                    serde_json::json!({"tag_name": "v1.0.0"}).to_string(),
+                ),
+                times: None,
+            },
+        ];
+        let (_addr, _log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let api_base = format!("http://{addr}");
+        let ctx = build_gitlab_ctx(&api_base, true);
+        let crate_cfg = build_gitlab_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("glpat-test".to_string());
+        let env = GitlabBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let missing = std::path::PathBuf::from("/nonexistent/anodizer-test/missing.tar.gz");
+        let artifacts = vec![(missing, Some("missing.tar.gz".to_string()))];
+
+        let err = run_gitlab_backend(
+            &env,
+            &crate_cfg,
+            release_cfg,
+            &default_gitlab_spec(),
+            &artifacts,
+        )
+        .expect_err("a missing artifact file must abort the upload loop");
+        assert!(
+            format!("{err:#}").contains("missing"),
+            "error must report the missing artifact, got: {err:#}"
         );
     }
 }

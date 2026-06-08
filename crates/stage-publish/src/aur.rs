@@ -834,6 +834,7 @@ fn aur_commit_and_push(
 /// Produced by [`render_aur_pkgbuild_and_srcinfo_for_crate`] (binary) and the
 /// source-AUR render fns so the offline schema validator checks the
 /// byte-identical artifacts the publish path ships.
+#[derive(Debug)]
 pub(crate) struct AurRendered {
     /// The rendered `PKGBUILD` Bash script body.
     pub(crate) pkgbuild: String,
@@ -2828,5 +2829,731 @@ mod tests {
     #[test]
     fn extract_archive_extension_no_extension_yields_empty() {
         assert_eq!(extract_archive_extension("https://x/release/binary"), "");
+    }
+
+    // -----------------------------------------------------------------------
+    // generate_pkgbuild / generate_srcinfo — empty-extension rename branch
+    // (the `String::new()` arm of the `if format.is_empty()` in both
+    // renderers' `rename` construction).
+    // -----------------------------------------------------------------------
+
+    /// A source URL with no archive extension (e.g. a bare binary path)
+    /// renders a `rename` token with NO trailing `.<ext>` — exercising the
+    /// `String::new()` arm of `generate_pkgbuild`'s rename builder.
+    #[test]
+    fn test_generate_pkgbuild_extensionless_source_has_no_rename_suffix() {
+        let pkgbuild = generate_pkgbuild(&PkgbuildParams {
+            name: "mytool",
+            version: "1.0.0",
+            pkgrel: 1,
+            description: "A tool",
+            url: "https://example.com",
+            license: "MIT",
+            maintainers: &[],
+            contributors: &[],
+            depends: &[],
+            optdepends: &[],
+            conflicts: &[],
+            provides: &[],
+            replaces: &[],
+            backup: &[],
+            // Bare binary path — `extract_archive_extension` returns "".
+            sources: &[(
+                "x86_64".to_string(),
+                "https://example.com/download/mytool".to_string(),
+                "hash".to_string(),
+            )],
+            binary_name: "mytool",
+            install_template: None,
+            install_file: None,
+        })
+        .unwrap();
+
+        // rename token is `mytool_${pkgver}_x86_64` with no `.<ext>`.
+        assert!(
+            pkgbuild.contains(
+                "source_x86_64=(\"mytool_${pkgver}_x86_64::https://example.com/download/mytool\")"
+            ),
+            "extensionless source must render a suffix-free rename:\n{pkgbuild}"
+        );
+    }
+
+    /// `.SRCINFO` rename builder mirrors the PKGBUILD one: an extensionless
+    /// source omits the trailing `.<ext>`. The .SRCINFO template embeds the
+    /// raw `source_<arch>` URL (not the rename), so the assertion here pins
+    /// the raw URL survives the empty-extension path without a panic and the
+    /// arch/source/sha lines render.
+    #[test]
+    fn test_generate_srcinfo_extensionless_source_renders() {
+        let srcinfo = generate_srcinfo(&PkgbuildParams {
+            name: "mytool-bin",
+            version: "1.0.0",
+            pkgrel: 1,
+            description: "A tool",
+            url: "https://example.com",
+            license: "MIT",
+            maintainers: &[],
+            contributors: &[],
+            depends: &[],
+            optdepends: &[],
+            conflicts: &[],
+            provides: &[],
+            replaces: &[],
+            backup: &[],
+            sources: &[(
+                "x86_64".to_string(),
+                "https://example.com/download/mytool".to_string(),
+                "deadbeef".to_string(),
+            )],
+            binary_name: "mytool",
+            install_template: None,
+            install_file: None,
+        })
+        .unwrap();
+
+        assert!(srcinfo.contains("\tarch = x86_64"), "{srcinfo}");
+        assert!(
+            srcinfo.contains("\tsource_x86_64 = https://example.com/download/mytool"),
+            "{srcinfo}"
+        );
+        assert!(
+            srcinfo.contains("\tsha256sums_x86_64 = deadbeef"),
+            "{srcinfo}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // render_aur_pkgbuild_and_srcinfo_for_crate — the skip-aware render entry
+    // the offline validator drives. Pure (no git): exercises the url
+    // fallback / bail, the url_template branch, install-file emission, and the
+    // skip / if / skip_upload gates.
+    // -----------------------------------------------------------------------
+
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{AurConfig, Config, CrateConfig, PublishConfig, StringOrBool};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    fn render_quiet_log() -> StageLogger {
+        StageLogger::new("publish", Verbosity::Quiet)
+    }
+
+    /// A linux amd64 archive carrying url + sha256, matching the AUR filters.
+    fn linux_amd64_archive(crate_name: &str, url: &str, sha: &str) -> Artifact {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("url".to_string(), url.to_string());
+        metadata.insert("sha256".to_string(), sha.to_string());
+        Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/tmp/{crate_name}-linux-amd64.tar.gz")),
+            name: format!("{crate_name}-linux-amd64.tar.gz"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: crate_name.to_string(),
+            metadata,
+            size: None,
+        }
+    }
+
+    /// Build a single-crate context wired to publish `crate_name` to AUR with
+    /// the supplied `aur` config and one matching linux archive.
+    fn render_ctx(crate_name: &str, aur: AurConfig, release_github: bool) -> Context {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: crate_name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            release: if release_github {
+                Some(anodizer_core::config::ReleaseConfig {
+                    github: Some(anodizer_core::config::ScmRepoConfig {
+                        owner: "myorg".to_string(),
+                        name: "mytool".to_string(),
+                    }),
+                    ..Default::default()
+                })
+            } else {
+                None
+            },
+            publish: Some(PublishConfig {
+                aur: Some(aur),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(linux_amd64_archive(
+            crate_name,
+            "https://example.com/mytool-linux-amd64.tar.gz",
+            "abc123",
+        ));
+        ctx
+    }
+
+    /// With no `homepage`/`metadata.homepage` but a `release.github`
+    /// owner/name, the PKGBUILD `url=` falls back to the derived GitHub repo
+    /// URL (the `else if let Some(gh)` arm of the url resolver).
+    #[test]
+    fn render_url_falls_back_to_release_github() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        };
+        let ctx = render_ctx("mytool", aur, true);
+        let rendered =
+            render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+                .expect("render ok")
+                .expect("not skipped");
+        assert!(
+            rendered
+                .pkgbuild
+                .contains("url=\"https://github.com/myorg/mytool\""),
+            "url must derive from release.github when homepage unset:\n{}",
+            rendered.pkgbuild
+        );
+    }
+
+    /// No `homepage` AND no `release.github` is a hard error: the PKGBUILD
+    /// `url=` cannot be resolved, so the render bails naming the crate and
+    /// pointing at `homepage` / `release.github`.
+    #[test]
+    fn render_url_unresolvable_bails_with_actionable_error() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        };
+        let ctx = render_ctx("mytool", aur, false);
+        let err = render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+            .expect_err("no url source must bail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("no url configured"), "{msg}");
+        assert!(msg.contains("mytool"), "{msg}");
+        assert!(msg.contains("publish.aur.homepage"), "{msg}");
+    }
+
+    /// `url_template` overrides the artifact's `metadata.url`: the rendered
+    /// `source_<arch>=` line carries the templated URL (os/arch/version
+    /// substituted), not the original archive URL.
+    #[test]
+    fn render_url_template_drives_source_url() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            url_template: Some(
+                "https://dl/{{ .Version }}/{{ .Os }}-{{ .Arch }}.tar.gz".to_string(),
+            ),
+            ..Default::default()
+        };
+        let mut ctx = render_ctx("mytool", aur, false);
+        // The url_template interpolates `{{ .Version }}`; without a resolved
+        // `Version` var the rendered URL has an empty version segment and the
+        // PKGBUILD's `version → ${pkgver}` substitution has nothing to replace.
+        // Set it the way the live publish path does (the `Version` template var).
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        let rendered =
+            render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+                .expect("render ok")
+                .expect("not skipped");
+        // The substituted-version URL replaces the literal version with
+        // ${pkgver} in the PKGBUILD; arch=x86_64 / os=linux from the template.
+        assert!(
+            rendered
+                .pkgbuild
+                .contains("https://dl/${pkgver}/linux-x86_64.tar.gz"),
+            "url_template must drive the source URL:\n{}",
+            rendered.pkgbuild
+        );
+        assert!(
+            !rendered
+                .pkgbuild
+                .contains("example.com/mytool-linux-amd64.tar.gz"),
+            "the original metadata.url must not appear when url_template is set:\n{}",
+            rendered.pkgbuild
+        );
+    }
+
+    /// `install:` content makes the rendered PKGBUILD carry an
+    /// `install=<base>.install` line where `<base>` is the package name with a
+    /// trailing `-bin` stripped (the `install_file_ref = Some(...)` branch of
+    /// `render_aur_inner`).
+    #[test]
+    fn render_with_install_emits_install_line() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            install: Some("post_install() { echo hi; }".to_string()),
+            ..Default::default()
+        };
+        let ctx = render_ctx("mytool", aur, false);
+        let rendered =
+            render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+                .expect("render ok")
+                .expect("not skipped");
+        // Default name `mytool-bin` → install base strips to `mytool`.
+        assert!(
+            rendered.pkgbuild.contains("install=mytool.install"),
+            "install= line must reference <base>.install:\n{}",
+            rendered.pkgbuild
+        );
+    }
+
+    /// A truthy `skip` short-circuits the render to `Ok(None)` (the crate is
+    /// suppressed entirely) — no PKGBUILD is produced.
+    #[test]
+    fn render_skip_true_returns_none() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            skip: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        let ctx = render_ctx("mytool", aur, false);
+        let out = render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+            .expect("render ok");
+        assert!(out.is_none(), "skip=true must render None");
+    }
+
+    /// A falsy `if:` condition skips the crate (the `if` gate returns
+    /// `Ok(None)` before any render work).
+    #[test]
+    fn render_if_false_returns_none() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            if_condition: Some("false".to_string()),
+            ..Default::default()
+        };
+        let ctx = render_ctx("mytool", aur, false);
+        let out = render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+            .expect("render ok");
+        assert!(out.is_none(), "if:false must render None");
+    }
+
+    /// A truthy `skip_upload` skips the render (the upload gate fires before
+    /// the inner render, returning `Ok(None)`).
+    #[test]
+    fn render_skip_upload_true_returns_none() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            skip_upload: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        let ctx = render_ctx("mytool", aur, false);
+        let out = render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+            .expect("render ok");
+        assert!(out.is_none(), "skip_upload=true must render None");
+    }
+
+    /// `render_aur_pkgbuild_and_srcinfo_for_crate` errors when the crate has
+    /// no `aur` block at all (the `ok_or_else` on the missing config).
+    #[test]
+    fn render_missing_aur_block_errors() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig::default()),
+            ..Default::default()
+        }];
+        let ctx = Context::new(config, ContextOptions::default());
+        let err = render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+            .expect_err("missing aur block must error");
+        assert!(
+            format!("{err:#}").contains("no aur config"),
+            "error must name the missing aur config: {err:#}"
+        );
+    }
+
+    /// `crate_has_aur_linux_archive` returns `Ok(true)` when a matching linux
+    /// archive exists and `Ok(false)` (true absence) when none matches the
+    /// `ids:` filter — the validator's skip-vs-error discriminator.
+    #[test]
+    fn crate_has_aur_linux_archive_true_and_false() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            ..Default::default()
+        };
+        let ctx = render_ctx("mytool", aur.clone(), false);
+        assert!(
+            crate_has_aur_linux_archive(&ctx, &aur, "mytool").expect("ok"),
+            "a matching linux archive must report present",
+        );
+
+        // ids filter matching nothing → clean absence (Ok(false), not Err).
+        let aur_no_match = AurConfig {
+            ids: Some(vec!["nonexistent".to_string()]),
+            ..aur
+        };
+        assert!(
+            !crate_has_aur_linux_archive(&ctx, &aur_no_match, "mytool").expect("ok"),
+            "no archive matching ids must report absent",
+        );
+    }
+
+    /// `resolve_aur_credentials_from_config` skips crates with no
+    /// `publish.aur` block (the `continue` on the let-else) and returns
+    /// `(None, None)` for an unknown git_url.
+    #[test]
+    fn resolve_credentials_skips_non_aur_crates() {
+        let mut config = Config::default();
+        config.crates = vec![
+            // No publish.aur — must be skipped by the let-else continue.
+            CrateConfig {
+                name: "plain".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig::default()),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "withkey".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    aur: Some(AurConfig {
+                        git_url: Some("ssh://aur@aur.archlinux.org/withkey.git".to_string()),
+                        private_key: Some("KEYBYTES".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ];
+        let ctx = Context::new(config, ContextOptions::default());
+        let (pk, _) =
+            resolve_aur_credentials_from_config(&ctx, "ssh://aur@aur.archlinux.org/withkey.git");
+        assert_eq!(pk.as_deref(), Some("KEYBYTES"));
+        // Unknown url → (None, None) after walking past the skipped crate.
+        let (pk_none, ssh_none) = resolve_aur_credentials_from_config(&ctx, "ssh://aur@x/y.git");
+        assert!(pk_none.is_none() && ssh_none.is_none());
+    }
+
+    /// The publisher skips on nightly (its `skips_on_nightly` is `true`).
+    #[test]
+    fn aur_publisher_skips_on_nightly() {
+        use anodizer_core::Publisher;
+        assert!(AurOurPublisher::new().skips_on_nightly());
+    }
+
+    /// A truthy `skip` short-circuits `publish_to_aur` to `Ok(false)` via
+    /// `aur_check_skip_and_resolve_git_url`'s skip branch — before any archive
+    /// build or git clone (the `ids` filter that would otherwise hard-fail is
+    /// never reached).
+    #[test]
+    fn publish_to_aur_skip_true_returns_false_before_archive_check() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            skip: Some(StringOrBool::Bool(true)),
+            // Would hard-fail "no linux archives matched" if the skip gate
+            // did not short-circuit first.
+            ids: Some(vec!["nonexistent".to_string()]),
+            ..Default::default()
+        };
+        let ctx = render_ctx("mytool", aur, false);
+        let pushed = publish_to_aur(&ctx, "mytool", &render_quiet_log()).expect("skip ok");
+        assert!(!pushed, "skip=true must short-circuit to Ok(false)");
+    }
+
+    /// A falsy `if:` condition short-circuits `publish_to_aur` to `Ok(false)`
+    /// (the `if` gate in `aur_check_skip_and_resolve_git_url`).
+    #[test]
+    fn publish_to_aur_if_false_returns_false() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            if_condition: Some("false".to_string()),
+            ids: Some(vec!["nonexistent".to_string()]),
+            ..Default::default()
+        };
+        let ctx = render_ctx("mytool", aur, false);
+        let pushed = publish_to_aur(&ctx, "mytool", &render_quiet_log()).expect("if:false ok");
+        assert!(!pushed, "if:false must short-circuit to Ok(false)");
+    }
+
+    // -----------------------------------------------------------------------
+    // Live git-over-ssh publish path — clone, write PKGBUILD/.SRCINFO/.install,
+    // commit, push to AUR `master`. Driven against a local bare repo (the
+    // `clone_repo_with_auth` no-token branch is a plain `git clone <localpath>`).
+    // `#[cfg(unix)]`-gated: spawns git, sets process env for commit identity,
+    // and asserts unix-path file modes. Precedent: homebrew/publish_formula.rs
+    // `make_bare_tap`.
+    // -----------------------------------------------------------------------
+
+    #[cfg(unix)]
+    fn ensure_git_identity() {
+        use std::sync::OnceLock;
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            // SAFETY: runs once per process under OnceLock; constant values.
+            unsafe {
+                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
+                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
+                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
+                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
+                std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    fn git_ok(dir: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[cfg(unix)]
+    fn git_stdout(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+        assert!(out.status.success(), "git {args:?} failed");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A bare AUR repo seeded with one commit on `master`. Returns its
+    /// filesystem path (a usable local clone URL) plus the holder tempdir.
+    #[cfg(unix)]
+    fn make_bare_aur_repo() -> (String, tempfile::TempDir) {
+        ensure_git_identity();
+        let bare = tempfile::tempdir().expect("bare tempdir");
+        let seed = tempfile::tempdir().expect("seed tempdir");
+        git_ok(bare.path(), &["init", "--bare", "-b", "master"]);
+        git_ok(seed.path(), &["init", "-b", "master"]);
+        git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
+        git_ok(seed.path(), &["config", "user.name", "T"]);
+        git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
+        std::fs::write(seed.path().join("README"), "aur\n").unwrap();
+        git_ok(seed.path(), &["add", "README"]);
+        git_ok(seed.path(), &["commit", "-m", "seed"]);
+        assert!(
+            std::process::Command::new("git")
+                .args(["remote", "add", "origin"])
+                .arg(bare.path())
+                .current_dir(seed.path())
+                .status()
+                .expect("git remote add")
+                .success(),
+            "git remote add failed"
+        );
+        git_ok(seed.path(), &["push", "-u", "origin", "master"]);
+        (bare.path().to_string_lossy().into_owned(), bare)
+    }
+
+    /// Read a file as it landed on the bare repo's `master` ref.
+    #[cfg(unix)]
+    fn aur_show(bare: &std::path::Path, path: &str) -> String {
+        git_stdout(bare, &["show", &format!("master:{path}")])
+    }
+
+    /// Build a single-crate context whose `aur.git_url` points the clone at a
+    /// local bare repo, with one matching linux archive registered.
+    #[cfg(unix)]
+    fn live_ctx(bare_url: &str, install: Option<&str>) -> Context {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                aur: Some(AurConfig {
+                    git_url: Some(bare_url.to_string()),
+                    homepage: Some("https://example.com/mytool".to_string()),
+                    license: Some("MIT".to_string()),
+                    description: Some("A great tool".to_string()),
+                    install: install.map(str::to_string),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(linux_amd64_archive(
+            "mytool",
+            "https://example.com/mytool-1.2.3-linux-amd64.tar.gz",
+            "abc123",
+        ));
+        ctx
+    }
+
+    /// End-to-end: `publish_to_aur` clones the bare repo, writes
+    /// PKGBUILD/.SRCINFO, commits, and pushes to `master`. Assert the pushed
+    /// bytes (PKGBUILD pkgname + .SRCINFO pkgbase) and the `true` push outcome.
+    #[cfg(unix)]
+    #[test]
+    fn publish_to_aur_pushes_pkgbuild_and_srcinfo_to_master() {
+        let (bare_url, bare) = make_bare_aur_repo();
+        let ctx = live_ctx(&bare_url, None);
+        let log = render_quiet_log();
+
+        let pushed = publish_to_aur(&ctx, "mytool", &log).expect("publish ok");
+        assert!(pushed, "a fresh PKGBUILD must report a push");
+
+        let pkgbuild = aur_show(std::path::Path::new(&bare_url), "PKGBUILD");
+        assert!(pkgbuild.contains("pkgname='mytool-bin'"), "{pkgbuild}");
+        assert!(
+            pkgbuild.contains("url=\"https://example.com/mytool\""),
+            "{pkgbuild}"
+        );
+        let srcinfo = aur_show(std::path::Path::new(&bare_url), ".SRCINFO");
+        assert!(srcinfo.contains("pkgbase = mytool-bin"), "{srcinfo}");
+        assert!(srcinfo.contains("pkgname = mytool-bin"), "{srcinfo}");
+        drop(bare);
+    }
+
+    /// A second `publish_to_aur` against an already-current repo pushes
+    /// nothing new: `commit_and_push_with_opts` reports `NoChanges`, so the
+    /// publisher returns `false`.
+    #[cfg(unix)]
+    #[test]
+    fn publish_to_aur_second_run_no_changes_returns_false() {
+        let (bare_url, bare) = make_bare_aur_repo();
+        let ctx = live_ctx(&bare_url, None);
+        let log = render_quiet_log();
+
+        assert!(
+            publish_to_aur(&ctx, "mytool", &log).expect("first publish ok"),
+            "first publish must push"
+        );
+        assert!(
+            !publish_to_aur(&ctx, "mytool", &log).expect("second publish ok"),
+            "an unchanged repo must report no push (NoChanges)"
+        );
+        drop(bare);
+    }
+
+    /// With `install:` set, the `.install` file lands on `master` alongside
+    /// PKGBUILD/.SRCINFO and the PKGBUILD references it.
+    #[cfg(unix)]
+    #[test]
+    fn publish_to_aur_writes_install_file() {
+        let (bare_url, bare) = make_bare_aur_repo();
+        let ctx = live_ctx(&bare_url, Some("post_install() { echo hi; }"));
+        let log = render_quiet_log();
+
+        assert!(publish_to_aur(&ctx, "mytool", &log).expect("publish ok"));
+        let pkgbuild = aur_show(std::path::Path::new(&bare_url), "PKGBUILD");
+        assert!(pkgbuild.contains("install=mytool.install"), "{pkgbuild}");
+        let install = aur_show(std::path::Path::new(&bare_url), "mytool.install");
+        assert_eq!(install, "post_install() { echo hi; }");
+        drop(bare);
+    }
+
+    /// `directory:` renders a subdirectory inside the cloned repo and the
+    /// PKGBUILD lands under it (the `aur_resolve_output_dir` create-subdir
+    /// branch).
+    #[cfg(unix)]
+    #[test]
+    fn publish_to_aur_directory_nests_output() {
+        let (bare_url, bare) = make_bare_aur_repo();
+        let mut ctx = live_ctx(&bare_url, None);
+        if let Some(p) = ctx.config.crates[0].publish.as_mut()
+            && let Some(a) = p.aur.as_mut()
+        {
+            a.directory = Some("packages/mytool".to_string());
+        }
+        let log = render_quiet_log();
+        assert!(publish_to_aur(&ctx, "mytool", &log).expect("publish ok"));
+        let pkgbuild = aur_show(std::path::Path::new(&bare_url), "packages/mytool/PKGBUILD");
+        assert!(pkgbuild.contains("pkgname='mytool-bin'"), "{pkgbuild}");
+        drop(bare);
+    }
+
+    /// Cloning a path that is not a git repo fails: `publish_to_aur`
+    /// propagates the clone error naming the `aur` publisher (the repo was
+    /// never touched).
+    #[cfg(unix)]
+    #[test]
+    fn publish_to_aur_clone_failure_errors() {
+        ensure_git_identity();
+        let bogus = tempfile::tempdir().expect("bogus dir");
+        let bogus_url = bogus.path().to_string_lossy().into_owned();
+        let ctx = live_ctx(&bogus_url, None);
+        let log = render_quiet_log();
+        let err =
+            publish_to_aur(&ctx, "mytool", &log).expect_err("cloning a non-repo path must fail");
+        assert!(
+            format!("{err:#}").contains("aur"),
+            "error must name the publisher: {err:#}"
+        );
+        drop(bogus);
+    }
+
+    /// Full `Publisher::run` over a configured crate pushes the package and
+    /// records exactly one rollback target carrying the pushed git_url;
+    /// `rollback` then git-reverts that target without error.
+    #[cfg(unix)]
+    #[test]
+    fn aur_publisher_run_pushes_and_rollback_reverts() {
+        use anodizer_core::Publisher;
+        let (bare_url, bare) = make_bare_aur_repo();
+        let mut ctx = live_ctx(&bare_url, None);
+        ctx.options.selected_crates = vec!["mytool".to_string()];
+        let p = AurOurPublisher::new();
+
+        let evidence = p.run(&mut ctx).expect("run ok");
+        let targets = decode_aur_our_targets(&evidence.extra);
+        assert_eq!(targets.len(), 1, "one push → one rollback target");
+        assert_eq!(targets[0].git_url, bare_url);
+        assert_eq!(targets[0].target, "mytool-bin");
+
+        // A commit landed on master before rollback.
+        let before = git_stdout(
+            std::path::Path::new(&bare_url),
+            &["rev-list", "--count", "master"],
+        );
+        // Rollback git-reverts the AUR repo; it must not error.
+        p.rollback(&mut ctx, &evidence).expect("rollback ok");
+        let after = git_stdout(
+            std::path::Path::new(&bare_url),
+            &["rev-list", "--count", "master"],
+        );
+        assert!(
+            after.parse::<u32>().unwrap() > before.parse::<u32>().unwrap(),
+            "rollback must add a revert commit (before={before}, after={after})"
+        );
+        drop(bare);
+    }
+
+    /// A non-empty `git_ssh_command` routes the clone through `aur_clone_repo`'s
+    /// SSH branch (`clone_repo_ssh`) instead of `clone_repo_with_auth`. For a
+    /// local-path clone git ignores `GIT_SSH_COMMAND`, so the clone still
+    /// succeeds and the package pushes — exercising the SSH-branch + post-clone
+    /// `core.sshCommand` config-write that the no-key path never touches.
+    #[cfg(unix)]
+    #[test]
+    fn publish_to_aur_ssh_command_routes_through_ssh_clone() {
+        let (bare_url, bare) = make_bare_aur_repo();
+        let mut ctx = live_ctx(&bare_url, None);
+        if let Some(p) = ctx.config.crates[0].publish.as_mut()
+            && let Some(a) = p.aur.as_mut()
+        {
+            a.git_ssh_command = Some("ssh -o StrictHostKeyChecking=no".to_string());
+        }
+        let log = render_quiet_log();
+        assert!(
+            publish_to_aur(&ctx, "mytool", &log).expect("ssh-branch publish ok"),
+            "SSH-branch clone of a local bare repo must still push"
+        );
+        let pkgbuild = aur_show(std::path::Path::new(&bare_url), "PKGBUILD");
+        assert!(pkgbuild.contains("pkgname='mytool-bin'"), "{pkgbuild}");
+        drop(bare);
     }
 }

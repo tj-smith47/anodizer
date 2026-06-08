@@ -1707,4 +1707,756 @@ crates:
             "widget-bin"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // render_aur_source_inner — the skip-unaware render the live publish path
+    // and the offline validator share. Pure (reads ctx, no git): covers source
+    // URL derivation (GitURL owner extraction for both `://` and `git@host:`
+    // remotes), the empty-owner warn, the `url_template` override + `Amd64`
+    // scoping, and the dependency/field defaults landing in the rendered
+    // PKGBUILD/.SRCINFO.
+    // -----------------------------------------------------------------------
+
+    use anodizer_core::config::{Config, CrateConfig, PublishConfig, StringOrBool};
+    use anodizer_core::context::ContextOptions;
+    use anodizer_core::log::Verbosity;
+
+    fn quiet_log() -> StageLogger {
+        StageLogger::new("publish", Verbosity::Quiet)
+    }
+
+    /// A bare context with the four template vars `render_aur_source_inner`
+    /// reads (`Version`, `Tag`, `GitURL`, `ProjectName`). The default source
+    /// URL is `https://github.com/<owner>/<project>/archive/refs/tags/<tag>.tar.gz`,
+    /// so `owner` comes from `GitURL` and `project` from `ProjectName`.
+    fn source_ctx(git_url: &str, project: &str, version: &str, tag: &str) -> Context {
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut().set("Version", version);
+        ctx.template_vars_mut().set("Tag", tag);
+        ctx.template_vars_mut().set("GitURL", git_url);
+        ctx.template_vars_mut().set("ProjectName", project);
+        ctx
+    }
+
+    /// Default source URL: owner extracted from an `https://` GitURL
+    /// (`split('/').nth(3)`), project from `ProjectName`, tag from `Tag`. The
+    /// PKGBUILD `pkgver` carries the `Version` var with hyphens underscored.
+    #[test]
+    fn render_inner_default_url_from_https_giturl() {
+        let ctx = source_ctx(
+            "https://github.com/myorg/mytool.git",
+            "mytool",
+            "1.2.3-rc1",
+            "v1.2.3-rc1",
+        );
+        let cfg = AurSourceConfig {
+            description: Some("A source tool".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        };
+        let render =
+            render_aur_source_inner(&ctx, &cfg, "mytool", false, "aur_source", &quiet_log())
+                .expect("render ok");
+        assert_eq!(render.pkg_name, "mytool");
+        // Default source URL points at the github archive tarball.
+        assert!(
+            render.rendered.pkgbuild.contains(
+                "source=(\"https://github.com/myorg/mytool/archive/refs/tags/v1.2.3-rc1.tar.gz\")"
+            ),
+            "default source URL must derive owner from GitURL + project from ProjectName:\n{}",
+            render.rendered.pkgbuild
+        );
+        // Version hyphen → underscore per AUR pkgver rules.
+        assert!(
+            render.rendered.pkgbuild.contains("pkgver='1.2.3_rc1'"),
+            "{}",
+            render.rendered.pkgbuild
+        );
+        // Default makedepends are rust + cargo.
+        assert!(
+            render
+                .rendered
+                .pkgbuild
+                .contains("makedepends=('rust' 'cargo')"),
+            "{}",
+            render.rendered.pkgbuild
+        );
+        // conflicts/provides default to the bare package name.
+        assert!(render.rendered.pkgbuild.contains("conflicts=('mytool')"));
+        assert!(render.rendered.pkgbuild.contains("provides=('mytool')"));
+    }
+
+    /// Default source URL owner extraction for an SCP-style `git@host:owner/repo`
+    /// remote (the `contains(':')` branch, `split(':').nth(1).split('/').next()`).
+    #[test]
+    fn render_inner_default_url_from_scp_giturl() {
+        let ctx = source_ctx(
+            "git@github.com:acme/widget.git",
+            "widget",
+            "2.0.0",
+            "v2.0.0",
+        );
+        let cfg = AurSourceConfig::default();
+        let render =
+            render_aur_source_inner(&ctx, &cfg, "widget", false, "aur_source", &quiet_log())
+                .expect("render ok");
+        assert!(
+            render.rendered.pkgbuild.contains(
+                "source=(\"https://github.com/acme/widget/archive/refs/tags/v2.0.0.tar.gz\")"
+            ),
+            "SCP-style GitURL owner must extract to 'acme':\n{}",
+            render.rendered.pkgbuild
+        );
+    }
+
+    /// An unparseable GitURL (no scheme, no `:`) yields an empty owner; the
+    /// renderer warns and still produces a (malformed-owner) source URL rather
+    /// than panicking.
+    #[test]
+    fn render_inner_empty_owner_warns_and_continues() {
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = source_ctx("not-a-url", "thing", "1.0.0", "v1.0.0");
+        ctx.with_log_capture(capture.clone());
+        let log = ctx.logger("publish");
+        let cfg = AurSourceConfig::default();
+        let render = render_aur_source_inner(&ctx, &cfg, "thing", false, "aur_source", &log)
+            .expect("render ok despite unextractable owner");
+        // Empty owner → URL has an empty owner segment.
+        assert!(
+            render
+                .rendered
+                .pkgbuild
+                .contains("source=(\"https://github.com//thing/archive/refs/tags/v1.0.0.tar.gz\")"),
+            "{}",
+            render.rendered.pkgbuild
+        );
+        assert!(
+            capture
+                .warn_messages()
+                .iter()
+                .any(|m| m.contains("could not extract owner")),
+            "an unextractable GitURL must warn the operator; got: {:?}",
+            capture.warn_messages()
+        );
+    }
+
+    /// `url_template` overrides the default github-archive URL and sees the
+    /// `Amd64` micro-architecture var (default `v1`) plus the standard vars.
+    #[test]
+    fn render_inner_url_template_overrides_with_amd64_scope() {
+        let ctx = source_ctx("https://github.com/o/p.git", "p", "3.1.0", "v3.1.0");
+        let cfg = AurSourceConfig {
+            url_template: Some(
+                "https://dl.example/{{ .Version }}/{{ .Amd64 }}/src.tar.gz".to_string(),
+            ),
+            ..Default::default()
+        };
+        let render = render_aur_source_inner(&ctx, &cfg, "p", false, "aur_source", &quiet_log())
+            .expect("render ok");
+        assert!(
+            render
+                .rendered
+                .pkgbuild
+                .contains("source=(\"https://dl.example/3.1.0/v1/src.tar.gz\")"),
+            "url_template must render with default Amd64=v1:\n{}",
+            render.rendered.pkgbuild
+        );
+        // The scoped vars threaded out carry the same Amd64 the render saw.
+        assert_eq!(
+            render.scoped_vars.get("Amd64").map(|s| s.as_str()),
+            Some("v1")
+        );
+    }
+
+    /// A configured `amd64_variant` surfaces as the `Amd64` template var the
+    /// `url_template` (and hook bodies) branch on.
+    #[test]
+    fn render_inner_amd64_variant_threads_into_template() {
+        use anodizer_core::config::Amd64Variant;
+        let ctx = source_ctx("https://github.com/o/p.git", "p", "1.0.0", "v1.0.0");
+        let cfg = AurSourceConfig {
+            amd64_variant: Some(Amd64Variant::V3),
+            url_template: Some("https://dl/{{ .Amd64 }}.tar.gz".to_string()),
+            ..Default::default()
+        };
+        let render = render_aur_source_inner(&ctx, &cfg, "p", false, "aur_source", &quiet_log())
+            .expect("render ok");
+        assert!(
+            render
+                .rendered
+                .pkgbuild
+                .contains("source=(\"https://dl/v3.tar.gz\")"),
+            "{}",
+            render.rendered.pkgbuild
+        );
+        assert_eq!(
+            render.scoped_vars.get("Amd64").map(|s| s.as_str()),
+            Some("v3")
+        );
+    }
+
+    /// `install:` set → the render reports `<pkg>.install` and the PKGBUILD
+    /// emits the `install=` line; unset → no install filename reference leaks
+    /// into the body.
+    #[test]
+    fn render_inner_install_filename_tracks_config() {
+        let ctx = source_ctx("https://github.com/o/p.git", "p", "1.0.0", "v1.0.0");
+        let cfg = AurSourceConfig {
+            install: Some("post_install() { :; }".to_string()),
+            ..Default::default()
+        };
+        let render = render_aur_source_inner(&ctx, &cfg, "p", false, "aur_source", &quiet_log())
+            .expect("render ok");
+        assert_eq!(render.install_filename, "p.install");
+        assert!(
+            render.rendered.pkgbuild.contains("install=p.install"),
+            "{}",
+            render.rendered.pkgbuild
+        );
+
+        let cfg_none = AurSourceConfig::default();
+        let render_none =
+            render_aur_source_inner(&ctx, &cfg_none, "p", false, "aur_source", &quiet_log())
+                .expect("render ok");
+        assert!(
+            !render_none.rendered.pkgbuild.contains("install="),
+            "no install= line when install unset:\n{}",
+            render_none.rendered.pkgbuild
+        );
+    }
+
+    /// Top-level entries strip a trailing `-bin` from the default name; the
+    /// `Version` default `0.0.0` applies when the var is absent.
+    #[test]
+    fn render_inner_strips_bin_and_defaults_version() {
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        // No Version var → defaults to 0.0.0; GitURL/ProjectName empty.
+        ctx.template_vars_mut().set("Tag", "v9");
+        let cfg = AurSourceConfig::default();
+        let render =
+            render_aur_source_inner(&ctx, &cfg, "foo-bin", true, "aur_sources[0]", &quiet_log())
+                .expect("render ok");
+        assert_eq!(
+            render.pkg_name, "foo",
+            "-bin must be stripped for top-level"
+        );
+        assert!(
+            render.rendered.pkgbuild.contains("pkgver='0.0.0'"),
+            "missing Version var must default to 0.0.0:\n{}",
+            render.rendered.pkgbuild
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // render_aur_source_pkgbuild_and_srcinfo_for_crate / render_top_level_aur_source
+    // — the skip-aware entry points the offline validator drives. Pure (no git).
+    // -----------------------------------------------------------------------
+
+    fn crate_with_aur_source(name: &str, cfg: AurSourceConfig) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                aur_source: Some(cfg),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// No `aur_source` block on the crate → `Ok(None)` (the validator treats it
+    /// as nothing to validate).
+    #[test]
+    fn render_per_crate_none_when_no_block() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig::default()),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut()
+            .set("GitURL", "https://github.com/o/demo.git");
+        ctx.template_vars_mut().set("ProjectName", "demo");
+        let out = render_aur_source_pkgbuild_and_srcinfo_for_crate(&ctx, "demo", &quiet_log())
+            .expect("render ok");
+        assert!(out.is_none(), "no aur_source block → None");
+    }
+
+    /// A configured crate renders the PKGBUILD/.SRCINFO byte-content the live
+    /// publish would push.
+    #[test]
+    fn render_per_crate_emits_pkgbuild() {
+        let mut config = Config::default();
+        config.crates = vec![crate_with_aur_source(
+            "demo",
+            AurSourceConfig {
+                description: Some("demo tool".to_string()),
+                ..Default::default()
+            },
+        )];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut()
+            .set("GitURL", "https://github.com/o/demo.git");
+        ctx.template_vars_mut().set("ProjectName", "demo");
+        let rendered = render_aur_source_pkgbuild_and_srcinfo_for_crate(&ctx, "demo", &quiet_log())
+            .expect("render ok")
+            .expect("not skipped");
+        assert_eq!(rendered.package_name, "demo");
+        assert!(
+            rendered.pkgbuild.contains("pkgname='demo'"),
+            "{}",
+            rendered.pkgbuild
+        );
+        assert!(
+            rendered.srcinfo.contains("pkgbase = demo"),
+            "{}",
+            rendered.srcinfo
+        );
+    }
+
+    /// A truthy `skip` on the per-crate block short-circuits to `Ok(None)`.
+    #[test]
+    fn render_per_crate_skip_true_returns_none() {
+        let mut config = Config::default();
+        config.crates = vec![crate_with_aur_source(
+            "demo",
+            AurSourceConfig {
+                skip: Some(StringOrBool::Bool(true)),
+                ..Default::default()
+            },
+        )];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut()
+            .set("GitURL", "https://github.com/o/demo.git");
+        ctx.template_vars_mut().set("ProjectName", "demo");
+        let out = render_aur_source_pkgbuild_and_srcinfo_for_crate(&ctx, "demo", &quiet_log())
+            .expect("render ok");
+        assert!(out.is_none(), "skip=true → None");
+    }
+
+    /// Top-level `aur_sources` array: empty/unset → empty Vec; populated →
+    /// one rendered artifact per non-skipped entry; a truthy `skip` drops the
+    /// entry.
+    #[test]
+    fn render_top_level_handles_empty_populated_and_skip() {
+        // Unset → empty Vec.
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut()
+            .set("GitURL", "https://github.com/o/p.git");
+        ctx.template_vars_mut().set("ProjectName", "p");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        assert!(
+            render_top_level_aur_source(&ctx, &quiet_log())
+                .expect("render ok")
+                .is_empty(),
+            "unset aur_sources → empty Vec"
+        );
+
+        // Two entries, the second skipped → only the first renders.
+        let mut config = Config::default();
+        config.project_name = "p".to_string();
+        config.aur_sources = Some(vec![
+            AurSourceConfig {
+                name: Some("first".to_string()),
+                ..Default::default()
+            },
+            AurSourceConfig {
+                name: Some("second".to_string()),
+                skip: Some(StringOrBool::Bool(true)),
+                ..Default::default()
+            },
+        ]);
+        let mut ctx2 = Context::new(config, ContextOptions::default());
+        ctx2.template_vars_mut()
+            .set("GitURL", "https://github.com/o/p.git");
+        ctx2.template_vars_mut().set("ProjectName", "p");
+        ctx2.template_vars_mut().set("Tag", "v1.0.0");
+        ctx2.template_vars_mut().set("Version", "1.0.0");
+        let out = render_top_level_aur_source(&ctx2, &quiet_log()).expect("render ok");
+        assert_eq!(out.len(), 1, "skipped entry must be dropped");
+        assert_eq!(out[0].package_name, "first");
+    }
+
+    // -----------------------------------------------------------------------
+    // Dry-run publish — exercises the `is_dry_run` early-exit in
+    // `publish_aur_source_entry` without touching git.
+    // -----------------------------------------------------------------------
+
+    /// In dry-run, `publish_aur_source_entry` (via `publish_to_aur_source`)
+    /// returns `Ok(false)` (nothing pushed) before any clone/write.
+    #[test]
+    fn publish_to_aur_source_dry_run_returns_false() {
+        let mut config = Config::default();
+        config.crates = vec![crate_with_aur_source(
+            "demo",
+            AurSourceConfig {
+                description: Some("demo".to_string()),
+                ..Default::default()
+            },
+        )];
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut()
+            .set("GitURL", "https://github.com/o/demo.git");
+        ctx.template_vars_mut().set("ProjectName", "demo");
+        let pushed = publish_to_aur_source(&mut ctx, "demo", &quiet_log()).expect("dry-run ok");
+        assert!(!pushed, "dry-run must not push");
+    }
+
+    /// `publish_to_aur_source` errors when the named crate carries no
+    /// `aur_source` block at all (the `ok_or_else` on the missing config).
+    #[test]
+    fn publish_to_aur_source_missing_block_errors() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig::default()),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let err = publish_to_aur_source(&mut ctx, "demo", &quiet_log())
+            .expect_err("missing aur_source must error");
+        assert!(
+            format!("{err:#}").contains("no aur_source config"),
+            "{err:#}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Live git-over-ssh source publish — clone a local bare repo, write
+    // PKGBUILD/.SRCINFO/.install, commit, push to `master`. `#[cfg(unix)]`-gated:
+    // spawns git, sets commit-identity env, asserts pushed bytes on the bare
+    // ref. Precedent: aur.rs `make_bare_aur_repo`.
+    // -----------------------------------------------------------------------
+
+    #[cfg(unix)]
+    fn ensure_git_identity() {
+        use std::sync::OnceLock;
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            // SAFETY: runs once per process under OnceLock; constant values.
+            unsafe {
+                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
+                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
+                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
+                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
+                std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    fn git_ok(dir: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[cfg(unix)]
+    fn git_stdout(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+        assert!(out.status.success(), "git {args:?} failed");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A bare AUR repo seeded with one commit on `master`. Returns a usable
+    /// local clone URL plus the holder tempdir.
+    #[cfg(unix)]
+    fn make_bare_aur_repo() -> (String, tempfile::TempDir) {
+        ensure_git_identity();
+        let bare = tempfile::tempdir().expect("bare tempdir");
+        let seed = tempfile::tempdir().expect("seed tempdir");
+        git_ok(bare.path(), &["init", "--bare", "-b", "master"]);
+        git_ok(seed.path(), &["init", "-b", "master"]);
+        git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
+        git_ok(seed.path(), &["config", "user.name", "T"]);
+        git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
+        std::fs::write(seed.path().join("README"), "aur\n").unwrap();
+        git_ok(seed.path(), &["add", "README"]);
+        git_ok(seed.path(), &["commit", "-m", "seed"]);
+        assert!(
+            std::process::Command::new("git")
+                .args(["remote", "add", "origin"])
+                .arg(bare.path())
+                .current_dir(seed.path())
+                .status()
+                .expect("git remote add")
+                .success(),
+            "git remote add failed"
+        );
+        git_ok(seed.path(), &["push", "-u", "origin", "master"]);
+        (bare.path().to_string_lossy().into_owned(), bare)
+    }
+
+    /// Read a file as it landed on the bare repo's `master` ref.
+    #[cfg(unix)]
+    fn aur_show(bare: &std::path::Path, path: &str) -> String {
+        git_stdout(bare, &["show", &format!("master:{path}")])
+    }
+
+    /// Build a per-crate source-publish context pointing the clone at a local
+    /// bare repo, with the four template vars the render reads populated.
+    #[cfg(unix)]
+    fn live_source_ctx(bare_url: &str, cfg_mut: impl FnOnce(&mut AurSourceConfig)) -> Context {
+        let mut cfg = AurSourceConfig {
+            git_url: Some(bare_url.to_string()),
+            description: Some("A source tool".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        };
+        cfg_mut(&mut cfg);
+        let mut config = Config::default();
+        config.dist = std::env::temp_dir().join(format!(
+            "anodize-aursrc-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        config.crates = vec![crate_with_aur_source("mytool", cfg)];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.2.3");
+        ctx.template_vars_mut().set("Tag", "v1.2.3");
+        ctx.template_vars_mut()
+            .set("GitURL", "https://github.com/myorg/mytool.git");
+        ctx.template_vars_mut().set("ProjectName", "mytool");
+        ctx
+    }
+
+    /// End-to-end per-crate source publish: clone, write, commit, push. Assert
+    /// the pushed PKGBUILD pkgname + .SRCINFO pkgbase and the `true` outcome.
+    #[cfg(unix)]
+    #[test]
+    fn publish_to_aur_source_pushes_to_master() {
+        let (bare_url, bare) = make_bare_aur_repo();
+        let mut ctx = live_source_ctx(&bare_url, |_| {});
+        let pushed = publish_to_aur_source(&mut ctx, "mytool", &quiet_log()).expect("publish ok");
+        assert!(pushed, "a fresh source PKGBUILD must report a push");
+
+        let pkgbuild = aur_show(std::path::Path::new(&bare_url), "PKGBUILD");
+        assert!(pkgbuild.contains("pkgname='mytool'"), "{pkgbuild}");
+        assert!(
+            pkgbuild.contains(
+                "source=(\"https://github.com/myorg/mytool/archive/refs/tags/v1.2.3.tar.gz\")"
+            ),
+            "{pkgbuild}"
+        );
+        let srcinfo = aur_show(std::path::Path::new(&bare_url), ".SRCINFO");
+        assert!(srcinfo.contains("pkgbase = mytool"), "{srcinfo}");
+        std::fs::remove_dir_all(&ctx.config.dist).ok();
+        drop(bare);
+    }
+
+    /// A second publish against an unchanged repo reports `NoChanges` → `false`.
+    #[cfg(unix)]
+    #[test]
+    fn publish_to_aur_source_second_run_no_changes_returns_false() {
+        let (bare_url, bare) = make_bare_aur_repo();
+        let mut ctx = live_source_ctx(&bare_url, |_| {});
+        assert!(
+            publish_to_aur_source(&mut ctx, "mytool", &quiet_log()).expect("first publish ok"),
+            "first publish must push"
+        );
+        assert!(
+            !publish_to_aur_source(&mut ctx, "mytool", &quiet_log()).expect("second publish ok"),
+            "an unchanged repo must report no push"
+        );
+        std::fs::remove_dir_all(&ctx.config.dist).ok();
+        drop(bare);
+    }
+
+    /// `install:` set → the `.install` file lands on `master` and the PKGBUILD
+    /// references it. Also drives the `git_ssh_command` clone branch (a no-op
+    /// `ssh` command; the local-path clone ignores `GIT_SSH_COMMAND`).
+    #[cfg(unix)]
+    #[test]
+    fn publish_to_aur_source_writes_install_and_uses_ssh_branch() {
+        let (bare_url, bare) = make_bare_aur_repo();
+        let mut ctx = live_source_ctx(&bare_url, |c| {
+            c.install = Some("post_install() { echo hi; }".to_string());
+            // Non-empty git_ssh_command routes through `clone_repo_ssh`; for a
+            // local-path clone git ignores GIT_SSH_COMMAND so the clone still
+            // succeeds, exercising the SSH branch's config-write path.
+            c.git_ssh_command = Some("ssh -o StrictHostKeyChecking=no".to_string());
+        });
+        assert!(publish_to_aur_source(&mut ctx, "mytool", &quiet_log()).expect("publish ok"));
+        let pkgbuild = aur_show(std::path::Path::new(&bare_url), "PKGBUILD");
+        assert!(pkgbuild.contains("install=mytool.install"), "{pkgbuild}");
+        let install = aur_show(std::path::Path::new(&bare_url), "mytool.install");
+        assert_eq!(install, "post_install() { echo hi; }");
+        std::fs::remove_dir_all(&ctx.config.dist).ok();
+        drop(bare);
+    }
+
+    /// `directory:` nests the committed files under a subdirectory rendered
+    /// from the template (with the `Amd64` var scoped in).
+    #[cfg(unix)]
+    #[test]
+    fn publish_to_aur_source_directory_nests_output() {
+        let (bare_url, bare) = make_bare_aur_repo();
+        let mut ctx = live_source_ctx(&bare_url, |c| {
+            c.directory = Some("pkgs/{{ .Amd64 }}".to_string());
+        });
+        assert!(publish_to_aur_source(&mut ctx, "mytool", &quiet_log()).expect("publish ok"));
+        // Amd64 defaults to v1, so the files land under pkgs/v1/.
+        let pkgbuild = aur_show(std::path::Path::new(&bare_url), "pkgs/v1/PKGBUILD");
+        assert!(pkgbuild.contains("pkgname='mytool'"), "{pkgbuild}");
+        std::fs::remove_dir_all(&ctx.config.dist).ok();
+        drop(bare);
+    }
+
+    /// Cloning a non-repo path fails; the error names the `aur_source` label.
+    #[cfg(unix)]
+    #[test]
+    fn publish_to_aur_source_clone_failure_errors() {
+        ensure_git_identity();
+        let bogus = tempfile::tempdir().expect("bogus dir");
+        let bogus_url = bogus.path().to_string_lossy().into_owned();
+        let mut ctx = live_source_ctx(&bogus_url, |_| {});
+        let err = publish_to_aur_source(&mut ctx, "mytool", &quiet_log())
+            .expect_err("cloning a non-repo path must fail");
+        assert!(
+            format!("{err:#}").contains("aur_source"),
+            "error must name the label: {err:#}"
+        );
+        std::fs::remove_dir_all(&ctx.config.dist).ok();
+        drop(bogus);
+    }
+
+    /// Full `Publisher::run` over a per-crate source block pushes the package,
+    /// records exactly one target carrying the pushed git_url + tag, and
+    /// `rollback` warns (irreversible force-push) without error.
+    #[cfg(unix)]
+    #[test]
+    fn aur_source_publisher_run_pushes_and_records_target() {
+        use anodizer_core::Publisher;
+        let (bare_url, bare) = make_bare_aur_repo();
+        // Point project_root at a hermetic `v0.1.0`-tagged repo so the per-crate
+        // scope resolves the crate's tag deterministically (its `tag_template`
+        // is `v{{ .Version }}`), rather than depending on the process cwd's tags.
+        let scope_repo = crate::testing::hermetic_tagged_repo();
+        let mut ctx = live_source_ctx(&bare_url, |_| {});
+        ctx.options.project_root = Some(scope_repo.path().to_path_buf());
+        ctx.options.selected_crates = vec!["mytool".to_string()];
+        let p = AurSourcePublisher::new();
+
+        let evidence = p.run(&mut ctx).expect("run ok");
+        let targets = decode_aur_source_targets(&evidence.extra);
+        assert_eq!(targets.len(), 1, "one push → one recorded target");
+        assert_eq!(targets[0].package, "mytool");
+        assert_eq!(targets[0].git_url, bare_url);
+        assert_eq!(
+            evidence.primary_ref.as_deref(),
+            Some("https://aur.archlinux.org/packages/mytool"),
+            "primary_ref must point at the AUR package page"
+        );
+
+        // The package landed on master.
+        let pkgbuild = aur_show(std::path::Path::new(&bare_url), "PKGBUILD");
+        assert!(pkgbuild.contains("pkgname='mytool'"), "{pkgbuild}");
+
+        // Rollback is warn-only (force-push is irreversible); must not error.
+        p.rollback(&mut ctx, &evidence).expect("rollback ok");
+        std::fs::remove_dir_all(&ctx.config.dist).ok();
+        drop(bare);
+    }
+
+    /// `Publisher::run` with a top-level `aur_sources` entry pushes it and
+    /// records the `aur_sources[0]` target.
+    #[cfg(unix)]
+    #[test]
+    fn aur_source_publisher_run_pushes_top_level_entry() {
+        use anodizer_core::Publisher;
+        let (bare_url, bare) = make_bare_aur_repo();
+        let mut config = Config::default();
+        config.project_name = "widget".to_string();
+        config.dist = std::env::temp_dir().join(format!(
+            "anodize-aursrc-top-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        config.aur_sources = Some(vec![AurSourceConfig {
+            git_url: Some(bare_url.clone()),
+            description: Some("widget tool".to_string()),
+            ..Default::default()
+        }]);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "2.0.0");
+        ctx.template_vars_mut().set("Tag", "v2.0.0");
+        ctx.template_vars_mut()
+            .set("GitURL", "https://github.com/myorg/widget.git");
+        ctx.template_vars_mut().set("ProjectName", "widget");
+        let p = AurSourcePublisher::new();
+
+        let evidence = p.run(&mut ctx).expect("run ok");
+        let targets = decode_aur_source_targets(&evidence.extra);
+        assert_eq!(targets.len(), 1, "one top-level entry → one target");
+        assert_eq!(targets[0].target, "aur_sources[0]");
+        assert_eq!(targets[0].package, "widget");
+
+        let srcinfo = aur_show(std::path::Path::new(&bare_url), ".SRCINFO");
+        assert!(srcinfo.contains("pkgbase = widget"), "{srcinfo}");
+        std::fs::remove_dir_all(&ctx.config.dist).ok();
+        drop(bare);
+    }
+
+    /// `Publisher::run` in dry-run records no targets (no push happened).
+    #[test]
+    fn aur_source_publisher_run_dry_run_records_no_targets() {
+        use anodizer_core::Publisher;
+        let mut config = Config::default();
+        config.crates = vec![crate_with_aur_source(
+            "demo",
+            AurSourceConfig {
+                git_url: Some("ssh://aur@aur.archlinux.org/demo.git".to_string()),
+                description: Some("demo".to_string()),
+                ..Default::default()
+            },
+        )];
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.options.selected_crates = vec!["demo".to_string()];
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut()
+            .set("GitURL", "https://github.com/o/demo.git");
+        ctx.template_vars_mut().set("ProjectName", "demo");
+        let p = AurSourcePublisher::new();
+        let evidence = p.run(&mut ctx).expect("dry-run run ok");
+        let targets = decode_aur_source_targets(&evidence.extra);
+        assert!(
+            targets.is_empty(),
+            "dry-run must not record force-push targets: {targets:?}"
+        );
+    }
 }

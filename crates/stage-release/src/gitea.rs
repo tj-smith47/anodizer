@@ -1259,7 +1259,7 @@ mod tests {
     // delete call the backend issues against Gitea's `/api/v1/...` surface.
 
     use anodizer_core::test_helpers::scripted_responder::{
-        ScriptedRoute, spawn_scripted_responder,
+        ScriptedRoute, spawn_scripted_responder, spawn_scripted_responder_on,
     };
 
     /// Build a fast retry policy for the HTTP-flow tests (millisecond
@@ -2107,6 +2107,61 @@ mod tests {
         assert_eq!(entries.iter().filter(|e| e.method == "DELETE").count(), 1);
     }
 
+    /// When the matched asset's DELETE returns a 4xx, the DELETE error closure
+    /// fires: the function bails with a message naming the asset, its id, the
+    /// release id, and the status — never returning `true`. `max_attempts: 1`
+    /// proves the 4xx fast-fails rather than retrying.
+    #[tokio::test]
+    async fn delete_asset_by_name_surfaces_delete_failure() {
+        let assets = serde_json::json!([
+            {"id": 44, "name": "target.bin", "size": 7}
+        ])
+        .to_string();
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases/3/assets",
+                response: http_json("200 OK", assets),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/api/v1/repos/o/r/releases/3/assets/44",
+                response: http_json(
+                    "403 Forbidden",
+                    serde_json::json!({"message": "no delete access"}).to_string(),
+                ),
+                times: None,
+            },
+        ]);
+
+        let client = test_client();
+        let policy = fast_policy(1);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+
+        let err = gitea_delete_asset_by_name(&ctx, 3, "target.bin")
+            .await
+            .expect_err("a 403 on the DELETE must surface as an error");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("delete asset 'target.bin' (id=44) from release 3 failed (HTTP 403"),
+            "error must name asset + id + release + status, got: {chain}"
+        );
+        let entries = log.lock().unwrap();
+        assert_eq!(
+            entries.iter().filter(|e| e.method == "DELETE").count(),
+            1,
+            "a 4xx DELETE fast-fails (no retry)"
+        );
+    }
+
     // -- gitea_find_asset_size ----------------------------------------------
 
     /// The size probe returns the matched asset's `size` field.
@@ -2205,6 +2260,643 @@ mod tests {
         assert_eq!(
             size, None,
             "matched-but-unparseable size falls through to None"
+        );
+    }
+
+    /// A 4xx on the size-probe asset-list GET fires the size-probe list error
+    /// closure and bails (it is the size-probe variant of the list message,
+    /// distinct from the delete path's list). `max_attempts: 1` proves the
+    /// 4xx fast-fails.
+    #[tokio::test]
+    async fn find_asset_size_list_failure_surfaces_error() {
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases/8/assets",
+            response: http_json(
+                "401 Unauthorized",
+                serde_json::json!({"message": "bad token"}).to_string(),
+            ),
+            times: None,
+        }]);
+
+        let client = test_client();
+        let policy = fast_policy(1);
+        let api_url = format!("http://{addr}");
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+        };
+
+        let err = gitea_find_asset_size(&ctx, 8, "a.bin")
+            .await
+            .expect_err("a 401 on the size-probe list must surface");
+        assert!(
+            format!("{err:#}").contains("list release assets failed (HTTP 401"),
+            "error must name the failing list call + status, got: {err:#}"
+        );
+        assert_eq!(
+            log.lock().unwrap().len(),
+            1,
+            "a 4xx list GET fast-fails (no retry)"
+        );
+    }
+
+    // -- run_gitea_backend orchestration ------------------------------------
+    //
+    // These drive the production orchestrator (token resolution, URL
+    // resolution, create-release, the per-asset idempotency probe +
+    // delete-then-upload decision, and html_url composition) against the
+    // scripted responder. The Context is built with token_type=Gitea so
+    // `resolve_release_repo` reads `release.gitea`, and `gitea_urls.{api,
+    // download}` point at the loopback so every API call is observable.
+    // Mirrors the gitlab.rs `run_gitlab_backend` end-to-end tests.
+
+    use anodizer_core::config::{
+        CrateConfig, GiteaUrlsConfig, ReleaseConfig, RetryConfig, ScmRepoConfig,
+    };
+    use anodizer_core::context::Context;
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::scm::ScmTokenType;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    /// Build a Gitea-flavoured Context: token_type=Gitea, a fast retry policy,
+    /// and `gitea_urls.{api,download}` pointed at the loopback base so the URL
+    /// builder's `/api/v1/...` suffix lands on the scripted responder.
+    fn build_gitea_ctx(api_base: &str) -> Context {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("demo")
+            .tag("v1.0.0")
+            .commit("deadbeef")
+            .token(Some("gitea-test".to_string()))
+            .build();
+        ctx.token_type = ScmTokenType::Gitea;
+        ctx.config.gitea_urls = Some(GiteaUrlsConfig {
+            api: Some(api_base.to_string()),
+            download: Some(api_base.to_string()),
+            skip_tls_verify: None,
+        });
+        ctx.config.retry = Some(RetryConfig {
+            attempts: 3,
+            delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(1)),
+            max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(2)),
+        });
+        ctx
+    }
+
+    /// A `CrateConfig` whose `release.gitea` points at owner=o, name=r.
+    fn build_gitea_crate_cfg() -> CrateConfig {
+        let mut crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            ..Default::default()
+        };
+        crate_cfg.release = Some(ReleaseConfig {
+            gitea: Some(ScmRepoConfig {
+                owner: "o".to_string(),
+                name: "r".to_string(),
+            }),
+            mode: Some("replace".to_string()),
+            ..Default::default()
+        });
+        crate_cfg
+    }
+
+    fn default_gitea_spec() -> GiteaBackendSpec<'static> {
+        GiteaBackendSpec {
+            tag: "v1.0.0",
+            release_name: "Release v1.0.0",
+            release_body: "the body",
+            release_mode: "replace",
+            draft: false,
+            prerelease: false,
+            skip_upload: false,
+            replace_existing_draft: false,
+            use_existing_draft: false,
+            replace_existing_artifacts: false,
+        }
+    }
+
+    /// End-to-end: a fresh release (empty list GET → POST create) plus one
+    /// asset whose size probe finds no remote match, so the upload proceeds.
+    /// Asserts the success payload `(html_url, download, owner, repo)` and that
+    /// the create POST, the size-probe GET, and the upload POST all hit the
+    /// loopback.
+    #[test]
+    fn run_backend_creates_release_and_uploads_one_asset() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let artifact = dir.path().join("demo.tar.gz");
+        std::fs::write(&artifact, b"PAYLOAD").expect("write artifact");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+                response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases",
+                response: http_json("201 Created", serde_json::json!({"id": 7}).to_string()),
+                times: None,
+            },
+            // size probe: no assets yet => upload proceeds.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases/7/assets",
+                response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases/7/assets?name=demo.tar.gz",
+                response: http_json("201 Created", serde_json::json!({"id": 1}).to_string()),
+                times: None,
+            },
+        ];
+        let (_addr, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let api_base = format!("http://{addr}");
+        let ctx = build_gitea_ctx(&api_base);
+        let crate_cfg = build_gitea_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("gitea-test".to_string());
+        let env = GiteaBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let artifacts = vec![(artifact, Some("demo.tar.gz".to_string()))];
+
+        let out = run_gitea_backend(
+            &env,
+            &crate_cfg,
+            release_cfg,
+            &default_gitea_spec(),
+            &artifacts,
+        )
+        .expect("run_gitea_backend should succeed")
+        .expect("returns Some on success");
+        let (html_url, download, owner, repo) = out;
+        assert_eq!(owner, "o");
+        assert_eq!(repo, "r");
+        assert_eq!(
+            download, api_base,
+            "download base echoes gitea_urls.download"
+        );
+        assert_eq!(
+            html_url,
+            format!("{api_base}/o/r/releases/tag/v1.0.0"),
+            "html_url composes from download base + owner/repo/releases/tag/tag"
+        );
+
+        let entries = log.lock().unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path == "/api/v1/repos/o/r/releases"),
+            "the create POST hit the loopback"
+        );
+        let upload = entries
+            .iter()
+            .find(|e| e.method == "POST" && e.path.contains("/assets?name=demo.tar.gz"))
+            .expect("the upload POST was issued");
+        assert!(
+            upload.body.contains("PAYLOAD"),
+            "the upload POST carried the artifact bytes"
+        );
+    }
+
+    /// With `skip_upload` set, the orchestrator creates the release but issues
+    /// no size probe and no upload POST.
+    #[test]
+    fn run_backend_skip_upload_creates_release_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let artifact = dir.path().join("demo.tar.gz");
+        std::fs::write(&artifact, b"PAYLOAD").expect("write artifact");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+                response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases",
+                response: http_json("201 Created", serde_json::json!({"id": 7}).to_string()),
+                times: None,
+            },
+        ];
+        let (_addr, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let api_base = format!("http://{addr}");
+        let ctx = build_gitea_ctx(&api_base);
+        let crate_cfg = build_gitea_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("gitea-test".to_string());
+        let env = GiteaBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let mut spec = default_gitea_spec();
+        spec.skip_upload = true;
+        let artifacts = vec![(artifact, Some("demo.tar.gz".to_string()))];
+
+        run_gitea_backend(&env, &crate_cfg, release_cfg, &spec, &artifacts)
+            .expect("run_gitea_backend should succeed")
+            .expect("returns Some");
+
+        let entries = log.lock().unwrap();
+        assert!(
+            entries.iter().all(|e| !e.path.contains("/assets")),
+            "skip_upload must issue no size probe / upload calls, got: {:?}",
+            entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+        );
+    }
+
+    /// When the size probe finds a same-size remote asset, the upload is
+    /// skipped (idempotent no-op): no DELETE, no upload POST — only the create
+    /// flow plus the size probe GET.
+    #[test]
+    fn run_backend_idempotent_skip_when_size_matches() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let artifact = dir.path().join("demo.tar.gz");
+        std::fs::write(&artifact, b"PAYLOAD").expect("write artifact");
+        let local_size = std::fs::metadata(&artifact).expect("stat").len();
+
+        let existing_assets =
+            serde_json::json!([{"id": 1, "name": "demo.tar.gz", "size": local_size}]).to_string();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+                response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases",
+                response: http_json("201 Created", serde_json::json!({"id": 7}).to_string()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases/7/assets",
+                response: http_json("200 OK", existing_assets),
+                times: None,
+            },
+        ];
+        let (_addr, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let api_base = format!("http://{addr}");
+        let ctx = build_gitea_ctx(&api_base);
+        let crate_cfg = build_gitea_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("gitea-test".to_string());
+        let env = GiteaBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let artifacts = vec![(artifact, Some("demo.tar.gz".to_string()))];
+
+        run_gitea_backend(
+            &env,
+            &crate_cfg,
+            release_cfg,
+            &default_gitea_spec(),
+            &artifacts,
+        )
+        .expect("run_gitea_backend should succeed")
+        .expect("returns Some");
+
+        let entries = log.lock().unwrap();
+        assert!(
+            entries
+                .iter()
+                .all(|e| !(e.method == "POST" && e.path.contains("/assets?name="))),
+            "a same-size remote asset must skip the upload POST entirely"
+        );
+        assert!(
+            entries.iter().all(|e| e.method != "DELETE"),
+            "an idempotent skip issues no DELETE"
+        );
+    }
+
+    /// With `replace_existing_artifacts` and a DIFFERENT-size remote asset, the
+    /// orchestrator deletes the conflicting asset (GET list + DELETE) and then
+    /// re-uploads it (upload POST).
+    #[test]
+    fn run_backend_replace_existing_deletes_then_uploads() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let artifact = dir.path().join("demo.tar.gz");
+        std::fs::write(&artifact, b"PAYLOAD-NEW-LONGER").expect("write artifact");
+
+        // Remote reports a different size => DeleteThenUpload.
+        let existing_assets =
+            serde_json::json!([{"id": 5, "name": "demo.tar.gz", "size": 3}]).to_string();
+        let list_again =
+            serde_json::json!([{"id": 5, "name": "demo.tar.gz", "size": 3}]).to_string();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+                response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases",
+                response: http_json("201 Created", serde_json::json!({"id": 7}).to_string()),
+                times: None,
+            },
+            // size probe (find differing size).
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases/7/assets",
+                response: http_json("200 OK", existing_assets),
+                times: Some(1),
+            },
+            // delete-by-name list (matches the same asset id) ...
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases/7/assets",
+                response: http_json("200 OK", list_again),
+                times: None,
+            },
+            // ... then the DELETE.
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/api/v1/repos/o/r/releases/7/assets/5",
+                response: "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+            // ... then the re-upload.
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases/7/assets?name=demo.tar.gz",
+                response: http_json("201 Created", serde_json::json!({"id": 9}).to_string()),
+                times: None,
+            },
+        ];
+        let (_addr, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let api_base = format!("http://{addr}");
+        let ctx = build_gitea_ctx(&api_base);
+        let crate_cfg = build_gitea_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("gitea-test".to_string());
+        let env = GiteaBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let mut spec = default_gitea_spec();
+        spec.replace_existing_artifacts = true;
+        let artifacts = vec![(artifact, Some("demo.tar.gz".to_string()))];
+
+        run_gitea_backend(&env, &crate_cfg, release_cfg, &spec, &artifacts)
+            .expect("run_gitea_backend should succeed")
+            .expect("returns Some");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(
+                    |e| e.method == "DELETE" && e.path == "/api/v1/repos/o/r/releases/7/assets/5"
+                )
+                .count(),
+            1,
+            "the differing remote asset must be DELETEd before re-upload"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|e| e.method == "POST" && e.path.contains("/assets?name=demo.tar.gz"))
+                .count(),
+            1,
+            "the asset is re-uploaded after the delete"
+        );
+    }
+
+    /// Gitea's draft support is limited, so `replace_existing_draft` /
+    /// `use_existing_draft` are no-ops that only emit a warning. With both set
+    /// the orchestrator still creates the release and uploads the asset.
+    #[test]
+    fn run_backend_draft_flags_warn_but_create_proceeds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let artifact = dir.path().join("demo.tar.gz");
+        std::fs::write(&artifact, b"PAYLOAD").expect("write artifact");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+                response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases",
+                response: http_json("201 Created", serde_json::json!({"id": 7}).to_string()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases/7/assets",
+                response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases/7/assets?name=demo.tar.gz",
+                response: http_json("201 Created", serde_json::json!({"id": 1}).to_string()),
+                times: None,
+            },
+        ];
+        let (_addr, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let api_base = format!("http://{addr}");
+        let ctx = build_gitea_ctx(&api_base);
+        let crate_cfg = build_gitea_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("gitea-test".to_string());
+        let env = GiteaBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let mut spec = default_gitea_spec();
+        spec.replace_existing_draft = true;
+        spec.use_existing_draft = true;
+        let artifacts = vec![(artifact, Some("demo.tar.gz".to_string()))];
+
+        run_gitea_backend(&env, &crate_cfg, release_cfg, &spec, &artifacts)
+            .expect("draft flags must not abort the backend")
+            .expect("returns Some");
+
+        let entries = log.lock().unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path == "/api/v1/repos/o/r/releases"),
+            "the release is still created despite the no-op draft flags"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path.contains("/assets?name=demo.tar.gz")),
+            "the asset upload still proceeds"
+        );
+    }
+
+    /// A missing Gitea token short-circuits before any HTTP call with an
+    /// actionable bail naming GITEA_TOKEN.
+    #[test]
+    fn run_backend_missing_token_bails() {
+        let ctx = build_gitea_ctx("http://unused.invalid");
+        let crate_cfg = build_gitea_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token: Option<String> = None;
+        let env = GiteaBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let artifacts: Vec<(std::path::PathBuf, Option<String>)> = Vec::new();
+
+        let err = run_gitea_backend(
+            &env,
+            &crate_cfg,
+            release_cfg,
+            &default_gitea_spec(),
+            &artifacts,
+        )
+        .expect_err("a missing token must bail");
+        assert!(
+            format!("{err:#}").contains("GITEA_TOKEN"),
+            "bail must name the missing env var, got: {err:#}"
+        );
+    }
+
+    /// A crate without any `release.gitea`/`release.github` config returns
+    /// `Ok(None)` (the caller `continue`s) rather than erroring.
+    #[test]
+    fn run_backend_no_gitea_config_returns_none() {
+        let ctx = build_gitea_ctx("http://unused.invalid");
+        let mut crate_cfg = build_gitea_crate_cfg();
+        crate_cfg.release = Some(ReleaseConfig {
+            mode: Some("replace".to_string()),
+            ..Default::default()
+        });
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("gitea-test".to_string());
+        let env = GiteaBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let artifacts: Vec<(std::path::PathBuf, Option<String>)> = Vec::new();
+
+        let out = run_gitea_backend(
+            &env,
+            &crate_cfg,
+            release_cfg,
+            &default_gitea_spec(),
+            &artifacts,
+        )
+        .expect("no-config is not an error");
+        assert!(out.is_none(), "absent gitea config => Ok(None)");
+    }
+
+    /// A missing artifact file (path does not exist) aborts the upload loop
+    /// with a "files are missing" error AFTER the release is created.
+    #[test]
+    fn run_backend_missing_artifact_file_errors() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+                response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/repos/o/r/releases",
+                response: http_json("201 Created", serde_json::json!({"id": 7}).to_string()),
+                times: None,
+            },
+        ];
+        let (_addr, _log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let api_base = format!("http://{addr}");
+        let ctx = build_gitea_ctx(&api_base);
+        let crate_cfg = build_gitea_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("gitea-test".to_string());
+        let env = GiteaBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let missing = std::path::PathBuf::from("/nonexistent/anodizer-test/missing.tar.gz");
+        let artifacts = vec![(missing, Some("missing.tar.gz".to_string()))];
+
+        let err = run_gitea_backend(
+            &env,
+            &crate_cfg,
+            release_cfg,
+            &default_gitea_spec(),
+            &artifacts,
+        )
+        .expect_err("a missing artifact file must abort the upload loop");
+        assert!(
+            format!("{err:#}").contains("missing"),
+            "error must report the missing artifact, got: {err:#}"
         );
     }
 }

@@ -135,6 +135,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
 /// `(nix_system, url, hash)` archive tuples the derivation maps. No repo
 /// is cloned and no file is written — this is the validation-only twin of
 /// [`publish_to_nix`]'s render path.
+#[derive(Debug)]
 pub(crate) struct NixRender {
     pub name: String,
     pub expr: String,
@@ -272,12 +273,14 @@ fn render_nix_derivation_inner(
 // ---------------------------------------------------------------------------
 
 /// Carrier for the two repo coordinates after template rendering.
+#[derive(Debug)]
 struct RepoCoords {
     repo_owner: String,
     repo_name: String,
 }
 
 /// Bundle of rendered `meta.*` strings ready to feed into `NixParams`.
+#[derive(Debug)]
 struct NixMetadata {
     description: String,
     homepage: String,
@@ -1237,5 +1240,1037 @@ mod tests {
             .collect();
         assert_eq!(roots.get("x86_64-linux"), Some(&"mytool-1.0.0"));
         assert_eq!(roots.get("aarch64-darwin"), Some(&"."));
+    }
+
+    #[test]
+    fn resolve_source_roots_single_unidentified_cfg_matches_id_bearing_artifact() {
+        // The artifact carries an `id`, but the lone archive config has
+        // `id: None`. The `(_, None) if archive_cfgs.len() == 1` fallback
+        // matches it, so the custom wrap directory is applied to the system.
+        let mut art = os_artifact("linux", "amd64", "u1", "h1");
+        art.id = Some("some-archive-id".to_string());
+        let cc = CrateConfig {
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                id: None,
+                wrap_in_directory: Some(WrapInDirectory::Name("custom-root".to_string())),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let (single, map) = resolve_source_roots(&cc, &[art], "mytool", "1.0.0");
+        assert_eq!(single.as_deref(), Some("custom-root"));
+        assert!(map.is_none());
+    }
+
+    #[test]
+    fn build_install_lines_auto_block_appends_extra_install() {
+        // No custom `install`, so the auto mkdir/cp block runs; `extra_install`
+        // must be appended after the generated cp/chmod lines.
+        let nix_cfg = NixConfig {
+            extra_install: Some("install -m644 LICENSE $out/share/LICENSE".to_string()),
+            ..Default::default()
+        };
+        let cc = CrateConfig::default();
+        let lines = build_install_lines(&nix_cfg, &cc, "mytool", &[], false);
+        assert_eq!(lines[0], "mkdir -p $out/bin");
+        assert!(lines.iter().any(|l| l == "cp -vr ./mytool $out/bin/mytool"));
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("install -m644 LICENSE $out/share/LICENSE"),
+            "extra_install must be the final appended line on the auto path"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // detect_dynamically_linked — build-stage metadata flag short-circuit.
+    // -----------------------------------------------------------------
+
+    fn ctx_with_binary_metadata(crate_name: &str, flag: Option<&str>) -> Context {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::test_helpers::TestContextBuilder;
+        let mut ctx = TestContextBuilder::new()
+            .project_name("demo")
+            .crates(vec![CrateConfig {
+                name: crate_name.to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
+        let mut metadata = std::collections::HashMap::new();
+        if let Some(v) = flag {
+            metadata.insert("DynamicallyLinked".to_string(), v.to_string());
+        }
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            // A path that does NOT exist on disk — proving the metadata flag
+            // short-circuits before any ELF inspection of `path`.
+            path: std::path::PathBuf::from("/nonexistent/anodizer-test-binary"),
+            name: crate_name.to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: crate_name.to_string(),
+            metadata,
+            size: None,
+        });
+        ctx
+    }
+
+    #[test]
+    fn detect_dynamically_linked_true_from_metadata_flag() {
+        let ctx = ctx_with_binary_metadata("mytool", Some("true"));
+        assert!(
+            detect_dynamically_linked(&ctx, "mytool"),
+            "DynamicallyLinked=true metadata must report dynamic linkage \
+             without touching the (nonexistent) binary path"
+        );
+    }
+
+    #[test]
+    fn detect_dynamically_linked_false_from_metadata_flag() {
+        let ctx = ctx_with_binary_metadata("mytool", Some("false"));
+        assert!(
+            !detect_dynamically_linked(&ctx, "mytool"),
+            "DynamicallyLinked=false metadata must report static linkage \
+             without falling through to ELF inspection of a missing path"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // resolve_nix_metadata — license resolution + meta.* render.
+    // -----------------------------------------------------------------
+
+    fn meta_ctx() -> Context {
+        use anodizer_core::test_helpers::TestContextBuilder;
+        TestContextBuilder::new()
+            .project_name("demo")
+            .crates(vec![CrateConfig {
+                name: "mytool".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build()
+    }
+
+    #[test]
+    fn resolve_nix_metadata_resolves_spdx_license_to_nix_attr() {
+        let ctx = meta_ctx();
+        let cfg = NixConfig {
+            description: Some("a demo".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("Apache-2.0".to_string()),
+            main_program: Some("mytool".to_string()),
+            ..Default::default()
+        };
+        let meta = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log()).expect("resolve");
+        assert_eq!(meta.description, "a demo");
+        assert_eq!(meta.homepage, "https://example.com");
+        // SPDX `Apache-2.0` maps to the nix `lib.licenses.asl20` attribute.
+        assert_eq!(meta.license, "asl20");
+        assert_eq!(meta.main_program, "mytool");
+    }
+
+    #[test]
+    fn resolve_nix_metadata_passes_through_raw_nix_license_attr() {
+        let ctx = meta_ctx();
+        let cfg = NixConfig {
+            license: Some("mit".to_string()),
+            ..Default::default()
+        };
+        let meta = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log()).expect("resolve");
+        assert_eq!(
+            meta.license, "mit",
+            "a valid nix attr passes through verbatim"
+        );
+    }
+
+    #[test]
+    fn resolve_nix_metadata_empty_license_suppressed_not_resolved() {
+        let ctx = meta_ctx();
+        // No license configured and no project metadata fallback — the empty
+        // sentinel must short-circuit BEFORE resolve_nix_license (which would
+        // bail on an empty string).
+        let cfg = NixConfig::default();
+        let meta = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log()).expect("resolve");
+        assert_eq!(meta.license, "", "empty license must stay empty, not error");
+        assert_eq!(meta.description, "");
+        assert_eq!(meta.main_program, "");
+    }
+
+    #[test]
+    fn resolve_nix_metadata_invalid_license_bails() {
+        let ctx = meta_ctx();
+        let cfg = NixConfig {
+            license: Some("not-a-real-license-xyz".to_string()),
+            ..Default::default()
+        };
+        let err = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log())
+            .expect_err("unknown license must bail");
+        assert!(format!("{err}").contains("not-a-real-license-xyz"));
+    }
+
+    #[test]
+    fn resolve_nix_metadata_falls_back_to_project_metadata() {
+        use anodizer_core::config::MetadataConfig;
+        let mut ctx = meta_ctx();
+        ctx.config.metadata = Some(MetadataConfig {
+            description: Some("project-level description".to_string()),
+            homepage: Some("https://project.example".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        });
+        // NixConfig supplies none of these, so each must fall through to the
+        // project `metadata.*` value (and the SPDX `MIT` resolves to nix `mit`).
+        let cfg = NixConfig::default();
+        let meta = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log()).expect("resolve");
+        assert_eq!(meta.description, "project-level description");
+        assert_eq!(meta.homepage, "https://project.example");
+        assert_eq!(meta.license, "mit");
+    }
+
+    #[test]
+    fn resolve_nix_metadata_config_overrides_project_metadata() {
+        use anodizer_core::config::MetadataConfig;
+        let mut ctx = meta_ctx();
+        ctx.config.metadata = Some(MetadataConfig {
+            description: Some("project-level".to_string()),
+            homepage: Some("https://project.example".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        });
+        let cfg = NixConfig {
+            description: Some("nix-level".to_string()),
+            homepage: Some("https://nix.example".to_string()),
+            license: Some("Apache-2.0".to_string()),
+            ..Default::default()
+        };
+        let meta = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log()).expect("resolve");
+        assert_eq!(
+            meta.description, "nix-level",
+            "nix config wins over metadata"
+        );
+        assert_eq!(meta.homepage, "https://nix.example");
+        assert_eq!(meta.license, "asl20", "Apache-2.0 resolves to asl20");
+    }
+
+    #[test]
+    fn resolve_nix_metadata_bad_homepage_template_bails() {
+        let ctx = meta_ctx();
+        let cfg = NixConfig {
+            // Unterminated Tera expression — render must surface an Err that the
+            // `with_context("render homepage template …")` wrapper carries up.
+            homepage: Some("https://x/{{ unclosed".to_string()),
+            ..Default::default()
+        };
+        let err = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log())
+            .expect_err("malformed homepage template must bail");
+        assert!(format!("{err:#}").contains("homepage"));
+    }
+
+    #[test]
+    fn resolve_nix_metadata_bad_main_program_template_bails() {
+        let ctx = meta_ctx();
+        let cfg = NixConfig {
+            main_program: Some("{{ unclosed".to_string()),
+            ..Default::default()
+        };
+        let err = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log())
+            .expect_err("malformed main_program template must bail");
+        assert!(format!("{err:#}").contains("main_program"));
+    }
+
+    // -----------------------------------------------------------------
+    // resolve_repo_coords — owner/name resolution + render.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn resolve_repo_coords_renders_owner_and_name_templates() {
+        use anodizer_core::config::RepositoryConfig;
+        let ctx = meta_ctx();
+        let cfg = NixConfig {
+            repository: Some(RepositoryConfig {
+                owner: Some("acme-{{ ProjectName }}".to_string()),
+                name: Some("nix-overlay".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let coords = resolve_repo_coords(&ctx, &cfg, "mytool", &quiet_log()).expect("coords");
+        assert_eq!(
+            coords.repo_owner, "acme-demo",
+            "owner template must render {{ ProjectName }} -> demo"
+        );
+        assert_eq!(coords.repo_name, "nix-overlay");
+    }
+
+    #[test]
+    fn resolve_repo_coords_missing_repository_bails() {
+        let ctx = meta_ctx();
+        let cfg = NixConfig::default();
+        let err = resolve_repo_coords(&ctx, &cfg, "mytool", &quiet_log())
+            .expect_err("absent repository config must bail");
+        let msg = format!("{err}");
+        assert!(msg.contains("no repository config"), "{msg}");
+        assert!(msg.contains("mytool"), "{msg}");
+    }
+
+    // -----------------------------------------------------------------
+    // render_nix_for_validation + crate_has_nix_archive — the in-memory
+    // render twins (no clone, no subprocess). An Archive-kind artifact
+    // never registers as a Binary, so detect_dynamically_linked finds no
+    // binary artifacts and never touches disk — keeping these ungated.
+    // -----------------------------------------------------------------
+
+    fn archive_artifact(
+        target: &str,
+        url: &str,
+        sha256: &str,
+    ) -> anodizer_core::artifact::Artifact {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("url".to_string(), url.to_string());
+        metadata.insert("sha256".to_string(), sha256.to_string());
+        metadata.insert("format".to_string(), "tar.gz".to_string());
+        Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("dist/{target}.tar.gz")),
+            name: format!("mytool-{target}.tar.gz"),
+            target: Some(target.to_string()),
+            crate_name: "mytool".to_string(),
+            metadata,
+            size: None,
+        }
+    }
+
+    fn validation_ctx(
+        nix: NixConfig,
+        artifacts: Vec<anodizer_core::artifact::Artifact>,
+    ) -> Context {
+        use anodizer_core::config::PublishConfig;
+        use anodizer_core::test_helpers::TestContextBuilder;
+        let mut ctx = TestContextBuilder::new()
+            .project_name("demo")
+            .crates(vec![CrateConfig {
+                name: "mytool".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    nix: Some(nix),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        for a in artifacts {
+            ctx.artifacts.add(a);
+        }
+        ctx
+    }
+
+    const VALID_SHA: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    #[test]
+    fn render_nix_for_validation_renders_expression_without_clone() {
+        let arts = vec![
+            archive_artifact(
+                "x86_64-unknown-linux-gnu",
+                "https://e/x-linux.tar.gz",
+                VALID_SHA,
+            ),
+            archive_artifact(
+                "aarch64-apple-darwin",
+                "https://e/x-darwin.tar.gz",
+                VALID_SHA,
+            ),
+        ];
+        let cfg = NixConfig {
+            description: Some("demo tool".to_string()),
+            ..Default::default()
+        };
+        let ctx = validation_ctx(cfg, arts);
+        let render = render_nix_for_validation(&ctx, "mytool", &quiet_log())
+            .expect("render ok")
+            .expect("not skipped");
+        assert_eq!(render.name, "mytool");
+        assert!(
+            render.expr.contains("pname = \"mytool\";"),
+            "{}",
+            render.expr
+        );
+        assert!(
+            render.expr.contains("version = \"1.2.3\";"),
+            "{}",
+            render.expr
+        );
+        assert!(
+            render.expr.contains("https://e/x-linux.tar.gz"),
+            "linux archive url must be embedded: {}",
+            render.expr
+        );
+        // Both systems mapped to a (system, url, hash) tuple.
+        let systems: std::collections::HashSet<&str> =
+            render.archives.iter().map(|(s, _, _)| s.as_str()).collect();
+        assert!(systems.contains("x86_64-linux"));
+        assert!(systems.contains("aarch64-darwin"));
+    }
+
+    #[test]
+    fn render_nix_for_validation_returns_none_when_skipped() {
+        use anodizer_core::config::StringOrBool;
+        let arts = vec![archive_artifact(
+            "x86_64-unknown-linux-gnu",
+            "https://e/x.tar.gz",
+            VALID_SHA,
+        )];
+        let cfg = NixConfig {
+            skip: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        let ctx = validation_ctx(cfg, arts);
+        let render = render_nix_for_validation(&ctx, "mytool", &quiet_log()).expect("ok");
+        assert!(
+            render.is_none(),
+            "skip:true validation render must yield None"
+        );
+    }
+
+    #[test]
+    fn render_nix_for_validation_missing_nix_config_bails() {
+        use anodizer_core::config::PublishConfig;
+        use anodizer_core::test_helpers::TestContextBuilder;
+        // Crate has a publish block but no `nix` publisher configured.
+        let ctx = TestContextBuilder::new()
+            .project_name("demo")
+            .crates(vec![CrateConfig {
+                name: "mytool".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig::default()),
+                ..Default::default()
+            }])
+            .build();
+        let err = render_nix_for_validation(&ctx, "mytool", &quiet_log())
+            .expect_err("absent nix config must bail");
+        assert!(format!("{err}").contains("no nix config"));
+    }
+
+    #[test]
+    fn crate_has_nix_archive_true_when_nix_system_maps() {
+        let arts = vec![archive_artifact(
+            "x86_64-unknown-linux-gnu",
+            "https://e/x.tar.gz",
+            VALID_SHA,
+        )];
+        let cfg = NixConfig::default();
+        let ctx = validation_ctx(cfg.clone(), arts);
+        assert!(
+            crate_has_nix_archive(&ctx, &cfg, "mytool").expect("ok"),
+            "a linux archive maps to x86_64-linux"
+        );
+    }
+
+    #[test]
+    fn crate_has_nix_archive_false_when_only_non_nix_systems() {
+        // A windows archive (valid sha256) maps to no nix system: genuine
+        // absence, NOT an error — Ok(false), not Err.
+        let arts = vec![archive_artifact(
+            "x86_64-pc-windows-msvc",
+            "https://e/x.zip",
+            VALID_SHA,
+        )];
+        let cfg = NixConfig::default();
+        let ctx = validation_ctx(cfg.clone(), arts);
+        assert!(
+            !crate_has_nix_archive(&ctx, &cfg, "mytool").expect("absence is Ok(false)"),
+            "windows-only artifacts map to no nix system"
+        );
+    }
+
+    #[test]
+    fn crate_has_nix_archive_errors_on_present_but_sha_less_artifact() {
+        // A matched artifact missing its sha256 is present-but-broken: the
+        // collect step bails so the publisher surfaces it rather than skipping.
+        let arts = vec![archive_artifact(
+            "x86_64-unknown-linux-gnu",
+            "https://e/x.tar.gz",
+            "",
+        )];
+        let cfg = NixConfig::default();
+        let ctx = validation_ctx(cfg.clone(), arts);
+        let err = crate_has_nix_archive(&ctx, &cfg, "mytool")
+            .expect_err("missing sha256 on a present artifact must error, not skip");
+        assert!(format!("{err}").contains("sha256"));
+    }
+
+    #[test]
+    fn render_nix_for_validation_bails_on_sha_less_nix_artifact() {
+        let arts = vec![archive_artifact(
+            "x86_64-unknown-linux-gnu",
+            "https://e/x.tar.gz",
+            "",
+        )];
+        let cfg = NixConfig::default();
+        let ctx = validation_ctx(cfg, arts);
+        let err = render_nix_for_validation(&ctx, "mytool", &quiet_log())
+            .expect_err("sha-less nix artifact must bail before rendering");
+        assert!(format!("{err}").contains("sha256"));
+    }
+
+    #[test]
+    fn render_nix_for_validation_bad_if_template_bails() {
+        // A malformed `if` condition makes `check_skip_guards` -> the shared
+        // `evaluate_if_condition` propagate an Err rather than a skip boolean.
+        let arts = vec![archive_artifact(
+            "x86_64-unknown-linux-gnu",
+            "https://e/x.tar.gz",
+            VALID_SHA,
+        )];
+        let cfg = NixConfig {
+            if_condition: Some("{{ unclosed".to_string()),
+            ..Default::default()
+        };
+        let ctx = validation_ctx(cfg, arts);
+        let err = render_nix_for_validation(&ctx, "mytool", &quiet_log())
+            .expect_err("malformed `if` template must propagate an error");
+        assert!(format!("{err:#}").contains("nix publisher for crate 'mytool'"));
+    }
+
+    #[test]
+    fn render_nix_for_validation_bad_skip_template_bails() {
+        // A malformed `skip` template surfaces through the first guard's
+        // `with_context("render skip template …")` wrapper.
+        let arts = vec![archive_artifact(
+            "x86_64-unknown-linux-gnu",
+            "https://e/x.tar.gz",
+            VALID_SHA,
+        )];
+        let cfg = NixConfig {
+            skip: Some(anodizer_core::config::StringOrBool::String(
+                "{{ unclosed".to_string(),
+            )),
+            ..Default::default()
+        };
+        let ctx = validation_ctx(cfg, arts);
+        let err = render_nix_for_validation(&ctx, "mytool", &quiet_log())
+            .expect_err("malformed `skip` template must propagate an error");
+        assert!(format!("{err:#}").contains("skip template"));
+    }
+
+    // =================================================================
+    // Subprocess-driven paths: formatter (alejandra/nixfmt) + the full
+    // clone -> write -> flake -> commit -> push pipeline. Every test here
+    // spawns `git` (and a fake formatter) and mutates `PATH`/env, so the
+    // whole module is `#[cfg(unix)]`-gated (precedent: npm/tests.rs,
+    // homebrew/publish_formula.rs). Coverage is measured on ubuntu, so the
+    // gate costs nothing while keeping Windows builds warning-free.
+    // =================================================================
+    #[cfg(unix)]
+    mod subprocess {
+        use super::*;
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{
+            CommitAuthorConfig, GitRepoConfig, PublishConfig, ReleaseConfig, RepositoryConfig,
+            StringOrBool,
+        };
+        use anodizer_core::context::Context;
+        use anodizer_core::test_helpers::TestContextBuilder;
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use serial_test::serial;
+        use std::path::Path;
+        use std::process::Command;
+        use std::sync::OnceLock;
+
+        const SAMPLE_SHA: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+        fn git_ok(dir: &Path, args: &[&str]) {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+            assert!(status.success(), "git {args:?} failed");
+        }
+
+        fn git_stdout(dir: &Path, args: &[&str]) -> String {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+            assert!(out.status.success(), "git {args:?} failed");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+
+        fn ensure_git_identity() {
+            static INIT: OnceLock<()> = OnceLock::new();
+            INIT.get_or_init(|| {
+                // SAFETY: runs exactly once per process, guarded by OnceLock;
+                // values are constants, not user input.
+                unsafe {
+                    std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
+                    std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
+                    std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
+                    std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
+                    std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+                }
+            });
+        }
+
+        /// Bare overlay repo seeded with one commit on `branch`, usable as a
+        /// local `git clone` URL. The publisher clones it, writes the
+        /// derivation + flake, commits, and pushes back — the bare repo is the
+        /// assertion surface (inspect the landed `default.nix` / `flake.nix`).
+        fn make_bare_repo(branch: &str) -> (String, tempfile::TempDir) {
+            ensure_git_identity();
+            let bare = tempfile::tempdir().expect("bare tempdir");
+            let seed = tempfile::tempdir().expect("seed tempdir");
+            git_ok(bare.path(), &["init", "--bare", "-b", branch]);
+            git_ok(seed.path(), &["init", "-b", branch]);
+            git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
+            git_ok(seed.path(), &["config", "user.name", "T"]);
+            git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
+            std::fs::write(seed.path().join("README"), "overlay\n").unwrap();
+            git_ok(seed.path(), &["add", "README"]);
+            git_ok(seed.path(), &["commit", "-m", "seed overlay"]);
+            assert!(
+                Command::new("git")
+                    .args(["remote", "add", "origin"])
+                    .arg(bare.path())
+                    .current_dir(seed.path())
+                    .status()
+                    .expect("git remote add origin")
+                    .success(),
+                "git remote add origin failed"
+            );
+            git_ok(seed.path(), &["push", "-u", "origin", branch]);
+            (bare.path().to_string_lossy().into_owned(), bare)
+        }
+
+        /// Read a file's content as landed on the bare repo's `branch` ref.
+        fn show(bare: &Path, branch: &str, path: &str) -> String {
+            git_stdout(bare, &["show", &format!("{branch}:{path}")])
+        }
+
+        fn archive(target: &str, url: &str, sha: &str) -> Artifact {
+            let mut metadata = std::collections::HashMap::new();
+            metadata.insert("url".to_string(), url.to_string());
+            metadata.insert("sha256".to_string(), sha.to_string());
+            metadata.insert("format".to_string(), "tar.gz".to_string());
+            Artifact {
+                kind: ArtifactKind::Archive,
+                path: std::path::PathBuf::from(format!("/tmp/{target}.tar.gz")),
+                name: format!("mytool-{target}.tar.gz"),
+                target: Some(target.to_string()),
+                crate_name: "mytool".to_string(),
+                metadata,
+                size: None,
+            }
+        }
+
+        fn nix_cfg_local(bare_url: &str, branch: &str) -> NixConfig {
+            NixConfig {
+                repository: Some(RepositoryConfig {
+                    owner: Some("myorg".to_string()),
+                    name: Some("nix-overlay".to_string()),
+                    branch: Some(branch.to_string()),
+                    git: Some(GitRepoConfig {
+                        url: Some(bare_url.to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn ctx_for(nix: NixConfig, artifacts: Vec<Artifact>) -> Context {
+            let mut ctx = TestContextBuilder::new()
+                .crates(vec![CrateConfig {
+                    name: "mytool".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    release: Some(ReleaseConfig {
+                        github: Some(anodizer_core::config::ScmRepoConfig {
+                            owner: "myorg".to_string(),
+                            name: "mytool".to_string(),
+                        }),
+                        ..Default::default()
+                    }),
+                    publish: Some(PublishConfig {
+                        nix: Some(nix),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }])
+                .build();
+            for a in artifacts {
+                ctx.artifacts.add(a);
+            }
+            ctx
+        }
+
+        fn two_archives() -> Vec<Artifact> {
+            vec![
+                archive(
+                    "x86_64-unknown-linux-gnu",
+                    "https://e/mytool-linux-x64.tar.gz",
+                    SAMPLE_SHA,
+                ),
+                archive(
+                    "aarch64-apple-darwin",
+                    "https://e/mytool-darwin-arm64.tar.gz",
+                    SAMPLE_SHA,
+                ),
+            ]
+        }
+
+        // -------------------------------------------------------------
+        // run_formatter — strict-guard matrix (no formatter, unknown,
+        // success, non-zero exit, missing binary).
+        // -------------------------------------------------------------
+
+        fn lenient_ctx() -> Context {
+            TestContextBuilder::new().project_name("demo").build()
+        }
+
+        #[test]
+        fn run_formatter_none_is_noop() {
+            let mut ctx = lenient_ctx();
+            let cfg = NixConfig::default();
+            let tmp = tempfile::tempdir().unwrap();
+            let f = tmp.path().join("default.nix");
+            std::fs::write(&f, "{}\n").unwrap();
+            run_formatter(&mut ctx, &cfg, &f, &quiet_log()).expect("no formatter is Ok");
+        }
+
+        #[test]
+        #[serial]
+        fn run_formatter_runs_configured_alejandra_with_file_arg() {
+            let tools = FakeToolDir::new();
+            tools.tool("alejandra").install();
+            let _path = tools.activate();
+            let mut ctx = lenient_ctx();
+            let cfg = NixConfig {
+                formatter: Some("alejandra".to_string()),
+                ..Default::default()
+            };
+            let tmp = tempfile::tempdir().unwrap();
+            let f = tmp.path().join("default.nix");
+            std::fs::write(&f, "{}\n").unwrap();
+            run_formatter(&mut ctx, &cfg, &f, &quiet_log()).expect("formatter success is Ok");
+            let calls = tools.calls("alejandra");
+            assert_eq!(calls.len(), 1, "alejandra invoked exactly once");
+            assert_eq!(
+                calls[0],
+                vec![f.to_string_lossy().to_string()],
+                "formatter receives the generated file path as its sole arg"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn run_formatter_nonzero_exit_strict_bails() {
+            let tools = FakeToolDir::new();
+            tools.tool("nixfmt").exit(3).install();
+            let _path = tools.activate();
+            let mut ctx = lenient_ctx();
+            ctx.options.strict = true;
+            let cfg = NixConfig {
+                formatter: Some("nixfmt".to_string()),
+                ..Default::default()
+            };
+            let tmp = tempfile::tempdir().unwrap();
+            let f = tmp.path().join("default.nix");
+            std::fs::write(&f, "{}\n").unwrap();
+            let err = run_formatter(&mut ctx, &cfg, &f, &quiet_log())
+                .expect_err("non-zero formatter exit must bail under strict");
+            let msg = format!("{err}");
+            assert!(msg.contains("nixfmt formatting failed"), "{msg}");
+            assert!(msg.contains("strict mode"), "{msg}");
+        }
+
+        #[test]
+        #[serial]
+        fn run_formatter_nonzero_exit_lenient_warns_and_continues() {
+            let tools = FakeToolDir::new();
+            tools.tool("nixfmt").exit(3).install();
+            let _path = tools.activate();
+            let mut ctx = lenient_ctx();
+            let cfg = NixConfig {
+                formatter: Some("nixfmt".to_string()),
+                ..Default::default()
+            };
+            let tmp = tempfile::tempdir().unwrap();
+            let f = tmp.path().join("default.nix");
+            std::fs::write(&f, "{}\n").unwrap();
+            run_formatter(&mut ctx, &cfg, &f, &quiet_log())
+                .expect("lenient mode warns but returns Ok on formatter failure");
+        }
+
+        #[test]
+        fn run_formatter_missing_binary_strict_bails() {
+            // Use an absolute empty PATH-free dir so the named formatter cannot
+            // be found; the spawn `Err` routes through strict_guard.
+            let mut ctx = lenient_ctx();
+            ctx.options.strict = true;
+            let cfg = NixConfig {
+                formatter: Some("alejandra-definitely-not-installed-xyz".to_string()),
+                ..Default::default()
+            };
+            let tmp = tempfile::tempdir().unwrap();
+            let f = tmp.path().join("default.nix");
+            std::fs::write(&f, "{}\n").unwrap();
+            let err = run_formatter(&mut ctx, &cfg, &f, &quiet_log())
+                .expect_err("unknown formatter name must bail under strict");
+            assert!(format!("{err}").contains("skipping"));
+        }
+
+        #[test]
+        fn run_formatter_unknown_name_strict_bails() {
+            let mut ctx = lenient_ctx();
+            ctx.options.strict = true;
+            let cfg = NixConfig {
+                formatter: Some("rustfmt".to_string()),
+                ..Default::default()
+            };
+            let tmp = tempfile::tempdir().unwrap();
+            let f = tmp.path().join("default.nix");
+            std::fs::write(&f, "{}\n").unwrap();
+            let err = run_formatter(&mut ctx, &cfg, &f, &quiet_log())
+                .expect_err("unrecognized formatter must bail under strict");
+            assert!(format!("{err}").contains("unknown formatter 'rustfmt'"));
+        }
+
+        // -------------------------------------------------------------
+        // publish_to_nix — full clone/write/flake/commit/push pipeline.
+        // -------------------------------------------------------------
+
+        #[test]
+        fn publish_to_nix_direct_push_lands_derivation_and_flake() {
+            let (bare_url, bare) = make_bare_repo("main");
+            let nix = nix_cfg_local(&bare_url, "main");
+            let mut ctx = ctx_for(nix, two_archives());
+
+            let pushed = publish_to_nix(&mut ctx, "mytool", &quiet_log()).expect("publish ok");
+            assert!(pushed, "a real push must return Ok(true)");
+
+            let bare_path = Path::new(&bare_url);
+            // Default path is pkgs/<name>/default.nix.
+            let drv = show(bare_path, "main", "pkgs/mytool/default.nix");
+            assert!(drv.contains("pname = \"mytool\";"), "{drv}");
+            assert!(drv.contains("version = \"1.2.3\";"), "{drv}");
+            assert!(
+                drv.contains("https://e/mytool-linux-x64.tar.gz"),
+                "linux archive url must be embedded: {drv}"
+            );
+            assert!(
+                drv.contains("x86_64-linux") && drv.contains("aarch64-darwin"),
+                "both nix systems must be mapped: {drv}"
+            );
+            // The root flake referencing the package is written too.
+            let flake = show(bare_path, "main", "flake.nix");
+            assert!(
+                flake.contains("mytool"),
+                "flake must reference package: {flake}"
+            );
+
+            let subject = git_stdout(bare_path, &["log", "-1", "--pretty=%s", "main"]);
+            assert!(
+                subject.contains("mytool") && subject.contains("1.2.3"),
+                "commit subject must name package + version; got: {subject}"
+            );
+            drop(bare);
+        }
+
+        #[test]
+        fn publish_to_nix_honors_custom_path_and_commit_author() {
+            let (bare_url, bare) = make_bare_repo("main");
+            let mut nix = nix_cfg_local(&bare_url, "main");
+            nix.path = Some("packages/mytool.nix".to_string());
+            nix.commit_author = Some(CommitAuthorConfig {
+                name: Some("Nix Bot".to_string()),
+                email: Some("nix-bot@example.invalid".to_string()),
+                ..Default::default()
+            });
+            let mut ctx = ctx_for(nix, two_archives());
+
+            let pushed = publish_to_nix(&mut ctx, "mytool", &quiet_log()).expect("publish ok");
+            assert!(pushed);
+
+            let bare_path = Path::new(&bare_url);
+            let drv = show(bare_path, "main", "packages/mytool.nix");
+            assert!(drv.contains("pname = \"mytool\";"), "{drv}");
+            // The default pkgs/<name>/default.nix path must NOT exist.
+            let default_path = Command::new("git")
+                .args(["cat-file", "-e", "main:pkgs/mytool/default.nix"])
+                .current_dir(bare_path)
+                .status()
+                .expect("git cat-file");
+            assert!(
+                !default_path.success(),
+                "derivation must live at the configured path, not the default"
+            );
+            // The configured commit_author must win over the ambient
+            // GIT_AUTHOR_NAME/EMAIL that ensure_git_identity() exports into the
+            // process env — proving the identity is applied via the
+            // GIT_AUTHOR_* child env (which overrides inherited env + repo
+            // config), not via `-c user.name=` (which git's precedence defeats
+            // whenever an ambient GIT_AUTHOR_NAME is present).
+            let author = git_stdout(bare_path, &["log", "-1", "--pretty=%an", "main"]);
+            assert_eq!(author, "Nix Bot", "configured commit author must drive %an");
+            let author_email = git_stdout(bare_path, &["log", "-1", "--pretty=%ae", "main"]);
+            assert_eq!(
+                author_email, "nix-bot@example.invalid",
+                "configured commit author email must drive %ae over the ambient GIT_AUTHOR_EMAIL"
+            );
+            drop(bare);
+        }
+
+        #[test]
+        fn publish_to_nix_second_run_is_noop_no_extra_commit() {
+            let (bare_url, bare) = make_bare_repo("main");
+            let nix = nix_cfg_local(&bare_url, "main");
+            let mut ctx = ctx_for(nix.clone(), two_archives());
+            publish_to_nix(&mut ctx, "mytool", &quiet_log()).expect("first publish");
+            let bare_path = Path::new(&bare_url);
+            let head1 = git_stdout(bare_path, &["rev-parse", "main"]);
+
+            let mut ctx2 = ctx_for(nix, two_archives());
+            let pushed2 =
+                publish_to_nix(&mut ctx2, "mytool", &quiet_log()).expect("second publish");
+            let head2 = git_stdout(bare_path, &["rev-parse", "main"]);
+            assert!(!pushed2, "an unchanged re-publish must report no push");
+            assert_eq!(head1, head2, "no new commit when nothing changed");
+            drop(bare);
+        }
+
+        #[test]
+        fn publish_to_nix_dry_run_makes_no_commit() {
+            let (bare_url, bare) = make_bare_repo("main");
+            let nix = nix_cfg_local(&bare_url, "main");
+            let mut ctx = ctx_for(nix, two_archives());
+            ctx.options.dry_run = true;
+            let bare_path = Path::new(&bare_url);
+            let head_before = git_stdout(bare_path, &["rev-parse", "main"]);
+
+            let pushed = publish_to_nix(&mut ctx, "mytool", &quiet_log()).expect("dry-run ok");
+            assert!(!pushed, "dry-run must not push");
+            let head_after = git_stdout(bare_path, &["rev-parse", "main"]);
+            assert_eq!(
+                head_before, head_after,
+                "dry-run must leave the repo untouched"
+            );
+            drop(bare);
+        }
+
+        #[test]
+        fn publish_to_nix_skip_true_returns_false_without_clone() {
+            // `skip: true` short-circuits before any repo coordinate is even
+            // resolved; an invalid bare URL would error if a clone were
+            // attempted, so a clean Ok(false) proves the skip gate fired first.
+            let mut nix = nix_cfg_local("/nonexistent/not-a-repo", "main");
+            nix.skip = Some(StringOrBool::Bool(true));
+            let mut ctx = ctx_for(nix, two_archives());
+            let pushed = publish_to_nix(&mut ctx, "mytool", &quiet_log()).expect("skip ok");
+            assert!(!pushed, "skip:true must return Ok(false) and not clone");
+        }
+
+        #[test]
+        fn publish_to_nix_if_condition_falsy_returns_false_without_clone() {
+            let mut nix = nix_cfg_local("/nonexistent/not-a-repo", "main");
+            nix.if_condition = Some("false".to_string());
+            let mut ctx = ctx_for(nix, two_archives());
+            let pushed = publish_to_nix(&mut ctx, "mytool", &quiet_log()).expect("if-falsy ok");
+            assert!(!pushed, "falsy `if` must return Ok(false) and not clone");
+        }
+
+        #[test]
+        fn publish_to_nix_skip_upload_returns_false_without_clone() {
+            let mut nix = nix_cfg_local("/nonexistent/not-a-repo", "main");
+            nix.skip_upload = Some(StringOrBool::Bool(true));
+            let mut ctx = ctx_for(nix, two_archives());
+            let pushed = publish_to_nix(&mut ctx, "mytool", &quiet_log()).expect("skip_upload ok");
+            assert!(!pushed, "skip_upload must return Ok(false) and not clone");
+        }
+
+        #[test]
+        fn publish_to_nix_pull_request_enabled_records_outcome() {
+            // With `pull_request.enabled = true`, finalize_publish drives
+            // maybe_submit_pr, which yields Some(outcome) and is recorded on
+            // the context. The direct push still lands; the PR attempt (no gh
+            // resolvable against a fake fork) surfaces a recorded outcome —
+            // proving the `if let Some(pr_outcome)` branch ran (a non-PR
+            // publish records nothing).
+            use anodizer_core::config::PullRequestConfig;
+            let (bare_url, bare) = make_bare_repo("main");
+            let mut nix = nix_cfg_local(&bare_url, "main");
+            if let Some(repo) = nix.repository.as_mut() {
+                repo.pull_request = Some(PullRequestConfig {
+                    enabled: Some(true),
+                    ..Default::default()
+                });
+            }
+            let mut ctx = ctx_for(nix, two_archives());
+            let pushed = publish_to_nix(&mut ctx, "mytool", &quiet_log()).expect("publish ok");
+            assert!(pushed, "the direct push to the overlay branch still lands");
+            assert!(
+                ctx.take_pending_outcome().is_some(),
+                "an enabled pull_request must record a publisher outcome"
+            );
+            // The landed derivation is still correct.
+            let drv = show(Path::new(&bare_url), "main", "pkgs/mytool/default.nix");
+            assert!(drv.contains("pname = \"mytool\";"), "{drv}");
+            drop(bare);
+        }
+
+        #[test]
+        #[serial]
+        fn publish_to_nix_runs_configured_formatter_on_generated_file() {
+            // A configured formatter is invoked against the written derivation
+            // before commit; the fake formatter records its argv so we can
+            // assert the generated default.nix path was handed to it.
+            let tools = FakeToolDir::new();
+            tools.tool("nixfmt").install();
+            let _path = tools.activate();
+            let (bare_url, bare) = make_bare_repo("main");
+            let mut nix = nix_cfg_local(&bare_url, "main");
+            nix.formatter = Some("nixfmt".to_string());
+            let mut ctx = ctx_for(nix, two_archives());
+            let pushed = publish_to_nix(&mut ctx, "mytool", &quiet_log()).expect("publish ok");
+            assert!(pushed);
+            let calls = tools.calls("nixfmt");
+            assert_eq!(calls.len(), 1, "formatter invoked exactly once in-pipeline");
+            assert!(
+                calls[0]
+                    .last()
+                    .is_some_and(|p| p.ends_with("pkgs/mytool/default.nix")),
+                "formatter must receive the generated derivation path: {:?}",
+                calls[0]
+            );
+            drop(bare);
+        }
+
+        #[test]
+        fn publish_to_nix_embeds_post_install_and_custom_install_lines() {
+            // Exercises the install_lines / post_install_lines plumbing of
+            // render_nix_derivation_inner end-to-end: both land verbatim in
+            // the rendered derivation.
+            let (bare_url, bare) = make_bare_repo("main");
+            let mut nix = nix_cfg_local(&bare_url, "main");
+            nix.install = Some("mkdir -p $out/bin\ncp ./mytool $out/bin/".to_string());
+            nix.post_install = Some("echo done >$out/.installed".to_string());
+            let mut ctx = ctx_for(nix, two_archives());
+            publish_to_nix(&mut ctx, "mytool", &quiet_log()).expect("publish ok");
+            let drv = show(Path::new(&bare_url), "main", "pkgs/mytool/default.nix");
+            assert!(
+                drv.contains("cp ./mytool $out/bin/"),
+                "custom install line must be embedded: {drv}"
+            );
+            assert!(
+                drv.contains("echo done >$out/.installed"),
+                "post_install line must be embedded: {drv}"
+            );
+            drop(bare);
+        }
     }
 }

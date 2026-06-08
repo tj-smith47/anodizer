@@ -2581,6 +2581,71 @@ mod tests {
         drop(bare);
     }
 
+    /// With no `krew.homepage` and no Cargo.toml `meta_homepage`, the
+    /// manifest's `homepage:` falls back to the crate's `release.github`
+    /// slug — `https://github.com/<owner>/<repo>`. Pins the GitHub-slug
+    /// arm of the homepage-fallback chain (the crate's own repo, not the
+    /// krew-index fork owner).
+    #[test]
+    fn render_manifest_homepage_falls_back_to_release_github_slug() {
+        let c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        // pr_direct_crate sets release.github = acme/widget and leaves
+        // krew.homepage unset — exactly the GitHub-slug fallback case.
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        add_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &"a".repeat(64),
+        );
+        let manifest = render_krew_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        assert!(
+            manifest.contains("homepage: https://github.com/acme/widget\n"),
+            "homepage must derive from release.github slug; got:\n{manifest}"
+        );
+    }
+
+    /// An explicit `krew.homepage` wins over the `release.github` slug
+    /// fallback and is template-rendered (the `{{ .Version }}` here
+    /// expands), so the operator override survives into the manifest.
+    #[test]
+    fn render_manifest_homepage_explicit_override_is_rendered() {
+        let mut c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+            k.homepage = Some("https://docs.example/widget/{{ .Version }}".to_string());
+        }
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        add_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &"a".repeat(64),
+        );
+        let manifest = render_krew_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        assert!(
+            manifest.contains("homepage: https://docs.example/widget/1.0.0\n"),
+            "explicit homepage must win and render the template; got:\n{manifest}"
+        );
+        // The release.github slug must NOT be used for the homepage line —
+        // the override fully replaces it. (The slug legitimately appears in
+        // the artifact `uri:`, so assert on the `homepage:` line specifically
+        // rather than a blanket substring.)
+        assert!(
+            !manifest.contains("homepage: https://github.com/acme/widget"),
+            "the slug fallback must not drive the homepage; got:\n{manifest}"
+        );
+    }
+
     // -----------------------------------------------------------------
     // publish_to_krew — BotWebhook flow against a scripted responder.
     // -----------------------------------------------------------------
@@ -2768,6 +2833,158 @@ mod tests {
             "kubectl-widget.exe",
             "windows bin must carry the .exe suffix krew needs"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // generate_manifest — empty optional narrative fields are dropped.
+    // -----------------------------------------------------------------
+
+    /// An empty `description` is serialized as absent (no `description:`
+    /// key) — the `if params.description.is_empty()` → None branch. A
+    /// blank `caveats` is likewise dropped, while `shortDescription`
+    /// (always required) is still present.
+    #[test]
+    fn generate_manifest_empty_description_and_caveats_are_omitted() {
+        let manifest = generate_manifest(&KrewManifestParams {
+            name: "tool",
+            version: "1.0.0",
+            homepage: "https://example.com",
+            short_description: "A tool",
+            description: "",
+            caveats: "",
+            platforms: &[KrewPlatform {
+                os: "linux".to_string(),
+                arch: "amd64".to_string(),
+                url: "https://example.com/tool.tar.gz".to_string(),
+                sha256: "hash".to_string(),
+                bin: "kubectl-tool".to_string(),
+            }],
+        })
+        .unwrap();
+        assert!(
+            !manifest.contains("description:"),
+            "empty description must be omitted; got:\n{manifest}"
+        );
+        assert!(
+            !manifest.contains("caveats:"),
+            "empty caveats must be omitted; got:\n{manifest}"
+        );
+        assert!(
+            manifest.contains("shortDescription: A tool"),
+            "shortDescription is always present; got:\n{manifest}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // publish_to_krew — skip / falsy-`if` short-circuits on the LIVE
+    // publish path (distinct from the renderer's gates), returning the
+    // skipped outcome before any repository resolution.
+    // -----------------------------------------------------------------
+
+    /// `skip: true` on the publish path returns a skipped outcome
+    /// (pushed=false) BEFORE the missing-repository check fires — the
+    /// crate here has no repository block, yet the call is `Ok`.
+    #[test]
+    fn publish_to_krew_skip_true_short_circuits_before_repo_check() {
+        let mut c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+            k.repository = None;
+            k.skip = Some(anodizer_core::config::StringOrBool::Bool(true));
+        }
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        let outcome = publish_to_krew(&mut ctx, "widget", &quiet())
+            .expect("skip=true must short-circuit before the repo-missing check");
+        assert!(!outcome.pushed, "skip path must report no push");
+    }
+
+    /// A falsy `if:` on the publish path returns a skipped outcome before
+    /// the missing-repository check.
+    #[test]
+    fn publish_to_krew_falsy_if_short_circuits_before_repo_check() {
+        let mut c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+            k.repository = None;
+            k.if_condition = Some("false".to_string());
+        }
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        let outcome = publish_to_krew(&mut ctx, "widget", &quiet())
+            .expect("falsy `if` must short-circuit before the repo-missing check");
+        assert!(!outcome.pushed, "falsy `if` path must report no push");
+    }
+
+    // -----------------------------------------------------------------
+    // KrewPublisher::run — real-push path records a rollback target.
+    // -----------------------------------------------------------------
+
+    /// Drive the Publisher trait's `run` end-to-end with a real PrDirect
+    /// push against a local bare fork. The `any_pushed` gate must populate
+    /// rollback evidence with exactly one target carrying the crate's
+    /// upstream coordinates + the `{plugin}-v{version}` branch — proving
+    /// `collect_krew_target` ran inside the per-crate scope.
+    ///
+    /// `run` re-scopes each crate's version through
+    /// `with_published_crate_scope` → `resolve_crate_tag`, which hard-errors
+    /// unless a real release tag matching the `v{{ .Version }}` template
+    /// exists. `hermetic_tagged_repo()` (tag `v0.1.0`) supplies one, so the
+    /// scoped version resolves deterministically to `0.1.0` and the branch
+    /// is `<plugin>-v0.1.0`.
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn krew_publisher_run_records_rollback_target_after_push() {
+        use anodizer_core::Publisher;
+        let (_tools, _guard) = gh_absent();
+        let (bare_url, bare) = init_bare_fork();
+        let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/fork-owner/krew-index/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: None,
+        }]);
+        set_api_base(&addr);
+
+        let c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
+        // Per-crate version resolution needs a real tag matching the
+        // `v{{ .Version }}` template; the hermetic repo's `v0.1.0` supplies it.
+        let project = crate::testing::hermetic_tagged_repo();
+        let config = Config {
+            crates: vec![c],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                project_root: Some(project.path().to_path_buf()),
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "0.1.0");
+        ctx.template_vars_mut().set("RawVersion", "0.1.0");
+        ctx.template_vars_mut().set("Tag", "v0.1.0");
+        add_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &"a".repeat(64),
+        );
+
+        let p = KrewPublisher::new();
+        let evidence = p.run(&mut ctx).expect("publisher.run ok");
+        let targets = decode_krew_targets(&evidence.extra);
+        assert_eq!(targets.len(), 1, "one pushed plugin → one rollback target");
+        assert_eq!(targets[0].target, "widget");
+        assert_eq!(targets[0].upstream_owner, "kubernetes-sigs");
+        assert_eq!(targets[0].upstream_repo, "krew-index");
+        assert_eq!(targets[0].fork_owner, "fork-owner");
+        assert_eq!(
+            targets[0].branch, "kubectl-widget-v0.1.0",
+            "branch carries the per-crate-scoped version (v0.1.0 from the hermetic tag)"
+        );
+        clear_api_base();
+        drop(bare);
     }
 }
 
@@ -3295,6 +3512,53 @@ mod publisher_tests {
                 .iter()
                 .any(|m| m.contains("krew") && m.contains("PR targets") && m.contains("verify")),
             "expected captured warn naming publisher + target-noun + 'verify'; got: {warns:?}"
+        );
+    }
+
+    /// Rollback with a recorded target but NO token resolvable from the
+    /// env: the per-target loop must warn (naming the target + the env
+    /// var it tried) and `continue` WITHOUT making any network call —
+    /// then complete `Ok(())`, emitting the all-zero summary. Pins the
+    /// no-token skip arm that protects against firing a credential-less
+    /// GitHub API request.
+    #[test]
+    fn krew_rollback_warns_and_skips_target_when_no_token_resolvable() {
+        let capture = anodizer_core::log::LogCapture::new();
+        // `.env(...)` swaps the ctx env source to a MapEnvSource carrying
+        // NONE of KREW_INDEX_TOKEN / ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN,
+        // so resolve_token yields None and the target is skipped before
+        // any api.github.com request.
+        let mut ctx = TestContextBuilder::new().env("UNRELATED", "x").build();
+        ctx.with_log_capture(capture.clone());
+        let mut evidence = PublishEvidence::new("krew");
+        evidence.extra =
+            anodizer_core::PublishEvidenceExtra::Krew(anodizer_core::publish_evidence::KrewExtra {
+                krew_targets: vec![KrewPrTarget {
+                    target: "demo".into(),
+                    upstream_owner: "kubernetes-sigs".into(),
+                    upstream_repo: "krew-index".into(),
+                    fork_owner: "acme".into(),
+                    branch: "demo-v1.2.3".into(),
+                    token_env_var: Some("KREW_INDEX_TOKEN".into()),
+                }],
+            });
+        let p = KrewPublisher::new();
+        assert!(p.rollback(&mut ctx, &evidence).is_ok());
+
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("no token resolvable")
+                && m.contains("demo")
+                && m.contains("KREW_INDEX_TOKEN")),
+            "expected a no-token warn naming the target + env var; got: {warns:?}"
+        );
+        // The final summary reports zero work — no PR was queried or closed.
+        let all = capture.all_messages();
+        assert!(
+            all.iter().any(|(_, m)| m.contains("closed 0")
+                && m.contains("already-closed 0")
+                && m.contains("failed 0")),
+            "no-token skip must leave all counters at zero; got: {all:?}"
         );
     }
 

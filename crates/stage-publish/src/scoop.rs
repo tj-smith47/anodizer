@@ -2392,3 +2392,788 @@ mod tests {
         );
     }
 }
+
+// ===========================================================================
+// PUBLISH FLOW — render_scoop_manifest_for_crate + publish_to_scoop's
+// clone→write→commit→push→PR path, the artifact-eligibility filters, and the
+// Publisher::run/rollback orchestration.
+//
+// The end-to-end tests drive the live publish against a local bare git repo:
+// `repository.git.url` points the clone at a `file` path (no network), and the
+// PR-submission transport is forced onto an in-process scripted responder by
+// installing a failing `gh` stub (so `gh_is_available()` is false) and pointing
+// `ANODIZER_GITHUB_API_BASE` at the responder. These tests mutate PATH +
+// process env, so each is `#[cfg(unix)]` + `#[serial]`. Precedent: the krew
+// publish-flow tests in this crate and `crates/stage-publish/src/npm/tests.rs`.
+// ===========================================================================
+
+#[cfg(test)]
+mod publish_flow_tests {
+    use super::*;
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{
+        Config, CrateConfig, GitRepoConfig, PublishConfig, ReleaseConfig, RepositoryConfig,
+        ScmRepoConfig, ScoopConfig, StringOrBool,
+    };
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use std::collections::HashMap;
+
+    fn quiet() -> StageLogger {
+        StageLogger::new("publish", Verbosity::Quiet)
+    }
+
+    fn build_ctx(crates: Vec<CrateConfig>, version: &str) -> Context {
+        let config = Config {
+            crates,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", version);
+        ctx.template_vars_mut().set("RawVersion", version);
+        ctx.template_vars_mut().set("Tag", &format!("v{version}"));
+        ctx.template_vars_mut().set("ProjectName", "widget");
+        ctx
+    }
+
+    /// A scoop crate whose bucket clones from a local bare repo (`git.url`).
+    /// `release.github = acme/widget` provides the homepage-slug fallback.
+    fn scoop_crate_for_bucket(crate_name: &str, bucket_url: &str) -> CrateConfig {
+        CrateConfig {
+            name: crate_name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            release: Some(ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: "acme".to_string(),
+                    name: "widget".to_string(),
+                }),
+                ..Default::default()
+            }),
+            publish: Some(PublishConfig {
+                scoop: Some(ScoopConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("scoop-bucket".to_string()),
+                        branch: Some("main".to_string()),
+                        token: Some("ghp_test".to_string()),
+                        git: Some(GitRepoConfig {
+                            url: Some(bucket_url.to_string()),
+                            ssh_command: None,
+                            private_key: None,
+                        }),
+                        ..Default::default()
+                    }),
+                    description: Some("Manage widgets from Windows".to_string()),
+                    license: Some("MIT".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Register one Windows archive artifact carrying the `url` / `sha256` /
+    /// `binary` / `format` metadata the manifest's `architecture` block reads.
+    fn add_windows_archive(
+        ctx: &mut Context,
+        crate_name: &str,
+        target: &str,
+        arch: &str,
+        binary: &str,
+        sha: &str,
+    ) {
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            format!(
+                "https://github.com/acme/widget/releases/download/v1.0.0/{binary}-windows-{arch}.zip"
+            ),
+        );
+        meta.insert("sha256".to_string(), sha.to_string());
+        meta.insert("format".to_string(), "zip".to_string());
+        meta.insert("binary".to_string(), binary.to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/dist/{binary}-windows-{arch}.zip")),
+            name: format!("{binary}-windows-{arch}.zip"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: meta,
+            size: None,
+        });
+    }
+
+    // -----------------------------------------------------------------
+    // is_scoop_windows_artifact / ScoopArtifactFilters / crate_has_scoop
+    // -----------------------------------------------------------------
+
+    fn artifact_with(target: Option<&str>, path: &str, meta: &[(&str, &str)]) -> Artifact {
+        let mut m = HashMap::new();
+        for (k, v) in meta {
+            m.insert((*k).to_string(), (*v).to_string());
+        }
+        Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(path),
+            name: path.rsplit('/').next().unwrap_or(path).to_string(),
+            target: target.map(str::to_string),
+            crate_name: "widget".to_string(),
+            metadata: m,
+            size: None,
+        }
+    }
+
+    /// Windows is detected by the target triple OR by the artifact path —
+    /// either alone suffices, and a non-Windows artifact is rejected.
+    #[test]
+    fn is_scoop_windows_artifact_by_target_or_path() {
+        assert!(is_scoop_windows_artifact(&artifact_with(
+            Some("x86_64-pc-windows-msvc"),
+            "/dist/w-amd64.zip",
+            &[]
+        )));
+        // No windows in the target, but the path carries it.
+        assert!(is_scoop_windows_artifact(&artifact_with(
+            Some("x86_64-unknown-linux-gnu"),
+            "/dist/widget-windows-amd64.zip",
+            &[]
+        )));
+        // Neither target nor path mentions windows → not a scoop artifact.
+        assert!(!is_scoop_windows_artifact(&artifact_with(
+            Some("x86_64-unknown-linux-gnu"),
+            "/dist/widget-linux-amd64.tar.gz",
+            &[]
+        )));
+        // Absent target falls back to the path check (no windows here).
+        assert!(!is_scoop_windows_artifact(&artifact_with(
+            None,
+            "/dist/widget-linux.tar.gz",
+            &[]
+        )));
+    }
+
+    /// A universal binary that did NOT replace single-arch variants
+    /// (`replaces=false`) is filtered out before the Windows check — the
+    /// `only_replacing_unibins` guard.
+    #[test]
+    fn scoop_filters_reject_non_replacing_unibin() {
+        let cfg = ScoopConfig::default();
+        let filters = ScoopArtifactFilters::from_config(&cfg);
+        let a = artifact_with(
+            Some("x86_64-pc-windows-msvc"),
+            "/dist/w.zip",
+            &[("replaces", "false")],
+        );
+        assert!(
+            !filters.matches(&a),
+            "a non-replacing universal binary must be excluded"
+        );
+    }
+
+    /// The `amd64_variant` filter (default `v1`) drops an amd64 Windows
+    /// artifact whose recorded variant differs, and keeps a matching one.
+    #[test]
+    fn scoop_filters_amd64_variant_default_v1() {
+        let cfg = ScoopConfig::default(); // amd64_variant unset → defaults to v1
+        let filters = ScoopArtifactFilters::from_config(&cfg);
+        let v3 = artifact_with(
+            Some("x86_64-pc-windows-msvc"),
+            "/dist/w.zip",
+            &[("amd64_variant", "v3")],
+        );
+        assert!(
+            !filters.matches(&v3),
+            "amd64_variant=v3 must be filtered when default v1 is wanted"
+        );
+        let v1 = artifact_with(
+            Some("x86_64-pc-windows-msvc"),
+            "/dist/w.zip",
+            &[("amd64_variant", "v1")],
+        );
+        assert!(filters.matches(&v1), "amd64_variant=v1 must match default");
+    }
+
+    /// The `ids` allow-list filters by the artifact's `id` metadata: an
+    /// artifact whose id is not in the list is excluded.
+    #[test]
+    fn scoop_filters_ids_allowlist() {
+        let cfg = ScoopConfig {
+            ids: Some(vec!["wanted".to_string()]),
+            ..Default::default()
+        };
+        let filters = ScoopArtifactFilters::from_config(&cfg);
+        let included = artifact_with(
+            Some("x86_64-pc-windows-msvc"),
+            "/dist/w.zip",
+            &[("id", "wanted")],
+        );
+        let excluded = artifact_with(
+            Some("x86_64-pc-windows-msvc"),
+            "/dist/w.zip",
+            &[("id", "other")],
+        );
+        assert!(filters.matches(&included), "id 'wanted' must match");
+        assert!(!filters.matches(&excluded), "id 'other' must be excluded");
+    }
+
+    /// `crate_has_scoop_artifacts` is false on an empty set and true once an
+    /// eligible Windows archive exists — the offline validator's skip signal.
+    #[test]
+    fn crate_has_scoop_artifacts_reflects_presence() {
+        let c = scoop_crate_for_bucket("widget", "/unused");
+        let scoop_cfg = c
+            .publish
+            .as_ref()
+            .and_then(|p| p.scoop.clone())
+            .expect("scoop cfg");
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        assert!(
+            !crate_has_scoop_artifacts(&ctx, "widget", &scoop_cfg),
+            "no windows archive => not eligible"
+        );
+        add_windows_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-pc-windows-msvc",
+            "amd64",
+            "widget",
+            &"a".repeat(64),
+        );
+        assert!(
+            crate_has_scoop_artifacts(&ctx, "widget", &scoop_cfg),
+            "one windows archive => eligible"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // render_scoop_manifest_for_crate — render/skip/error boundaries.
+    // -----------------------------------------------------------------
+
+    /// `skip_upload: true` short-circuits the renderer to `None` (the
+    /// publisher renders nothing for this crate) BEFORE the no-artifact
+    /// guard — there are no artifacts here, yet the result is `Ok(None)`.
+    #[test]
+    fn render_scoop_skip_upload_true_returns_none() {
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        if let Some(s) = c.publish.as_mut().and_then(|p| p.scoop.as_mut()) {
+            s.skip_upload = Some(StringOrBool::Bool(true));
+        }
+        let ctx = build_ctx(vec![c], "1.0.0");
+        let out = render_scoop_manifest_for_crate(&ctx, "widget", &quiet()).expect("render ok");
+        assert!(out.is_none(), "skip_upload=true must render nothing");
+    }
+
+    /// A falsy `if:` condition short-circuits the renderer to `None`.
+    #[test]
+    fn render_scoop_falsy_if_returns_none() {
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        if let Some(s) = c.publish.as_mut().and_then(|p| p.scoop.as_mut()) {
+            s.if_condition = Some("false".to_string());
+        }
+        let ctx = build_ctx(vec![c], "1.0.0");
+        let out = render_scoop_manifest_for_crate(&ctx, "widget", &quiet()).expect("render ok");
+        assert!(out.is_none(), "falsy `if` must render nothing");
+    }
+
+    /// No Windows archive → hard error naming the crate.
+    #[test]
+    fn render_scoop_no_windows_artifact_bails() {
+        let c = scoop_crate_for_bucket("widget", "/unused");
+        let ctx = build_ctx(vec![c], "1.0.0");
+        let err = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect_err("no windows archive must bail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("no Windows archive artifact"), "got: {msg}");
+        assert!(msg.contains("widget"), "must name the crate: {msg}");
+    }
+
+    /// The rendered manifest embeds the artifact's real sha256, the
+    /// metadata-`url`, the `bin` derived from the `binary` metadata, the
+    /// release-github homepage slug, and the configured license — the full
+    /// metadata→manifest plumbing.
+    #[test]
+    fn render_scoop_embeds_real_metadata() {
+        let c = scoop_crate_for_bucket("widget", "/unused");
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        let sha = "b".repeat(64);
+        add_windows_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-pc-windows-msvc",
+            "amd64",
+            "widget",
+            &sha,
+        );
+        let manifest = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        let json: serde_json::Value = serde_json::from_str(&manifest).expect("valid JSON");
+        assert_eq!(json["version"], "1.0.0");
+        assert_eq!(json["description"], "Manage widgets from Windows");
+        assert_eq!(json["license"], "MIT");
+        assert_eq!(json["homepage"], "https://github.com/acme/widget");
+        assert_eq!(json["architecture"]["64bit"]["hash"], sha);
+        assert_eq!(
+            json["architecture"]["64bit"]["url"],
+            "https://github.com/acme/widget/releases/download/v1.0.0/widget-windows-amd64.zip"
+        );
+        assert_eq!(
+            json["architecture"]["64bit"]["bin"],
+            serde_json::json!(["widget.exe"]),
+            "bin must derive from the `binary` metadata + .exe suffix"
+        );
+    }
+
+    /// `url_template` overrides the artifact's metadata URL in the rendered
+    /// manifest; the raw artifact URL must be gone. `{{ name }}` resolves to
+    /// the manifest name and `{{ os }}` to `windows`.
+    #[test]
+    fn render_scoop_url_template_overrides_metadata_url() {
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        if let Some(s) = c.publish.as_mut().and_then(|p| p.scoop.as_mut()) {
+            s.url_template = Some(
+                "https://dl.acme.example/{{ name }}/{{ version }}/{{ os }}-{{ arch }}.zip"
+                    .to_string(),
+            );
+        }
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        add_windows_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-pc-windows-msvc",
+            "amd64",
+            "widget",
+            &"a".repeat(64),
+        );
+        let manifest = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        let json: serde_json::Value = serde_json::from_str(&manifest).expect("valid JSON");
+        assert_eq!(
+            json["architecture"]["64bit"]["url"],
+            "https://dl.acme.example/widget/1.0.0/windows-amd64.zip",
+            "url_template must rewrite the download URL"
+        );
+    }
+
+    /// A `scoop.name` override drives both the manifest body and is rendered
+    /// through the template engine; the homepage falls back to it when no
+    /// release-github / explicit homepage is present.
+    #[test]
+    fn render_scoop_name_override_used_for_bin_fallback() {
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        // Drop release.github so the homepage falls back to the name slug,
+        // and drop the binary metadata so `bin` derives from the manifest
+        // name (the override).
+        c.release = None;
+        if let Some(s) = c.publish.as_mut().and_then(|p| p.scoop.as_mut()) {
+            s.name = Some("widget-cli".to_string());
+        }
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        // Archive with NO `binary` metadata → bin derives from manifest name.
+        let mut meta = HashMap::new();
+        meta.insert("url".to_string(), "https://example.com/w.zip".to_string());
+        meta.insert("sha256".to_string(), "c".repeat(64));
+        meta.insert("format".to_string(), "zip".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/dist/widget-windows-amd64.zip"),
+            name: "widget-windows-amd64.zip".to_string(),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "widget".to_string(),
+            metadata: meta,
+            size: None,
+        });
+        let manifest = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        let json: serde_json::Value = serde_json::from_str(&manifest).expect("valid JSON");
+        assert_eq!(
+            json["architecture"]["64bit"]["bin"],
+            serde_json::json!(["widget-cli.exe"]),
+            "no `binary` metadata → bin derives from the scoop.name override"
+        );
+        assert_eq!(
+            json["homepage"], "https://github.com/widget-cli",
+            "no release.github → homepage falls back to the name slug"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // publish_to_scoop — non-e2e skip / dry-run guards.
+    // -----------------------------------------------------------------
+
+    /// `skip_upload: true` on the publish path returns `Ok(false)` (no push)
+    /// BEFORE the repository-resolution check — repository is None here, yet
+    /// the call succeeds rather than erroring on the missing repo.
+    #[test]
+    fn publish_scoop_skip_upload_short_circuits_before_repo_check() {
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        if let Some(s) = c.publish.as_mut().and_then(|p| p.scoop.as_mut()) {
+            s.repository = None;
+            s.skip_upload = Some(StringOrBool::Bool(true));
+        }
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        let pushed = publish_to_scoop(&mut ctx, "widget", &quiet())
+            .expect("skip_upload must short-circuit before the repo-missing check");
+        assert!(!pushed, "skip_upload path must report no push");
+    }
+
+    /// Missing repository config (and skip_upload unset) is a hard error.
+    #[test]
+    fn publish_scoop_missing_repository_bails() {
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        if let Some(s) = c.publish.as_mut().and_then(|p| p.scoop.as_mut()) {
+            s.repository = None;
+        }
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        let err = publish_to_scoop(&mut ctx, "widget", &quiet())
+            .expect_err("missing repository must bail");
+        assert!(
+            format!("{err:#}").contains("no repository config"),
+            "got: {err:#}"
+        );
+    }
+
+    /// dry-run short-circuits before any clone/push and reports no push.
+    #[test]
+    fn publish_scoop_dry_run_makes_no_push() {
+        let c = scoop_crate_for_bucket("widget", "/unused");
+        let config = Config {
+            crates: vec![c],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "widget");
+        add_windows_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-pc-windows-msvc",
+            "amd64",
+            "widget",
+            &"a".repeat(64),
+        );
+        let pushed = publish_to_scoop(&mut ctx, "widget", &quiet()).expect("dry-run ok");
+        assert!(!pushed, "dry-run must not push");
+    }
+
+    // -----------------------------------------------------------------
+    // publish_to_scoop — full clone→write→commit→push→PR against a local
+    // bare bucket repo (gated: spawns git, mutates PATH + process env).
+    // -----------------------------------------------------------------
+
+    #[cfg(unix)]
+    mod e2e {
+        use super::*;
+        use anodizer_core::config::{PullRequestBaseConfig, PullRequestConfig};
+        use anodizer_core::test_helpers::fake_tool::{FakeToolDir, PathGuard};
+        use anodizer_core::test_helpers::scripted_responder::{
+            ScriptedRoute, spawn_scripted_responder,
+        };
+        use serial_test::serial;
+        use std::path::Path;
+        use std::process::Command;
+        use std::sync::OnceLock;
+
+        fn ensure_git_identity() {
+            static INIT: OnceLock<()> = OnceLock::new();
+            INIT.get_or_init(|| {
+                // SAFETY: runs once per process under OnceLock; constants only.
+                unsafe {
+                    std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
+                    std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
+                    std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
+                    std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
+                    std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+                }
+            });
+        }
+
+        fn git_ok(dir: &Path, args: &[&str]) {
+            let st = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+            assert!(st.success(), "git {args:?} failed");
+        }
+
+        fn git_stdout(dir: &Path, args: &[&str]) -> String {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+            assert!(out.status.success(), "git {args:?} failed");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+
+        /// Build a bare bucket repo with one commit on `main` (the branch the
+        /// publish path's clone defaults to). Returns `(url, holder)`.
+        fn init_bare_bucket() -> (String, tempfile::TempDir) {
+            ensure_git_identity();
+            let bare = tempfile::tempdir().expect("bare tempdir");
+            let seed = tempfile::tempdir().expect("seed tempdir");
+            git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+            git_ok(seed.path(), &["init", "-b", "main"]);
+            git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
+            git_ok(seed.path(), &["config", "user.name", "Test"]);
+            git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
+            std::fs::write(seed.path().join("README"), "bucket\n").unwrap();
+            git_ok(seed.path(), &["add", "README"]);
+            git_ok(seed.path(), &["commit", "-m", "seed"]);
+            assert!(
+                Command::new("git")
+                    .args(["remote", "add", "origin"])
+                    .arg(bare.path())
+                    .current_dir(seed.path())
+                    .status()
+                    .expect("remote add")
+                    .success()
+            );
+            git_ok(seed.path(), &["push", "-u", "origin", "main"]);
+            (bare.path().to_string_lossy().into_owned(), bare)
+        }
+
+        /// A `gh` stub that exits non-zero on `--version` so
+        /// `gh_is_available()` is false → the PR transport falls to the API.
+        fn gh_absent() -> (FakeToolDir, PathGuard) {
+            let tools = FakeToolDir::new();
+            tools.tool("gh").exit(1).install();
+            let guard = tools.activate();
+            (tools, guard)
+        }
+
+        fn set_api_base(addr: &std::net::SocketAddr) {
+            // SAFETY: env mutex held by the live PathGuard from gh_absent().
+            unsafe { std::env::set_var("ANODIZER_GITHUB_API_BASE", format!("http://{addr}")) };
+        }
+        fn clear_api_base() {
+            // SAFETY: same mutex still held by the PathGuard.
+            unsafe { std::env::remove_var("ANODIZER_GITHUB_API_BASE") };
+        }
+
+        /// Enable a PR against the bucket repo so `maybe_submit_pr` runs.
+        fn enable_self_pr(c: &mut CrateConfig) {
+            if let Some(s) = c.publish.as_mut().and_then(|p| p.scoop.as_mut())
+                && let Some(r) = s.repository.as_mut()
+            {
+                r.pull_request = Some(PullRequestConfig {
+                    enabled: Some(true),
+                    base: Some(PullRequestBaseConfig {
+                        // Same-repo PR base → no cross-repo fork sync against
+                        // the bare repo, and the responder sees the PR POST.
+                        owner: Some("acme".to_string()),
+                        name: Some("scoop-bucket".to_string()),
+                        branch: Some("main".to_string()),
+                    }),
+                    draft: None,
+                    body: None,
+                });
+            }
+        }
+
+        /// Full publish: clone the local bucket, write `<name>.json`, commit,
+        /// push to `main`, then POST the PR via the API transport. Asserts
+        /// the pushed manifest carries the real sha256 AND the PR-create POST
+        /// reached the bucket repo's `/pulls`.
+        #[test]
+        #[serial]
+        fn publish_to_scoop_pushes_manifest_and_opens_pr() {
+            let (_tools, _guard) = gh_absent();
+            let (bucket_url, bare) = init_bare_bucket();
+            let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/acme/scoop-bucket/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: Some(1),
+            }]);
+            set_api_base(&addr);
+
+            let mut c = scoop_crate_for_bucket("widget", &bucket_url);
+            enable_self_pr(&mut c);
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            let sha = "d".repeat(64);
+            add_windows_archive(
+                &mut ctx,
+                "widget",
+                "x86_64-pc-windows-msvc",
+                "amd64",
+                "widget",
+                &sha,
+            );
+
+            let pushed = publish_to_scoop(&mut ctx, "widget", &quiet()).expect("publish ok");
+            assert!(pushed, "a fresh manifest push must report pushed=true");
+
+            // The manifest landed on main with the real sha256.
+            let manifest_in_repo = git_stdout(bare.path(), &["show", "main:widget.json"]);
+            let json: serde_json::Value =
+                serde_json::from_str(&manifest_in_repo).expect("pushed manifest is JSON");
+            assert_eq!(json["architecture"]["64bit"]["hash"], sha);
+            assert_eq!(json["version"], "1.0.0");
+
+            // The PR-create POST hit the bucket repo upstream.
+            let entries = req_log.lock().unwrap();
+            assert_eq!(entries.len(), 1, "exactly one PR-create POST expected");
+            assert_eq!(entries[0].path, "/repos/acme/scoop-bucket/pulls");
+            drop(entries);
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// `directory:` places the manifest under a subdirectory of the
+        /// bucket; the pushed file lands at `<dir>/<name>.json`.
+        #[test]
+        #[serial]
+        fn publish_to_scoop_honors_directory_subdir() {
+            let (_tools, _guard) = gh_absent();
+            let (bucket_url, bare) = init_bare_bucket();
+            let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/acme/scoop-bucket/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+            set_api_base(&addr);
+
+            let mut c = scoop_crate_for_bucket("widget", &bucket_url);
+            enable_self_pr(&mut c);
+            if let Some(s) = c.publish.as_mut().and_then(|p| p.scoop.as_mut()) {
+                s.directory = Some("bucket".to_string());
+            }
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            add_windows_archive(
+                &mut ctx,
+                "widget",
+                "x86_64-pc-windows-msvc",
+                "amd64",
+                "widget",
+                &"e".repeat(64),
+            );
+
+            publish_to_scoop(&mut ctx, "widget", &quiet()).expect("publish ok");
+            let tree = git_stdout(bare.path(), &["ls-tree", "-r", "--name-only", "main"]);
+            assert!(
+                tree.lines().any(|l| l == "bucket/widget.json"),
+                "manifest must land under the configured subdirectory; tree:\n{tree}"
+            );
+        }
+
+        /// Re-publishing the identical manifest finds an unchanged tree and
+        /// reports `pushed=false` (NoChanges) — nothing to roll back.
+        #[test]
+        #[serial]
+        fn publish_to_scoop_idempotent_no_changes() {
+            let (_tools, _guard) = gh_absent();
+            let (bucket_url, bare) = init_bare_bucket();
+            let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/acme/scoop-bucket/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+            set_api_base(&addr);
+
+            let sha = "f".repeat(64);
+            let build = || {
+                let mut c = scoop_crate_for_bucket("widget", &bucket_url);
+                enable_self_pr(&mut c);
+                let mut ctx = build_ctx(vec![c], "1.0.0");
+                add_windows_archive(
+                    &mut ctx,
+                    "widget",
+                    "x86_64-pc-windows-msvc",
+                    "amd64",
+                    "widget",
+                    &sha,
+                );
+                ctx
+            };
+
+            let mut ctx1 = build();
+            assert!(
+                publish_to_scoop(&mut ctx1, "widget", &quiet()).expect("first publish"),
+                "first publish pushes"
+            );
+            let mut ctx2 = build();
+            assert!(
+                !publish_to_scoop(&mut ctx2, "widget", &quiet()).expect("second publish"),
+                "re-publishing an identical manifest must report NoChanges (pushed=false)"
+            );
+            clear_api_base();
+            drop(bare);
+        }
+
+        /// Publisher::run end-to-end with a real push records exactly one
+        /// rollback target carrying the bucket repo URL + branch (the
+        /// `any_pushed` evidence gate).
+        #[test]
+        #[serial]
+        fn scoop_publisher_run_records_rollback_target_after_push() {
+            use anodizer_core::Publisher;
+            let (_tools, _guard) = gh_absent();
+            let (bucket_url, bare) = init_bare_bucket();
+            let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/acme/scoop-bucket/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+            set_api_base(&addr);
+
+            let mut c = scoop_crate_for_bucket("widget", &bucket_url);
+            enable_self_pr(&mut c);
+            // `run` re-scopes each crate's version through
+            // `with_published_crate_scope` → `resolve_crate_tag`, which
+            // hard-errors unless a real tag matching `v{{ .Version }}` exists.
+            // `hermetic_tagged_repo()` (tag `v0.1.0`) supplies one so the
+            // scoped version resolves (the bucket branch is `main` either way).
+            let project = crate::testing::hermetic_tagged_repo();
+            let config = Config {
+                crates: vec![c],
+                ..Default::default()
+            };
+            let mut ctx = Context::new(
+                config,
+                ContextOptions {
+                    project_root: Some(project.path().to_path_buf()),
+                    ..Default::default()
+                },
+            );
+            ctx.template_vars_mut().set("Version", "0.1.0");
+            ctx.template_vars_mut().set("Tag", "v0.1.0");
+            ctx.template_vars_mut().set("ProjectName", "widget");
+            add_windows_archive(
+                &mut ctx,
+                "widget",
+                "x86_64-pc-windows-msvc",
+                "amd64",
+                "widget",
+                &"a".repeat(64),
+            );
+
+            let p = ScoopPublisher::new();
+            let evidence = p.run(&mut ctx).expect("publisher.run ok");
+            let targets = decode_scoop_targets(&evidence.extra);
+            assert_eq!(targets.len(), 1, "one pushed bucket → one rollback target");
+            assert_eq!(
+                targets[0].repo_url,
+                "https://github.com/acme/scoop-bucket.git"
+            );
+            assert_eq!(targets[0].branch.as_deref(), Some("main"));
+            clear_api_base();
+            drop(bare);
+        }
+    }
+}
