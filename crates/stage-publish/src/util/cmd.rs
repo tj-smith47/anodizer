@@ -18,7 +18,46 @@ pub(crate) const REDACTED_TOKEN_MARKER: &[u8] = b"<REDACTED_TOKEN>";
 /// on spawn failure or non-zero exit. Captures stdout/stderr so that
 /// diagnostics are included in the error message.
 pub(crate) fn run_cmd_in(dir: &Path, program: &str, args: &[&str], label: &str) -> Result<()> {
-    run_cmd_in_redacted(dir, program, args, label, None)
+    run_cmd_in_envs(dir, program, args, label, &[])
+}
+
+/// Variant of [`run_cmd_in`] that sets additional environment variables on
+/// the spawned child before running it. Used by the commit step to make a
+/// configured author/committer identity authoritative: passing
+/// `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` (and the committer pair) as child
+/// env overrides BOTH an inherited ambient `GIT_AUTHOR_*` env var AND the
+/// repo's `user.name` / `user.email` config — `-c user.name=` does neither,
+/// since git's identity precedence is `--author` > `GIT_AUTHOR_*` env >
+/// `user.*` config.
+pub(crate) fn run_cmd_in_envs(
+    dir: &Path,
+    program: &str,
+    args: &[&str],
+    label: &str,
+    envs: &[(&str, &str)],
+) -> Result<()> {
+    let mut cmd = Command::new(program);
+    cmd.args(args).current_dir(dir);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let output = cmd
+        .output()
+        .with_context(|| format!("{label}: failed to run {program} {}", args.join(" ")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "{}: {} {} failed (exit {})\nstderr: {}\nstdout: {}",
+            label,
+            program,
+            args.join(" "),
+            output.status.code().unwrap_or(-1),
+            stderr,
+            stdout
+        );
+    }
+    Ok(())
 }
 
 /// Variant of [`run_cmd_in`] that scrubs `secret` from any captured

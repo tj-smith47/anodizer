@@ -8,7 +8,7 @@ use anyhow::Result;
 use std::path::Path;
 use std::process::Command;
 
-use super::cmd::run_cmd_in;
+use super::cmd::{run_cmd_in, run_cmd_in_envs};
 
 /// Outcome of a `commit_and_push_with_opts` call.
 ///
@@ -34,18 +34,23 @@ impl CommitOutcome {
 /// Optional overrides for the git commit step.
 #[derive(Debug, Default)]
 pub(crate) struct CommitOptions<'a> {
-    /// Git commit author name (passed via `-c user.name=X`). Owned because
+    /// Git commit author name, applied as `GIT_AUTHOR_NAME` /
+    /// `GIT_COMMITTER_NAME` on the commit child so it overrides both an
+    /// ambient `GIT_AUTHOR_NAME` env var and the repo's `user.name` config
+    /// (git precedence: `GIT_AUTHOR_*` env > `user.*` config). Owned because
     /// `resolve_commit_opts` may shell out to `git config user.name`, whose
     /// result is a fresh String.
     pub author_name: Option<String>,
-    /// Git commit author email (passed via `-c user.email=X`).
+    /// Git commit author email, applied as `GIT_AUTHOR_EMAIL` /
+    /// `GIT_COMMITTER_EMAIL` on the commit child (same override rationale as
+    /// `author_name`).
     pub author_email: Option<String>,
     /// Enable GPG/SSH signing for the commit.
     pub signing: Option<&'a anodizer_core::config::CommitSigningConfig>,
-    /// When true, suppress emitting `-c user.name=` /
-    /// `-c user.email=` so the running git client uses the GitHub App's
-    /// identity (already configured in the repo's local git config by the
-    /// Actions checkout step).
+    /// When true, suppress the `GIT_AUTHOR_*` / `GIT_COMMITTER_*` identity
+    /// overrides so the running git client uses the GitHub App's identity
+    /// (already configured in the repo's local git config by the Actions
+    /// checkout step).
     pub use_github_app_token: bool,
 }
 
@@ -78,9 +83,9 @@ const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodizer.dev";
 ///
 /// `use_github_app_token` is propagated from the config struct onto the
 /// resulting `CommitOptions`. When true, downstream
-/// `commit_and_push_with_opts` skips the `-c user.name=…` / `-c user.email=…`
-/// overrides so the local git config (configured by the Actions checkout
-/// step) wins.
+/// `commit_and_push_with_opts` skips the `GIT_AUTHOR_*` / `GIT_COMMITTER_*`
+/// identity overrides so the local git config (configured by the Actions
+/// checkout step) wins.
 pub(crate) fn resolve_commit_opts<'a>(
     ctx: &Context,
     commit_author: Option<&'a anodizer_core::config::CommitAuthorConfig>,
@@ -242,30 +247,42 @@ pub(crate) fn commit_and_push_with_opts(
         return Ok(CommitOutcome::NoChanges);
     }
 
-    // Build commit args, optionally injecting -c user.name / -c user.email / signing.
+    // Build commit args + identity env, optionally injecting the configured
+    // author/committer and signing config.
     //
-    // Q-author1: when `use_github_app_token` is set on the CommitAuthorConfig,
-    // skip the explicit `-c user.name=` / `-c user.email=` overrides so the
-    // local git config (already populated by the GitHub Actions checkout step
-    // with the App's `<app-slug>[bot]` identity) is the authority on commit
-    // identity.
+    // The configured author is applied via `GIT_AUTHOR_NAME` /
+    // `GIT_AUTHOR_EMAIL` (and the matching committer pair) set on the git
+    // child — NOT via `-c user.name=` / `-c user.email=`. Git's identity
+    // precedence is `--author` > `GIT_AUTHOR_*` env > `user.*` config, so a
+    // `-c user.name=` override is silently defeated whenever an ambient
+    // `GIT_AUTHOR_NAME` is already exported in the environment (CI runners,
+    // wrapper scripts). Setting the identity env vars makes the config
+    // authoritative over both that ambient env and the repo config — the
+    // whole point of `commit_author`, which exists so publisher PRs carry the
+    // release engineer's CLA-registered identity rather than a bot's. Mirrors
+    // `core::git::CommitterIdentity::apply_to`, which uses the same mechanism
+    // for rollback commits.
+    //
+    // When `use_github_app_token` is set, the identity env is NOT applied so
+    // the local git config (already populated by the GitHub Actions checkout
+    // step with the App's `<app-slug>[bot]` identity) stays authoritative.
+    let mut commit_envs: Vec<(&str, &str)> = Vec::new();
+    if !opts.use_github_app_token {
+        if let Some(ref name) = opts.author_name {
+            commit_envs.push(("GIT_AUTHOR_NAME", name));
+            commit_envs.push(("GIT_COMMITTER_NAME", name));
+        }
+        if let Some(ref email) = opts.author_email {
+            commit_envs.push(("GIT_AUTHOR_EMAIL", email));
+            commit_envs.push(("GIT_COMMITTER_EMAIL", email));
+        }
+    }
+
     let mut commit_args: Vec<&str> = Vec::new();
-    let name_cfg;
-    let email_cfg;
     let sign_cfg;
     let sign_key_cfg;
     let sign_program_cfg;
     let sign_format_cfg;
-    if !opts.use_github_app_token {
-        if let Some(ref name) = opts.author_name {
-            name_cfg = format!("user.name={}", name);
-            commit_args.extend_from_slice(&["-c", &name_cfg]);
-        }
-        if let Some(ref email) = opts.author_email {
-            email_cfg = format!("user.email={}", email);
-            commit_args.extend_from_slice(&["-c", &email_cfg]);
-        }
-    }
     // Handle commit signing config
     let do_sign = opts.signing.and_then(|s| s.enabled).unwrap_or(false);
     if do_sign {
@@ -292,11 +309,12 @@ pub(crate) fn commit_and_push_with_opts(
     }
     commit_args.extend_from_slice(&["commit", "-m", message]);
 
-    run_cmd_in(
+    run_cmd_in_envs(
         repo_path,
         "git",
         &commit_args,
         &format!("{label}: git commit"),
+        &commit_envs,
     )?;
 
     // Push strategy:
@@ -327,6 +345,7 @@ pub(crate) fn commit_and_push_with_opts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::process::Command as Cmd;
 
     #[test]
@@ -555,6 +574,139 @@ mod tests {
         assert_eq!(
             sha_before, sha_after,
             "no-op retry must not create a new commit"
+        );
+    }
+
+    /// Restores (or clears) a process env var on drop so a test that
+    /// overrides an ambient `GIT_AUTHOR_*` value cannot leak it to siblings.
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: the whole test is `#[serial]`, so no other thread reads
+            // or writes the environment concurrently; the guard restores the
+            // prior value on drop.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: see `EnvVarGuard::set` — serialized, single-threaded
+            // access for the lifetime of the guard.
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    /// Regression: a configured `commit_author` must win over an ambient
+    /// `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` exported in the process env.
+    /// Before the fix the identity was applied via `-c user.name=` /
+    /// `-c user.email=`, which git's precedence (`GIT_AUTHOR_*` env > `user.*`
+    /// config) silently defeats — so the commit carried the ambient identity
+    /// (e.g. a CI runner's), breaking the CLA-registered-author guarantee.
+    #[test]
+    #[serial]
+    fn configured_author_overrides_ambient_git_author_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote_dir = tmp.path().join("remote");
+        let local_dir = tmp.path().join("local");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        std::fs::create_dir_all(&local_dir).unwrap();
+
+        init_bare_remote(&remote_dir);
+        init_local_with_remote(&local_dir, &remote_dir);
+
+        // Ambient env that would hijack a `-c user.name=` override.
+        let _name = EnvVarGuard::set("GIT_AUTHOR_NAME", "Ambient Runner");
+        let _email = EnvVarGuard::set("GIT_AUTHOR_EMAIL", "runner@ci.invalid");
+        let _cname = EnvVarGuard::set("GIT_COMMITTER_NAME", "Ambient Runner");
+        let _cemail = EnvVarGuard::set("GIT_COMMITTER_EMAIL", "runner@ci.invalid");
+
+        std::fs::write(local_dir.join("data.txt"), "hello").unwrap();
+        let opts = CommitOptions {
+            author_name: Some("Release Eng".to_string()),
+            author_email: Some("eng@example.invalid".to_string()),
+            signing: None,
+            use_github_app_token: false,
+        };
+        let outcome =
+            commit_and_push_with_opts(&local_dir, &["data.txt"], "add data", None, "test", &opts)
+                .unwrap();
+        assert_eq!(outcome, CommitOutcome::Pushed);
+
+        let an = Cmd::new("git")
+            .args(["log", "-1", "--pretty=%an"])
+            .current_dir(&local_dir)
+            .output()
+            .unwrap();
+        let ae = Cmd::new("git")
+            .args(["log", "-1", "--pretty=%ae"])
+            .current_dir(&local_dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&an.stdout).trim(),
+            "Release Eng",
+            "configured author name must override the ambient GIT_AUTHOR_NAME"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&ae.stdout).trim(),
+            "eng@example.invalid",
+            "configured author email must override the ambient GIT_AUTHOR_EMAIL"
+        );
+    }
+
+    /// `use_github_app_token` must NOT override the ambient/local identity:
+    /// the GitHub App's `<slug>[bot]` identity (set by actions/checkout in the
+    /// repo's git config / env) stays authoritative.
+    #[test]
+    #[serial]
+    fn use_github_app_token_leaves_ambient_identity_intact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote_dir = tmp.path().join("remote");
+        let local_dir = tmp.path().join("local");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        std::fs::create_dir_all(&local_dir).unwrap();
+
+        init_bare_remote(&remote_dir);
+        init_local_with_remote(&local_dir, &remote_dir);
+
+        let _name = EnvVarGuard::set("GIT_AUTHOR_NAME", "anodizer[bot]");
+        let _email = EnvVarGuard::set("GIT_AUTHOR_EMAIL", "bot@users.noreply.github.com");
+        let _cname = EnvVarGuard::set("GIT_COMMITTER_NAME", "anodizer[bot]");
+        let _cemail = EnvVarGuard::set("GIT_COMMITTER_EMAIL", "bot@users.noreply.github.com");
+
+        std::fs::write(local_dir.join("data.txt"), "hello").unwrap();
+        let opts = CommitOptions {
+            // A configured author is present but must be ignored because the
+            // App-token flag defers to the checkout-configured identity.
+            author_name: Some("Release Eng".to_string()),
+            author_email: Some("eng@example.invalid".to_string()),
+            signing: None,
+            use_github_app_token: true,
+        };
+        commit_and_push_with_opts(&local_dir, &["data.txt"], "add data", None, "test", &opts)
+            .unwrap();
+
+        let an = Cmd::new("git")
+            .args(["log", "-1", "--pretty=%an"])
+            .current_dir(&local_dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&an.stdout).trim(),
+            "anodizer[bot]",
+            "use_github_app_token must defer to the ambient App identity, not the config"
         );
     }
 }
