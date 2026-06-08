@@ -78,6 +78,8 @@ fn render_winget_commit_msg(
 
     let mut vars = TemplateVars::new();
     vars.set("PackageIdentifier", package_id);
+    vars.set("ProjectName", package_id);
+    vars.set("Tag", version);
     vars.set("Version", version);
     vars.set("name", package_id);
     vars.set("version", version);
@@ -2984,6 +2986,39 @@ mod tests {
         )
         .expect("template renders");
         assert_eq!(msg, "release: Org.MyTool 3.0.0");
+    }
+
+    #[test]
+    fn test_winget_commit_msg_tag_and_version_vars() {
+        // Regression: `.Tag`/`.Version` (the standard cross-publisher vars)
+        // must resolve in winget's commit-msg context — not error and fall
+        // back to the default. Mirrors the v0.6.0 production warning.
+        let msg = render_winget_commit_msg(
+            Some("x {{ Tag }} {{ Version }}"),
+            "Org.MyTool",
+            "1.2.3",
+            &commit_msg_logger(),
+            // strict: ensure an unregistered var would surface as an error
+            // rather than be silently swallowed by the warn-and-default path.
+            true,
+        )
+        .expect("Tag/Version registered in winget commit-msg context");
+        assert_eq!(msg, "x 1.2.3 1.2.3");
+    }
+
+    #[test]
+    fn test_winget_commit_msg_project_name_var() {
+        // `.ProjectName` is registered alongside `PackageIdentifier` so a
+        // template migrated from another publisher renders unchanged.
+        let msg = render_winget_commit_msg(
+            Some("{{ ProjectName }} {{ Tag }}"),
+            "Org.MyTool",
+            "4.5.6",
+            &commit_msg_logger(),
+            true,
+        )
+        .expect("ProjectName registered in winget commit-msg context");
+        assert_eq!(msg, "Org.MyTool 4.5.6");
     }
 
     #[test]
