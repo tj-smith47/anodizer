@@ -2153,4 +2153,541 @@ mod tests {
             "Add/update Anodizer, cfgd-config schema(s)"
         );
     }
+
+    // --- planned_line: every verdict arm renders a distinct verb ---------
+    //
+    // The dry-run path leaves `verdict: None` ("register/refresh"); the
+    // real path resolves Add/Update/NoOp. `planned_line` must map each to
+    // its own operator-facing verb so the log never claims "register" for
+    // a no-op (the verbs differ from the PR-title/commit text on purpose).
+
+    /// Build an external plan against a fixture catalog so its `verdict`
+    /// resolves to `want`, then return the rendered `planned_line`.
+    fn planned_line_for_verdict(want: &catalog::Verdict) -> String {
+        let e = external_entry();
+        let desired = "Anodizer Rust release-automation configuration file";
+        let cat = match want {
+            // Entry absent ⇒ Add.
+            catalog::Verdict::Add => catalog_with(&[]),
+            // Entry present, identical ⇒ NoOp.
+            catalog::Verdict::NoOp => {
+                let same = catalog::build_entry_json(
+                    &e.name,
+                    desired,
+                    &e.file_match,
+                    e.url.as_deref().unwrap(),
+                    None,
+                );
+                catalog_with(&[same])
+            }
+            // Entry present, stale description ⇒ Update.
+            catalog::Verdict::Update => {
+                let stale = catalog::build_entry_json(
+                    &e.name,
+                    "an older description",
+                    &e.file_match,
+                    e.url.as_deref().unwrap(),
+                    None,
+                );
+                catalog_with(&[stale])
+            }
+        };
+        let plan = plan_schema(&e, desired, false, None, Some(&cat)).unwrap();
+        assert_eq!(
+            plan.verdict.as_ref(),
+            Some(want),
+            "fixture must produce {want:?}"
+        );
+        plan.planned_line()
+    }
+
+    #[test]
+    fn planned_line_verbs_match_each_resolved_verdict() {
+        // No-op: the operator must see "already registered", never "register".
+        let noop = planned_line_for_verdict(&catalog::Verdict::NoOp);
+        assert!(
+            noop.contains("would no-op (already registered) `Anodizer`"),
+            "no-op verdict must render the no-op verb; got {noop}"
+        );
+        // Add: "register".
+        let add = planned_line_for_verdict(&catalog::Verdict::Add);
+        assert!(
+            add.contains("would register `Anodizer`") && !add.contains("no-op"),
+            "Add verdict must render the register verb; got {add}"
+        );
+        // Update: "refresh".
+        let update = planned_line_for_verdict(&catalog::Verdict::Update);
+        assert!(
+            update.contains("would refresh `Anodizer`") && !update.contains("no-op"),
+            "Update verdict must render the refresh verb; got {update}"
+        );
+    }
+
+    #[test]
+    fn planned_line_vendor_appends_versioned_file_path() {
+        // A versioned vendor plan (verdict left unresolved) renders the
+        // "vendor, versioned" mode label AND the versioned vendor file path.
+        let plan = plan_schema(
+            &vendor_entry(),
+            "cfgd machine config",
+            true,
+            Some("0.4.2"),
+            None,
+        )
+        .unwrap();
+        let line = plan.planned_line();
+        assert!(
+            line.contains("would register/refresh `cfgd-config` (vendor, versioned)"),
+            "unresolved verdict + versioned vendor mode label; got {line}"
+        );
+        assert!(
+            line.contains("url https://www.schemastore.org/cfgd-config-0.4.2.json"),
+            "versioned url in the planned line; got {line}"
+        );
+        assert!(
+            line.contains(", vendor file src/schemas/json/cfgd-config-0.4.2.json"),
+            "versioned vendor file path appended; got {line}"
+        );
+    }
+
+    // --- plan_schema error arm: versioned vendor needs a version ---------
+
+    #[test]
+    fn plan_versioned_vendor_without_version_errors() {
+        // A versioned vendor entry needs a resolved crate version to stamp
+        // `<VER>`; passing `version: None` must surface an actionable error
+        // naming the entry, never silently emit a bare `-.json` file.
+        let err = plan_schema(&vendor_entry(), "cfgd machine config", true, None, None)
+            .expect_err("versioned vendor without a version must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cfgd-config") && msg.contains("needs a resolved crate version"),
+            "expected the missing-version error naming the entry; got {msg}"
+        );
+    }
+
+    // --- upstream_versions: malformed catalog surfaces an Err ------------
+
+    #[test]
+    fn upstream_versions_returns_err_on_malformed_catalog() {
+        // A versioned vendor plan reads prior versions off the upstream
+        // catalog; a malformed catalog must surface as `Some(Err)` (which
+        // `plan_schema` `?`-propagates) rather than silently dropping the
+        // carry-forward and orphaning older versioned files.
+        let got = upstream_versions("{ not json", "cfgd-config");
+        match got {
+            Some(Err(_)) => {}
+            other => panic!("malformed catalog must yield Some(Err); got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn upstream_versions_none_when_entry_absent_or_unversioned() {
+        // Entry absent ⇒ None (no prior versions to carry).
+        let empty = catalog_with(&[]);
+        assert!(
+            upstream_versions(&empty, "cfgd-config").is_none(),
+            "absent entry must yield None, not an error"
+        );
+        // Entry present but with no `versions` map ⇒ None.
+        let no_versions = catalog_with(&[serde_json::json!({
+            "name": "cfgd-config",
+            "description": "x",
+            "fileMatch": ["cfgd.yaml"],
+            "url": "https://www.schemastore.org/cfgd-config.json",
+        })]);
+        assert!(
+            upstream_versions(&no_versions, "cfgd-config").is_none(),
+            "an entry without a versions map must yield None"
+        );
+    }
+
+    #[test]
+    fn plan_versioned_vendor_carry_forward_propagates_malformed_catalog() {
+        // The `?` on `upstream_versions(...).transpose()` inside the
+        // versioned-vendor arm must propagate a malformed-catalog error out
+        // of `plan_schema` — a corrupt upstream catalog can't silently
+        // collapse the versions carry-forward.
+        let err = plan_schema(
+            &vendor_entry(),
+            "cfgd machine config",
+            true,
+            Some("0.4.2"),
+            Some("{ not valid json"),
+        )
+        .expect_err("malformed carry-forward catalog must error");
+        // serde's parse error message; the point is the `?` fired.
+        assert!(
+            err.to_string().contains("expected")
+                || err.to_string().contains("key")
+                || err.to_string().contains("value"),
+            "expected a JSON-parse error from the carry-forward read; got {err}"
+        );
+    }
+
+    // --- allowlist_name_for: no-vendor-path arm --------------------------
+
+    #[test]
+    fn allowlist_name_for_errors_for_external_plan_without_path() {
+        // An external plan carries no vendor path, so deriving an allowlist
+        // key is a logic error — the function must say so, naming the entry,
+        // rather than unwrap-panicking on the `None` path.
+        let plan = plan_schema(&external_entry(), "Anodizer config", false, None, None).unwrap();
+        assert!(plan.vendor_path.is_none(), "precondition: no vendor path");
+        let err =
+            allowlist_name_for(&plan).expect_err("external plan has no path for the allowlist key");
+        assert!(
+            err.to_string().contains("Anodizer") && err.to_string().contains("no path"),
+            "expected a 'no path' error naming the entry; got {err}"
+        );
+    }
+
+    // --- resolve_description: crate-bound derivation branch --------------
+
+    #[test]
+    fn resolve_description_derives_from_bound_crate_metadata() {
+        // An entry with `crate: <name>` and no inline description derives
+        // from THAT crate's metadata via `meta_description_for` — the
+        // crate-scoped branch, distinct from the project-metadata branch.
+        let mut ctx = TestContextBuilder::new().build();
+        // Top-level metadata.description wins inside `meta_description_for`,
+        // so set it and bind the entry to a crate to exercise the
+        // `crate_.as_deref() => Some` arm.
+        ctx.config.metadata = Some(anodizer_core::config::MetadataConfig {
+            description: Some("crate-derived description".into()),
+            ..Default::default()
+        });
+        let mut entry = vendor_entry();
+        entry.description = None;
+        entry.crate_ = Some("cfgd".into());
+        let desc = resolve_description(&ctx, &entry).expect("derive from bound crate metadata");
+        assert_eq!(desc, "crate-derived description");
+    }
+
+    // --- effective_schemas: a malformed `if:` propagates -----------------
+
+    #[test]
+    fn run_publish_propagates_malformed_if_render_error() {
+        // A malformed `if:` template (unterminated Tera) must surface as an
+        // Err out of the effective-set resolution — never silently keep or
+        // drop the entry. Dry-run so the failure is reached before any
+        // network/clone path.
+        let mut ctx = TestContextBuilder::new().dry_run(true).build();
+        let mut entry = external_entry();
+        entry.if_condition = Some("{{ unterminated".into());
+        ctx.config.schemastore = SchemastoreConfig {
+            schemas: vec![entry],
+            ..Default::default()
+        };
+        let err = run_publish(&mut ctx).expect_err("malformed `if:` must surface as Err");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("if") || chain.contains("template") || chain.contains("render"),
+            "expected an if-template render error in the chain; got {chain}"
+        );
+    }
+
+    // --- plan_schema_scoped: versioned vendor with no crate to bind ------
+
+    #[test]
+    fn plan_schema_scoped_versioned_vendor_no_crate_errors() {
+        // A versioned vendor entry with no `crate` AND an empty crate set
+        // (so the `all_crates().first()` fallback yields nothing) cannot
+        // resolve a version scope — the guard must error, naming the entry,
+        // rather than stamping a bogus `<VER>`.
+        let mut ctx = TestContextBuilder::new().crates(vec![]).build();
+        let cfg = SchemastoreConfig::default();
+        let mut entry = versioned_vendor_entry("cfgd");
+        entry.crate_ = None; // no explicit crate, and no crates to fall back to
+        let err = plan_schema_scoped(&mut ctx, &cfg, &entry, "cfgd machine config", None)
+            .expect_err("versioned vendor with no bindable crate must error");
+        assert!(
+            err.to_string().contains("cfgd-config") && err.to_string().contains("needs a `crate`"),
+            "expected the no-crate-to-bind error naming the entry; got {err}"
+        );
+    }
+
+    // --- fetch_raw_required / fetch_raw_optional (HTTP-mock, local TCP) --
+    //
+    // These take a `client` + `url` directly, so a local scripted responder
+    // exercises the success / 404 / non-success / status-mapping branches
+    // without any subprocess, PATH stub, or env mutation — cross-platform
+    // safe and ungated. (The probe's caller uses a hardcoded
+    // raw.githubusercontent URL, but these leaf fetchers are url-injectable.)
+
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+
+    fn http_client() -> reqwest::blocking::Client {
+        anodizer_core::http::blocking_client(std::time::Duration::from_secs(5))
+            .expect("blocking http client")
+    }
+
+    #[test]
+    fn fetch_raw_required_returns_body_on_200() {
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/catalog.json",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\n{\"schemas\":1}",
+            times: Some(1),
+        }]);
+        let body = fetch_raw_required(&http_client(), &format!("http://{addr}/catalog.json"))
+            .expect("200 must return the body");
+        assert_eq!(body, "{\"schemas\":1}", "the exact response body verbatim");
+    }
+
+    #[test]
+    fn fetch_raw_required_errors_on_404_with_status_in_message() {
+        // For a REQUIRED fetch, even a 404 is an error (the probe falls
+        // through to the clone); the message must carry the URL + status.
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/missing.json",
+            response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+            times: Some(1),
+        }]);
+        let url = format!("http://{addr}/missing.json");
+        let err = fetch_raw_required(&http_client(), &url).expect_err("404 must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("404") && msg.contains(&url),
+            "required-fetch error must name the URL + status; got {msg}"
+        );
+    }
+
+    #[test]
+    fn fetch_raw_optional_maps_200_to_some_404_to_none() {
+        // Success ⇒ Some(body); a 404 ⇒ None (absent upstream ⇒ the
+        // change-decision reads None as change-needed).
+        let (addr, _log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/present.json",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello",
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/absent.json",
+                response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                times: Some(1),
+            },
+        ]);
+        let client = http_client();
+        assert_eq!(
+            fetch_raw_optional(&client, &format!("http://{addr}/present.json")).unwrap(),
+            Some("hello".to_string()),
+            "200 ⇒ Some(body)"
+        );
+        assert_eq!(
+            fetch_raw_optional(&client, &format!("http://{addr}/absent.json")).unwrap(),
+            None,
+            "404 ⇒ None (file absent upstream)"
+        );
+    }
+
+    #[test]
+    fn fetch_raw_optional_errors_on_non_404_non_success() {
+        // A 500 is neither "absent" (404 ⇒ None) nor success ⇒ the optional
+        // fetch must ERROR so the probe falls through rather than guessing.
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/boom.json",
+            response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+            times: Some(1),
+        }]);
+        let url = format!("http://{addr}/boom.json");
+        let err = fetch_raw_optional(&http_client(), &url).expect_err("500 must error");
+        assert!(
+            err.to_string().contains("500"),
+            "non-404 non-success must surface the status; got {err}"
+        );
+    }
+
+    // --- run_real I/O shell: post-clone splice/write/idempotency ---------
+    //
+    // `run_real` clones the fork, then `sync_to_upstream` fetches the
+    // hardcoded PUBLIC github.com/SchemaStore upstream (network). The
+    // genuinely hermetic seam these gate is the change-decision short-
+    // circuit: when EVERY effective schema is already current against the
+    // cloned tree, `run_real` returns the "nothing to publish" evidence
+    // WITHOUT a push or a PR. We exercise the splice/write/change-decision
+    // helpers it orchestrates directly, since the network sync sits between
+    // the clone and those helpers.
+    //
+    // These build bare working trees + read the process env, so they are
+    // `#[cfg(unix)]`-gated: the on-disk git plumbing + the unix-path / mode
+    // assumptions are POSIX-only, and gating costs zero coverage (coverage
+    // is measured on ubuntu).
+
+    /// A draft-07 vendor schema written under a fresh `project_root` so a
+    /// vendor plan's local read+format succeeds, plus the formatted bytes.
+    #[cfg(unix)]
+    fn seed_local_vendor_schema(entry: &SchemaEntry) -> (tempfile::TempDir, String) {
+        let root = tempfile::tempdir().expect("project root");
+        let rel = entry
+            .schema_file
+            .as_deref()
+            .expect("vendor entry schema_file");
+        let src = root.path().join(rel);
+        std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+        std::fs::write(&src, DRAFT07_SCHEMA).unwrap();
+        let formatted = manifest::format_vendor_schema(DRAFT07_SCHEMA).unwrap();
+        (root, formatted)
+    }
+
+    /// Lay a synced-clone working tree: the catalog already holding the
+    /// exact desired entry for `plan`, plus the upstream vendor file equal
+    /// to `vendor_bytes` — the readers `run_real` consults after the sync.
+    #[cfg(unix)]
+    fn seed_clone(plan: &SchemaPlan, vendor_bytes: &str) -> tempfile::TempDir {
+        let clone = tempfile::tempdir().expect("clone dir");
+        let cat = catalog_with(std::slice::from_ref(&plan.desired_entry));
+        let cat_abs = clone.path().join(CATALOG_PATH);
+        std::fs::create_dir_all(cat_abs.parent().unwrap()).unwrap();
+        std::fs::write(&cat_abs, &cat).unwrap();
+        if let Some(rel) = plan.vendor_path.as_ref() {
+            let abs = clone.path().join(rel);
+            std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+            std::fs::write(&abs, vendor_bytes).unwrap();
+        }
+        clone
+    }
+
+    /// The whole-flow change-decision the cloned `run_real` loop gates each
+    /// schema on: a vendor schema whose catalog entry AND upstream file both
+    /// already match (draft-07 ⇒ no allowlist) is a CERTAIN no-op, so
+    /// `run_real` would `continue` past it and (if it were the only schema)
+    /// publish nothing. Proven against a real on-disk clone tree built by
+    /// the same `read_cloned_*` readers `run_real` uses — the seam between
+    /// the network sync and the push.
+    #[cfg(unix)]
+    #[test]
+    fn cloned_tree_current_vendor_is_a_certain_noop_via_run_real_readers() {
+        let entry = vendor_entry();
+        let plan = plan_schema(&entry, "cfgd machine config", false, None, None).unwrap();
+        let (root, formatted) = seed_local_vendor_schema(&entry);
+        let clone = seed_clone(&plan, &formatted);
+
+        // Re-derive exactly as `run_real` does, off the cloned tree.
+        let local = read_local_vendor_schema(root.path(), &entry).unwrap();
+        let cloned_vendor = read_cloned_vendor_file(clone.path(), &plan);
+        let cloned_jsonc = read_cloned_jsonc(clone.path());
+        let catalog_json = std::fs::read_to_string(clone.path().join(CATALOG_PATH)).unwrap();
+        let remote = RemoteState {
+            catalog_json: &catalog_json,
+            vendor_file: cloned_vendor.as_deref(),
+            jsonc: cloned_jsonc.as_deref(),
+        };
+        assert!(
+            !schema_change_needed(&plan, Some(&local), &remote),
+            "a clone whose catalog entry + vendor file both match must be a no-op"
+        );
+    }
+
+    /// Drift case: the cloned upstream vendor file differs from the local
+    /// formatted content (catalog entry unchanged). The same readers must
+    /// report change-needed, so `run_real` would write + splice + push —
+    /// the latent-bug guard, proven against a real clone tree.
+    #[cfg(unix)]
+    #[test]
+    fn cloned_tree_vendor_drift_needs_change_via_run_real_readers() {
+        let entry = vendor_entry();
+        let plan = plan_schema(&entry, "cfgd machine config", false, None, None).unwrap();
+        let (root, _formatted) = seed_local_vendor_schema(&entry);
+        // Seed the clone's upstream vendor file with DIFFERENT content.
+        let drifted = manifest::format_vendor_schema(
+            r#"{"$schema":"https://json-schema.org/draft-07/schema#","type":"string"}"#,
+        )
+        .unwrap();
+        let clone = seed_clone(&plan, &drifted);
+
+        let local = read_local_vendor_schema(root.path(), &entry).unwrap();
+        assert_ne!(local, drifted, "fixture must differ");
+        let cloned_vendor = read_cloned_vendor_file(clone.path(), &plan);
+        let cloned_jsonc = read_cloned_jsonc(clone.path());
+        let catalog_json = std::fs::read_to_string(clone.path().join(CATALOG_PATH)).unwrap();
+        let remote = RemoteState {
+            catalog_json: &catalog_json,
+            vendor_file: cloned_vendor.as_deref(),
+            jsonc: cloned_jsonc.as_deref(),
+        };
+        assert!(
+            schema_change_needed(&plan, Some(&local), &remote),
+            "upstream vendor drift must trigger a change even when the catalog matches"
+        );
+    }
+
+    /// `write_vendor_schema` + `splice_entry` compose to the exact tree
+    /// `run_real` stages: the formatted schema lands at the vendor path AND
+    /// the catalog gains the desired entry. Drives the two write seams
+    /// `run_real`'s apply-loop calls, asserting the staged bytes.
+    #[cfg(unix)]
+    #[test]
+    fn write_then_splice_stages_vendor_file_and_catalog_entry() {
+        let entry = vendor_entry();
+        let plan = plan_schema(&entry, "cfgd machine config", false, None, None).unwrap();
+        let (_root, formatted) = seed_local_vendor_schema(&entry);
+        let clone = tempfile::tempdir().expect("clone");
+        // Empty upstream catalog ⇒ the splice ADDS the entry.
+        let cat_abs = clone.path().join(CATALOG_PATH);
+        std::fs::create_dir_all(cat_abs.parent().unwrap()).unwrap();
+        std::fs::write(&cat_abs, catalog_with(&[])).unwrap();
+
+        write_vendor_schema(clone.path(), &entry, &plan, &formatted, &quiet_log())
+            .expect("write vendor file into clone");
+        let dest = clone.path().join("src/schemas/json/cfgd-config.json");
+        assert_eq!(
+            std::fs::read_to_string(&dest).unwrap(),
+            formatted,
+            "staged vendor file must byte-equal the formatted schema"
+        );
+
+        let spliced = catalog::splice_entry(
+            &std::fs::read_to_string(&cat_abs).unwrap(),
+            &plan.name,
+            &plan.desired_entry,
+        )
+        .expect("splice the desired entry");
+        let parsed: Value = serde_json::from_str(&spliced).unwrap();
+        let names: Vec<&str> = parsed["schemas"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e.get("name").and_then(Value::as_str))
+            .collect();
+        assert!(
+            names.contains(&"cfgd-config"),
+            "the spliced catalog must hold the new entry; names: {names:?}"
+        );
+    }
+
+    /// A too-high (2020-12) vendor schema whose clone's
+    /// `schema-validation.jsonc` lacks the `highSchemaVersion` array makes
+    /// `add_high_schema_version` fail — the `write_vendor_schema` allowlist
+    /// step must propagate that error (`schemastore: allowlist high-dialect
+    /// schema` context) rather than landing the schema with no allowlist
+    /// entry (which SchemaStore CI would then reject).
+    #[cfg(unix)]
+    #[test]
+    fn write_vendor_schema_propagates_allowlist_error_on_missing_array() {
+        let clone = tempfile::tempdir().expect("clone");
+        // jsonc present but with NO `highSchemaVersion` array ⇒ the catalog
+        // helper can't find the insertion point and errors.
+        let allow_abs = clone.path().join(DIALECT_ALLOWLIST_PATH);
+        std::fs::create_dir_all(allow_abs.parent().unwrap()).unwrap();
+        std::fs::write(&allow_abs, "{\n  \"other\": []\n}\n").unwrap();
+
+        let entry = vendor_entry();
+        let plan = plan_schema(&entry, "cfgd machine config", false, None, None).unwrap();
+        let formatted = manifest::format_vendor_schema(DRAFT2020_SCHEMA).unwrap();
+        let err = write_vendor_schema(clone.path(), &entry, &plan, &formatted, &quiet_log())
+            .expect_err("a too-high schema with no allowlist array must error");
+        assert!(
+            err.to_string().contains("allowlist high-dialect schema")
+                || err.to_string().contains("cfgd-config.json"),
+            "expected the allowlist-failure context naming the key; got {err}"
+        );
+    }
 }

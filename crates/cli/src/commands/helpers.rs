@@ -2645,4 +2645,386 @@ list:
         let env = anodizer_core::MapEnvSource::new();
         assert_eq!(resolve_force_token_with_env(&config, &env), None);
     }
+
+    fn quiet_log() -> StageLogger {
+        StageLogger::new("test", anodizer_core::log::Verbosity::Quiet)
+    }
+
+    // ---- sort_yaml_mapping — Tagged-node recursion ---------------------
+
+    /// A `!Tag`-tagged YAML mapping must still have its inner keys sorted —
+    /// the `Value::Tagged` arm recurses into the wrapped value. Without that
+    /// arm a tagged sub-map would emit in source order and drift the
+    /// determinism fingerprint.
+    #[test]
+    fn sort_yaml_mapping_sorts_inside_tagged_node() {
+        use serde_yaml_ng::value::{Tag, TaggedValue};
+        use serde_yaml_ng::{Mapping, Value};
+        let mut inner = Mapping::new();
+        inner.insert(Value::from("z"), Value::from(1));
+        inner.insert(Value::from("a"), Value::from(2));
+        let mut value = Value::Tagged(Box::new(TaggedValue {
+            tag: Tag::new("Custom"),
+            value: Value::Mapping(inner),
+        }));
+        sort_yaml_mapping(&mut value);
+        let out = serde_yaml_ng::to_string(&value).unwrap();
+        let a_pos = out.find("a:").expect("a: present");
+        let z_pos = out.find("z:").expect("z: present");
+        assert!(
+            a_pos < z_pos,
+            "keys inside a tagged node must be sorted; got {out:?}"
+        );
+    }
+
+    // ---- token-presence hard error in setup_env ------------------------
+
+    /// A crate carrying a `release:` block, no token, and a non-snapshot /
+    /// non-dry-run / non-publish-only run must bail with the GitHub-specific
+    /// hint (the default token_type). Gated + serial: `setup_env` may mutate
+    /// process env through the default token-file loader.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn setup_env_missing_token_bails_with_github_hint() {
+        let config = Config {
+            project_name: "p".to_string(),
+            crates: vec![CrateConfig {
+                name: "p".to_string(),
+                release: Some(anodizer_core::config::ReleaseConfig::default()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = ctx_with_env(&config, &[]);
+        let err = setup_env(&mut ctx, &config, &quiet_log())
+            .expect_err("a release-configured run with no token must bail");
+        assert!(
+            err.to_string().contains("no GitHub token found"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Snapshot mode must short-circuit the missing-token gate — a tokenless
+    /// snapshot is a supported local-validation flow.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn setup_env_missing_token_ok_in_snapshot() {
+        let config = Config {
+            project_name: "p".to_string(),
+            crates: vec![CrateConfig {
+                name: "p".to_string(),
+                release: Some(anodizer_core::config::ReleaseConfig::default()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let opts = ContextOptions {
+            snapshot: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config.clone(), opts);
+        ctx.set_env_source(anodizer_core::env_source::MapEnvSource::new());
+        setup_env(&mut ctx, &config, &quiet_log())
+            .expect("snapshot mode must skip the missing-token gate");
+    }
+
+    /// Two SCM tokens set without `force_token` is ambiguous — setup_env must
+    /// bail naming both offenders so the operator knows to set force_token.
+    /// Gated + serial: drives setup_env's process-env touchpoints.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn setup_env_multiple_tokens_without_force_bails() {
+        let config = Config {
+            project_name: "p".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = ctx_with_env(&config, &[("GITHUB_TOKEN", "gh"), ("GITLAB_TOKEN", "gl")]);
+        let err = setup_env(&mut ctx, &config, &quiet_log())
+            .expect_err("two tokens without force_token must bail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("multiple SCM tokens set simultaneously")
+                && msg.contains("GITHUB_TOKEN")
+                && msg.contains("GITLAB_TOKEN"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    // ---- write_metadata_and_artifacts — mod_timestamp application ------
+
+    /// `metadata.mod_timestamp` (when it renders non-empty) must be parsed and
+    /// stamped onto both metadata.json and artifacts.json. Assert the files
+    /// land and the mtime matches the parsed epoch — proving the stamp arm
+    /// (not just the write) ran.
+    #[test]
+    fn write_metadata_and_artifacts_applies_mod_timestamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = Config {
+            project_name: "demo".to_string(),
+            dist: tmp.path().to_path_buf(),
+            metadata: Some(anodizer_core::config::MetadataConfig {
+                mod_timestamp: Some("1700000000".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config.clone(), ContextOptions::default());
+        write_metadata_and_artifacts(&mut ctx, &config, &quiet_log())
+            .expect("metadata + artifacts write must succeed");
+
+        let meta = tmp.path().join("metadata.json");
+        let arts = tmp.path().join("artifacts.json");
+        assert!(meta.is_file(), "metadata.json must be written");
+        assert!(arts.is_file(), "artifacts.json must be written");
+        let mtime = std::fs::metadata(&meta)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(
+            mtime, 1700000000,
+            "metadata.json mtime must equal the rendered mod_timestamp epoch"
+        );
+    }
+
+    /// metadata.json must register as a Metadata artifact so downstream stages
+    /// can pick it up; artifacts.json must NOT self-register.
+    #[test]
+    fn write_metadata_and_artifacts_registers_metadata_artifact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = Config {
+            project_name: "demo".to_string(),
+            dist: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config.clone(), ContextOptions::default());
+        write_metadata_and_artifacts(&mut ctx, &config, &quiet_log()).expect("write");
+        let kinds: Vec<_> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.name == "metadata.json")
+            .map(|a| a.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![ArtifactKind::Metadata],
+            "exactly one metadata.json artifact of kind Metadata must be registered"
+        );
+    }
+
+    // ---- load_artifacts_from_manifest — targetless dedup skip ----------
+
+    /// Two manifest entries sharing the same path with `target: null` (e.g. a
+    /// source archive duplicated across shard manifests) must collapse to a
+    /// single registry entry — the second is skipped, not re-added.
+    #[test]
+    fn load_manifest_dedupes_targetless_duplicate_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path();
+        let manifest = dist.join("artifacts.json");
+        std::fs::write(
+            &manifest,
+            r#"[
+              {"kind":"archive","name":"src.tar.gz","path":"dist/src.tar.gz","target":null,"crate_name":"demo","metadata":{},"size":null},
+              {"kind":"archive","name":"src.tar.gz","path":"dist/src.tar.gz","target":null,"crate_name":"demo","metadata":{},"size":null}
+            ]"#,
+        )
+        .unwrap();
+        let config = Config {
+            dist: dist.to_path_buf(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        load_artifacts_from_manifest(&mut ctx, dist, &manifest).expect("load manifest");
+        let count = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.path == dist.join("src.tar.gz"))
+            .count();
+        assert_eq!(
+            count, 1,
+            "a targetless artifact duplicated across shard manifests must register once"
+        );
+    }
+
+    // ---- resolve_git_context — workspace fallback + snapshot defaults --
+    //
+    // resolve_git_context shells to `git` in the process cwd. Driving its
+    // crate-selection + snapshot-default branches hermetically needs the cwd
+    // swapped to an empty git repo with no tags. Gated (cwd swap is global)
+    // + serial.
+
+    #[cfg(unix)]
+    fn with_empty_git_repo_cwd(body: impl FnOnce()) {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(tmp.path())
+                .status()
+                .expect("spawn git init")
+                .success(),
+            "git init must succeed",
+        );
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        std::env::set_current_dir(orig).unwrap();
+        if let Err(p) = result {
+            std::panic::resume_unwind(p);
+        }
+    }
+
+    /// Build a context backed by an EMPTY env source so the tag-discovery env
+    /// chain (`ANODIZER_CURRENT_TAG`, `GITHUB_REF_TYPE`/`GITHUB_REF_NAME`, …)
+    /// resolves to nothing. anodizer's own CI runs under GitHub Actions, which
+    /// exports `GITHUB_REF_*`; without this isolation those would leak in as a
+    /// tag override and mask the no-tag branches under test.
+    #[cfg(unix)]
+    fn empty_env_ctx(config: &Config, opts: ContextOptions) -> Context {
+        let mut ctx = Context::new(config.clone(), opts);
+        ctx.set_env_source(anodizer_core::env_source::MapEnvSource::new());
+        ctx
+    }
+
+    /// A workspace-only config (no top-level crates) in snapshot mode must
+    /// resolve `first_crate` from the workspace fallback and, finding no tag,
+    /// default Version to 0.0.0 — proving both the workspace-crate selection
+    /// arm and the snapshot tag-default arm.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn resolve_git_context_workspace_only_snapshot_defaults_version() {
+        with_empty_git_repo_cwd(|| {
+            let config = Config {
+                project_name: "ws".to_string(),
+                workspaces: Some(vec![WorkspaceConfig {
+                    name: "w".to_string(),
+                    crates: vec![CrateConfig {
+                        name: "wcrate".to_string(),
+                        path: ".".to_string(),
+                        tag_template: "wcrate-v{{ .Version }}".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            };
+            let opts = ContextOptions {
+                snapshot: true,
+                ..Default::default()
+            };
+            let mut ctx = empty_env_ctx(&config, opts);
+            resolve_git_context(&mut ctx, &config, &quiet_log())
+                .expect("snapshot workspace-only resolve must succeed");
+            assert_eq!(
+                ctx.template_vars().get("Version").map(String::as_str),
+                Some("0.0.0"),
+                "workspace-only snapshot must default Version to 0.0.0 via the v0.0.0 tag"
+            );
+        });
+    }
+
+    /// No crates and no workspaces: `first_crate` is None, so resolve_git_context
+    /// takes the bare `populate_git_vars` branch and returns Ok without touching
+    /// tag discovery. The `Tag` var stays unset (never populated from a crate).
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn resolve_git_context_no_crates_populates_vars_and_ok() {
+        with_empty_git_repo_cwd(|| {
+            let config = Config {
+                project_name: "empty".to_string(),
+                ..Default::default()
+            };
+            let mut ctx = empty_env_ctx(&config, ContextOptions::default());
+            resolve_git_context(&mut ctx, &config, &quiet_log())
+                .expect("no-crate config must resolve cleanly");
+            assert!(
+                ctx.template_vars().get("Tag").is_none(),
+                "no crate means no tag-derived Tag var"
+            );
+        });
+    }
+
+    /// Non-snapshot, non-dry-run, no tags, with a selectable crate must be a
+    /// hard error: `resolve_git_context` bails demanding a tag or --snapshot.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn resolve_git_context_no_tag_non_snapshot_bails() {
+        with_empty_git_repo_cwd(|| {
+            let config = Config {
+                project_name: "x".to_string(),
+                crates: vec![CrateConfig {
+                    name: "x".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "x-v{{ .Version }}".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let mut ctx = empty_env_ctx(&config, ContextOptions::default());
+            let err = resolve_git_context(&mut ctx, &config, &quiet_log())
+                .expect_err("no tag + non-snapshot must bail");
+            assert!(
+                err.to_string().contains("no git tag found"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
+    // ---- auto_detect_github — no-remote warn path ----------------------
+
+    /// In a git repo with no `origin` remote, `auto_detect_github` can't detect
+    /// a repo, so a crate with a release block but no `github:` is left as-is
+    /// (the warn arm fires, no github filled). Gated + serial: cwd swap.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn auto_detect_github_leaves_github_none_without_remote() {
+        with_empty_git_repo_cwd(|| {
+            let mut config = Config {
+                project_name: "x".to_string(),
+                crates: vec![CrateConfig {
+                    name: "x".to_string(),
+                    release: Some(anodizer_core::config::ReleaseConfig::default()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            auto_detect_github(&mut config, &quiet_log());
+            assert!(
+                config.crates[0].release.as_ref().unwrap().github.is_none(),
+                "with no detectable remote, the missing github block must stay None"
+            );
+        });
+    }
+
+    // ---- discover_workspace_root — override ancestor walk --------------
+
+    /// With a `--config` override pointing at a file inside a dir that has a
+    /// `Cargo.toml`, discovery walks up from the config's parent and returns
+    /// that dir (absolutized). Gated: asserts on an absolute unix path.
+    #[cfg(unix)]
+    #[test]
+    fn discover_workspace_root_override_finds_cargo_toml_ancestor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname=\"x\"\n").unwrap();
+        let cfg = root.join(".anodizer.yaml");
+        std::fs::write(&cfg, "project_name: x\n").unwrap();
+        let found = discover_workspace_root(Some(&cfg)).expect("must find Cargo.toml ancestor");
+        assert_eq!(
+            found, root,
+            "override discovery must return the absolute dir holding Cargo.toml"
+        );
+    }
 }

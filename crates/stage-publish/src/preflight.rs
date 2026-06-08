@@ -1571,6 +1571,35 @@ mod tests {
         );
     }
 
+    // ---- percent_encode (GitHub search query encoder) -------------------
+
+    #[test]
+    fn percent_encode_space_becomes_plus() {
+        // Spaces in the search query must become `+`, and the query operators
+        // anodizer emits (`repo:`, `is:pr`, `in:title`) must round-trip
+        // unescaped so the GitHub search syntax survives the encode.
+        assert_eq!(
+            percent_encode("repo:microsoft/winget-pkgs is:pr in:title"),
+            "repo:microsoft/winget-pkgs+is:pr+in:title"
+        );
+    }
+
+    #[test]
+    fn percent_encode_passes_through_unreserved() {
+        // Alphanumerics plus the explicit safe set `-._~/:` must NOT be
+        // escaped — escaping them would corrupt package identifiers and the
+        // search operators.
+        let safe = "Abc123-._~/:";
+        assert_eq!(percent_encode(safe), safe);
+    }
+
+    #[test]
+    fn percent_encode_escapes_reserved_and_unicode_bytes() {
+        // A reserved ASCII char (`#`) and a multi-byte UTF-8 char (`é`,
+        // 0xC3 0xA9) must each percent-escape every byte as uppercase hex.
+        assert_eq!(percent_encode("a#é"), "a%23%C3%A9");
+    }
+
     // ---- Chocolatey checker fixtures (PackageStatus / IsApproved) -------
 
     fn choco_odata_entry(version: &str, status: Option<&str>, is_approved: Option<bool>) -> String {
@@ -1653,6 +1682,30 @@ mod tests {
         assert!(
             matches!(state, PublisherState::Clean),
             "absent row must be Clean, got: {:?}",
+            state
+        );
+    }
+
+    #[test]
+    fn chocolatey_checker_present_without_hash_is_published() {
+        // A 200 OData entry that exists but omits PackageHash maps to
+        // FeedHashResult::PresentNoHash → the version is taken (Published),
+        // never Clean — an unreadable hash must not let a published version
+        // slip the preflight gate.
+        let body = r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<entry>
+  <id>http://example.com/api/v2/Packages(Id='foo',Version='1.0.0')</id>
+  <m:properties><d:PackageStatus>Approved</d:PackageStatus></m:properties>
+</entry>"#
+            .to_string();
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![choco_http_resp(body)]);
+        let source = format!("http://{}/", addr);
+
+        let checker = Chocolatey::new(source, fast_retry());
+        let state = checker.check("foo", "1.0.0");
+        assert!(
+            matches!(state, PublisherState::Published),
+            "present-but-hashless row must be Published, got: {:?}",
             state
         );
     }
@@ -2677,6 +2730,193 @@ mod tests {
                 "package-ID mismatch → Unavailable (env artifact), got {out:?}"
             );
         }
+
+        #[test]
+        fn classify_stderr_could_not_find_is_benign_sibling() {
+            // "could not find" is checked in the missing-package block (BEFORE
+            // the compile block, which also contains "cannot find"), so a
+            // `could not find crate` line must classify as a benign-sibling
+            // signal the caller resolves against the to-publish set — never a
+            // hard compile blocker.
+            let out = classify_dry_run_stderr(
+                "error: could not find `anodizer-core` in registry `crates-io`\n",
+            );
+            match out {
+                DryRunOutcome::BenignSiblingMissing(line) => {
+                    assert!(line.contains("could not find"), "line: {line}")
+                }
+                other => panic!("expected BenignSiblingMissing, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn classify_stderr_failed_to_select_version_is_benign_sibling() {
+            let out = classify_dry_run_stderr(
+                "error: failed to select a version for the requirement `anodizer-core = \"^0.6\"`\n",
+            );
+            match out {
+                DryRunOutcome::BenignSiblingMissing(line) => {
+                    assert!(line.contains("failed to select"), "line: {line}")
+                }
+                other => panic!("expected BenignSiblingMissing, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn classify_stderr_unresolved_import_is_compile_error() {
+            let out = classify_dry_run_stderr(
+                "   Compiling anodizer-stage-blob v0.6.0\nerror[E0432]: unresolved import `anodizer_core::probe`\n",
+            );
+            // Both the `error[e` and `unresolved import` needles match; the
+            // `error[e` line wins because it precedes the import line and
+            // `first_line_matching` returns the first matching line.
+            match out {
+                DryRunOutcome::CompileError(line) => {
+                    assert!(line.contains("E0432"), "line: {line}")
+                }
+                other => panic!("expected CompileError, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn classify_stderr_cannot_find_function_is_compile_error() {
+            // A bare `cannot find function` line (no `error[E…]` prefix) must
+            // still reach the compile-error block via the dedicated needle.
+            let out = classify_dry_run_stderr("cannot find function `probe_dir` in this scope\n");
+            match out {
+                DryRunOutcome::CompileError(line) => {
+                    assert!(line.contains("probe_dir"), "line: {line}")
+                }
+                other => panic!("expected CompileError, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn classify_stderr_could_not_compile_is_compile_error() {
+            let out = classify_dry_run_stderr(
+                "error: could not compile `anodizer-stage-blob` due to 2 previous errors\n",
+            );
+            match out {
+                DryRunOutcome::CompileError(line) => {
+                    assert!(line.contains("could not compile"), "line: {line}")
+                }
+                other => panic!("expected CompileError, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn classify_stderr_failed_to_download_is_unavailable() {
+            let out = classify_dry_run_stderr(
+                "error: failed to download `serde v1.0.0`\nCaused by:\n  timed out\n",
+            );
+            match out {
+                DryRunOutcome::Unavailable(line) => {
+                    assert!(line.contains("failed to download"), "line: {line}")
+                }
+                other => panic!("expected Unavailable, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn classify_stderr_http_response_failure_is_unavailable() {
+            let out = classify_dry_run_stderr(
+                "error: failed to get successful HTTP response from `https://index.crates.io`\n",
+            );
+            assert!(
+                matches!(out, DryRunOutcome::Unavailable(_)),
+                "registry HTTP failure → Unavailable, got {out:?}"
+            );
+        }
+
+        #[test]
+        fn classify_stderr_blank_only_uses_placeholder_diagnostic() {
+            // Stderr with no non-empty line falls through every needle block to
+            // the conservative CompileError, and `first_nonempty_line` must
+            // yield the bare-diagnostic placeholder rather than an empty string.
+            let out = classify_dry_run_stderr("\n   \n\t\n");
+            match out {
+                DryRunOutcome::CompileError(line) => {
+                    assert_eq!(line, "non-zero exit, no diagnostic")
+                }
+                other => panic!("expected CompileError placeholder, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn noop_dry_run_runner_reports_unavailable() {
+            // The default test-seam runner never spawns and always degrades to
+            // the index-only check; carry a reason so the caller's warn line is
+            // honest about why the dry-run was skipped.
+            match noop_dry_run_runner("anodizer-core") {
+                DryRunOutcome::Unavailable(reason) => {
+                    assert!(reason.contains("disabled"), "reason: {reason}")
+                }
+                other => panic!("expected Unavailable, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn partial_publish_non_index_state_is_treated_as_published() {
+            // crates.io never yields InModeration, but the partial-publish
+            // classifier must treat ANY non-Clean/non-Unknown state as
+            // "present" so a mixed set (one present, one Clean) still aborts.
+            let mut ctx = two_crate_ctx();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            let index = |krate: &str, _v: &str| {
+                if krate == "anodizer-core" {
+                    PublisherState::InModeration {
+                        reason: "unexpected moderation state".into(),
+                    }
+                } else {
+                    PublisherState::Clean
+                }
+            };
+            let dry = |krate: &str| -> DryRunOutcome {
+                panic!("dry-run must not run once a mixed state aborts (ran for {krate})")
+            };
+            run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
+            assert_eq!(report.blockers.len(), 1, "mixed state aborts");
+            let b = &report.blockers[0];
+            assert!(b.contains("partially published"), "blocker: {b}");
+            assert!(
+                b.contains("anodizer-core") && b.contains("anodizer-stage-blob"),
+                "names both crates: {b}"
+            );
+        }
+
+        #[test]
+        fn render_failure_in_skip_template_surfaces_as_blocker() {
+            use anodizer_core::config::StringOrBool;
+            // An unterminated `skip:` template breaks `cargo_publish_plan` — the
+            // same failure the real publish would hit — so the simulation must
+            // surface it as a blocker, never silently skip the gate.
+            let mut blob = cargo_crate("anodizer-stage-blob", &["anodizer-core"]);
+            if let Some(ref mut p) = blob.publish
+                && let Some(ref mut c) = p.cargo
+            {
+                c.skip = Some(StringOrBool::String("{{ unterminated".to_string()));
+            }
+            let mut ctx = TestContextBuilder::new()
+                .crates(vec![blob, cargo_crate("anodizer-core", &[])])
+                .build();
+            let log = quiet_log();
+            let mut report = PreflightReport::new();
+            // Neither seam may run: the plan fails before any state query.
+            let index = |krate: &str, _v: &str| -> PublisherState {
+                panic!("index must not be queried when the plan fails (queried {krate})")
+            };
+            let dry = |krate: &str| -> DryRunOutcome {
+                panic!("dry-run must not run when the plan fails (ran for {krate})")
+            };
+            run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
+            assert_eq!(report.blockers.len(), 1, "plan render failure blocks");
+            assert!(
+                report.blockers[0].contains("cargo publish-simulation:"),
+                "blocker is tagged with the simulation prefix: {}",
+                report.blockers[0]
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2749,6 +2989,40 @@ mod tests {
                     assert!(line.contains("anodizer-core"), "line: {line}")
                 }
                 other => panic!("expected BenignSiblingMissing, got {other:?}"),
+            }
+        }
+
+        #[test]
+        #[serial_test::serial]
+        fn dry_run_spawn_failure_is_unavailable() {
+            use anodizer_core::test_helpers::env::env_mutex;
+
+            // Point PATH at an empty dir so `Command::new("cargo")` fails to
+            // spawn (cargo absent / not on PATH). The runner must degrade to
+            // Unavailable — never abort the release on a missing toolchain —
+            // and carry the spawn-error reason so the warn line is honest.
+            let empty = tempfile::TempDir::new().expect("temp dir");
+            let _lock = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+            let prior = std::env::var_os("PATH");
+            // SAFETY: serialised by `_lock` (held for the test body) and the
+            // `#[serial]` attribute; PATH is restored before the lock drops.
+            unsafe { std::env::set_var("PATH", empty.path()) };
+
+            let out = run_cargo_dry_run("anodizer-core", &quiet_log());
+
+            // SAFETY: same serialisation guarantees as the set_var above.
+            unsafe {
+                match prior {
+                    Some(p) => std::env::set_var("PATH", p),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+
+            match out {
+                DryRunOutcome::Unavailable(reason) => {
+                    assert!(reason.contains("spawn cargo"), "reason: {reason}")
+                }
+                other => panic!("expected Unavailable on spawn failure, got {other:?}"),
             }
         }
     }

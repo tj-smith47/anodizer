@@ -1251,4 +1251,410 @@ mod tests {
         let cfg = MilestoneConfig::default();
         assert!(resolve_milestone_api_url(&cfg, &config_with_gitlab_api(None)).is_none());
     }
+
+    // ---- empty-token guard on every provider close ---------------------
+    //
+    // The first line of each provider close is a token presence check. An
+    // empty token must bail with a provider-specific message BEFORE any HTTP
+    // is attempted (no runtime block_on, no socket). Asserting the exact
+    // substring pins the per-provider diagnostic.
+
+    fn dummy_rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Runtime::new().expect("runtime")
+    }
+
+    fn default_policy() -> RetryPolicy {
+        use std::time::Duration;
+        RetryPolicy {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+        }
+    }
+
+    /// Single-attempt, sub-millisecond retry config so `close_milestones`
+    /// (which reads `ctx.retry_policy()`, defaulting to 10×10s) doesn't sleep
+    /// for minutes when a test exercises an API-error path.
+    fn fast_retry() -> anodizer_core::config::RetryConfig {
+        use anodizer_core::config::HumanDuration;
+        use std::time::Duration;
+        anodizer_core::config::RetryConfig {
+            attempts: 1,
+            delay: HumanDuration(Duration::from_millis(1)),
+            max_delay: HumanDuration(Duration::from_millis(1)),
+        }
+    }
+
+    #[test]
+    fn github_close_empty_token_bails_before_http() {
+        let rt = dummy_rt();
+        let err = close_milestone_github(&rt, "", "o", "r", "v1.0.0", &default_policy())
+            .expect_err("empty token must bail");
+        assert!(
+            err.to_string()
+                .contains("no authentication token available for milestone close"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn gitlab_close_empty_token_bails_before_http() {
+        let rt = dummy_rt();
+        let err = close_milestone_gitlab(&rt, "", "o", "r", "v1.0.0", None, &default_policy())
+            .expect_err("empty token must bail");
+        assert!(
+            err.to_string()
+                .contains("no authentication token available for GitLab milestone close"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn gitea_close_empty_token_bails_before_http() {
+        let rt = dummy_rt();
+        let err = close_milestone_gitea(&rt, "", "o", "r", "v1.0.0", None, &default_policy())
+            .expect_err("empty token must bail");
+        assert!(
+            err.to_string()
+                .contains("no authentication token available for Gitea milestone close"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // GitHub close targets the hardcoded api.github.com host (no api_url
+    // override), so its list/find/PATCH wiring is not mockable without a live
+    // network. The empty-token guard above is its only hermetic seam; the
+    // list→find→close→NotFound logic is provider-shared and proven through the
+    // GitLab + Gitea mock tests below.
+
+    // ---- GitLab close — milestone-absent maps to NotFound ---------------
+
+    #[test]
+    fn gitlab_close_milestone_absent_returns_not_found() {
+        use std::sync::atomic::Ordering;
+        // List returns 200 with an empty array (no milestone matches the
+        // title). The close PUT must never fire; the outcome is NotFound.
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+        ]);
+        let rt = dummy_rt();
+        let api_url = format!("http://{addr}");
+        let outcome = close_milestone_gitlab(
+            &rt,
+            "tok",
+            "org",
+            "repo",
+            "v9.9.9",
+            Some(&api_url),
+            &default_policy(),
+        )
+        .expect("absent milestone is not an error");
+        assert_eq!(outcome, MilestoneCloseOutcome::NotFound);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "only the list GET should fire when the milestone is absent (no close PUT)"
+        );
+    }
+
+    // ---- Gitea close — end-to-end list + PATCH against a mock -----------
+
+    #[test]
+    fn gitea_close_lists_finds_and_patches() {
+        use std::sync::atomic::Ordering;
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n[{\"id\":7,\"title\":\"v2.0.0\"}]",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 18\r\n\r\n{\"state\":\"closed\"}",
+        ]);
+        let rt = dummy_rt();
+        let api_url = format!("http://{addr}");
+        let outcome = close_milestone_gitea(
+            &rt,
+            "tok",
+            "org",
+            "repo",
+            "v2.0.0",
+            Some(&api_url),
+            &default_policy(),
+        )
+        .expect("list + close must succeed");
+        assert_eq!(outcome, MilestoneCloseOutcome::Closed);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "expected 2 connections (list GET, close PATCH)"
+        );
+    }
+
+    #[test]
+    fn gitea_close_404_on_patch_maps_to_not_found() {
+        use std::sync::atomic::Ordering;
+        // List finds the milestone, but the close PATCH 404s (deleted between
+        // list and close). The Gitea close maps that specific 404 to NotFound
+        // rather than surfacing it as a hard error.
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n[{\"id\":7,\"title\":\"v2.0.0\"}]",
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let rt = dummy_rt();
+        let api_url = format!("http://{addr}");
+        let outcome = close_milestone_gitea(
+            &rt,
+            "tok",
+            "org",
+            "repo",
+            "v2.0.0",
+            Some(&api_url),
+            &default_policy(),
+        )
+        .expect("a 404 on the close PATCH must map to NotFound, not Err");
+        assert_eq!(outcome, MilestoneCloseOutcome::NotFound);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "expected 2 connections (list GET, close PATCH that 404s)"
+        );
+    }
+
+    #[test]
+    fn gitea_close_non_404_error_on_patch_propagates() {
+        use std::sync::atomic::Ordering;
+        // A 403 on the close PATCH is NOT the already-closed race — it must
+        // propagate as an error, distinguishing it from the 404→NotFound path.
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n[{\"id\":7,\"title\":\"v2.0.0\"}]",
+            "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let rt = dummy_rt();
+        let api_url = format!("http://{addr}");
+        let err = close_milestone_gitea(
+            &rt,
+            "tok",
+            "org",
+            "repo",
+            "v2.0.0",
+            Some(&api_url),
+            &default_policy(),
+        )
+        .expect_err("a 403 on the close PATCH must propagate as an error");
+        // The full error chain carries the per-attempt classifier; the top
+        // frame is the retry-exhaustion wrapper. Either way it is an Err and
+        // NOT the 404→NotFound mapping — that is the behaviour under test.
+        let chained = format!("{err:#}");
+        assert!(
+            chained.contains("Gitea close failed (HTTP 403"),
+            "the 403 must surface through the close classifier, got: {chained}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    // ---- close_milestones — real publish path drives a provider close --
+
+    #[test]
+    fn close_milestones_drives_gitlab_close_when_not_dry_run() {
+        use std::sync::atomic::Ordering;
+        // Wire close_milestones (the public entrypoint) all the way through to
+        // a live close: token_type=GitLab routes to close_milestone_gitlab,
+        // gitlab_urls.api points the call at the mock. dry_run=false so the
+        // actual HTTP fires. Proves the resolve→route→close path, not just the
+        // per-provider helpers in isolation.
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 28\r\n\r\n[{\"id\":42,\"title\":\"v1.0.0\"}]",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 18\r\n\r\n{\"state\":\"closed\"}",
+        ]);
+        let api_url = format!("http://{addr}");
+
+        let config = Config {
+            crates: vec![CrateConfig {
+                release: Some(ReleaseConfig {
+                    gitlab: Some(ScmRepoConfig {
+                        owner: "org".into(),
+                        name: "repo".into(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            gitlab_urls: Some(anodizer_core::config::GitLabUrlsConfig {
+                api: Some(api_url),
+                ..Default::default()
+            }),
+            retry: Some(fast_retry()),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                token: Some("glpat-test".into()),
+                ..Default::default()
+            },
+        );
+        ctx.token_type = ScmTokenType::GitLab;
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(true),
+            name_template: Some("{{ Tag }}".into()),
+            ..Default::default()
+        }];
+        close_milestones(&milestones, &mut ctx, false, &log)
+            .expect("close_milestones must drive the GitLab close end-to-end");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "expected list GET + close PUT through the public close_milestones path"
+        );
+    }
+
+    #[test]
+    fn close_milestones_api_error_warns_when_fail_on_error_false() {
+        use std::sync::atomic::Ordering;
+        // A 500 on the list (exhausting the 1-attempt policy) is an API
+        // failure. With fail_on_error unset (default false), close_milestones
+        // swallows it as a warning and returns Ok — the release must not fail
+        // because a milestone couldn't be closed.
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let api_url = format!("http://{addr}");
+        let config = Config {
+            crates: vec![CrateConfig {
+                release: Some(ReleaseConfig {
+                    gitlab: Some(ScmRepoConfig {
+                        owner: "org".into(),
+                        name: "repo".into(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            gitlab_urls: Some(anodizer_core::config::GitLabUrlsConfig {
+                api: Some(api_url),
+                ..Default::default()
+            }),
+            retry: Some(fast_retry()),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                token: Some("glpat-test".into()),
+                ..Default::default()
+            },
+        );
+        ctx.token_type = ScmTokenType::GitLab;
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(true),
+            fail_on_error: Some(false),
+            name_template: Some("{{ Tag }}".into()),
+            ..Default::default()
+        }];
+        close_milestones(&milestones, &mut ctx, false, &log)
+            .expect("fail_on_error=false must swallow the API error as a warning");
+        assert!(
+            calls.load(Ordering::SeqCst) >= 1,
+            "the list GET must have been attempted"
+        );
+    }
+
+    #[test]
+    fn close_milestones_api_error_propagates_when_fail_on_error_true() {
+        // Same 500-on-list, but fail_on_error=true must promote the API
+        // failure to a hard error with the close-context message.
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let api_url = format!("http://{addr}");
+        let config = Config {
+            crates: vec![CrateConfig {
+                release: Some(ReleaseConfig {
+                    gitlab: Some(ScmRepoConfig {
+                        owner: "org".into(),
+                        name: "repo".into(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            gitlab_urls: Some(anodizer_core::config::GitLabUrlsConfig {
+                api: Some(api_url),
+                ..Default::default()
+            }),
+            retry: Some(fast_retry()),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                token: Some("glpat-test".into()),
+                ..Default::default()
+            },
+        );
+        ctx.token_type = ScmTokenType::GitLab;
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(true),
+            fail_on_error: Some(true),
+            name_template: Some("{{ Tag }}".into()),
+            ..Default::default()
+        }];
+        let err = close_milestones(&milestones, &mut ctx, false, &log)
+            .expect_err("fail_on_error=true must propagate the API failure");
+        assert!(
+            err.to_string().contains("failed to close 'v1.0.0'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn close_milestones_dry_run_skips_http() {
+        // dry_run=true must log the intent and skip the HTTP entirely — the
+        // mock socket receives zero connections.
+        let (addr, calls) =
+            spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"]);
+        let api_url = format!("http://{addr}");
+        let config = Config {
+            crates: vec![CrateConfig {
+                release: Some(ReleaseConfig {
+                    gitlab: Some(ScmRepoConfig {
+                        owner: "org".into(),
+                        name: "repo".into(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            gitlab_urls: Some(anodizer_core::config::GitLabUrlsConfig {
+                api: Some(api_url),
+                ..Default::default()
+            }),
+            retry: Some(fast_retry()),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                token: Some("glpat-test".into()),
+                ..Default::default()
+            },
+        );
+        ctx.token_type = ScmTokenType::GitLab;
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(true),
+            name_template: Some("{{ Tag }}".into()),
+            ..Default::default()
+        }];
+        close_milestones(&milestones, &mut ctx, true, &log).expect("dry-run must succeed");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "dry-run must not open any connection to the milestone API"
+        );
+    }
 }

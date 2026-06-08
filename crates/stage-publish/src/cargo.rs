@@ -3322,6 +3322,564 @@ features = ["extra"]
     }
 
     // -----------------------------------------------------------------------
+    // cargo_publish_plan — the #25 single-source-of-truth extraction.
+    //
+    // Asserts the resolved plan directly (order + per-crate cfgs + per-crate
+    // versions) rather than only the dry-run log, so a regression in the
+    // version/cfg resolution surfaces even if the ordering stays correct.
+    // Covered across all three config modes per the all-modes requirement.
+    // -----------------------------------------------------------------------
+
+    /// Quiet logger for plan resolution — the plan emits skip/if status
+    /// lines we don't inspect here, so a non-capturing logger suffices.
+    fn quiet_log() -> StageLogger {
+        StageLogger::new("publish-test", Verbosity::Normal)
+    }
+
+    /// Write a `[package]` manifest pinning `version` under a fresh subdir of
+    /// `root` and return a cargo-eligible `CrateConfig` rooted there, so the
+    /// plan's per-crate version resolution reads a REAL on-disk version
+    /// instead of the cwd manifest. `cfg` controls the publish.cargo block.
+    fn disk_crate(
+        root: &std::path::Path,
+        name: &str,
+        version: &str,
+        deps: &[&str],
+        cfg: CargoPublishConfig,
+    ) -> CrateConfig {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).expect("mkdir crate dir");
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"{version}\"\n"),
+        )
+        .expect("write manifest");
+        CrateConfig {
+            name: name.to_string(),
+            path: dir.display().to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
+            publish: Some(PublishConfig {
+                cargo: Some(cfg),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Single-crate mode: the plan resolves exactly the one selected crate,
+    /// carries its cargo cfg, and reads the crate's own on-disk version.
+    #[test]
+    fn cargo_publish_plan_single_crate_resolves_order_cfg_and_version() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let solo = disk_crate(
+            tmp.path(),
+            "solo",
+            "1.2.3",
+            &[],
+            CargoPublishConfig {
+                no_verify: Some(true),
+                ..Default::default()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .tag("v9.9.9") // release version differs from the on-disk version
+            .crates(vec![solo])
+            .selected_crates(vec!["solo".to_string()])
+            .build();
+        let plan = cargo_publish_plan(&mut ctx, &["solo".to_string()], &quiet_log())
+            .expect("plan resolves");
+
+        assert_eq!(plan.order, vec!["solo"]);
+        // cfg survives into the plan map verbatim.
+        assert_eq!(plan.cfgs.get("solo").and_then(|c| c.no_verify), Some(true));
+        // Version is read from the crate's own manifest, not the release tag.
+        assert_eq!(plan.versions.get("solo").map(String::as_str), Some("1.2.3"));
+    }
+
+    /// Workspace-lockstep mode: a `--crate` selection of the leaf expands
+    /// transitively, the plan orders the dependency first, and EACH crate's
+    /// own on-disk version is resolved (mixed cadence: 0.4.0 vs 0.4.1).
+    #[test]
+    fn cargo_publish_plan_lockstep_orders_deps_and_resolves_both_versions() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let core = disk_crate(
+            tmp.path(),
+            "cfgd-core",
+            "0.4.0",
+            &[],
+            CargoPublishConfig::default(),
+        );
+        let app = disk_crate(
+            tmp.path(),
+            "cfgd",
+            "0.4.1",
+            &["cfgd-core"],
+            CargoPublishConfig::default(),
+        );
+        let mut ctx = TestContextBuilder::new()
+            .tag("v0.4.0")
+            .crates(vec![app, core])
+            .selected_crates(vec!["cfgd".to_string()])
+            .build();
+        let plan = cargo_publish_plan(&mut ctx, &["cfgd".to_string()], &quiet_log())
+            .expect("plan resolves");
+
+        assert_eq!(plan.order, vec!["cfgd-core", "cfgd"]);
+        assert_eq!(
+            plan.versions.get("cfgd-core").map(String::as_str),
+            Some("0.4.0")
+        );
+        // Distinct per-crate version proves the plan reads each manifest.
+        assert_eq!(plan.versions.get("cfgd").map(String::as_str), Some("0.4.1"));
+        // Both eligible crates have a (default) cargo cfg recorded.
+        assert!(plan.cfgs.contains_key("cfgd-core"));
+        assert!(plan.cfgs.contains_key("cfgd"));
+    }
+
+    /// Workspace per-crate mode: members live under `workspaces:` and the
+    /// plan overlays them into `all_crates`, orders a cross-member dep
+    /// first, and records each member's cfg/version from disk.
+    #[test]
+    fn cargo_publish_plan_per_crate_workspace_overlays_members() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let core = disk_crate(
+            tmp.path(),
+            "cfgd-core",
+            "0.3.0",
+            &[],
+            CargoPublishConfig::default(),
+        );
+        let app = disk_crate(
+            tmp.path(),
+            "cfgd",
+            "2.0.0",
+            &["cfgd-core"],
+            CargoPublishConfig::default(),
+        );
+        let core_ws = WorkspaceConfig {
+            name: "core-ws".to_string(),
+            crates: vec![core],
+            ..Default::default()
+        };
+        let app_ws = WorkspaceConfig {
+            name: "app-ws".to_string(),
+            crates: vec![app],
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .tag("v2.0.0")
+            .workspaces(vec![core_ws, app_ws])
+            .selected_crates(vec!["cfgd".to_string()])
+            .build();
+        let plan = cargo_publish_plan(&mut ctx, &["cfgd".to_string()], &quiet_log())
+            .expect("plan resolves");
+
+        assert_eq!(plan.order, vec!["cfgd-core", "cfgd"]);
+        // `all_crates` is the overlay both members are drawn from.
+        let names: HashSet<&str> = plan.all_crates.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains("cfgd-core") && names.contains("cfgd"));
+        // Cross-member crates resolve their distinct on-disk versions.
+        assert_eq!(
+            plan.versions.get("cfgd-core").map(String::as_str),
+            Some("0.3.0")
+        );
+        assert_eq!(plan.versions.get("cfgd").map(String::as_str), Some("2.0.0"));
+    }
+
+    /// A `skip: true` crate is dropped from BOTH the cfg map and the order —
+    /// the plan is the single source of truth, so the skip must not leave a
+    /// dangling cfg entry that a later consumer could publish.
+    #[test]
+    fn cargo_publish_plan_skip_true_removes_from_cfgs_and_order() {
+        let skipped = cargo_crate_with_cfg(
+            "skipme",
+            &[],
+            CargoPublishConfig {
+                skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
+                ..Default::default()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![skipped, cargo_crate("keepme", &[])])
+            .selected_crates(vec!["skipme".to_string(), "keepme".to_string()])
+            .build();
+        let plan = cargo_publish_plan(
+            &mut ctx,
+            &["skipme".to_string(), "keepme".to_string()],
+            &quiet_log(),
+        )
+        .expect("plan resolves");
+
+        assert_eq!(plan.order, vec!["keepme"]);
+        assert!(
+            !plan.cfgs.contains_key("skipme"),
+            "skip=true must drop the cfg entry too: {:?}",
+            plan.cfgs.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// A falsy `if:` condition drops the crate from the plan; the surviving
+    /// crate keeps its cfg + order. Complements the skip test (separate gate).
+    #[test]
+    fn cargo_publish_plan_falsy_if_drops_crate() {
+        let gated = cargo_crate_with_cfg(
+            "gated",
+            &[],
+            CargoPublishConfig {
+                if_condition: Some("false".to_string()),
+                ..Default::default()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![gated, cargo_crate("open", &[])])
+            .selected_crates(vec!["gated".to_string(), "open".to_string()])
+            .build();
+        let plan = cargo_publish_plan(
+            &mut ctx,
+            &["gated".to_string(), "open".to_string()],
+            &quiet_log(),
+        )
+        .expect("plan resolves");
+        assert_eq!(plan.order, vec!["open"]);
+        assert!(!plan.cfgs.contains_key("gated"));
+    }
+
+    /// Empty selection (no `--crate`) means "all eligible crates": every
+    /// crate with a publish.cargo block lands in the plan, ordered topo.
+    #[test]
+    fn cargo_publish_plan_empty_selection_takes_all_eligible() {
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![cargo_crate("app", &["lib"]), cargo_crate("lib", &[])])
+            .build();
+        let plan = cargo_publish_plan(&mut ctx, &[], &quiet_log()).expect("plan resolves");
+        assert_eq!(plan.order, vec!["lib", "app"]);
+    }
+
+    /// A malformed `if:` template (unterminated Tera expression) propagates
+    /// the render error out of plan resolution rather than silently keeping
+    /// or dropping the crate.
+    #[test]
+    fn cargo_publish_plan_propagates_if_render_error() {
+        let bad = cargo_crate_with_cfg(
+            "bad",
+            &[],
+            CargoPublishConfig {
+                // Unbalanced delimiters — Tera render must error.
+                if_condition: Some("{{ unterminated".to_string()),
+                ..Default::default()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![bad])
+            .selected_crates(vec!["bad".to_string()])
+            .build();
+        // CargoPublishPlan is not Debug, so match rather than expect_err.
+        let chain = match cargo_publish_plan(&mut ctx, &["bad".to_string()], &quiet_log()) {
+            Ok(_) => panic!("malformed if template must surface as Err"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            chain.contains("if") || chain.contains("template") || chain.contains("render"),
+            "expected an if-template render error in the chain: {chain}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // publish_to_cargo — empty-plan early return + no-eligible publisher run.
+    // -----------------------------------------------------------------------
+
+    /// When the expanded selection matches no cargo-eligible crate, the plan
+    /// is empty and `publish_to_cargo` returns Ok without emitting any
+    /// per-crate start line (the empty-`sorted_names` early return).
+    #[test]
+    fn publish_to_cargo_empty_plan_is_clean_noop() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![cargo_crate("real", &[])])
+            // Select a name that doesn't exist → expanded selection is empty
+            // of any eligible crate → plan order is empty.
+            .selected_crates(vec!["ghost".to_string()])
+            .dry_run(true)
+            .build();
+        assert!(
+            dry_run_publish_order(&mut ctx).is_empty(),
+            "no eligible crate selected ⇒ no per-crate work"
+        );
+    }
+
+    /// `CargoPublisher::run` with zero cargo-configured crates emits the
+    /// canonical no-eligible warn and returns empty evidence (the
+    /// `eligible == 0` short-circuit), without delegating into the loop.
+    #[test]
+    fn cargo_publisher_run_warns_when_no_cargo_crate_configured() {
+        use anodizer_core::Publisher;
+        // A crate with NO publish.cargo block ⇒ count_cargo_configured == 0.
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![plain_crate("plain", &[])])
+            .selected_crates(vec!["plain".to_string()])
+            .dry_run(true)
+            .build();
+        let ev = CargoPublisher::new().run(&mut ctx).expect("run ok");
+        assert_eq!(ev.publisher, "cargo");
+        // No crate published ⇒ no recorded yank targets, no primary ref.
+        assert!(decode_cargo_yank_targets(&ev.extra).is_empty());
+        assert!(ev.primary_ref.is_none());
+    }
+
+    /// `skips_on_nightly` is true for the cargo publisher — nightly/snapshot
+    /// builds carry a non-publishable version and must not hit crates.io.
+    #[test]
+    fn cargo_publisher_skips_on_nightly() {
+        use anodizer_core::Publisher;
+        assert!(CargoPublisher::new().skips_on_nightly());
+    }
+
+    /// `decode_cargo_yank_targets` returns an empty vec for any non-Cargo
+    /// evidence variant, so rollback treats a foreign-evidence run as
+    /// "nothing published" and no-ops instead of panicking.
+    #[test]
+    fn decode_cargo_yank_targets_empty_for_non_cargo_variant() {
+        // `PublishEvidenceExtra::None` is the default/empty variant — any
+        // non-Cargo variant must decode to an empty target list.
+        let extra = anodizer_core::PublishEvidenceExtra::default();
+        assert!(decode_cargo_yank_targets(&extra).is_empty());
+    }
+
+    /// `programmatic_rollback_on_failure` is gated on a non-empty recorded
+    /// target set: a run that published nothing stays inert (no rollback),
+    /// while a run that recorded a yank target opts into rollback.
+    #[test]
+    fn programmatic_rollback_gated_on_recorded_targets() {
+        use anodizer_core::Publisher;
+        let p = CargoPublisher::new();
+
+        let mut empty = anodizer_core::PublishEvidence::new("cargo");
+        empty.extra = encode_cargo_yank_targets(&[]);
+        assert!(
+            !p.programmatic_rollback_on_failure(&empty),
+            "empty record ⇒ no rollback"
+        );
+
+        let mut nonempty = anodizer_core::PublishEvidence::new("cargo");
+        nonempty.extra = encode_cargo_yank_targets(&[CargoYankTarget {
+            name: "x".into(),
+            version: "1.0.0".into(),
+            registry: None,
+            index: None,
+        }]);
+        assert!(
+            p.programmatic_rollback_on_failure(&nonempty),
+            "recorded target ⇒ rollback"
+        );
+    }
+
+    /// Dry-run rollback takes the `is_dry_run` branch: it returns Ok WITHOUT
+    /// spawning `cargo`. "No spawn" is proven by pointing PATH at an empty
+    /// dir, so any reached `cargo yank` would fail with not-found at
+    /// `Command::output()?`; the Ok result therefore witnesses the dry-run
+    /// short-circuit firing before the loop. Gated unix: mutates PATH and
+    /// uses unix paths.
+    #[cfg(unix)]
+    #[test]
+    fn rollback_dry_run_returns_ok_without_spawning_cargo() {
+        use anodizer_core::Publisher;
+        let empty = tempfile::tempdir().expect("tempdir");
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .dry_run(true)
+            .build();
+        // Two recorded targets so the loop WOULD spawn twice if reached.
+        let targets = vec![
+            CargoYankTarget {
+                name: "a".into(),
+                version: "1.0.0".into(),
+                registry: None,
+                index: None,
+            },
+            CargoYankTarget {
+                name: "b".into(),
+                version: "2.0.0".into(),
+                registry: None,
+                index: None,
+            },
+        ];
+        let mut evidence = anodizer_core::PublishEvidence::new("cargo");
+        evidence.extra = encode_cargo_yank_targets(&targets);
+
+        let _g = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("PATH").ok();
+        // SAFETY: serialised by env_mutex; paired with the restore below.
+        unsafe { std::env::set_var("PATH", empty.path()) };
+        let rb = CargoPublisher::new().rollback(&mut ctx, &evidence);
+        // SAFETY: restore PATH (paired with the set above).
+        unsafe {
+            match prev {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        rb.expect("dry-run rollback must short-circuit to Ok before spawning");
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_version_pin — the three TOML dep shapes + the None branches.
+    //
+    // workspace_deps_for_crate tests above exercise the happy paths end to
+    // end; these pin the helper directly so each early-return branch (bare
+    // string, inline-table workspace-inherit, inline-table version, standard
+    // table workspace-inherit, standard table version, no-version) is
+    // observable in isolation.
+    // -----------------------------------------------------------------------
+
+    fn dep_item(toml_body: &str, key: &str) -> toml_edit::Item {
+        let doc = toml_body.parse::<toml_edit::DocumentMut>().expect("parse");
+        doc["dependencies"][key].clone()
+    }
+
+    #[test]
+    fn extract_version_pin_bare_string() {
+        let item = dep_item("[dependencies]\nfoo = \"1.2.3\"\n", "foo");
+        assert_eq!(extract_version_pin(&item), Some("1.2.3".to_string()));
+    }
+
+    #[test]
+    fn extract_version_pin_inline_table_version() {
+        let item = dep_item(
+            "[dependencies]\nfoo = { path = \"../foo\", version = \"4.5.6\" }\n",
+            "foo",
+        );
+        assert_eq!(extract_version_pin(&item), Some("4.5.6".to_string()));
+    }
+
+    #[test]
+    fn extract_version_pin_inline_table_workspace_inherit_is_none() {
+        let item = dep_item("[dependencies]\nfoo = { workspace = true }\n", "foo");
+        assert_eq!(extract_version_pin(&item), None);
+    }
+
+    #[test]
+    fn extract_version_pin_inline_table_no_version_is_none() {
+        // path-only inline table — nothing to poll for.
+        let item = dep_item("[dependencies]\nfoo = { path = \"../foo\" }\n", "foo");
+        assert_eq!(extract_version_pin(&item), None);
+    }
+
+    #[test]
+    fn extract_version_pin_standard_table_version() {
+        let item = dep_item(
+            "[dependencies.foo]\npath = \"../foo\"\nversion = \"7.8.9\"\n",
+            "foo",
+        );
+        assert_eq!(extract_version_pin(&item), Some("7.8.9".to_string()));
+    }
+
+    #[test]
+    fn extract_version_pin_standard_table_workspace_inherit_is_none() {
+        let item = dep_item("[dependencies.foo]\nworkspace = true\n", "foo");
+        assert_eq!(extract_version_pin(&item), None);
+    }
+
+    #[test]
+    fn extract_version_pin_standard_table_no_version_is_none() {
+        let item = dep_item("[dependencies.foo]\npath = \"../foo\"\n", "foo");
+        assert_eq!(extract_version_pin(&item), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // workspace_deps_for_crate — degraded-input branches (unreadable /
+    // unparseable manifest) must return an empty vec so the gate no-ops
+    // rather than erroring out an otherwise-valid publish.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn workspace_deps_for_crate_missing_manifest_returns_empty() {
+        let ws: HashSet<&str> = ["a"].iter().copied().collect();
+        let nonexistent = std::path::Path::new("/nonexistent/dir/does/not/exist/Cargo.toml");
+        assert!(workspace_deps_for_crate(nonexistent, &ws).is_empty());
+    }
+
+    #[test]
+    fn workspace_deps_for_crate_unparseable_manifest_returns_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manifest = write_manifest(tmp.path(), "this is = = not valid toml [[[");
+        let ws: HashSet<&str> = ["a"].iter().copied().collect();
+        assert!(workspace_deps_for_crate(&manifest, &ws).is_empty());
+    }
+
+    /// A `[target.<cfg>]` whose value is not a dependency table (e.g. a
+    /// stray scalar) is skipped without panicking — the recursion guards
+    /// against malformed target sections.
+    #[test]
+    fn workspace_deps_for_crate_skips_non_table_target_value() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manifest = write_manifest(
+            tmp.path(),
+            r#"
+[package]
+name = "leaf"
+version = "1.0.0"
+
+[target]
+"cfg(unix)" = "not-a-table"
+
+[dependencies]
+real = { path = "../real", version = "1.0.0" }
+"#,
+        );
+        let ws: HashSet<&str> = ["real", "leaf"].iter().copied().collect();
+        // The malformed target scalar is skipped; the normal dep is still found.
+        assert_eq!(
+            workspace_deps_for_crate(&manifest, &ws),
+            vec![("real".to_string(), "1.0.0".to_string())]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // scan_section_version — workspace-inherit branches inside the scan that
+    // the read_cargo_toml_version tests reach only indirectly.
+    // -----------------------------------------------------------------------
+
+    /// `version.workspace = true` immediately followed by another value on
+    /// the same logical line is classified Workspace (the dot-form branch).
+    #[test]
+    fn scan_section_version_dot_workspace_true() {
+        let body = "[package]\nname = \"x\"\nversion.workspace = true\n";
+        assert_eq!(
+            scan_section_version(body, "[package]"),
+            CargoVersionRef::Workspace
+        );
+    }
+
+    /// A workspace-inherit manifest whose workspace root has NO
+    /// `[workspace.package].version` resolves to None (the `_ => None` arm
+    /// in read_cargo_toml_version) — the publish path then falls back to the
+    /// release version.
+    #[test]
+    fn read_cargo_toml_version_workspace_root_without_version_is_none() {
+        let ws_root = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            ws_root.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"leaf\"]\n[workspace.package]\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let leaf = ws_root.path().join("leaf");
+        std::fs::create_dir_all(&leaf).unwrap();
+        std::fs::write(
+            leaf.join("Cargo.toml"),
+            "[package]\nname = \"leaf\"\nversion.workspace = true\n",
+        )
+        .unwrap();
+        // [workspace.package] exists but carries no `version` ⇒ None.
+        assert_eq!(read_cargo_toml_version(leaf.to_str().unwrap()), None);
+    }
+
+    // -----------------------------------------------------------------------
     // run_cargo_publish_with_retry — exhaustion path (all retries fail).
     //
     // The recovery + fast-fail paths are covered above; this pins the third
@@ -3686,5 +4244,411 @@ mod partial_rollback_tests {
             read_argv_log(&argv_log).is_empty(),
             "no-op rollback must not spawn cargo"
         );
+    }
+
+    /// Install a `cargo` stub that records argv and exits non-zero for
+    /// `cargo yank` (every other call exits 0). Drives the rollback
+    /// yank-failure branch so the `failed` counter + warn path are exercised.
+    fn install_yank_failing_stub(dir: &Path, argv_log: &Path) -> String {
+        let stub = dir.join("cargo");
+        let script = format!(
+            "#!/bin/sh\n\
+             printf '%s\\n' \"$*\" >> '{log}'\n\
+             if [ \"$1\" = yank ]; then\n\
+             echo 'error: api errored: 403 forbidden' >&2\n\
+             exit 1\n\
+             fi\n\
+             exit 0\n",
+            log = argv_log.display(),
+        );
+        std::fs::write(&stub, script).expect("write cargo stub");
+        let mut perms = std::fs::metadata(&stub).expect("stat stub").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&stub, perms).expect("chmod stub");
+        let prev = std::env::var("PATH").unwrap_or_default();
+        format!("{}:{}", dir.display(), prev)
+    }
+
+    /// Run `f` with `PATH` prepended to `new_path` under the serial guard,
+    /// restoring the previous value afterward. Keeps the set/restore pairing
+    /// out of each test body.
+    fn with_path<R>(new_path: &str, f: impl FnOnce() -> R) -> R {
+        let prev = std::env::var("PATH").ok();
+        // SAFETY: callers hold the `#[serial(cargo_stub_path)]` guard, so the
+        // process-global PATH is mutated single-threaded; paired restore below.
+        unsafe { std::env::set_var("PATH", new_path) };
+        let out = f();
+        // SAFETY: restore the prior PATH (paired with the set above).
+        unsafe {
+            match prev {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        out
+    }
+
+    /// Rollback whose `cargo yank` fails: the publisher must NOT propagate
+    /// the error (rollback is best-effort), still record the failure, and
+    /// emit the per-target warn. We assert the yank was attempted with the
+    /// recorded version and that rollback returns Ok despite the non-zero
+    /// exit.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn rollback_continues_and_warns_when_yank_fails() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let argv_log = tmp.path().join("argv.log");
+
+        let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+        let mut evidence = anodizer_core::PublishEvidence::new("cargo");
+        evidence.extra = encode_cargo_yank_targets(&[CargoYankTarget {
+            name: "crate-x".into(),
+            version: "1.4.2".into(),
+            registry: None,
+            index: None,
+        }]);
+
+        let new_path = install_yank_failing_stub(tmp.path(), &argv_log);
+        let publisher = CargoPublisher::new();
+        let rb = with_path(&new_path, || publisher.rollback(&mut ctx, &evidence));
+        // Best-effort: a failed yank must NOT turn rollback into an Err.
+        rb.expect("rollback tolerates a failed yank");
+
+        let yanks: Vec<String> = read_argv_log(&argv_log)
+            .into_iter()
+            .filter(|l| l.starts_with("yank"))
+            .collect();
+        assert_eq!(
+            yanks.len(),
+            1,
+            "the single target is yanked once: {yanks:?}"
+        );
+        assert!(
+            yanks[0].contains("--version 1.4.2") && yanks[0].contains("crate-x"),
+            "yank carries the recorded version + name: {}",
+            yanks[0]
+        );
+    }
+
+    /// A recorded target with an `index` (not a `registry`) threads
+    /// `--index <url>` into the yank argv. Pins the index-arg branch of the
+    /// rollback yank command builder.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn rollback_yank_threads_index_arg() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let argv_log = tmp.path().join("argv.log");
+
+        let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+        let mut evidence = anodizer_core::PublishEvidence::new("cargo");
+        evidence.extra = encode_cargo_yank_targets(&[CargoYankTarget {
+            name: "crate-idx".into(),
+            version: "0.2.0".into(),
+            registry: None,
+            index: Some("sparse+https://example.test/index/".into()),
+        }]);
+
+        // `none` never matches a publish arg, so this stub exits 0 for yank.
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "none");
+        let publisher = CargoPublisher::new();
+        with_path(&new_path, || publisher.rollback(&mut ctx, &evidence)).expect("rollback ok");
+
+        let yank = read_argv_log(&argv_log)
+            .into_iter()
+            .find(|l| l.starts_with("yank"))
+            .expect("a yank was issued");
+        assert!(
+            yank.contains("--index sparse+https://example.test/index/"),
+            "index target must thread --index: {yank}"
+        );
+        assert!(
+            !yank.contains("--registry"),
+            "index-only target must NOT carry --registry: {yank}"
+        );
+    }
+
+    /// A crate whose resolved version is empty (no `[package].version` on
+    /// disk AND a blank release version) is published but CANNOT be recorded
+    /// for auto-yank: the loop emits the "CANNOT be auto-yanked" warn and the
+    /// success record stays empty, so a later failure leaves nothing to yank.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn empty_version_publish_is_not_recorded_for_yank() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Manifest with NO version field ⇒ read_cargo_toml_version → None.
+        let dir = tmp.path().join("noversion");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"noversion\"\n")
+            .expect("write manifest");
+        let argv_log = tmp.path().join("argv.log");
+
+        let crate_nv = cargo_crate(
+            "noversion",
+            &dir.display().to_string(),
+            &[],
+            CargoPublishConfig::default(),
+        );
+        // Suppress git-var population so the release-version fallback is also
+        // empty — without this the builder's default semver (1.2.3) fills in.
+        let mut ctx = TestContextBuilder::new()
+            .populate_git_vars(false)
+            .crates(vec![crate_nv])
+            .selected_crates(vec!["noversion".to_string()])
+            .build();
+
+        let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+        // never_published would early-skip on a non-empty version, but the
+        // empty-version branch bypasses the index check entirely and goes
+        // straight to publish — so the stub's `cargo publish` runs.
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail-crate");
+        let result = with_path(&new_path, || {
+            publish_to_cargo_with(
+                &mut ctx,
+                &["noversion".to_string()],
+                &log,
+                &mut record,
+                never_published,
+            )
+        });
+        result.expect("publish of a version-less crate still succeeds");
+
+        // The publish ran...
+        assert!(
+            read_argv_log(&argv_log)
+                .iter()
+                .any(|l| l.contains("publish") && l.contains("noversion")),
+            "version-less crate is still published"
+        );
+        // ...but NOTHING is recorded, because an empty version can't be yanked.
+        assert!(
+            record.is_empty(),
+            "empty-version publish must NOT be recorded for auto-yank: {record:?}"
+        );
+    }
+
+    /// Already-published idempotency: when the injected index check reports
+    /// the version is live (`Ok(Some(_))`), the publish loop SKIPS that crate
+    /// — `cargo publish` is never spawned and nothing is recorded.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn already_published_crate_is_skipped_not_republished() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_crate_dir(tmp.path(), "live-crate", "9.9.9");
+        let argv_log = tmp.path().join("argv.log");
+
+        let crate_cfg = cargo_crate("live-crate", &path, &[], CargoPublishConfig::default());
+        let mut ctx = TestContextBuilder::new()
+            .tag("v9.9.9")
+            .crates(vec![crate_cfg])
+            .selected_crates(vec!["live-crate".to_string()])
+            .build();
+
+        // Inject "already on crates.io with this cksum" for every query.
+        let always_published =
+            |_n: &str,
+             _v: &str,
+             _p: &anodizer_core::retry::RetryPolicy|
+             -> Result<Option<String>> { Ok(Some("deadbeef".to_string())) };
+
+        let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "never");
+        let result = with_path(&new_path, || {
+            publish_to_cargo_with(
+                &mut ctx,
+                &["live-crate".to_string()],
+                &log,
+                &mut record,
+                always_published,
+            )
+        });
+        result.expect("already-published path returns Ok");
+
+        assert!(
+            read_argv_log(&argv_log).is_empty(),
+            "already-published crate must NOT spawn cargo publish"
+        );
+        assert!(
+            record.is_empty(),
+            "a skipped (already-published) crate is not recorded for yank"
+        );
+    }
+
+    /// Index-check error (`Err`) is non-fatal: the loop logs a warn and
+    /// falls through to publish anyway, letting cargo's server-side guard
+    /// arbitrate. The crate publishes and is recorded.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn index_check_error_falls_through_to_publish() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_crate_dir(tmp.path(), "flaky", "1.0.0");
+        let argv_log = tmp.path().join("argv.log");
+
+        let crate_cfg = cargo_crate("flaky", &path, &[], CargoPublishConfig::default());
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![crate_cfg])
+            .selected_crates(vec!["flaky".to_string()])
+            .build();
+
+        let index_errors = |_n: &str,
+                            _v: &str,
+                            _p: &anodizer_core::retry::RetryPolicy|
+         -> Result<Option<String>> {
+            Err(anyhow::anyhow!("index transport blew up"))
+        };
+
+        let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "never");
+        let result = with_path(&new_path, || {
+            publish_to_cargo_with(
+                &mut ctx,
+                &["flaky".to_string()],
+                &log,
+                &mut record,
+                index_errors,
+            )
+        });
+        result.expect("index error is non-fatal; publish proceeds");
+
+        assert!(
+            read_argv_log(&argv_log)
+                .iter()
+                .any(|l| l.contains("publish") && l.contains("flaky")),
+            "index-check error must fall through to publish"
+        );
+        assert_eq!(record.len(), 1, "the published crate is recorded");
+        assert_eq!(record[0].version, "1.0.0");
+    }
+
+    /// `wait_for_workspace_deps` integration: when enabled and the crate has
+    /// a literal-pinned workspace dep, the loop polls crates.io for that dep.
+    /// We point the dep's expected version at one already on a local index
+    /// responder so the gate clears in one probe — proving the gate is wired
+    /// into the publish loop (not just unit-tested in isolation). The dep
+    /// pin uses a crate name whose sparse-index URL we can serve locally is
+    /// impossible (the gate computes the real index URL), so instead we set
+    /// a tiny max_wait and assert the gate's TIMEOUT error surfaces through
+    /// the publish loop's context — proving the wiring fires.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn wait_for_workspace_deps_gate_is_wired_into_publish_loop() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Leaf with a literal-pinned workspace-internal dep that will never
+        // appear (bogus version on the real index) → the gate times out.
+        let dir = tmp.path().join("leaf");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"leaf\"\nversion = \"1.0.0\"\n\n\
+             [dependencies]\ndep-crate = { path = \"../dep\", version = \"0.0.0-never-exists\" }\n",
+        )
+        .expect("write manifest");
+        let argv_log = tmp.path().join("argv.log");
+
+        use anodizer_core::config::HumanDuration;
+        use std::time::Duration;
+        let wait_cfg = WaitForWorkspaceDepsConfig {
+            enabled: Some(true),
+            // Sub-millisecond budget so the timeout fires fast.
+            max_wait: Some(HumanDuration(Duration::from_millis(1))),
+            poll_interval: Some(HumanDuration(Duration::from_millis(1))),
+        };
+        let leaf = cargo_crate(
+            "leaf",
+            &dir.display().to_string(),
+            &["dep-crate"],
+            CargoPublishConfig {
+                wait_for_workspace_deps: Some(wait_cfg),
+                ..Default::default()
+            },
+        );
+        // `dep-crate` is in the config (so it counts as workspace-internal)
+        // but has no cargo block, so it isn't itself published.
+        let dep = CrateConfig {
+            name: "dep-crate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![leaf, dep])
+            .selected_crates(vec!["leaf".to_string()])
+            .build();
+
+        let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "never");
+        let result = with_path(&new_path, || {
+            publish_to_cargo_with(
+                &mut ctx,
+                &["leaf".to_string()],
+                &log,
+                &mut record,
+                never_published,
+            )
+        });
+        let err = result.expect_err("wait_for_workspace_deps timeout must surface");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("wait_for_workspace_deps"),
+            "the gate error must be threaded through the publish loop: {chain}"
+        );
+        // The gate fired BEFORE the publish spawn, so cargo was never run.
+        assert!(
+            read_argv_log(&argv_log).is_empty(),
+            "publish must not spawn while the dep gate is still blocking"
+        );
+    }
+
+    /// End-to-end through `CargoPublisher::run`: a multi-crate publish that
+    /// fails on the second crate stashes the partial evidence on the context
+    /// (the Err arm of `run`) so the dispatcher can recover it for rollback.
+    /// Asserts the stashed evidence records ONLY the first (succeeded) crate.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn run_failure_stashes_partial_evidence_on_context() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path_a = write_crate_dir(tmp.path(), "crate-a", "1.0.0");
+        let path_b = write_crate_dir(tmp.path(), "crate-b", "2.0.0");
+        let argv_log = tmp.path().join("argv.log");
+
+        let crate_a = cargo_crate(
+            "crate-a",
+            &path_a,
+            &[],
+            CargoPublishConfig {
+                index_timeout: Some(0),
+                ..Default::default()
+            },
+        );
+        let crate_b = cargo_crate(
+            "crate-b",
+            &path_b,
+            &["crate-a"],
+            CargoPublishConfig::default(),
+        );
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![crate_a, crate_b])
+            .selected_crates(vec!["crate-b".to_string()])
+            .build();
+
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "crate-b");
+        let publisher = CargoPublisher::new();
+        let run_result = with_path(&new_path, || publisher.run(&mut ctx));
+        assert!(run_result.is_err(), "crate-b failure surfaces from run");
+
+        // The Err arm recorded the partial evidence on the context.
+        let pending = ctx
+            .take_pending_evidence()
+            .expect("failed run must stash pending evidence for rollback");
+        let targets = decode_cargo_yank_targets(&pending.extra);
+        assert_eq!(targets.len(), 1, "only crate-a is recorded: {targets:?}");
+        assert_eq!(targets[0].name, "crate-a");
+        assert_eq!(targets[0].version, "1.0.0");
     }
 }

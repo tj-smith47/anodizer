@@ -287,8 +287,20 @@ fn get_profile_urn_legacy(
 
 #[cfg(test)]
 mod tests {
-    use super::{format_linkedin_http_error, validate_token_shape};
+    use super::{LinkedinFallback, format_linkedin_http_error, validate_token_shape};
     use serde_json::json;
+
+    /// The typed 403-fallback sentinel's `Display` names the endpoint and the
+    /// fall-back target so a surfaced error (when the downcast misses) is still
+    /// actionable. Pins the exact text the `LinkedinFallback` sentinel renders.
+    #[test]
+    fn fallback_sentinel_display_names_endpoints() {
+        let msg = LinkedinFallback.to_string();
+        assert_eq!(
+            msg,
+            "linkedin: /v2/userinfo returned 403, fall back to /v2/me"
+        );
+    }
 
     #[test]
     fn http_error_includes_endpoint_status_and_body() {
