@@ -33,6 +33,24 @@ pub fn find_config(config_override: Option<&Path>) -> Result<PathBuf> {
     find_config_with_logger(config_override, None)
 }
 
+/// Anchor an auto-detected (CWD-relative) config path to an absolute path.
+///
+/// Auto-detection found the file in the current directory, so recording the
+/// resolved location lets `resolve_project_root` derive the project root from
+/// the real parent dir. Returning the bare filename instead makes a routine
+/// `anodizer release` (and the determinism harness, which runs with no
+/// `--config`) trip the bare-filename fallback warning that is meant only for
+/// an explicit, genuinely-ambiguous `--config=foo.yaml`. An explicit override
+/// is deliberately NOT routed through here.
+fn anchor_to_cwd(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(&path))
+        .unwrap_or(path)
+}
+
 /// Variant of [`find_config`] that routes the Cargo.toml-fallback
 /// warning through the caller's `StageLogger` so the message appears
 /// with the same stage prefix as the rest of the command's output.
@@ -57,7 +75,7 @@ pub fn find_config_with_logger(
     for name in &candidates {
         let path = PathBuf::from(name);
         if path.exists() {
-            return Ok(path);
+            return Ok(anchor_to_cwd(path));
         }
     }
     // Fallback: if Cargo.toml exists, use a default config instead of erroring.
@@ -67,7 +85,7 @@ pub fn find_config_with_logger(
             Some(l) => l.warn(msg),
             None => tracing::warn!("{}", msg),
         }
-        return Ok(PathBuf::from("Cargo.toml"));
+        return Ok(anchor_to_cwd(PathBuf::from("Cargo.toml")));
     }
     bail!(
         "no anodizer config file found (tried: {}). Run `anodizer init` to generate one.",
