@@ -739,3 +739,670 @@ fn run_native_pkg(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(all(test, unix))]
+#[allow(clippy::field_reassign_with_default)]
+mod tests {
+    use std::collections::HashMap;
+    use std::os::unix::process::ExitStatusExt;
+    use std::path::PathBuf;
+    use std::process::Output;
+
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{
+        Config, MacOSNativeArtifactKind, MacOSNativeNotarizeConfig, MacOSNativeSignConfig,
+        MacOSNativeSignNotarizeConfig, MacOSNotarizeApiConfig, MacOSSignConfig,
+        MacOSSignNotarizeConfig, NotarizeConfig,
+    };
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::stage::Stage;
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+    use tempfile::TempDir;
+
+    use super::{check_notarize_output, run_with_retry};
+    use crate::NotarizeStage;
+
+    fn logger() -> StageLogger {
+        StageLogger::new("notarize", Verbosity::Quiet)
+    }
+
+    /// Fabricate an [`Output`] with a chosen exit code and combined output. A
+    /// raw status of `code << 8` is how the kernel encodes a normal exit, so
+    /// `ExitStatusExt::from_raw` yields a status whose `.code()` is `code`.
+    fn output_with(code: i32, stdout: &str, stderr: &str) -> Output {
+        Output {
+            status: ExitStatusExt::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    /// Drop a real file at `path` so the stage's stat-checks and in-place
+    /// rename/checksum-refresh operate on something concrete.
+    fn touch(dir: &TempDir, name: &str, contents: &str) -> PathBuf {
+        let p = dir.path().join(name);
+        std::fs::write(&p, contents).unwrap();
+        p
+    }
+
+    // -----------------------------------------------------------------------
+    // check_notarize_output: status classification branches
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn check_output_accepted_success_is_ok() {
+        let out = output_with(
+            0,
+            "{\"status\":\"Accepted\"}\nProcessing complete\n  status: Accepted\n",
+            "",
+        );
+        check_notarize_output(&out, "submit for app", &logger()).unwrap();
+    }
+
+    #[test]
+    fn check_output_success_with_timeout_warns_but_ok() {
+        // Zero exit but the body mentions a timeout: non-fatal, returns Ok.
+        let out = output_with(0, "submission still processing: timeout reached\n", "");
+        check_notarize_output(&out, "submit for app", &logger()).unwrap();
+    }
+
+    #[test]
+    fn check_output_invalid_status_bails() {
+        let out = output_with(1, "  status: Invalid\nThe binary is not signed\n", "");
+        let err = check_notarize_output(&out, "submit for app", &logger()).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid"),
+            "expected invalid classification, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_output_invalid_submission_phrase_bails() {
+        let out = output_with(1, "", "error: invalid submission rejected by checks\n");
+        let err = check_notarize_output(&out, "submit for app", &logger()).unwrap_err();
+        assert!(err.to_string().contains("invalid"));
+    }
+
+    #[test]
+    fn check_output_rejected_status_bails() {
+        let out = output_with(1, "  status: Rejected\n", "");
+        let err = check_notarize_output(&out, "submit for app", &logger()).unwrap_err();
+        assert!(
+            err.to_string().contains("rejected"),
+            "expected rejected classification, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_output_timeout_on_failure_is_nonfatal_ok() {
+        // Non-zero exit but the only signal is a timeout -> treated as Ok.
+        let out = output_with(1, "", "operation timed out waiting for Apple\n");
+        check_notarize_output(&out, "submit for app", &logger()).unwrap();
+    }
+
+    #[test]
+    fn check_output_generic_failure_bails_with_exit_code() {
+        let out = output_with(7, "", "xcrun: error: unrecognized flag --bogus\n");
+        let err = check_notarize_output(&out, "submit for app", &logger()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failed (exit code"), "got: {msg}");
+        assert!(
+            msg.contains("unrecognized flag"),
+            "should surface stderr: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // run_with_retry: transient failure then success drives >1 invocation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial]
+    fn retry_driver_reinvokes_after_transient_failure() {
+        let tools = FakeToolDir::new();
+        // First call: exit 1 with a retriable network marker. Second call:
+        // exit 0. The stub flips on a marker file it creates after attempt 1.
+        tools
+            .tool("rcodesign")
+            .script(
+                "if [ -f .attempted ]; then exit 0; fi\n\
+                 touch .attempted\n\
+                 echo 'error: connection reset by peer' 1>&2\n\
+                 exit 1",
+            )
+            .install();
+        let work = TempDir::new().unwrap();
+        let bin = tools.tool_path("rcodesign").to_string_lossy().to_string();
+        let args = vec![bin, "notary-submit".to_string()];
+        // No-op sleeper so the exponential backoff doesn't stall the suite.
+        let nap = |_: std::time::Duration| {};
+        // Run from `work` so the `.attempted` marker lands in a temp dir.
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(work.path()).unwrap();
+        let res = run_with_retry(&args, "rcodesign notary-submit", &logger(), &nap);
+        std::env::set_current_dir(prev).unwrap();
+
+        let out = res.unwrap();
+        assert!(out.status.success(), "second attempt should succeed");
+        assert!(
+            tools.call_count("rcodesign") >= 2,
+            "transient failure must trigger a re-invocation; got {} calls",
+            tools.call_count("rcodesign")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn retry_driver_does_not_retry_nonretriable_failure() {
+        let tools = FakeToolDir::new();
+        // status: Invalid is a hard Apple rejection — must NOT retry.
+        tools
+            .tool("rcodesign")
+            .stdout("  status: Invalid\n")
+            .exit(1)
+            .install();
+        let bin = tools.tool_path("rcodesign").to_string_lossy().to_string();
+        let args = vec![bin, "notary-submit".to_string()];
+        let nap = |_: std::time::Duration| {};
+        let out = run_with_retry(&args, "rcodesign notary-submit", &logger(), &nap).unwrap();
+        assert!(!out.status.success());
+        assert_eq!(
+            tools.call_count("rcodesign"),
+            1,
+            "non-retriable failure must run exactly once"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Native DMG end-to-end: codesign + xcrun notarytool + xcrun stapler
+    // -----------------------------------------------------------------------
+
+    fn native_dmg_config(wait: bool, opts: Option<Vec<String>>) -> Config {
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.notarize = Some(NotarizeConfig {
+            skip: None,
+            macos: None,
+            macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
+                skip: None,
+                use_: Some(MacOSNativeArtifactKind::Dmg),
+                sign: Some(MacOSNativeSignConfig {
+                    identity: Some("Developer ID Application: Test".to_string()),
+                    keychain: Some("/path/to/kc".to_string()),
+                    options: opts,
+                    entitlements: Some("ent.xml".to_string()),
+                }),
+                notarize: Some(MacOSNativeNotarizeConfig {
+                    profile_name: Some("my-profile".to_string()),
+                    wait: Some(wait),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+        });
+        config
+    }
+
+    fn dmg_ctx(config: Config, work: &TempDir) -> Context {
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        let bundle = touch(work, "MyApp.app", "bundle");
+        let dmg = touch(work, "MyApp.dmg", "diskimage-bytes");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Installer,
+            name: String::new(),
+            path: bundle,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([
+                ("format".to_string(), "appbundle".to_string()),
+                ("id".to_string(), "myapp".to_string()),
+            ]),
+            size: None,
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::DiskImage,
+            name: String::new(),
+            path: dmg,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([
+                ("format".to_string(), "dmg".to_string()),
+                ("id".to_string(), "myapp".to_string()),
+            ]),
+            size: None,
+        });
+        ctx
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn native_dmg_signs_notarizes_and_staples() {
+        let tools = FakeToolDir::new();
+        tools.tool("codesign").install();
+        tools.tool("xcrun").stdout("  status: Accepted\n").install();
+        let work = TempDir::new().unwrap();
+        let mut ctx = dmg_ctx(
+            native_dmg_config(true, Some(vec!["runtime".to_string()])),
+            &work,
+        );
+
+        let _g = tools.activate();
+        NotarizeStage.run(&mut ctx).unwrap();
+        drop(_g);
+
+        // codesign: --deep --force --sign <identity> ... --keychain ... --options runtime --entitlements ent.xml <bundle>
+        let cs = tools.calls("codesign");
+        assert_eq!(cs.len(), 1, "one app bundle signed");
+        let argv = &cs[0];
+        assert_eq!(argv[0], "--deep");
+        assert_eq!(argv[1], "--force");
+        assert_eq!(argv[2], "--sign");
+        assert_eq!(argv[3], "Developer ID Application: Test");
+        assert!(argv.iter().any(|a| a == "--keychain"));
+        let opt_idx = argv
+            .iter()
+            .position(|a| a == "--options")
+            .expect("--options present");
+        assert_eq!(argv[opt_idx + 1], "runtime");
+        let ent_idx = argv
+            .iter()
+            .position(|a| a == "--entitlements")
+            .expect("--entitlements present");
+        assert_eq!(argv[ent_idx + 1], "ent.xml");
+        assert!(argv.last().unwrap().ends_with("MyApp.app"));
+
+        // xcrun was invoked twice: notarytool submit, then stapler staple.
+        let xc = tools.calls("xcrun");
+        assert_eq!(xc.len(), 2, "submit + staple");
+        assert_eq!(xc[0][0], "notarytool");
+        assert_eq!(xc[0][1], "submit");
+        assert!(xc[0].iter().any(|a| a == "--keychain-profile"));
+        assert!(xc[0].iter().any(|a| a == "--wait"), "wait:true adds --wait");
+        assert_eq!(xc[1][0], "stapler");
+        assert_eq!(xc[1][1], "staple");
+        assert!(xc[1][2].ends_with("MyApp.dmg"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn native_dmg_wait_false_skips_stapling() {
+        let tools = FakeToolDir::new();
+        tools.tool("codesign").install();
+        tools.tool("xcrun").stdout("  status: Accepted\n").install();
+        let work = TempDir::new().unwrap();
+        let mut ctx = dmg_ctx(native_dmg_config(false, None), &work);
+
+        let _g = tools.activate();
+        NotarizeStage.run(&mut ctx).unwrap();
+        drop(_g);
+
+        let xc = tools.calls("xcrun");
+        assert_eq!(xc.len(), 1, "only submit, no staple when wait:false");
+        assert_eq!(xc[0][0], "notarytool");
+        assert!(
+            !xc[0].iter().any(|a| a == "--wait"),
+            "wait:false omits --wait"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn native_dmg_codesign_nonzero_exit_errors() {
+        let tools = FakeToolDir::new();
+        tools
+            .tool("codesign")
+            .stderr("codesign: errSecInternalComponent\n")
+            .exit(1)
+            .install();
+        tools.tool("xcrun").stdout("  status: Accepted\n").install();
+        let work = TempDir::new().unwrap();
+        let mut ctx = dmg_ctx(native_dmg_config(true, None), &work);
+
+        let _g = tools.activate();
+        let err = NotarizeStage.run(&mut ctx).unwrap_err();
+        drop(_g);
+
+        assert!(err.to_string().contains("codesign failed"), "got: {err}");
+        // notarytool must not run after a codesign failure.
+        assert!(
+            !tools.was_called("xcrun"),
+            "xcrun should not run after codesign fails"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn native_dmg_notarytool_invalid_errors_before_staple() {
+        let tools = FakeToolDir::new();
+        tools.tool("codesign").install();
+        tools
+            .tool("xcrun")
+            .stdout("  status: Invalid\nartifact failed Apple checks\n")
+            .exit(1)
+            .install();
+        let work = TempDir::new().unwrap();
+        let mut ctx = dmg_ctx(native_dmg_config(true, None), &work);
+
+        let _g = tools.activate();
+        let err = NotarizeStage.run(&mut ctx).unwrap_err();
+        drop(_g);
+
+        assert!(err.to_string().contains("invalid"), "got: {err}");
+        // Exactly one xcrun call (the submit); stapler is never reached.
+        let xc = tools.calls("xcrun");
+        assert_eq!(
+            xc.len(),
+            1,
+            "stapler must not run after an invalid notarization"
+        );
+        assert_eq!(xc[0][0], "notarytool");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn native_dmg_stapler_nonzero_exit_errors() {
+        let tools = FakeToolDir::new();
+        tools.tool("codesign").install();
+        // notarytool accepts, stapler fails.
+        tools
+            .tool("xcrun")
+            .script(
+                "case \"$1\" in\n\
+                 notarytool) printf '  status: Accepted\\n'; exit 0;;\n\
+                 stapler) printf 'CloudKit query failed\\n' 1>&2; exit 65;;\n\
+                 esac",
+            )
+            .install();
+        let work = TempDir::new().unwrap();
+        let mut ctx = dmg_ctx(native_dmg_config(true, None), &work);
+
+        let _g = tools.activate();
+        let err = NotarizeStage.run(&mut ctx).unwrap_err();
+        drop(_g);
+
+        assert!(
+            err.to_string().contains("stapler staple failed"),
+            "got: {err}"
+        );
+        assert_eq!(tools.call_count("xcrun"), 2, "submit then staple both ran");
+    }
+
+    // -----------------------------------------------------------------------
+    // Native PKG end-to-end: productsign + xcrun notarytool (+ rename)
+    // -----------------------------------------------------------------------
+
+    fn native_pkg_config(wait: bool) -> Config {
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.notarize = Some(NotarizeConfig {
+            skip: None,
+            macos: None,
+            macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
+                skip: None,
+                use_: Some(MacOSNativeArtifactKind::Pkg),
+                sign: Some(MacOSNativeSignConfig {
+                    identity: Some("Developer ID Installer: Test".to_string()),
+                    keychain: Some("/path/to/kc".to_string()),
+                    ..Default::default()
+                }),
+                notarize: Some(MacOSNativeNotarizeConfig {
+                    profile_name: Some("my-profile".to_string()),
+                    wait: Some(wait),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+        });
+        config
+    }
+
+    fn pkg_ctx(config: Config, work: &TempDir) -> Context {
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        let pkg = touch(work, "MyApp.pkg", "pkg-bytes");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::MacOsPackage,
+            name: String::new(),
+            path: pkg,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([
+                ("format".to_string(), "pkg".to_string()),
+                ("id".to_string(), "myapp".to_string()),
+            ]),
+            size: None,
+        });
+        ctx
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn native_pkg_productsigns_and_notarizes() {
+        let tools = FakeToolDir::new();
+        // productsign writes the `<pkg>.signed` output the stage renames over the original.
+        tools
+            .tool("productsign")
+            .script("for dest in \"$@\"; do :; done; printf 'signed-bytes' > \"$dest\"; exit 0")
+            .install();
+        tools.tool("xcrun").stdout("  status: Accepted\n").install();
+        let work = TempDir::new().unwrap();
+        let pkg_path = work.path().join("MyApp.pkg");
+        let mut ctx = pkg_ctx(native_pkg_config(true), &work);
+
+        let _g = tools.activate();
+        NotarizeStage.run(&mut ctx).unwrap();
+        drop(_g);
+
+        // productsign: --sign <identity> --keychain <kc> <pkg> <pkg>.signed
+        let ps = tools.calls("productsign");
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0][0], "--sign");
+        assert_eq!(ps[0][1], "Developer ID Installer: Test");
+        assert!(ps[0].iter().any(|a| a == "--keychain"));
+        assert!(ps[0][ps[0].len() - 1].ends_with("MyApp.pkg.signed"));
+        // The signed file was renamed over the original.
+        assert_eq!(std::fs::read_to_string(&pkg_path).unwrap(), "signed-bytes");
+        assert!(
+            !work.path().join("MyApp.pkg.signed").exists(),
+            "renamed away"
+        );
+
+        // notarytool submit + stapler staple (wait:true).
+        let xc = tools.calls("xcrun");
+        assert_eq!(xc.len(), 2);
+        assert_eq!(xc[0][0], "notarytool");
+        assert_eq!(xc[0][1], "submit");
+        assert_eq!(xc[1][0], "stapler");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn native_pkg_productsign_nonzero_exit_errors() {
+        let tools = FakeToolDir::new();
+        tools
+            .tool("productsign")
+            .stderr("productsign: no identity found\n")
+            .exit(1)
+            .install();
+        tools.tool("xcrun").stdout("  status: Accepted\n").install();
+        let work = TempDir::new().unwrap();
+        let mut ctx = pkg_ctx(native_pkg_config(true), &work);
+
+        let _g = tools.activate();
+        let err = NotarizeStage.run(&mut ctx).unwrap_err();
+        drop(_g);
+
+        assert!(err.to_string().contains("productsign failed"), "got: {err}");
+        assert!(
+            !tools.was_called("xcrun"),
+            "notarytool must not run after sign failure"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Cross-platform (rcodesign) end-to-end: sign + notary-submit
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial]
+    fn cross_platform_signs_and_submits_with_rcodesign() {
+        let tools = FakeToolDir::new();
+        // One rcodesign stub handles both `sign` and `notary-submit`; emit an
+        // Accepted line so check_notarize_output classifies the submit cleanly.
+        tools
+            .tool("rcodesign")
+            .stdout("notarization: Accepted\n")
+            .install();
+        let work = TempDir::new().unwrap();
+        let cert = touch(&work, "cert.p12", "p12-bytes");
+        let key = touch(&work, "key.p8", "p8-bytes");
+        let bin = touch(&work, "myapp", "mach-o");
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.notarize = Some(NotarizeConfig {
+            skip: None,
+            macos: Some(vec![MacOSSignNotarizeConfig {
+                skip: None,
+                sign: Some(MacOSSignConfig {
+                    certificate: Some(cert.to_string_lossy().to_string()),
+                    password: Some("s3cret".to_string()),
+                    ..Default::default()
+                }),
+                notarize: Some(MacOSNotarizeApiConfig {
+                    issuer_id: Some("issuer-123".to_string()),
+                    key: Some(key.to_string_lossy().to_string()),
+                    key_id: Some("KEY1".to_string()),
+                    wait: Some(true),
+                    timeout: Some(anodizer_core::config::HumanDuration(
+                        std::time::Duration::from_secs(15 * 60),
+                    )),
+                }),
+                ..Default::default()
+            }]),
+            macos_native: None,
+        });
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "myapp".to_string())]),
+            size: None,
+        });
+
+        let _g = tools.activate();
+        NotarizeStage.run(&mut ctx).unwrap();
+        drop(_g);
+
+        let calls = tools.calls("rcodesign");
+        assert_eq!(calls.len(), 2, "sign then notary-submit");
+        // First call: sign with --p12-file <cert> --p12-password <pw> --timestamp-url <url> <bin>
+        assert_eq!(calls[0][0], "sign");
+        let p12_idx = calls[0]
+            .iter()
+            .position(|a| a == "--p12-file")
+            .expect("--p12-file");
+        assert!(calls[0][p12_idx + 1].ends_with("cert.p12"));
+        assert!(calls[0].iter().any(|a| a == "--p12-password"));
+        assert!(calls[0].iter().any(|a| a == "--timestamp-url"));
+        assert!(calls[0].last().unwrap().ends_with("myapp"));
+        // Second call: notary-submit --api-issuer ... --api-key KEY1 --api-key-path <key> --wait --max-wait 15m <bin>
+        assert_eq!(calls[1][0], "notary-submit");
+        let iss_idx = calls[1]
+            .iter()
+            .position(|a| a == "--api-issuer")
+            .expect("--api-issuer");
+        assert_eq!(calls[1][iss_idx + 1], "issuer-123");
+        let key_idx = calls[1]
+            .iter()
+            .position(|a| a == "--api-key")
+            .expect("--api-key");
+        assert_eq!(calls[1][key_idx + 1], "KEY1");
+        assert!(calls[1].iter().any(|a| a == "--wait"));
+        let mw_idx = calls[1]
+            .iter()
+            .position(|a| a == "--max-wait")
+            .expect("--max-wait");
+        assert_eq!(calls[1][mw_idx + 1], "15m");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cross_platform_missing_certificate_path_errors() {
+        // Non-dry-run stat-check rejects a certificate path that does not exist
+        // before any rcodesign spawn.
+        let tools = FakeToolDir::new();
+        tools.tool("rcodesign").install();
+        let work = TempDir::new().unwrap();
+        let bin = touch(&work, "myapp", "mach-o");
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.notarize = Some(NotarizeConfig {
+            skip: None,
+            macos: Some(vec![MacOSSignNotarizeConfig {
+                skip: None,
+                sign: Some(MacOSSignConfig {
+                    certificate: Some("/no/such/cert.p12".to_string()),
+                    password: Some("pw".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            macos_native: None,
+        });
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "myapp".to_string())]),
+            size: None,
+        });
+
+        let _g = tools.activate();
+        let err = NotarizeStage.run(&mut ctx).unwrap_err();
+        drop(_g);
+
+        assert!(
+            err.to_string()
+                .contains("sign.certificate path does not exist"),
+            "got: {err}"
+        );
+        assert!(
+            !tools.was_called("rcodesign"),
+            "rcodesign must not spawn on a bad cert path"
+        );
+    }
+}

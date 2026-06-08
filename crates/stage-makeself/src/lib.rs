@@ -1293,4 +1293,635 @@ crates:
         assert!(date.contains("Jan"), "{date}");
         assert!(date.contains("UTC"), "{date}");
     }
+
+    // ---- live `makeself` subprocess run path (PATH-stub harness) ----
+    //
+    // makeself is hard-coded as `Command::new("makeself")` (no configurable
+    // `cmd:` field), so every test that drives the real run path prepends a
+    // stub dir to `PATH` via `FakeToolDir::activate` and is `#[serial]`.
+
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    /// A scratch project laid out for a live makeself run: a `dist` root, an
+    /// on-disk binary artifact, and an on-disk startup script. Returns the
+    /// pieces a test needs to build a `Context` and assert against `dist`.
+    struct MakeselfFixture {
+        _tmp: tempfile::TempDir,
+        dist: PathBuf,
+        binary_path: PathBuf,
+        script_path: PathBuf,
+    }
+
+    impl MakeselfFixture {
+        fn new() -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let dist = tmp.path().join("dist");
+            std::fs::create_dir_all(&dist).unwrap();
+            let binary_path = tmp.path().join("bin");
+            std::fs::write(&binary_path, b"\x7fELF-fake-binary").unwrap();
+            let script_path = tmp.path().join("install.sh");
+            std::fs::write(&script_path, b"#!/bin/sh\necho hi\n").unwrap();
+            Self {
+                _tmp: tmp,
+                dist,
+                binary_path,
+                script_path,
+            }
+        }
+
+        /// Build a Context whose `dist`, `project_name`, and template vars are
+        /// wired, plus one binary artifact per `(target, crate_name)` pair.
+        fn ctx(&self, binaries: &[(&str, &str)]) -> Context {
+            let mut ctx = Context::new(
+                anodizer_core::config::Config::default(),
+                anodizer_core::context::ContextOptions::default(),
+            );
+            ctx.config.project_name = "proj".to_string();
+            ctx.config.dist = self.dist.clone();
+            ctx.template_vars_mut().set("ProjectName", "proj");
+            ctx.template_vars_mut().set("Version", "1.0.0");
+            for (i, (target, crate_name)) in binaries.iter().enumerate() {
+                let p = if i == 0 {
+                    self.binary_path.clone()
+                } else {
+                    let extra = self._tmp.path().join(format!("bin{i}"));
+                    std::fs::write(&extra, b"\x7fELF-fake-binary").unwrap();
+                    extra
+                };
+                ctx.artifacts.add(Artifact {
+                    kind: ArtifactKind::Binary,
+                    name: "bin".into(),
+                    path: p,
+                    target: Some((*target).to_string()),
+                    crate_name: (*crate_name).to_string(),
+                    metadata: HashMap::new(),
+                    size: None,
+                });
+            }
+            ctx
+        }
+    }
+
+    /// Default-template output filename for the single-config linux_amd64 path:
+    /// `proj_1.0.0_linux_amd64.run`, plus its work-dir-relative .run name (the
+    /// stub `.creates()` writes the built archive into the job work dir, where
+    /// `execute_makeself_job` renames it out to `dist/<filename>`).
+    fn linux_amd64_run_name() -> String {
+        "proj_1.0.0_linux_amd64.run".to_string()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_makeself_live_run_invokes_makeself_and_records_artifact() {
+        let fx = MakeselfFixture::new();
+        let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("d".into()),
+            script: Some(fx.script_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        }];
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("makeself")
+            .creates(linux_amd64_run_name(), "#!installer")
+            .install();
+        let _g = tools.activate();
+
+        MakeselfStage
+            .run(&mut ctx)
+            .expect("live makeself run should succeed");
+
+        // The stage shelled out to `makeself` exactly once.
+        assert_eq!(tools.call_count("makeself"), 1);
+
+        // Output landed at dist/<filename> (renamed out of the work dir).
+        let out = fx.dist.join(linux_amd64_run_name());
+        assert!(
+            out.exists(),
+            "installer .run not produced at {}",
+            out.display()
+        );
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "#!installer");
+
+        // Exactly one Makeself artifact, format=makeself, path = the .run.
+        let made: Vec<&Artifact> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::Makeself)
+            .collect();
+        assert_eq!(made.len(), 1);
+        assert_eq!(made[0].name, linux_amd64_run_name());
+        assert_eq!(made[0].path, out);
+        assert_eq!(
+            made[0].metadata.get("format").map(String::as_str),
+            Some("makeself")
+        );
+        assert_eq!(made[0].metadata.get("id").map(String::as_str), Some("d"));
+        assert_eq!(made[0].target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_makeself_live_run_argv_shape() {
+        let fx = MakeselfFixture::new();
+        let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("d".into()),
+            script: Some(fx.script_path.to_string_lossy().into_owned()),
+            extra_args: Some(vec!["--noprogress".into()]),
+            ..Default::default()
+        }];
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("makeself")
+            .creates(linux_amd64_run_name(), "#!installer")
+            .install();
+        let _g = tools.activate();
+
+        MakeselfStage.run(&mut ctx).expect("run should succeed");
+
+        let argv = &tools.calls("makeself")[0];
+        // --quiet leads; --lsm package.lsm; --target <name-sans-.run>.
+        assert_eq!(argv[0], "--quiet");
+        let lsm = argv
+            .iter()
+            .position(|a| a == "--lsm")
+            .expect("--lsm present");
+        assert_eq!(argv[lsm + 1], "package.lsm");
+        let tgt = argv
+            .iter()
+            .position(|a| a == "--target")
+            .expect("--target present");
+        assert_eq!(argv[tgt + 1], "proj_1.0.0_linux_amd64");
+        // Default compression is --xz (not makeself's gzip default).
+        assert!(argv.iter().any(|a| a == "--xz"), "{argv:?}");
+        // Extra args carried through.
+        assert!(argv.iter().any(|a| a == "--noprogress"), "{argv:?}");
+        // Final four positionals: archive_dir output_file label startup_script.
+        assert_eq!(
+            &argv[argv.len() - 4..],
+            &[
+                ".".to_string(),
+                linux_amd64_run_name(),
+                "proj".to_string(),
+                "./install.sh".to_string(),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_makeself_live_run_stages_files_into_work_dir() {
+        // The work dir must contain the copied binary, the copied startup
+        // script, the LSM file, and (via `files:`) an extra file at its
+        // mapped destination — all staged before makeself is invoked.
+        let fx = MakeselfFixture::new();
+        let extra_src = fx._tmp.path().join("README.md");
+        std::fs::write(&extra_src, b"readme body").unwrap();
+
+        let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("d".into()),
+            script: Some(fx.script_path.to_string_lossy().into_owned()),
+            files: Some(vec![anodizer_core::config::MakeselfFile {
+                source: extra_src.to_string_lossy().into_owned(),
+                destination: Some("docs/README.md".into()),
+                strip_parent: None,
+            }]),
+            ..Default::default()
+        }];
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("makeself")
+            .creates(linux_amd64_run_name(), "#!installer")
+            .install();
+        let _g = tools.activate();
+
+        MakeselfStage.run(&mut ctx).expect("run should succeed");
+
+        let work = fx.dist.join("makeself").join("d").join("linux_amd64");
+        assert!(work.join("bin").exists(), "binary not staged");
+        assert!(work.join("install.sh").exists(), "script not staged");
+        let lsm = std::fs::read_to_string(work.join("package.lsm")).unwrap();
+        assert!(lsm.starts_with("Begin4\n") && lsm.contains("End"), "{lsm}");
+        assert_eq!(
+            std::fs::read_to_string(work.join("docs/README.md")).unwrap(),
+            "readme body",
+            "extra file not staged at its mapped destination"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_makeself_live_run_pins_workdir_mtimes_under_sde() {
+        // With SOURCE_DATE_EPOCH set, every staged file's mtime is pinned to
+        // that epoch before makeself runs, so tar embeds stable timestamps.
+        let fx = MakeselfFixture::new();
+        let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("d".into()),
+            script: Some(fx.script_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        }];
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("makeself")
+            .creates(linux_amd64_run_name(), "#!installer")
+            .install();
+        // activate() and the SDE var both mutate process env — hold the same
+        // serialised window; restore SDE on exit.
+        let _g = tools.activate();
+        let prior_sde = std::env::var_os("SOURCE_DATE_EPOCH");
+        // SAFETY: serialised by the env mutex held inside `_g` for this test.
+        unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1577836800") };
+
+        let run = MakeselfStage.run(&mut ctx);
+
+        // Restore SDE before asserting so a panic doesn't leak it.
+        // SAFETY: still inside the `_g` serialised window.
+        unsafe {
+            match prior_sde {
+                Some(v) => std::env::set_var("SOURCE_DATE_EPOCH", v),
+                None => std::env::remove_var("SOURCE_DATE_EPOCH"),
+            }
+        }
+        run.expect("run under SDE should succeed");
+
+        let work = fx.dist.join("makeself").join("d").join("linux_amd64");
+        let mtime = std::fs::metadata(work.join("bin"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        let secs = mtime
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // 1577836800 = 2020-01-01 00:00:00 UTC.
+        assert_eq!(secs, 1_577_836_800, "staged file mtime not pinned to SDE");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_makeself_live_run_tool_failure_surfaces_stderr() {
+        // Non-zero exit → the stage bails, naming the filename, id, and the
+        // tool's stderr/stdout in the error.
+        let fx = MakeselfFixture::new();
+        let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("boomcfg".into()),
+            script: Some(fx.script_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        }];
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("makeself")
+            .stdout("partial-progress\n")
+            .stderr("boom: archive failed\n")
+            .exit(1)
+            .install();
+        let _g = tools.activate();
+
+        let err = MakeselfStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("makeself command failed"), "{err}");
+        assert!(err.contains("boomcfg"), "error must name the id: {err}");
+        assert!(
+            err.contains("boom: archive failed"),
+            "error must carry stderr: {err}"
+        );
+        // No artifact registered on failure.
+        assert!(
+            ctx.artifacts
+                .all()
+                .iter()
+                .all(|a| a.kind != ArtifactKind::Makeself),
+            "failed run must not register a Makeself artifact"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_makeself_live_run_output_missing_after_success() {
+        // makeself exits 0 but produces no .run file in the work dir — the
+        // rename/copy of the built archive out to dist must fail.
+        let fx = MakeselfFixture::new();
+        let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("d".into()),
+            script: Some(fx.script_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        }];
+
+        let tools = FakeToolDir::new();
+        // exits 0 but does NOT `.creates()` the .run file.
+        tools.tool("makeself").install();
+        let _g = tools.activate();
+
+        let err = MakeselfStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(
+            err.contains("makeself: move"),
+            "missing output must fail at the move step: {err}"
+        );
+        assert!(
+            !fx.dist.join(linux_amd64_run_name()).exists(),
+            "no installer should exist when makeself emitted nothing"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_makeself_live_run_multi_platform_one_run_per_platform() {
+        // Two targets (linux amd64 + darwin arm64) → two makeself invocations,
+        // two .run files, two registered artifacts. Mirrors workspace builds
+        // that fan out per platform.
+        let fx = MakeselfFixture::new();
+        let mut ctx = fx.ctx(&[
+            ("x86_64-unknown-linux-gnu", "proj"),
+            ("aarch64-apple-darwin", "proj"),
+        ]);
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("d".into()),
+            script: Some(fx.script_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        }];
+
+        let darwin_run = "proj_1.0.0_darwin_arm64.run".to_string();
+        let tools = FakeToolDir::new();
+        tools
+            .tool("makeself")
+            .creates(linux_amd64_run_name(), "#!installer")
+            .creates(&darwin_run, "#!installer")
+            .install();
+        let _g = tools.activate();
+
+        MakeselfStage
+            .run(&mut ctx)
+            .expect("multi-platform run should succeed");
+
+        assert_eq!(tools.call_count("makeself"), 2);
+        let mut made: Vec<String> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::Makeself)
+            .map(|a| a.name.clone())
+            .collect();
+        made.sort();
+        assert_eq!(made, vec![darwin_run, linux_amd64_run_name()]);
+        assert!(fx.dist.join(linux_amd64_run_name()).exists());
+        assert!(fx.dist.join("proj_1.0.0_darwin_arm64.run").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_makeself_live_run_per_crate_binaries_share_one_platform_run() {
+        // Two binaries from different crates but the SAME platform group into a
+        // single .run (one makeself invocation), with both staged into the work
+        // dir. Covers the workspace per-crate mode where multiple crates emit
+        // linux/amd64 binaries.
+        let fx = MakeselfFixture::new();
+        let mut ctx = fx.ctx(&[
+            ("x86_64-unknown-linux-gnu", "crate-a"),
+            ("x86_64-unknown-linux-gnu", "crate-b"),
+        ]);
+        // Distinct names so both copy into the work dir without clobbering.
+        let all: Vec<Artifact> = ctx.artifacts.all().to_vec();
+        ctx.artifacts = anodizer_core::artifact::ArtifactRegistry::default();
+        for (i, mut a) in all.into_iter().enumerate() {
+            a.name = format!("bin-{i}");
+            ctx.artifacts.add(a);
+        }
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("d".into()),
+            script: Some(fx.script_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        }];
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("makeself")
+            .creates(linux_amd64_run_name(), "#!installer")
+            .install();
+        let _g = tools.activate();
+
+        MakeselfStage
+            .run(&mut ctx)
+            .expect("per-crate run should succeed");
+
+        // One platform → one invocation, one artifact.
+        assert_eq!(tools.call_count("makeself"), 1);
+        let work = fx.dist.join("makeself").join("d").join("linux_amd64");
+        assert!(work.join("bin-0").exists(), "crate-a binary not staged");
+        assert!(work.join("bin-1").exists(), "crate-b binary not staged");
+        assert_eq!(
+            ctx.artifacts
+                .all()
+                .iter()
+                .filter(|a| a.kind == ArtifactKind::Makeself)
+                .count(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_makeself_live_run_custom_filename_template_and_compression() {
+        // A templated `filename:` (without .run) gets `.run` appended; an
+        // explicit `compression: gzip` lands `--gzip` in argv; the output
+        // is written under the rendered name.
+        let fx = MakeselfFixture::new();
+        let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("d".into()),
+            script: Some(fx.script_path.to_string_lossy().into_owned()),
+            filename: Some("{{ ProjectName }}-installer-{{ Os }}".into()),
+            compression: Some("gzip".into()),
+            ..Default::default()
+        }];
+
+        let rendered = "proj-installer-linux.run".to_string();
+        let tools = FakeToolDir::new();
+        tools
+            .tool("makeself")
+            .creates(&rendered, "#!installer")
+            .install();
+        let _g = tools.activate();
+
+        MakeselfStage
+            .run(&mut ctx)
+            .expect("templated filename run should succeed");
+
+        let argv = &tools.calls("makeself")[0];
+        assert!(
+            argv.iter().any(|a| a == "--gzip"),
+            "explicit gzip honored: {argv:?}"
+        );
+        assert!(
+            argv.iter().any(|a| a == &rendered),
+            "rendered filename in argv: {argv:?}"
+        );
+        assert!(
+            fx.dist.join(&rendered).exists(),
+            "installer not written at rendered filename"
+        );
+        let made = ctx
+            .artifacts
+            .all()
+            .iter()
+            .find(|a| a.kind == ArtifactKind::Makeself)
+            .expect("makeself artifact");
+        assert_eq!(made.name, rendered);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_makeself_live_run_emits_replaces_metadata() {
+        // A binary carrying `replaces` metadata propagates it onto the
+        // resulting Makeself artifact.
+        let fx = MakeselfFixture::new();
+        let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
+        // Re-stamp the single artifact with a `replaces` metadata entry.
+        let mut a = ctx.artifacts.all()[0].clone();
+        a.metadata.insert("replaces".into(), "oldpkg".into());
+        ctx.artifacts = anodizer_core::artifact::ArtifactRegistry::default();
+        ctx.artifacts.add(a);
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("d".into()),
+            script: Some(fx.script_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        }];
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("makeself")
+            .creates(linux_amd64_run_name(), "#!installer")
+            .install();
+        let _g = tools.activate();
+
+        MakeselfStage.run(&mut ctx).expect("run should succeed");
+
+        let made = ctx
+            .artifacts
+            .all()
+            .iter()
+            .find(|a| a.kind == ArtifactKind::Makeself)
+            .expect("makeself artifact");
+        assert_eq!(
+            made.metadata.get("replaces").map(String::as_str),
+            Some("oldpkg")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_makeself_live_run_arch_filter_narrows_platforms() {
+        // `arch: [amd64]` drops the arm64 binary; only the amd64 .run is built.
+        let fx = MakeselfFixture::new();
+        let mut ctx = fx.ctx(&[
+            ("x86_64-unknown-linux-gnu", "proj"),
+            ("aarch64-unknown-linux-musl", "proj"),
+        ]);
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("d".into()),
+            script: Some(fx.script_path.to_string_lossy().into_owned()),
+            arch: Some(vec!["amd64".into()]),
+            ..Default::default()
+        }];
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("makeself")
+            .creates(linux_amd64_run_name(), "#!installer")
+            .install();
+        let _g = tools.activate();
+
+        MakeselfStage
+            .run(&mut ctx)
+            .expect("arch-filtered run should succeed");
+
+        assert_eq!(tools.call_count("makeself"), 1);
+        let made: Vec<String> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::Makeself)
+            .map(|a| a.name.clone())
+            .collect();
+        assert_eq!(made, vec![linux_amd64_run_name()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_makeself_live_run_two_configs_distinct_ids() {
+        // Two configs (distinct ids) each emit their own .run with the id in
+        // the work-dir path and the artifact metadata. Two invocations.
+        let fx = MakeselfFixture::new();
+        let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
+        ctx.config.makeselfs = vec![
+            MakeselfConfig {
+                id: Some("alpha".into()),
+                script: Some(fx.script_path.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            MakeselfConfig {
+                id: Some("beta".into()),
+                script: Some(fx.script_path.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        ];
+
+        let tools = FakeToolDir::new();
+        // Both configs render the same default filename (same project/version/
+        // platform) but run in id-scoped work dirs.
+        tools
+            .tool("makeself")
+            .creates(linux_amd64_run_name(), "#!installer")
+            .install();
+        let _g = tools.activate();
+
+        MakeselfStage
+            .run(&mut ctx)
+            .expect("two-config run should succeed");
+
+        assert_eq!(tools.call_count("makeself"), 2);
+        let ids: std::collections::HashSet<String> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::Makeself)
+            .filter_map(|a| a.metadata.get("id").cloned())
+            .collect();
+        assert!(ids.contains("alpha") && ids.contains("beta"), "{ids:?}");
+        assert!(
+            fx.dist
+                .join("makeself")
+                .join("alpha")
+                .join("linux_amd64")
+                .exists()
+        );
+        assert!(
+            fx.dist
+                .join("makeself")
+                .join("beta")
+                .join("linux_amd64")
+                .exists()
+        );
+    }
 }

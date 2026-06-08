@@ -15,4 +15,6 @@ sha2.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]
+anodizer-core = { workspace = true, features = ["test-helpers"] }
 serde_yaml_ng.workspace = true
+serial_test.workspace = true
