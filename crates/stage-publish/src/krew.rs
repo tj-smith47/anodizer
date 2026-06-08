@@ -1831,6 +1831,942 @@ mod tests {
              to Ok(()) before the repository-missing check (GR cba5b9f)",
         );
     }
+
+    // =====================================================================
+    // PUBLISH FLOW — render_krew_manifest_for_crate + publish_to_krew's
+    // PrDirect clone→write→commit→push→PR path and its error/classifier
+    // boundaries.
+    //
+    // The PrDirect end-to-end tests drive the live publish against a local
+    // bare git repo: `repository.git.url` points the clone at a `file`
+    // path (no network), and the PR-submission transport is forced onto an
+    // in-process scripted responder by installing a failing `gh` stub
+    // (so `gh_is_available()` is false) and pointing
+    // `ANODIZER_GITHUB_API_BASE` at the responder. These tests mutate PATH
+    // + process env, so each is `#[serial]`.
+    //
+    // The krew publish path threads PR submission through the *process*
+    // env (`util::maybe_submit_pr` / `submit_pr_via_gh_with_opts`, not the
+    // `_with_env` siblings), so the responder address + token are set in
+    // the process env under the env mutex the `gh`-absent `PathGuard`
+    // already holds.
+    // =====================================================================
+
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{
+        Config, CrateConfig, GitRepoConfig, KrewConfig, KrewMode, PublishConfig, PullRequestConfig,
+        ReleaseConfig, RepositoryConfig, ScmRepoConfig,
+    };
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+    use serial_test::serial;
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::process::Command;
+    use std::sync::OnceLock;
+
+    fn quiet() -> StageLogger {
+        StageLogger::new("publish", Verbosity::Quiet)
+    }
+
+    /// Give the test process a git identity + non-interactive credential
+    /// behaviour so the publish path's `git commit` / cross-repo
+    /// `git fetch` work on a bare CI runner. One-shot per process.
+    fn ensure_git_identity() {
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            // SAFETY: runs once per process under OnceLock; constants only.
+            unsafe {
+                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
+                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
+                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
+                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
+                std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+            }
+        });
+    }
+
+    fn git_ok(dir: &Path, args: &[&str]) {
+        let st = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+        assert!(st.success(), "git {args:?} failed");
+    }
+
+    fn git_stdout(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+        assert!(out.status.success(), "git {args:?} failed");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Build a bare "krew-index fork" repo with one commit on `main`, the
+    /// branch the publish path's clone (`--depth=1`) defaults to. Returns
+    /// `(bare_path_string, _bare_holder)`. The PrDirect publish clones
+    /// this, writes `plugins/<name>.yaml`, commits a versioned branch, and
+    /// pushes it back here.
+    fn init_bare_fork() -> (String, tempfile::TempDir) {
+        ensure_git_identity();
+        let bare = tempfile::tempdir().expect("bare tempdir");
+        let seed = tempfile::tempdir().expect("seed tempdir");
+        git_ok(bare.path(), &["init", "--bare", "-b", "main"]);
+        git_ok(seed.path(), &["init", "-b", "main"]);
+        git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
+        git_ok(seed.path(), &["config", "user.name", "Test"]);
+        git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
+        std::fs::write(seed.path().join("README"), "krew-index\n").unwrap();
+        git_ok(seed.path(), &["add", "README"]);
+        git_ok(seed.path(), &["commit", "-m", "seed"]);
+        assert!(
+            Command::new("git")
+                .args(["remote", "add", "origin"])
+                .arg(bare.path())
+                .current_dir(seed.path())
+                .status()
+                .expect("remote add")
+                .success()
+        );
+        git_ok(seed.path(), &["push", "-u", "origin", "main"]);
+        (bare.path().to_string_lossy().into_owned(), bare)
+    }
+
+    /// A `gh` stub that exits non-zero on `--version` so
+    /// `gh_is_available()` is false → the PR transport falls to the API
+    /// path. Returns the guard (restores PATH + holds the env mutex for
+    /// the test's lifetime) + the on-disk stub holder.
+    fn gh_absent() -> (
+        FakeToolDir,
+        anodizer_core::test_helpers::fake_tool::PathGuard,
+    ) {
+        let tools = FakeToolDir::new();
+        tools.tool("gh").exit(1).install();
+        let guard = tools.activate();
+        (tools, guard)
+    }
+
+    /// Set `ANODIZER_GITHUB_API_BASE` in the *process* env (the krew PR
+    /// path reads it via `ProcessEnvSource`). Safe to call without
+    /// re-locking the env mutex: the caller already holds it via the
+    /// `gh_absent()` `PathGuard` for the whole `#[serial]` test. Pair with
+    /// [`clear_api_base`].
+    fn set_api_base(addr: &std::net::SocketAddr) {
+        // SAFETY: env mutex is held by the live `PathGuard` from `gh_absent()`.
+        unsafe { std::env::set_var("ANODIZER_GITHUB_API_BASE", format!("http://{addr}")) };
+    }
+    fn clear_api_base() {
+        // SAFETY: same mutex still held by the `PathGuard`.
+        unsafe { std::env::remove_var("ANODIZER_GITHUB_API_BASE") };
+    }
+
+    /// Register one archive artifact carrying the `url` / `sha256` /
+    /// `extra_binaries` metadata the manifest's `platforms[]` block reads.
+    /// Mirrors the schema-validation test helper so the manifest the live
+    /// publish renders is the same byte-for-byte shape.
+    fn add_archive(
+        ctx: &mut Context,
+        crate_name: &str,
+        target: &str,
+        os: &str,
+        arch: &str,
+        binary: &str,
+        sha: &str,
+    ) {
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            format!("https://github.com/acme/widget/releases/download/v1.0.0/{binary}-{os}-{arch}.tar.gz"),
+        );
+        meta.insert("sha256".to_string(), sha.to_string());
+        meta.insert("format".to_string(), "tar.gz".to_string());
+        meta.insert("extra_binaries".to_string(), binary.to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/dist/{binary}-{os}-{arch}.tar.gz")),
+            name: format!("{binary}-{os}-{arch}.tar.gz"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: meta,
+            size: None,
+        });
+    }
+
+    /// A crate whose krew block clones from a local bare repo (`git.url`)
+    /// and PRs same-repo (so no cross-repo fork-sync), forcing the API
+    /// transport when `gh` is absent. `mode: pr-direct` skips the
+    /// network membership probe.
+    fn pr_direct_crate(crate_name: &str, plugin: &str, bare_url: &str) -> CrateConfig {
+        CrateConfig {
+            name: crate_name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            release: Some(ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: "acme".to_string(),
+                    name: "widget".to_string(),
+                }),
+                ..Default::default()
+            }),
+            publish: Some(PublishConfig {
+                krew: Some(KrewConfig {
+                    name: Some(plugin.to_string()),
+                    mode: Some(KrewMode::PrDirect),
+                    repository: Some(RepositoryConfig {
+                        owner: Some("fork-owner".to_string()),
+                        name: Some("krew-index".to_string()),
+                        token: Some("ghp_test".to_string()),
+                        git: Some(GitRepoConfig {
+                            url: Some(bare_url.to_string()),
+                            ssh_command: None,
+                            private_key: None,
+                        }),
+                        pull_request: Some(PullRequestConfig {
+                            enabled: Some(true),
+                            // No `base` => upstream == fork => same-repo,
+                            // no fork-sync side effect on the bare repo.
+                            base: None,
+                            draft: None,
+                            body: None,
+                        }),
+                        ..Default::default()
+                    }),
+                    description: Some("A widget management kubectl plugin.".to_string()),
+                    short_description: Some("Manage widgets from kubectl".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn build_ctx(crates: Vec<CrateConfig>, version: &str) -> Context {
+        let config = Config {
+            crates,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", version);
+        ctx.template_vars_mut().set("RawVersion", version);
+        ctx.template_vars_mut().set("Tag", &format!("v{version}"));
+        ctx
+    }
+
+    // -----------------------------------------------------------------
+    // render_krew_manifest_for_crate — skip / error boundaries that the
+    // publish path short-circuits on before any clone.
+    // -----------------------------------------------------------------
+
+    /// `skip: true` short-circuits the renderer to `None` (the publisher
+    /// renders nothing for this crate). Asserts the gate fires BEFORE the
+    /// required-artifact / repository checks — there are no artifacts here,
+    /// yet the call is `Ok(None)`, not an error.
+    #[test]
+    fn render_manifest_skip_true_returns_none() {
+        let mut c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+            k.skip = Some(anodizer_core::config::StringOrBool::Bool(true));
+        }
+        let ctx = build_ctx(vec![c], "1.0.0");
+        let out = render_krew_manifest_for_crate(&ctx, "widget", &quiet()).expect("render ok");
+        assert!(out.is_none(), "skip=true must render nothing, got {out:?}");
+    }
+
+    /// A falsy `if:` condition short-circuits the renderer to `None`,
+    /// same as `skip` — proving the `if` gate is evaluated and honored.
+    #[test]
+    fn render_manifest_falsy_if_returns_none() {
+        let mut c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+            k.if_condition = Some("false".to_string());
+        }
+        let ctx = build_ctx(vec![c], "1.0.0");
+        let out = render_krew_manifest_for_crate(&ctx, "widget", &quiet()).expect("render ok");
+        assert!(out.is_none(), "falsy `if` must render nothing, got {out:?}");
+    }
+
+    /// A crate with no description anywhere (no krew.description, no
+    /// Cargo.toml fallback) bails with the actionable "description is not
+    /// set" message — the manifest's required narrative field.
+    #[test]
+    fn render_manifest_missing_description_bails() {
+        let mut c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+            k.description = None;
+            k.short_description = None;
+        }
+        let ctx = build_ctx(vec![c], "1.0.0");
+        let err = render_krew_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect_err("missing description must bail");
+        assert!(
+            format!("{err:#}").contains("description is not set"),
+            "got: {err:#}"
+        );
+    }
+
+    /// No archive artifacts → hard error (a manifest with no real
+    /// platforms is unusable). The message must name the crate and point
+    /// at adding targets / removing the publisher.
+    #[test]
+    fn render_manifest_no_artifacts_bails() {
+        let c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        let ctx = build_ctx(vec![c], "1.0.0");
+        let err = render_krew_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect_err("no artifacts must bail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("no archive artifacts"), "got: {msg}");
+        assert!(msg.contains("widget"), "must name the crate: {msg}");
+    }
+
+    /// More than one binary in a single archive → bail (krew allows
+    /// exactly one binary per platform). `extra_binaries` is a
+    /// COMMA-separated list (`Artifact::extra_binaries` splits on `,`), so
+    /// two comma-joined names must trip the one-binary-per-archive guard
+    /// with the count in the message.
+    #[test]
+    fn render_manifest_multi_binary_archive_bails() {
+        let c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            "https://example.com/widget-linux-amd64.tar.gz".to_string(),
+        );
+        meta.insert("sha256".to_string(), "a".repeat(64));
+        meta.insert(
+            "extra_binaries".to_string(),
+            "kubectl-widget,kubectl-extra".to_string(),
+        );
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/dist/widget-linux-amd64.tar.gz"),
+            name: "widget-linux-amd64.tar.gz".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "widget".to_string(),
+            metadata: meta,
+            size: None,
+        });
+        let err = render_krew_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect_err("multi-binary archive must bail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("only one binary per archive"), "got: {msg}");
+        assert!(msg.contains("got 2"), "must report the count: {msg}");
+    }
+
+    /// The rendered manifest carries the crate's real sha256 + url from
+    /// the registered artifact (not a placeholder), with the resolved
+    /// plugin-name override in `metadata.name`. Pins the field plumbing
+    /// from artifact metadata → manifest YAML end-to-end.
+    #[test]
+    fn render_manifest_embeds_real_sha256_and_url() {
+        let c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        let sha = "b".repeat(64);
+        add_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &sha,
+        );
+        let manifest = render_krew_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        assert!(
+            manifest.contains(&format!("sha256: {sha}")),
+            "manifest must embed the artifact's real sha256; got:\n{manifest}"
+        );
+        assert!(
+            manifest.contains(
+                "uri: https://github.com/acme/widget/releases/download/v1.0.0/kubectl-widget-linux-amd64.tar.gz"
+            ),
+            "manifest must embed the artifact url; got:\n{manifest}"
+        );
+        assert!(
+            manifest.contains("\nmetadata:\n  name: kubectl-widget\n"),
+            "metadata.name carries the krew.name override; got:\n{manifest}"
+        );
+        assert!(manifest.contains("version: v1.0.0"), "got:\n{manifest}");
+    }
+
+    // -----------------------------------------------------------------
+    // crate_has_krew_artifacts — eligibility predicate.
+    // -----------------------------------------------------------------
+
+    /// `crate_has_krew_artifacts` is true once an eligible archive exists
+    /// and false on an empty artifact set — the live path errors and the
+    /// offline validator skips on the same `false` signal.
+    #[test]
+    fn crate_has_krew_artifacts_reflects_artifact_presence() {
+        let c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        let krew_cfg = c
+            .publish
+            .as_ref()
+            .and_then(|p| p.krew.clone())
+            .expect("krew cfg");
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        assert!(
+            !crate_has_krew_artifacts(&ctx, "widget", &krew_cfg).unwrap(),
+            "no archives => not eligible"
+        );
+        add_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &"a".repeat(64),
+        );
+        assert!(
+            crate_has_krew_artifacts(&ctx, "widget", &krew_cfg).unwrap(),
+            "one archive => eligible"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // publish_to_krew — PrDirect end-to-end against a local bare repo.
+    // -----------------------------------------------------------------
+
+    /// Full PrDirect single-crate publish: clone the (local) fork, write
+    /// `plugins/<plugin>.yaml`, commit a `<plugin>-v<version>` branch,
+    /// push it to the bare repo, then submit the PR via the API
+    /// transport. Asserts BOTH real side effects:
+    ///   (1) the bare repo gained the versioned branch carrying the
+    ///       manifest file with the crate's real sha256, and
+    ///   (2) the PR-create POST reached the responder at the same-repo
+    ///       `/repos/fork-owner/krew-index/pulls` with head = fork:branch.
+    #[test]
+    #[serial]
+    fn publish_to_krew_pr_direct_pushes_branch_and_opens_pr() {
+        let (_tools, _guard) = gh_absent();
+        let (bare_url, bare) = init_bare_fork();
+        let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/fork-owner/krew-index/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: Some(1),
+        }]);
+        set_api_base(&addr);
+
+        let c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        let sha = "c".repeat(64);
+        add_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &sha,
+        );
+
+        let outcome = publish_to_krew(&mut ctx, "widget", &quiet()).expect("publish ok");
+        assert!(
+            outcome.pushed,
+            "PrDirect publish must report a real push (drives any_pushed gate)"
+        );
+
+        // (1) The versioned branch landed in the bare repo, carrying the
+        //     manifest file with the real sha256.
+        let branches = git_stdout(bare.path(), &["branch", "--list"]);
+        assert!(
+            branches.contains("kubectl-widget-v1.0.0"),
+            "publish must push the versioned branch; bare branches:\n{branches}"
+        );
+        let manifest_in_repo = git_stdout(
+            bare.path(),
+            &["show", "kubectl-widget-v1.0.0:plugins/kubectl-widget.yaml"],
+        );
+        assert!(
+            manifest_in_repo.contains(&format!("sha256: {sha}")),
+            "pushed manifest must carry the real sha256; got:\n{manifest_in_repo}"
+        );
+        assert!(
+            manifest_in_repo.contains("name: kubectl-widget"),
+            "pushed manifest metadata.name; got:\n{manifest_in_repo}"
+        );
+
+        // (2) The PR-create POST hit the same-repo upstream slug.
+        let entries = req_log.lock().unwrap();
+        assert_eq!(entries.len(), 1, "exactly one PR-create POST expected");
+        assert_eq!(entries[0].path, "/repos/fork-owner/krew-index/pulls");
+        let payload: serde_json::Value = serde_json::from_str(&entries[0].body).expect("JSON body");
+        assert_eq!(
+            payload["head"], "fork-owner:kubectl-widget-v1.0.0",
+            "head must be fork-owner:<plugin>-v<version>"
+        );
+        drop(entries);
+        clear_api_base();
+        drop(bare);
+    }
+
+    /// PrDirect publish when the upstream PR already exists: the API
+    /// transport returns 422 "already exists" and the publisher records a
+    /// `PendingValidation` override (so the dispatch summary tells the
+    /// truth instead of reporting `succeeded`). The branch push still
+    /// happened, so `pushed` is true.
+    #[test]
+    #[serial]
+    fn publish_to_krew_pr_direct_already_exists_records_pending() {
+        let (_tools, _guard) = gh_absent();
+        let (bare_url, bare) = init_bare_fork();
+        let body = "{\"message\":\"Validation Failed\",\"errors\":[{\"message\":\"A pull request already exists for fork-owner:kubectl-widget-v1.0.0.\"}]}";
+        let (addr, _req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/fork-owner/krew-index/pulls",
+            response: Box::leak(
+                format!(
+                    "HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .into_boxed_str(),
+            ),
+            times: Some(1),
+        }]);
+        set_api_base(&addr);
+
+        let c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        add_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &"d".repeat(64),
+        );
+
+        let outcome = publish_to_krew(&mut ctx, "widget", &quiet()).expect("publish ok");
+        assert!(outcome.pushed, "branch push happened before the PR call");
+        let pending = ctx.take_pending_outcome();
+        assert!(
+            matches!(
+                pending,
+                Some(anodizer_core::PublisherOutcome::PendingValidation)
+            ),
+            "422 already-exists must record PendingValidation, got {pending:?}"
+        );
+        clear_api_base();
+        drop(bare);
+    }
+
+    /// Idempotent re-publish: when the bare fork already carries the exact
+    /// versioned branch + identical manifest, `commit_and_push_with_opts`
+    /// detects the unchanged tree and reports `NoChanges`, so the publish
+    /// outcome's `pushed` is false (nothing to roll back). The PR is not
+    /// re-submitted side-effect-wise; we assert the no-push outcome.
+    #[test]
+    #[serial]
+    fn publish_to_krew_pr_direct_idempotent_no_changes() {
+        let (_tools, _guard) = gh_absent();
+        let (bare_url, bare) = init_bare_fork();
+        // First publish pushes the branch.
+        let (addr, _l1) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/fork-owner/krew-index/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: None,
+        }]);
+        set_api_base(&addr);
+
+        let sha = "e".repeat(64);
+        let build = || {
+            let c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            add_archive(
+                &mut ctx,
+                "widget",
+                "x86_64-unknown-linux-gnu",
+                "linux",
+                "amd64",
+                "kubectl-widget",
+                &sha,
+            );
+            ctx
+        };
+
+        let mut ctx1 = build();
+        let first = publish_to_krew(&mut ctx1, "widget", &quiet()).expect("first publish");
+        assert!(first.pushed, "first publish must push the branch");
+
+        // Second publish renders the identical manifest onto the same
+        // branch — the remote tree already matches, so no push.
+        let mut ctx2 = build();
+        let second = publish_to_krew(&mut ctx2, "widget", &quiet()).expect("second publish");
+        assert!(
+            !second.pushed,
+            "re-publishing an identical manifest must report NoChanges (pushed=false)"
+        );
+        clear_api_base();
+        drop(bare);
+    }
+
+    /// Workspace per-crate mode: each crate renders + pushes its OWN
+    /// versioned branch under its OWN plugin name. Two krew crates sharing
+    /// one bare fork must each land a distinct `plugins/<plugin>.yaml` on a
+    /// distinct `<plugin>-v<version>` branch — proving the per-crate name +
+    /// branch resolution is not clobbered by a sibling.
+    #[test]
+    #[serial]
+    fn publish_to_krew_pr_direct_workspace_per_crate_distinct_branches() {
+        let (_tools, _guard) = gh_absent();
+        let (bare_url, bare) = init_bare_fork();
+        let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/fork-owner/krew-index/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: None,
+        }]);
+        set_api_base(&addr);
+
+        let alpha = pr_direct_crate("alpha", "kubectl-alpha", &bare_url);
+        let beta = pr_direct_crate("beta", "kubectl-beta", &bare_url);
+        let mut ctx = build_ctx(vec![alpha, beta], "2.3.4");
+        for (cn, bin) in [("alpha", "kubectl-alpha"), ("beta", "kubectl-beta")] {
+            add_archive(
+                &mut ctx,
+                cn,
+                "x86_64-unknown-linux-gnu",
+                "linux",
+                "amd64",
+                bin,
+                &"f".repeat(64),
+            );
+        }
+
+        publish_to_krew(&mut ctx, "alpha", &quiet()).expect("publish alpha");
+        publish_to_krew(&mut ctx, "beta", &quiet()).expect("publish beta");
+
+        let branches = git_stdout(bare.path(), &["branch", "--list"]);
+        assert!(
+            branches.contains("kubectl-alpha-v2.3.4"),
+            "alpha branch missing; got:\n{branches}"
+        );
+        assert!(
+            branches.contains("kubectl-beta-v2.3.4"),
+            "beta branch missing; got:\n{branches}"
+        );
+        // Each branch carries only its own plugin manifest file.
+        let alpha_file = git_stdout(
+            bare.path(),
+            &["show", "kubectl-alpha-v2.3.4:plugins/kubectl-alpha.yaml"],
+        );
+        assert!(alpha_file.contains("name: kubectl-alpha"), "{alpha_file}");
+        let beta_file = git_stdout(
+            bare.path(),
+            &["show", "kubectl-beta-v2.3.4:plugins/kubectl-beta.yaml"],
+        );
+        assert!(beta_file.contains("name: kubectl-beta"), "{beta_file}");
+        clear_api_base();
+        drop(bare);
+    }
+
+    /// `url_template` rewrites the pushed manifest's `platforms[].uri`
+    /// (not the raw artifact URL). The landed manifest in the bare repo
+    /// must carry the templated URL with `{{ name }}/{{ version }}/{{ os
+    /// }}-{{ arch }}` substituted — proving the override survives the
+    /// full render→push round-trip, not just an in-memory render.
+    ///
+    /// `{{ name }}` resolves to the CRATE name (`widget`), not the krew
+    /// plugin-name override: `render_url_template_with_ctx` is called with
+    /// `crate_name` as its `name` arg (krew.rs ~815). The crate here is
+    /// `widget` and the plugin is `kubectl-widget`, so the two are
+    /// distinguishable in the rendered uri.
+    #[test]
+    #[serial]
+    fn publish_to_krew_pr_direct_applies_url_template() {
+        let (_tools, _guard) = gh_absent();
+        let (bare_url, bare) = init_bare_fork();
+        let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/fork-owner/krew-index/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: None,
+        }]);
+        set_api_base(&addr);
+
+        let mut c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
+        if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+            k.url_template = Some(
+                "https://dl.acme.example/{{ name }}/{{ version }}/{{ os }}-{{ arch }}.tar.gz"
+                    .to_string(),
+            );
+        }
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        add_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &"a".repeat(64),
+        );
+
+        publish_to_krew(&mut ctx, "widget", &quiet()).expect("publish ok");
+        let manifest_in_repo = git_stdout(
+            bare.path(),
+            &["show", "kubectl-widget-v1.0.0:plugins/kubectl-widget.yaml"],
+        );
+        assert!(
+            manifest_in_repo
+                .contains("uri: https://dl.acme.example/widget/1.0.0/linux-amd64.tar.gz"),
+            "url_template must rewrite the pushed manifest uri ({{ name }} = \
+             crate name 'widget'); got:\n{manifest_in_repo}"
+        );
+        // And the original (non-templated) artifact URL must be gone.
+        assert!(
+            !manifest_in_repo
+                .contains("releases/download/v1.0.0/kubectl-widget-linux-amd64.tar.gz"),
+            "the raw artifact URL must be replaced by the templated uri; got:\n{manifest_in_repo}"
+        );
+        clear_api_base();
+        drop(bare);
+    }
+
+    /// dry-run short-circuits before any clone/push: no branch lands in
+    /// the bare repo, and the outcome reports `pushed = false`. Guards the
+    /// "(dry-run) would submit …" early return from making real side
+    /// effects.
+    #[test]
+    fn publish_to_krew_dry_run_makes_no_push() {
+        let (bare_url, bare) = init_bare_fork();
+        let c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
+        let mut config = Config {
+            crates: vec![c],
+            ..Default::default()
+        };
+        config.project_name = "widget".to_string();
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        add_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &"a".repeat(64),
+        );
+        let outcome = publish_to_krew(&mut ctx, "widget", &quiet()).expect("dry-run ok");
+        assert!(!outcome.pushed, "dry-run must not push");
+        let branches = git_stdout(bare.path(), &["branch", "--list"]);
+        assert!(
+            !branches.contains("kubectl-widget-v1.0.0"),
+            "dry-run must not push a branch; bare branches:\n{branches}"
+        );
+        drop(bare);
+    }
+
+    // -----------------------------------------------------------------
+    // publish_to_krew — BotWebhook flow against a scripted responder.
+    // -----------------------------------------------------------------
+
+    /// `mode: bot` routes through the webhook flow: the publisher POSTs a
+    /// `ReleaseRequest` (with the rendered manifest base64'd into
+    /// `processedTemplate`) to the resolved webhook URL and, on HTTP 200,
+    /// returns `pushed = false` (the bot owns the krew-index PR — nothing
+    /// for anodizer to roll back). Asserts the request reached the
+    /// responder carrying the plugin coordinates.
+    #[test]
+    #[serial]
+    fn publish_to_krew_bot_webhook_posts_release_request() {
+        let (bare_url, bare) = init_bare_fork();
+        let resp_body =
+            "PR \"https://github.com/kubernetes-sigs/krew-index/pull/7\" submitted successfully";
+        let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/github-action-webhook",
+            response: Box::leak(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                    resp_body.len(),
+                    resp_body
+                )
+                .into_boxed_str(),
+            ),
+            times: Some(1),
+        }]);
+        // The webhook URL is read from the env source on `ctx`
+        // (`resolve_webhook_url(ctx.env_source())`), so point it at the
+        // responder via the builder env (no process-env mutation needed).
+        let mut c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
+        if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+            k.mode = Some(KrewMode::Bot);
+        }
+        let config = Config {
+            crates: vec![c],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.set_env_source(anodizer_core::MapEnvSource::new().with(
+            "KREW_RELEASE_BOT_WEBHOOK_URL",
+            format!("http://{addr}/github-action-webhook"),
+        ));
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        add_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &"a".repeat(64),
+        );
+
+        let outcome = publish_to_krew(&mut ctx, "widget", &quiet()).expect("webhook publish ok");
+        assert!(
+            !outcome.pushed,
+            "BotWebhook flow must report pushed=false (bot owns the PR)"
+        );
+        let entries = req_log.lock().unwrap();
+        assert_eq!(entries.len(), 1, "exactly one webhook POST expected");
+        let payload: serde_json::Value = serde_json::from_str(&entries[0].body).expect("JSON body");
+        assert_eq!(payload["pluginName"], "kubectl-widget");
+        assert_eq!(payload["tagName"], "v1.0.0");
+        assert_eq!(payload["pluginOwner"], "acme");
+        assert_eq!(payload["pluginRepo"], "widget");
+        // The rendered manifest is base64'd into processedTemplate and
+        // carries the crate's real artifact data.
+        use base64::Engine as _;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(payload["processedTemplate"].as_str().expect("base64 str"))
+            .expect("decode");
+        let manifest = String::from_utf8(decoded).expect("utf8");
+        assert!(manifest.contains("name: kubectl-widget"), "{manifest}");
+        assert!(manifest.contains("version: v1.0.0"), "{manifest}");
+        drop(entries);
+        drop(bare);
+    }
+
+    /// BotWebhook flow with no `release.github` owner/repo on the crate:
+    /// the webhook needs the plugin's GitHub repo to identify the
+    /// submission, so the publisher bails with an actionable error rather
+    /// than POSTing a mis-targeted request.
+    #[test]
+    fn publish_to_krew_bot_webhook_without_release_github_bails() {
+        let mut c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        c.release = None; // No plugin GitHub coordinates.
+        if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+            k.mode = Some(KrewMode::Bot);
+        }
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        add_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &"a".repeat(64),
+        );
+        let err = publish_to_krew(&mut ctx, "widget", &quiet())
+            .expect_err("webhook flow needs release.github");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("release.github"), "got: {msg}");
+        assert!(msg.contains("webhook"), "got: {msg}");
+    }
+
+    /// BotWebhook flow on a genuine server failure (HTTP 500 whose body is
+    /// NOT an already-submitted signal): the publisher surfaces a loud
+    /// error — krew must never silently skip a one-way publish.
+    #[test]
+    #[serial]
+    fn publish_to_krew_bot_webhook_genuine_failure_bails() {
+        let (bare_url, bare) = init_bare_fork();
+        let body = "opening pr: failed when validating plugin spec";
+        let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/github-action-webhook",
+            response: Box::leak(
+                format!(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .into_boxed_str(),
+            ),
+            times: Some(1),
+        }]);
+        let mut c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
+        if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+            k.mode = Some(KrewMode::Bot);
+        }
+        let config = Config {
+            crates: vec![c],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.set_env_source(anodizer_core::MapEnvSource::new().with(
+            "KREW_RELEASE_BOT_WEBHOOK_URL",
+            format!("http://{addr}/github-action-webhook"),
+        ));
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        add_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &"a".repeat(64),
+        );
+        let err = publish_to_krew(&mut ctx, "widget", &quiet()).expect_err("genuine 500 must bail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("500"), "got: {msg}");
+        assert!(msg.contains("validating plugin spec"), "got: {msg}");
+        drop(bare);
+    }
+
+    // -----------------------------------------------------------------
+    // artifacts_to_platforms — multi-platform expansion the publish path
+    // feeds into the manifest.
+    // -----------------------------------------------------------------
+
+    /// A multi-OS artifact set expands to one platform entry per OS with
+    /// the correct krew os/arch labels and the `.exe` suffix on Windows —
+    /// the shape the pushed manifest's `platforms[]` carries.
+    #[test]
+    fn artifacts_to_platforms_multi_os_labels_and_exe() {
+        let arts = vec![
+            make_os_artifact("linux", "amd64", Some("kubectl-widget")),
+            make_os_artifact("darwin", "arm64", Some("kubectl-widget")),
+            make_os_artifact("windows", "amd64", Some("kubectl-widget")),
+        ];
+        let plats = artifacts_to_platforms(&arts, "kubectl-widget");
+        let find = |os: &str| plats.iter().find(|p| p.os == os).expect("platform");
+        assert_eq!(find("linux").arch, "amd64");
+        assert_eq!(find("linux").bin, "kubectl-widget");
+        assert_eq!(find("darwin").arch, "arm64");
+        assert_eq!(
+            find("windows").bin,
+            "kubectl-widget.exe",
+            "windows bin must carry the .exe suffix krew needs"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
