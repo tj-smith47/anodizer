@@ -268,6 +268,13 @@ impl ToolSpec<'_> {
                 s.push('\n');
             }
         } else {
+            // Drain stdin to EOF before emitting output: a stubbed tool that the
+            // producer pipes input to (e.g. a kms CLI fed plaintext on stdin)
+            // must consume it, or the producer's write hits a broken pipe when
+            // this stub exits first. Harmless when nothing is piped — under the
+            // test harness stdin is /dev/null, so this returns immediately.
+            // (A custom `.script()` owns its own stdin handling.)
+            s.push_str("cat >/dev/null 2>&1\n");
             if !self.stdout.is_empty() {
                 s.push_str(&format!("printf '%s' {}\n", sh_quote(&self.stdout)));
             }
