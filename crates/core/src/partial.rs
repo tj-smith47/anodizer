@@ -747,8 +747,12 @@ mod tests {
     /// a tempdir and tearing it down used to make `rustc -vV` abort with
     /// "Could not locate working directory"; `run_rustc_vv` now pins its spawn
     /// to a guaranteed-existing dir, so detection no longer depends on the cwd.
+    // Unix-only: deleting the directory that is the process cwd is a POSIX
+    // behavior. Windows locks the cwd and refuses to remove it (os error 32),
+    // so the deleted-cwd race this guards against cannot occur there.
     #[test]
     #[serial]
+    #[cfg(unix)]
     fn detect_host_target_survives_deleted_cwd() {
         let original = std::env::current_dir().unwrap();
         let scratch = tempfile::tempdir().unwrap();
