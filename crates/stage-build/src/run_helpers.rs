@@ -2027,3 +2027,719 @@ mod run_helpers_tests {
         );
     }
 }
+
+/// Tests for the live compile paths (`run_sequential` / `run_parallel` /
+/// `run_copy_jobs`) that actually spawn `BuildJob::cmd`. Rather than invoke a
+/// real toolchain, each job's `program` points at a `FakeToolDir` stub that
+/// records argv and (where the post-build `exists()` check matters) materialises
+/// the binary at `bin_path` via `.creates()`. Asserts the produced artifact's
+/// path/target, the applied mtime (reproducible + mod_timestamp), and the exact
+/// error text on the failure paths — never just "no panic".
+#[cfg(unix)]
+#[cfg(test)]
+mod run_exec_tests {
+    use super::*;
+    use anodizer_core::MapEnvSource;
+    use anodizer_core::artifact::ArtifactKind;
+    use anodizer_core::config::{Config, HookEntry, StructuredHook};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::Verbosity;
+    use anodizer_core::template::TemplateVars;
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+    use std::collections::HashMap;
+    use std::time::SystemTime;
+
+    fn mk_ctx() -> Context {
+        let mut ctx = Context::new(
+            Config {
+                project_name: "myproj".to_string(),
+                ..Default::default()
+            },
+            ContextOptions::default(),
+        );
+        // Clean env source so SOURCE_DATE_EPOCH from the host never leaks into
+        // the reproducible-epoch resolution under test.
+        ctx.set_env_source(MapEnvSource::new());
+        ctx
+    }
+
+    fn mk_log() -> StageLogger {
+        StageLogger::new("test", Verbosity::Quiet)
+    }
+
+    /// A `BuildJob` whose `cmd` runs `stub` in `cwd`, producing a binary at
+    /// `cwd/<binary_name>` (matching `bin_path`) so the post-build existence
+    /// check passes.
+    #[allow(clippy::too_many_arguments)]
+    fn building_job(
+        stub: &std::path::Path,
+        cwd: &std::path::Path,
+        binary_name: &str,
+        target: &str,
+    ) -> BuildJob {
+        let bin_path = cwd.join(binary_name);
+        BuildJob {
+            cmd: Some(BuildCommand {
+                program: stub.to_string_lossy().into_owned(),
+                args: vec!["build".to_string(), "--release".to_string()],
+                env: HashMap::new(),
+                cwd: cwd.to_path_buf(),
+            }),
+            copy_from: None,
+            bin_path,
+            artifact_kind: ArtifactKind::Binary,
+            target: target.to_string(),
+            crate_name: "myproj".to_string(),
+            binary_name: binary_name.to_string(),
+            build_id: None,
+            reproducible: false,
+            pre_hooks: vec![],
+            post_hooks: vec![],
+            no_unique_dist_dir: false,
+            crate_path: cwd.to_string_lossy().into_owned(),
+            mod_timestamp: None,
+            amd64_variant: None,
+            build_env: HashMap::new(),
+        }
+    }
+
+    fn mk_exec<'a>(
+        log: &'a StageLogger,
+        tvars: &'a TemplateVars,
+        dist: &'a std::path::Path,
+        commit_timestamp: &'a str,
+    ) -> BuildExec<'a> {
+        BuildExec {
+            log,
+            template_vars: tvars,
+            dist_dir: dist,
+            dry_run: false,
+            commit_timestamp,
+        }
+    }
+
+    fn mtime_epoch(path: &std::path::Path) -> u64 {
+        std::fs::metadata(path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    // -------------------------------------------------------------------------
+    // run_sequential
+    // -------------------------------------------------------------------------
+
+    /// Happy path: the stub compiler is spawned with the job's argv, the
+    /// resulting binary is registered as an artifact at its resolved path, and
+    /// the exact argv reaches the tool.
+    #[test]
+    fn run_sequential_spawns_cmd_and_registers_artifact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let work = tmp.path().join("crate");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("cargo")
+            .creates("myproj", "\x7fELF-fake")
+            .install();
+        let stub = tools.tool_path("cargo");
+
+        let job = building_job(&stub, &work, "myproj", "x86_64-unknown-linux-gnu");
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
+
+        // The stub was invoked with exactly the job's argv.
+        assert_eq!(tools.calls("cargo"), vec![vec!["build", "--release"]]);
+
+        let arts = ctx.artifacts.by_kind(ArtifactKind::Binary);
+        assert_eq!(arts.len(), 1);
+        assert_eq!(arts[0].path, work.join("myproj"));
+        assert_eq!(arts[0].target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+    }
+
+    /// reproducible=true with a usable commit timestamp: the produced binary's
+    /// mtime is stamped to that epoch.
+    #[test]
+    fn run_sequential_reproducible_sets_mtime_to_commit_epoch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let work = tmp.path().join("crate");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let tools = FakeToolDir::new();
+        tools.tool("cargo").creates("app", "x").install();
+        let mut job = building_job(
+            &tools.tool_path("cargo"),
+            &work,
+            "app",
+            "x86_64-unknown-linux-gnu",
+        );
+        job.reproducible = true;
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "1700000000");
+        let mut ctx = mk_ctx();
+        run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
+
+        assert_eq!(
+            mtime_epoch(&work.join("app")),
+            1_700_000_000,
+            "reproducible build must stamp the binary mtime to the commit epoch"
+        );
+    }
+
+    /// mod_timestamp renders to a Unix epoch and the binary mtime is set to it,
+    /// overriding the default filesystem mtime.
+    #[test]
+    fn run_sequential_mod_timestamp_sets_explicit_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let work = tmp.path().join("crate");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let tools = FakeToolDir::new();
+        tools.tool("cargo").creates("app", "x").install();
+        let mut job = building_job(
+            &tools.tool_path("cargo"),
+            &work,
+            "app",
+            "x86_64-unknown-linux-gnu",
+        );
+        // 2024-01-01T00:00:00Z = 1704067200.
+        job.mod_timestamp = Some("1704067200".to_string());
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
+
+        assert_eq!(mtime_epoch(&work.join("app")), 1_704_067_200);
+    }
+
+    /// pre_hooks and post_hooks both fire around the build: each hook touches a
+    /// sentinel file, proving the bracketing runs.
+    #[test]
+    fn run_sequential_runs_pre_and_post_hooks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let work = tmp.path().join("crate");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let tools = FakeToolDir::new();
+        tools.tool("cargo").creates("app", "x").install();
+        let mut job = building_job(
+            &tools.tool_path("cargo"),
+            &work,
+            "app",
+            "x86_64-unknown-linux-gnu",
+        );
+
+        let pre_marker = tmp.path().join("pre.done");
+        let post_marker = tmp.path().join("post.done");
+        job.pre_hooks = vec![HookEntry::Structured(StructuredHook {
+            cmd: format!("touch {}", pre_marker.display()),
+            dir: Some(work.to_string_lossy().into_owned()),
+            ..Default::default()
+        })];
+        job.post_hooks = vec![HookEntry::Structured(StructuredHook {
+            cmd: format!("touch {}", post_marker.display()),
+            dir: Some(work.to_string_lossy().into_owned()),
+            ..Default::default()
+        })];
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
+
+        assert!(pre_marker.exists(), "pre-build hook must run");
+        assert!(post_marker.exists(), "post-build hook must run");
+    }
+
+    /// The compile succeeds but no binary appears at bin_path: a fail-loud error
+    /// pointing at the missing path / Cargo.toml [bin] mismatch.
+    #[test]
+    fn run_sequential_missing_binary_after_success_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let work = tmp.path().join("crate");
+        std::fs::create_dir_all(&work).unwrap();
+
+        // Stub exits 0 but creates NOTHING — the binary will be absent.
+        let tools = FakeToolDir::new();
+        tools.tool("cargo").install();
+        let job = building_job(
+            &tools.tool_path("cargo"),
+            &work,
+            "ghost",
+            "x86_64-unknown-linux-gnu",
+        );
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        let err = run_sequential(&mut ctx, &exec, &[job], &[]).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("build succeeded but binary not found") && msg.contains("ghost"),
+            "error must name the missing binary path, got: {msg}"
+        );
+    }
+
+    /// The compiler exits non-zero: `check_output` surfaces a failure naming the
+    /// program. No artifact is registered.
+    #[test]
+    fn run_sequential_compile_failure_propagates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let work = tmp.path().join("crate");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("cargo")
+            .stderr("error[E0001]: boom\n")
+            .exit(101)
+            .install();
+        let job = building_job(
+            &tools.tool_path("cargo"),
+            &work,
+            "app",
+            "x86_64-unknown-linux-gnu",
+        );
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        let err = run_sequential(&mut ctx, &exec, &[job], &[]).unwrap_err();
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("cargo") && (msg.contains("exit") || msg.contains("fail")),
+            "compile failure must surface the program + failure, got: {msg}"
+        );
+        assert!(
+            ctx.artifacts.by_kind(ArtifactKind::Binary).is_empty(),
+            "no artifact may be registered for a failed build"
+        );
+    }
+
+    /// A build job with `cmd: None` reaching the sequential path is a planner
+    /// invariant violation surfaced as an error, not a panic.
+    #[test]
+    fn run_sequential_missing_cmd_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        let mut job = building_job(
+            std::path::Path::new("/nonexistent"),
+            tmp.path(),
+            "app",
+            "x86_64-unknown-linux-gnu",
+        );
+        job.cmd = None;
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        let err = run_sequential(&mut ctx, &exec, &[job], &[]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("build job has no cmd"),
+            "missing cmd must be a fail-loud planner-bug error"
+        );
+    }
+
+    /// no_unique_dist_dir=true: after building, `add_artifact` copies the binary
+    /// flat into dist_dir and tags the metadata.
+    #[test]
+    fn run_sequential_no_unique_dist_dir_flattens_into_dist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let work = tmp.path().join("crate");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let tools = FakeToolDir::new();
+        tools.tool("cargo").creates("app", "BINARY").install();
+        let mut job = building_job(
+            &tools.tool_path("cargo"),
+            &work,
+            "app",
+            "x86_64-unknown-linux-gnu",
+        );
+        job.no_unique_dist_dir = true;
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
+
+        let arts = ctx.artifacts.by_kind(ArtifactKind::Binary);
+        assert_eq!(arts.len(), 1);
+        assert_eq!(arts[0].path, dist.join("app"), "binary flattened into dist");
+        assert_eq!(
+            arts[0]
+                .metadata
+                .get("no_unique_dist_dir")
+                .map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(std::fs::read(dist.join("app")).unwrap(), b"BINARY");
+    }
+
+    // -------------------------------------------------------------------------
+    // run_parallel
+    // -------------------------------------------------------------------------
+
+    /// Parallel path across two jobs (parallelism=2): both stubs run, both
+    /// binaries are registered with their respective targets.
+    #[test]
+    fn run_parallel_builds_all_jobs_and_registers_each() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let work_a = tmp.path().join("a");
+        let work_b = tmp.path().join("b");
+        std::fs::create_dir_all(&work_a).unwrap();
+        std::fs::create_dir_all(&work_b).unwrap();
+
+        let tools = FakeToolDir::new();
+        tools.tool("cargo").creates("app", "x").install();
+        let stub = tools.tool_path("cargo");
+
+        let job_a = building_job(&stub, &work_a, "app", "x86_64-unknown-linux-gnu");
+        let job_b = building_job(&stub, &work_b, "app", "aarch64-unknown-linux-gnu");
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        run_parallel(&mut ctx, &exec, &[job_a, job_b], &[], 2).unwrap();
+
+        let arts = ctx.artifacts.by_kind(ArtifactKind::Binary);
+        assert_eq!(arts.len(), 2);
+        let targets: HashSet<&str> = arts.iter().filter_map(|a| a.target.as_deref()).collect();
+        assert!(targets.contains("x86_64-unknown-linux-gnu"));
+        assert!(targets.contains("aarch64-unknown-linux-gnu"));
+        assert_eq!(tools.call_count("cargo"), 2);
+    }
+
+    /// Parallel chunking: 3 jobs with parallelism=1 still build every job (the
+    /// chunk loop iterates three times).
+    #[test]
+    fn run_parallel_chunks_smaller_than_job_count_build_all() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        let tools = FakeToolDir::new();
+        tools.tool("cargo").creates("app", "x").install();
+        let stub = tools.tool_path("cargo");
+
+        let mut jobs = Vec::new();
+        for (i, target) in [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-apple-darwin",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let work = tmp.path().join(format!("c{i}"));
+            std::fs::create_dir_all(&work).unwrap();
+            jobs.push(building_job(&stub, &work, "app", target));
+        }
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        run_parallel(&mut ctx, &exec, &jobs, &[], 1).unwrap();
+
+        assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Binary).len(), 3);
+        assert_eq!(tools.call_count("cargo"), 3);
+    }
+
+    /// A failing job in the parallel path unwinds through the Result channel
+    /// (not a process abort) and the redacted exit-code message surfaces.
+    #[test]
+    fn run_parallel_compile_failure_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let work = tmp.path().join("crate");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("cargo")
+            .stderr("linker error\n")
+            .exit(1)
+            .install();
+        let job = building_job(
+            &tools.tool_path("cargo"),
+            &work,
+            "app",
+            "x86_64-unknown-linux-gnu",
+        );
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        let err = run_parallel(&mut ctx, &exec, &[job], &[], 1).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("failed with exit code") && msg.contains("cargo"),
+            "parallel failure must surface the exit-code message, got: {msg}"
+        );
+    }
+
+    /// reproducible=true on the parallel path stamps the binary mtime from the
+    /// commit epoch, same as the sequential path.
+    #[test]
+    fn run_parallel_reproducible_sets_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let work = tmp.path().join("crate");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let tools = FakeToolDir::new();
+        tools.tool("cargo").creates("app", "x").install();
+        let mut job = building_job(
+            &tools.tool_path("cargo"),
+            &work,
+            "app",
+            "x86_64-unknown-linux-gnu",
+        );
+        job.reproducible = true;
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "1600000000");
+        let mut ctx = mk_ctx();
+        run_parallel(&mut ctx, &exec, &[job], &[], 1).unwrap();
+
+        assert_eq!(mtime_epoch(&work.join("app")), 1_600_000_000);
+    }
+
+    /// mod_timestamp on the parallel path (rendered via thread-local Tera, not
+    /// ctx) stamps the binary mtime.
+    #[test]
+    fn run_parallel_mod_timestamp_renders_and_sets_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let work = tmp.path().join("crate");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let tools = FakeToolDir::new();
+        tools.tool("cargo").creates("app", "x").install();
+        let mut job = building_job(
+            &tools.tool_path("cargo"),
+            &work,
+            "app",
+            "x86_64-unknown-linux-gnu",
+        );
+        job.mod_timestamp = Some("1704067200".to_string());
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        run_parallel(&mut ctx, &exec, &[job], &[], 1).unwrap();
+
+        assert_eq!(mtime_epoch(&work.join("app")), 1_704_067_200);
+    }
+
+    /// A `cmd: None` job reaching the parallel worker unwinds as an error naming
+    /// the planner-invariant violation, not a panic that aborts the process.
+    #[test]
+    fn run_parallel_missing_cmd_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        let mut job = building_job(
+            std::path::Path::new("/nonexistent"),
+            tmp.path(),
+            "app",
+            "x86_64-unknown-linux-gnu",
+        );
+        job.cmd = None;
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        let err = run_parallel(&mut ctx, &exec, &[job], &[], 1).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("planner invariant violation"),
+            "missing cmd in the parallel worker must surface the invariant error"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // run_copy_jobs — happy path (real copy)
+    // -------------------------------------------------------------------------
+
+    /// A copy_from job copies the registered source binary to its destination
+    /// and registers a new artifact at the copy destination.
+    #[test]
+    fn run_sequential_drains_copy_jobs_after_builds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        // A source binary already registered as an artifact (e.g. a sibling
+        // build) that the copy job points at.
+        let src = tmp.path().join("src-bin");
+        std::fs::write(&src, b"SRC").unwrap();
+        let dst = tmp.path().join("dst-bin");
+
+        let mut ctx = mk_ctx();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "src-bin".to_string(),
+            path: src.clone(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myproj".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let copy_job = BuildJob {
+            cmd: None,
+            copy_from: Some((src.clone(), dst.clone())),
+            bin_path: dst.clone(),
+            artifact_kind: ArtifactKind::Binary,
+            target: "x86_64-unknown-linux-gnu".to_string(),
+            crate_name: "myproj".to_string(),
+            binary_name: "dst-bin".to_string(),
+            build_id: None,
+            reproducible: false,
+            pre_hooks: vec![],
+            post_hooks: vec![],
+            no_unique_dist_dir: false,
+            crate_path: ".".to_string(),
+            mod_timestamp: None,
+            amd64_variant: None,
+            build_env: HashMap::new(),
+        };
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        run_sequential(&mut ctx, &exec, &[], &[copy_job]).unwrap();
+
+        assert_eq!(std::fs::read(&dst).unwrap(), b"SRC", "copy must reach dst");
+        let arts = ctx.artifacts.by_kind(ArtifactKind::Binary);
+        // src + copied dst.
+        assert!(arts.iter().any(|a| a.path == dst));
+    }
+
+    // -------------------------------------------------------------------------
+    // process_universal_binaries — non-error paths
+    // -------------------------------------------------------------------------
+
+    /// A crate with no universal_binaries config is a no-op (the `if let Some`
+    /// guard is skipped); returns Ok with no artifacts added.
+    #[test]
+    fn process_universal_binaries_none_config_is_noop() {
+        let mut ctx = mk_ctx();
+        let crate_cfg = anodizer_core::config::CrateConfig {
+            name: "myproj".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            universal_binaries: None,
+            ..Default::default()
+        };
+        let before = ctx.artifacts.by_kind(ArtifactKind::Binary).len();
+        process_universal_binaries(&mut ctx, &[crate_cfg], true).unwrap();
+        assert_eq!(
+            ctx.artifacts.by_kind(ArtifactKind::Binary).len(),
+            before,
+            "no universal_binaries config must add no artifacts"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // run_dry_run — pre/post hooks fire in dry-run too
+    // -------------------------------------------------------------------------
+
+    /// In dry-run the compiler is never spawned, but pre/post hooks still run in
+    /// dry-run mode (their own dry_run=true). The artifact is registered.
+    #[test]
+    fn run_dry_run_invokes_hooks_in_dry_run_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let work = tmp.path().join("crate");
+        std::fs::create_dir_all(&work).unwrap();
+
+        // Stub that, if ever spawned, would create a sentinel — proving the
+        // compiler is NOT run in dry-run.
+        let tools = FakeToolDir::new();
+        tools.tool("cargo").creates("spawned.marker", "x").install();
+        let mut job = building_job(
+            &tools.tool_path("cargo"),
+            &work,
+            "app",
+            "x86_64-unknown-linux-gnu",
+        );
+
+        // A dry-run hook: run_hooks with dry_run=true must NOT execute the body,
+        // so this sentinel must remain absent.
+        let hook_marker = tmp.path().join("hook.ran");
+        job.pre_hooks = vec![HookEntry::Structured(StructuredHook {
+            cmd: format!("touch {}", hook_marker.display()),
+            ..Default::default()
+        })];
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = BuildExec {
+            log: &log,
+            template_vars: &tvars,
+            dist_dir: &dist,
+            dry_run: true,
+            commit_timestamp: "0",
+        };
+        let mut ctx = mk_ctx();
+        run_dry_run(&mut ctx, &exec, &[job], &[]).unwrap();
+
+        assert!(
+            !work.join("spawned.marker").exists(),
+            "dry-run must not spawn the compiler"
+        );
+        assert!(
+            !hook_marker.exists(),
+            "dry-run hooks must not execute their command body"
+        );
+        // Artifact still registered (planning output).
+        assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Binary).len(), 1);
+    }
+}

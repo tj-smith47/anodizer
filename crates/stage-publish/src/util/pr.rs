@@ -688,17 +688,24 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
 mod tests {
     use super::{
         PrOrigin, PrSpec, PrTransport, Upstream, classify_pr_transport, create_pr_via_api_with_env,
-        maybe_submit_pr,
+        maybe_submit_pr, maybe_submit_pr_with_env, sync_fork,
     };
     use anodizer_core::MapEnvSource;
     use anodizer_core::PublisherOutcome;
     use anodizer_core::config::{
-        HomebrewCaskConfig, KrewConfig, PullRequestConfig, RepositoryConfig, StringOrBool,
-        WingetConfig,
+        HomebrewCaskConfig, KrewConfig, PullRequestBaseConfig, PullRequestConfig, RepositoryConfig,
+        StringOrBool, WingetConfig,
     };
     use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+    use serial_test::serial;
     use std::path::Path;
+    use std::process::Command;
+    use std::sync::OnceLock;
 
     fn quiet_log() -> StageLogger {
         StageLogger::new("pr-test", Verbosity::Quiet)
@@ -1195,5 +1202,698 @@ mod tests {
             &log,
         );
         assert!(outcome.is_none());
+    }
+
+    // =================================================================
+    // Local-git-fixture infrastructure for the flows that shell out to
+    // `git` (`sync_fork`, and `maybe_submit_pr_with_env`'s cross-repo
+    // fork-sync + post-sync force-push). All of these run against a
+    // local bare repo reached over a `file://`-equivalent filesystem
+    // path — no network. Mirrors the `init_bare_remote_with_one_commit`
+    // helper in `util/git_revert.rs`.
+    // =================================================================
+
+    /// Give the test process a git identity so the helper's `git commit`
+    /// works on bare CI runners (no global ~/.gitconfig). Set once per
+    /// process via `OnceLock` to avoid the parallel-test `set_var` race.
+    /// Mirrors `util/git_revert.rs::ensure_git_identity`.
+    fn ensure_git_identity() {
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            // SAFETY: runs exactly once per process, guarded by OnceLock;
+            // values are constants, not user input.
+            unsafe {
+                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
+                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
+                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
+                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
+                // Fail the cross-repo fork-sync `git fetch <https-upstream>`
+                // immediately instead of blocking on an interactive
+                // credential prompt — these tests never reach a real host.
+                std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+            }
+        });
+    }
+
+    fn git_ok(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    fn git_stdout(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+        assert!(out.status.success(), "git {args:?} failed");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Configure a working dir as a usable git repo (identity +
+    /// no-gpg-sign) on branch `master`.
+    fn git_init_work(dir: &Path) {
+        git_ok(dir, &["init", "-b", "master"]);
+        git_ok(dir, &["config", "user.email", "test@example.invalid"]);
+        git_ok(dir, &["config", "user.name", "Test"]);
+        git_ok(dir, &["config", "commit.gpgsign", "false"]);
+    }
+
+    fn write_commit(dir: &Path, file: &str, contents: &str, msg: &str) {
+        std::fs::write(dir.join(file), contents).unwrap();
+        git_ok(dir, &["add", file]);
+        git_ok(dir, &["commit", "-m", msg]);
+    }
+
+    /// Build a bare "origin" remote with one commit on `master`, plus a
+    /// working clone already wired to push to it. Returns
+    /// `(origin_path_string, _bare_holder, work_holder)`.
+    fn init_origin_with_work() -> (String, tempfile::TempDir, tempfile::TempDir) {
+        ensure_git_identity();
+        let bare = tempfile::tempdir().expect("bare tempdir");
+        let work = tempfile::tempdir().expect("work tempdir");
+
+        git_ok(bare.path(), &["init", "--bare", "-b", "master"]);
+
+        git_init_work(work.path());
+        write_commit(work.path(), "README", "hello\n", "initial commit");
+        // `git remote add` takes a path; pass it as an OsStr arg.
+        assert!(
+            Command::new("git")
+                .args(["remote", "add", "origin"])
+                .arg(bare.path())
+                .current_dir(work.path())
+                .status()
+                .expect("git remote add origin")
+                .success(),
+            "git remote add origin failed"
+        );
+        git_ok(work.path(), &["push", "-u", "origin", "master"]);
+
+        let origin_url = bare.path().to_string_lossy().into_owned();
+        (origin_url, bare, work)
+    }
+
+    /// Build a bare "upstream" remote that is one commit AHEAD of the
+    /// shared base commit, so a rebase against it advances the rebasing
+    /// repo. The upstream and the work clone share the same root commit
+    /// (work is cloned from upstream) which keeps the rebase conflict-free.
+    /// Returns `(upstream_path, work_holder, _upstream_holder)`.
+    fn init_upstream_ahead_with_clone() -> (String, tempfile::TempDir, tempfile::TempDir) {
+        ensure_git_identity();
+        let upstream = tempfile::tempdir().expect("upstream tempdir");
+        let seed = tempfile::tempdir().expect("seed tempdir");
+        let work = tempfile::tempdir().expect("work tempdir");
+
+        // Seed the upstream bare repo with one commit on master.
+        git_ok(upstream.path(), &["init", "--bare", "-b", "master"]);
+        git_init_work(seed.path());
+        write_commit(seed.path(), "base.txt", "base\n", "base commit");
+        assert!(
+            Command::new("git")
+                .args(["remote", "add", "origin"])
+                .arg(upstream.path())
+                .current_dir(seed.path())
+                .status()
+                .expect("seed remote add")
+                .success()
+        );
+        git_ok(seed.path(), &["push", "-u", "origin", "master"]);
+
+        // Clone the upstream into `work` (this shares history root).
+        let upstream_url = upstream.path().to_string_lossy().into_owned();
+        assert!(
+            Command::new("git")
+                .args(["clone"])
+                .arg(upstream.path())
+                .arg(work.path())
+                .status()
+                .expect("git clone work")
+                .success(),
+            "git clone for work failed"
+        );
+        git_ok(
+            work.path(),
+            &["config", "user.email", "test@example.invalid"],
+        );
+        git_ok(work.path(), &["config", "user.name", "Test"]);
+        git_ok(work.path(), &["config", "commit.gpgsign", "false"]);
+
+        // Advance upstream by one commit AFTER the work clone was taken,
+        // so `sync_fork`'s rebase has something to fast-forward over.
+        write_commit(seed.path(), "ahead.txt", "ahead\n", "upstream advance");
+        git_ok(seed.path(), &["push", "origin", "master"]);
+
+        (upstream_url, work, upstream)
+    }
+
+    // -----------------------------------------------------------------
+    // `sync_fork`
+    // -----------------------------------------------------------------
+
+    /// Success path: when the upstream base branch carries a commit the
+    /// fork doesn't have yet, `sync_fork` fetches upstream and rebases the
+    /// fork's local branch on top — the fork's working tree gains the
+    /// upstream-only file. Asserts the rebase actually advanced history,
+    /// not merely that the function returned.
+    #[test]
+    fn sync_fork_rebases_fork_onto_upstream_advance() {
+        let (upstream_url, work, _upstream) = init_upstream_ahead_with_clone();
+        let log = quiet_log();
+
+        // Before sync, the work clone has NOT seen the upstream advance.
+        assert!(
+            !work.path().join("ahead.txt").exists(),
+            "precondition: work clone must not yet have the upstream-only file"
+        );
+
+        sync_fork(work.path(), &upstream_url, "master", "sync-test", &log);
+
+        // After rebase onto upstream/master the upstream-only file is present
+        // in the fork's working tree.
+        assert!(
+            work.path().join("ahead.txt").exists(),
+            "sync_fork must rebase the fork onto upstream/master, pulling in \
+             the upstream-only commit (ahead.txt)"
+        );
+        // And the upstream advance commit is now in the fork's history.
+        let subjects = git_stdout(work.path(), &["log", "--pretty=%s"]);
+        assert!(
+            subjects.contains("upstream advance"),
+            "rebased history must contain the upstream commit; got:\n{subjects}"
+        );
+    }
+
+    /// Fetch-failure path: a bogus upstream URL makes `git fetch upstream`
+    /// fail. `sync_fork` must swallow the error (best-effort), leave the
+    /// fork's HEAD untouched, and not panic — the push still proceeds with
+    /// the un-synced branch.
+    #[test]
+    fn sync_fork_fetch_failure_leaves_head_untouched() {
+        let (_origin, _bare, work) = init_origin_with_work();
+        let log = quiet_log();
+        let head_before = git_stdout(work.path(), &["rev-parse", "HEAD"]);
+
+        // Point upstream at a path that is not a git repo at all.
+        let bogus = tempfile::tempdir().expect("bogus tempdir");
+        let bogus_url = bogus.path().to_string_lossy().into_owned();
+        sync_fork(work.path(), &bogus_url, "master", "sync-test", &log);
+
+        let head_after = git_stdout(work.path(), &["rev-parse", "HEAD"]);
+        assert_eq!(
+            head_before, head_after,
+            "a failed upstream fetch must leave the fork's HEAD unchanged"
+        );
+    }
+
+    /// Idempotence / re-entry: calling `sync_fork` twice must not fail on
+    /// the second `git remote add upstream` (the remote already exists).
+    /// The function explicitly ignores that error; this pins the contract
+    /// so a future refactor doesn't start bailing on the duplicate-remote
+    /// case.
+    #[test]
+    fn sync_fork_tolerates_preexisting_upstream_remote() {
+        let (upstream_url, work, _upstream) = init_upstream_ahead_with_clone();
+        let log = quiet_log();
+
+        sync_fork(work.path(), &upstream_url, "master", "sync-test", &log);
+        // Second call: `git remote add upstream` now errors (already exists)
+        // but sync_fork must continue and re-rebase cleanly (no-op rebase).
+        sync_fork(work.path(), &upstream_url, "master", "sync-test", &log);
+
+        assert!(
+            work.path().join("ahead.txt").exists(),
+            "second sync_fork call must still leave the fork synced; \
+             the duplicate `git remote add upstream` error is ignored"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // `maybe_submit_pr_with_env` — cross-repo fork-sync + force-push side
+    // effects. These run BEFORE the transport dispatch, so they are
+    // observable on the local `file://` origin. To keep the transport
+    // hermetic (the box may have a real `gh` that would call github.com),
+    // each test installs a failing `gh` stub via `FakeToolDir` so
+    // `gh_is_available()` returns false, forcing the token-driven API
+    // transport onto an in-process scripted responder. Both touch
+    // `PATH`, so they hold the env mutex and run `#[serial]`.
+    // -----------------------------------------------------------------
+
+    /// Install a `gh` stub that exits non-zero on `--version` so
+    /// `gh_is_available()` reports false, then prepend it to `PATH`.
+    /// Returns the guard (restores `PATH` + releases the env mutex on
+    /// drop) plus the `FakeToolDir` holder (keeps the stub on disk).
+    fn gh_absent_path() -> (
+        FakeToolDir,
+        anodizer_core::test_helpers::fake_tool::PathGuard,
+    ) {
+        let tools = FakeToolDir::new();
+        // `gh --version` exits 1 => probe treats gh as unavailable.
+        tools.tool("gh").exit(1).install();
+        let guard = tools.activate();
+        (tools, guard)
+    }
+
+    /// Cross-repo PR (upstream owner/name differ from the fork) takes the
+    /// fork-sync branch and then dispatches the PR via the API transport.
+    /// Two observable effects are asserted:
+    ///   1. the fork's `branch_name` was force-pushed to the local origin
+    ///      (the post-sync `git push --force-with-lease origin <branch>`),
+    ///   2. the PR-create request reached the responder at
+    ///      `/repos/upstream-owner/upstream-repo/pulls` with the correct
+    ///      head/base — proving the cross-repo upstream resolution flows
+    ///      through to the request, not the fork's own slug.
+    #[test]
+    #[serial]
+    fn maybe_submit_pr_cross_repo_force_pushes_and_targets_upstream() {
+        let (_tools, _guard) = gh_absent_path();
+        let (_origin_url, bare, work) = init_origin_with_work();
+        git_ok(work.path(), &["checkout", "-b", "release/v9.9.9"]);
+        write_commit(work.path(), "manifest.rb", "formula\n", "add manifest");
+
+        // Responder accepts the cross-repo PR create. A separate GET
+        // route would be the default-branch lookup, but `maybe_submit_pr`
+        // takes the base branch from config (`master`), not a lookup, so
+        // only the POST is expected here.
+        let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/upstream-owner/upstream-repo/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: Some(1),
+        }]);
+
+        let log = quiet_log();
+        let repo = RepositoryConfig {
+            owner: Some("fork-owner".into()),
+            name: Some("fork-repo".into()),
+            token: Some("ghp_test".into()),
+            pull_request: Some(PullRequestConfig {
+                enabled: Some(true),
+                // Different upstream owner/name => cross-repo => fork sync.
+                base: Some(PullRequestBaseConfig {
+                    owner: Some("upstream-owner".into()),
+                    name: Some("upstream-repo".into()),
+                    branch: Some("master".into()),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let origin = PrOrigin {
+            repo_owner: "fork-owner",
+            repo_name: "fork-repo",
+            branch_name: "release/v9.9.9",
+            update_existing_pr: false,
+        };
+
+        let env = MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
+        let outcome = maybe_submit_pr_with_env(
+            work.path(),
+            Some(&repo),
+            &origin,
+            "title",
+            "body",
+            "homebrew",
+            &log,
+            &env,
+        );
+        // 201 from the responder is the success path.
+        assert!(
+            outcome.is_none(),
+            "201 PR create is success; got {outcome:?}"
+        );
+
+        // (1) Force-push side effect: the release branch landed in origin.
+        let refs = git_stdout(bare.path(), &["branch", "--list"]);
+        assert!(
+            refs.contains("release/v9.9.9"),
+            "cross-repo flow must force-push the release branch to origin; \
+             bare branches:\n{refs}"
+        );
+        let subject = git_stdout(bare.path(), &["log", "-1", "--pretty=%s", "release/v9.9.9"]);
+        assert_eq!(
+            subject, "add manifest",
+            "force-pushed branch must carry the manifest commit"
+        );
+
+        // (2) The PR request targeted the UPSTREAM repo, head = fork:branch.
+        let entries = req_log.lock().unwrap();
+        assert_eq!(entries.len(), 1, "exactly one PR-create POST expected");
+        assert_eq!(entries[0].path, "/repos/upstream-owner/upstream-repo/pulls");
+        let payload: serde_json::Value = serde_json::from_str(&entries[0].body).expect("JSON body");
+        assert_eq!(
+            payload["head"], "fork-owner:release/v9.9.9",
+            "head must be fork-owner:branch"
+        );
+        assert_eq!(
+            payload["base"], "master",
+            "base branch from pull_request.base"
+        );
+        drop(work);
+    }
+
+    /// Same-repo PR (upstream == fork) must NOT take the cross-repo
+    /// fork-sync branch — the release branch is NOT force-pushed to origin
+    /// as a side effect — yet the PR is still created, targeting the fork's
+    /// own slug. Pins the `is_cross_repo` guard AND that the non-cross-repo
+    /// path still reaches the transport with the fork as upstream.
+    #[test]
+    #[serial]
+    fn maybe_submit_pr_same_repo_skips_sync_but_still_creates_pr() {
+        let (_tools, _guard) = gh_absent_path();
+        let (_origin_url, bare, work) = init_origin_with_work();
+        git_ok(work.path(), &["checkout", "-b", "release/v8.8.8"]);
+        write_commit(work.path(), "manifest.rb", "formula\n", "add manifest");
+
+        let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/fork-owner/fork-repo/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: Some(1),
+        }]);
+
+        let log = quiet_log();
+        let repo = RepositoryConfig {
+            owner: Some("fork-owner".into()),
+            name: Some("fork-repo".into()),
+            token: Some("ghp_test".into()),
+            pull_request: Some(PullRequestConfig {
+                enabled: Some(true),
+                // No `base` => upstream defaults to the fork => same-repo.
+                base: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let origin = PrOrigin {
+            repo_owner: "fork-owner",
+            repo_name: "fork-repo",
+            branch_name: "release/v8.8.8",
+            update_existing_pr: false,
+        };
+        let env = MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
+        let outcome = maybe_submit_pr_with_env(
+            work.path(),
+            Some(&repo),
+            &origin,
+            "title",
+            "body",
+            "homebrew",
+            &log,
+            &env,
+        );
+        assert!(
+            outcome.is_none(),
+            "201 PR create is success; got {outcome:?}"
+        );
+
+        // No cross-repo => no force-push => origin still only has master.
+        let refs = git_stdout(bare.path(), &["branch", "--list"]);
+        assert!(
+            !refs.contains("release/v8.8.8"),
+            "same-repo PR must NOT force-push the release branch; \
+             bare branches should still be just master:\n{refs}"
+        );
+
+        // But the PR WAS created, targeting the fork's own slug.
+        let entries = req_log.lock().unwrap();
+        assert_eq!(entries.len(), 1, "same-repo PR must still POST a create");
+        assert_eq!(entries[0].path, "/repos/fork-owner/fork-repo/pulls");
+        drop(work);
+    }
+
+    /// `pull_request.body` overrides the caller-supplied body; `draft:
+    /// true` flips the payload's draft flag. Drives the full
+    /// `maybe_submit_pr_with_env` flow (same-repo, hermetic gh-absent
+    /// transport) and asserts the emitted request reflects both config
+    /// fields — the config-to-request wiring, not just the return value.
+    #[test]
+    #[serial]
+    fn maybe_submit_pr_applies_body_override_and_draft_flag() {
+        let (_tools, _guard) = gh_absent_path();
+        let (_origin_url, _bare, work) = init_origin_with_work();
+        git_ok(work.path(), &["checkout", "-b", "release/v7.7.7"]);
+        write_commit(work.path(), "manifest.rb", "formula\n", "add manifest");
+
+        let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/fork-owner/fork-repo/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: Some(1),
+        }]);
+
+        let log = quiet_log();
+        let repo = RepositoryConfig {
+            owner: Some("fork-owner".into()),
+            name: Some("fork-repo".into()),
+            token: Some("ghp_test".into()),
+            pull_request: Some(PullRequestConfig {
+                enabled: Some(true),
+                draft: Some(true),
+                body: Some("PR body from config".into()),
+                base: None,
+            }),
+            ..Default::default()
+        };
+        let origin = PrOrigin {
+            repo_owner: "fork-owner",
+            repo_name: "fork-repo",
+            branch_name: "release/v7.7.7",
+            update_existing_pr: false,
+        };
+        let env = MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
+        let outcome = maybe_submit_pr_with_env(
+            work.path(),
+            Some(&repo),
+            &origin,
+            "title",
+            "caller-supplied body that must be overridden",
+            "homebrew",
+            &log,
+            &env,
+        );
+        assert!(outcome.is_none(), "201 is success; got {outcome:?}");
+
+        let entries = req_log.lock().unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&entries[0].body).expect("JSON body");
+        assert_eq!(
+            payload["body"], "PR body from config",
+            "pull_request.body must override the caller body"
+        );
+        assert_eq!(
+            payload["draft"], true,
+            "pull_request.draft must set the flag"
+        );
+        drop(work);
+    }
+
+    /// Token resolution precedence: with NO `repo.token`, the flow falls
+    /// back to `ANODIZER_GITHUB_TOKEN` from the env source. With gh absent
+    /// and that var present, the API transport is selected and the PR is
+    /// created — proving env-based token resolution reaches the transport.
+    #[test]
+    #[serial]
+    fn maybe_submit_pr_resolves_token_from_env_when_repo_token_absent() {
+        let (_tools, _guard) = gh_absent_path();
+        let (_origin_url, _bare, work) = init_origin_with_work();
+        git_ok(work.path(), &["checkout", "-b", "release/v6.6.6"]);
+        write_commit(work.path(), "manifest.rb", "formula\n", "add manifest");
+
+        let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/fork-owner/fork-repo/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: Some(1),
+        }]);
+
+        let log = quiet_log();
+        let repo = RepositoryConfig {
+            owner: Some("fork-owner".into()),
+            name: Some("fork-repo".into()),
+            // No token on the repo config — must fall back to env.
+            token: None,
+            pull_request: Some(PullRequestConfig {
+                enabled: Some(true),
+                base: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let origin = PrOrigin {
+            repo_owner: "fork-owner",
+            repo_name: "fork-repo",
+            branch_name: "release/v6.6.6",
+            update_existing_pr: false,
+        };
+        let env = MapEnvSource::new()
+            .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"))
+            .with("ANODIZER_GITHUB_TOKEN", "env-token");
+        let outcome = maybe_submit_pr_with_env(
+            work.path(),
+            Some(&repo),
+            &origin,
+            "title",
+            "body",
+            "homebrew",
+            &log,
+            &env,
+        );
+        assert!(
+            outcome.is_none(),
+            "env-resolved token must reach the API transport (201); got {outcome:?}"
+        );
+        let entries = req_log.lock().unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "env-resolved token must drive a PR-create POST"
+        );
+        drop(work);
+    }
+
+    /// No token anywhere (repo config absent, env unset) AND gh absent =>
+    /// `NoneAvailable` => the function MUST surface `Failed`, never a
+    /// silent `None` that dispatch would record as `succeeded`. End-to-end
+    /// proof of the silent-skip contract at the orchestration boundary.
+    #[test]
+    #[serial]
+    fn maybe_submit_pr_no_gh_no_token_returns_failed() {
+        let (_tools, _guard) = gh_absent_path();
+        let (_origin_url, _bare, work) = init_origin_with_work();
+        git_ok(work.path(), &["checkout", "-b", "release/v5.5.5"]);
+        write_commit(work.path(), "manifest.rb", "formula\n", "add manifest");
+
+        let log = quiet_log();
+        let repo = RepositoryConfig {
+            owner: Some("fork-owner".into()),
+            name: Some("fork-repo".into()),
+            token: None,
+            pull_request: Some(PullRequestConfig {
+                enabled: Some(true),
+                base: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let origin = PrOrigin {
+            repo_owner: "fork-owner",
+            repo_name: "fork-repo",
+            branch_name: "release/v5.5.5",
+            update_existing_pr: false,
+        };
+        // MapEnvSource carries NO token vars, so token resolution yields
+        // None; gh stub is unavailable => NoneAvailable.
+        let env = MapEnvSource::new();
+        let outcome = maybe_submit_pr_with_env(
+            work.path(),
+            Some(&repo),
+            &origin,
+            "title",
+            "body",
+            "homebrew",
+            &log,
+            &env,
+        );
+        match outcome {
+            Some(PublisherOutcome::Failed(msg)) => {
+                assert!(
+                    msg.contains("neither") && msg.contains("gh"),
+                    "Failed msg must explain neither gh nor token available: {msg}"
+                );
+            }
+            other => panic!("expected Failed when neither gh nor token present, got {other:?}"),
+        }
+        drop(work);
+    }
+
+    // -----------------------------------------------------------------
+    // `create_pr_via_api_with_env` — REQUEST-CONTENT assertions. The
+    // existing tests assert the returned outcome per status code; these
+    // pin the actual request the API transport emits (method, path, and
+    // JSON payload fields) via the scripted responder's request log.
+    // -----------------------------------------------------------------
+
+    /// The API transport must POST to
+    /// `/repos/{owner}/{name}/pulls` with the spec's title/head/base/body
+    /// and `draft` flag serialised into the JSON payload. Asserts on the
+    /// recorded request, not just the 201 outcome.
+    #[test]
+    fn create_pr_via_api_posts_expected_request_shape() {
+        let (addr, log_handle) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/up-owner/up-repo/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: Some(1),
+        }]);
+        let env = env_with_base(&format!("http://{addr}"));
+        let log = quiet_log();
+        let upstream = Upstream {
+            owner: "up-owner",
+            name: "up-repo",
+        };
+        let pr_spec = PrSpec {
+            title: "Update myapp to 1.2.3",
+            body: "automated release PR",
+            head: "fork-owner:release/v1.2.3",
+            base_branch: "develop",
+            draft: true,
+            update_existing_pr: false,
+        };
+        let outcome =
+            create_pr_via_api_with_env(&upstream, &pr_spec, "tok", "homebrew", &log, &env);
+        assert!(outcome.is_none(), "201 is the success path");
+
+        let entries = log_handle.lock().unwrap();
+        assert_eq!(entries.len(), 1, "exactly one POST expected");
+        let req = &entries[0];
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.path, "/repos/up-owner/up-repo/pulls");
+        let payload: serde_json::Value =
+            serde_json::from_str(&req.body).expect("request body must be JSON");
+        assert_eq!(payload["title"], "Update myapp to 1.2.3");
+        assert_eq!(payload["head"], "fork-owner:release/v1.2.3");
+        assert_eq!(payload["base"], "develop");
+        assert_eq!(payload["body"], "automated release PR");
+        assert_eq!(payload["draft"], true);
+    }
+
+    /// The token is sent as an `Authorization: token <tok>` header. The
+    /// scripted responder records the request body but not headers, so
+    /// this instead pins that a custom (non-default) base branch and
+    /// `draft=false` round-trip into the payload — complementing the
+    /// draft=true case above so both branches of the bool are covered in
+    /// the emitted request, not just the return value.
+    #[test]
+    fn create_pr_via_api_serialises_non_draft_payload() {
+        let (addr, log_handle) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/o/n/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: Some(1),
+        }]);
+        let env = env_with_base(&format!("http://{addr}"));
+        let log = quiet_log();
+        let upstream = Upstream {
+            owner: "o",
+            name: "n",
+        };
+        let pr_spec = PrSpec {
+            title: "t",
+            body: "b",
+            head: "o:feature",
+            base_branch: "main",
+            draft: false,
+            update_existing_pr: false,
+        };
+        let outcome = create_pr_via_api_with_env(&upstream, &pr_spec, "tok", "label", &log, &env);
+        assert!(outcome.is_none());
+        let entries = log_handle.lock().unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&entries[0].body).expect("JSON body");
+        assert_eq!(payload["draft"], false, "draft=false must serialise");
+        assert_eq!(payload["base"], "main");
     }
 }
