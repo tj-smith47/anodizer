@@ -134,8 +134,16 @@ impl FakeToolDir {
         let Ok(raw) = std::fs::read_to_string(&log) else {
             return Vec::new();
         };
-        raw.split(REC_SEP)
-            .filter(|rec| !rec.is_empty())
+        // Each invocation writes its argv terminated by REC_SEP, so the element
+        // after the final terminator is always an empty tail — drop it. Every
+        // remaining element is one invocation (an empty one means a zero-arg
+        // call, which still counts).
+        let mut records: Vec<&str> = raw.split(REC_SEP).collect();
+        if records.last() == Some(&"") {
+            records.pop();
+        }
+        records
+            .iter()
             .map(|rec| {
                 rec.split(ARG_SEP)
                     .filter(|a| !a.is_empty())
@@ -231,8 +239,13 @@ impl ToolSpec<'_> {
     fn render_script(&self, calls: &Path) -> String {
         let mut s = String::from("#!/bin/sh\n");
         // Record argv (excluding arg0) as ARG_SEP-joined, REC_SEP-terminated.
+        // Build the whole record in one variable and emit it with a single
+        // `printf` so the append is one atomic write — stages that invoke the
+        // tool in parallel (e.g. makeself) append concurrently, and two
+        // separate writes per call would interleave and merge records.
         s.push_str(&format!(
-            "{{ printf '%s{arg}' \"$@\"; printf '{rec}'; }} >> {log}\n",
+            "__r=''\nfor __a in \"$@\"; do __r=\"${{__r}}${{__a}}{arg}\"; done\n\
+             printf '%s{rec}' \"$__r\" >> {log}\n",
             arg = ARG_SEP,
             rec = REC_SEP,
             log = sh_quote(&calls.to_string_lossy()),

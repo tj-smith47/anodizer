@@ -1554,8 +1554,19 @@ dockerhub:
             if let Ok((mut stream, _)) = listener.accept() {
                 let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
                 let mut buf = [0u8; 4096];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let mut req = String::new();
+                // Read until the header terminator so a header line split across
+                // TCP segments can't be missed (there is no request body).
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    req.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if req.contains("\r\n\r\n") {
+                        break;
+                    }
+                }
                 let _ = stream.write_all(
                     b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
                 );
