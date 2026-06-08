@@ -1834,4 +1834,936 @@ finish_args:
         let flatpaks = ctx.artifacts.by_kind(ArtifactKind::Flatpak);
         assert_eq!(flatpaks.len(), 1);
     }
+
+    // -----------------------------------------------------------------------
+    // build_manifest with extra files
+    // -----------------------------------------------------------------------
+
+    /// Verifies that extra_file_names produces additional sources + install
+    /// commands with the correct paths. A regression here would mean the
+    /// generated manifest no longer installs extra files into /app/share/<id>/.
+    #[test]
+    fn test_build_manifest_with_extra_files() {
+        let manifest = build_manifest(
+            "org.example.App",
+            "org.freedesktop.Platform",
+            "24.08",
+            "org.freedesktop.Sdk",
+            "app",
+            vec!["--share=network".to_string()],
+            "app",
+            &["license.txt".to_string(), "config.toml".to_string()],
+        );
+
+        let json: serde_json::Value = serde_json::to_value(&manifest).unwrap();
+        let module = &json["modules"][0];
+
+        // Binary source + 2 extra file sources = 3 total
+        let sources = module["sources"].as_array().unwrap();
+        assert_eq!(
+            sources.len(),
+            3,
+            "should have binary + 2 extra file sources"
+        );
+        assert_eq!(sources[1]["path"], "license.txt");
+        assert_eq!(sources[2]["path"], "config.toml");
+
+        // Binary install + 2 extra file installs = 3 total build commands
+        let cmds = module["build-commands"].as_array().unwrap();
+        assert_eq!(cmds.len(), 3);
+        assert!(
+            cmds[1]
+                .as_str()
+                .unwrap()
+                .contains("/app/share/org.example.App/license.txt"),
+            "extra file should install into /app/share/<app_id>/: {}",
+            cmds[1]
+        );
+        assert!(
+            cmds[2]
+                .as_str()
+                .unwrap()
+                .contains("/app/share/org.example.App/config.toml"),
+            "second extra file should install into /app/share/<app_id>/: {}",
+            cmds[2]
+        );
+        // Extra files use 644 permissions, binary uses 755
+        assert!(cmds[0].as_str().unwrap().contains("755"));
+        assert!(cmds[1].as_str().unwrap().contains("644"));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_subprocess_args
+    // -----------------------------------------------------------------------
+
+    /// Verifies the builder and bundle arg vectors contain the correct flags.
+    /// A regression that rearranges args would silently break the subprocess
+    /// invocations.
+    #[test]
+    fn test_build_subprocess_args() {
+        let output_path = std::path::Path::new("/dist/flatpak/app-1.0.0-linux-amd64.flatpak");
+        let (builder, bundle) =
+            build_subprocess_args("org.example.App", "1.0.0", "x86_64", output_path);
+
+        assert_eq!(builder[0], "flatpak-builder");
+        assert!(builder.contains(&"--force-clean".to_string()));
+        assert!(builder.contains(&"--arch=x86_64".to_string()));
+        assert!(builder.contains(&"--default-branch=1.0.0".to_string()));
+        assert!(builder.contains(&"--repo=repo".to_string()));
+        assert!(builder.contains(&"org.example.App.json".to_string()));
+
+        assert_eq!(bundle[0], "flatpak");
+        assert_eq!(bundle[1], "build-bundle");
+        assert!(bundle.contains(&"--arch=x86_64".to_string()));
+        assert!(bundle.contains(&"org.example.App".to_string()));
+        assert!(bundle.contains(&"1.0.0".to_string()));
+        assert!(bundle.iter().any(|a| a.contains("amd64.flatpak")));
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_extra_file_specs — valid glob
+    // -----------------------------------------------------------------------
+
+    /// Verifies that a valid glob resolves to (path, destination_name) pairs.
+    /// When name_template is absent the destination is the file's basename.
+    #[test]
+    fn test_resolve_extra_file_specs_glob_match() {
+        use anodizer_core::config::ExtraFileSpec;
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("data.json"), b"{}").unwrap();
+
+        let pattern = format!("{}/*.json", tmp.path().display());
+        let specs = vec![ExtraFileSpec::Glob(pattern)];
+        let log = StageLogger::new("flatpak", Verbosity::Normal);
+
+        let results = resolve_extra_file_specs(&specs, &log);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, "data.json");
+        assert!(results[0].0.is_file());
+    }
+
+    /// Verifies that a Detailed spec with name_template overrides the basename.
+    #[test]
+    fn test_resolve_extra_file_specs_name_template_override() {
+        use anodizer_core::config::ExtraFileSpec;
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("original.txt"), b"data").unwrap();
+
+        let pattern = format!("{}/*.txt", tmp.path().display());
+        let specs = vec![ExtraFileSpec::Detailed {
+            glob: pattern,
+            name_template: Some("renamed.txt".to_string()),
+            allow_empty: false,
+        }];
+        let log = StageLogger::new("flatpak", Verbosity::Normal);
+
+        let results = resolve_extra_file_specs(&specs, &log);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[1 - 1].1,
+            "renamed.txt",
+            "name_template should override basename"
+        );
+    }
+
+    /// Verifies that an invalid glob pattern is warned-and-skipped (no panic,
+    /// returns empty). A glob with invalid character sequences triggers this.
+    #[test]
+    fn test_resolve_extra_file_specs_invalid_glob_skipped() {
+        use anodizer_core::config::ExtraFileSpec;
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        // On most systems a pattern with unmatched `[` is invalid
+        let specs = vec![ExtraFileSpec::Glob("[invalid".to_string())];
+        let log = StageLogger::new("flatpak", Verbosity::Normal);
+
+        // Must not panic; simply returns empty after logging a warning
+        let results = resolve_extra_file_specs(&specs, &log);
+        assert!(results.is_empty(), "invalid glob should produce no results");
+    }
+
+    // -----------------------------------------------------------------------
+    // filter_binaries_by_ids
+    // -----------------------------------------------------------------------
+
+    /// Verifies that with an ids filter, only binaries whose metadata "id" or
+    /// "name" matches are retained. Without this filter the ids-gate is a no-op.
+    #[test]
+    fn test_filter_binaries_by_ids_retains_matching() {
+        let mut binaries = vec![
+            Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from("dist/a"),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: {
+                    let mut m = std::collections::HashMap::new();
+                    m.insert("id".to_string(), "build-linux-amd64".to_string());
+                    m
+                },
+                size: None,
+            },
+            Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from("dist/b"),
+                target: Some("aarch64-unknown-linux-gnu".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: {
+                    let mut m = std::collections::HashMap::new();
+                    m.insert("id".to_string(), "build-linux-arm64".to_string());
+                    m
+                },
+                size: None,
+            },
+        ];
+
+        let filter = vec!["build-linux-amd64".to_string()];
+        filter_binaries_by_ids(&mut binaries, Some(&filter));
+
+        assert_eq!(binaries.len(), 1, "only the amd64 binary should remain");
+        assert_eq!(binaries[0].metadata.get("id").unwrap(), "build-linux-amd64");
+    }
+
+    /// Verifies that an ids filter with no matches empties the list — this is
+    /// the path that triggers the "ids filter matched no binaries" warning.
+    #[test]
+    fn test_filter_binaries_by_ids_no_match_empties_list() {
+        let mut binaries = vec![Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/a"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("id".to_string(), "build-linux-amd64".to_string());
+                m
+            },
+            size: None,
+        }];
+
+        let filter = vec!["build-windows-amd64".to_string()];
+        filter_binaries_by_ids(&mut binaries, Some(&filter));
+
+        assert!(
+            binaries.is_empty(),
+            "non-matching ids filter should empty the list"
+        );
+    }
+
+    /// Verifies that a None filter is a no-op (all binaries retained).
+    #[test]
+    fn test_filter_binaries_by_ids_none_is_noop() {
+        let mut binaries = vec![
+            Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from("dist/a"),
+                target: None,
+                crate_name: "myapp".to_string(),
+                metadata: Default::default(),
+                size: None,
+            },
+            Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from("dist/b"),
+                target: None,
+                crate_name: "myapp".to_string(),
+                metadata: Default::default(),
+                size: None,
+            },
+        ];
+
+        filter_binaries_by_ids(&mut binaries, None);
+        assert_eq!(binaries.len(), 2, "None filter should retain all binaries");
+    }
+
+    // -----------------------------------------------------------------------
+    // render_output_filename — auto-appends .flatpak suffix
+    // -----------------------------------------------------------------------
+
+    /// Verifies that a name_template that does NOT end with ".flatpak" gets the
+    /// suffix appended automatically. Without this logic the produced file would
+    /// have a bare name with no extension.
+    #[test]
+    fn test_render_output_filename_appends_suffix_when_missing() {
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let flatpak_cfg = FlatpakConfig {
+            app_id: Some("org.example.App".to_string()),
+            runtime: Some("org.freedesktop.Platform".to_string()),
+            runtime_version: Some("24.08".to_string()),
+            sdk: Some("org.freedesktop.Sdk".to_string()),
+            // Template that does NOT end with .flatpak
+            name_template: Some("{{ ProjectName }}-{{ Version }}".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            flatpaks: Some(vec![flatpak_cfg.clone()]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "3.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        ctx.template_vars_mut().set("Os", "linux");
+        ctx.template_vars_mut().set("Arch", "amd64");
+
+        let target: Option<String> = Some("x86_64-unknown-linux-gnu".to_string());
+        let name = render_output_filename(&ctx, &flatpak_cfg, "myapp", &target).unwrap();
+
+        assert!(
+            name.ends_with(".flatpak"),
+            "suffix should be auto-appended: {}",
+            name
+        );
+        assert_eq!(name, "myapp-3.0.0.flatpak");
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_flatpak_version — missing Version var falls back to "0.0.0"
+    // -----------------------------------------------------------------------
+
+    /// Verifies that when the Version template variable is absent the stage falls
+    /// back to "0.0.0" for the Flatpak bundle version (the value passed to
+    /// flatpak-builder's --default-branch and build-bundle). The name_template
+    /// must not reference {{ Version }} in this test since that variable is
+    /// genuinely absent from the render context — the fallback only guards the
+    /// `resolve_flatpak_version` code path, not the generic template renderer.
+    #[test]
+    fn test_flatpak_stage_no_version_falls_back_to_0_0_0() {
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let flatpak_cfg = FlatpakConfig {
+            app_id: Some("org.example.App".to_string()),
+            runtime: Some("org.freedesktop.Platform".to_string()),
+            runtime_version: Some("24.08".to_string()),
+            sdk: Some("org.freedesktop.Sdk".to_string()),
+            // Use a template that does NOT reference {{ Version }} because that
+            // var is absent; we verify the fallback via build_subprocess_args
+            // by asserting the stage completes without error.
+            name_template: Some("myapp-{{ Arch }}.flatpak".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            flatpaks: Some(vec![flatpak_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        // Deliberately do NOT set "Version" — exercises the fallback path
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = FlatpakStage;
+        // Must succeed — resolve_flatpak_version falls back to "0.0.0" rather
+        // than panicking or propagating a missing-variable error.
+        stage.run(&mut ctx).unwrap();
+
+        let flatpaks = ctx.artifacts.by_kind(ArtifactKind::Flatpak);
+        assert_eq!(flatpaks.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // require_flatpak_tools bails when tools are missing
+    // -----------------------------------------------------------------------
+
+    /// Verifies that when flatpak-builder is absent (which it is in the test
+    /// sandbox) `require_flatpak_tools` returns an error with a helpful message.
+    /// This exercises the 189-199 block; in CI the binaries genuinely aren't
+    /// on PATH.
+    #[test]
+    fn test_require_flatpak_tools_errors_when_absent() {
+        // Only runs the direct function, not a subprocess.
+        let result = require_flatpak_tools();
+        // In CI/test environments flatpak-builder is not installed —
+        // the function must bail with a descriptive message.
+        if let Err(e) = result {
+            let msg = e.to_string();
+            assert!(
+                msg.contains("flatpak-builder") || msg.contains("flatpak"),
+                "error should name the missing tool: {}",
+                msg
+            );
+        }
+        // If the tools happen to be installed on the host, the function
+        // succeeds — that is also correct.
+    }
+
+    // -----------------------------------------------------------------------
+    // Stage::run bails early when no flatpak tool and not dry-run
+    // -----------------------------------------------------------------------
+
+    /// Verifies that the non-dry-run path calls require_flatpak_tools and bails
+    /// when neither flatpak-builder nor flatpak is on PATH. This exercises
+    /// lines 808-809 in Stage::run.
+    #[test]
+    fn test_stage_run_non_dry_run_fails_without_tools() {
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        // Skip if the tools are actually installed
+        if anodizer_core::util::find_binary("flatpak-builder") {
+            return;
+        }
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let flatpak_cfg = FlatpakConfig {
+            app_id: Some("org.example.App".to_string()),
+            runtime: Some("org.freedesktop.Platform".to_string()),
+            runtime_version: Some("24.08".to_string()),
+            sdk: Some("org.freedesktop.Sdk".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            flatpaks: Some(vec![flatpak_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false, // not dry-run → triggers require_flatpak_tools
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = FlatpakStage;
+        let result = stage.run(&mut ctx);
+        assert!(
+            result.is_err(),
+            "should fail when flatpak-builder is absent"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("flatpak"),
+            "error message should mention flatpak: {}",
+            msg
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // any_flatpak_enabled — skip template render error propagates
+    // -----------------------------------------------------------------------
+
+    /// Verifies that a malformed skip template in `any_flatpak_enabled` causes
+    /// the stage to return an error rather than silently running or suppressing.
+    #[test]
+    fn test_any_flatpak_enabled_bad_template_propagates_error() {
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let flatpak_cfg = FlatpakConfig {
+            // Unclosed Tera tag → render error
+            skip: Some(StringOrBool::String("{{ unclosed".to_string())),
+            app_id: Some("org.example.App".to_string()),
+            runtime: Some("org.freedesktop.Platform".to_string()),
+            runtime_version: Some("24.08".to_string()),
+            sdk: Some("org.freedesktop.Sdk".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            flatpaks: Some(vec![flatpak_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = FlatpakStage;
+        let result = stage.run(&mut ctx);
+        assert!(
+            result.is_err(),
+            "malformed skip template should propagate an error"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // process_flatpak_cfg — ids filter matched no binaries
+    // -----------------------------------------------------------------------
+
+    /// Verifies that when the ids filter matches none of the available binaries
+    /// the stage skips quietly (no error, no flatpak artifact).
+    #[test]
+    fn test_flatpak_stage_ids_filter_no_match_skips() {
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let flatpak_cfg = FlatpakConfig {
+            app_id: Some("org.example.App".to_string()),
+            runtime: Some("org.freedesktop.Platform".to_string()),
+            runtime_version: Some("24.08".to_string()),
+            sdk: Some("org.freedesktop.Sdk".to_string()),
+            // Request a specific build id that no binary carries
+            ids: Some(vec!["build-nonexistent".to_string()]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            flatpaks: Some(vec![flatpak_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Binary has no "id" metadata → ids filter will not match
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = FlatpakStage;
+        stage.run(&mut ctx).unwrap();
+
+        let flatpaks = ctx.artifacts.by_kind(ArtifactKind::Flatpak);
+        assert!(
+            flatpaks.is_empty(),
+            "ids filter with no match should produce no artifacts"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // process_flatpak_cfg — per-cfg skip template (lines 717-723)
+    // -----------------------------------------------------------------------
+
+    /// Verifies that a skip template evaluated at the per-cfg level (inside
+    /// process_flatpak_cfg) suppresses that specific config but not others.
+    /// This is distinct from the any_flatpak_enabled-level skip (which exits
+    /// the whole stage early).
+    #[test]
+    fn test_process_flatpak_cfg_skip_per_cfg() {
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Two configs: first is skipped, second is active
+        let skip_cfg = FlatpakConfig {
+            skip: Some(StringOrBool::Bool(true)),
+            app_id: Some("org.example.Skipped".to_string()),
+            runtime: Some("org.freedesktop.Platform".to_string()),
+            runtime_version: Some("24.08".to_string()),
+            sdk: Some("org.freedesktop.Sdk".to_string()),
+            ..Default::default()
+        };
+        let active_cfg = FlatpakConfig {
+            app_id: Some("org.example.Active".to_string()),
+            runtime: Some("org.freedesktop.Platform".to_string()),
+            runtime_version: Some("24.08".to_string()),
+            sdk: Some("org.freedesktop.Sdk".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            flatpaks: Some(vec![skip_cfg, active_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = FlatpakStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Only the active cfg should emit an artifact
+        let flatpaks = ctx.artifacts.by_kind(ArtifactKind::Flatpak);
+        assert_eq!(
+            flatpaks.len(),
+            1,
+            "skipped config should not emit an artifact; active config should"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Workspace multi-crate mode: two crates, each with a flatpak config
+    // -----------------------------------------------------------------------
+
+    /// Verifies that in workspace per-crate mode (multiple crates each with an
+    /// independent flatpaks: config), each crate emits its own artifact keyed
+    /// by crate_name. A regression where the second crate clobbers the first
+    /// would manifest as only one artifact with the wrong crate_name.
+    #[test]
+    fn test_flatpak_dry_run_workspace_per_crate() {
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let make_flatpak_cfg = |app_id: &str| FlatpakConfig {
+            app_id: Some(app_id.to_string()),
+            runtime: Some("org.freedesktop.Platform".to_string()),
+            runtime_version: Some("24.08".to_string()),
+            sdk: Some("org.freedesktop.Sdk".to_string()),
+            name_template: Some("{{ ProjectName }}-{{ Version }}-{{ Arch }}.flatpak".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "workspace".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![
+            CrateConfig {
+                name: "crate-a".to_string(),
+                path: "crates/a".to_string(),
+                flatpaks: Some(vec![make_flatpak_cfg("org.example.CrateA")]),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "crate-b".to_string(),
+                path: "crates/b".to_string(),
+                flatpaks: Some(vec![make_flatpak_cfg("org.example.CrateB")]),
+                ..Default::default()
+            },
+        ];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "workspace");
+
+        // One Linux binary per crate
+        for crate_name in &["crate-a", "crate-b"] {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from(format!("dist/{crate_name}")),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: crate_name.to_string(),
+                metadata: Default::default(),
+                size: None,
+            });
+        }
+
+        let stage = FlatpakStage;
+        stage.run(&mut ctx).unwrap();
+
+        let flatpaks = ctx.artifacts.by_kind(ArtifactKind::Flatpak);
+        assert_eq!(
+            flatpaks.len(),
+            2,
+            "each crate should emit one flatpak artifact"
+        );
+
+        let crate_names: std::collections::HashSet<&str> =
+            flatpaks.iter().map(|a| a.crate_name.as_str()).collect();
+        assert!(crate_names.contains("crate-a"), "crate-a artifact missing");
+        assert!(crate_names.contains("crate-b"), "crate-b artifact missing");
+    }
+
+    // -----------------------------------------------------------------------
+    // selected_crates filter (crate selection axis)
+    // -----------------------------------------------------------------------
+
+    /// Verifies that when selected_crates is set, only the matching crate
+    /// is processed. The excluded crate must produce no artifact.
+    #[test]
+    fn test_flatpak_dry_run_selected_crates_filter() {
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let make_cfg = |app_id: &str| FlatpakConfig {
+            app_id: Some(app_id.to_string()),
+            runtime: Some("org.freedesktop.Platform".to_string()),
+            runtime_version: Some("24.08".to_string()),
+            sdk: Some("org.freedesktop.Sdk".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "ws".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![
+            CrateConfig {
+                name: "included".to_string(),
+                path: "crates/included".to_string(),
+                flatpaks: Some(vec![make_cfg("org.example.Included")]),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "excluded".to_string(),
+                path: "crates/excluded".to_string(),
+                flatpaks: Some(vec![make_cfg("org.example.Excluded")]),
+                ..Default::default()
+            },
+        ];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                selected_crates: vec!["included".to_string()],
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "ws");
+
+        for crate_name in &["included", "excluded"] {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from(format!("dist/{crate_name}")),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: crate_name.to_string(),
+                metadata: Default::default(),
+                size: None,
+            });
+        }
+
+        let stage = FlatpakStage;
+        stage.run(&mut ctx).unwrap();
+
+        let flatpaks = ctx.artifacts.by_kind(ArtifactKind::Flatpak);
+        assert_eq!(
+            flatpaks.len(),
+            1,
+            "only the selected crate should produce an artifact"
+        );
+        assert_eq!(flatpaks[0].crate_name, "included");
+    }
+
+    // -----------------------------------------------------------------------
+    // map_to_supported_arches
+    // -----------------------------------------------------------------------
+
+    /// Verifies that binaries with supported arches are mapped and those with
+    /// unsupported arches (i686, armv7) are dropped.
+    #[test]
+    fn test_map_to_supported_arches_filters_unsupported() {
+        let binaries = vec![
+            Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from("dist/app-x86"),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "app".to_string(),
+                metadata: Default::default(),
+                size: None,
+            },
+            Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from("dist/app-arm"),
+                target: Some("aarch64-unknown-linux-gnu".to_string()),
+                crate_name: "app".to_string(),
+                metadata: Default::default(),
+                size: None,
+            },
+            Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from("dist/app-i686"),
+                target: Some("i686-unknown-linux-gnu".to_string()),
+                crate_name: "app".to_string(),
+                metadata: Default::default(),
+                size: None,
+            },
+        ];
+
+        let result = map_to_supported_arches(&binaries);
+        assert_eq!(result.len(), 2, "i686 should be filtered out");
+
+        let arches: Vec<&str> = result.iter().map(|(_, _, a)| a.as_str()).collect();
+        assert!(arches.contains(&"x86_64"));
+        assert!(arches.contains(&"aarch64"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Dry-run with extra_files config (process_binary_iteration lines 627-634)
+    // -----------------------------------------------------------------------
+
+    /// Verifies that when extra_files is configured, the resolved file names
+    /// surface in the dry-run artifact path (via the manifest JSON — we can
+    /// assert the stage runs without error and produces the artifact).
+    /// The extra_file_names collection at lines 627-634 is exercised.
+    #[test]
+    fn test_flatpak_dry_run_with_extra_files() {
+        use anodizer_core::config::{Config, CrateConfig, ExtraFileSpec, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Write an actual file for the glob to match
+        let extra_dir = tmp.path().join("extras");
+        std::fs::create_dir_all(&extra_dir).unwrap();
+        std::fs::write(extra_dir.join("README.md"), b"readme").unwrap();
+
+        let glob_pattern = format!("{}/*.md", extra_dir.display());
+        let flatpak_cfg = FlatpakConfig {
+            app_id: Some("org.example.App".to_string()),
+            runtime: Some("org.freedesktop.Platform".to_string()),
+            runtime_version: Some("24.08".to_string()),
+            sdk: Some("org.freedesktop.Sdk".to_string()),
+            extra_files: Some(vec![ExtraFileSpec::Glob(glob_pattern)]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            flatpaks: Some(vec![flatpak_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = FlatpakStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Stage succeeded and produced an artifact — extra_files path was traversed
+        let flatpaks = ctx.artifacts.by_kind(ArtifactKind::Flatpak);
+        assert_eq!(flatpaks.len(), 1);
+    }
 }

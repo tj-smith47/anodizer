@@ -2768,4 +2768,61 @@ mod tests {
              to Ok(()) before the archive-set check",
         );
     }
+
+    // -----------------------------------------------------------------------
+    // quote_pkgdesc
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn quote_pkgdesc_plain_uses_double_quotes() {
+        assert_eq!(quote_pkgdesc("A great tool"), "\"A great tool\"");
+    }
+
+    #[test]
+    fn quote_pkgdesc_double_quote_only_switches_to_single() {
+        assert_eq!(quote_pkgdesc("Say \"hi\" now"), "'Say \"hi\" now'");
+    }
+
+    #[test]
+    fn quote_pkgdesc_apostrophe_only_keeps_double() {
+        assert_eq!(quote_pkgdesc("don't panic"), "\"don't panic\"");
+    }
+
+    #[test]
+    fn quote_pkgdesc_both_quotes_escapes_apostrophe() {
+        // contains both ' and " -> single-quote wrap with shell-escaped '.
+        assert_eq!(quote_pkgdesc("it's \"quoted\""), "'it'\\''s \"quoted\"'");
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_archive_extension
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_archive_extension_compound_tarballs() {
+        assert_eq!(
+            extract_archive_extension("https://x/a-1.0-linux.tar.gz"),
+            "tar.gz"
+        );
+        assert_eq!(extract_archive_extension("https://x/a.tar.xz"), "tar.xz");
+        assert_eq!(extract_archive_extension("https://x/a.tar.zst"), "tar.zst");
+    }
+
+    #[test]
+    fn extract_archive_extension_simple() {
+        assert_eq!(extract_archive_extension("https://x/a.zip"), "zip");
+    }
+
+    #[test]
+    fn extract_archive_extension_strips_query_and_fragment() {
+        assert_eq!(
+            extract_archive_extension("https://x/a.tar.gz?token=abc#frag"),
+            "tar.gz"
+        );
+    }
+
+    #[test]
+    fn extract_archive_extension_no_extension_yields_empty() {
+        assert_eq!(extract_archive_extension("https://x/release/binary"), "");
+    }
 }

@@ -2307,6 +2307,7 @@ fn rewrite_and_stage_version_files(
 }
 
 /// One planned `version_files` rewrite: rewrite `old` → `new` in `file`.
+#[derive(Debug, PartialEq)]
 struct VersionFileRewrite {
     file: String,
     old: String,
@@ -3823,5 +3824,346 @@ tag_post_hooks:
         let json = serde_json::to_string(&versions).unwrap();
         // serde_json::to_string for a single-entry map is deterministic.
         assert_eq!(json, "{\"cfgd-core\":\"0.4.0\"}");
+    }
+
+    // -----------------------------------------------------------------------
+    // skip_ci_suffix
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn skip_ci_suffix_on_appends_marker_with_leading_space() {
+        assert_eq!(skip_ci_suffix(true), " [skip ci]");
+    }
+
+    #[test]
+    fn skip_ci_suffix_off_is_empty() {
+        assert_eq!(skip_ci_suffix(false), "");
+    }
+
+    // -----------------------------------------------------------------------
+    // shared_tag_prefix
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn shared_tag_prefix_uniform_prefix_returns_it() {
+        let crates = vec![
+            crate_cfg("a", "crates/a", "v{{ .Version }}"),
+            crate_cfg("b", "crates/b", "v{{ .Version }}"),
+        ];
+        assert_eq!(shared_tag_prefix(&crates), Some("v".to_string()));
+    }
+
+    #[test]
+    fn shared_tag_prefix_divergent_prefixes_returns_none() {
+        let crates = vec![
+            crate_cfg("a", "crates/a", "a-v{{ .Version }}"),
+            crate_cfg("b", "crates/b", "b-v{{ .Version }}"),
+        ];
+        assert_eq!(shared_tag_prefix(&crates), None);
+    }
+
+    #[test]
+    fn shared_tag_prefix_single_crate_returns_its_prefix() {
+        let crates = vec![crate_cfg("core", "crates/core", "core-v{{ .Version }}")];
+        assert_eq!(shared_tag_prefix(&crates), Some("core-v".to_string()));
+    }
+
+    #[test]
+    fn shared_tag_prefix_empty_slice_returns_none() {
+        assert_eq!(shared_tag_prefix(&[]), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // bare_version_from_tag
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bare_version_from_tag_strips_v_prefix() {
+        assert_eq!(bare_version_from_tag("v1.2.3"), Some("1.2.3".to_string()));
+    }
+
+    #[test]
+    fn bare_version_from_tag_keeps_prerelease() {
+        assert_eq!(
+            bare_version_from_tag("v0.4.0-beta.1"),
+            Some("0.4.0-beta.1".to_string())
+        );
+    }
+
+    #[test]
+    fn bare_version_from_tag_handles_monorepo_prefix() {
+        assert_eq!(
+            bare_version_from_tag("core-v2.0.1"),
+            Some("2.0.1".to_string())
+        );
+    }
+
+    #[test]
+    fn bare_version_from_tag_empty_is_none() {
+        assert_eq!(bare_version_from_tag(""), None);
+    }
+
+    #[test]
+    fn bare_version_from_tag_non_semver_is_none() {
+        assert_eq!(bare_version_from_tag("not-a-version"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // message_has_token (whole-word, not substring)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn message_has_token_matches_standalone_word() {
+        assert!(message_has_token("fix: a bug #patch", "#patch"));
+    }
+
+    #[test]
+    fn message_has_token_rejects_substring_within_word() {
+        assert!(!message_has_token("this is #handsome", "#hand"));
+        assert!(!message_has_token("#patches galore", "#patch"));
+    }
+
+    #[test]
+    fn message_has_token_matches_token_anywhere_in_whitespace_split() {
+        assert!(message_has_token(
+            "subject\nbody line #major footer",
+            "#major"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // detect_conventional_bump
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn detect_conventional_bump_feat_is_minor() {
+        let msgs = vec!["feat: add thing".to_string()];
+        assert_eq!(detect_conventional_bump(&msgs), Some(BumpKind::Minor));
+    }
+
+    #[test]
+    fn detect_conventional_bump_fix_is_patch() {
+        let msgs = vec!["fix(core): correct it".to_string()];
+        assert_eq!(detect_conventional_bump(&msgs), Some(BumpKind::Patch));
+    }
+
+    #[test]
+    fn detect_conventional_bump_breaking_shorthand_is_major() {
+        let msgs = vec!["feat!: drop old API".to_string()];
+        assert_eq!(detect_conventional_bump(&msgs), Some(BumpKind::Major));
+    }
+
+    #[test]
+    fn detect_conventional_bump_chore_only_is_none() {
+        let msgs = vec!["chore: bump deps".to_string(), "docs: tweak".to_string()];
+        assert_eq!(detect_conventional_bump(&msgs), None);
+    }
+
+    #[test]
+    fn detect_conventional_bump_major_wins_over_minor_and_patch() {
+        let msgs = vec![
+            "fix: x".to_string(),
+            "feat: y".to_string(),
+            "refactor!: z".to_string(),
+        ];
+        assert_eq!(detect_conventional_bump(&msgs), Some(BumpKind::Major));
+    }
+
+    // -----------------------------------------------------------------------
+    // plan_changelog_targets / collapse_targets_to_flat_aggregate /
+    // plan_version_files_rewrites — small fixture builder for GroupTagResult.
+    // -----------------------------------------------------------------------
+
+    fn group_result(
+        crate_names: &[&str],
+        new_tags: &[(&str, &str)],
+        version_updates: &[(&str, &str)],
+        old_version: Option<&str>,
+        prev_tag: Option<&str>,
+        crate_version_files: Vec<Vec<String>>,
+    ) -> GroupTagResult {
+        GroupTagResult {
+            crate_names: crate_names.iter().map(|s| s.to_string()).collect(),
+            new_tags: new_tags
+                .iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect(),
+            version_updates: version_updates
+                .iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect(),
+            old_version: old_version.map(str::to_string),
+            prev_tag: prev_tag.map(str::to_string),
+            crate_version_files,
+        }
+    }
+
+    #[test]
+    fn plan_changelog_targets_one_target_per_bumped_crate() {
+        let root = Path::new("/ws");
+        let groups = vec![
+            group_result(
+                &["core"],
+                &[("core-v0.2.0", "msg")],
+                &[("crates/core", "0.2.0")],
+                Some("0.1.0"),
+                Some("core-v0.1.0"),
+                vec![vec![]],
+            ),
+            group_result(
+                &["cli"],
+                &[("cli-v1.0.0", "msg")],
+                &[("crates/cli", "1.0.0")],
+                None,
+                None,
+                vec![vec![]],
+            ),
+        ];
+        let targets = plan_changelog_targets(root, &groups);
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].crate_name, "core");
+        assert_eq!(targets[0].crate_dir, root.join("crates/core"));
+        assert_eq!(targets[0].from_tag.as_deref(), Some("core-v0.1.0"));
+        assert_eq!(targets[0].to_version, "0.2.0");
+        assert_eq!(targets[0].full_tag, "core-v0.2.0");
+        assert_eq!(targets[1].crate_name, "cli");
+        assert_eq!(targets[1].from_tag, None);
+        assert_eq!(targets[1].full_tag, "cli-v1.0.0");
+    }
+
+    #[test]
+    fn collapse_targets_to_flat_aggregate_collapses_lockstep_set() {
+        let root = Path::new("/ws");
+        let groups = vec![group_result(
+            &["a", "b"],
+            &[("v0.5.0", "m"), ("v0.5.0", "m")],
+            &[("crates/a", "0.5.0"), ("crates/b", "0.5.0")],
+            Some("0.4.0"),
+            Some("v0.4.0"),
+            vec![vec![], vec![]],
+        )];
+        let mut targets = plan_changelog_targets(root, &groups);
+        assert_eq!(targets.len(), 2, "precondition: two per-crate targets");
+        let config = anodizer_core::config::Config {
+            project_name: "myproj".to_string(),
+            ..Default::default()
+        };
+        let collapsed = collapse_targets_to_flat_aggregate(&mut targets, root, Some(&config), true);
+        assert!(collapsed);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].crate_name, "myproj");
+        assert_eq!(targets[0].crate_dir, root.to_path_buf());
+        assert_eq!(targets[0].from_tag.as_deref(), Some("v0.4.0"));
+        assert_eq!(targets[0].to_version, "0.5.0");
+    }
+
+    #[test]
+    fn collapse_targets_to_flat_aggregate_noop_when_collapse_false() {
+        let root = Path::new("/ws");
+        let mut targets = plan_changelog_targets(
+            root,
+            &[group_result(
+                &["a", "b"],
+                &[("v1.0.0", "m"), ("v1.0.0", "m")],
+                &[("crates/a", "1.0.0"), ("crates/b", "1.0.0")],
+                Some("0.9.0"),
+                Some("v0.9.0"),
+                vec![vec![], vec![]],
+            )],
+        );
+        let config = anodizer_core::config::Config::default();
+        let collapsed =
+            collapse_targets_to_flat_aggregate(&mut targets, root, Some(&config), false);
+        assert!(!collapsed);
+        assert_eq!(targets.len(), 2, "targets must be left untouched");
+    }
+
+    #[test]
+    fn collapse_targets_to_flat_aggregate_noop_for_single_target() {
+        let root = Path::new("/ws");
+        let mut targets = plan_changelog_targets(
+            root,
+            &[group_result(
+                &["solo"],
+                &[("v1.0.0", "m")],
+                &[("crates/solo", "1.0.0")],
+                Some("0.9.0"),
+                Some("v0.9.0"),
+                vec![vec![]],
+            )],
+        );
+        let config = anodizer_core::config::Config::default();
+        assert!(!collapse_targets_to_flat_aggregate(
+            &mut targets,
+            root,
+            Some(&config),
+            true
+        ));
+        assert_eq!(targets.len(), 1);
+    }
+
+    #[test]
+    fn plan_version_files_rewrites_dedupes_identical_lockstep_pair() {
+        // Two crates in one group enroll the same file with the same (old,new):
+        // a lockstep set dedupes to a single rewrite.
+        let groups = vec![group_result(
+            &["a", "b"],
+            &[("v0.2.0", "m"), ("v0.2.0", "m")],
+            &[("crates/a", "0.2.0"), ("crates/b", "0.2.0")],
+            Some("0.1.0"),
+            Some("v0.1.0"),
+            vec![vec!["README.md".to_string()], vec!["README.md".to_string()]],
+        )];
+        let plan = plan_version_files_rewrites(&groups).unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].file, "README.md");
+        assert_eq!(plan[0].old, "0.1.0");
+        assert_eq!(plan[0].new, "0.2.0");
+    }
+
+    #[test]
+    fn plan_version_files_rewrites_conflicting_old_versions_bail() {
+        // Two crates enroll the SAME file but bump from different old versions:
+        // a file cannot hold two source versions in one tag run.
+        let groups = vec![
+            group_result(
+                &["a"],
+                &[("a-v0.2.0", "m")],
+                &[("crates/a", "0.2.0")],
+                Some("0.1.0"),
+                Some("a-v0.1.0"),
+                vec![vec!["shared.txt".to_string()]],
+            ),
+            group_result(
+                &["b"],
+                &[("b-v0.2.0", "m")],
+                &[("crates/b", "0.2.0")],
+                Some("0.1.5"),
+                Some("b-v0.1.5"),
+                vec![vec!["shared.txt".to_string()]],
+            ),
+        ];
+        let err = plan_version_files_rewrites(&groups)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("version_files conflict") && err.contains("shared.txt"),
+            "conflict must name the file, got: {err}"
+        );
+    }
+
+    #[test]
+    fn plan_version_files_rewrites_skips_group_with_no_old_version() {
+        // A first-tag group (old_version=None) has nothing to rewrite from.
+        let groups = vec![group_result(
+            &["new"],
+            &[("new-v0.1.0", "m")],
+            &[("crates/new", "0.1.0")],
+            None,
+            None,
+            vec![vec!["VERSION".to_string()]],
+        )];
+        let plan = plan_version_files_rewrites(&groups).unwrap();
+        assert!(plan.is_empty());
     }
 }

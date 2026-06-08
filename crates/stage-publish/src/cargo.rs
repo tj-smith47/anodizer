@@ -2414,8 +2414,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_cargo_publish_with_retry_recovers_from_propagation_lag() {
-        use std::os::unix::fs::PermissionsExt;
-
         let tmp = tempfile::tempdir().expect("tempdir");
         let counter = tmp.path().join("counter");
         let stub = tmp.path().join("cargo");
@@ -2433,10 +2431,17 @@ mod tests {
             counter = counter.display(),
         );
         std::fs::write(&stub, script).expect("write stub");
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod stub");
 
-        let cmd = vec![stub.display().to_string(), "publish".to_string()];
+        // Run the stub via `sh` instead of exec'ing it directly. A freshly
+        // written executable that another test thread forks across in the
+        // window before its write fd is closed trips ETXTBSY ("Text file
+        // busy") on execve; `sh` is a long-lived binary and the stub is only
+        // read, so the race cannot occur.
+        let cmd = vec![
+            "sh".to_string(),
+            stub.display().to_string(),
+            "publish".to_string(),
+        ];
         let log = anodizer_core::log::StageLogger::new(
             "publish-test",
             anodizer_core::log::Verbosity::Normal,
@@ -2468,8 +2473,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_cargo_publish_with_retry_does_not_retry_unrelated_failure() {
-        use std::os::unix::fs::PermissionsExt;
-
         let tmp = tempfile::tempdir().expect("tempdir");
         let counter = tmp.path().join("counter");
         let stub = tmp.path().join("cargo");
@@ -2483,10 +2486,14 @@ mod tests {
             counter = counter.display(),
         );
         std::fs::write(&stub, script).expect("write stub");
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod stub");
 
-        let cmd = vec![stub.display().to_string(), "publish".to_string()];
+        // See the recovery test above: route through `sh` to dodge the
+        // ETXTBSY race exec'ing a freshly-written stub under parallel tests.
+        let cmd = vec![
+            "sh".to_string(),
+            stub.display().to_string(),
+            "publish".to_string(),
+        ];
         let log = anodizer_core::log::StageLogger::new(
             "publish-test",
             anodizer_core::log::Verbosity::Normal,
@@ -2942,5 +2949,255 @@ features = ["extra"]
         let url = format!("http://{addr}/cf/gd/cfgd-core");
         let found = probe_dep_on_index(&client, &url, "0.4.0").expect("404 is not an error");
         assert!(!found);
+    }
+
+    // -----------------------------------------------------------------------
+    // expected_crate_path / parse_crate_name_version — predicted .crate path
+    // and round-trip parsing used by the rollback (yank) path.
+    // -----------------------------------------------------------------------
+
+    /// With no per-crate `target_dir`, the predicted `.crate` path lands
+    /// under `<project_root>/target/package/<name>-<version>.crate`.
+    #[test]
+    fn expected_crate_path_defaults_to_project_target() {
+        let root = std::path::Path::new("/repo");
+        let p = expected_crate_path(root, None, "cfgd-core", "0.4.0");
+        assert_eq!(
+            p,
+            std::path::PathBuf::from("/repo/target/package/cfgd-core-0.4.0.crate")
+        );
+    }
+
+    /// An explicit `target_dir` overrides the default `target/` base.
+    #[test]
+    fn expected_crate_path_honors_explicit_target_dir() {
+        let root = std::path::Path::new("/repo");
+        let td = std::path::Path::new("/custom/out");
+        let p = expected_crate_path(root, Some(td), "myapp", "1.2.3");
+        assert_eq!(
+            p,
+            std::path::PathBuf::from("/custom/out/package/myapp-1.2.3.crate")
+        );
+    }
+
+    /// `parse_crate_name_version` splits at the first `-<digit>` boundary, so
+    /// a hyphenated crate name keeps its hyphens and only the version is split
+    /// off.
+    #[test]
+    fn parse_crate_name_version_splits_hyphenated_name() {
+        let path = std::path::Path::new("dist/cfgd-core-0.4.0.crate");
+        assert_eq!(
+            parse_crate_name_version(path),
+            Some(("cfgd-core".to_string(), "0.4.0".to_string()))
+        );
+    }
+
+    /// Prerelease and build-metadata suffixes (which contain extra `-`)
+    /// stay attached to the version, not the name.
+    #[test]
+    fn parse_crate_name_version_keeps_prerelease_suffix_in_version() {
+        let path = std::path::Path::new("anodizer-0.2.1-rc.1.crate");
+        assert_eq!(
+            parse_crate_name_version(path),
+            Some(("anodizer".to_string(), "0.2.1-rc.1".to_string()))
+        );
+    }
+
+    /// A stem with no `-<digit>` boundary yields `None`.
+    #[test]
+    fn parse_crate_name_version_returns_none_without_version_boundary() {
+        let path = std::path::Path::new("noversion.crate");
+        assert_eq!(parse_crate_name_version(path), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Operator-facing log message helpers.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn run_start_and_done_messages_carry_counts() {
+        assert_eq!(
+            run_start_message(3),
+            "cargo: starting publish for 3 selected crate(s)"
+        );
+        assert_eq!(
+            run_per_crate_start_message("cfgd-core"),
+            "cargo: starting per-crate publish for 'cfgd-core'"
+        );
+        assert_eq!(
+            run_done_message(2),
+            "cargo: completed — 2 crate(s) processed"
+        );
+    }
+
+    #[test]
+    fn run_no_eligible_crates_warning_names_the_total() {
+        let w = run_no_eligible_crates_warning(5);
+        assert!(w.starts_with("cargo: registered but 0 of 5 effective crate(s)"));
+        assert!(w.contains("--crate / --all"));
+    }
+
+    // -----------------------------------------------------------------------
+    // strip_key_prefix — key-boundary check guarding `version` scans.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn strip_key_prefix_accepts_boundary_chars_only() {
+        // Whitespace, `=`, and `.` are valid boundaries after the key.
+        assert_eq!(
+            strip_key_prefix("version = \"1.0\"", "version"),
+            Some(" = \"1.0\"")
+        );
+        assert_eq!(
+            strip_key_prefix("version= \"1.0\"", "version"),
+            Some("= \"1.0\"")
+        );
+        assert_eq!(
+            strip_key_prefix("version.workspace = true", "version"),
+            Some(".workspace = true")
+        );
+        // A non-boundary continuation (`versioned`, `versions`) is rejected.
+        assert_eq!(strip_key_prefix("versioned = 1", "version"), None);
+        assert_eq!(strip_key_prefix("versions = []", "version"), None);
+        // Bare key with nothing after it is rejected (not a key=value line).
+        assert_eq!(strip_key_prefix("version", "version"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // scan_section_version — section scoping + literal/workspace/none.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn scan_section_version_reads_literal_and_strips_inline_comment() {
+        let body = "[package]\nname = \"x\"\nversion = \"1.2.3\" # pinned\n";
+        assert_eq!(
+            scan_section_version(body, "[package]"),
+            CargoVersionRef::Literal("1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn scan_section_version_detects_dot_and_inline_workspace_inherit() {
+        let dot = "[package]\nversion.workspace = true\n";
+        assert_eq!(
+            scan_section_version(dot, "[package]"),
+            CargoVersionRef::Workspace
+        );
+        let inline = "[package]\nversion = { workspace = true }\n";
+        assert_eq!(
+            scan_section_version(inline, "[package]"),
+            CargoVersionRef::Workspace
+        );
+    }
+
+    #[test]
+    fn scan_section_version_stops_at_sibling_section_but_not_subtable() {
+        // The version lives only in a SIBLING section -> None (scan stops at
+        // `[dependencies]`, never reaching it).
+        let sibling = "[package]\nname = \"x\"\n[dependencies]\nversion = \"9.9.9\"\n";
+        assert_eq!(
+            scan_section_version(sibling, "[package]"),
+            CargoVersionRef::None
+        );
+
+        // A sub-table of the logical block does NOT end the scan: the version
+        // after `[workspace.package.metadata.x]` is still found.
+        let subtable = concat!(
+            "[workspace.package]\n",
+            "[workspace.package.metadata.docs]\n",
+            "foo = 1\n",
+            "version = \"7.7.7\"\n",
+        );
+        assert_eq!(
+            scan_section_version(subtable, "[workspace.package]"),
+            CargoVersionRef::Literal("7.7.7".to_string())
+        );
+    }
+
+    #[test]
+    fn scan_section_version_skips_comment_lines() {
+        let body = "# comment\n[package]\n# version = \"0.0.0\"\nversion = \"4.5.6\"\n";
+        assert_eq!(
+            scan_section_version(body, "[package]"),
+            CargoVersionRef::Literal("4.5.6".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // read_cargo_toml_name — [package].name literal extraction.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn read_cargo_toml_name_reads_package_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"cfgd-core\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_cargo_toml_name(dir.path().to_str().unwrap()),
+            Some("cfgd-core".to_string())
+        );
+    }
+
+    /// Name in a non-`[package]` section is not picked up; absence yields None.
+    #[test]
+    fn read_cargo_toml_name_ignores_name_outside_package() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nversion = \"1.0.0\"\n[dependencies]\nname = \"not-the-package\"\n",
+        )
+        .unwrap();
+        assert_eq!(read_cargo_toml_name(dir.path().to_str().unwrap()), None);
+    }
+
+    #[test]
+    fn read_cargo_toml_name_returns_none_for_missing_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(read_cargo_toml_name(dir.path().to_str().unwrap()), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // find_workspace_root_manifest — anchored [workspace] header walk.
+    // -----------------------------------------------------------------------
+
+    /// Walks up from a leaf crate dir to the manifest carrying `[workspace]`.
+    #[test]
+    fn find_workspace_root_manifest_walks_up_to_workspace() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            root.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/leaf\"]\n",
+        )
+        .unwrap();
+        let leaf = root.path().join("crates").join("leaf");
+        std::fs::create_dir_all(&leaf).unwrap();
+        std::fs::write(
+            leaf.join("Cargo.toml"),
+            "[package]\nname = \"leaf\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let found = find_workspace_root_manifest(&leaf).expect("workspace root found");
+        assert_eq!(
+            std::fs::canonicalize(found).unwrap(),
+            std::fs::canonicalize(root.path().join("Cargo.toml")).unwrap()
+        );
+    }
+
+    /// A bare `[workspace.package.metadata.docs.rs]` sub-table in a leaf
+    /// manifest must NOT be mistaken for a workspace root (anchored exact
+    /// header match, not `starts_with`).
+    #[test]
+    fn find_workspace_root_manifest_ignores_metadata_subtable() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // Leaf-only manifest with a metadata sub-table but no real [workspace].
+        std::fs::write(
+            root.path().join("Cargo.toml"),
+            "[package]\nname = \"solo\"\n[workspace.package.metadata.docs.rs]\nall-features = true\n",
+        )
+        .unwrap();
+        assert_eq!(find_workspace_root_manifest(root.path()), None);
     }
 }

@@ -2696,3 +2696,1162 @@ fn test_render_preserves_emoji_in_literal_footer() {
     assert_eq!(result, "Released with [anodizer](https://x) 🦀");
     assert!(!result.contains('\u{f0}'), "no mojibake `ð`: {result:?}");
 }
+
+// ---- Coverage: value_to_string Bool / Array / Object arms (lines 22-23, 25) ----
+
+#[test]
+fn test_value_to_string_bool_arm_via_in_function() {
+    // `in` uses value_to_string on each item; a bool item exercises the Bool arm.
+    let vars = test_vars();
+    // The array contains a bool true; search for "true" (string match after stringification).
+    let result = render(
+        "{% set items = [true, false] %}{% if items | in(value=\"true\") %}yes{% else %}no{% endif %}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(result, "yes");
+}
+
+#[test]
+fn test_value_to_string_bool_false_arm_via_in_function() {
+    // Bool false → "false" via value_to_string Bool arm.
+    let vars = test_vars();
+    let result = render(
+        "{% set items = [true, false] %}{% if items | in(value=\"false\") %}yes{% else %}no{% endif %}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(result, "yes");
+}
+
+#[test]
+fn test_value_to_string_array_arm_via_printf_v() {
+    // %v of an array falls back to JSON representation (the "other" arm in value_to_string).
+    let mut vars = test_vars();
+    vars.set_structured("Arr", serde_json::json!(["a", "b"]));
+    let result = render("{{ printf \"%v\" Arr }}", &vars).unwrap();
+    // JSON representation of an array: ["a","b"] (Tera/serde_json compact form).
+    assert!(
+        !result.is_empty(),
+        "array should render via JSON fallback: {result}"
+    );
+    assert!(
+        result.contains("a") && result.contains("b"),
+        "got: {result}"
+    );
+}
+
+// ---- Coverage: pad — len >= width (line 64) ----
+
+#[test]
+fn test_printf_string_already_wider_than_width() {
+    // When the formatted value is already wider than the requested width,
+    // pad returns it unchanged (line 64 — early return when len >= width).
+    let vars = test_vars();
+    let result = render("{{ printf \"%2s\" \"hello\" }}", &vars).unwrap();
+    assert_eq!(result, "hello");
+}
+
+// ---- Coverage: pad zero-pad without sign/prefix (line 73) ----
+
+#[test]
+fn test_printf_zero_pad_string_verb() {
+    // %0Ns with a string: zero-pad is applied (no sign prefix for strings).
+    // This exercises the `else if spec.zero` branch (line 73) with None sign-prefix.
+    let vars = test_vars();
+    let result = render("{{ printf \"%05s\" \"hi\" }}", &vars).unwrap();
+    // Go pads strings with spaces, not zeros — zero-pad only applies to numbers.
+    // But our implementation routes through pad() with no sign prefix.
+    // The format "%05s" with a space-pad/zero-pad branch: since no numeric_sign_prefix
+    // the zero branch (line 73) applies → "000hi".
+    assert_eq!(result, "000hi");
+}
+
+// ---- Coverage: numeric_sign space flag (line 105) ----
+
+#[test]
+fn test_printf_space_flag_positive_int() {
+    // "% d" of a positive integer: space is prepended as sign (line 105 in numeric_sign).
+    let vars = test_vars();
+    let result = render("{{ printf \"% d\" 7 }}", &vars).unwrap();
+    assert_eq!(result, " 7");
+}
+
+#[test]
+fn test_printf_space_flag_negative_int() {
+    // "% d" of a negative integer: minus sign wins over space (numeric_sign returns "-").
+    let mut vars = test_vars();
+    vars.set_structured("Neg", Value::Number((-3i64).into()));
+    let result = render("{{ printf \"% d\" Neg }}", &vars).unwrap();
+    assert_eq!(result, "-3");
+}
+
+// ---- Coverage: go_exponent — no e/E in string (line 136) ----
+// go_exponent is called from format_g's exponential branch AND from %e/%E.
+// The "no e/E" early return (line 136) is a defensive branch. It IS reachable
+// from format_g's trim path when trim_fraction_zeros produces a value without
+// an exponent -- but in practice the exponential branch always has an `e`.
+// This branch cannot be reached through public API without instrumenting the
+// private function; skip it.
+
+// ---- Coverage: trim_fraction_zeros — no dot in string (line 158) ----
+
+#[test]
+fn test_printf_g_integer_value_no_dot() {
+    // trim_fraction_zeros is called in format_g decimal branch.
+    // format!("{}", 42.0_f64) → "42" (no dot in Rust), exercising line 158.
+    let mut vars = test_vars();
+    vars.set_structured(
+        "V",
+        Value::Number(serde_json::Number::from_f64(42.0).unwrap()),
+    );
+    let result = render("{{ printf \"%g\" V }}", &vars).unwrap();
+    // exp=1 < eprec=6 → decimal branch; "42" has no dot, trim_fraction_zeros passes through.
+    assert_eq!(result, "42");
+}
+
+// ---- Coverage: format_g decimal branch with explicit precision (lines 205-207) ----
+
+#[test]
+fn test_printf_g_explicit_precision_decimal_branch() {
+    // %.4g of 3.14159: exp=0, eprec=4, 0 < 4 → decimal branch with explicit precision.
+    // frac = (4 - (0+1)).max(0) = 3 fractional digits → "3.142", trimmed zeros → "3.142".
+    let vars = test_vars();
+    let result = render("{{ printf \"%.4g\" 3.14159 }}", &vars).unwrap();
+    assert_eq!(result, "3.142");
+}
+
+#[test]
+fn test_printf_g_explicit_precision_decimal_branch_rounds() {
+    // %.2g of 3.14: exp=0, eprec=2 → decimal branch; frac=(2-1)=1 → "3.1" trimmed.
+    let vars = test_vars();
+    let result = render("{{ printf \"%.2g\" 3.14 }}", &vars).unwrap();
+    assert_eq!(result, "3.1");
+}
+
+// ---- Coverage: sprintf literal %% (line 233) ----
+// Already covered by test_printf_percent_literal — included in existing suite.
+// Listing here as confirmation; no new test needed if the line is reported covered.
+
+// ---- Coverage: format_verb %c — invalid code point (lines 257-258) ----
+
+#[test]
+fn test_printf_c_verb_invalid_code_point() {
+    // A value > 0x10FFFF is not a valid Unicode scalar: %c must error.
+    let mut vars = test_vars();
+    vars.set_structured("Big", Value::Number((0x110000u64).into()));
+    let result = render("{{ printf \"%c\" Big }}", &vars);
+    assert!(result.is_err(), "%c with invalid code point must error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("valid code point") || msg.contains("%c"),
+        "got: {msg}"
+    );
+}
+
+// ---- Coverage: format_verb %d type error (line 275) ----
+
+#[test]
+fn test_printf_d_verb_string_type_error() {
+    // %d expects an integer; passing a non-numeric string should error.
+    let vars = test_vars();
+    let result = render("{{ printf \"%d\" \"hello\" }}", &vars);
+    assert!(result.is_err(), "%d with string must error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("expects an integer") || msg.contains("%d"),
+        "got: {msg}"
+    );
+}
+
+// ---- Coverage: format_verb %b/%o/%x/%X type error (line 279) ----
+
+#[test]
+fn test_printf_x_verb_string_type_error() {
+    // %x expects an integer; a float string should error.
+    let vars = test_vars();
+    let result = render("{{ printf \"%x\" \"nope\" }}", &vars);
+    assert!(result.is_err(), "%x with non-integer must error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("expects an integer") || msg.contains("%x"),
+        "got: {msg}"
+    );
+}
+
+#[test]
+fn test_printf_o_verb_string_type_error() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%o\" \"nope\" }}", &vars);
+    assert!(result.is_err(), "%o with non-integer must error");
+}
+
+#[test]
+fn test_printf_b_verb_string_type_error() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%b\" \"nope\" }}", &vars);
+    assert!(result.is_err(), "%b with non-integer must error");
+}
+
+// ---- Coverage: %b/%o prefix with # flag (lines 286, 292-296) ----
+
+#[test]
+fn test_printf_hash_binary_prefix() {
+    // %#b of 5 → "0b101" (line 286 prefix "0b").
+    let vars = test_vars();
+    let result = render("{{ printf \"%#b\" 5 }}", &vars).unwrap();
+    assert_eq!(result, "0b101");
+}
+
+#[test]
+fn test_printf_hash_octal_prefix() {
+    // %#o of 8 → "010" (line 292 prefix "0").
+    let vars = test_vars();
+    let result = render("{{ printf \"%#o\" 8 }}", &vars).unwrap();
+    assert_eq!(result, "010");
+}
+
+#[test]
+fn test_printf_hash_hex_upper_prefix() {
+    // %#X of 255 → "0XFF" (line 295 prefix "0X").
+    let vars = test_vars();
+    let result = render("{{ printf \"%#X\" 255 }}", &vars).unwrap();
+    assert_eq!(result, "0XFF");
+}
+
+// ---- Coverage: %f/%e/%E/%g/%G float type error (lines 305-306) ----
+
+#[test]
+fn test_printf_f_verb_string_type_error() {
+    // %f expects a numeric argument; a string should error.
+    let vars = test_vars();
+    let result = render("{{ printf \"%f\" \"nope\" }}", &vars);
+    assert!(result.is_err(), "%f with non-numeric must error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("expects a numeric") || msg.contains("%f"),
+        "got: {msg}"
+    );
+}
+
+#[test]
+fn test_printf_e_verb_string_type_error() {
+    let vars = test_vars();
+    let result = render("{{ printf \"%e\" \"nope\" }}", &vars);
+    assert!(result.is_err(), "%e with non-numeric must error");
+}
+
+// ---- Coverage: printf width overflow (line 369) ----
+// Already covered by test_printf_width_cap_errors.
+
+// ---- Coverage: sprintf empty precision "%.d" → precision 0 (line 413) ----
+
+#[test]
+fn test_printf_empty_precision_means_zero() {
+    // "%.d" means precision=0; for %d, precision 0 of value 0 → empty string.
+    let mut vars = test_vars();
+    vars.set_structured("Z", Value::Number(0i64.into()));
+    let result = render("{{ printf \"%.d\" Z }}", &vars).unwrap();
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_printf_empty_precision_nonzero_value() {
+    // "%.d" of 42: precision 0 means min-digit-count 0, but 42 already has 2 digits.
+    let vars = test_vars();
+    let result = render("{{ printf \"%.d\" 42 }}", &vars).unwrap();
+    assert_eq!(result, "42");
+}
+
+// ---- Coverage: BASE_TERA placeholder envOrDefault (lines 628-636) ----
+// The placeholder in BASE_TERA reads directly from std::env::var when called
+// without the render() override. Exercised by calling BASE_TERA directly.
+
+#[test]
+fn test_base_tera_env_or_default_placeholder_reads_process_env() {
+    use super::base_tera::BASE_TERA;
+    // Set a unique env var, then call the BASE_TERA placeholder directly.
+    let key = "ANODIZER_TEST_PLACEHOLDER_ENVDEFAULT";
+    // Ensure the var is absent — should return the default.
+    unsafe { std::env::remove_var(key) };
+    let mut tera = BASE_TERA.clone();
+    tera.add_raw_template(
+        "t",
+        "{{ envOrDefault(name=\"ANODIZER_TEST_PLACEHOLDER_ENVDEFAULT\", default=\"sentinel\") }}",
+    )
+    .unwrap();
+    let ctx = tera::Context::new();
+    let result = tera.render("t", &ctx).unwrap();
+    assert_eq!(result, "sentinel");
+}
+
+#[test]
+fn test_base_tera_env_or_default_placeholder_reads_set_var() {
+    use super::base_tera::BASE_TERA;
+    let key = "ANODIZER_TEST_PLACEHOLDER_ENVSET";
+    unsafe { std::env::set_var(key, "fromenv") };
+    let mut tera = BASE_TERA.clone();
+    tera.add_raw_template(
+        "t",
+        "{{ envOrDefault(name=\"ANODIZER_TEST_PLACEHOLDER_ENVSET\", default=\"missed\") }}",
+    )
+    .unwrap();
+    let ctx = tera::Context::new();
+    let result = tera.render("t", &ctx).unwrap();
+    unsafe { std::env::remove_var(key) };
+    assert_eq!(result, "fromenv");
+}
+
+// ---- Coverage: BASE_TERA placeholder isEnvSet (lines 640-647) ----
+
+#[test]
+fn test_base_tera_is_env_set_placeholder_unset() {
+    use super::base_tera::BASE_TERA;
+    let key = "ANODIZER_TEST_PLACEHOLDER_ISSET_UNSET";
+    unsafe { std::env::remove_var(key) };
+    let mut tera = BASE_TERA.clone();
+    tera.add_raw_template("t", "{% if isEnvSet(name=\"ANODIZER_TEST_PLACEHOLDER_ISSET_UNSET\") %}set{% else %}unset{% endif %}")
+        .unwrap();
+    let ctx = tera::Context::new();
+    let result = tera.render("t", &ctx).unwrap();
+    assert_eq!(result, "unset");
+}
+
+#[test]
+fn test_base_tera_is_env_set_placeholder_set() {
+    use super::base_tera::BASE_TERA;
+    let key = "ANODIZER_TEST_PLACEHOLDER_ISSET_SET";
+    unsafe { std::env::set_var(key, "yes") };
+    let mut tera = BASE_TERA.clone();
+    tera.add_raw_template("t", "{% if isEnvSet(name=\"ANODIZER_TEST_PLACEHOLDER_ISSET_SET\") %}set{% else %}unset{% endif %}")
+        .unwrap();
+    let ctx = tera::Context::new();
+    let result = tera.render("t", &ctx).unwrap();
+    unsafe { std::env::remove_var(key) };
+    assert_eq!(result, "set");
+}
+
+// ---- Coverage: hash fn file-read error (lines 700-701) ----
+
+#[test]
+fn test_hash_sha256_missing_file_errors() {
+    // sha256 (and all hash fns) must error (not silently return "") on a missing file.
+    let vars = test_vars();
+    let result = render(
+        "{{ sha256(s=\"/nonexistent/path/anodizer_test_missing_abc\") }}",
+        &vars,
+    );
+    assert!(result.is_err(), "hash of missing file must error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("failed to read file") || msg.contains("sha256"),
+        "got: {msg}"
+    );
+}
+
+// ---- Coverage: sha224 (lines 714-717) ----
+
+#[test]
+fn test_hash_sha224() {
+    let vars = test_vars();
+    let (_dir, path) = hash_test_file();
+    let tmpl = format!("{{{{ sha224(s=\"{path}\") }}}}");
+    let result = render(&tmpl, &vars).unwrap();
+    // Known SHA-224 of "hello": ea09ae9cc6768c50fcee903ed054556e5bfc8347907f12598aa24193
+    assert_eq!(
+        result,
+        "ea09ae9cc6768c50fcee903ed054556e5bfc8347907f12598aa24193"
+    );
+}
+
+// ---- Coverage: sha384 (lines 724-727) ----
+
+#[test]
+fn test_hash_sha384() {
+    let vars = test_vars();
+    let (_dir, path) = hash_test_file();
+    let tmpl = format!("{{{{ sha384(s=\"{path}\") }}}}");
+    let result = render(&tmpl, &vars).unwrap();
+    // Known SHA-384 of "hello"
+    assert_eq!(
+        result,
+        "59e1748777448c69de6b800d7a33bbfb9ff1b463e44354c3553bcdb9c666fa90125a3c79f90397bdf5f6a13de828684f"
+    );
+}
+
+// ---- Coverage: sha3_224 (lines 734-737) ----
+
+#[test]
+fn test_hash_sha3_224() {
+    let vars = test_vars();
+    let (_dir, path) = hash_test_file();
+    let tmpl = format!("{{{{ sha3_224(s=\"{path}\") }}}}");
+    let result = render(&tmpl, &vars).unwrap();
+    // Known SHA3-224 of "hello"
+    assert_eq!(
+        result,
+        "b87f88c72702fff1748e58b87e9141a42c0dbedc29a78cb0d4a5cd81"
+    );
+}
+
+// ---- Coverage: sha3_256 (lines 739-742) ----
+
+#[test]
+fn test_hash_sha3_256() {
+    let vars = test_vars();
+    let (_dir, path) = hash_test_file();
+    let tmpl = format!("{{{{ sha3_256(s=\"{path}\") }}}}");
+    let result = render(&tmpl, &vars).unwrap();
+    // Known SHA3-256 of "hello"
+    assert_eq!(
+        result,
+        "3338be694f50c5f338814986cdf0686453a888b84f424d792af4b9202398f392"
+    );
+}
+
+// ---- Coverage: sha3_384 (lines 744-747) ----
+
+#[test]
+fn test_hash_sha3_384() {
+    let vars = test_vars();
+    let (_dir, path) = hash_test_file();
+    let tmpl = format!("{{{{ sha3_384(s=\"{path}\") }}}}");
+    let result = render(&tmpl, &vars).unwrap();
+    // Known SHA3-384 of "hello"
+    assert_eq!(
+        result,
+        "720aea11019ef06440fbf05d87aa24680a2153df3907b23631e7177ce620fa1330ff07c0fddee54699a4c3ee0ee9d887"
+    );
+}
+
+// ---- Coverage: sha3_512 (lines 749-752) ----
+
+#[test]
+fn test_hash_sha3_512() {
+    let vars = test_vars();
+    let (_dir, path) = hash_test_file();
+    let tmpl = format!("{{{{ sha3_512(s=\"{path}\") }}}}");
+    let result = render(&tmpl, &vars).unwrap();
+    // Known SHA3-512 of "hello"
+    assert_eq!(
+        result,
+        "75d527c368f2efe848ecf6b073a36767800805e9eef2b1857d5f984f036eb6df891d75f72d9b154518c1cd58835286d1da9a38deba3de98b5a53e5ed78a84976"
+    );
+}
+
+// ---- Coverage: blake2b (lines 754-757) ----
+
+#[test]
+fn test_hash_blake2b() {
+    let vars = test_vars();
+    let (_dir, path) = hash_test_file();
+    let tmpl = format!("{{{{ blake2b(s=\"{path}\") }}}}");
+    let result = render(&tmpl, &vars).unwrap();
+    // blake2b-512 of "hello" — known vector
+    assert_eq!(
+        result,
+        "e4cfa39a3d37be31c59609e807970799caa68a19bfaa15135f165085e01d41a65ba1e1b146aeb6bd0092b49eac214c103ccfa3a365954bbbe52f74a2b3620c94"
+    );
+}
+
+// ---- Coverage: blake2s (lines 759-762) ----
+
+#[test]
+fn test_hash_blake2s() {
+    let vars = test_vars();
+    let (_dir, path) = hash_test_file();
+    let tmpl = format!("{{{{ blake2s(s=\"{path}\") }}}}");
+    let result = render(&tmpl, &vars).unwrap();
+    // blake2s-256 of "hello" — known vector
+    assert_eq!(
+        result,
+        "19213bacc58dee6dbde3ceb9a47cbb330b3d86f8cca8997eb00be456f140ca25"
+    );
+}
+
+// ---- Coverage: BASE_TERA time placeholder (lines 819-827) ----
+
+#[test]
+fn test_base_tera_time_placeholder_produces_date() {
+    use super::base_tera::BASE_TERA;
+    let mut tera = BASE_TERA.clone();
+    tera.add_raw_template("t", "{{ time(format=\"%Y-%m-%d\") }}")
+        .unwrap();
+    let ctx = tera::Context::new();
+    let result = tera.render("t", &ctx).unwrap();
+    assert_eq!(result.len(), 10, "expected YYYY-MM-DD, got: {result}");
+    assert_eq!(result.matches('-').count(), 2);
+}
+
+// ---- Coverage: abs filter — relative path (lines 856-866) ----
+
+#[test]
+fn test_abs_filter_relative_path() {
+    let mut vars = test_vars();
+    vars.set("RelPath", "some/relative/path");
+    let result = render("{{ RelPath | abs }}", &vars).unwrap();
+    // A relative path should be prefixed with the cwd.
+    assert!(
+        std::path::Path::new(&result).is_absolute(),
+        "abs filter on relative path must return absolute path: {result}"
+    );
+    assert!(result.ends_with("some/relative/path"), "got: {result}");
+}
+
+#[test]
+fn test_abs_filter_absolute_path_passthrough() {
+    let mut vars = test_vars();
+    vars.set("AbsPath", "/already/absolute");
+    let result = render("{{ AbsPath | abs }}", &vars).unwrap();
+    assert_eq!(result, "/already/absolute");
+}
+
+// ---- Coverage: list function (lines 931-937) ----
+
+#[test]
+fn test_list_function_creates_array() {
+    let vars = test_vars();
+    let result = render(
+        "{{ list(items=[\"x\", \"y\", \"z\"]) | join(sep=\",\") }}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(result, "x,y,z");
+}
+
+#[test]
+fn test_list_function_missing_items_error() {
+    let vars = test_vars();
+    let result = render("{{ list() }}", &vars);
+    assert!(result.is_err(), "list without items should error");
+}
+
+// ---- Coverage: map function — odd args error (lines 950-952) ----
+
+#[test]
+fn test_map_function_odd_args_error() {
+    // map with an odd number of key-value pairs must error.
+    let vars = test_vars();
+    let result = render("{{ $m := map \"a\" \"1\" \"b\" }}{{ $m }}", &vars);
+    assert!(result.is_err(), "map with odd arg count must error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("even") || msg.contains("key-value"),
+        "got: {msg}"
+    );
+}
+
+// ---- Coverage: reReplaceAll filter — missing pattern/replacement (lines 1027-1034) ----
+
+#[test]
+fn test_re_replace_all_filter_missing_pattern_error() {
+    // Filter form without pattern arg must error.
+    let vars = test_vars();
+    let result = render("{{ Tag | reReplaceAll(replacement=\"x\") }}", &vars);
+    assert!(
+        result.is_err(),
+        "reReplaceAll filter without pattern should error"
+    );
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("pattern") || msg.contains("reReplaceAll"),
+        "got: {msg}"
+    );
+}
+
+#[test]
+fn test_re_replace_all_filter_missing_replacement_error() {
+    // Filter form without replacement arg must error.
+    let vars = test_vars();
+    let result = render("{{ Tag | reReplaceAll(pattern=\"v\") }}", &vars);
+    assert!(
+        result.is_err(),
+        "reReplaceAll filter without replacement should error"
+    );
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("replacement") || msg.contains("reReplaceAll"),
+        "got: {msg}"
+    );
+}
+
+// ---- Coverage: englishJoin filter form (lines 1094-1124) ----
+
+#[test]
+fn test_english_join_filter_zero_items() {
+    // Pipe form: empty array through englishJoin filter.
+    let mut vars = test_vars();
+    vars.set_structured("Names", Value::Array(vec![]));
+    let result = render("{{ Names | englishJoin }}", &vars).unwrap();
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_english_join_filter_one_item() {
+    let mut vars = test_vars();
+    vars.set_structured("Names", Value::Array(vec![Value::String("alice".into())]));
+    let result = render("{{ Names | englishJoin }}", &vars).unwrap();
+    assert_eq!(result, "alice");
+}
+
+#[test]
+fn test_english_join_filter_two_items() {
+    let mut vars = test_vars();
+    vars.set_structured(
+        "Names",
+        Value::Array(vec![
+            Value::String("alice".into()),
+            Value::String("bob".into()),
+        ]),
+    );
+    let result = render("{{ Names | englishJoin }}", &vars).unwrap();
+    assert_eq!(result, "alice and bob");
+}
+
+#[test]
+fn test_english_join_filter_three_items_no_oxford() {
+    let mut vars = test_vars();
+    vars.set_structured(
+        "Names",
+        Value::Array(vec![
+            Value::String("a".into()),
+            Value::String("b".into()),
+            Value::String("c".into()),
+        ]),
+    );
+    let result = render("{{ Names | englishJoin(oxford=false) }}", &vars).unwrap();
+    assert_eq!(result, "a, b and c");
+}
+
+#[test]
+fn test_english_join_filter_non_array_errors() {
+    let vars = test_vars();
+    let result = render("{{ ProjectName | englishJoin }}", &vars);
+    assert!(
+        result.is_err(),
+        "englishJoin filter on non-array must error"
+    );
+}
+
+// ---- Coverage: reverseFilter filter — missing arg (lines 1137-1139) ----
+
+#[test]
+fn test_reverse_filter_pipe_missing_arg_error() {
+    let vars = test_vars();
+    // reverseFilter pipe form without regexp should error.
+    let result = render("{{ ProjectName | reverseFilter }}", &vars);
+    assert!(result.is_err(), "reverseFilter without regexp must error");
+}
+
+// ---- Coverage: filter fn — string items input (lines 1163-1168) ----
+
+#[test]
+fn test_filter_function_string_input_keeps_matching_lines() {
+    // filter(items=multiline_string, regexp="2") → "line2"
+    // Pass the multiline string via a structured var so Tera sees the real newlines.
+    let mut vars = test_vars();
+    vars.set_structured("Lines", Value::String("line1\nline2\nline3".to_string()));
+    let result = render("{{ filter(items=Lines, regexp=\"2\") }}", &vars).unwrap();
+    assert_eq!(result, "line2");
+}
+
+#[test]
+fn test_filter_function_string_input_no_match() {
+    let mut vars = test_vars();
+    vars.set_structured("Lines", Value::String("aaa\nbbb\nccc".to_string()));
+    let result = render("{{ filter(items=Lines, regexp=\"xyz\") }}", &vars).unwrap();
+    assert_eq!(result, "");
+}
+
+// ---- Coverage: filter fn — invalid type error (lines 1178-1180) ----
+
+#[test]
+fn test_filter_function_number_items_error() {
+    // Passing a number (not string or array) as items must error.
+    let mut vars = test_vars();
+    vars.set_structured("N", Value::Number(42i64.into()));
+    let result = render("{{ filter(items=N, regexp=\"x\") }}", &vars);
+    assert!(
+        result.is_err(),
+        "filter with non-string/non-array items must error"
+    );
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("string or array") || msg.contains("filter"),
+        "got: {msg}"
+    );
+}
+
+// ---- Coverage: reverseFilter fn (lines 1205-1244) ----
+
+#[test]
+fn test_reverse_filter_function_string_input() {
+    // String input: reverseFilter keeps lines NOT matching the regex.
+    // Pass the multiline string via a structured var so Tera sees real newlines.
+    let mut vars = test_vars();
+    vars.set_structured("Lines", Value::String("line1\nline2\nline3".to_string()));
+    let result = render("{{ reverseFilter(items=Lines, regexp=\"2\") }}", &vars).unwrap();
+    // Should keep line1 and line3, not line2.
+    assert!(result.contains("line1"), "got: {result}");
+    assert!(!result.contains("line2"), "got: {result}");
+    assert!(result.contains("line3"), "got: {result}");
+}
+
+#[test]
+fn test_reverse_filter_function_array_input() {
+    // Array input: reverseFilter excludes matching elements.
+    let vars = test_vars();
+    let result = render(
+        "{{ reverseFilter(items=[\"apple\", \"banana\", \"avocado\"], regexp=\"^a\") }}",
+        &vars,
+    )
+    .unwrap();
+    assert!(result.contains("banana"), "got: {result}");
+    assert!(!result.contains("apple"), "got: {result}");
+    assert!(!result.contains("avocado"), "got: {result}");
+}
+
+#[test]
+fn test_reverse_filter_function_invalid_type_error() {
+    let mut vars = test_vars();
+    vars.set_structured("N", Value::Number(42i64.into()));
+    let result = render("{{ reverseFilter(items=N, regexp=\"x\") }}", &vars);
+    assert!(
+        result.is_err(),
+        "reverseFilter with non-string/non-array must error"
+    );
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("string or array") || msg.contains("reverseFilter"),
+        "got: {msg}"
+    );
+}
+
+#[test]
+fn test_reverse_filter_function_missing_items_error() {
+    let vars = test_vars();
+    let result = render("{{ reverseFilter(regexp=\"x\") }}", &vars);
+    assert!(result.is_err(), "reverseFilter without items must error");
+}
+
+#[test]
+fn test_reverse_filter_function_missing_regexp_error() {
+    let vars = test_vars();
+    let result = render("{{ reverseFilter(items=[\"a\", \"b\"]) }}", &vars);
+    assert!(result.is_err(), "reverseFilter without regexp must error");
+}
+
+// ---- Coverage: dual-registered function forms (lines 1329-1565) ----
+
+#[test]
+fn test_trim_function_form() {
+    let vars = test_vars();
+    let result = render("{{ trim(s=\"  hello  \") }}", &vars).unwrap();
+    assert_eq!(result, "hello");
+}
+
+#[test]
+fn test_trim_function_form_missing_s_error() {
+    let vars = test_vars();
+    let result = render("{{ trim() }}", &vars);
+    assert!(result.is_err(), "trim() without s must error");
+}
+
+#[test]
+fn test_title_function_form() {
+    let vars = test_vars();
+    let result = render("{{ title(s=\"hello world\") }}", &vars).unwrap();
+    assert_eq!(result, "Hello World");
+}
+
+#[test]
+fn test_title_function_form_missing_s_error() {
+    let vars = test_vars();
+    let result = render("{{ title() }}", &vars);
+    assert!(result.is_err(), "title() without s must error");
+}
+
+#[test]
+fn test_tolower_function_form() {
+    let vars = test_vars();
+    let result = render("{{ tolower(s=\"HELLO\") }}", &vars).unwrap();
+    assert_eq!(result, "hello");
+}
+
+#[test]
+fn test_tolower_function_form_missing_s_error() {
+    let vars = test_vars();
+    let result = render("{{ tolower() }}", &vars);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_toupper_function_form() {
+    let vars = test_vars();
+    let result = render("{{ toupper(s=\"hello\") }}", &vars).unwrap();
+    assert_eq!(result, "HELLO");
+}
+
+#[test]
+fn test_toupper_function_form_missing_s_error() {
+    let vars = test_vars();
+    let result = render("{{ toupper() }}", &vars);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_trimprefix_function_form() {
+    let vars = test_vars();
+    let result = render("{{ trimprefix(s=\"v1.2.3\", prefix=\"v\") }}", &vars).unwrap();
+    assert_eq!(result, "1.2.3");
+}
+
+#[test]
+fn test_trimprefix_function_form_no_match() {
+    let vars = test_vars();
+    let result = render("{{ trimprefix(s=\"1.2.3\", prefix=\"v\") }}", &vars).unwrap();
+    assert_eq!(result, "1.2.3");
+}
+
+#[test]
+fn test_trimprefix_function_form_missing_args_error() {
+    let vars = test_vars();
+    let result = render("{{ trimprefix(s=\"v1.2.3\") }}", &vars);
+    assert!(result.is_err(), "trimprefix fn without prefix should error");
+}
+
+#[test]
+fn test_trimsuffix_function_form() {
+    let vars = test_vars();
+    let result = render(
+        "{{ trimsuffix(s=\"hello.tar.gz\", suffix=\".tar.gz\") }}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(result, "hello");
+}
+
+#[test]
+fn test_trimsuffix_function_form_no_match() {
+    let vars = test_vars();
+    let result = render(
+        "{{ trimsuffix(s=\"hello.zip\", suffix=\".tar.gz\") }}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(result, "hello.zip");
+}
+
+#[test]
+fn test_trimsuffix_function_form_missing_args_error() {
+    let vars = test_vars();
+    let result = render("{{ trimsuffix(s=\"hello\") }}", &vars);
+    assert!(result.is_err(), "trimsuffix fn without suffix should error");
+}
+
+#[test]
+fn test_dir_function_form() {
+    let vars = test_vars();
+    let result = render("{{ dir(s=\"/foo/bar/baz.txt\") }}", &vars).unwrap();
+    assert_eq!(result, "/foo/bar");
+}
+
+#[test]
+fn test_dir_function_form_missing_s_error() {
+    let vars = test_vars();
+    let result = render("{{ dir() }}", &vars);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_base_function_form() {
+    let vars = test_vars();
+    let result = render("{{ base(s=\"/foo/bar/baz.txt\") }}", &vars).unwrap();
+    assert_eq!(result, "baz.txt");
+}
+
+#[test]
+fn test_base_function_form_missing_s_error() {
+    let vars = test_vars();
+    let result = render("{{ base() }}", &vars);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_abs_function_form_absolute() {
+    let vars = test_vars();
+    let result = render("{{ abs(s=\"/already/absolute\") }}", &vars).unwrap();
+    assert_eq!(result, "/already/absolute");
+}
+
+#[test]
+fn test_abs_function_form_relative() {
+    let vars = test_vars();
+    let result = render("{{ abs(s=\"relative/path\") }}", &vars).unwrap();
+    assert!(
+        std::path::Path::new(&result).is_absolute(),
+        "abs(s=relative) must be absolute: {result}"
+    );
+    assert!(result.ends_with("relative/path"), "got: {result}");
+}
+
+#[test]
+fn test_abs_function_form_missing_s_error() {
+    let vars = test_vars();
+    let result = render("{{ abs() }}", &vars);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_url_path_escape_function_form() {
+    let vars = test_vars();
+    let result = render("{{ urlPathEscape(s=\"hello world\") }}", &vars).unwrap();
+    assert_eq!(result, "hello%20world");
+}
+
+#[test]
+fn test_url_path_escape_function_form_missing_s_error() {
+    let vars = test_vars();
+    let result = render("{{ urlPathEscape() }}", &vars);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_mdv2escape_function_form() {
+    let vars = test_vars();
+    let result = render("{{ mdv2escape(s=\"hello_world\") }}", &vars).unwrap();
+    assert_eq!(result, "hello\\_world");
+}
+
+#[test]
+fn test_mdv2escape_function_form_missing_s_error() {
+    let vars = test_vars();
+    let result = render("{{ mdv2escape() }}", &vars);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_incpatch_filter_form_increments() {
+    let vars = test_vars();
+    let result = render("{{ \"2.4.6\" | incpatch }}", &vars).unwrap();
+    assert_eq!(result, "2.4.7");
+}
+
+#[test]
+fn test_incminor_filter_form_increments() {
+    let vars = test_vars();
+    let result = render("{{ \"2.4.6\" | incminor }}", &vars).unwrap();
+    assert_eq!(result, "2.5.0");
+}
+
+#[test]
+fn test_incmajor_filter_form_increments() {
+    let vars = test_vars();
+    let result = render("{{ \"2.4.6\" | incmajor }}", &vars).unwrap();
+    assert_eq!(result, "3.0.0");
+}
+
+// ---- Coverage: index — array non-number index error (line 1602) ----
+
+#[test]
+fn test_index_array_string_key_errors() {
+    let mut vars = test_vars();
+    vars.set_structured("Arr", serde_json::json!(["a", "b", "c"]));
+    let result = render("{{ index(collection=Arr, key=\"notanumber\") }}", &vars);
+    assert!(result.is_err(), "index on array with string key must error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("array index must be a number") || msg.contains("index"),
+        "got: {msg}"
+    );
+}
+
+// ---- Coverage: index — non-collection type (line 1597/1602) ----
+
+#[test]
+fn test_index_non_collection_returns_empty() {
+    // Passing a scalar (string) as collection: graceful empty string.
+    let vars = test_vars();
+    let result = render("{{ index(collection=\"scalar\", key=\"k\") }}", &vars).unwrap();
+    assert_eq!(result, "");
+}
+
+// ---- Coverage: slice filter — non-string/non-array type error (lines 1655-1658) ----
+
+#[test]
+fn test_slice_filter_number_errors() {
+    // Slicing a number (not a string or array) must error.
+    let mut vars = test_vars();
+    vars.set_structured("N", Value::Number(42i64.into()));
+    let result = render("{{ N | slice(start=0, end=1) }}", &vars);
+    assert!(result.is_err(), "slice of a number must error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("string or array") || msg.contains("slice"),
+        "got: {msg}"
+    );
+}
+
+// ---- Coverage: printf %e / %E exponential verb formatting ----
+
+#[test]
+fn test_printf_e_lowercase_default_precision() {
+    // Go %e default precision is 6; exponent is signed with min two digits.
+    let mut vars = test_vars();
+    vars.set_structured(
+        "F",
+        Value::Number(serde_json::Number::from_f64(1234.5).unwrap()),
+    );
+    let result = render("{{ printf \"%e\" F }}", &vars).unwrap();
+    assert_eq!(result, "1.234500e+03");
+}
+
+#[test]
+fn test_printf_e_uppercase_uses_capital_exponent_letter() {
+    let mut vars = test_vars();
+    vars.set_structured(
+        "F",
+        Value::Number(serde_json::Number::from_f64(1234.5).unwrap()),
+    );
+    let result = render("{{ printf \"%E\" F }}", &vars).unwrap();
+    assert_eq!(result, "1.234500E+03");
+}
+
+#[test]
+fn test_printf_e_explicit_precision_two() {
+    let mut vars = test_vars();
+    vars.set_structured(
+        "F",
+        Value::Number(serde_json::Number::from_f64(0.0001234).unwrap()),
+    );
+    let result = render("{{ printf \"%.2e\" F }}", &vars).unwrap();
+    assert_eq!(result, "1.23e-04");
+}
+
+#[test]
+fn test_printf_e_negative_value_keeps_sign_before_mantissa() {
+    let mut vars = test_vars();
+    vars.set_structured(
+        "F",
+        Value::Number(serde_json::Number::from_f64(-1234.5).unwrap()),
+    );
+    let result = render("{{ printf \"%e\" F }}", &vars).unwrap();
+    assert_eq!(result, "-1.234500e+03");
+}
+
+// ---- Coverage: split function form (split(s=, sep=)) ----
+
+#[test]
+fn test_split_function_form_returns_array() {
+    // The function form returns an array; rejoin with a different separator
+    // to pin the element boundaries.
+    let vars = test_vars();
+    let result = render(
+        "{{ split(s=\"a,b,c\", sep=\",\") | join(sep=\"|\") }}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(result, "a|b|c");
+}
+
+#[test]
+fn test_split_function_form_single_field_no_separator_match() {
+    // No separator present → a single-element array containing the whole string.
+    let vars = test_vars();
+    let result = render(
+        "{{ split(s=\"nodelimiter\", sep=\",\") | join(sep=\"|\") }}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(result, "nodelimiter");
+}
+
+#[test]
+fn test_split_function_form_missing_sep_errors() {
+    let vars = test_vars();
+    let result = render("{{ split(s=\"a,b\") }}", &vars);
+    assert!(result.is_err(), "split without sep must error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(msg.contains("sep") || msg.contains("split"), "got: {msg}");
+}
+
+// ---- Coverage: map(pairs=[...]) named function form + odd-pairs error ----
+
+#[test]
+fn test_map_pairs_named_form_builds_object() {
+    let vars = test_vars();
+    let result = render(
+        "{% set m = map(pairs=[\"k1\", \"v1\", \"k2\", \"v2\"]) %}{{ index(collection=m, key=\"k2\") }}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(result, "v2");
+}
+
+#[test]
+fn test_map_pairs_odd_count_errors() {
+    let vars = test_vars();
+    let result = render("{{ map(pairs=[\"k1\", \"v1\", \"k2\"]) }}", &vars);
+    assert!(result.is_err(), "odd pair count must error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("even number") || msg.contains("key-value"),
+        "got: {msg}"
+    );
+}
+
+#[test]
+fn test_map_pairs_missing_pairs_errors() {
+    let vars = test_vars();
+    let result = render("{{ map() }}", &vars);
+    assert!(result.is_err(), "map without pairs must error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(msg.contains("pairs") || msg.contains("map"), "got: {msg}");
+}
+
+// ---- Coverage: contains_any (function + filter forms, the `in` alias) ----
+
+#[test]
+fn test_contains_any_function_form_found() {
+    let vars = test_vars();
+    let result = render(
+        "{% if contains_any(items=[\"a\", \"b\", \"c\"], value=\"b\") %}yes{% else %}no{% endif %}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(result, "yes");
+}
+
+#[test]
+fn test_contains_any_function_form_not_found() {
+    let vars = test_vars();
+    let result = render(
+        "{% if contains_any(items=[\"a\", \"b\"], value=\"z\") %}yes{% else %}no{% endif %}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(result, "no");
+}
+
+#[test]
+fn test_contains_any_filter_form_found() {
+    let vars = test_vars();
+    let result = render(
+        "{% set items = [\"x\", \"y\"] %}{% if items | contains_any(value=\"y\") %}yes{% else %}no{% endif %}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(result, "yes");
+}
+
+#[test]
+fn test_contains_any_filter_form_numeric_value_stringified() {
+    // value_to_string stringifies a numeric needle to match a numeric element.
+    let vars = test_vars();
+    let result = render(
+        "{% set items = [1, 2, 3] %}{% if items | contains_any(value=2) %}yes{% else %}no{% endif %}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(result, "yes");
+}

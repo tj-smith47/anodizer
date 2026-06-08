@@ -3076,4 +3076,208 @@ license-file = "LICENSE.txt"
             "Beta tool"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // map_winget_arch
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn map_winget_arch_translates_known_archs() {
+        assert_eq!(map_winget_arch("amd64"), "x64");
+        assert_eq!(map_winget_arch("386"), "x86");
+        assert_eq!(map_winget_arch("i686"), "x86");
+        assert_eq!(map_winget_arch("arm64"), "arm64");
+    }
+
+    #[test]
+    fn map_winget_arch_passes_through_unknown() {
+        assert_eq!(map_winget_arch("riscv64"), "riscv64");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_winget_zip_archive
+    // -----------------------------------------------------------------------
+
+    fn archive_with(path: &str, format: Option<&str>) -> anodizer_core::artifact::Artifact {
+        let mut metadata = std::collections::HashMap::new();
+        if let Some(f) = format {
+            metadata.insert("format".to_string(), f.to_string());
+        }
+        anodizer_core::artifact::Artifact {
+            kind: anodizer_core::artifact::ArtifactKind::Archive,
+            path: std::path::PathBuf::from(path),
+            name: path.rsplit('/').next().unwrap_or(path).to_string(),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "demo".to_string(),
+            metadata,
+            size: None,
+        }
+    }
+
+    #[test]
+    fn is_winget_zip_archive_true_on_format_metadata() {
+        assert!(is_winget_zip_archive(&archive_with(
+            "/dist/demo.tar",
+            Some("zip")
+        )));
+    }
+
+    #[test]
+    fn is_winget_zip_archive_true_on_zip_extension() {
+        assert!(is_winget_zip_archive(&archive_with("/dist/demo.zip", None)));
+    }
+
+    #[test]
+    fn is_winget_zip_archive_false_for_tarball() {
+        assert!(!is_winget_zip_archive(&archive_with(
+            "/dist/demo.tar.gz",
+            Some("tar.gz")
+        )));
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_winget_upstream
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_winget_upstream_defaults_to_microsoft() {
+        let cfg = WingetConfig::default();
+        assert_eq!(
+            resolve_winget_upstream(&cfg),
+            ("microsoft".to_string(), "winget-pkgs".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_winget_upstream_honors_pull_request_base() {
+        use anodizer_core::config::{PullRequestBaseConfig, PullRequestConfig, RepositoryConfig};
+        let cfg = WingetConfig {
+            repository: Some(RepositoryConfig {
+                pull_request: Some(PullRequestConfig {
+                    base: Some(PullRequestBaseConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("winget-mirror".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_winget_upstream(&cfg),
+            ("acme".to_string(), "winget-mirror".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_winget_upstream_partial_base_falls_back_to_default() {
+        use anodizer_core::config::{PullRequestBaseConfig, PullRequestConfig, RepositoryConfig};
+        // owner set but name missing -> default upstream, not a half-built repo.
+        let cfg = WingetConfig {
+            repository: Some(RepositoryConfig {
+                pull_request: Some(PullRequestConfig {
+                    base: Some(PullRequestBaseConfig {
+                        owner: Some("acme".to_string()),
+                        name: None,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_winget_upstream(&cfg),
+            ("microsoft".to_string(), "winget-pkgs".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_winget_publisher_name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_winget_publisher_name_prefers_explicit_publisher() {
+        use anodizer_core::log::{StageLogger, Verbosity};
+        let log = StageLogger::new("publish", Verbosity::Quiet);
+        let cfg = WingetConfig {
+            publisher: Some("AcmeCo".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_winget_publisher_name(&cfg, "ignored-owner", "demo", &log).unwrap(),
+            "AcmeCo"
+        );
+    }
+
+    #[test]
+    fn resolve_winget_publisher_name_falls_back_to_repo_owner() {
+        use anodizer_core::log::{StageLogger, Verbosity};
+        let log = StageLogger::new("publish", Verbosity::Quiet);
+        let cfg = WingetConfig::default();
+        assert_eq!(
+            resolve_winget_publisher_name(&cfg, "acme-owner", "demo", &log).unwrap(),
+            "acme-owner"
+        );
+    }
+
+    #[test]
+    fn resolve_winget_publisher_name_errors_when_publisher_and_owner_empty() {
+        use anodizer_core::log::{StageLogger, Verbosity};
+        let log = StageLogger::new("publish", Verbosity::Quiet);
+        let cfg = WingetConfig {
+            publisher: Some(String::new()),
+            ..Default::default()
+        };
+        let err = resolve_winget_publisher_name(&cfg, "", "demo", &log)
+            .expect_err("empty publisher + empty owner must error");
+        assert!(
+            err.to_string().contains("publisher is required"),
+            "got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_winget_description
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_winget_description_uses_explicit_and_normalizes_tabs() {
+        let ctx = TestContextBuilder::new().build();
+        let cfg = WingetConfig {
+            description: Some("line\twith\ttabs".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_winget_description(&ctx, &cfg, "demo"),
+            "line  with  tabs"
+        );
+    }
+
+    #[test]
+    fn resolve_winget_description_falls_back_to_cargo_metadata() {
+        let mut ctx = TestContextBuilder::new().build();
+        let tmp = tempfile::tempdir().unwrap();
+        derive_into(
+            &mut ctx,
+            tmp.path(),
+            "demo",
+            "[package]\nname = \"demo\"\ndescription = \"derived blurb\"\n",
+        );
+        let cfg = WingetConfig::default();
+        assert_eq!(
+            resolve_winget_description(&ctx, &cfg, "demo"),
+            "derived blurb"
+        );
+    }
+
+    #[test]
+    fn resolve_winget_description_empty_when_nothing_configured() {
+        let ctx = TestContextBuilder::new().build();
+        let cfg = WingetConfig::default();
+        assert_eq!(resolve_winget_description(&ctx, &cfg, "demo"), "");
+    }
 }

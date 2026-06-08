@@ -1650,4 +1650,58 @@ crates:
              entry without reaching the git push path (GR cba5b9f)",
         );
     }
+
+    #[test]
+    fn generate_source_srcinfo_omits_url_when_homepage_empty() {
+        let meta = AurMeta {
+            name: "myapp",
+            version: "2.3.0",
+            pkgrel: 2,
+            description: "No homepage tool",
+            homepage: "",
+            license: "Apache-2.0",
+        };
+        let optdepends = vec!["bash-completion: shell completions".to_string()];
+        let deps = AurDeps {
+            depends: &[],
+            makedepends: &[],
+            optdepends: &optdepends,
+            conflicts: &[],
+            provides: &[],
+        };
+        let srcinfo = generate_source_srcinfo(&meta, &deps, "https://example.com/src-2.3.0.tar.gz");
+
+        // empty homepage -> NO `url =` line.
+        assert!(
+            !srcinfo.contains("\turl ="),
+            "url line must be omitted for empty homepage:\n{srcinfo}"
+        );
+        // optdepends rendered.
+        assert!(srcinfo.contains("\toptdepends = bash-completion: shell completions"));
+        // both fixed arches always present.
+        assert!(srcinfo.contains("\tarch = x86_64"));
+        assert!(srcinfo.contains("\tarch = aarch64"));
+        assert!(srcinfo.contains("\tlicense = Apache-2.0"));
+        assert!(srcinfo.contains("\tsource = https://example.com/src-2.3.0.tar.gz"));
+        assert!(srcinfo.contains("\tsha256sums = SKIP"));
+    }
+
+    #[test]
+    fn resolve_aur_source_package_name_strip_bin_honors_explicit_name() {
+        use anodizer_core::config::AurSourceConfig;
+        // Explicit name is taken verbatim, then -bin stripped when requested.
+        let cfg = AurSourceConfig {
+            name: Some("widget-bin".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_aur_source_package_name(&cfg, "ignored", true),
+            "widget"
+        );
+        // strip disabled -> -bin retained.
+        assert_eq!(
+            resolve_aur_source_package_name(&cfg, "ignored", false),
+            "widget-bin"
+        );
+    }
 }

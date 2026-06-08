@@ -667,6 +667,34 @@ fn fury_package_name_strips_version_suffix() {
     );
 }
 
+#[test]
+fn fury_package_name_empty_version_strips_extension() {
+    use super::publish::fury_package_name;
+    // Empty version skips the find() and strips a known extension.
+    assert_eq!(fury_package_name("mytool_x.rpm", ""), "mytool_x");
+    assert_eq!(fury_package_name("mytool.apk", ""), "mytool");
+}
+
+#[test]
+fn fury_package_name_unknown_extension_returns_raw() {
+    use super::publish::fury_package_name;
+    // No version match AND no recognized package extension: the raw
+    // filename is the closest key available.
+    assert_eq!(
+        fury_package_name("mystery-artifact.bin", "9.9.9"),
+        "mystery-artifact.bin"
+    );
+}
+
+#[test]
+fn fury_package_name_version_at_start_falls_through_to_ext_strip() {
+    use super::publish::fury_package_name;
+    // version is the whole leading segment -> trimmed head is empty, so
+    // the function falls through to extension stripping rather than
+    // returning an empty package name.
+    assert_eq!(fury_package_name("1.2.3.deb", "1.2.3"), "1.2.3");
+}
+
 /// A re-run against an already-published version must succeed (idempotent):
 /// the probe 404s (Fury's probe surface), then the push returns 409 Conflict
 /// → treated as success with no rollback target recorded. A genuine failure

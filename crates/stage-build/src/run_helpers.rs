@@ -1271,3 +1271,759 @@ mod source_mutation_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod run_helpers_tests {
+    use super::*;
+    use anodizer_core::MapEnvSource;
+    use anodizer_core::artifact::ArtifactKind;
+    use anodizer_core::config::{Config, CrateConfig, UniversalBinaryConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::Verbosity;
+    use anodizer_core::template::TemplateVars;
+    use std::collections::HashMap;
+
+    fn mk_ctx() -> Context {
+        let config = Config {
+            project_name: "myproj".to_string(),
+            ..Default::default()
+        };
+        Context::new(config, ContextOptions::default())
+    }
+
+    fn mk_log() -> StageLogger {
+        StageLogger::new("test", Verbosity::Quiet)
+    }
+
+    // -------------------------------------------------------------------------
+    // artifact_meta
+    // -------------------------------------------------------------------------
+
+    /// amd64_variant is inserted only when Some — proves the conditional branch.
+    #[test]
+    fn artifact_meta_inserts_amd64_variant_only_when_some() {
+        let m = artifact_meta("mybinary", &None, &Some("v3".to_string()));
+        assert_eq!(m.get("amd64_variant").map(String::as_str), Some("v3"));
+        let m2 = artifact_meta("mybinary", &None, &None);
+        assert!(
+            !m2.contains_key("amd64_variant"),
+            "amd64_variant must be absent when None"
+        );
+    }
+
+    /// build_id overrides the binary name in the `id` key.
+    #[test]
+    fn artifact_meta_build_id_overrides_binary_in_id_key() {
+        let m = artifact_meta("mybin", &Some("custom-id".to_string()), &None);
+        assert_eq!(m.get("id").map(String::as_str), Some("custom-id"));
+        assert_eq!(m.get("binary").map(String::as_str), Some("mybin"));
+    }
+
+    // -------------------------------------------------------------------------
+    // add_artifact — no_unique_dist_dir branch (lines 95-117)
+    // -------------------------------------------------------------------------
+
+    /// no_unique_dist_dir=true, dry_run=true: artifact path placed flat under
+    /// dist_dir but NO copy happens (dry-run). The artifact is registered with
+    /// `no_unique_dist_dir` in metadata.
+    #[test]
+    fn add_artifact_no_unique_dist_dir_dry_run_registers_flat_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist_dir = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist_dir).unwrap();
+
+        let fake_bin = tmp.path().join("subdir").join("mybin");
+        // Don't create the file — dry_run should not copy.
+
+        let mut ctx = mk_ctx();
+        add_artifact(
+            &mut ctx,
+            &dist_dir,
+            true, // dry_run
+            &fake_bin,
+            ArtifactKind::Binary,
+            "x86_64-unknown-linux-gnu",
+            "myproj",
+            "mybin",
+            &None,
+            true, // no_unique_dist_dir
+            &None,
+        )
+        .unwrap();
+
+        let arts = ctx.artifacts.by_kind(ArtifactKind::Binary);
+        assert_eq!(arts.len(), 1);
+        let a = &arts[0];
+        // Flat path under dist_dir.
+        assert_eq!(a.path, dist_dir.join("mybin"));
+        assert_eq!(
+            a.metadata.get("no_unique_dist_dir").map(String::as_str),
+            Some("true"),
+            "metadata must carry no_unique_dist_dir flag"
+        );
+        // Dry-run: the file should NOT have been created.
+        assert!(!dist_dir.join("mybin").exists());
+    }
+
+    /// no_unique_dist_dir=true, dry_run=false, source exists: the binary is
+    /// copied to the flat dist path.
+    #[test]
+    fn add_artifact_no_unique_dist_dir_copies_file_when_not_dry_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist_dir = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist_dir).unwrap();
+
+        let src_bin = tmp.path().join("mybin");
+        std::fs::write(&src_bin, b"fake-binary-content").unwrap();
+
+        let mut ctx = mk_ctx();
+        add_artifact(
+            &mut ctx,
+            &dist_dir,
+            false, // not dry_run
+            &src_bin,
+            ArtifactKind::Binary,
+            "x86_64-unknown-linux-gnu",
+            "myproj",
+            "mybin",
+            &None,
+            true, // no_unique_dist_dir
+            &None,
+        )
+        .unwrap();
+
+        let flat = dist_dir.join("mybin");
+        assert!(flat.exists(), "binary must be copied to flat dist path");
+        assert_eq!(
+            std::fs::read(&flat).unwrap(),
+            b"fake-binary-content",
+            "copied content must match source"
+        );
+    }
+
+    /// no_unique_dist_dir=false path: artifact registered at the original path
+    /// (no copy).
+    #[test]
+    fn add_artifact_normal_path_uses_original_bin_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist_dir = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist_dir).unwrap();
+        let bin_path = tmp.path().join("mybin");
+
+        let mut ctx = mk_ctx();
+        add_artifact(
+            &mut ctx,
+            &dist_dir,
+            false,
+            &bin_path,
+            ArtifactKind::Binary,
+            "x86_64-unknown-linux-gnu",
+            "myproj",
+            "mybin",
+            &None,
+            false, // no_unique_dist_dir = false
+            &None,
+        )
+        .unwrap();
+
+        let arts = ctx.artifacts.by_kind(ArtifactKind::Binary);
+        assert_eq!(arts.len(), 1);
+        assert_eq!(arts[0].path, bin_path);
+        assert!(
+            !arts[0].metadata.contains_key("no_unique_dist_dir"),
+            "normal path must not inject no_unique_dist_dir metadata"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // apply_source_mutations — snapshot mode (lines 193, 211-215, 231-235)
+    // -------------------------------------------------------------------------
+
+    /// Snapshot mode: mutations are completely skipped for every crate, even if
+    /// version_sync and binstall are both enabled. The Cargo.toml stays unchanged.
+    #[test]
+    fn apply_source_mutations_snapshot_mode_skips_all_mutations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("solo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"solo\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+
+        let mut crate_cfg = CrateConfig {
+            name: "solo".to_string(),
+            path: dir.to_str().unwrap().to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            version_sync: Some(anodizer_core::config::VersionSyncConfig {
+                enabled: Some(true),
+                mode: None,
+            }),
+            binstall: Some(anodizer_core::config::BinstallConfig {
+                enabled: Some(true),
+                pkg_url: Some("https://example.com/v{{ .Version }}/solo.tar.gz".to_string()),
+                bin_dir: None,
+                pkg_fmt: Some("tgz".to_string()),
+                overrides: None,
+            }),
+            ..Default::default()
+        };
+        let _ = &mut crate_cfg;
+
+        let config = Config {
+            project_name: "solo".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                snapshot: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "5.0.0");
+        ctx.template_vars_mut().set("RawVersion", "5.0.0");
+        ctx.template_vars_mut().set("Tag", "v5.0.0");
+        ctx.template_vars_mut().set("ProjectName", "solo");
+
+        // Resolver should never be called in snapshot mode (saved vec is empty).
+        let resolver = |_: &Context, _: &CrateConfig| -> Option<String> {
+            panic!("resolver must not be called in snapshot mode")
+        };
+        let log = mk_log();
+        apply_source_mutations_with_resolver(&mut ctx, &[crate_cfg], &[], false, &log, &resolver)
+            .unwrap();
+
+        // Cargo.toml must remain at 0.0.0 — no version-sync applied.
+        let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+        assert!(
+            toml.contains("version = \"0.0.0\""),
+            "snapshot mode must not mutate Cargo.toml, got:\n{toml}"
+        );
+        // No binstall metadata section created.
+        let doc = toml.parse::<toml_edit::DocumentMut>().unwrap();
+        assert!(
+            doc["package"].get("metadata").is_none(),
+            "snapshot mode must not inject binstall metadata"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // seed_determinism_state (lines 272-282, 288-290)
+    // -------------------------------------------------------------------------
+
+    /// Non-snapshot mode with a valid commit timestamp: determinism state is
+    /// seeded from the epoch.
+    #[test]
+    fn seed_determinism_state_non_snapshot_seeds_from_commit_timestamp() {
+        let mut ctx = mk_ctx();
+        // inject a clean MapEnvSource with no SOURCE_DATE_EPOCH so the
+        // commit_timestamp branch fires.
+        ctx.set_env_source(MapEnvSource::new());
+        let log = mk_log();
+        seed_determinism_state(&mut ctx, "1700000000", &log).unwrap();
+        assert!(
+            ctx.determinism.is_some(),
+            "determinism state must be seeded from commit timestamp"
+        );
+    }
+
+    /// Non-snapshot mode with SOURCE_DATE_EPOCH overriding the commit timestamp.
+    #[test]
+    fn seed_determinism_state_respects_source_date_epoch_env() {
+        let mut ctx = mk_ctx();
+        ctx.set_env_source(MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1600000000"));
+        let log = mk_log();
+        seed_determinism_state(&mut ctx, "0", &log).unwrap();
+        assert!(
+            ctx.determinism.is_some(),
+            "determinism state must be seeded from SOURCE_DATE_EPOCH"
+        );
+    }
+
+    /// When determinism is already set before calling seed_determinism_state, it
+    /// is not overwritten.
+    #[test]
+    fn seed_determinism_state_does_not_overwrite_existing() {
+        let mut ctx = mk_ctx();
+        ctx.set_env_source(MapEnvSource::new());
+        let log = mk_log();
+        // Seed once.
+        seed_determinism_state(&mut ctx, "1700000000", &log).unwrap();
+        let state_ptr = ctx.determinism.as_ref().unwrap() as *const _;
+        // Seed again — must not replace.
+        seed_determinism_state(&mut ctx, "1800000000", &log).unwrap();
+        let state_ptr2 = ctx.determinism.as_ref().unwrap() as *const _;
+        assert_eq!(
+            state_ptr, state_ptr2,
+            "already-set determinism state must not be replaced on second call"
+        );
+    }
+
+    /// runtime_nondeterministic_allowlist entries are appended to the state.
+    #[test]
+    fn seed_determinism_state_appends_runtime_allowlist() {
+        let mut ctx = Context::new(
+            Config {
+                project_name: "myproj".to_string(),
+                ..Default::default()
+            },
+            ContextOptions {
+                runtime_nondeterministic_allowlist: vec![(
+                    "myartifact".to_string(),
+                    "platform-specific".to_string(),
+                )],
+                ..Default::default()
+            },
+        );
+        ctx.set_env_source(MapEnvSource::new());
+        let log = mk_log();
+        seed_determinism_state(&mut ctx, "1700000000", &log).unwrap();
+        assert!(
+            ctx.determinism.is_some(),
+            "state must be seeded so allowlist append runs"
+        );
+        // The state was seeded and then append_runtime was called with our pair.
+        // We can't inspect internals directly, but we can assert no panic/error
+        // and that state is present, which is meaningful because the allowlist-
+        // append path (line 292-294) is exercised.
+    }
+
+    /// Non-snapshot, commit_timestamp = "0" and no SOURCE_DATE_EPOCH: epoch is
+    /// zero, so determinism is NOT seeded (epoch must be > 0).
+    #[test]
+    fn seed_determinism_state_zero_epoch_leaves_determinism_none() {
+        let mut ctx = mk_ctx();
+        ctx.set_env_source(MapEnvSource::new());
+        let log = mk_log();
+        seed_determinism_state(&mut ctx, "0", &log).unwrap();
+        assert!(
+            ctx.determinism.is_none(),
+            "epoch=0 must not seed determinism state"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // run_dry_run (lines 322-370)
+    // -------------------------------------------------------------------------
+
+    fn mk_exec<'a>(
+        log: &'a StageLogger,
+        tvars: &'a TemplateVars,
+        dist_dir: &'a std::path::Path,
+    ) -> BuildExec<'a> {
+        BuildExec {
+            log,
+            template_vars: tvars,
+            dist_dir,
+            dry_run: true,
+            commit_timestamp: "0",
+        }
+    }
+
+    fn mk_build_job(bin_path: std::path::PathBuf, target: &str) -> BuildJob {
+        BuildJob {
+            cmd: Some(BuildCommand {
+                program: "true".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                cwd: std::path::PathBuf::from("."),
+            }),
+            copy_from: None,
+            bin_path,
+            artifact_kind: ArtifactKind::Binary,
+            target: target.to_string(),
+            crate_name: "myproj".to_string(),
+            binary_name: "myproj".to_string(),
+            build_id: None,
+            reproducible: false,
+            pre_hooks: vec![],
+            post_hooks: vec![],
+            no_unique_dist_dir: false,
+            crate_path: ".".to_string(),
+            mod_timestamp: None,
+            amd64_variant: None,
+            build_env: HashMap::new(),
+        }
+    }
+
+    /// run_dry_run with a cmd job: artifact is registered without spawning the
+    /// compiler. The artifact appears in ctx.artifacts.
+    #[test]
+    fn run_dry_run_registers_artifact_without_spawning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let bin = tmp.path().join("myproj");
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist);
+
+        let job = mk_build_job(bin.clone(), "x86_64-unknown-linux-gnu");
+        let mut ctx = mk_ctx();
+        run_dry_run(&mut ctx, &exec, &[job], &[]).unwrap();
+
+        let arts = ctx.artifacts.by_kind(ArtifactKind::Binary);
+        assert_eq!(arts.len(), 1);
+        assert_eq!(arts[0].target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+    }
+
+    /// run_dry_run with a copy_from job (cmd=None, copy_from set): the copy_from
+    /// log branch fires instead of the cmd branch.
+    #[test]
+    fn run_dry_run_logs_copy_from_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let src = tmp.path().join("src_bin");
+        let dst = tmp.path().join("dst_bin");
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist);
+
+        let job = BuildJob {
+            cmd: None,
+            copy_from: Some((src.clone(), dst.clone())),
+            bin_path: src.clone(),
+            artifact_kind: ArtifactKind::Binary,
+            target: "aarch64-apple-darwin".to_string(),
+            crate_name: "myproj".to_string(),
+            binary_name: "myproj".to_string(),
+            build_id: None,
+            reproducible: false,
+            pre_hooks: vec![],
+            post_hooks: vec![],
+            no_unique_dist_dir: false,
+            crate_path: ".".to_string(),
+            mod_timestamp: None,
+            amd64_variant: None,
+            build_env: HashMap::new(),
+        };
+        let mut ctx = mk_ctx();
+        run_dry_run(&mut ctx, &exec, &[job], &[]).unwrap();
+
+        let arts = ctx.artifacts.by_kind(ArtifactKind::Binary);
+        assert_eq!(arts.len(), 1);
+        assert_eq!(arts[0].target.as_deref(), Some("aarch64-apple-darwin"));
+    }
+
+    /// run_dry_run with multiple jobs across build_jobs and copy_jobs: all
+    /// artifacts are registered.
+    #[test]
+    fn run_dry_run_processes_both_build_and_copy_job_slices() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist);
+
+        let build_job = mk_build_job(tmp.path().join("bin1"), "x86_64-unknown-linux-gnu");
+        let copy_job = BuildJob {
+            cmd: None,
+            copy_from: Some((tmp.path().join("bin1"), tmp.path().join("bin1-copy"))),
+            bin_path: tmp.path().join("bin1"),
+            artifact_kind: ArtifactKind::Binary,
+            target: "aarch64-unknown-linux-gnu".to_string(),
+            crate_name: "myproj".to_string(),
+            binary_name: "myproj".to_string(),
+            build_id: None,
+            reproducible: false,
+            pre_hooks: vec![],
+            post_hooks: vec![],
+            no_unique_dist_dir: false,
+            crate_path: ".".to_string(),
+            mod_timestamp: None,
+            amd64_variant: None,
+            build_env: HashMap::new(),
+        };
+        let mut ctx = mk_ctx();
+        run_dry_run(&mut ctx, &exec, &[build_job], &[copy_job]).unwrap();
+
+        // Both jobs processed: 2 artifact registrations.
+        let arts = ctx.artifacts.by_kind(ArtifactKind::Binary);
+        assert_eq!(arts.len(), 2);
+    }
+
+    // -------------------------------------------------------------------------
+    // run_dry_run with no_unique_dist_dir=true in a copy_jobs slot (line 367)
+    // -------------------------------------------------------------------------
+
+    /// run_dry_run with no_unique_dist_dir=true on a copy_job: flat-path
+    /// registration fires. dry_run=true so no copy happens.
+    #[test]
+    fn run_dry_run_no_unique_dist_dir_registers_flat_path_no_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let src = tmp.path().join("mybin");
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist);
+
+        let job = BuildJob {
+            cmd: Some(BuildCommand {
+                program: "true".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                cwd: std::path::PathBuf::from("."),
+            }),
+            copy_from: None,
+            bin_path: src.clone(),
+            artifact_kind: ArtifactKind::Binary,
+            target: "x86_64-apple-darwin".to_string(),
+            crate_name: "myproj".to_string(),
+            binary_name: "mybin".to_string(),
+            build_id: None,
+            reproducible: false,
+            pre_hooks: vec![],
+            post_hooks: vec![],
+            no_unique_dist_dir: true,
+            crate_path: ".".to_string(),
+            mod_timestamp: None,
+            amd64_variant: None,
+            build_env: HashMap::new(),
+        };
+
+        let mut ctx = mk_ctx();
+        run_dry_run(&mut ctx, &exec, &[job], &[]).unwrap();
+
+        let arts = ctx.artifacts.by_kind(ArtifactKind::Binary);
+        assert_eq!(arts.len(), 1);
+        // Flat path: dist_dir/mybin, not the original src path.
+        assert_eq!(arts[0].path, dist.join("mybin"));
+        // Dry-run: file must NOT have been written.
+        assert!(!dist.join("mybin").exists());
+    }
+
+    // -------------------------------------------------------------------------
+    // process_universal_binaries — duplicate output path error (lines 736-746)
+    // -------------------------------------------------------------------------
+
+    /// Two universal_binaries entries resolving to the same output path must
+    /// produce a fail-loud error naming the conflicting path.
+    #[test]
+    fn process_universal_binaries_duplicate_output_path_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Build a context that has arm64 + x86_64 apple-darwin binaries
+        // registered so project_universal_out_path returns Some for both entries.
+        let mut ctx = Context::new(
+            Config {
+                project_name: "myapp".to_string(),
+                dist: tmp.path().to_path_buf(),
+                ..Default::default()
+            },
+            ContextOptions::default(),
+        );
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Register the two arch binaries so the universal path projection resolves.
+        use anodizer_core::artifact::Artifact;
+        let fake_arm = tmp.path().join("myapp-arm64");
+        let fake_x86 = tmp.path().join("myapp-x86_64");
+        std::fs::write(&fake_arm, b"arm").unwrap();
+        std::fs::write(&fake_x86, b"x86").unwrap();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "myapp".to_string(),
+            path: fake_arm,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([
+                ("binary".to_string(), "myapp".to_string()),
+                ("id".to_string(), "myapp".to_string()),
+            ]),
+            size: None,
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "myapp".to_string(),
+            path: fake_x86,
+            target: Some("x86_64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([
+                ("binary".to_string(), "myapp".to_string()),
+                ("id".to_string(), "myapp".to_string()),
+            ]),
+            size: None,
+        });
+
+        // Two entries with the SAME (default) name_template -> same output path.
+        let ub1 = UniversalBinaryConfig::default();
+        let ub2 = UniversalBinaryConfig::default();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            universal_binaries: Some(vec![ub1, ub2]),
+            ..Default::default()
+        };
+
+        let err = process_universal_binaries(&mut ctx, &[crate_cfg], true).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("same output path") || msg.contains("disambiguate"),
+            "error must mention collision/disambiguation, got: {msg}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // run_copy_jobs (lines 711-723) — missing copy_from pair error
+    // -------------------------------------------------------------------------
+
+    /// A copy_job with copy_from=None is a programmer bug; the function must
+    /// return an error rather than panicking.
+    #[test]
+    fn run_copy_jobs_missing_copy_from_pair_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        // Not dry_run so copy_jobs path triggers real copy
+        let exec = BuildExec {
+            log: &log,
+            template_vars: &tvars,
+            dist_dir: &dist,
+            dry_run: false,
+            commit_timestamp: "0",
+        };
+
+        // copy_from is None — this is the programmer-bug path.
+        let bad_job = BuildJob {
+            cmd: None,
+            copy_from: None,
+            bin_path: tmp.path().join("bin"),
+            artifact_kind: ArtifactKind::Binary,
+            target: "x86_64-unknown-linux-gnu".to_string(),
+            crate_name: "myproj".to_string(),
+            binary_name: "myproj".to_string(),
+            build_id: None,
+            reproducible: false,
+            pre_hooks: vec![],
+            post_hooks: vec![],
+            no_unique_dist_dir: false,
+            crate_path: ".".to_string(),
+            mod_timestamp: None,
+            amd64_variant: None,
+            build_env: HashMap::new(),
+        };
+        let mut ctx = mk_ctx();
+        let err = run_copy_jobs(&mut ctx, &exec, &[bad_job]).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("copy_from job without copy_from pair"),
+            "error must describe the missing copy_from pair, got: {msg}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // apply_source_mutations — version_sync only (no binstall) path (line 224)
+    // -------------------------------------------------------------------------
+
+    /// A crate with version_sync enabled but binstall disabled: only Cargo.toml
+    /// version is mutated, no binstall metadata is injected.
+    #[test]
+    fn apply_source_mutations_version_sync_only_no_binstall_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("core");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"core\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "core".to_string(),
+            path: dir.to_str().unwrap().to_string(),
+            tag_template: "core-v{{ .Version }}".to_string(),
+            version_sync: Some(anodizer_core::config::VersionSyncConfig {
+                enabled: Some(true),
+                mode: None,
+            }),
+            binstall: None, // binstall not enabled
+            ..Default::default()
+        };
+
+        let config = Config {
+            project_name: "core".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "7.8.9");
+        ctx.template_vars_mut().set("RawVersion", "7.8.9");
+        ctx.template_vars_mut().set("Tag", "core-v7.8.9");
+        ctx.template_vars_mut().set("ProjectName", "core");
+
+        let resolver = |_: &Context, _: &CrateConfig| Some("core-v7.8.9".to_string());
+        let log = mk_log();
+        apply_source_mutations_with_resolver(&mut ctx, &[crate_cfg], &[], false, &log, &resolver)
+            .unwrap();
+
+        let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+        let doc = toml.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(doc["package"]["version"].as_str().unwrap(), "7.8.9");
+        assert!(
+            doc["package"].get("metadata").is_none(),
+            "no binstall metadata should be injected when binstall is None"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // apply_source_mutations — needs_mutation=false skips entirely (line 179)
+    // -------------------------------------------------------------------------
+
+    /// A crate with neither version_sync nor binstall enabled must be skipped
+    /// entirely (needs_mutation=false). The resolver must not be called and the
+    /// Cargo.toml stays at 0.0.0.
+    #[test]
+    fn apply_source_mutations_skips_when_needs_mutation_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("noop");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"noop\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "noop".to_string(),
+            path: dir.to_str().unwrap().to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            version_sync: None,
+            binstall: None,
+            ..Default::default()
+        };
+
+        let config = Config {
+            project_name: "noop".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        let resolver = |_: &Context, _: &CrateConfig| -> Option<String> {
+            panic!("resolver must not be called when needs_mutation=false")
+        };
+        let log = mk_log();
+        apply_source_mutations_with_resolver(&mut ctx, &[crate_cfg], &[], false, &log, &resolver)
+            .unwrap();
+
+        let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+        assert!(
+            toml.contains("version = \"0.0.0\""),
+            "noop crate must remain untouched, got:\n{toml}"
+        );
+    }
+}

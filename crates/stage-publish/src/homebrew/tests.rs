@@ -3529,3 +3529,316 @@ fn install_fragment_escapes_each_side_keeps_structure() {
     let broken = format!("class T < Formula\n  def install\n    {naive_line}\n  end\nend\n");
     assert_ruby_syntax_err("install-fragment-unescaped", &broken);
 }
+
+// -----------------------------------------------------------------------
+// Formula renderer: previously-uncovered archive-layout and opts branches.
+// -----------------------------------------------------------------------
+
+/// A multi-archive macOS set with only an amd64 entry must emit the
+/// "darwin_arm64 not supported" caveats fallback inside `on_macos do`
+/// (the `has_only_amd64_macos` branch). The url/sha256 stay flat (no
+/// `on_intel`/`on_arm` sub-blocks) because the macos set isn't arch-split.
+#[test]
+fn test_formula_macos_amd64_only_emits_arm_unsupported_caveats() {
+    let formula = generate_formula(
+        &super::formula::FormulaCore {
+            name: "monotool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[
+            (
+                "darwin-amd64",
+                "https://example.com/monotool-darwin-amd64.tar.gz",
+                "machash",
+            ),
+            (
+                "linux-amd64",
+                "https://example.com/monotool-linux-amd64.tar.gz",
+                "linuxhash",
+            ),
+        ],
+        &super::formula::FormulaCode {
+            install: "bin.install \"monotool\"",
+            test: "system \"#{bin}/monotool\"",
+        },
+    )
+    .unwrap();
+    assert!(formula.contains("on_macos do"));
+    assert!(formula.contains("if Hardware::CPU.arm?"));
+    assert!(formula.contains("The darwin_arm64 architecture is not supported for the monotool"));
+    assert!(formula.contains("machash"));
+    // No arch sub-blocks for the amd64-only macOS set.
+    assert!(!formula.contains("on_intel"));
+    assert!(!formula.contains("on_arm do"));
+}
+
+/// A 32-bit linux ARM target (`armv7`) selects the
+/// `Hardware::CPU.arm? && !Hardware::CPU.is_64_bit?` guard, distinct from
+/// the 64-bit arm and intel guards.
+#[test]
+fn test_formula_linux_armv7_uses_32bit_arm_guard() {
+    let formula = generate_formula(
+        &super::formula::FormulaCore {
+            name: "pitool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[
+            (
+                "linux-armv7",
+                "https://example.com/pitool-linux-armv7.tar.gz",
+                "armv7hash",
+            ),
+            (
+                "linux-amd64",
+                "https://example.com/pitool-linux-amd64.tar.gz",
+                "amd64hash",
+            ),
+        ],
+        &super::formula::FormulaCode {
+            install: "bin.install \"pitool\"",
+            test: "system \"#{bin}/pitool\"",
+        },
+    )
+    .unwrap();
+    assert!(formula.contains("if Hardware::CPU.arm? && !Hardware::CPU.is_64_bit?"));
+    assert!(formula.contains("if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?"));
+    assert!(formula.contains("armv7hash"));
+    assert!(formula.contains("amd64hash"));
+}
+
+/// Multi-archive entries whose platform tag is neither darwin nor linux
+/// render through the `unknown_entries` branch as a flat
+/// `# platform: <tag>` + url/sha256 trio, without any `on_macos`/`on_linux`
+/// wrapper.
+#[test]
+fn test_formula_unknown_platform_emits_commented_flat_entry() {
+    let formula = generate_formula(
+        &super::formula::FormulaCore {
+            name: "xtool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[
+            (
+                "freebsd-amd64",
+                "https://example.com/xtool-freebsd-amd64.tar.gz",
+                "bsdhash",
+            ),
+            (
+                "linux-amd64",
+                "https://example.com/xtool-linux-amd64.tar.gz",
+                "linuxhash",
+            ),
+        ],
+        &super::formula::FormulaCode {
+            install: "bin.install \"xtool\"",
+            test: "system \"#{bin}/xtool\"",
+        },
+    )
+    .unwrap();
+    assert!(formula.contains("# platform: freebsd-amd64"));
+    assert!(formula.contains("url \"https://example.com/xtool-freebsd-amd64.tar.gz\""));
+    assert!(formula.contains("sha256 \"bsdhash\""));
+    // The linux entry still wraps in on_linux.
+    assert!(formula.contains("on_linux do"));
+    assert!(formula.contains("linuxhash"));
+}
+
+/// `download_strategy` + `custom_require` + `url_headers` all splice into
+/// the `url "..."` line on the single-archive layout.
+#[test]
+fn test_formula_download_strategy_custom_require_and_headers() {
+    let headers = vec![
+        "Authorization: Bearer tok".to_string(),
+        "X-Foo: bar".to_string(),
+    ];
+    let opts = FormulaOptions {
+        download_strategy: Some("GitHubPrivateRepositoryReleaseDownloadStrategy"),
+        custom_require: Some("private_strategy"),
+        url_headers: Some(&headers),
+        ..Default::default()
+    };
+    let formula = generate_formula_with_opts(
+        &super::formula::FormulaCore {
+            name: "privtool",
+            version: "2.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[("linux-amd64", "https://example.com/privtool.tar.gz", "abc")],
+        &super::formula::FormulaCode {
+            install: "bin.install \"privtool\"",
+            test: "system \"#{bin}/privtool\"",
+        },
+        &opts,
+    )
+    .unwrap();
+    assert!(formula.contains("require_relative \"private_strategy\""));
+    assert!(
+        formula.contains("using: GitHubPrivateRepositoryReleaseDownloadStrategy"),
+        "download strategy must splice into url line\n{formula}"
+    );
+    assert!(formula.contains("headers: ["));
+    assert!(formula.contains("\"Authorization: Bearer tok\","));
+    assert!(formula.contains("\"X-Foo: bar\","));
+}
+
+/// `extra_install`, `post_install`, `custom_block`, `plist`, and `service`
+/// opts each render their respective formula stanza.
+#[test]
+fn test_formula_extra_install_post_install_custom_block_plist_service() {
+    let opts = FormulaOptions {
+        extra_install: Some("chmod 0755, bin/\"extra\""),
+        post_install: Some("system \"#{bin}/setup\""),
+        custom_block: Some("  # custom ruby here"),
+        plist: Some("      <plist>stub</plist>"),
+        service: Some("    run [opt_bin/\"svc\"]"),
+        ..Default::default()
+    };
+    let formula = generate_formula_with_opts(
+        &super::formula::FormulaCore {
+            name: "fulltool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[("linux-amd64", "https://example.com/fulltool.tar.gz", "abc")],
+        &super::formula::FormulaCode {
+            install: "bin.install \"fulltool\"",
+            test: "system \"#{bin}/fulltool\"",
+        },
+        &opts,
+    )
+    .unwrap();
+    assert!(formula.contains("chmod 0755, bin/\"extra\""));
+    assert!(formula.contains("def post_install"));
+    assert!(formula.contains("system \"#{bin}/setup\""));
+    assert!(formula.contains("# custom ruby here"));
+    assert!(formula.contains("plist_options startup: true"));
+    assert!(formula.contains("def plist"));
+    assert!(formula.contains("<plist>stub</plist>"));
+    assert!(formula.contains("service do"));
+    assert!(formula.contains("run [opt_bin/\"svc\"]"));
+}
+
+/// A dependency carrying an explicit `version` pin renders
+/// `depends_on "name" => "version"` — the `version` branch of the dep
+/// template, distinct from the `:optional` and bare branches.
+#[test]
+fn test_formula_dependency_with_version_pin() {
+    use anodizer_core::config::HomebrewDependency;
+    let deps = vec![HomebrewDependency {
+        name: "openssl@3".to_string(),
+        os: None,
+        dep_type: None,
+        version: Some("3.2.0".to_string()),
+    }];
+    let opts = FormulaOptions {
+        dependencies: Some(&deps),
+        ..Default::default()
+    };
+    let formula = generate_formula_with_opts(
+        &super::formula::FormulaCore {
+            name: "vertool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[],
+        &super::formula::FormulaCode {
+            install: "bin.install \"vertool\"",
+            test: "system \"#{bin}/vertool\"",
+        },
+        &opts,
+    )
+    .unwrap();
+    assert!(formula.contains("depends_on \"openssl@3\" => \"3.2.0\""));
+}
+
+/// macOS-only multi-archive set (intel + arm, no linux) emits
+/// `depends_on :macos` (the `depends_on_macos` branch). The linux-only
+/// counterpart emits `depends_on :linux`.
+#[test]
+fn test_formula_macos_only_multiarch_emits_depends_on_macos() {
+    let macos_only = generate_formula(
+        &super::formula::FormulaCore {
+            name: "mactool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[
+            ("darwin-amd64", "https://example.com/m-amd64.tar.gz", "h1"),
+            ("darwin-arm64", "https://example.com/m-arm64.tar.gz", "h2"),
+        ],
+        &super::formula::FormulaCode {
+            install: "bin.install \"mactool\"",
+            test: "system \"#{bin}/mactool\"",
+        },
+    )
+    .unwrap();
+    assert!(macos_only.contains("depends_on :macos"));
+    assert!(!macos_only.contains("depends_on :linux"));
+
+    let linux_only = generate_formula(
+        &super::formula::FormulaCore {
+            name: "lintool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[
+            ("linux-amd64", "https://example.com/l-amd64.tar.gz", "h3"),
+            ("linux-arm64", "https://example.com/l-arm64.tar.gz", "h4"),
+        ],
+        &super::formula::FormulaCode {
+            install: "bin.install \"lintool\"",
+            test: "system \"#{bin}/lintool\"",
+        },
+    )
+    .unwrap();
+    assert!(linux_only.contains("depends_on :linux"));
+    assert!(!linux_only.contains("depends_on :macos"));
+}
+
+/// The `license` field is guarded by `{% if license %}`: an empty license
+/// omits the `license` stanza entirely rather than emitting `license ""`.
+#[test]
+fn test_formula_empty_license_omits_stanza() {
+    let with_license = generate_formula(
+        &super::formula::FormulaCore {
+            name: "lictool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[],
+        &super::formula::FormulaCode {
+            install: "bin.install \"lictool\"",
+            test: "system \"#{bin}/lictool\"",
+        },
+    )
+    .unwrap();
+    assert!(with_license.contains("license \"MIT\""));
+
+    let no_license = generate_formula(
+        &super::formula::FormulaCore {
+            name: "lictool",
+            version: "1.0.0",
+            description: "desc",
+            license: "",
+        },
+        &[],
+        &super::formula::FormulaCode {
+            install: "bin.install \"lictool\"",
+            test: "system \"#{bin}/lictool\"",
+        },
+    )
+    .unwrap();
+    assert!(!no_license.contains("license \""));
+}

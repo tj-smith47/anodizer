@@ -1603,6 +1603,76 @@ mod tests {
     }
 
     #[test]
+    fn render_artifact_url_interpolates_os_arch_target_ext() {
+        let config = Config::default();
+        let ctx = Context::new(config, ContextOptions::default());
+        let artifact = Artifact {
+            kind: ArtifactKind::Archive,
+            name: "myapp-1.0.0.tar.gz".to_string(),
+            path: PathBuf::from("dist/myapp-1.0.0.tar.gz"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        };
+        // ArtifactExt already carries its leading dot (".tar.gz").
+        let url = render_artifact_url(
+            &ctx,
+            "https://art.example.com/{{ .Os }}/{{ .Arch }}/{{ .Target }}{{ .ArtifactExt }}",
+            &artifact,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            url,
+            "https://art.example.com/linux/amd64/x86_64-unknown-linux-gnu.tar.gz"
+        );
+    }
+
+    #[test]
+    fn render_artifact_url_template_referencing_artifact_name_suppresses_append() {
+        let config = Config::default();
+        let ctx = Context::new(config, ContextOptions::default());
+        let artifact = Artifact {
+            kind: ArtifactKind::Archive,
+            name: "myapp-1.0.0.tar.gz".to_string(),
+            path: PathBuf::from("dist/myapp-1.0.0.tar.gz"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        };
+        // custom_artifact_name=false BUT the template names ArtifactName ->
+        // no second append (the name appears exactly once).
+        let url = render_artifact_url(
+            &ctx,
+            "https://art.example.com/repo/{{ .ArtifactName }}",
+            &artifact,
+            false,
+        )
+        .unwrap();
+        assert_eq!(url, "https://art.example.com/repo/myapp-1.0.0.tar.gz");
+    }
+
+    #[test]
+    fn render_artifact_url_keeps_single_slash_when_template_trailing_slashed() {
+        let config = Config::default();
+        let ctx = Context::new(config, ContextOptions::default());
+        let artifact = Artifact {
+            kind: ArtifactKind::Archive,
+            name: "myapp.tar.gz".to_string(),
+            path: PathBuf::from("dist/myapp.tar.gz"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        };
+        let url =
+            render_artifact_url(&ctx, "https://art.example.com/repo/", &artifact, false).unwrap();
+        assert_eq!(url, "https://art.example.com/repo/myapp.tar.gz");
+    }
+
+    #[test]
     fn test_dry_run_lists_matching_artifacts() {
         let mut config = Config::default();
         config.project_name = "testapp".to_string();

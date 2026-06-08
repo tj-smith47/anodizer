@@ -2415,4 +2415,217 @@ list:
             "a backward reference (dependency sorts first) must not warn"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // parse_csv_list
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_csv_list_none_passes_through() {
+        assert_eq!(parse_csv_list(None, "--targets=<a,b>").unwrap(), None);
+    }
+
+    #[test]
+    fn parse_csv_list_splits_and_trims() {
+        let got = parse_csv_list(Some(" a , b ,c"), "--targets=<a,b>")
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn parse_csv_list_drops_empty_tokens_from_double_and_trailing_commas() {
+        let got = parse_csv_list(Some("a,,b,"), "--stages=<x,y>")
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn parse_csv_list_all_empty_is_error_with_flag_help() {
+        let err = parse_csv_list(Some("  , , "), "--targets=<a,b>").unwrap_err();
+        assert!(
+            err.starts_with("--targets=<a,b> must list at least one entry"),
+            "error must lead with the call-site flag help, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_csv_list_empty_string_is_error() {
+        assert!(parse_csv_list(Some(""), "--flag=<x>").is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // detect_duplicate_paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn detect_duplicate_paths_unique_is_ok() {
+        let a = Path::new("dist/a.tar.gz");
+        let b = Path::new("dist/b.tar.gz");
+        assert!(detect_duplicate_paths([a, b]).is_ok());
+    }
+
+    #[test]
+    fn detect_duplicate_paths_flags_repeat_with_count() {
+        let a = Path::new("dist/a.tar.gz");
+        let err = detect_duplicate_paths([a, a, a]).unwrap_err().to_string();
+        assert!(
+            err.contains("dist/a.tar.gz (3×)"),
+            "must name the duplicated path with its occurrence count, got: {err}"
+        );
+    }
+
+    #[test]
+    fn detect_duplicate_paths_empty_iter_is_ok() {
+        let none: [&Path; 0] = [];
+        assert!(detect_duplicate_paths(none).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // detect_missing_files
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn detect_missing_files_present_relative_under_dist_is_ok() {
+        let dist = tempfile::tempdir().unwrap();
+        std::fs::write(dist.path().join("a.bin"), b"x").unwrap();
+        let rel = Path::new("a.bin");
+        assert!(detect_missing_files([rel], dist.path()).is_ok());
+    }
+
+    #[test]
+    fn detect_missing_files_absent_bails_naming_dist_root() {
+        let dist = tempfile::tempdir().unwrap();
+        let rel = Path::new("ghost.bin");
+        let err = detect_missing_files([rel], dist.path())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("ghost.bin"),
+            "missing file must be named in the diagnostic, got: {err}"
+        );
+        assert!(
+            err.contains(&dist.path().display().to_string()),
+            "diagnostic must name the dist root it searched, got: {err}"
+        );
+    }
+
+    #[test]
+    fn detect_missing_files_absolute_path_checked_literally() {
+        let dist = tempfile::tempdir().unwrap();
+        let abs = dist.path().join("nope.bin");
+        let err = detect_missing_files([abs.as_path()], dist.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("nope.bin"));
+    }
+
+    // -----------------------------------------------------------------------
+    // referenced_var_keys
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn referenced_var_keys_lifts_each_var_dot_identifier() {
+        let keys = referenced_var_keys("{{ .Var.FOO }}-{{ .Var.bar_baz }}");
+        assert_eq!(keys, vec!["FOO", "bar_baz"]);
+    }
+
+    #[test]
+    fn referenced_var_keys_stops_at_non_identifier_char() {
+        // The identifier ends at the dot / brace, not at end-of-string.
+        let keys = referenced_var_keys("Var.alpha.Var.beta}");
+        assert_eq!(keys, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn referenced_var_keys_empty_when_no_var_prefix() {
+        assert!(referenced_var_keys("{{ .Version }} no vars here").is_empty());
+    }
+
+    #[test]
+    fn referenced_var_keys_bare_var_dot_with_no_identifier_yields_nothing() {
+        // `Var.` immediately followed by a non-ident char contributes no key.
+        assert!(referenced_var_keys("Var. ").is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // yaml_key_sort_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn yaml_key_sort_key_strings_compare_on_raw_value() {
+        let v = serde_yaml_ng::Value::String("zeta".to_string());
+        assert_eq!(yaml_key_sort_key(&v), "zeta");
+    }
+
+    #[test]
+    fn yaml_key_sort_key_non_string_falls_back_to_debug() {
+        let v = serde_yaml_ng::Value::Number(7.into());
+        // A non-string key must still produce a deterministic, non-empty key.
+        assert_eq!(yaml_key_sort_key(&v), format!("{:?}", v));
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_force_token_with_env (injected EnvSource — no process-env mutation)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_force_token_config_field_wins_over_env() {
+        let config = Config {
+            force_token: Some(ForceTokenKind::Gitea),
+            ..Default::default()
+        };
+        let env = anodizer_core::MapEnvSource::new().with("ANODIZER_FORCE_TOKEN", "gitlab");
+        assert_eq!(
+            resolve_force_token_with_env(&config, &env),
+            Some(ForceTokenKind::Gitea)
+        );
+    }
+
+    #[test]
+    fn resolve_force_token_reads_anodizer_env_case_insensitively() {
+        let config = Config::default();
+        let env = anodizer_core::MapEnvSource::new().with("ANODIZER_FORCE_TOKEN", "GitLab");
+        assert_eq!(
+            resolve_force_token_with_env(&config, &env),
+            Some(ForceTokenKind::GitLab)
+        );
+    }
+
+    #[test]
+    fn resolve_force_token_goreleaser_alias_is_fallback() {
+        let config = Config::default();
+        let env = anodizer_core::MapEnvSource::new().with("GORELEASER_FORCE_TOKEN", "github");
+        assert_eq!(
+            resolve_force_token_with_env(&config, &env),
+            Some(ForceTokenKind::GitHub)
+        );
+    }
+
+    #[test]
+    fn resolve_force_token_anodizer_var_takes_precedence_over_goreleaser_alias() {
+        let config = Config::default();
+        let env = anodizer_core::MapEnvSource::new()
+            .with("ANODIZER_FORCE_TOKEN", "gitea")
+            .with("GORELEASER_FORCE_TOKEN", "gitlab");
+        assert_eq!(
+            resolve_force_token_with_env(&config, &env),
+            Some(ForceTokenKind::Gitea)
+        );
+    }
+
+    #[test]
+    fn resolve_force_token_unrecognized_backend_is_none() {
+        let config = Config::default();
+        let env = anodizer_core::MapEnvSource::new().with("ANODIZER_FORCE_TOKEN", "bitbucket");
+        assert_eq!(resolve_force_token_with_env(&config, &env), None);
+    }
+
+    #[test]
+    fn resolve_force_token_unset_everywhere_is_none() {
+        let config = Config::default();
+        let env = anodizer_core::MapEnvSource::new();
+        assert_eq!(resolve_force_token_with_env(&config, &env), None);
+    }
 }
