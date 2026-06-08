@@ -61,7 +61,17 @@ pub fn validate_package_identifier(id: &str) -> Result<()> {
 
 /// Render a commit message for WinGet with PackageIdentifier in the context.
 /// `PackageIdentifier` is exposed as an extra template field.
-fn render_winget_commit_msg(template: Option<&str>, package_id: &str, version: &str) -> String {
+///
+/// Strict-aware via [`util::render_or_warn_with_vars`]: a malformed
+/// `commit_msg_template` errors under the guard / `--strict`, else warns and
+/// falls back to the default-shaped raw message.
+fn render_winget_commit_msg(
+    template: Option<&str>,
+    package_id: &str,
+    version: &str,
+    log: &StageLogger,
+    is_strict: bool,
+) -> Result<String> {
     // Default: "New version: {{ .PackageIdentifier }} {{ .Version }}"
     let default_tmpl = "New version: {{ PackageIdentifier }} {{ Version }}";
     let tmpl = template.unwrap_or(default_tmpl);
@@ -71,8 +81,19 @@ fn render_winget_commit_msg(template: Option<&str>, package_id: &str, version: &
     vars.set("Version", version);
     vars.set("name", package_id);
     vars.set("version", version);
-    template::render(tmpl, &vars)
-        .unwrap_or_else(|_| format!("New version: {} {}", package_id, version))
+    match template::render(tmpl, &vars) {
+        Ok(rendered) => Ok(rendered),
+        Err(e) => {
+            if is_strict {
+                anyhow::bail!("failed to render winget.commit_msg_template {tmpl:?}: {e}");
+            }
+            log.warn(&format!(
+                "failed to render winget.commit_msg_template {tmpl:?}: {e}; \
+                 falling back to default commit message"
+            ));
+            Ok(format!("New version: {} {}", package_id, version))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -524,16 +545,16 @@ fn resolve_winget_description(
     ctx: &Context,
     winget_cfg: &anodizer_core::config::WingetConfig,
     crate_name: &str,
-) -> String {
+    log: &StageLogger,
+) -> Result<String> {
     let description_raw_cfg = winget_cfg
         .description
         .as_deref()
         .or_else(|| ctx.config.meta_description_for(crate_name))
         .unwrap_or("");
-    let description_tmpl = ctx
-        .render_template(description_raw_cfg)
-        .unwrap_or_else(|_| description_raw_cfg.to_string());
-    description_tmpl.replace('\t', "  ")
+    let description_tmpl =
+        util::render_or_warn(ctx, log, "winget.description", description_raw_cfg)?;
+    Ok(description_tmpl.replace('\t', "  "))
 }
 
 /// Resolve the required short description with the layered winget →
@@ -943,6 +964,11 @@ struct RenderedWingetFields {
 
 /// Template-render all 18 winget config string fields against the live
 /// context, injecting `Changelog` as an extra field per render.
+///
+/// Each field renders strict-aware via [`util::render_or_warn_with_vars`]: a
+/// malformed field template errors under the guard / `--strict`, else warns
+/// and falls back to its raw value.
+#[allow(clippy::too_many_arguments)]
 fn render_winget_fields(
     ctx: &Context,
     winget_cfg: &anodizer_core::config::WingetConfig,
@@ -951,45 +977,60 @@ fn render_winget_fields(
     publisher_name: &str,
     license: &str,
     short_desc: &str,
-) -> RenderedWingetFields {
+    log: &StageLogger,
+) -> Result<RenderedWingetFields> {
     let release_notes_var = ctx
         .template_vars()
         .get("ReleaseNotes")
         .cloned()
         .unwrap_or_default();
-    let render = |s: Option<&str>| -> Option<String> {
+    let is_strict = ctx.render_is_strict();
+    let render = |field: &str, s: Option<&str>| -> Result<Option<String>> {
         s.map(|v| {
             let mut vars = ctx.template_vars().clone();
             vars.set("Changelog", &release_notes_var);
-            anodizer_core::template::render(v, &vars).unwrap_or_else(|_| v.to_string())
+            util::render_or_warn_with_vars(&vars, log, field, v, is_strict)
         })
+        .transpose()
     };
 
-    RenderedWingetFields {
-        publisher: render(Some(publisher_name)).unwrap_or_else(|| publisher_name.to_string()),
-        publisher_url: render(winget_cfg.publisher_url.as_deref()),
-        publisher_support_url: render(winget_cfg.publisher_support_url.as_deref()),
-        privacy_url: render(winget_cfg.privacy_url.as_deref()),
+    Ok(RenderedWingetFields {
+        publisher: render("winget.publisher", Some(publisher_name))?
+            .unwrap_or_else(|| publisher_name.to_string()),
+        publisher_url: render("winget.publisher_url", winget_cfg.publisher_url.as_deref())?,
+        publisher_support_url: render(
+            "winget.publisher_support_url",
+            winget_cfg.publisher_support_url.as_deref(),
+        )?,
+        privacy_url: render("winget.privacy_url", winget_cfg.privacy_url.as_deref())?,
         homepage: render(
+            "winget.homepage",
             winget_cfg
                 .homepage
                 .as_deref()
                 .or_else(|| ctx.config.meta_homepage_for(crate_name)),
-        ),
-        author: render(winget_cfg.author.as_deref()),
-        copyright: render(winget_cfg.copyright.as_deref()),
-        copyright_url: render(winget_cfg.copyright_url.as_deref()),
-        license: render(Some(license)).unwrap_or_else(|| license.to_string()),
-        license_url: render(winget_cfg.license_url.as_deref()),
-        short_description: render(Some(short_desc))
+        )?,
+        author: render("winget.author", winget_cfg.author.as_deref())?,
+        copyright: render("winget.copyright", winget_cfg.copyright.as_deref())?,
+        copyright_url: render("winget.copyright_url", winget_cfg.copyright_url.as_deref())?,
+        license: render("winget.license", Some(license))?.unwrap_or_else(|| license.to_string()),
+        license_url: render("winget.license_url", winget_cfg.license_url.as_deref())?,
+        short_description: render("winget.short_description", Some(short_desc))?
             .unwrap_or_else(|| short_desc.to_string())
             .replace('\t', "  "),
-        release_notes_url: render(winget_cfg.release_notes_url.as_deref()),
-        installation_notes: render(winget_cfg.installation_notes.as_deref()),
-        path: render(winget_cfg.path.as_deref()),
-        package_name: render(winget_cfg.package_name.as_deref()).or_else(|| Some(name.to_string())),
-        release_notes: render(winget_cfg.release_notes.as_deref()),
-    }
+        release_notes_url: render(
+            "winget.release_notes_url",
+            winget_cfg.release_notes_url.as_deref(),
+        )?,
+        installation_notes: render(
+            "winget.installation_notes",
+            winget_cfg.installation_notes.as_deref(),
+        )?,
+        path: render("winget.path", winget_cfg.path.as_deref())?,
+        package_name: render("winget.package_name", winget_cfg.package_name.as_deref())?
+            .or_else(|| Some(name.to_string())),
+        release_notes: render("winget.release_notes", winget_cfg.release_notes.as_deref())?,
+    })
 }
 
 /// Compute the on-disk manifest directory inside the cloned winget repo
@@ -1163,9 +1204,7 @@ fn resolve_winget_identity(
             .ok_or_else(|| anyhow::anyhow!("winget: no repository config for '{}'", crate_name))?;
 
     let name_raw = winget_cfg.name.as_deref().unwrap_or(crate_name);
-    let name = ctx
-        .render_template(name_raw)
-        .unwrap_or_else(|_| name_raw.to_string());
+    let name = util::render_or_warn(ctx, log, "winget.name", name_raw)?;
     let publisher_name =
         resolve_winget_publisher_name(winget_cfg, &repo_owner, crate_name, log)?.to_string();
 
@@ -1209,7 +1248,7 @@ pub(crate) fn render_winget_manifests_for_crate(
         return Ok(None);
     };
     Ok(Some(render_winget_manifests_with_identity(
-        ctx, crate_name, winget_cfg, &identity,
+        ctx, crate_name, winget_cfg, &identity, log,
     )?))
 }
 
@@ -1225,13 +1264,14 @@ fn render_winget_manifests_with_identity(
     crate_name: &str,
     winget_cfg: &anodizer_core::config::WingetConfig,
     identity: &WingetIdentity,
+    log: &StageLogger,
 ) -> Result<RenderedWingetManifests> {
     let name = identity.name.as_str();
     let publisher_name = identity.publisher_name.as_str();
     let package_id = identity.package_id.as_str();
 
     let version = ctx.version();
-    let description = resolve_winget_description(ctx, winget_cfg, crate_name);
+    let description = resolve_winget_description(ctx, winget_cfg, crate_name, log)?;
     let short_desc = resolve_winget_short_description(ctx, winget_cfg, crate_name)?;
     let license = resolve_winget_license(ctx, winget_cfg, crate_name)?;
 
@@ -1249,7 +1289,8 @@ fn render_winget_manifests_with_identity(
         publisher_name,
         license,
         &short_desc,
-    );
+        log,
+    )?;
 
     let (version_yaml, installer_yaml, locale_yaml) = generate_manifests(&WingetManifestParams {
         package_id,
@@ -1318,7 +1359,8 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
     // Reuse the identity already resolved above so the manifest render does not
     // re-run `resolve_winget_publisher_name` (which would re-emit its
     // fallback-to-repo-owner warning a second time per publish).
-    let rendered = render_winget_manifests_with_identity(ctx, crate_name, &winget_cfg, &identity)?;
+    let rendered =
+        render_winget_manifests_with_identity(ctx, crate_name, &winget_cfg, &identity, log)?;
 
     submit_winget_manifests(ctx, log, &winget_cfg, &rendered)
 }
@@ -1378,11 +1420,13 @@ fn submit_winget_manifests(
         winget_cfg.commit_msg_template.as_deref(),
         package_id,
         &version,
-    );
+        log,
+        ctx.render_is_strict(),
+    )?;
 
     let auto_branch = format!("{}-{}", package_id, version);
     let branch_name = util::resolve_branch(winget_cfg.repository.as_ref()).unwrap_or(&auto_branch);
-    let commit_opts = util::resolve_commit_opts(ctx, winget_cfg.commit_author.as_ref());
+    let commit_opts = util::resolve_commit_opts(ctx, winget_cfg.commit_author.as_ref(), log)?;
     let outcome = util::commit_and_push_with_opts(
         repo_path,
         &["."],
@@ -1513,18 +1557,26 @@ pub(crate) fn is_winget_per_crate_configured(ctx: &Context, crate_name: &str) ->
 /// `publish_to_winget` will push. Returns `None` when no winget block
 /// is configured or when the publisher / repo resolution would itself
 /// no-op (matches the publish path's skip semantics).
-fn collect_winget_target(ctx: &Context, crate_name: &str) -> Option<WingetTarget> {
-    let c = ctx.config.crates.iter().find(|c| c.name == crate_name)?;
-    let cfg = c.publish.as_ref().and_then(|p| p.winget.as_ref())?;
-    let (repo_owner, _repo_name) = crate::util::resolve_repo_owner_name(cfg.repository.as_ref())?;
-    let fork_owner = ctx
-        .render_template(&repo_owner)
-        .unwrap_or_else(|_| repo_owner.clone());
+fn collect_winget_target(
+    ctx: &Context,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Option<WingetTarget>> {
+    let Some(c) = ctx.config.crates.iter().find(|c| c.name == crate_name) else {
+        return Ok(None);
+    };
+    let Some(cfg) = c.publish.as_ref().and_then(|p| p.winget.as_ref()) else {
+        return Ok(None);
+    };
+    let Some((repo_owner, _repo_name)) =
+        crate::util::resolve_repo_owner_name(cfg.repository.as_ref())
+    else {
+        return Ok(None);
+    };
+    let fork_owner = util::render_or_warn(ctx, log, "winget.repository.owner", &repo_owner)?;
 
     let name_raw = cfg.name.as_deref().unwrap_or(crate_name);
-    let name_rendered = ctx
-        .render_template(name_raw)
-        .unwrap_or_else(|_| name_raw.to_string());
+    let name_rendered = util::render_or_warn(ctx, log, "winget.name", name_raw)?;
 
     let publisher_name = match cfg.publisher.as_deref() {
         Some(p) if !p.is_empty() => p.to_string(),
@@ -1546,7 +1598,7 @@ fn collect_winget_target(ctx: &Context, crate_name: &str) -> Option<WingetTarget
 
     let (upstream_owner, upstream_repo) = resolve_winget_upstream(cfg);
 
-    Some(WingetTarget {
+    Ok(Some(WingetTarget {
         target: package_id.clone(),
         crate_name: crate_name.to_string(),
         package_id,
@@ -1555,7 +1607,7 @@ fn collect_winget_target(ctx: &Context, crate_name: &str) -> Option<WingetTarget
         upstream_repo,
         fork_owner,
         branch,
-    })
+    }))
 }
 
 /// Message emitted at publisher entry. Names how many crates the publisher
@@ -1662,7 +1714,7 @@ impl anodizer_core::Publisher for WingetPublisher {
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| {
-                    let target = collect_winget_target(ctx, crate_name);
+                    let target = collect_winget_target(ctx, crate_name, &log)?;
                     publish_to_winget(ctx, crate_name, &log)?;
                     Ok(target)
                 },
@@ -2092,7 +2144,9 @@ mod publisher_tests {
             w.package_identifier = Some("ExplicitOrg.Demo".to_string());
         }
         let ctx = TestContextBuilder::new().crates(vec![c]).build();
-        let t = collect_winget_target(&ctx, "demo").expect("target");
+        let t = collect_winget_target(&ctx, "demo", &ctx.logger("publish"))
+            .expect("render ok")
+            .expect("target");
         assert_eq!(t.package_id, "ExplicitOrg.Demo");
         assert_eq!(t.upstream_owner, "microsoft");
         assert_eq!(t.upstream_repo, "winget-pkgs");
@@ -2104,7 +2158,9 @@ mod publisher_tests {
         let ctx = TestContextBuilder::new()
             .crates(vec![winget_crate("demo")])
             .build();
-        let t = collect_winget_target(&ctx, "demo").expect("target");
+        let t = collect_winget_target(&ctx, "demo", &ctx.logger("publish"))
+            .expect("render ok")
+            .expect("target");
         // Publisher "AcmeCo" + name "demo" → "AcmeCo.demo".
         assert_eq!(t.package_id, "AcmeCo.demo");
         assert!(t.branch.starts_with("AcmeCo.demo-"));
@@ -2891,9 +2947,15 @@ mod tests {
     // Winget commit message with PackageIdentifier
     // -----------------------------------------------------------------------
 
+    fn commit_msg_logger() -> StageLogger {
+        StageLogger::new("publish", anodizer_core::log::Verbosity::Normal)
+    }
+
     #[test]
     fn test_winget_commit_msg_default() {
-        let msg = render_winget_commit_msg(None, "Org.MyTool", "1.0.0");
+        let msg =
+            render_winget_commit_msg(None, "Org.MyTool", "1.0.0", &commit_msg_logger(), false)
+                .expect("default template renders");
         assert_eq!(msg, "New version: Org.MyTool 1.0.0");
     }
 
@@ -2904,7 +2966,10 @@ mod tests {
             Some("winget: {{ PackageIdentifier }} v{{ version }}"),
             "Org.MyTool",
             "2.0.0",
-        );
+            &commit_msg_logger(),
+            false,
+        )
+        .expect("template renders");
         assert_eq!(msg, "winget: Org.MyTool v2.0.0");
     }
 
@@ -2914,7 +2979,10 @@ mod tests {
             Some("release: {{ name }} {{ version }}"),
             "Org.MyTool",
             "3.0.0",
-        );
+            &commit_msg_logger(),
+            false,
+        )
+        .expect("template renders");
         assert_eq!(msg, "release: Org.MyTool 3.0.0");
     }
 
@@ -3252,7 +3320,7 @@ license-file = "LICENSE.txt"
             ..Default::default()
         };
         assert_eq!(
-            resolve_winget_description(&ctx, &cfg, "demo"),
+            resolve_winget_description(&ctx, &cfg, "demo", &ctx.logger("publish")).unwrap(),
             "line  with  tabs"
         );
     }
@@ -3269,7 +3337,7 @@ license-file = "LICENSE.txt"
         );
         let cfg = WingetConfig::default();
         assert_eq!(
-            resolve_winget_description(&ctx, &cfg, "demo"),
+            resolve_winget_description(&ctx, &cfg, "demo", &ctx.logger("publish")).unwrap(),
             "derived blurb"
         );
     }
@@ -3278,6 +3346,9 @@ license-file = "LICENSE.txt"
     fn resolve_winget_description_empty_when_nothing_configured() {
         let ctx = TestContextBuilder::new().build();
         let cfg = WingetConfig::default();
-        assert_eq!(resolve_winget_description(&ctx, &cfg, "demo"), "");
+        assert_eq!(
+            resolve_winget_description(&ctx, &cfg, "demo", &ctx.logger("publish")).unwrap(),
+            ""
+        );
     }
 }

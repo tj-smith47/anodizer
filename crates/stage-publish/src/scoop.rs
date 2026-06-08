@@ -354,9 +354,7 @@ pub(crate) fn render_scoop_manifest_for_crate(
         .as_deref()
         .or_else(|| ctx.config.meta_description_for(crate_name))
         .unwrap_or(crate_name);
-    let description = ctx
-        .render_template(description_raw)
-        .unwrap_or_else(|_| description_raw.to_string());
+    let description = util::render_or_warn(ctx, log, "scoop.description", description_raw)?;
 
     // Scoop manifest schema lists `license` under `["string", "object"]` but
     // does NOT mark it required (see ScoopInstaller/Scoop schema.json — only
@@ -370,9 +368,7 @@ pub(crate) fn render_scoop_manifest_for_crate(
 
     // Use name override if set, otherwise crate name; render through template engine.
     let manifest_name_raw = scoop_cfg.name.as_deref().unwrap_or(crate_name);
-    let manifest_name_rendered = ctx
-        .render_template(manifest_name_raw)
-        .unwrap_or_else(|_| manifest_name_raw.to_string());
+    let manifest_name_rendered = util::render_or_warn(ctx, log, "scoop.name", manifest_name_raw)?;
     let manifest_name = manifest_name_rendered.as_str();
 
     // Find all Windows Archive artifacts, applying IDs + amd64_variant filter.
@@ -594,9 +590,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     // message key off the rendered name; the manifest body itself is rendered
     // by `render_scoop_manifest_for_crate`.
     let manifest_name_raw = scoop_cfg.name.as_deref().unwrap_or(crate_name);
-    let manifest_name_rendered = ctx
-        .render_template(manifest_name_raw)
-        .unwrap_or_else(|_| manifest_name_raw.to_string());
+    let manifest_name_rendered = util::render_or_warn(ctx, log, "scoop.name", manifest_name_raw)?;
     let manifest_name = manifest_name_rendered.as_str();
 
     // Render the manifest via the same path the schema validator uses. The
@@ -656,10 +650,12 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         manifest_name,
         &version,
         "manifest",
-    );
+        log,
+        ctx.render_is_strict(),
+    )?;
 
     let manifest_lossy = manifest_path.to_string_lossy();
-    let commit_opts = util::resolve_commit_opts(ctx, scoop_cfg.commit_author.as_ref());
+    let commit_opts = util::resolve_commit_opts(ctx, scoop_cfg.commit_author.as_ref(), log)?;
     let branch = util::resolve_branch(scoop_cfg.repository.as_ref());
     let outcome = util::commit_and_push_with_opts(
         repo_path,
@@ -2071,19 +2067,33 @@ mod tests {
     fn test_scoop_commit_msg_default() {
         // Canonical default: "Scoop update for {{ .ProjectName }} version {{ .Tag }}"
         let scoop_default = "Scoop update for {{ ProjectName }} version {{ Tag }}";
-        let msg =
-            crate::homebrew::render_commit_msg(Some(scoop_default), "mytool", "1.2.3", "manifest");
+        let log =
+            anodizer_core::log::StageLogger::new("publish", anodizer_core::log::Verbosity::Normal);
+        let msg = crate::homebrew::render_commit_msg(
+            Some(scoop_default),
+            "mytool",
+            "1.2.3",
+            "manifest",
+            &log,
+            false,
+        )
+        .unwrap();
         assert_eq!(msg, "Scoop update for mytool version 1.2.3");
     }
 
     #[test]
     fn test_scoop_commit_msg_custom() {
+        let log =
+            anodizer_core::log::StageLogger::new("publish", anodizer_core::log::Verbosity::Normal);
         let msg = crate::homebrew::render_commit_msg(
             Some("scoop: bump {{ name }} to {{ version }}"),
             "mytool",
             "3.0.0",
             "manifest",
-        );
+            &log,
+            false,
+        )
+        .unwrap();
         assert_eq!(msg, "scoop: bump mytool to 3.0.0");
     }
 

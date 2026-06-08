@@ -79,6 +79,16 @@ fn guard_checks(
 ) -> Result<()> {
     let mut errors: Vec<String> = vec![];
 
+    // Render strictly for the duration of the guard's in-memory pass: every
+    // publisher/announce template the validators render must PROPAGATE a
+    // malformed-template error (so it lands in `errors` and aborts the
+    // release) instead of being swallowed into a warn + raw fallback.
+    // Production publish renders stay lenient unless the user passed the
+    // global `--strict`. Both checks accumulate their `Err` into `errors`
+    // (never `?`-return), so the prior value is unconditionally restored
+    // before this fn returns.
+    let prior_strict = ctx.set_render_strict(true);
+
     if let Err(e) = anodizer_stage_publish::validate_publisher_schemas(ctx, log, resolve_tag) {
         errors.push(format!("{e:#}"));
     }
@@ -86,6 +96,8 @@ fn guard_checks(
     if let Err(e) = anodizer_stage_announce::validate_announce_templates(ctx, log) {
         errors.push(format!("{e:#}"));
     }
+
+    ctx.set_render_strict(prior_strict);
 
     if !errors.is_empty() {
         bail!(
@@ -317,6 +329,40 @@ mod tests {
         );
     }
 
+    /// (3b) A broken scoop `description` aborts the guard. `description` is a
+    /// previously-swallowed field (rendered with `unwrap_or_else(|_| raw)`),
+    /// now routed through the strict-aware `render_or_warn`; under the guard's
+    /// transient render-strict it propagates instead of shipping the raw
+    /// `{{ … }}` to the bucket. This is the regression the swallow-hole fix
+    /// closes — distinct from the `homepage` case, which already propagated.
+    #[test]
+    fn broken_scoop_description_aborts_under_guard_strict() {
+        let mut cfg = scoop_cfg("widget");
+        cfg.description = Some("widget — {{ NoSuchVar }}".to_string());
+        let krate = crate_with(
+            "widget",
+            "v{{ .Version }}",
+            PublishConfig {
+                scoop: Some(cfg),
+                ..Default::default()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .project_name("widget")
+            .crates(vec![krate])
+            .build();
+        scope(&mut ctx, "1.0.0");
+        add_windows_zip(&mut ctx, "widget", "widget");
+
+        let err = run_guard(&mut ctx, &test_version_resolver())
+            .expect_err("broken scoop description must abort before publish");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("scoop") || msg.contains("NoSuchVar") || msg.contains("description"),
+            "names the publisher / failing field: {msg}"
+        );
+    }
+
     /// (6) Happy path, single-crate: every template valid → guard Ok.
     #[test]
     fn happy_path_single_crate() {
@@ -351,7 +397,7 @@ mod tests {
             },
         );
         let mut broken = scoop_cfg("beta");
-        broken.homepage = Some("https://acme.example/{{ NoSuchVar }}".to_string());
+        broken.description = Some("widget — {{ NoSuchVar }}".to_string());
         let beta = crate_with(
             "beta",
             "v{{ .Version }}",
@@ -391,7 +437,7 @@ mod tests {
             },
         );
         let mut broken = scoop_cfg("beta");
-        broken.homepage = Some("https://acme.example/{{ NoSuchVar }}".to_string());
+        broken.description = Some("widget — {{ NoSuchVar }}".to_string());
         let beta = crate_with(
             "beta",
             "beta-v{{ .Version }}",

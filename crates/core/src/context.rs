@@ -406,6 +406,21 @@ pub struct Context {
     /// binaries do not carry the field at all.
     #[cfg(feature = "test-helpers")]
     pub log_capture: Option<crate::log::LogCapture>,
+    /// Runtime-togglable strict-render flag, distinct from the user's global
+    /// `--strict` (`options.strict`). The pre-publish guard flips this on for
+    /// the duration of its in-memory render pass (via [`Context::set_render_strict`])
+    /// so EVERY publisher/announce template it renders propagates its error
+    /// instead of falling back to the raw string — turning a swallowed
+    /// broken-template warning into a release-blocking abort BEFORE any
+    /// irreversible publisher fires. Production publish leaves it `false`, so
+    /// dry-run / snapshot / nightly stay lenient (warn + raw fallback).
+    ///
+    /// A `Cell` (not a plain `bool`) because the render path holds only a
+    /// shared `&Context`: the guard sets it through its `&mut Context`, then
+    /// the deep render helpers toggle-read it through `&Context`.
+    /// [`Context::render_is_strict`] ORs this with `is_strict()`, so the user's
+    /// global `--strict` also makes every render strict everywhere.
+    render_strict: std::cell::Cell<bool>,
 }
 
 impl Context {
@@ -428,6 +443,7 @@ impl Context {
             env_source: Arc::new(ProcessEnvSource),
             #[cfg(feature = "test-helpers")]
             log_capture: None,
+            render_strict: std::cell::Cell::new(false),
         }
     }
 
@@ -595,6 +611,27 @@ impl Context {
 
     pub fn is_strict(&self) -> bool {
         self.options.strict
+    }
+
+    /// Toggle the runtime strict-render flag (see the `render_strict` field).
+    ///
+    /// The pre-publish guard calls this with `true` before its render pass and
+    /// restores the prior value after, so render-error swallowing is suppressed
+    /// only for that in-memory validation — production publish renders stay
+    /// lenient unless the user passed the global `--strict`. Returns the prior
+    /// value so the caller can restore it.
+    pub fn set_render_strict(&self, on: bool) -> bool {
+        self.render_strict.replace(on)
+    }
+
+    /// Whether template renders should propagate errors (strict) rather than
+    /// warn-and-fall-back-to-raw (lenient).
+    ///
+    /// True when EITHER the guard's transient `render_strict` flag is set OR the
+    /// user passed the global `--strict`, so a malformed publisher/announce
+    /// template fails loud under the guard and under `--strict` everywhere.
+    pub fn render_is_strict(&self) -> bool {
+        self.render_strict.get() || self.is_strict()
     }
 
     /// In strict mode, return an error. In normal mode, log a warning and continue.

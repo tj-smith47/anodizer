@@ -591,10 +591,10 @@ fn run_real(
         .ok_or_else(|| {
             anyhow::anyhow!("schemastore: `repository` must set both `owner` and `name` (the fork)")
         })?;
-    let fork_owner = ctx
-        .render_template(&fork_owner_raw)
-        .unwrap_or(fork_owner_raw);
-    let fork_name = ctx.render_template(&fork_name_raw).unwrap_or(fork_name_raw);
+    let fork_owner =
+        crate::util::render_or_warn(ctx, log, "schemastore.repository.owner", &fork_owner_raw)?;
+    let fork_name =
+        crate::util::render_or_warn(ctx, log, "schemastore.repository.name", &fork_name_raw)?;
 
     let token = crate::util::resolve_repo_token(ctx, Some(repo), Some(TOKEN_ENV_VAR));
 
@@ -710,7 +710,7 @@ fn run_real(
     }
 
     let commit_msg = schemastore_commit_msg(&applied);
-    let commit_opts = crate::util::resolve_commit_opts(ctx, cfg.commit_author.as_ref());
+    let commit_opts = crate::util::resolve_commit_opts(ctx, cfg.commit_author.as_ref(), log)?;
     let push = crate::util::commit_and_push_with_opts(
         repo_path,
         &["."],

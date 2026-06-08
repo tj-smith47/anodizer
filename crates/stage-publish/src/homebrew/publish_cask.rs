@@ -23,7 +23,7 @@ fn cask_skip_gates_trip(
         .skip_upload
         .as_ref()
         .or(hb_cfg.skip_upload.as_ref());
-    if crate::util::should_skip_upload(effective_skip, ctx, log) {
+    if crate::util::should_skip_upload(effective_skip, ctx, log)? {
         log.status(&format!(
             "homebrew cask: skipping upload for '{}' (skip_upload={})",
             crate_name,
@@ -183,14 +183,16 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         &cask_result.cask_name,
         &version,
         "cask",
-    );
+        log,
+        ctx.render_is_strict(),
+    )?;
 
     let path_strings: Vec<String> = written_paths
         .iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect();
     let path_refs: Vec<&str> = path_strings.iter().map(String::as_str).collect();
-    let commit_opts = crate::util::resolve_commit_opts(ctx, hb_cfg.commit_author.as_ref());
+    let commit_opts = crate::util::resolve_commit_opts(ctx, hb_cfg.commit_author.as_ref(), log)?;
     let branch = crate::util::resolve_branch(hb_cfg.repository.as_ref());
     let outcome = crate::util::commit_and_push_with_opts(
         repo_path,

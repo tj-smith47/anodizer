@@ -122,7 +122,7 @@ pub fn publish_to_chocolatey(
     // The skip gate above already ran (`check_skip_publish`), so render the
     // nuspec via the skip-unaware inner helper — re-evaluating the skip/`if`
     // gate here would double every resolved-with-warning value's log line.
-    let nuspec = render_nuspec_inner(ctx, choco_cfg, crate_name, repo_owner, repo_name)?;
+    let nuspec = render_nuspec_inner(ctx, choco_cfg, crate_name, repo_owner, repo_name, log)?;
 
     let (artifact_32, artifact_64) = select_windows_artifacts(ctx, choco_cfg, crate_name, log);
     let install_mode = build_install_mode(
@@ -139,7 +139,7 @@ pub fn publish_to_chocolatey(
 
     let staged = stage_package(pkg_name, &version, &nuspec, &install_script, log)?;
 
-    let api_key = resolve_api_key(ctx, choco_cfg);
+    let api_key = resolve_api_key(ctx, choco_cfg, log)?;
     if api_key.is_empty() {
         log.warn(&format!(
             "chocolatey: no API key for '{}', skipping push",
@@ -248,7 +248,7 @@ pub(crate) fn render_nuspec_for_crate(
         ),
         None => ("", ""),
     };
-    let nuspec = render_nuspec_inner(ctx, choco_cfg, crate_name, repo_owner, repo_name)?;
+    let nuspec = render_nuspec_inner(ctx, choco_cfg, crate_name, repo_owner, repo_name, log)?;
     Ok(Some(nuspec))
 }
 
@@ -263,10 +263,11 @@ fn render_nuspec_inner(
     crate_name: &str,
     repo_owner: &str,
     repo_name: &str,
+    log: &StageLogger,
 ) -> Result<String> {
     let version = ctx.version();
-    let metadata = resolve_metadata(ctx, choco_cfg, crate_name, repo_owner, repo_name)?;
-    let text_fields = render_text_fields(ctx, choco_cfg, crate_name);
+    let metadata = resolve_metadata(ctx, choco_cfg, crate_name, repo_owner, repo_name, log)?;
+    let text_fields = render_text_fields(ctx, choco_cfg, crate_name, log)?;
     build_nuspec(choco_cfg, crate_name, &version, &metadata, &text_fields)
 }
 
@@ -280,6 +281,7 @@ fn resolve_metadata(
     crate_name: &str,
     repo_owner: &str,
     repo_name: &str,
+    log: &StageLogger,
 ) -> Result<ChocoMetadata> {
     // Fall back to project `metadata.*` when choco config unset.
     let description_raw = choco_cfg
@@ -287,9 +289,8 @@ fn resolve_metadata(
         .as_deref()
         .or_else(|| ctx.config.meta_description_for(crate_name))
         .unwrap_or(crate_name);
-    let description = ctx
-        .render_template(description_raw)
-        .unwrap_or_else(|_| description_raw.to_string());
+    let description =
+        crate::util::render_or_warn(ctx, log, "chocolatey.description", description_raw)?;
     let license = choco_cfg
         .license
         .clone()
@@ -541,11 +542,14 @@ fn render_text_fields(
     ctx: &Context,
     choco_cfg: &anodizer_core::config::ChocolateyConfig,
     crate_name: &str,
-) -> ChocoTextFields {
+    log: &StageLogger,
+) -> Result<ChocoTextFields> {
+    let is_strict = ctx.render_is_strict();
     let title = choco_cfg
         .title
         .as_deref()
-        .map(|t| ctx.render_template(t).unwrap_or_else(|_| t.to_string()));
+        .map(|t| util::render_or_warn(ctx, log, "chocolatey.title", t))
+        .transpose()?;
 
     // Template-render Copyright, Summary, Description, ReleaseNotes.
     // `Changelog` is injected as a per-render extra so configs that use
@@ -559,26 +563,28 @@ fn render_text_fields(
         .get("ReleaseNotes")
         .cloned()
         .unwrap_or_default();
-    let render = |s: Option<&str>| -> Option<String> {
+    let render = |field: &str, s: Option<&str>| -> Result<Option<String>> {
         s.map(|v| {
             let mut vars = ctx.template_vars().clone();
             vars.set("Changelog", &release_notes_var);
-            anodizer_core::template::render(v, &vars).unwrap_or_else(|_| v.to_string())
+            util::render_or_warn_with_vars(&vars, log, field, v, is_strict)
         })
+        .transpose()
     };
-    let copyright = render(choco_cfg.copyright.as_deref());
+    let copyright = render("chocolatey.copyright", choco_cfg.copyright.as_deref())?;
     // Summary falls back to project-level
     // `metadata.description` (the 1-line summary), same source the
     // `description` field already falls back to. The Chocolatey gallery
     // requires `<summary>`; without this fallback an unset `summary:` in
     // the choco block emitted an empty tag, which gallery moderators
     // flag as incomplete metadata.
-    let summary = render(choco_cfg.summary.as_deref()).or_else(|| {
-        ctx.config.meta_description_for(crate_name).map(|s| {
-            anodizer_core::template::render(s, ctx.template_vars())
-                .unwrap_or_else(|_| s.to_string())
-        })
-    });
+    let summary = match render("chocolatey.summary", choco_cfg.summary.as_deref())? {
+        Some(s) => Some(s),
+        None => match ctx.config.meta_description_for(crate_name) {
+            Some(s) => Some(util::render_or_warn(ctx, log, "chocolatey.summary", s)?),
+            None => None,
+        },
+    };
     // release_notes falls back to the resolved
     // `metadata.full_description` (the long-form body, typically
     // README.md via `from_file:`). Without this fallback an unset
@@ -586,20 +592,26 @@ fn render_text_fields(
     // `<releaseNotes>` empty even when the project carried a
     // README. `render_template` walks the structured `Metadata` map
     // populated at context bootstrap.
-    let release_notes = render(choco_cfg.release_notes.as_deref()).or_else(|| {
-        let resolved = ctx.render_template("{{ Metadata.FullDescription }}").ok()?;
-        if resolved.is_empty() {
-            None
-        } else {
-            Some(resolved)
+    let release_notes = match render(
+        "chocolatey.release_notes",
+        choco_cfg.release_notes.as_deref(),
+    )? {
+        Some(s) => Some(s),
+        None => {
+            // The full-description fallback is the tool's own fixed template
+            // (`{{ Metadata.FullDescription }}`), not user config, so a render
+            // failure here is genuinely internal — keep its `.ok()` swallow.
+            ctx.render_template("{{ Metadata.FullDescription }}")
+                .ok()
+                .filter(|s| !s.is_empty())
         }
-    });
-    ChocoTextFields {
+    };
+    Ok(ChocoTextFields {
         title,
         copyright,
         summary,
         release_notes,
-    }
+    })
 }
 
 /// Renders the `.nuspec` XML body from the resolved metadata + text fields.
@@ -709,17 +721,23 @@ fn stage_package(
 /// Resolves the NuGet API key from `choco.api_key` (template-rendered)
 /// with `CHOCOLATEY_API_KEY` env-var fallback. An empty result signals
 /// "skip push" at the call site.
-fn resolve_api_key(ctx: &Context, choco_cfg: &anodizer_core::config::ChocolateyConfig) -> String {
+fn resolve_api_key(
+    ctx: &Context,
+    choco_cfg: &anodizer_core::config::ChocolateyConfig,
+    log: &StageLogger,
+) -> Result<String> {
     // Template-render APIKey.
     // Empty default is checked by the caller — the empty branch logs a
     // warn and returns Ok(false) (skip push) rather than letting an empty
     // key reach the NuGet push API where it would surface as opaque 403.
-    choco_cfg
+    let rendered = choco_cfg
         .api_key
         .as_deref()
-        .map(|k| ctx.render_template(k).unwrap_or_else(|_| k.to_string()))
+        .map(|k| util::render_or_warn(ctx, log, "chocolatey.api_key", k))
+        .transpose()?;
+    Ok(rendered
         .or_else(|| ctx.env_var("CHOCOLATEY_API_KEY"))
-        .unwrap_or_default()
+        .unwrap_or_default())
 }
 
 /// Inspects the feed for the current `pkg_name@version` and decides
@@ -981,7 +999,7 @@ mod tests {
         }];
         let ctx = Context::new(config, ContextOptions::default());
         let cfg = ChocolateyConfig::default();
-        let meta = resolve_metadata(&ctx, &cfg, "mytool", "", "").unwrap();
+        let meta = resolve_metadata(&ctx, &cfg, "mytool", "", "", &ctx.logger("publish")).unwrap();
         assert_eq!(meta.description, "project-level desc");
         assert_eq!(meta.license, "Apache-2.0");
         assert_eq!(meta.authors, "Alice <a@example.com>");
@@ -1013,7 +1031,7 @@ mod tests {
             icon_url: Some("https://example.com/i.png".to_string()),
             ..Default::default()
         };
-        let meta = resolve_metadata(&ctx, &cfg, "mytool", "", "").unwrap();
+        let meta = resolve_metadata(&ctx, &cfg, "mytool", "", "", &ctx.logger("publish")).unwrap();
         assert_eq!(meta.description, "choco desc");
         assert_eq!(meta.license, "MIT");
         assert_eq!(meta.authors, "Choco Author");
@@ -1028,7 +1046,15 @@ mod tests {
             license: Some("MIT".to_string()),
             ..Default::default()
         };
-        let meta = resolve_metadata(&ctx, &cfg, "mytool", "myorg", "mytool").unwrap();
+        let meta = resolve_metadata(
+            &ctx,
+            &cfg,
+            "mytool",
+            "myorg",
+            "mytool",
+            &ctx.logger("publish"),
+        )
+        .unwrap();
         assert_eq!(meta.project_url, "https://github.com/myorg/mytool");
     }
 
@@ -1040,7 +1066,15 @@ mod tests {
             project_url: Some("https://example.com/home".to_string()),
             ..Default::default()
         };
-        let meta = resolve_metadata(&ctx, &cfg, "mytool", "myorg", "mytool").unwrap();
+        let meta = resolve_metadata(
+            &ctx,
+            &cfg,
+            "mytool",
+            "myorg",
+            "mytool",
+            &ctx.logger("publish"),
+        )
+        .unwrap();
         assert_eq!(meta.project_url, "https://example.com/home");
     }
 
@@ -1051,7 +1085,7 @@ mod tests {
             license: Some("MIT".to_string()),
             ..Default::default()
         };
-        let meta = resolve_metadata(&ctx, &cfg, "mytool", "", "").unwrap();
+        let meta = resolve_metadata(&ctx, &cfg, "mytool", "", "", &ctx.logger("publish")).unwrap();
         assert_eq!(meta.authors, "mytool");
     }
 
@@ -1059,7 +1093,7 @@ mod tests {
     fn resolve_metadata_missing_license_returns_actionable_bail() {
         let ctx = ctx_with_choco(ChocolateyConfig::default());
         let cfg = ChocolateyConfig::default();
-        let err = match resolve_metadata(&ctx, &cfg, "mytool", "", "") {
+        let err = match resolve_metadata(&ctx, &cfg, "mytool", "", "", &ctx.logger("publish")) {
             Err(e) => e,
             Ok(_) => panic!("missing license must bail"),
         };
@@ -1304,7 +1338,7 @@ mod tests {
     fn render_text_fields_all_none_when_choco_unset_and_no_metadata() {
         let ctx = ctx_with_choco(ChocolateyConfig::default());
         let cfg = ChocolateyConfig::default();
-        let tf = render_text_fields(&ctx, &cfg, "mytool");
+        let tf = render_text_fields(&ctx, &cfg, "mytool", &ctx.logger("publish")).unwrap();
         assert!(tf.title.is_none());
         assert!(tf.copyright.is_none());
         assert!(tf.summary.is_none());
@@ -1327,7 +1361,7 @@ mod tests {
             copyright: Some("Copyright {{ ProjectName }}".to_string()),
             ..Default::default()
         };
-        let tf = render_text_fields(&ctx, &cfg, "mytool");
+        let tf = render_text_fields(&ctx, &cfg, "mytool", &ctx.logger("publish")).unwrap();
         assert_eq!(tf.title.as_deref(), Some("mytool CLI"));
         assert_eq!(tf.copyright.as_deref(), Some("Copyright mytool"));
     }
@@ -1347,7 +1381,7 @@ mod tests {
         }];
         let ctx = Context::new(config, ContextOptions::default());
         let cfg = ChocolateyConfig::default();
-        let tf = render_text_fields(&ctx, &cfg, "mytool");
+        let tf = render_text_fields(&ctx, &cfg, "mytool", &ctx.logger("publish")).unwrap();
         assert_eq!(tf.summary.as_deref(), Some("project summary"));
     }
 
@@ -1367,7 +1401,7 @@ mod tests {
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.populate_metadata_var().unwrap();
         let cfg = ChocolateyConfig::default();
-        let tf = render_text_fields(&ctx, &cfg, "mytool");
+        let tf = render_text_fields(&ctx, &cfg, "mytool", &ctx.logger("publish")).unwrap();
         assert_eq!(tf.release_notes.as_deref(), Some("long-form readme"));
     }
 
@@ -1380,7 +1414,7 @@ mod tests {
             release_notes: Some("Release notes:\n{{ Changelog }}".to_string()),
             ..Default::default()
         };
-        let tf = render_text_fields(&ctx, &cfg, "mytool");
+        let tf = render_text_fields(&ctx, &cfg, "mytool", &ctx.logger("publish")).unwrap();
         let rn = tf.release_notes.expect("release_notes set");
         assert!(rn.contains("## v1.0.0"));
         assert!(rn.contains("- one"));
@@ -1393,7 +1427,7 @@ mod tests {
             title: Some("{{ broken".to_string()),
             ..Default::default()
         };
-        let tf = render_text_fields(&ctx, &cfg, "mytool");
+        let tf = render_text_fields(&ctx, &cfg, "mytool", &ctx.logger("publish")).unwrap();
         assert_eq!(tf.title.as_deref(), Some("{{ broken"));
     }
 
@@ -1491,7 +1525,10 @@ mod tests {
             api_key: Some("{{ MyKey }}".to_string()),
             ..Default::default()
         };
-        assert_eq!(resolve_api_key(&ctx, &cfg), "from-template");
+        assert_eq!(
+            resolve_api_key(&ctx, &cfg, &ctx.logger("publish")).unwrap(),
+            "from-template"
+        );
     }
 
     #[test]
@@ -1501,7 +1538,10 @@ mod tests {
             anodizer_core::MapEnvSource::new().with("CHOCOLATEY_API_KEY", "from-env"),
         );
         let cfg = ChocolateyConfig::default();
-        assert_eq!(resolve_api_key(&ctx, &cfg), "from-env");
+        assert_eq!(
+            resolve_api_key(&ctx, &cfg, &ctx.logger("publish")).unwrap(),
+            "from-env"
+        );
     }
 
     #[test]
@@ -1511,7 +1551,11 @@ mod tests {
         // `CHOCOLATEY_API_KEY` from the host shell.
         ctx.set_env_source(anodizer_core::MapEnvSource::new());
         let cfg = ChocolateyConfig::default();
-        assert!(resolve_api_key(&ctx, &cfg).is_empty());
+        assert!(
+            resolve_api_key(&ctx, &cfg, &ctx.logger("publish"))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     // -----------------------------------------------------------------

@@ -1,17 +1,25 @@
+use anodizer_core::log::StageLogger;
 use anodizer_core::template::{self, TemplateVars};
+use anyhow::Result;
 
 /// Render a commit message from an optional Tera template string.
 ///
 /// The template receives `ProjectName` (= name) and `Tag`/`Version` variables
 /// in the template context.  When `template` is `None` the default for
 /// the publisher `kind` is used.
+///
+/// Strict-aware: a malformed `commit_msg_template` errors under the guard /
+/// `--strict` (`is_strict`), else warns and falls back to a default-shaped
+/// message.
 pub(crate) fn render_commit_msg(
     template: Option<&str>,
     name: &str,
     version: &str,
     kind: &str,
-) -> String {
-    render_commit_msg_with_prev(template, name, version, "", kind)
+    log: &StageLogger,
+    is_strict: bool,
+) -> Result<String> {
+    render_commit_msg_with_prev(template, name, version, "", kind, log, is_strict)
 }
 
 /// Render a commit message with PreviousTag support (for Nix publisher).
@@ -21,7 +29,9 @@ pub(crate) fn render_commit_msg_with_prev(
     version: &str,
     previous_tag: &str,
     kind: &str,
-) -> String {
+    log: &StageLogger,
+    is_strict: bool,
+) -> Result<String> {
     // Default commit messages per publisher type:
     //   brew formula: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
     //   brew cask:    "Brew cask update for {{ .ProjectName }} version {{ .Tag }}"
@@ -46,6 +56,17 @@ pub(crate) fn render_commit_msg_with_prev(
     vars.set("PreviousTag", previous_tag);
     vars.set("name", name);
     vars.set("version", version);
-    template::render(tmpl, &vars)
-        .unwrap_or_else(|_| format!("{} update for {} version {}", kind, name, version))
+    match template::render(tmpl, &vars) {
+        Ok(rendered) => Ok(rendered),
+        Err(e) => {
+            if is_strict {
+                anyhow::bail!("failed to render {kind}.commit_msg_template {tmpl:?}: {e}");
+            }
+            log.warn(&format!(
+                "failed to render {kind}.commit_msg_template {tmpl:?}: {e}; \
+                 falling back to default commit message"
+            ));
+            Ok(format!("{} update for {} version {}", kind, name, version))
+        }
+    }
 }

@@ -554,7 +554,8 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             ));
             if !custom_headers.is_empty() {
                 for (k, v) in custom_headers {
-                    let rendered_v = ctx.render_template(v).unwrap_or_else(|_| v.clone());
+                    let rendered_v =
+                        crate::util::render_or_warn(ctx, log, "artifactory.headers", v)?;
                     log.status(&format!("(dry-run) custom header: {}={}", k, rendered_v));
                 }
             }

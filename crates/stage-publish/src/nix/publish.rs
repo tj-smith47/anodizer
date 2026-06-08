@@ -45,7 +45,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
     let RepoCoords {
         repo_owner,
         repo_name,
-    } = resolve_repo_coords(ctx, nix_cfg, crate_name)?;
+    } = resolve_repo_coords(ctx, nix_cfg, crate_name, log)?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -217,12 +217,10 @@ fn render_nix_derivation_inner(
     log: &StageLogger,
 ) -> Result<NixRender> {
     let name_raw = nix_cfg.name.as_deref().unwrap_or(crate_name);
-    let name = ctx
-        .render_template(name_raw)
-        .unwrap_or_else(|_| name_raw.to_string());
+    let name = util::render_or_warn(ctx, log, "nix.name", name_raw)?;
 
     let version = ctx.version();
-    let meta = resolve_nix_metadata(ctx, nix_cfg, crate_name)?;
+    let meta = resolve_nix_metadata(ctx, nix_cfg, crate_name, log)?;
 
     let all_artifacts = collect_platform_artifacts(ctx, crate_name, nix_cfg)?;
     let archives = build_archive_tuples(&all_artifacts, nix_cfg, crate_name, &version, log)?;
@@ -318,7 +316,7 @@ fn check_skip_guards(
         ));
         return Ok(true);
     }
-    if util::should_skip_upload(nix_cfg.skip_upload.as_ref(), ctx, log) {
+    if util::should_skip_upload(nix_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
             "nix: skipping upload for '{}' (skip_upload={})",
             crate_name,
@@ -335,14 +333,17 @@ fn check_skip_guards(
 
 /// Resolves `(owner, name)` from the repository config and renders both
 /// halves through the template engine.
-fn resolve_repo_coords(ctx: &Context, nix_cfg: &NixConfig, crate_name: &str) -> Result<RepoCoords> {
+fn resolve_repo_coords(
+    ctx: &Context,
+    nix_cfg: &NixConfig,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<RepoCoords> {
     let (repo_owner_raw, repo_name_raw) =
         crate::util::resolve_repo_owner_name(nix_cfg.repository.as_ref())
             .ok_or_else(|| anyhow::anyhow!("nix: no repository config for '{}'", crate_name))?;
-    let repo_owner = ctx
-        .render_template(&repo_owner_raw)
-        .unwrap_or(repo_owner_raw);
-    let repo_name = ctx.render_template(&repo_name_raw).unwrap_or(repo_name_raw);
+    let repo_owner = util::render_or_warn(ctx, log, "nix.repository.owner", &repo_owner_raw)?;
+    let repo_name = util::render_or_warn(ctx, log, "nix.repository.name", &repo_name_raw)?;
     Ok(RepoCoords {
         repo_owner,
         repo_name,
@@ -357,15 +358,14 @@ fn resolve_nix_metadata(
     ctx: &Context,
     nix_cfg: &NixConfig,
     crate_name: &str,
+    log: &StageLogger,
 ) -> Result<NixMetadata> {
     let description_raw = nix_cfg
         .description
         .as_deref()
         .or_else(|| ctx.config.meta_description_for(crate_name))
         .unwrap_or("");
-    let description = ctx
-        .render_template(description_raw)
-        .unwrap_or_else(|_| description_raw.to_string());
+    let description = util::render_or_warn(ctx, log, "nix.description", description_raw)?;
 
     let homepage_raw = nix_cfg
         .homepage
@@ -743,8 +743,10 @@ fn finalize_publish(
         version,
         &previous_tag,
         "nix",
-    );
-    let commit_opts = util::resolve_commit_opts(ctx, nix_cfg.commit_author.as_ref());
+        log,
+        ctx.render_is_strict(),
+    )?;
+    let commit_opts = util::resolve_commit_opts(ctx, nix_cfg.commit_author.as_ref(), log)?;
     let branch = util::resolve_branch(nix_cfg.repository.as_ref());
     let outcome = util::commit_and_push_with_opts(
         repo_path,

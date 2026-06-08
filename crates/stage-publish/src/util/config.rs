@@ -197,13 +197,13 @@ pub(crate) fn should_skip_upload(
     skip_upload: Option<&anodizer_core::config::StringOrBool>,
     ctx: &Context,
     log: &StageLogger,
-) -> bool {
+) -> Result<bool> {
     let raw = match skip_upload {
         Some(v) => v.as_str(),
-        None => return false,
+        None => return Ok(false),
     };
-    let rendered = ctx.render_template(raw).unwrap_or_else(|_| raw.to_string());
-    match rendered.trim() {
+    let rendered = super::template::render_or_warn(ctx, log, "skip_upload", raw)?;
+    Ok(match rendered.trim() {
         "true" => true,
         "auto" => {
             let pre = ctx
@@ -220,7 +220,7 @@ pub(crate) fn should_skip_upload(
             ));
             false
         }
-    }
+    })
 }
 
 /// Evaluate `skip` / `skip_upload` / `if:` fields for a publisher entry.
@@ -253,7 +253,7 @@ pub(crate) fn should_skip_publisher_with_if(
     // bare bool-eval would silently treat `auto` as an unknown string and
     // never skip a prerelease, regressing the documented `skip_upload: auto`
     // semantics.
-    if skip_upload.is_some() && should_skip_upload(skip_upload, ctx, log) {
+    if skip_upload.is_some() && should_skip_upload(skip_upload, ctx, log)? {
         log.status(&format!("{label}: skipping upload (skip_upload)"));
         return Ok(true);
     }

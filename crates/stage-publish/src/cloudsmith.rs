@@ -477,7 +477,8 @@ pub(crate) fn publish_to_cloudsmith(
         let component = entry
             .component
             .as_ref()
-            .map(|c| ctx.render_template(c).unwrap_or_else(|_| c.clone()));
+            .map(|c| crate::util::render_or_warn(ctx, log, "cloudsmith.component", c))
+            .transpose()?;
 
         // Check republish flag.
         let republish = match entry.republish.as_ref() {

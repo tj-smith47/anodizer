@@ -657,7 +657,7 @@ pub(crate) fn render_krew_manifest_for_crate(
     if !proceed {
         return Ok(None);
     }
-    if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx, log) {
+    if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx, log)? {
         return Ok(None);
     }
 
@@ -692,17 +692,14 @@ pub(crate) fn render_krew_manifest_for_crate(
         .as_deref()
         .or_else(|| ctx.config.meta_description_for(crate_name))
         .unwrap_or(crate_name);
-    let description = ctx
-        .render_template(description_raw)
-        .unwrap_or_else(|_| description_raw.to_string());
+    let description = util::render_or_warn(ctx, log, "krew.description", description_raw)?;
     let short_description_raw = krew_cfg
         .short_description
         .as_deref()
         .or(effective_description)
         .unwrap_or(crate_name);
-    let short_description = ctx
-        .render_template(short_description_raw)
-        .unwrap_or_else(|_| short_description_raw.to_string());
+    let short_description =
+        util::render_or_warn(ctx, log, "krew.short_description", short_description_raw)?;
     // Derive GitHub slug (owner/repo) for the homepage fallback, consistent with
     // the homebrew publisher.
     let plugin_github = crate_cfg
@@ -723,7 +720,8 @@ pub(crate) fn render_krew_manifest_for_crate(
     // `https://github.com//crate` URL — never widen leniency past the live
     // path's guarantees.
     let repo_owner_fallback = crate::util::resolve_repo_owner_name(krew_cfg.repository.as_ref())
-        .map(|(owner_raw, _)| ctx.render_template(&owner_raw).unwrap_or(owner_raw))
+        .map(|(owner_raw, _)| util::render_or_warn(ctx, log, "krew.repository.owner", &owner_raw))
+        .transpose()?
         .filter(|owner| !owner.is_empty());
     let homepage_raw = krew_cfg
         .homepage
@@ -883,7 +881,7 @@ pub fn publish_to_krew(
         ));
         return Ok(KrewPublishOutcome::skipped());
     }
-    if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx, log) {
+    if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
             "krew: skipping upload for '{}' (skip_upload={})",
             crate_name,
@@ -901,10 +899,8 @@ pub fn publish_to_krew(
     let (repo_owner_raw, repo_name_raw) =
         crate::util::resolve_repo_owner_name(krew_cfg.repository.as_ref())
             .ok_or_else(|| anyhow::anyhow!("krew: no repository config for '{}'", crate_name))?;
-    let repo_owner = ctx
-        .render_template(&repo_owner_raw)
-        .unwrap_or(repo_owner_raw);
-    let repo_name = ctx.render_template(&repo_name_raw).unwrap_or(repo_name_raw);
+    let repo_owner = util::render_or_warn(ctx, log, "krew.repository.owner", &repo_owner_raw)?;
+    let repo_name = util::render_or_warn(ctx, log, "krew.repository.name", &repo_name_raw)?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -1029,9 +1025,11 @@ pub fn publish_to_krew(
         plugin_name,
         &version,
         "plugin",
-    );
+        log,
+        ctx.render_is_strict(),
+    )?;
     let branch_name = format!("{}-v{}", plugin_name, version);
-    let commit_opts = util::resolve_commit_opts(ctx, krew_cfg.commit_author.as_ref());
+    let commit_opts = util::resolve_commit_opts(ctx, krew_cfg.commit_author.as_ref(), log)?;
     // Always create a versioned branch for Krew PRs.
     let branch = Some(branch_name.as_str());
     let push_outcome = util::commit_and_push_with_opts(
@@ -1908,31 +1906,40 @@ fn resolve_krew_upstream(krew_cfg: &anodizer_core::config::KrewConfig) -> (Strin
 /// pushed — in workspace per-crate independent-version mode the global
 /// `ctx.version()` is the FIRST crate's version, which would record the wrong
 /// branch and orphan this crate's PR from rollback.
-fn collect_krew_target(ctx: &Context, crate_name: &str) -> Option<KrewPrTarget> {
+fn collect_krew_target(
+    ctx: &Context,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Option<KrewPrTarget>> {
     let version = ctx.version();
-    let c = ctx.config.crates.iter().find(|c| c.name == crate_name)?;
-    let krew_cfg = c.publish.as_ref().and_then(|p| p.krew.as_ref())?;
-    let (fork_owner_raw, _) = crate::util::resolve_repo_owner_name(krew_cfg.repository.as_ref())?;
-    let fork_owner = ctx
-        .render_template(&fork_owner_raw)
-        .unwrap_or(fork_owner_raw);
+    let Some(c) = ctx.config.crates.iter().find(|c| c.name == crate_name) else {
+        return Ok(None);
+    };
+    let Some(krew_cfg) = c.publish.as_ref().and_then(|p| p.krew.as_ref()) else {
+        return Ok(None);
+    };
+    let Some((fork_owner_raw, _)) =
+        crate::util::resolve_repo_owner_name(krew_cfg.repository.as_ref())
+    else {
+        return Ok(None);
+    };
+    let fork_owner = util::render_or_warn(ctx, log, "krew.repository.owner", &fork_owner_raw)?;
     // Plugin-name override resolved through the same single-source helper
     // as `publish_to_krew` so the rollback-evidence branch name cannot
     // drift from the manifest `metadata.name` / file basename / webhook.
     let plugin_name = resolve_plugin_name(krew_cfg.name.as_deref(), &c.name, |t| {
         ctx.render_template(t)
-    })
-    .ok()?;
+    })?;
     let branch = format!("{}-v{}", plugin_name, version);
     let (upstream_owner, upstream_repo) = resolve_krew_upstream(krew_cfg);
-    Some(KrewPrTarget {
+    Ok(Some(KrewPrTarget {
         target: c.name.clone(),
         upstream_owner,
         upstream_repo,
         fork_owner,
         branch,
         token_env_var: Some("KREW_INDEX_TOKEN".to_string()),
-    })
+    }))
 }
 
 /// True when the crate has a `publish.krew` block — mirrors the
@@ -2057,7 +2064,7 @@ impl anodizer_core::Publisher for KrewPublisher {
                 |ctx| {
                     let outcome = publish_to_krew(ctx, crate_name, &log)?;
                     let target = if outcome.pushed {
-                        collect_krew_target(ctx, crate_name)
+                        collect_krew_target(ctx, crate_name, &log)?
                     } else {
                         None
                     };
@@ -2441,7 +2448,9 @@ mod publisher_tests {
         let ctx = TestContextBuilder::new()
             .crates(vec![krew_crate("demo")])
             .build();
-        let target = collect_krew_target(&ctx, "demo").expect("target");
+        let target = collect_krew_target(&ctx, "demo", &ctx.logger("publish"))
+            .expect("render ok")
+            .expect("target");
         assert_eq!(target.target, "demo");
         assert_eq!(target.upstream_owner, "kubernetes-sigs");
         assert_eq!(target.upstream_repo, "krew-index");
@@ -2473,7 +2482,9 @@ mod publisher_tests {
             });
         }
         let ctx = TestContextBuilder::new().crates(vec![c]).build();
-        let target = collect_krew_target(&ctx, "demo").expect("target");
+        let target = collect_krew_target(&ctx, "demo", &ctx.logger("publish"))
+            .expect("render ok")
+            .expect("target");
         assert_eq!(target.upstream_owner, "custom-org");
         assert_eq!(target.upstream_repo, "custom-index");
     }

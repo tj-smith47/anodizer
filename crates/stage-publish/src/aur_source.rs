@@ -382,7 +382,8 @@ fn publish_aur_source_entry(
         // Render against the `Amd64`-scoped vars from the inner render so a
         // `directory: "{{ .Amd64 }}/…"` template resolves to the configured
         // variant, consistent with the url_template / hook renders.
-        let rendered_dir = util::render_or_warn_with_vars(&scoped_vars, log, label, dir);
+        let rendered_dir =
+            util::render_or_warn_with_vars(&scoped_vars, log, label, dir, ctx.render_is_strict())?;
         let d = repo_path.join(&rendered_dir);
         std::fs::create_dir_all(&d)?;
         d
@@ -407,8 +408,10 @@ fn publish_aur_source_entry(
         &pkg_name,
         &version,
         "package",
-    );
-    let commit_opts = util::resolve_commit_opts(ctx, cfg.commit_author.as_ref());
+        log,
+        ctx.render_is_strict(),
+    )?;
+    let commit_opts = util::resolve_commit_opts(ctx, cfg.commit_author.as_ref(), log)?;
     let outcome =
         util::commit_and_push_with_opts(repo_path, &["."], &commit_msg, None, label, &commit_opts)?;
     match outcome {

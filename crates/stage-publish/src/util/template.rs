@@ -5,6 +5,7 @@
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::template::{self, TemplateVars};
+use anyhow::{Result, bail};
 
 /// Render a `url_template` string with Tera, providing only the four
 /// per-artifact lower-case helper vars: `name`, `version`, `arch`, `os`.
@@ -73,26 +74,40 @@ pub(crate) fn render_url_template_with_ctx(
     template::render(url_template, &vars).unwrap_or_else(|_| url_template.to_string())
 }
 
-/// Render `raw` through the context template engine and on error emit a
-/// `log.warn` describing the failed `field` (e.g. `"aur.name"`,
-/// `"aur.description"`, `"aur.directory"`) and fall back to the raw value.
+/// Render `raw` through the context template engine, named by `field` (e.g.
+/// `"aur.name"`, `"winget.description"`, `"scoop.name"`).
 ///
-/// Originally these sites used `ctx.render_template(...).unwrap_or_else(|_|
-/// raw.clone())` which silently swallowed malformed-template errors and
-/// propagated the raw string downstream — defeating debuggability. The
-/// non-strict warn-and-fallback path keeps currently-malformed user
-/// configs building (no behavior regression) while making the error
-/// visible in stage output.
+/// Behaviour depends on [`Context::render_is_strict`]:
+/// - **Strict** (the pre-publish guard's render pass, or the user's global
+///   `--strict`): a malformed template returns `Err`, naming the `field`, so a
+///   broken publisher template fails the release loud BEFORE any irreversible
+///   publisher fires.
+/// - **Lenient** (production dry-run / snapshot / nightly publish): a malformed
+///   template logs a `log.warn` describing the failed `field` and falls back to
+///   the raw value, keeping a currently-malformed config building while making
+///   the error visible in stage output.
+///
+/// Earlier these sites used `ctx.render_template(...).unwrap_or_else(|_|
+/// raw.clone())`, which silently swallowed malformed-template errors and
+/// propagated the raw string downstream — defeating both debuggability and the
+/// guard. Routing every site through here closes that gap.
 ///
 /// `field` should carry the namespace (e.g. `"aur.name"`,
 /// `"aur_source.directory"`); the warn message does not prepend a stage
 /// prefix because `StageLogger` already does that for every line.
-pub(crate) fn render_or_warn(ctx: &Context, log: &StageLogger, field: &str, raw: &str) -> String {
-    render_or_warn_with_vars(ctx.template_vars(), log, field, raw)
+pub(crate) fn render_or_warn(
+    ctx: &Context,
+    log: &StageLogger,
+    field: &str,
+    raw: &str,
+) -> Result<String> {
+    render_or_warn_with_vars(ctx.template_vars(), log, field, raw, ctx.render_is_strict())
 }
 
 /// Like [`render_or_warn`], but renders against an explicit `vars` set instead
-/// of the context's global template vars.
+/// of the context's global template vars, and takes `is_strict` directly
+/// (callers pass [`Context::render_is_strict`]) since there is no `&Context`
+/// in hand.
 ///
 /// Used where a publisher scopes an extra template variable for a single
 /// resource's renders (e.g. the AUR-source `Amd64` micro-architecture variable)
@@ -104,15 +119,19 @@ pub(crate) fn render_or_warn_with_vars(
     log: &StageLogger,
     field: &str,
     raw: &str,
-) -> String {
+    is_strict: bool,
+) -> Result<String> {
     match template::render(raw, vars) {
-        Ok(rendered) => rendered,
+        Ok(rendered) => Ok(rendered),
         Err(e) => {
+            if is_strict {
+                bail!("failed to render {field} template {raw:?}: {e}");
+            }
             log.warn(&format!(
                 "failed to render {field} template {raw:?}: {e}; \
                  falling back to raw value"
             ));
-            raw.to_string()
+            Ok(raw.to_string())
         }
     }
 }

@@ -63,35 +63,34 @@ fn resolve_homebrew_metadata(
     ctx: &Context,
     hb_cfg: &HomebrewConfig,
     crate_name: &str,
-) -> ResolvedMetadata {
+    log: &StageLogger,
+) -> Result<ResolvedMetadata> {
     let description_raw = hb_cfg
         .description
         .as_deref()
         .or_else(|| ctx.config.meta_description_for(crate_name))
         .unwrap_or(crate_name);
-    let description = ctx
-        .render_template(description_raw)
-        .unwrap_or_else(|_| description_raw.to_string());
+    let description = crate::util::render_or_warn(ctx, log, "brew.description", description_raw)?;
     let license = hb_cfg
         .license
         .as_deref()
         .or_else(|| ctx.config.meta_license_for(crate_name))
-        .map(|l| ctx.render_template(l).unwrap_or_else(|_| l.to_string()));
+        .map(|l| crate::util::render_or_warn(ctx, log, "brew.license", l))
+        .transpose()?;
     let homepage = hb_cfg
         .homepage
         .as_deref()
         .or_else(|| ctx.config.meta_homepage_for(crate_name))
-        .map(|h| ctx.render_template(h).unwrap_or_else(|_| h.to_string()));
+        .map(|h| crate::util::render_or_warn(ctx, log, "brew.homepage", h))
+        .transpose()?;
     let formula_name_raw = hb_cfg.name.as_deref().unwrap_or(crate_name);
-    let formula_name = ctx
-        .render_template(formula_name_raw)
-        .unwrap_or_else(|_| formula_name_raw.to_string());
-    ResolvedMetadata {
+    let formula_name = crate::util::render_or_warn(ctx, log, "brew.name", formula_name_raw)?;
+    Ok(ResolvedMetadata {
         description,
         license,
         homepage,
         formula_name,
-    }
+    })
 }
 
 /// Pre-rendered Ruby code blocks emitted into the formula body.
@@ -111,7 +110,9 @@ fn render_install_and_test_blocks(
     hb_cfg: &HomebrewConfig,
     crate_name: &str,
     version: &str,
-) -> RenderedFormulaCode {
+    log: &StageLogger,
+) -> Result<RenderedFormulaCode> {
+    let is_strict = ctx.render_is_strict();
     let mut tmpl_vars = TemplateVars::new();
     tmpl_vars.set("name", crate_name);
     tmpl_vars.set("version", version);
@@ -158,30 +159,54 @@ fn render_install_and_test_blocks(
                 .join("\n")
         }
     };
-    let install =
-        template::render(&install_raw, &tmpl_vars).unwrap_or_else(|_| install_raw.clone());
+    let install = crate::util::render_or_warn_with_vars(
+        &tmpl_vars,
+        log,
+        "brew.install",
+        &install_raw,
+        is_strict,
+    )?;
     let test_raw = hb_cfg.test.clone().unwrap_or_else(|| {
         format!(
             "system \"#{{bin}}/{}\", \"--version\"",
             template::ruby_escape_str(crate_name)
         )
     });
-    let test = template::render(&test_raw, &tmpl_vars).unwrap_or_else(|_| test_raw.clone());
+    let test =
+        crate::util::render_or_warn_with_vars(&tmpl_vars, log, "brew.test", &test_raw, is_strict)?;
 
     let extra_install = hb_cfg
         .extra_install
         .as_deref()
-        .map(|s| template::render(s, &tmpl_vars).unwrap_or_else(|_| s.to_string()));
+        .map(|s| {
+            crate::util::render_or_warn_with_vars(
+                &tmpl_vars,
+                log,
+                "brew.extra_install",
+                s,
+                is_strict,
+            )
+        })
+        .transpose()?;
     let post_install = hb_cfg
         .post_install
         .as_deref()
-        .map(|s| template::render(s, &tmpl_vars).unwrap_or_else(|_| s.to_string()));
-    RenderedFormulaCode {
+        .map(|s| {
+            crate::util::render_or_warn_with_vars(
+                &tmpl_vars,
+                log,
+                "brew.post_install",
+                s,
+                is_strict,
+            )
+        })
+        .transpose()?;
+    Ok(RenderedFormulaCode {
         install,
         test,
         extra_install,
         post_install,
-    }
+    })
 }
 
 /// Filter `crate_name`'s `Archive` + `UploadableBinary` artifacts down to the
@@ -430,7 +455,7 @@ pub(crate) fn render_same_tap_cask_for_crate(
     let Some(cask_cfg) = hb_cfg.cask.as_ref() else {
         return Ok(None);
     };
-    if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log) {
+    if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
             "homebrew cask: skipping upload for '{}' (skip_upload={})",
             crate_name,
@@ -543,9 +568,11 @@ fn commit_files_to_tap(
         ident.formula_name,
         ident.version,
         kind,
-    );
+        log,
+        ctx.render_is_strict(),
+    )?;
 
-    let commit_opts = crate::util::resolve_commit_opts(ctx, hb_cfg.commit_author.as_ref());
+    let commit_opts = crate::util::resolve_commit_opts(ctx, hb_cfg.commit_author.as_ref(), log)?;
     let outcome = crate::util::commit_and_push_with_opts(
         tap.repo_path,
         &files_to_commit,
@@ -669,7 +696,7 @@ pub(crate) fn render_homebrew_formula_for_crate(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("homebrew: no homebrew config for '{}'", crate_name))?;
 
-    if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log) {
+    if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
             "homebrew: skipping upload for '{}' (skip_upload={})",
             crate_name,
@@ -736,8 +763,8 @@ fn render_formula_inner(
     log: &StageLogger,
 ) -> Result<RenderedFormula> {
     let version = ctx.version();
-    let meta = resolve_homebrew_metadata(ctx, hb_cfg, crate_name);
-    let code = render_install_and_test_blocks(ctx, hb_cfg, crate_name, &version);
+    let meta = resolve_homebrew_metadata(ctx, hb_cfg, crate_name, log)?;
+    let code = render_install_and_test_blocks(ctx, hb_cfg, crate_name, &version, log)?;
 
     let opts = FormulaOptions {
         homepage: meta.homepage.as_deref(),
@@ -803,7 +830,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("homebrew: no homebrew config for '{}'", crate_name))?;
 
-    if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log) {
+    if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
             "homebrew: skipping upload for '{}' (skip_upload={})",
             crate_name,

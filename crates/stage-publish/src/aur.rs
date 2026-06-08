@@ -400,15 +400,14 @@ fn aur_resolve_push_git_url(
     ctx: &Context,
     aur_cfg: &anodizer_core::config::AurConfig,
     crate_name: &str,
-) -> String {
+    log: &StageLogger,
+) -> Result<String> {
     match aur_cfg.git_url.as_deref().filter(|u| !u.trim().is_empty()) {
-        Some(url) => url.to_string(),
+        Some(url) => Ok(url.to_string()),
         None => {
             let raw_name = aur_default_package_name(aur_cfg, crate_name);
-            let package_name = ctx
-                .render_template(&raw_name)
-                .unwrap_or_else(|_| raw_name.clone());
-            crate::util::aur_default_git_url(&package_name)
+            let package_name = util::render_or_warn(ctx, log, "aur.name", &raw_name)?;
+            Ok(crate::util::aur_default_git_url(&package_name))
         }
     }
 }
@@ -449,7 +448,7 @@ fn aur_check_skip_and_resolve_git_url(
         return Ok(None);
     }
 
-    if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx, log) {
+    if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
             "aur: skipping upload for '{}' (skip_upload={})",
             crate_name,
@@ -462,7 +461,7 @@ fn aur_check_skip_and_resolve_git_url(
         return Ok(None);
     }
 
-    let git_url = aur_resolve_push_git_url(ctx, aur_cfg, crate_name);
+    let git_url = aur_resolve_push_git_url(ctx, aur_cfg, crate_name, log)?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -507,7 +506,7 @@ fn aur_resolve_fields(
     // (typically a malformed template like `{{ unclosed`), surface a warning
     // and fall back to the raw value: a visible warning beats a silent
     // swallow without breaking a currently-malformed user build.
-    let package_name = util::render_or_warn(ctx, log, "aur.name", &raw_package_name);
+    let package_name = util::render_or_warn(ctx, log, "aur.name", &raw_package_name)?;
     let resolved_defaults = aur_resolve_defaults(aur_cfg, &package_name, project_name_for_defaults);
 
     // Fall back to project `metadata.*` when aur config unset.
@@ -516,7 +515,7 @@ fn aur_resolve_fields(
         .as_deref()
         .or_else(|| ctx.config.meta_description_for(crate_name))
         .unwrap_or(crate_name);
-    let description = util::render_or_warn(ctx, log, "aur.description", description_raw);
+    let description = util::render_or_warn(ctx, log, "aur.description", description_raw)?;
 
     // PKGBUILD `license=()` is documented as RECOMMENDED but not required
     // per the Arch wiki (https://wiki.archlinux.org/title/PKGBUILD#license);
@@ -725,7 +724,7 @@ fn aur_resolve_output_dir(
     log: &StageLogger,
 ) -> Result<std::path::PathBuf> {
     if let Some(ref dir) = aur_cfg.directory {
-        let rendered_dir = util::render_or_warn(ctx, log, "aur.directory", dir);
+        let rendered_dir = util::render_or_warn(ctx, log, "aur.directory", dir)?;
         let d = repo_path.join(&rendered_dir);
         std::fs::create_dir_all(&d)
             .with_context(|| format!("aur: create directory {}", d.display()))?;
@@ -790,8 +789,10 @@ fn aur_commit_and_push(
         package_name,
         version,
         "package",
-    );
-    let commit_opts = util::resolve_commit_opts(ctx, aur_cfg.commit_author.as_ref());
+        log,
+        ctx.render_is_strict(),
+    )?;
+    let commit_opts = util::resolve_commit_opts(ctx, aur_cfg.commit_author.as_ref(), log)?;
     // AUR repositories are always on `master`. Pin the push branch via the
     // shared [`AUR_REPO_BRANCH`] constant so the publish and rollback
     // paths can never drift (e.g. one renamed to `main`).
@@ -984,7 +985,7 @@ pub(crate) fn render_aur_pkgbuild_and_srcinfo_for_crate(
         return Ok(None);
     }
 
-    if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx, log) {
+    if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
             "aur: skipping upload for '{}' (skip_upload)",
             crate_name
@@ -1209,7 +1210,7 @@ fn decode_aur_our_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<Au
     }
 }
 
-fn collect_aur_our_run_targets(ctx: &Context) -> Vec<AurOurTarget> {
+fn collect_aur_our_run_targets(ctx: &Context, log: &StageLogger) -> Result<Vec<AurOurTarget>> {
     let mut out: Vec<AurOurTarget> = Vec::new();
     let selected = &ctx.options.selected_crates;
     for c in &ctx.config.crates {
@@ -1223,11 +1224,11 @@ fn collect_aur_our_run_targets(ctx: &Context) -> Vec<AurOurTarget> {
         // override, else the canonical derived url) so the rollback target
         // never drifts from the pushed repo. Reuses the live-push resolver
         // as the single source of truth.
-        let git_url = aur_resolve_push_git_url(ctx, ac, &c.name);
+        let git_url = aur_resolve_push_git_url(ctx, ac, &c.name, log)?;
         // Use the package name (or the AUR-default of `<crate>-bin`)
         // as the human label so log lines say what was rolled back.
         let raw_pkg = aur_default_package_name(ac, &c.name);
-        let label = ctx.render_template(&raw_pkg).unwrap_or(raw_pkg);
+        let label = util::render_or_warn(ctx, log, "aur.name", &raw_pkg)?;
         out.push(AurOurTarget {
             target: label,
             git_url,
@@ -1235,7 +1236,7 @@ fn collect_aur_our_run_targets(ctx: &Context) -> Vec<AurOurTarget> {
             git_ssh_command: ac.git_ssh_command.clone(),
         });
     }
-    out
+    Ok(out)
 }
 
 pub(crate) fn is_aur_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
@@ -1364,7 +1365,7 @@ impl anodizer_core::Publisher for AurOurPublisher {
         // Phantom evidence causes rollback to git-revert in repos that
         // were never touched (dry-run, skip_upload, no-op NoChanges).
         if any_pushed {
-            let targets = collect_aur_our_run_targets(ctx);
+            let targets = collect_aur_our_run_targets(ctx, &log)?;
             evidence.extra = anodizer_core::PublishEvidenceExtra::Aur(
                 anodizer_core::publish_evidence::AurExtra {
                     aur_our_targets: targets.iter().map(Into::into).collect(),
@@ -1508,7 +1509,8 @@ mod publisher_tests {
         let ctx = TestContextBuilder::new()
             .crates(vec![aur_crate("demo")])
             .build();
-        let targets = collect_aur_our_run_targets(&ctx);
+        let targets =
+            collect_aur_our_run_targets(&ctx, &ctx.logger("publish")).expect("collect run targets");
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].target, "demo-bin");
         assert!(targets[0].git_url.ends_with("demo-bin.git"));
@@ -1666,7 +1668,8 @@ mod publisher_tests {
             a.git_url = None;
         }
         let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
-        let targets = collect_aur_our_run_targets(&ctx);
+        let targets =
+            collect_aur_our_run_targets(&ctx, &ctx.logger("publish")).expect("collect run targets");
         assert_eq!(targets.len(), 1, "expected one target, got {targets:?}");
         assert_eq!(targets[0].target, "demo-bin");
         assert_eq!(
@@ -2480,11 +2483,12 @@ mod tests {
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
+        let log = ctx.logger("publish");
 
         // Unset git_url + default name → `<crate>-bin`.
         let cfg = AurConfig::default();
         assert_eq!(
-            aur_resolve_push_git_url(&ctx, &cfg, "mytool"),
+            aur_resolve_push_git_url(&ctx, &cfg, "mytool", &log).unwrap(),
             "ssh://aur@aur.archlinux.org/mytool-bin.git",
         );
 
@@ -2494,7 +2498,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            aur_resolve_push_git_url(&ctx, &cfg_empty, "mytool"),
+            aur_resolve_push_git_url(&ctx, &cfg_empty, "mytool", &log).unwrap(),
             "ssh://aur@aur.archlinux.org/mytool-bin.git",
         );
 
@@ -2505,7 +2509,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            aur_resolve_push_git_url(&ctx, &cfg_name, "mytool"),
+            aur_resolve_push_git_url(&ctx, &cfg_name, "mytool", &log).unwrap(),
             "ssh://aur@aur.archlinux.org/widget.git",
         );
 
@@ -2517,7 +2521,7 @@ mod tests {
         // `ProjectName` is empty in a bare default context, so the rendered
         // name is `-bin`; the url must reflect the rendered name exactly.
         assert_eq!(
-            aur_resolve_push_git_url(&ctx, &cfg_tmpl, "mytool"),
+            aur_resolve_push_git_url(&ctx, &cfg_tmpl, "mytool", &log).unwrap(),
             "ssh://aur@aur.archlinux.org/-bin.git",
         );
 
@@ -2528,7 +2532,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            aur_resolve_push_git_url(&ctx, &cfg_override, "mytool"),
+            aur_resolve_push_git_url(&ctx, &cfg_override, "mytool", &log).unwrap(),
             "ssh://aur@aur.archlinux.org/custom.git",
         );
     }

@@ -93,7 +93,7 @@ pub(crate) fn render_top_level_cask_entry(
     let project_name = &ctx.config.project_name;
     let cask_name = cask_cfg.name.as_deref().unwrap_or(project_name);
 
-    if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log) {
+    if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
             "homebrew_casks: skipping upload for '{}' (skip_upload)",
             cask_name
@@ -427,7 +427,7 @@ pub fn publish_top_level_homebrew_casks(
         let version = ctx.version();
 
         // Check skip_upload.
-        if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log) {
+        if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log)? {
             log.status(&format!(
                 "homebrew_casks: skipping upload for '{}' (skip_upload)",
                 cask_name
@@ -538,14 +538,17 @@ pub fn publish_top_level_homebrew_casks(
             cask_name,
             &version,
             "cask",
-        );
+            log,
+            ctx.render_is_strict(),
+        )?;
 
         let path_strings: Vec<String> = written_paths
             .iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect();
         let path_refs: Vec<&str> = path_strings.iter().map(String::as_str).collect();
-        let commit_opts = crate::util::resolve_commit_opts(ctx, cask_cfg.commit_author.as_ref());
+        let commit_opts =
+            crate::util::resolve_commit_opts(ctx, cask_cfg.commit_author.as_ref(), log)?;
         let branch = crate::util::resolve_branch(repo_cfg);
         let outcome = crate::util::commit_and_push_with_opts(
             repo_path,

@@ -869,18 +869,25 @@ fn test_formula_name_override() {
 
 #[test]
 fn test_render_commit_msg_default() {
-    let msg = render_commit_msg(None, "mytool", "1.2.3", "formula");
+    let log =
+        anodizer_core::log::StageLogger::new("publish", anodizer_core::log::Verbosity::Normal);
+    let msg = render_commit_msg(None, "mytool", "1.2.3", "formula", &log, false).unwrap();
     assert_eq!(msg, "Brew formula update for mytool version 1.2.3");
 }
 
 #[test]
 fn test_render_commit_msg_custom_template() {
+    let log =
+        anodizer_core::log::StageLogger::new("publish", anodizer_core::log::Verbosity::Normal);
     let msg = render_commit_msg(
         Some("release: {{ name }} v{{ version }}"),
         "mytool",
         "2.0.0",
         "formula",
-    );
+        &log,
+        false,
+    )
+    .unwrap();
     assert_eq!(msg, "release: mytool v2.0.0");
 }
 

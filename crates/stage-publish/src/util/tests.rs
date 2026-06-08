@@ -608,7 +608,7 @@ fn test_should_skip_upload_true_string() {
     use anodizer_core::context::{Context, ContextOptions};
     let ctx = Context::new(Config::default(), ContextOptions::default());
     let val = StringOrBool::String("true".to_string());
-    assert!(should_skip_upload(Some(&val), &ctx, &test_log()));
+    assert!(should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
 }
 
 #[test]
@@ -617,7 +617,7 @@ fn test_should_skip_upload_true_bool() {
     use anodizer_core::context::{Context, ContextOptions};
     let ctx = Context::new(Config::default(), ContextOptions::default());
     let val = StringOrBool::Bool(true);
-    assert!(should_skip_upload(Some(&val), &ctx, &test_log()));
+    assert!(should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
 }
 
 #[test]
@@ -625,7 +625,7 @@ fn test_should_skip_upload_false_when_none() {
     use anodizer_core::config::Config;
     use anodizer_core::context::{Context, ContextOptions};
     let ctx = Context::new(Config::default(), ContextOptions::default());
-    assert!(!should_skip_upload(None, &ctx, &test_log()));
+    assert!(!should_skip_upload(None, &ctx, &test_log()).unwrap());
 }
 
 #[test]
@@ -634,7 +634,7 @@ fn test_should_skip_upload_explicit_false_string() {
     use anodizer_core::context::{Context, ContextOptions};
     let ctx = Context::new(Config::default(), ContextOptions::default());
     let val = StringOrBool::String("false".to_string());
-    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()));
+    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
 }
 
 #[test]
@@ -643,7 +643,7 @@ fn test_should_skip_upload_explicit_false_bool() {
     use anodizer_core::context::{Context, ContextOptions};
     let ctx = Context::new(Config::default(), ContextOptions::default());
     let val = StringOrBool::Bool(false);
-    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()));
+    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
 }
 
 #[test]
@@ -653,7 +653,7 @@ fn test_should_skip_upload_auto_skips_prerelease() {
     let mut ctx = Context::new(Config::default(), ContextOptions::default());
     ctx.template_vars_mut().set("Prerelease", "rc.1");
     let val = StringOrBool::String("auto".to_string());
-    assert!(should_skip_upload(Some(&val), &ctx, &test_log()));
+    assert!(should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
 }
 
 #[test]
@@ -663,7 +663,7 @@ fn test_should_skip_upload_auto_does_not_skip_stable() {
     let mut ctx = Context::new(Config::default(), ContextOptions::default());
     ctx.template_vars_mut().set("Prerelease", "");
     let val = StringOrBool::String("auto".to_string());
-    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()));
+    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
 }
 
 #[test]
@@ -672,7 +672,7 @@ fn test_should_skip_upload_auto_does_not_skip_when_no_prerelease_var() {
     use anodizer_core::context::{Context, ContextOptions};
     let ctx = Context::new(Config::default(), ContextOptions::default());
     let val = StringOrBool::String("auto".to_string());
-    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()));
+    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
 }
 
 #[test]
@@ -710,7 +710,7 @@ fn test_should_skip_upload_template_rendered() {
     let mut ctx = Context::new(Config::default(), ContextOptions::default());
     ctx.template_vars_mut().set_env("SKIP", "true");
     let val = StringOrBool::String("{{ .Env.SKIP }}".to_string());
-    assert!(should_skip_upload(Some(&val), &ctx, &test_log()));
+    assert!(should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
 }
 
 #[test]
@@ -720,7 +720,7 @@ fn test_should_skip_upload_template_rendered_false() {
     let mut ctx = Context::new(Config::default(), ContextOptions::default());
     ctx.template_vars_mut().set_env("SKIP", "false");
     let val = StringOrBool::String("{{ .Env.SKIP }}".to_string());
-    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()));
+    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
 }
 
 // -----------------------------------------------------------------------
@@ -764,10 +764,10 @@ fn test_resolve_repo_owner_name_partial_returns_none() {
 // (hard-fail).
 // -----------------------------------------------------------------------
 
-/// A malformed Tera template (`{{ unclosed`) feeding `render_or_warn`
-/// must yield the raw value back (not Err, not empty). The warning
-/// surfaces on stderr — the unit assertion focuses on the fallback
-/// value which is the load-bearing wire-shape contract.
+/// Lenient (production dry-run / snapshot / nightly): a malformed Tera
+/// template (`{{ unclosed`) feeding `render_or_warn` must NOT error — it
+/// yields the raw value back (not Err, not empty) and warns on stderr. This
+/// pins the warn-and-fallback path so a forgiving release stays forgiving.
 #[test]
 fn test_render_or_warn_falls_back_on_malformed_template() {
     use anodizer_core::config::Config;
@@ -778,11 +778,57 @@ fn test_render_or_warn_falls_back_on_malformed_template() {
     let log = StageLogger::new("publish", Verbosity::Normal);
 
     let raw = "{{ unclosed";
-    let out = render_or_warn(&ctx, &log, "aur.name", raw);
+    let out = render_or_warn(&ctx, &log, "aur.name", raw)
+        .expect("lenient render must not error on a malformed template");
     assert_eq!(
         out, raw,
         "malformed template must fall back to raw value, got {out:?}"
     );
+}
+
+/// Strict (the pre-publish guard's render pass, or the user's global
+/// `--strict`): the SAME malformed template must propagate `Err`, naming the
+/// field, so a broken publisher template fails the release before any
+/// irreversible publisher fires instead of being swallowed.
+#[test]
+fn test_render_or_warn_errors_on_malformed_template_when_strict() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    ctx.set_render_strict(true);
+    let log = StageLogger::new("publish", Verbosity::Normal);
+
+    let err = render_or_warn(&ctx, &log, "winget.description", "{{ unclosed")
+        .expect_err("strict render must propagate the malformed-template error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("winget.description"),
+        "strict error names the field: {msg}"
+    );
+}
+
+/// Strict via the user's global `--strict` (`options.strict`) — distinct from
+/// the guard's transient `render_strict` flag — also makes the same malformed
+/// template error, proving `--strict` hardens renders everywhere, not just
+/// under the guard.
+#[test]
+fn test_render_or_warn_errors_on_malformed_template_under_global_strict() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    let opts = ContextOptions {
+        strict: true,
+        ..ContextOptions::default()
+    };
+    let ctx = Context::new(Config::default(), opts);
+    let log = StageLogger::new("publish", Verbosity::Normal);
+
+    let err = render_or_warn(&ctx, &log, "scoop.name", "{{ unclosed")
+        .expect_err("global --strict must make a malformed template error");
+    assert!(format!("{err:#}").contains("scoop.name"));
 }
 
 /// Well-formed templates render normally — pin the success path so a
@@ -798,7 +844,7 @@ fn test_render_or_warn_renders_well_formed_template() {
     let ctx = Context::new(config, ContextOptions::default());
     let log = StageLogger::new("publish", Verbosity::Normal);
 
-    let out = render_or_warn(&ctx, &log, "aur.name", "{{ .ProjectName }}-bin");
+    let out = render_or_warn(&ctx, &log, "aur.name", "{{ .ProjectName }}-bin").unwrap();
     assert_eq!(out, "myproj-bin");
 }
 
@@ -962,29 +1008,45 @@ mod commit_opts_tests {
             signing: None,
             use_github_app_token: false,
         };
-        let opts = resolve_commit_opts(&ctx, Some(&ca));
+        let opts = resolve_commit_opts(&ctx, Some(&ca), &super::test_log()).unwrap();
         assert_eq!(opts.author_name.as_deref(), Some("release-bot"));
         assert_eq!(opts.author_email.as_deref(), Some("myapp-bot@example.com"));
     }
 
-    /// If a template references a variable that is not bound, the rendered
-    /// value falls back to the literal string rather than failing the whole
-    /// publish stage. Matches `resolve_token`'s fail-soft behaviour.
+    /// Lenient (no guard, no `--strict`): a malformed `name` template falls
+    /// back to the literal string and warns, rather than failing the whole
+    /// publish stage — keeping a forgiving dry-run / snapshot building.
     #[test]
     fn test_resolve_commit_opts_unrendered_template_falls_back_to_literal() {
         let ctx = ctx_for_template_tests();
         let ca = CommitAuthorConfig {
-            name: Some("{{ Env.NOT_SET_AT_ALL_!!! }}".to_string()),
+            name: Some("{{ unclosed".to_string()),
             email: None,
             signing: None,
             use_github_app_token: false,
         };
-        let opts = resolve_commit_opts(&ctx, Some(&ca));
-        // The name is the literal template (because rendering failed).
-        assert_eq!(
-            opts.author_name.as_deref(),
-            Some("{{ Env.NOT_SET_AT_ALL_!!! }}")
-        );
+        let opts = resolve_commit_opts(&ctx, Some(&ca), &super::test_log()).unwrap();
+        // The name is the literal template (because rendering failed lenient).
+        assert_eq!(opts.author_name.as_deref(), Some("{{ unclosed"));
+    }
+
+    /// Strict (the pre-publish guard's render pass, or the user's global
+    /// `--strict`): the SAME malformed `name` template propagates `Err`,
+    /// naming the field, so a broken commit-author template fails the release
+    /// before any irreversible PR-publisher pushes a commit.
+    #[test]
+    fn test_resolve_commit_opts_malformed_template_errors_when_strict() {
+        let ctx = ctx_for_template_tests();
+        ctx.set_render_strict(true);
+        let ca = CommitAuthorConfig {
+            name: Some("{{ unclosed".to_string()),
+            email: None,
+            signing: None,
+            use_github_app_token: false,
+        };
+        let err = resolve_commit_opts(&ctx, Some(&ca), &super::test_log())
+            .expect_err("strict render must propagate a malformed commit_author.name");
+        assert!(format!("{err:#}").contains("commit_author.name"));
     }
 
     /// `use_github_app_token: true` propagates onto the resulting
@@ -999,7 +1061,7 @@ mod commit_opts_tests {
             signing: None,
             use_github_app_token: true,
         };
-        let opts = resolve_commit_opts(&ctx, Some(&ca));
+        let opts = resolve_commit_opts(&ctx, Some(&ca), &super::test_log()).unwrap();
         assert!(
             opts.use_github_app_token,
             "use_github_app_token must propagate from config to CommitOptions"
@@ -1017,7 +1079,7 @@ mod commit_opts_tests {
     #[test]
     fn test_resolve_commit_opts_no_config_uses_defaults() {
         let ctx = ctx_for_template_tests();
-        let opts = resolve_commit_opts(&ctx, None);
+        let opts = resolve_commit_opts(&ctx, None, &super::test_log()).unwrap();
         // We can't assert the exact value because it depends on the local
         // git config of the test environment, but it must be Some(...).
         assert!(opts.author_name.is_some());

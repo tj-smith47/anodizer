@@ -3,6 +3,7 @@
 //! winget, krew, aur, aur_source, nix, chocolatey).
 
 use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 use anyhow::Result;
 use std::path::Path;
 use std::process::Command;
@@ -31,7 +32,7 @@ impl CommitOutcome {
 }
 
 /// Optional overrides for the git commit step.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct CommitOptions<'a> {
     /// Git commit author name (passed via `-c user.name=X`). Owned because
     /// `resolve_commit_opts` may shell out to `git config user.name`, whose
@@ -41,7 +42,7 @@ pub(crate) struct CommitOptions<'a> {
     pub author_email: Option<String>,
     /// Enable GPG/SSH signing for the commit.
     pub signing: Option<&'a anodizer_core::config::CommitSigningConfig>,
-    /// Q-author1: when true, suppress emitting `-c user.name=` /
+    /// When true, suppress emitting `-c user.name=` /
     /// `-c user.email=` so the running git client uses the GitHub App's
     /// identity (already configured in the repo's local git config by the
     /// Actions checkout step).
@@ -67,14 +68,13 @@ const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodizer.dev";
 /// so that values read from git config (which need allocation) can be returned
 /// alongside borrowed config values.
 ///
-/// The commit-author resolution template-renders `Name`, `Email`, and
-/// `Signing.{Key, Program, Format}` before applying built-in defaults:
-/// each non-empty config-supplied value is passed through
-/// `ctx.render_template(...)` before the local-git / built-in fallbacks.
-/// Templates that fail to render fall back to the literal string (rather
-/// than returning an error that would break the publish stage), matching
-/// the fail-soft behaviour of `resolve_token` and friends in this module —
-/// diagnostic logging still surfaces the underlying issue at the call site.
+/// The commit-author resolution template-renders the config-supplied `name`
+/// and `email` (each via [`render_or_warn`](super::template::render_or_warn))
+/// before the local-git / built-in fallbacks apply when a value is unset.
+/// Render-error handling follows the strict-aware policy: under the
+/// pre-publish guard (or the user's global `--strict`) a malformed
+/// name/email template returns `Err`; otherwise it warns and falls back to
+/// the raw literal so a forgiving dry-run / snapshot keeps building.
 ///
 /// `use_github_app_token` is propagated from the config struct onto the
 /// resulting `CommitOptions`. When true, downstream
@@ -84,10 +84,8 @@ const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodizer.dev";
 pub(crate) fn resolve_commit_opts<'a>(
     ctx: &Context,
     commit_author: Option<&'a anodizer_core::config::CommitAuthorConfig>,
-) -> CommitOptions<'a> {
-    let render =
-        |raw: &str| -> String { ctx.render_template(raw).unwrap_or_else(|_| raw.to_string()) };
-
+    log: &StageLogger,
+) -> Result<CommitOptions<'a>> {
     let (cfg_name, cfg_email, signing, use_github_app_token) = if let Some(ca) = commit_author {
         (
             ca.name.as_deref(),
@@ -99,21 +97,23 @@ pub(crate) fn resolve_commit_opts<'a>(
         (None, None, None, false)
     };
 
-    let name = cfg_name
-        .map(render)
-        .or_else(anodizer_core::git::local_git_user_name)
-        .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_NAME.to_string());
-    let email = cfg_email
-        .map(render)
-        .or_else(anodizer_core::git::local_git_user_email)
-        .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_EMAIL.to_string());
+    let name = match cfg_name {
+        Some(raw) => super::template::render_or_warn(ctx, log, "commit_author.name", raw)?,
+        None => anodizer_core::git::local_git_user_name()
+            .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_NAME.to_string()),
+    };
+    let email = match cfg_email {
+        Some(raw) => super::template::render_or_warn(ctx, log, "commit_author.email", raw)?,
+        None => anodizer_core::git::local_git_user_email()
+            .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_EMAIL.to_string()),
+    };
 
-    CommitOptions {
+    Ok(CommitOptions {
         author_name: Some(name),
         author_email: Some(email),
         signing,
         use_github_app_token,
-    }
+    })
 }
 
 /// Stage files, commit, and push with optional commit author overrides.
