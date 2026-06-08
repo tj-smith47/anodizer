@@ -3201,9 +3201,17 @@ fn test_abs_filter_relative_path() {
 #[test]
 fn test_abs_filter_absolute_path_passthrough() {
     let mut vars = test_vars();
-    vars.set("AbsPath", "/already/absolute");
+    // `abs` returns an already-absolute path verbatim; "absolute" is
+    // host-defined — a leading-slash path is not absolute on Windows
+    // (it needs a drive prefix), so pick a per-host absolute path.
+    let already_abs = if cfg!(windows) {
+        "C:/already/absolute"
+    } else {
+        "/already/absolute"
+    };
+    vars.set("AbsPath", already_abs);
     let result = render("{{ AbsPath | abs }}", &vars).unwrap();
-    assert_eq!(result, "/already/absolute");
+    assert_eq!(result, already_abs);
 }
 
 // ---- Coverage: list function (lines 931-937) ----
@@ -3580,8 +3588,16 @@ fn test_base_function_form_missing_s_error() {
 #[test]
 fn test_abs_function_form_absolute() {
     let vars = test_vars();
-    let result = render("{{ abs(s=\"/already/absolute\") }}", &vars).unwrap();
-    assert_eq!(result, "/already/absolute");
+    // See `test_abs_filter_absolute_path_passthrough`: absoluteness is
+    // host-defined, so use a per-host absolute path the function passes
+    // through unchanged.
+    let already_abs = if cfg!(windows) {
+        "C:/already/absolute"
+    } else {
+        "/already/absolute"
+    };
+    let result = render(&format!("{{{{ abs(s=\"{already_abs}\") }}}}"), &vars).unwrap();
+    assert_eq!(result, already_abs);
 }
 
 #[test]
