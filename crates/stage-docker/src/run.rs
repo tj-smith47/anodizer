@@ -293,7 +293,10 @@ fn run_docker_post_hooks(
 /// fallback to `""` cannot mask a future refactor that broadens the input
 /// type (the downstream `JSON_LIST_KEYS` parser would otherwise read the
 /// empty string and skip the key without warning).
-fn insert_platforms_meta(meta: &mut HashMap<String, String>, plats: &[String]) -> Result<()> {
+pub(crate) fn insert_platforms_meta(
+    meta: &mut HashMap<String, String>,
+    plats: &[String],
+) -> Result<()> {
     let encoded =
         serde_json::to_string(plats).context("docker: serialize Platforms metadata to JSON")?;
     meta.insert("Platforms".to_string(), encoded);
@@ -962,7 +965,9 @@ fn queue_v2_build_for_platforms(
 /// Validate Docker V2 config ID uniqueness. Duplicate IDs are a hard
 /// error because downstream filters rely on IDs to disambiguate
 /// artifacts.
-fn validate_docker_v2_id_uniqueness(crates: &[anodizer_core::config::CrateConfig]) -> Result<()> {
+pub(crate) fn validate_docker_v2_id_uniqueness(
+    crates: &[anodizer_core::config::CrateConfig],
+) -> Result<()> {
     let mut v2_ids: HashSet<String> = HashSet::new();
     for krate in crates {
         if let Some(ref v2_cfgs) = krate.dockers_v2 {
@@ -998,7 +1003,7 @@ fn run_buildx_probes(stage: &super::DockerStage, log: &anodizer_core::log::Stage
 /// through the engine. Empty rendered keys or values are dropped. Output is
 /// sorted by rendered key for deterministic emission.
 /// `tplMapFlags`.
-fn render_v2_kv_map(
+pub(crate) fn render_v2_kv_map(
     ctx: &mut Context,
     map: Option<&HashMap<String, String>>,
     label: &str,
@@ -1022,7 +1027,10 @@ fn render_v2_kv_map(
 }
 
 /// Render a list of template strings, dropping any that render empty.
-fn render_v2_flag_list(ctx: &mut Context, flags: Option<&Vec<String>>) -> Result<Vec<String>> {
+pub(crate) fn render_v2_flag_list(
+    ctx: &mut Context,
+    flags: Option<&Vec<String>>,
+) -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     if let Some(flag_list) = flags {
         for flag_tmpl in flag_list {
@@ -1041,7 +1049,7 @@ fn render_v2_flag_list(ctx: &mut Context, flags: Option<&Vec<String>>) -> Result
 /// manifest (with retry), and register a `DockerManifest` artifact in
 /// `new_artifacts`.
 #[allow(clippy::too_many_arguments)]
-fn process_docker_manifest(
+pub(crate) fn process_docker_manifest(
     ctx: &mut Context,
     log: &anodizer_core::log::StageLogger,
     krate: &anodizer_core::config::CrateConfig,
@@ -1243,7 +1251,7 @@ fn process_docker_manifest(
 /// Compose the `docker manifest create` command, pinning each image to its
 /// digest when available. Emits a `did you mean?` warning for any
 /// unknown-image input that has a near-match in the registered tag set.
-fn build_manifest_create_cmd(
+pub(crate) fn build_manifest_create_cmd(
     log: &anodizer_core::log::StageLogger,
     manifest_bin: &str,
     manifest_name: &str,
@@ -1450,7 +1458,7 @@ fn run_manifest_push_with_retry(
 /// digest. The filename is resolved from the first non-empty
 /// `docker_digest.name_template` across configured crates, falling back to
 /// `digests.txt`.
-fn write_combined_digest_file(
+pub(crate) fn write_combined_digest_file(
     ctx: &mut Context,
     log: &anodizer_core::log::StageLogger,
     dist: &std::path::Path,
