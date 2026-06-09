@@ -806,7 +806,16 @@ fn handle_feed_state(
                          republish_in_moderation=true — replacing in-moderation copy.",
                         pkg_name, version, reason, status_label, published_label
                     ));
-                    // Fall through to the push path below.
+                    // Push the new nupkg to displace the queued one. Skip the
+                    // hash-equality check below: an in-moderation re-cut
+                    // legitimately changes the nupkg (a fail-forward adds a
+                    // commit, shifting the changelog embedded in <releaseNotes>),
+                    // and bailing on that diff is exactly what
+                    // republish_in_moderation opts out of. A still-Submitted
+                    // version accepts a re-push; if it has since been Approved
+                    // (truly immutable) the push path surfaces the 403 as a
+                    // real error.
+                    return Ok(None);
                 } else {
                     log.warn(&format!(
                         "chocolatey: '{}-{}' {} (PackageStatus={}, Published={}); \
@@ -1808,7 +1817,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_feed_state_in_moderation_with_republish_flag_falls_through() {
+    fn handle_feed_state_in_moderation_with_republish_flag_proceeds_to_push() {
         use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
         let body = "<entry><id>https://example.com/api/v2/Packages(Id='mytool',Version='1.0.0')</id>\
             <m:properties>\
@@ -1821,17 +1830,18 @@ mod tests {
         let (addr, _calls) = spawn_oneshot_http_responder(vec![resp]);
         let source = format!("http://{addr}");
         let mut ctx = ctx_with_choco(ChocolateyConfig::default());
-        // With republish_in_moderation=true the local hash must differ
-        // from the feed hash (otherwise the hash-match branch takes
-        // precedence and would return Some(false)). Use bytes whose
-        // SHA512 base64 cannot be "X".
+        // Local bytes whose SHA512 base64 cannot be the feed's "X": the nupkg
+        // differs (a fail-forward re-cut shifts <releaseNotes>). A Submitted
+        // (in-moderation) version is NOT immutable, so republish_in_moderation
+        // must proceed to push (replace the queued copy) rather than bail on
+        // the drift.
         let cfg = ChocolateyConfig {
             republish_in_moderation: Some(StringOrBool::Bool(true)),
             ..Default::default()
         };
         let (_d, pkg) = tmp_blob(b"local-bytes");
         let log = StageLogger::new("publish", Verbosity::Quiet);
-        let err = match handle_feed_state(
+        let decision = handle_feed_state(
             &mut ctx,
             &cfg,
             &source,
@@ -1840,16 +1850,51 @@ mod tests {
             &pkg,
             &fast_retry(),
             &log,
-        ) {
-            // With republish_in_moderation=true the code falls through to
-            // the hash-check; differing bytes then bail with the drift
-            // message — which is the correct end-state (the operator's
-            // republish intent does not bypass byte-immutability).
-            Err(e) => e,
-            Ok(other) => panic!("expected hash-drift bail, got Ok({other:?})"),
+        )
+        .expect("republish of an in-moderation version must not bail on nupkg drift");
+        assert_eq!(
+            decision, None,
+            "republish_in_moderation=true on a Submitted version must signal \
+             proceed-to-push (Ok(None)), not skip or bail"
+        );
+    }
+
+    /// An ALREADY-APPROVED version is genuinely immutable: a differing nupkg
+    /// must still bail (republish_in_moderation only covers the in-moderation
+    /// state, never an approved/live version).
+    #[test]
+    fn handle_feed_state_approved_with_differing_nupkg_bails() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        let body = "<entry><id>https://example.com/api/v2/Packages(Id='mytool',Version='1.0.0')</id>\
+            <m:properties>\
+            <d:PackageHash>X</d:PackageHash>\
+            <d:PackageHashAlgorithm>SHA512</d:PackageHashAlgorithm>\
+            <d:PackageStatus>Approved</d:PackageStatus>\
+            <d:IsApproved>true</d:IsApproved>\
+            </m:properties></entry>";
+        let resp: &'static str = Box::leak(http_200(body).into_boxed_str());
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp]);
+        let source = format!("http://{addr}");
+        let mut ctx = ctx_with_choco(ChocolateyConfig::default());
+        // republish_in_moderation must NOT rescue an approved version.
+        let cfg = ChocolateyConfig {
+            republish_in_moderation: Some(StringOrBool::Bool(true)),
+            ..Default::default()
         };
-        let msg = format!("{err:#}");
-        assert!(msg.contains("local nupkg"), "{msg}");
+        let (_d, pkg) = tmp_blob(b"local-bytes");
+        let log = StageLogger::new("publish", Verbosity::Quiet);
+        let err = handle_feed_state(
+            &mut ctx,
+            &cfg,
+            &source,
+            "mytool",
+            "1.0.0",
+            &pkg,
+            &fast_retry(),
+            &log,
+        )
+        .expect_err("an approved immutable version with a differing nupkg must bail");
+        assert!(format!("{err:#}").contains("local nupkg"), "{err:#}");
     }
 
     // -----------------------------------------------------------------
