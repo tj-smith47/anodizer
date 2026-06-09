@@ -240,6 +240,10 @@ crates:
     path: crates/stage-verify-release
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core, anodizer-stage-release]
+  - name: anodizer-stage-prepublish-guard
+    path: crates/stage-prepublish-guard
+    tag_template: "v{{ Version }}"
+    depends_on: [anodizer-core, anodizer-stage-publish, anodizer-stage-announce]
 
   # --- Tier 3: CLI binary (depends on all stages) ---
   - name: anodizer
@@ -275,6 +279,7 @@ crates:
       - anodizer-stage-attest
       - anodizer-stage-appimage
       - anodizer-stage-verify-release
+      - anodizer-stage-prepublish-guard
     builds:
       - binary: anodizer
         features: []
