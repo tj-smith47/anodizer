@@ -808,8 +808,58 @@ fn run_cargo_publish_simulation_with(
         return;
     }
 
+    // ---- (1b) dep-completeness guard -------------------------------------
+    // Refuse a release where a publishing crate depends on a workspace crate
+    // that is neither in the publish set nor on crates.io. `cargo publish
+    // --dry-run` (step 2) does NOT catch this — dry-run resolves the dep via
+    // the local workspace PATH — so this guard is the only preflight check
+    // for the missing-from-set failure that burned the 0.6.0/0.7.0 CLI
+    // publish. Reuses the injected `index_query` so tests drive it without a
+    // network round-trip; an inconclusive probe never blocks.
+    if check_publish_set_completeness(&plan, index_query, log, report) {
+        return;
+    }
+
     // ---- (2) cargo publish --dry-run, dependency order -------------------
     simulate_dry_run_publishes(&to_publish, index_query, dry_run_runner, log, report);
+}
+
+/// Preflight wrapper over [`crate::cargo::check_publish_set_completeness`].
+///
+/// Maps the injected [`IndexQuery`] (which returns [`PublisherState`]) onto
+/// the guard's tri-state probe, runs the guard, and converts a guard error
+/// into a report blocker so the preflight aborts loudly (same channel as the
+/// partial-publish and dry-run checks) instead of bubbling an `Err`. Returns
+/// `true` when a blocker was pushed and the caller should stop.
+fn check_publish_set_completeness(
+    plan: &crate::cargo::CargoPublishPlan,
+    index_query: &IndexQuery<'_>,
+    log: &StageLogger,
+    report: &mut PreflightReport,
+) -> bool {
+    use crate::cargo::DepIndexState;
+
+    let probe = |name: &str, version: &str| match index_query(name, version) {
+        PublisherState::Published => DepIndexState::Present,
+        PublisherState::Clean => DepIndexState::Absent,
+        // A transport error (Unknown) or any non-crates.io state is treated
+        // conservatively — the guard does not fail on an inconclusive probe.
+        _ => DepIndexState::Unknown,
+    };
+
+    match crate::cargo::check_publish_set_completeness(
+        &plan.order,
+        &plan.all_crates,
+        &plan.versions,
+        &probe,
+        log,
+    ) {
+        Ok(()) => false,
+        Err(e) => {
+            report.blockers.push(format!("{e:#}"));
+            true
+        }
+    }
 }
 
 /// (1) PARTIAL-PUBLISH ABORT.

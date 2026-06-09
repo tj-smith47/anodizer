@@ -620,6 +620,279 @@ fn wait_for_workspace_deps_to_appear(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// publish-set dep-completeness guard
+// ---------------------------------------------------------------------------
+
+/// Registry state of a workspace-internal dependency that is NOT in the
+/// cargo-publish set, as observed by the guard's index check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DepIndexState {
+    /// The dep at the required version is live on crates.io — `cargo publish`
+    /// of the dependent will resolve it against the registry. Safe.
+    Present,
+    /// The dep is positively absent from the index (404, or the version line
+    /// is missing). With the dep also absent from the publish set, the real
+    /// `cargo publish` would fail with "no matching package". Fail the guard.
+    Absent,
+    /// The index check could not positively determine presence (transport
+    /// error, timeout). Treated conservatively — the guard does NOT fail on
+    /// an inconclusive probe, so a transient crates.io outage cannot block a
+    /// release whose deps are actually fine.
+    Unknown,
+}
+
+/// Injectable index presence probe so the guard is unit-testable without a
+/// network round-trip. Production wires a closure over [`is_already_published`];
+/// tests inject a closure returning canned [`DepIndexState`]s.
+pub(crate) type DepIndexProbe<'a> = dyn Fn(&str, &str) -> DepIndexState + 'a;
+
+/// Whether a `[dependencies].<name>` value is a `workspace = true` inherit
+/// (dotted `name.workspace = true`, inline `{ workspace = true }`, or a
+/// standard sub-table with `workspace = true`).
+fn dep_value_is_workspace_inherit(item: &toml_edit::Item) -> bool {
+    if let Some(v) = item.as_value()
+        && let Some(tbl) = v.as_inline_table()
+    {
+        return tbl
+            .get("workspace")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+    }
+    if let Some(tbl) = item.as_table() {
+        return tbl
+            .get("workspace")
+            .and_then(|i| i.as_value())
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+    }
+    false
+}
+
+/// Parse a workspace-root manifest's `[workspace.dependencies]` table into a
+/// `name -> version` map (entries without a literal `version` key are
+/// skipped). Used to resolve the version of a leaf crate's
+/// `<dep>.workspace = true` inherit. Returns an empty map when the manifest
+/// can't be read/parsed or declares no `[workspace.dependencies]`.
+fn workspace_dependency_versions(workspace_manifest: &std::path::Path) -> HashMap<String, String> {
+    let mut out: HashMap<String, String> = HashMap::new();
+    let Ok(content) = std::fs::read_to_string(workspace_manifest) else {
+        return out;
+    };
+    let Ok(doc) = content.parse::<toml_edit::DocumentMut>() else {
+        return out;
+    };
+    let Some(ws_deps) = doc
+        .get("workspace")
+        .and_then(|w| w.as_table_like())
+        .and_then(|w| w.get("dependencies"))
+        .and_then(|d| d.as_table_like())
+    else {
+        return out;
+    };
+    for (name, value) in ws_deps.iter() {
+        if let Some(ver) = extract_version_pin(value) {
+            out.insert(name.to_string(), ver);
+        }
+    }
+    out
+}
+
+/// The workspace-internal, publish-required dependencies of one crate:
+/// `(dep_name, required_version_or_empty)` for every `[dependencies]` /
+/// `[build-dependencies]` (incl. their `[target.*]` variants) entry whose
+/// name is a workspace crate. `dev-dependencies` are intentionally excluded —
+/// `cargo publish` strips them and does NOT require them on the index, so a
+/// dev-dep on a sibling that is itself unpublished must not trip the guard.
+///
+/// The required version is resolved from a literal pin on the leaf entry, or
+/// from the workspace root's `[workspace.dependencies]` for a
+/// `workspace = true` inherit. An empty version string means "the dep edge
+/// exists but no registry version could be resolved" — the guard then checks
+/// set membership only and skips the (un-versioned) index probe.
+fn publish_required_workspace_deps(
+    manifest_path: &std::path::Path,
+    workspace_crate_names: &HashSet<&str>,
+) -> Vec<(String, String)> {
+    let Ok(content) = std::fs::read_to_string(manifest_path) else {
+        return Vec::new();
+    };
+    let Ok(doc) = content.parse::<toml_edit::DocumentMut>() else {
+        return Vec::new();
+    };
+
+    // Resolve inherited versions lazily — only read the workspace root when a
+    // crate actually has at least one `workspace = true` workspace-dep edge.
+    let mut ws_versions: Option<HashMap<String, String>> = None;
+    let mut resolve_ws_version = |dep: &str| -> Option<String> {
+        let map = ws_versions.get_or_insert_with(|| {
+            find_workspace_root_manifest(
+                manifest_path.parent().unwrap_or(std::path::Path::new(".")),
+            )
+            .map(|m| workspace_dependency_versions(&m))
+            .unwrap_or_default()
+        });
+        map.get(dep).cloned()
+    };
+
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    let mut visit =
+        |item: &toml_edit::Item, out: &mut Vec<(String, String)>, seen: &mut HashSet<String>| {
+            let Some(table) = item.as_table_like() else {
+                return;
+            };
+            for (key, value) in table.iter() {
+                if !workspace_crate_names.contains(key) || !seen.insert(key.to_string()) {
+                    continue;
+                }
+                // Literal leaf pin first, then a workspace inherit resolved from
+                // the root; an unresolved version stays empty (set-membership-only).
+                let version = extract_version_pin(value)
+                    .or_else(|| {
+                        if dep_value_is_workspace_inherit(value) {
+                            resolve_ws_version(key)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                out.push((key.to_string(), version));
+            }
+        };
+
+    // Normal + build deps require registry resolution at publish; dev-deps do
+    // not (cargo publish drops them), so they are excluded.
+    for section in ["dependencies", "build-dependencies"] {
+        if let Some(item) = doc.get(section) {
+            visit(item, &mut out, &mut seen);
+        }
+    }
+    if let Some(target_item) = doc.get("target")
+        && let Some(target_tbl) = target_item.as_table_like()
+    {
+        for (_cfg, target_value) in target_tbl.iter() {
+            let Some(target_table) = target_value.as_table_like() else {
+                continue;
+            };
+            for section in ["dependencies", "build-dependencies"] {
+                if let Some(item) = target_table.get(section) {
+                    visit(item, &mut out, &mut seen);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Pre-publish dep-completeness guard.
+///
+/// For every crate in the resolved cargo-publish set, walk its
+/// `Cargo.toml` non-dev dependencies and assert each workspace-internal
+/// dependency is EITHER (a) also in the publish set OR (b) already live on
+/// crates.io at the required version. A dep that is in NEITHER would make the
+/// real `cargo publish` of the dependent fail with
+/// `no matching package named '<dep>' found`, because cargo strips path deps
+/// and resolves the version against the crates.io index — exactly the failure
+/// that burned the CLI publish on 0.6.0 and 0.7.0 (the stage crates the CLI
+/// depends on were missing from the publish set). `cargo publish --dry-run`
+/// does NOT catch this: dry-run resolves the dep via the local workspace
+/// PATH, so it passes even when the dep is absent from the set and the index.
+///
+/// `index_probe` is injected so the guard is testable without a network round
+/// trip; production wires it over [`is_already_published`]. An inconclusive
+/// probe ([`DepIndexState::Unknown`]) never fails the guard — only a positive
+/// "absent from BOTH the set AND the index" determination does.
+///
+/// Works across all config modes: the publish set is whatever
+/// [`cargo_publish_plan`] resolved (single-crate, workspace-lockstep, or
+/// workspace per-crate), and `all_crates` spans the full universe so the
+/// workspace-internal name set is mode-independent.
+pub(crate) fn check_publish_set_completeness(
+    order: &[String],
+    all_crates: &[CrateConfig],
+    versions: &HashMap<String, String>,
+    index_probe: &DepIndexProbe<'_>,
+    log: &StageLogger,
+) -> Result<()> {
+    // The publish set (names actually being published this run) and the full
+    // workspace-internal name set (every crate anodize knows about).
+    let in_set: HashSet<&str> = order.iter().map(|s| s.as_str()).collect();
+    let workspace_names: HashSet<&str> = all_crates.iter().map(|c| c.name.as_str()).collect();
+    let crate_paths: HashMap<&str, &str> = all_crates
+        .iter()
+        .map(|c| (c.name.as_str(), c.path.as_str()))
+        .collect();
+
+    for publishing in order {
+        let path = crate_paths.get(publishing.as_str()).copied().unwrap_or(".");
+        let manifest_path = std::path::Path::new(path).join("Cargo.toml");
+        let deps = publish_required_workspace_deps(&manifest_path, &workspace_names);
+
+        for (dep_name, required_version) in deps {
+            // In the publish set → the real publish lands it first (topological
+            // order guarantees dependency-before-dependent). Safe.
+            if in_set.contains(dep_name.as_str()) {
+                continue;
+            }
+
+            // Not in the set — it must already be on crates.io at the version
+            // the dependent requires, or the real publish will 404. Without a
+            // resolvable version we cannot probe the exact line; fall back to
+            // the dependent's resolved version (lockstep workspaces share one)
+            // so the guard still fails loudly on a genuinely-missing sibling
+            // rather than silently passing.
+            let probe_version = if required_version.is_empty() {
+                versions.get(publishing).cloned().unwrap_or_default()
+            } else {
+                required_version.clone()
+            };
+
+            if probe_version.is_empty() {
+                // No version to probe AND the dep isn't in the set: we cannot
+                // positively prove absence, so do not hard-fail — but surface
+                // it so a real gap isn't swallowed silently.
+                log.warn(&format!(
+                    "publish dep-guard: crate '{publishing}' depends on workspace crate \
+                     '{dep_name}' which is not in the cargo publish set, and no required \
+                     version could be resolved to verify it is on crates.io; verify manually"
+                ));
+                continue;
+            }
+
+            match index_probe(&dep_name, &probe_version) {
+                DepIndexState::Present => {
+                    log.verbose(&format!(
+                        "publish dep-guard: '{publishing}' dep '{dep_name}@{probe_version}' is \
+                         not in the publish set but is already on crates.io — ok"
+                    ));
+                }
+                DepIndexState::Absent => {
+                    anyhow::bail!(
+                        "publish dep-guard: crate '{publishing}' depends on workspace crate \
+                         '{dep_name}' (version {probe_version}) which is neither in the cargo \
+                         publish set nor already on crates.io; `cargo publish -p {publishing}` \
+                         would fail with `no matching package named '{dep_name}' found` because \
+                         cargo strips path deps and resolves the version against the crates.io \
+                         index. Add '{dep_name}' to the crates: publish set (give it a \
+                         publish.cargo block), or make the dependency non-publish."
+                    );
+                }
+                DepIndexState::Unknown => {
+                    log.warn(&format!(
+                        "publish dep-guard: could not determine crates.io state for '{publishing}' \
+                         dep '{dep_name}@{probe_version}' (transient index error); not failing the \
+                         guard on an inconclusive probe — verify the dep is published if the \
+                         real `cargo publish` fails"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Heuristic: does this cargo-publish stderr look like it failed because
 /// the sparse index hadn't caught up with a just-published dependency?
 ///
@@ -1119,6 +1392,32 @@ fn publish_to_cargo_with(
     // for every crate's index-check GET. Mirrors the per-pipe-invocation
     // pattern used by artifactory/cloudsmith.
     let retry_policy = ctx.retry_policy();
+
+    // Hard backstop, BEFORE the first irreversible `cargo publish`: refuse to
+    // start when any crate in the publish set has a workspace-internal
+    // (non-dev) dependency that is neither in the set nor already on
+    // crates.io. The publish-simulation preflight runs the same guard earlier
+    // for a louder/earlier abort, but it is gated behind `--no-preflight`;
+    // re-running it here means no real-publish path (publish_to_cargo /
+    // --publish-only) can bypass it. Cheap: at most one sparse-index GET per
+    // out-of-set dep, and a no-op for the common lockstep case where every
+    // workspace dep is in the set. (Skipped in dry-run — the early return
+    // above already handled that path.)
+    //
+    // The index probe routes through the SAME injected `already_published_check`
+    // seam the publish loop uses, so the guard shares one mockable index path:
+    // `Ok(Some)` = present, `Ok(None)` = positively absent, `Err` = inconclusive
+    // (never fails the guard).
+    {
+        let probe =
+            |name: &str, version: &str| match already_published_check(name, version, &retry_policy)
+            {
+                Ok(Some(_)) => DepIndexState::Present,
+                Ok(None) => DepIndexState::Absent,
+                Err(_) => DepIndexState::Unknown,
+            };
+        check_publish_set_completeness(&sorted_names, &all_crates, &crate_versions, &probe, log)?;
+    }
 
     // Path lookup for the wait-for-workspace-deps manifest scan below.
     let crate_paths: HashMap<String, String> = all_crates
@@ -4022,6 +4321,23 @@ mod partial_rollback_tests {
         Ok(None)
     }
 
+    /// Index injection used by the wait-gate wiring test: the workspace
+    /// dependency `dep-crate` is reported already-live on crates.io (so the
+    /// dep-completeness guard passes — the legitimate multi-tag case), while
+    /// the crate being published (`leaf`) is reported absent (so the loop's
+    /// idempotency check does NOT skip it and the wait-gate actually runs).
+    fn dep_published_leaf_clean(
+        name: &str,
+        _version: &str,
+        _policy: &anodizer_core::retry::RetryPolicy,
+    ) -> Result<Option<String>> {
+        if name == "dep-crate" {
+            Ok(Some("deadbeef".to_string()))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn cargo_crate(name: &str, path: &str, deps: &[&str], cfg: CargoPublishConfig) -> CrateConfig {
         CrateConfig {
             name: name.to_string(),
@@ -4582,13 +4898,19 @@ mod partial_rollback_tests {
         let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
         let mut record: Vec<CargoYankTarget> = Vec::new();
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "never");
+        // The dep-completeness guard runs first; inject `always_published` so
+        // it treats `dep-crate` as live on crates.io (the legitimate multi-tag
+        // case the wait-gate is for) and the wait-gate TIMEOUT — not the guard
+        // — is the failure under test. The wait-gate itself polls the REAL
+        // index for the bogus `0.0.0-never-exists` version, so it still times
+        // out as intended.
         let result = with_path(&new_path, || {
             publish_to_cargo_with(
                 &mut ctx,
                 &["leaf".to_string()],
                 &log,
                 &mut record,
-                never_published,
+                dep_published_leaf_clean,
             )
         });
         let err = result.expect_err("wait_for_workspace_deps timeout must surface");
@@ -4650,5 +4972,240 @@ mod partial_rollback_tests {
         assert_eq!(targets.len(), 1, "only crate-a is recorded: {targets:?}");
         assert_eq!(targets[0].name, "crate-a");
         assert_eq!(targets[0].version, "1.0.0");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// dep-completeness guard tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod dep_guard_tests {
+    use super::*;
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    fn quiet_log() -> StageLogger {
+        StageLogger::new("publish-test", Verbosity::Normal)
+    }
+
+    /// Write a crate dir with a `[package]` (version `ver`) plus a
+    /// `[dependencies]` block listing each `(dep_name, dep_version)`, and a
+    /// `[dev-dependencies]` block listing each `(dep_name, dep_version)` in
+    /// `dev_deps`. Returns the crate's path string.
+    fn write_crate(
+        root: &std::path::Path,
+        name: &str,
+        ver: &str,
+        deps: &[(&str, &str)],
+        dev_deps: &[(&str, &str)],
+    ) -> String {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let mut body = format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\n");
+        if !deps.is_empty() {
+            body.push_str("\n[dependencies]\n");
+            for (d, dv) in deps {
+                body.push_str(&format!("{d} = {{ version = \"{dv}\" }}\n"));
+            }
+        }
+        if !dev_deps.is_empty() {
+            body.push_str("\n[dev-dependencies]\n");
+            for (d, dv) in dev_deps {
+                body.push_str(&format!("{d} = {{ version = \"{dv}\" }}\n"));
+            }
+        }
+        std::fs::write(dir.join("Cargo.toml"), body).expect("write manifest");
+        dir.display().to_string()
+    }
+
+    fn crate_cfg(name: &str, path: &str, deps: &[&str]) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: path.to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
+            publish: Some(anodizer_core::config::PublishConfig {
+                cargo: Some(CargoPublishConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// (1) A publishing crate whose workspace dep is missing from the set AND
+    /// absent from the index → the guard returns Err naming the dep + crate.
+    #[test]
+    fn guard_errors_when_dep_missing_from_set_and_index() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // `app` depends on `lib` (a workspace crate) but only `app` is in the
+        // publish set; `lib` is not, and the index probe reports it Absent.
+        let app_path = write_crate(tmp.path(), "app", "1.0.0", &[("lib", "1.0.0")], &[]);
+        let lib_path = write_crate(tmp.path(), "lib", "1.0.0", &[], &[]);
+        let all = vec![
+            crate_cfg("app", &app_path, &["lib"]),
+            crate_cfg("lib", &lib_path, &[]),
+        ];
+        let order = vec!["app".to_string()]; // lib intentionally NOT in the set
+        let versions: HashMap<String, String> = [("app".to_string(), "1.0.0".to_string())]
+            .into_iter()
+            .collect();
+
+        let probe = |_n: &str, _v: &str| DepIndexState::Absent;
+        let err = check_publish_set_completeness(&order, &all, &versions, &probe, &quiet_log())
+            .expect_err("missing-and-absent dep must fail the guard");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("'app'"), "names the publishing crate: {msg}");
+        assert!(msg.contains("'lib'"), "names the missing dep: {msg}");
+        assert!(
+            msg.contains("publish set"),
+            "explains the fix (add to publish set): {msg}"
+        );
+    }
+
+    /// (2) Every workspace dep is in the publish set → Ok regardless of index
+    /// state (the probe must not even be consulted for an in-set dep).
+    #[test]
+    fn guard_ok_when_all_deps_in_set() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_path = write_crate(tmp.path(), "app", "1.0.0", &[("lib", "1.0.0")], &[]);
+        let lib_path = write_crate(tmp.path(), "lib", "1.0.0", &[], &[]);
+        let all = vec![
+            crate_cfg("app", &app_path, &["lib"]),
+            crate_cfg("lib", &lib_path, &[]),
+        ];
+        let order = vec!["lib".to_string(), "app".to_string()]; // both in set
+        let versions: HashMap<String, String> = [
+            ("app".to_string(), "1.0.0".to_string()),
+            ("lib".to_string(), "1.0.0".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        // Probe panics if called — an in-set dep must short-circuit before it.
+        let probe = |_n: &str, _v: &str| panic!("index probe must not run for in-set deps");
+        check_publish_set_completeness(&order, &all, &versions, &probe, &quiet_log())
+            .expect("all deps in set → ok");
+    }
+
+    /// (3) A dep not in the set but already live on crates.io (mocked Present)
+    /// → Ok. The version probed must be the one the dependent requires.
+    #[test]
+    fn guard_ok_when_dep_not_in_set_but_already_on_index() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_path = write_crate(tmp.path(), "app", "2.0.0", &[("lib", "1.5.0")], &[]);
+        let lib_path = write_crate(tmp.path(), "lib", "1.5.0", &[], &[]);
+        let all = vec![
+            crate_cfg("app", &app_path, &["lib"]),
+            crate_cfg("lib", &lib_path, &[]),
+        ];
+        let order = vec!["app".to_string()]; // lib not re-published this run
+        let versions: HashMap<String, String> = [("app".to_string(), "2.0.0".to_string())]
+            .into_iter()
+            .collect();
+
+        let seen: std::cell::RefCell<Vec<(String, String)>> = std::cell::RefCell::new(Vec::new());
+        let probe = |n: &str, v: &str| {
+            seen.borrow_mut().push((n.to_string(), v.to_string()));
+            DepIndexState::Present
+        };
+        check_publish_set_completeness(&order, &all, &versions, &probe, &quiet_log())
+            .expect("dep live on crates.io → ok");
+        assert_eq!(
+            *seen.borrow(),
+            vec![("lib".to_string(), "1.5.0".to_string())],
+            "guard probes the dep at the version the dependent pins"
+        );
+    }
+
+    /// An inconclusive (Unknown) index probe never fails the guard — a
+    /// transient crates.io outage must not block a release.
+    #[test]
+    fn guard_ok_on_inconclusive_index_probe() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_path = write_crate(tmp.path(), "app", "1.0.0", &[("lib", "1.0.0")], &[]);
+        let lib_path = write_crate(tmp.path(), "lib", "1.0.0", &[], &[]);
+        let all = vec![
+            crate_cfg("app", &app_path, &["lib"]),
+            crate_cfg("lib", &lib_path, &[]),
+        ];
+        let order = vec!["app".to_string()];
+        let versions: HashMap<String, String> = [("app".to_string(), "1.0.0".to_string())]
+            .into_iter()
+            .collect();
+
+        let probe = |_n: &str, _v: &str| DepIndexState::Unknown;
+        check_publish_set_completeness(&order, &all, &versions, &probe, &quiet_log())
+            .expect("inconclusive probe must not fail the guard");
+    }
+
+    /// A dev-dependency on an out-of-set, index-absent sibling must NOT trip
+    /// the guard: `cargo publish` strips dev-deps and does not require them on
+    /// the index. The probe must never be called (no non-dev edge exists).
+    #[test]
+    fn guard_ignores_dev_dependencies() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // `lib` is ONLY a dev-dependency of `app`.
+        let app_path = write_crate(tmp.path(), "app", "1.0.0", &[], &[("lib", "1.0.0")]);
+        let lib_path = write_crate(tmp.path(), "lib", "1.0.0", &[], &[]);
+        let all = vec![
+            crate_cfg("app", &app_path, &[]),
+            crate_cfg("lib", &lib_path, &[]),
+        ];
+        let order = vec!["app".to_string()];
+        let versions: HashMap<String, String> = [("app".to_string(), "1.0.0".to_string())]
+            .into_iter()
+            .collect();
+
+        let probe = |_n: &str, _v: &str| panic!("dev-dep must not be probed");
+        check_publish_set_completeness(&order, &all, &versions, &probe, &quiet_log())
+            .expect("dev-dep on out-of-set sibling must not trip the guard");
+    }
+
+    /// The real 0.6.0/0.7.0 burn shape: a `<dep>.workspace = true` inherit.
+    /// The required version lives in the workspace root's
+    /// `[workspace.dependencies]`, not the leaf manifest — the guard must
+    /// resolve it and probe `lib@0.7.0`.
+    #[test]
+    fn guard_resolves_workspace_inherited_dep_version() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Workspace root with a `[workspace.dependencies]` pinning lib@0.7.0.
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"app\", \"lib\"]\n\n\
+             [workspace.dependencies]\nlib = { path = \"lib\", version = \"0.7.0\" }\n",
+        )
+        .expect("write workspace root");
+        // app inherits lib via `lib.workspace = true` (no literal pin).
+        let app_dir = tmp.path().join("app");
+        std::fs::create_dir_all(&app_dir).expect("mkdir app");
+        std::fs::write(
+            app_dir.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.7.0\"\n\n\
+             [dependencies]\nlib.workspace = true\n",
+        )
+        .expect("write app manifest");
+        let lib_path = write_crate(tmp.path(), "lib", "0.7.0", &[], &[]);
+        let all = vec![
+            crate_cfg("app", &app_dir.display().to_string(), &["lib"]),
+            crate_cfg("lib", &lib_path, &[]),
+        ];
+        let order = vec!["app".to_string()]; // lib missing from the set (the bug)
+        let versions: HashMap<String, String> = [("app".to_string(), "0.7.0".to_string())]
+            .into_iter()
+            .collect();
+
+        let seen: std::cell::RefCell<Vec<(String, String)>> = std::cell::RefCell::new(Vec::new());
+        let probe = |n: &str, v: &str| {
+            seen.borrow_mut().push((n.to_string(), v.to_string()));
+            DepIndexState::Absent
+        };
+        let err = check_publish_set_completeness(&order, &all, &versions, &probe, &quiet_log())
+            .expect_err("inherited dep missing from set + absent must fail");
+        assert!(format!("{err:#}").contains("'lib'"), "names the dep");
+        assert_eq!(
+            *seen.borrow(),
+            vec![("lib".to_string(), "0.7.0".to_string())],
+            "inherited version resolved from the workspace root"
+        );
     }
 }
