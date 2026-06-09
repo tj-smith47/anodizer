@@ -19,6 +19,10 @@ use crate::commands::version_files_resolve::resolve_version_files;
 pub struct TagOpts {
     pub dry_run: bool,
     pub custom_tag: Option<String>,
+    /// Explicit `--version`: tag exactly this version, bypassing autotag
+    /// derivation and the Cargo.toml-ahead guard. Accepts `1.2.3` or `v1.2.3`;
+    /// normalized + validated in [`run`].
+    pub version_override: Option<String>,
     pub default_bump: Option<String>,
     /// When set, select a specific crate's tag_template for tagging.
     pub crate_name: Option<String>,
@@ -199,6 +203,21 @@ pub fn run(opts: TagOpts) -> Result<()> {
 
     let mut cfg = ResolvedConfig::from_tag_config(&tag_config, &opts);
 
+    // Validate + normalize the explicit `--version` override once, up front, so
+    // an ill-formed value fails before any git/manifest work. The bare
+    // `MAJOR.MINOR.PATCH[-pre][+build]` form is retained (the configured tag
+    // prefix is re-applied at tag-creation time); accepting both `1.2.3` and
+    // `v1.2.3` is exactly `parse_semver`'s contract.
+    let version_override: Option<String> = match opts.version_override.as_deref() {
+        Some(raw) => {
+            let sv = git::parse_semver(raw).map_err(|_| {
+                anyhow::anyhow!("--version {:?} is not a valid semver version", raw)
+            })?;
+            Some(sv.version_string())
+        }
+        None => None,
+    };
+
     // Push controls shared by every tagging path. `remote` defaults to origin;
     // `effective_push` per-path resolution is computed at each call site so the
     // per-crate path can carry its own (true) default.
@@ -248,6 +267,29 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 ct
             );
         }
+    }
+
+    // `--version` pins ONE version. In per-crate / flat-aggregate dispatch there
+    // is no single versioned unit — applying one version across independently
+    // versioned crates would corrupt their cadences — so reject it unless
+    // `--crate <name>` narrows to a single crate (which routes through the
+    // single-crate derivation path below where the override is honored).
+    if let Some(ref v) = version_override
+        && opts.crate_name.is_none()
+        && matches!(
+            detect_repo_shape(
+                &workspace_root_path,
+                loaded_config.as_ref(),
+                loaded_workspace.as_ref()
+            ),
+            RepoShape::PerCrate(_) | RepoShape::FlatAggregate(_)
+        )
+    {
+        anyhow::bail!(
+            "--version {:?} is incompatible with per-crate workspace mode; \
+             pass --crate <name> to pin a single crate's version",
+            v
+        );
     }
     if opts.crate_name.is_none() {
         // A `FlatAggregate` (shared-prefix flat `crates:` list, no
@@ -467,9 +509,14 @@ pub fn run(opts: TagOpts) -> Result<()> {
         return Ok(());
     }
 
-    // Check release branches
+    // Check release branches. An explicit `--version` is an authoritative
+    // "tag exactly this" request, so it bypasses the non-release-branch
+    // hash-postfix guard (recovery tagging often runs off the release branch).
     let current_branch = git::get_current_branch()?;
-    if !cfg.release_branches.is_empty() && !branch_matches(&current_branch, &cfg.release_branches) {
+    if version_override.is_none()
+        && !cfg.release_branches.is_empty()
+        && !branch_matches(&current_branch, &cfg.release_branches)
+    {
         // Non-release branch: produce a hash-postfixed version, don't tag
         let short_commit = git::get_short_commit()?;
         let prev_tag = find_previous_tag(&cfg, git_config.as_ref())?;
@@ -508,11 +555,16 @@ pub fn run(opts: TagOpts) -> Result<()> {
             git::has_commits_since_tag(tag)?
         };
         if !has_changes {
-            let force = if cfg.prerelease {
-                cfg.force_without_changes_pre
-            } else {
-                cfg.force_without_changes
-            };
+            // An explicit `--version` is an authoritative release request, so it
+            // forces past the "no changes since last tag" skip the same way
+            // `force_without_changes` does (release-recovery re-tags often carry
+            // no new commits).
+            let force = version_override.is_some()
+                || if cfg.prerelease {
+                    cfg.force_without_changes_pre
+                } else {
+                    cfg.force_without_changes
+                };
             if !force {
                 log.verbose(&format!("no changes since {} -- skipping", tag));
                 println!("new_tag={}", tag);
@@ -575,7 +627,9 @@ pub fn run(opts: TagOpts) -> Result<()> {
     };
 
     // If #none token detected (and Cargo.toml isn't explicitly ahead), skip.
-    if bump == BumpKind::None && !cargo_ahead {
+    // An explicit `--version` is itself the release signal, so it tags
+    // regardless of any per-commit bump directive.
+    if bump == BumpKind::None && !cargo_ahead && version_override.is_none() {
         log.verbose("no bump signal and Cargo.toml not ahead -- skipping tag");
         println!("new_tag={}", prev_tag.as_deref().unwrap_or(""));
         println!("old_tag={}", prev_tag.as_deref().unwrap_or(""));
@@ -610,21 +664,40 @@ pub fn run(opts: TagOpts) -> Result<()> {
         new_version = format!("{}-{}", new_version, cfg.prerelease_suffix);
     }
 
-    // Bug fix: when version_sync is enabled, check if the current Cargo.toml
-    // version is already higher than the tag-derived version. If so, use the
-    // Cargo.toml version to avoid downgrading manually bumped versions.
+    // When version_sync is enabled, a Cargo.toml version already higher than
+    // the tag-derived version wins, to avoid downgrading a manual bump. This is
+    // the Cargo.toml-ahead guard; computing it here (even with `--version` set)
+    // yields the version autotag *would* have produced, so the override warning
+    // can name the true derived value the operator is overriding.
     if let Some(cargo_ver) = cargo_current_ver
         && let Ok(cargo_sv) = git::parse_semver(&cargo_ver)
     {
         let tag_tuple = (new_major, new_minor, new_patch);
         let cargo_tuple = (cargo_sv.major, cargo_sv.minor, cargo_sv.patch);
         if cargo_tuple > tag_tuple {
-            log.status(&format!(
-                "Cargo.toml version {} > tag-derived {}, using Cargo.toml version",
-                cargo_ver, new_version
-            ));
+            if version_override.is_none() {
+                log.status(&format!(
+                    "Cargo.toml version {} > tag-derived {}, using Cargo.toml version",
+                    cargo_ver, new_version
+                ));
+            }
             new_version = cargo_ver;
         }
+    }
+
+    if let Some(pinned) = version_override {
+        // The operator is authoritative: pin the explicit version verbatim,
+        // bypassing the autotag bump AND the Cargo.toml-ahead guard above. Warn
+        // when it disagrees with the version derivation would have produced
+        // (`new_version` now holds that fully-derived value) so the divergence
+        // is visible, then proceed with the explicit one.
+        if pinned != new_version {
+            log.warn(&format!(
+                "--version {} overrides the derived version {} (autotag + Cargo.toml-ahead guard bypassed)",
+                pinned, new_version
+            ));
+        }
+        new_version = pinned;
     }
 
     let new_tag = format!("{}{}", cfg.tag_prefix, new_version);
@@ -2483,6 +2556,7 @@ mod tests {
         TagOpts {
             dry_run: false,
             custom_tag: None,
+            version_override: None,
             default_bump: None,
             crate_name: None,
             push,
@@ -3042,6 +3116,7 @@ mod tests {
         let opts = TagOpts {
             dry_run: false,
             custom_tag: None,
+            version_override: None,
             default_bump: None,
             crate_name: None,
             push: false,
@@ -3080,6 +3155,7 @@ mod tests {
         let opts = TagOpts {
             dry_run: false,
             custom_tag: Some("v9.9.9".to_string()),
+            version_override: None,
             default_bump: Some("major".to_string()),
             crate_name: None,
             push: false,
@@ -3128,6 +3204,7 @@ mod tests {
         let opts = TagOpts {
             dry_run: false,
             custom_tag: None,
+            version_override: None,
             default_bump: None,
             crate_name: None,
             push: false,

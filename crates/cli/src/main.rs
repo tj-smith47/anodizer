@@ -564,6 +564,7 @@ fn run() {
         Commands::Tag {
             dry_run,
             custom_tag,
+            version_override,
             default_bump,
             crate_name,
             push,
@@ -595,6 +596,9 @@ fn run() {
                     if changelog {
                         anyhow::bail!("--changelog applies to `anodizer tag`, not `tag rollback`");
                     }
+                    if version_override.is_some() {
+                        anyhow::bail!("--version applies to `anodizer tag`, not `tag rollback`");
+                    }
                     let scope: Scope = scope.parse().map_err(anyhow::Error::msg)?;
                     let mode: Mode = mode.parse().map_err(anyhow::Error::msg)?;
                     commands::tag::rollback::run(RollbackOpts {
@@ -613,6 +617,7 @@ fn run() {
             None => commands::tag::run(commands::tag::TagOpts {
                 dry_run,
                 custom_tag,
+                version_override,
                 default_bump,
                 crate_name,
                 push,
@@ -991,6 +996,24 @@ mod tests {
         );
         if let Some(Commands::Tag { custom_tag, .. }) = cli.unwrap().command {
             assert_eq!(custom_tag, Some("v5.0.0".to_string()));
+        } else {
+            panic!("expected Tag command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_tag_version_override() {
+        let cli = Cli::try_parse_from(["anodizer", "tag", "--version", "v1.2.3"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse tag --version: {:?}",
+            cli.err()
+        );
+        if let Some(Commands::Tag {
+            version_override, ..
+        }) = cli.unwrap().command
+        {
+            assert_eq!(version_override, Some("v1.2.3".to_string()));
         } else {
             panic!("expected Tag command");
         }

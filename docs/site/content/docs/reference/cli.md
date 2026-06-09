@@ -210,6 +210,7 @@ Auto-tag based on commit message directives
 |------|-------|---------|-------------|
 | `--dry-run` | — | — | Show what tag would be created without pushing |
 | `--custom-tag` | — | — | Override bump logic with a specific tag value |
+| `--version` | — | — | Tag exactly this semver version, bypassing autotag derivation and the Cargo.toml-ahead guard |
 | `--default-bump` | — | — | Override default bump type (patch/minor/major) |
 | `--crate` | — | — | Tag a specific crate in a workspace |
 | `--push` | — | — | Push the version-sync bump commit to the release branch atomically with the tag |

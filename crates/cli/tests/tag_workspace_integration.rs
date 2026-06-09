@@ -500,3 +500,243 @@ fn per_crate_bump_minor_pre_major_demotes_breaking_to_minor() {
         res.stdout
     );
 }
+
+// --- `--version` explicit override -----------------------------------------
+
+/// Read a member crate's own `[package].version`.
+fn read_member_version(root: &Path, member: &str) -> String {
+    let text = fs::read_to_string(root.join(member).join("Cargo.toml")).unwrap();
+    let doc = text.parse::<toml_edit::DocumentMut>().unwrap();
+    doc.get("package")
+        .and_then(|p| p.get("version"))
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string()
+}
+
+/// Lockstep workspace where `--version` (in both `1.2.3` and `v1.2.3` forms)
+/// pins the workspace version verbatim, bypassing autotag derivation.
+fn lockstep_version_override(arg: &str, expected_tag: &str) {
+    let tmp = TempDir::new().unwrap();
+    inheriting_workspace_with_deps(tmp.path());
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "v0.1.0"]);
+    fs::write(tmp.path().join("crates/a/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(tmp.path(), "fix: a deref issue");
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["tag", "--version", arg])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag --version {arg} failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(&format!("new_tag={expected_tag}")),
+        "expected new_tag={expected_tag} in stdout: {stdout}"
+    );
+    // The explicit version (not the derived v0.1.1 patch) is synced into the
+    // workspace manifest + dep pins before the tag.
+    let bare = expected_tag.trim_start_matches('v');
+    assert_eq!(read_workspace_package_version(tmp.path()), bare);
+    assert_eq!(
+        read_workspace_dep_version(tmp.path(), "a").as_deref(),
+        Some(bare)
+    );
+    assert!(
+        git_tag_exists(tmp.path(), expected_tag),
+        "{expected_tag} should be created"
+    );
+    assert!(
+        !git_tag_exists(tmp.path(), "v0.1.1"),
+        "derived patch tag v0.1.1 must NOT be created when --version pins"
+    );
+}
+
+#[test]
+fn version_override_lockstep_bare_form() {
+    lockstep_version_override("1.2.3", "v1.2.3");
+}
+
+#[test]
+fn version_override_lockstep_v_prefixed_form() {
+    lockstep_version_override("v1.2.3", "v1.2.3");
+}
+
+/// Lockstep workspace where `--version` overrides the Cargo.toml-ahead guard.
+/// The workspace manifest sits at 0.4.0 (ahead of the v0.2.0 tag, so autotag's
+/// guard would lift the derived patch 0.2.1 to 0.4.0), yet `--version 0.3.0`
+/// wins and a warning naming the derived 0.4.0 is emitted.
+#[test]
+fn version_override_beats_cargo_ahead_guard_and_warns() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    // A lockstep workspace whose [workspace.package].version is manually ahead
+    // of the previous tag, the exact condition the Cargo.toml-ahead guard fires
+    // on.
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/a\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"0.4.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/a/src")).unwrap();
+    fs::write(
+        root.join("crates/a/Cargo.toml"),
+        "[package]\nname = \"a\"\nversion.workspace = true\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/a/src/lib.rs"), "").unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.2.0"]);
+    fs::write(root.join("crates/a/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: something");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--version", "0.3.0"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag --version failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let combined =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    assert!(
+        combined.contains("new_tag=v0.3.0"),
+        "explicit v0.3.0 must win over Cargo-ahead 0.4.0: {combined}"
+    );
+    // The warning names the explicit version and the fully-derived version
+    // (0.4.0 — the value the Cargo.toml-ahead guard would have produced).
+    assert!(
+        combined.contains("--version 0.3.0 overrides the derived version 0.4.0"),
+        "expected a warning naming explicit 0.3.0 and derived 0.4.0: {combined}"
+    );
+    assert_eq!(read_workspace_package_version(root), "0.3.0");
+    assert!(git_tag_exists(root, "v0.3.0"));
+    assert!(!git_tag_exists(root, "v0.4.0"));
+}
+
+/// An ill-formed `--version` value fails cleanly with a non-zero exit before
+/// any tag is created.
+#[test]
+fn version_override_invalid_errors() {
+    let tmp = TempDir::new().unwrap();
+    inheriting_workspace_with_deps(tmp.path());
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["tag", "--version", "not-a-version"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "invalid --version must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not a valid semver"),
+        "expected a semver-validation error: {stderr}"
+    );
+}
+
+/// Build a per-crate (independently versioned) workspace with two distinctly
+/// prefixed crates and a baseline tag for each.
+fn per_crate_workspace(root: &Path) {
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (name, ver) in [("core", "0.1.0"), ("cli", "0.2.0")] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: percrate\ncrates:\n  - name: core\n    path: crates/core\n    tag_template: \"core-v{{ .Version }}\"\n    version_sync:\n      enabled: true\n  - name: cli\n    path: crates/cli\n    tag_template: \"cli-v{{ .Version }}\"\n    version_sync:\n      enabled: true\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "core-v0.1.0"]);
+    run_git(root, &["tag", "cli-v0.2.0"]);
+}
+
+/// A bare `--version` in per-crate mode is rejected — one version across
+/// independently versioned crates would corrupt their cadences — with guidance
+/// pointing at the `--crate` selector.
+#[test]
+fn version_override_rejected_in_per_crate_mode() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    per_crate_workspace(root);
+    fs::write(root.join("crates/core/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "feat: core change");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--version", "5.0.0"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "--version without --crate must be rejected in per-crate mode"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("per-crate") && stderr.contains("--crate"),
+        "rejection must point at the --crate alternative: {stderr}"
+    );
+    assert!(!git_tag_exists(root, "core-v5.0.0"));
+    assert!(!git_tag_exists(root, "cli-v5.0.0"));
+}
+
+/// `--version` WITH `--crate` in per-crate mode pins exactly that one crate's
+/// version, leaving its siblings untouched.
+#[test]
+fn version_override_with_crate_in_per_crate_mode() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    per_crate_workspace(root);
+    fs::write(root.join("crates/core/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "feat: core change");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--crate", "core", "--version", "5.0.0"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag --crate core --version 5.0.0 failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("new_tag=core-v5.0.0"),
+        "expected new_tag=core-v5.0.0: {stdout}"
+    );
+    assert!(git_tag_exists(root, "core-v5.0.0"));
+    assert_eq!(read_member_version(root, "crates/core"), "5.0.0");
+    // The sibling crate is untouched: no cli tag, manifest stays at 0.2.0.
+    assert!(!git_tag_exists(root, "cli-v5.0.0"));
+    assert_eq!(read_member_version(root, "crates/cli"), "0.2.0");
+}

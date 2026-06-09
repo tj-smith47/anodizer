@@ -387,6 +387,18 @@ pub enum Commands {
         dry_run: bool,
         #[arg(long, help = "Override bump logic with a specific tag value")]
         custom_tag: Option<String>,
+        /// Tag exactly this semver version, bypassing autotag derivation and the
+        /// Cargo.toml-ahead guard.
+        ///
+        /// Accepts `1.2.3` or `v1.2.3` (the `v`/configured prefix is normalized).
+        /// The version is applied to the tag AND synced into the relevant
+        /// `Cargo.toml` / `version_files` (single-crate, `--crate`, and lockstep
+        /// modes). In per-crate workspace mode it is rejected unless `--crate
+        /// <name>` selects a single crate — one version across independently
+        /// versioned crates would corrupt their cadences. Intended for release
+        /// recovery where the operator must pin a precise version.
+        #[arg(long = "version", value_name = "VERSION")]
+        version_override: Option<String>,
         #[arg(long, help = "Override default bump type (patch/minor/major)")]
         default_bump: Option<String>,
         #[arg(long = "crate", help = "Tag a specific crate in a workspace")]
