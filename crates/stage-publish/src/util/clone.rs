@@ -165,8 +165,9 @@ fn write_ssh_key_secure(path: &Path, key_content: &str) -> std::io::Result<()> {
     // final newline — after which `ssh` rejects the key with "error in
     // libcrypto" → "Permission denied (publickey)". Append exactly one when
     // the content lacks it; an existing trailing newline is left untouched so
-    // a correctly-formed key is never double-terminated.
-    if !key_content.ends_with('\n') {
+    // a correctly-formed key is never double-terminated. Empty content is left
+    // empty (an invalid key either way — don't manufacture a lone-newline file).
+    if !key_content.is_empty() && !key_content.ends_with('\n') {
         f.write_all(b"\n")?;
     }
     f.flush()
@@ -543,6 +544,21 @@ mod tests {
             std::fs::read_to_string(&key_path).unwrap(),
             "-----END OPENSSH PRIVATE KEY-----\n",
             "an existing trailing newline must not be doubled"
+        );
+    }
+
+    /// Empty content yields an empty file — the newline-normalization must not
+    /// manufacture a lone-newline file from nothing (an empty key is invalid
+    /// regardless, but the byte output should be faithful, not fabricated).
+    #[test]
+    fn write_ssh_key_secure_leaves_empty_content_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join(".anodizer_ssh_key");
+        write_ssh_key_secure(&key_path, "").expect("write succeeds");
+        assert_eq!(
+            std::fs::read(&key_path).unwrap(),
+            Vec::<u8>::new(),
+            "empty content must produce an empty file, not a lone newline"
         );
     }
 

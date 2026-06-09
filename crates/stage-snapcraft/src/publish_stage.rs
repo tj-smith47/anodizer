@@ -722,10 +722,8 @@ mod publish_stage_tests {
     #[test]
     fn submitter_gate_stays_open_on_optional_upstream_failure() {
         // Continue-on-error preserved: an OPTIONAL upstream failure must NOT
-        // gate snapcraft. With no snap artifacts staged the stage records
-        // nothing (no work attempted), which is the tell that it passed the
-        // gate and proceeded into the upload path rather than short-circuiting
-        // to Skipped(SubmitterGated).
+        // gate snapcraft. The stage must not record Skipped(SubmitterGated),
+        // and — positively — the gate predicate it consults must report open.
         let mut ctx = TestContextBuilder::new()
             .crates(vec![snap_crate("demo", None, Some("stable"))])
             .build();
@@ -757,6 +755,14 @@ mod publish_stage_tests {
         assert!(
             !gated,
             "an optional upstream failure must not gate snapcraft (continue-on-error)"
+        );
+        // Positive proof the gate is open, not merely that no gated row was
+        // recorded (which the no-work path would also satisfy).
+        assert!(
+            !ctx.publish_report()
+                .expect("report present")
+                .submitter_gate_closed(),
+            "an optional upstream failure must leave the submitter gate open"
         );
     }
 

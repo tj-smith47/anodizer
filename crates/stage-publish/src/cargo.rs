@@ -2575,7 +2575,12 @@ mod tests {
         // Last-verified cargo minor. Update together with re-verification.
         const VERIFIED_CARGO_MINOR: u64 = 96;
 
-        let output = std::process::Command::new("cargo")
+        // Resolve cargo via the `CARGO` env var — the absolute path cargo
+        // exports when it spawns the test binary — not PATH: a peer `#[serial]`
+        // test prepends a stub-cargo dir to the process-global PATH, and a
+        // PATH-resolved spawn here would race it and read the stub's version.
+        let cargo_bin = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let output = std::process::Command::new(cargo_bin)
             .arg("--version")
             // Pin cwd: a peer test that deletes the process-global cwd would
             // otherwise make this forked `cargo --version` abort on getcwd.

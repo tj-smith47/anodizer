@@ -1742,6 +1742,15 @@ fn blob_stage_not_gated_on_optional_upstream_failure() {
         !gated,
         "an optional upstream failure must not gate the blob upload"
     );
+    // Positive proof the gate is open — not merely that no gated row was
+    // recorded (which the no-work path would also satisfy). The predicate the
+    // stage consults must itself report not-closed for an optional-only failure.
+    assert!(
+        !ctx.publish_report()
+            .expect("report present")
+            .submitter_gate_closed(),
+        "an optional upstream failure must leave the submitter gate open"
+    );
 }
 
 #[test]
