@@ -144,6 +144,13 @@ pub fn run(
         // `RollbackFailed` for both — a crate is live we could not pull,
         // which is the manual-intervention signal.
         let was_failure = matches!(report.results[i].outcome, PublisherOutcome::Failed(_));
+        // For a failed-submitter row (cargo) the `{{ .Error }}` template var
+        // carries the originating failure message; for a reverted
+        // `Succeeded` Assets/Manager publisher there is no error.
+        let origin_error = match &report.results[i].outcome {
+            PublisherOutcome::Failed(msg) => msg.clone(),
+            _ => String::new(),
+        };
 
         log.status(&format!("rollback: invoking '{}'", name_owned));
         match publisher.rollback(ctx, &evidence_owned) {
@@ -160,6 +167,11 @@ pub fn run(
                 log.warn(&format!("rollback: '{}' failed: {}", name_owned, msg));
             }
         }
+
+        // Fire `on_rollback` hooks once per publisher whose rollback was
+        // actually attempted. Warn-only: a hook failure must not abort the
+        // remaining rollback steps.
+        crate::failure_hooks::fire_on_rollback(ctx, &report.results[i], &origin_error, &log);
     }
 
     log.status(&format!(
@@ -211,6 +223,53 @@ mod tests {
             outcome: PublisherOutcome::Failed(msg.into()),
             evidence: None,
         }
+    }
+
+    #[test]
+    fn on_rollback_hook_fires_through_rollback_path() {
+        // End-to-end: a succeeded Manager publisher that gets reverted must
+        // run the configured `on_rollback` hook with .Publisher/.Tag bound.
+        use anodizer_core::config::{CrateConfig, HookEntry, PublishConfig, StructuredHook};
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("rb.txt").display().to_string();
+        let publish = PublishConfig {
+            on_rollback: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: format!("printf '%s\\n' '{{{{ .Publisher }}}} {{{{ .Tag }}}}' >> {out}"),
+                ..Default::default()
+            })]),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .tag("v3.1.4")
+            .crates(vec![CrateConfig {
+                name: "app".into(),
+                path: ".".into(),
+                publish: Some(publish),
+                ..Default::default()
+            }])
+            .build();
+        let publishers = vec![fake(
+            "mgr1",
+            PublisherGroup::Manager,
+            true,
+            FakeOutcome::Succeed,
+        )];
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded("mgr1", PublisherGroup::Manager, true));
+
+        run(&publishers, &mut report, &mut ctx, RollbackMode::BestEffort);
+
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::RolledBack
+        ));
+        let body = std::fs::read_to_string(dir.path().join("rb.txt"))
+            .expect("on_rollback hook must have fired in the rollback path");
+        assert_eq!(body.trim(), "mgr1 v3.1.4");
     }
 
     #[test]

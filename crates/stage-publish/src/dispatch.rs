@@ -164,13 +164,22 @@ pub fn dispatch(
                 }
             };
             let failed = matches!(outcome, PublisherOutcome::Failed(_));
-            report.results.push(PublisherResult {
+            let result = PublisherResult {
                 name: p.name().into(),
                 group,
                 required: p.required(),
                 outcome,
                 evidence,
-            });
+            };
+            // Fire `on_error` hooks for this failed publisher BEFORE any
+            // rollback runs (rollback is a separate pass after `dispatch`
+            // returns). A hook's own failure is warn-only and never changes
+            // the recorded outcome.
+            if let PublisherOutcome::Failed(ref err) = result.outcome {
+                let log = ctx.logger("publish");
+                crate::failure_hooks::fire_on_error(ctx, &result, err, &log);
+            }
+            report.results.push(result);
             if failed && opts.fail_fast {
                 break 'outer;
             }
@@ -184,6 +193,52 @@ pub fn dispatch(
 mod tests {
     use super::*;
     use crate::testing::*;
+
+    #[test]
+    fn on_error_hook_fires_through_dispatch_failure_path() {
+        // End-to-end proof the dispatcher invokes `on_error` for a failed
+        // publisher (not just the helper in isolation). A required homebrew
+        // failure must run the configured on_error hook, which records the
+        // rendered .Publisher/.Error to a temp file.
+        use anodizer_core::config::HookEntry;
+        use anodizer_core::config::{CrateConfig, PublishConfig, StructuredHook};
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("fired.txt").display().to_string();
+        let publish = PublishConfig {
+            on_error: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: format!("printf '%s\\n' '{{{{ .Publisher }}}}:{{{{ .Error }}}}' >> {out}"),
+                ..Default::default()
+            })]),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![CrateConfig {
+                name: "app".into(),
+                path: ".".into(),
+                publish: Some(publish),
+                ..Default::default()
+            }])
+            .build();
+        let publishers = vec![fake(
+            "homebrew",
+            PublisherGroup::Manager,
+            true,
+            FakeOutcome::Fail("tap rejected".into()),
+        )];
+
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::Failed(_)
+        ));
+        let body = std::fs::read_to_string(dir.path().join("fired.txt"))
+            .expect("on_error hook must have fired in the dispatch failure path");
+        assert_eq!(body.trim(), "homebrew:tap rejected");
+    }
 
     #[test]
     fn empty_registry_yields_empty_report() {

@@ -11088,6 +11088,56 @@
             }
           ]
         },
+        "on_error": {
+          "description": "Hooks that fire once per FAILED publisher, before that publisher is rolled back. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), and `{{ .Required }}`. A hook's own failure is logged as a warning and never changes the release outcome.\n\nThis is the publish-wide default; a per-publisher entry under [`PublishConfig::on_error_per_publisher`] REPLACES it for that publisher (most-specific wins — no double-fire).\n\n```yaml publish: on_error: - cmd: \"notify 'anodizer: {{ .Publisher }} failed @ {{ .Version }}: {{ .Error }}'\" ```",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/HookEntry"
+          }
+        },
+        "on_error_per_publisher": {
+          "description": "Per-publisher `on_error` overrides, keyed by publisher name (e.g. `homebrew`, `cargo`, `github-release`). When present for a publisher, this REPLACES [`PublishConfig::on_error`] for that publisher rather than appending to it. Keyed by name (not nested under each publisher block) so the override surface uniformly covers every publisher, including the Assets-group ones (github-release, dockerhub, ...) that are not declared inside `publish:`.\n\n```yaml publish: on_error_per_publisher: homebrew: - cmd: \"page-oncall {{ .Error }}\" ```",
+          "default": null,
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/HookEntry"
+            }
+          }
+        },
+        "on_rollback": {
+          "description": "Hooks that fire once per publisher that is actually rolled back, in the rollback path. Same template surface and same warn-don't-cascade semantics as [`PublishConfig::on_error`]. Publish-wide default; overridable per publisher via [`PublishConfig::on_rollback_per_publisher`].\n\n```yaml publish: on_rollback: - cmd: \"log-rollback {{ .Publisher }} {{ .Tag }}\" ```",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/HookEntry"
+          }
+        },
+        "on_rollback_per_publisher": {
+          "description": "Per-publisher `on_rollback` overrides, keyed by publisher name. Same replace-not-append semantics as [`PublishConfig::on_error_per_publisher`].",
+          "default": null,
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/HookEntry"
+            }
+          }
+        },
         "scoop": {
           "description": "Scoop manifest publishing configuration.",
           "default": null,

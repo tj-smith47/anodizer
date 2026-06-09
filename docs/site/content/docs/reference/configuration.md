@@ -972,6 +972,18 @@ After each docker image push, a digest file (containing the sha256 digest) is wr
 Uses the unified `HomebrewCaskConfig` which carries all fields from both the per-crate cask config and the top-level `homebrew_casks:` config. |
 | `krew` | KrewConfig | — | Krew (kubectl plugin manager) manifest publishing configuration. |
 | `nix` | NixConfig | — | Nix derivation publishing configuration. |
+| `on_error` | list of HookEntry | — | Hooks that fire once per FAILED publisher, before that publisher is rolled back. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), and `{{ .Required }}`. A hook's own failure is logged as a warning and never changes the release outcome.
+
+This is the publish-wide default; a per-publisher entry under [`PublishConfig::on_error_per_publisher`] REPLACES it for that publisher (most-specific wins — no double-fire).
+
+```yaml publish: on_error: - cmd: "notify 'anodizer: {{ .Publisher }} failed @ {{ .Version }}: {{ .Error }}'" ``` |
+| `on_error_per_publisher` | map | — | Per-publisher `on_error` overrides, keyed by publisher name (e.g. `homebrew`, `cargo`, `github-release`). When present for a publisher, this REPLACES [`PublishConfig::on_error`] for that publisher rather than appending to it. Keyed by name (not nested under each publisher block) so the override surface uniformly covers every publisher, including the Assets-group ones (github-release, dockerhub, ...) that are not declared inside `publish:`.
+
+```yaml publish: on_error_per_publisher: homebrew: - cmd: "page-oncall {{ .Error }}" ``` |
+| `on_rollback` | list of HookEntry | — | Hooks that fire once per publisher that is actually rolled back, in the rollback path. Same template surface and same warn-don't-cascade semantics as [`PublishConfig::on_error`]. Publish-wide default; overridable per publisher via [`PublishConfig::on_rollback_per_publisher`].
+
+```yaml publish: on_rollback: - cmd: "log-rollback {{ .Publisher }} {{ .Tag }}" ``` |
+| `on_rollback_per_publisher` | map | — | Per-publisher `on_rollback` overrides, keyed by publisher name. Same replace-not-append semantics as [`PublishConfig::on_error_per_publisher`]. |
 | `scoop` | ScoopConfig | — | Scoop manifest publishing configuration. |
 | `winget` | WingetConfig | — | WinGet manifest publishing configuration. |
 
