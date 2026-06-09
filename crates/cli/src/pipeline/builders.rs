@@ -145,12 +145,17 @@ pub fn build_split_pipeline() -> Pipeline {
 /// SignStage for the determinism-preserved-dist re-sign pass.
 pub fn build_publish_pipeline() -> Pipeline {
     use anodizer_stage_blob::BlobStage;
+    use anodizer_stage_checksum::ChecksumStage;
     use anodizer_stage_prepublish_guard::PrePublishGuardStage;
     use anodizer_stage_publish::PublishStage;
     use anodizer_stage_release::ReleaseStage;
     use anodizer_stage_snapcraft::SnapcraftPublishStage;
 
     let mut p = Pipeline::new();
+    // artifacts.json strips content-hash keys (sha256) for determinism, so a
+    // from-disk publish must rehydrate them from the .sha256 sidecars before any
+    // sha256-consuming publisher's schema-validate runs in PrePublishGuardStage.
+    p.add(Box::new(ChecksumStage));
     p.add(Box::new(anodizer_core::hooks::BeforePublishStage));
     p.add(Box::new(ReleaseStage));
     // Guard the (legacy) publish path too: a broken publisher-manifest or
@@ -456,6 +461,25 @@ mod tests {
         let p = build_publish_only_pipeline();
         let names = p.stage_names();
         assert_guard_after_release_before_publishers(&names, "build_publish_only_pipeline");
+    }
+
+    /// Stage order: ChecksumStage → PrePublishGuardStage.
+    /// `build_publish_pipeline` loads a serialized dist whose
+    /// artifacts.json had `sha256` stripped for determinism;
+    /// ChecksumStage must re-run to rehydrate the per-artifact
+    /// `sha256` from the `.sha256` sidecars before the guard's
+    /// schema-validate (which sha256-consuming publishers —
+    /// aur/krew/homebrew/scoop/nix/npm — require) runs.
+    #[test]
+    fn publish_pipeline_runs_checksum_before_guard() {
+        let p = build_publish_pipeline();
+        let names = p.stage_names();
+        let checksum_idx = idx(&names, "checksum", "build_publish_pipeline");
+        let guard_idx = idx(&names, "prepublish-guard", "build_publish_pipeline");
+        assert!(
+            checksum_idx < guard_idx,
+            "checksum (idx {checksum_idx}) must precede prepublish-guard (idx {guard_idx}) so publishers see sha256 metadata; got {names:?}"
+        );
     }
 
     #[test]
