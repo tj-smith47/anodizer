@@ -228,6 +228,18 @@ crates:
     path: crates/stage-sbom
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
+  - name: anodizer-stage-attest
+    path: crates/stage-attest
+    tag_template: "v{{ Version }}"
+    depends_on: [anodizer-core, anodizer-stage-checksum, anodizer-stage-sign]
+  - name: anodizer-stage-appimage
+    path: crates/stage-appimage
+    tag_template: "v{{ Version }}"
+    depends_on: [anodizer-core]
+  - name: anodizer-stage-verify-release
+    path: crates/stage-verify-release
+    tag_template: "v{{ Version }}"
+    depends_on: [anodizer-core, anodizer-stage-release]
 
   # --- Tier 3: CLI binary (depends on all stages) ---
   - name: anodizer
@@ -260,6 +272,9 @@ crates:
       - anodizer-stage-makeself
       - anodizer-stage-srpm
       - anodizer-stage-sbom
+      - anodizer-stage-attest
+      - anodizer-stage-appimage
+      - anodizer-stage-verify-release
     builds:
       - binary: anodizer
         features: []
@@ -454,17 +469,6 @@ crates:
         commit_author:
           name: TJ Smith
           email: tj@jarvispro.io
-      krew:
-        required: false
-        skip: true  # anodizer is not a kubectl plugin — krew is not an appropriate channel
-        repository:
-          owner: tj-smith47
-          name: krew-index
-        short_description: "A Rust-native release automation tool"
-        homepage: "https://github.com/tj-smith47/anodizer"
-        commit_author:
-          name: TJ Smith
-          email: tj@jarvispro.io
     nfpm:
       - id: default
         package_name: anodizer
@@ -528,6 +532,10 @@ crates:
     snapcrafts:
       - id: default
         name: anodizer
+        # 0.7.0 was already uploaded to the Snap Store; re-publishing the same
+        # version mints a duplicate store revision (snapcraft upload is not
+        # idempotent), so the upload is suppressed for this version.
+        skip: true
         title: "Anodizer"
         # icon: omitted intentionally — Snap Store snap.json validation
         # rejects the `icon` field with "Additional properties are not
