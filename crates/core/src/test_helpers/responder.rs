@@ -210,9 +210,43 @@ pub fn spawn_request_capturing_responder(
 fn serve_one(mut stream: TcpStream, resp: &str) {
     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
     consume_request(&mut stream);
+    let resp = force_connection_close(resp);
     let _ = stream.write_all(resp.as_bytes());
     let _ = stream.flush();
     let _ = stream.shutdown(std::net::Shutdown::Both);
+}
+
+/// Inject `Connection: close` into `resp`'s header block (unless it already
+/// carries a `Connection:` header) so a pooling HTTP client never reuses the
+/// connection for a follow-up request.
+///
+/// The responder serves exactly one response per accepted connection (see
+/// [`spawn_serve_thread`]). A keep-alive client (reqwest pools per-client)
+/// can race to reuse the connection from response *N* for request *N+1*,
+/// but the responder has already closed that socket and moved on to its next
+/// `accept()` — the client then sees `connection closed before message
+/// completed` non-deterministically under CI scheduling load. Advertising
+/// `Connection: close` makes the client retire the socket after each
+/// response and dial a fresh one, matching the one-response-per-connection
+/// contract. Real servers keep-alive; a single-shot test double must not.
+fn force_connection_close(resp: &str) -> std::borrow::Cow<'_, str> {
+    // Split status line from the rest at the first CRLF; every canned
+    // response is a well-formed HTTP/1.1 message starting with a status line.
+    let Some((status_line, rest)) = resp.split_once("\r\n") else {
+        return std::borrow::Cow::Borrowed(resp);
+    };
+    // Header names are case-insensitive (RFC 7230); only inspect the header
+    // block (everything up to the blank line) so a `Connection:` substring in
+    // the body can't suppress the injection.
+    let header_block = rest.split("\r\n\r\n").next().unwrap_or(rest);
+    if header_block
+        .split("\r\n")
+        .filter_map(|line| line.split_once(':'))
+        .any(|(name, _)| name.trim().eq_ignore_ascii_case("connection"))
+    {
+        return std::borrow::Cow::Borrowed(resp);
+    }
+    std::borrow::Cow::Owned(format!("{status_line}\r\nConnection: close\r\n{rest}"))
 }
 
 /// Read the full HTTP request from `stream`: headers up to the first
@@ -396,6 +430,38 @@ mod self_tests {
     fn parse_content_length_unparseable_returns_none() {
         let hdr = b"PUT / HTTP/1.1\r\nContent-Length: chunked\r\n\r\n";
         assert_eq!(parse_content_length(hdr), None);
+    }
+
+    #[test]
+    fn force_connection_close_injects_header_after_status_line() {
+        let resp = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
+        assert_eq!(
+            force_connection_close(resp),
+            "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn force_connection_close_is_noop_when_header_present() {
+        // Case-insensitive: an existing `connection:` header suppresses the
+        // injection so the responder never emits a duplicate.
+        let resp = "HTTP/1.1 200 OK\r\nconnection: keep-alive\r\nContent-Length: 0\r\n\r\n";
+        assert!(matches!(
+            force_connection_close(resp),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(force_connection_close(resp), resp);
+    }
+
+    #[test]
+    fn force_connection_close_ignores_connection_token_in_body() {
+        // A `Connection:` substring in the BODY must not suppress injection —
+        // only the header block (up to the blank line) is inspected.
+        let resp = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nConnection: x";
+        assert_eq!(
+            force_connection_close(resp),
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 13\r\n\r\nConnection: x"
+        );
     }
 
     /// End-to-end: spin up the responder, send a multipart-ish PUT with
