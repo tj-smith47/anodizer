@@ -6,6 +6,24 @@ on:
     types: [completed]
     branches: [master]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re-)publish against, e.g. v0.7.0. Empty runs the normal auto-tag flow on the latest master CI."
+        required: false
+        default: ""
+      skip_determinism:
+        description: "Reuse a prior run's byte-proven dist instead of rebuilding it. Re-publishes the identical artifacts, so winget/homebrew hashes stay valid."
+        type: boolean
+        required: false
+        default: false
+      dist_run_id:
+        description: "Release run id whose preserved dist-* artifacts to reuse when skip_determinism is set. Empty auto-resolves to the latest Release run for the target commit."
+        required: false
+        default: ""
+      anodizer_version:
+        description: "anodizer build that runs the publish, e.g. 0.8.0 to re-publish an older tag with a newer anodizer. Empty uses the binary built for the target commit."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -27,20 +45,26 @@ jobs:
       contents: write
       actions: read
     outputs:
-      sha: ${{ steps.tag.outputs.head-sha }}
-      tagged: ${{ steps.tag.outputs.tagged }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      tagged: ${{ steps.resolve.outputs.tagged }}
+      dist_run_id: ${{ steps.resolve.outputs.dist_run_id }}
+      run_determinism: ${{ steps.resolve.outputs.run_determinism }}
+      is_republish: ${{ steps.resolve.outputs.is_republish }}
+      publish_from_artifact: ${{ steps.resolve.outputs.publish_from_artifact }}
+      publish_version: ${{ steps.resolve.outputs.publish_version }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ inputs.tag || github.event.workflow_run.head_sha || github.sha }}
       - name: Configure git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-      - id: tag
-        name: Auto-tag release
+      - name: Auto-tag release
+        id: autotag
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.tag == '' }}
         uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: anodizer-linux
@@ -49,6 +73,17 @@ jobs:
           args: tag --push --changelog
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve release target
+        id: resolve
+        uses: ./.github/actions/resolve-release-target
+        with:
+          tag: ${{ inputs.tag }}
+          skip-determinism: ${{ inputs.skip_determinism }}
+          dist-run-id: ${{ inputs.dist_run_id }}
+          anodizer-version: ${{ inputs.anodizer_version }}
+          autotag-sha: ${{ steps.autotag.outputs.head-sha }}
+          autotag-tagged: ${{ steps.autotag.outputs.tagged }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
   # Sharded byte-for-byte reproducibility gate, one shard per host/target.
   # The shard matrix lives in the reusable determinism.yml so it is defined
@@ -56,7 +91,7 @@ jobs:
   determinism-check:
     name: Determinism
     needs: tag
-    if: needs.tag.result == 'success' && needs.tag.outputs.tagged == 'true'
+    if: needs.tag.result == 'success' && needs.tag.outputs.tagged == 'true' && needs.tag.outputs.run_determinism == 'true'
     uses: ./.github/workflows/determinism.yml
     with:
       head_sha: ${{ needs.tag.outputs.sha }}
@@ -65,7 +100,7 @@ jobs:
   release:
     name: Publish Release
     needs: [tag, determinism-check]
-    if: needs.tag.result == 'success' && needs.tag.outputs.tagged == 'true' && needs.determinism-check.result == 'success'
+    if: needs.tag.result == 'success' && needs.tag.outputs.tagged == 'true' && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -94,6 +129,8 @@ jobs:
           path: dist/
           pattern: dist-*
           merge-multiple: true
+          run-id: ${{ needs.tag.outputs.dist_run_id != '' && needs.tag.outputs.dist_run_id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify preserved dist
         run: |
@@ -124,7 +161,8 @@ jobs:
         id: release
         uses: tj-smith47/anodizer-action@v1
         with:
-          from-artifact: anodizer-linux
+          from-artifact: ${{ needs.tag.outputs.publish_from_artifact }}
+          version: ${{ needs.tag.outputs.publish_version }}
           artifact-run-id: auto
           artifact-workflow: ci.yml
           install: nfpm,makeself,snapcraft,rpmbuild,cosign,syft
@@ -144,7 +182,7 @@ jobs:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
 
       - name: Rollback on release failure
-        if: ${{ always() && (steps.release.outcome == 'failure' || steps.release.outcome == 'cancelled') }}
+        if: ${{ always() && needs.tag.outputs.is_republish != 'true' && (steps.release.outcome == 'failure' || steps.release.outcome == 'cancelled') }}
         uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: anodizer-linux

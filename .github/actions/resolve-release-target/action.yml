@@ -1,0 +1,107 @@
+name: Resolve release target
+description: >-
+  Flatten a release/re-publish run into the booleans release.yml gates on:
+  target commit, tag state, whether to run the determinism gate, the dist
+  source, and which anodizer build runs the publish.
+
+inputs:
+  tag:
+    description: Existing tag to re-publish against; empty for a fresh auto-tagged cut.
+    default: ""
+  skip-determinism:
+    description: "true to reuse a prior run's byte-proven dist instead of rebuilding it."
+    default: "false"
+  dist-run-id:
+    description: Release run id whose dist-* to reuse; empty auto-resolves from the tag's commit.
+    default: ""
+  anodizer-version:
+    description: anodizer release to run the publish with; empty uses the CI-built binary.
+    default: ""
+  autotag-sha:
+    description: head-sha output from the auto-tag step (fresh-cut path).
+    default: ""
+  autotag-tagged:
+    description: tagged output from the auto-tag step (fresh-cut path).
+    default: ""
+  github-token:
+    description: Token used to resolve the prior Release run id.
+    default: ""
+
+outputs:
+  sha:
+    value: ${{ steps.resolve.outputs.sha }}
+  tagged:
+    value: ${{ steps.resolve.outputs.tagged }}
+  is_republish:
+    value: ${{ steps.resolve.outputs.is_republish }}
+  run_determinism:
+    value: ${{ steps.resolve.outputs.run_determinism }}
+  dist_run_id:
+    value: ${{ steps.resolve.outputs.dist_run_id }}
+  publish_from_artifact:
+    value: ${{ steps.resolve.outputs.publish_from_artifact }}
+  publish_version:
+    value: ${{ steps.resolve.outputs.publish_version }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        INPUT_TAG: ${{ inputs.tag }}
+        SKIP_DET: ${{ inputs.skip-determinism }}
+        DIST_RUN_ID_INPUT: ${{ inputs.dist-run-id }}
+        ANODIZER_VERSION: ${{ inputs.anodizer-version }}
+        AUTOTAG_SHA: ${{ inputs.autotag-sha }}
+        AUTOTAG_TAGGED: ${{ inputs.autotag-tagged }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+
+        republish=false
+        [ -n "$INPUT_TAG" ] && republish=true
+
+        if [ "$republish" = "true" ]; then
+          sha="$(git rev-parse "${INPUT_TAG}^{commit}")"
+          tagged=true
+          printf 'Re-publishing existing tag %s at %s\n' "$INPUT_TAG" "$sha"
+        else
+          sha="$AUTOTAG_SHA"
+          tagged="$AUTOTAG_TAGGED"
+        fi
+
+        run_determinism=true
+        [ "$SKIP_DET" = "true" ] && run_determinism=false
+
+        dist_run_id=""
+        if [ "$run_determinism" = "false" ]; then
+          dist_run_id="$DIST_RUN_ID_INPUT"
+          if [ -z "$dist_run_id" ]; then
+            dist_run_id="$(gh run list --workflow=Release --json databaseId,headSha -L 100 \
+              --jq "[.[] | select(.headSha==\"$sha\")][0].databaseId // empty" || true)"
+          fi
+          if [ -z "$dist_run_id" ]; then
+            echo "::error::skip-determinism set but no prior Release run found for $sha; pass dist-run-id explicitly"
+            exit 1
+          fi
+          printf 'Reusing preserved dist from Release run %s\n' "$dist_run_id"
+        fi
+
+        if [ -n "$ANODIZER_VERSION" ]; then
+          from_artifact=""
+          version="$ANODIZER_VERSION"
+        else
+          from_artifact="anodizer-linux"
+          version="latest"
+        fi
+
+        {
+          echo "sha=$sha"
+          echo "tagged=$tagged"
+          echo "is_republish=$republish"
+          echo "run_determinism=$run_determinism"
+          echo "dist_run_id=$dist_run_id"
+          echo "publish_from_artifact=$from_artifact"
+          echo "publish_version=$version"
+        } >> "$GITHUB_OUTPUT"
