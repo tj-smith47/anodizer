@@ -251,7 +251,7 @@ pub(crate) fn publish_with_registry(
 
     // ---- POST /v0/publish with retries ----
     let publish_url = format!("{}/v0/publish", registry_url.trim_end_matches('/'));
-    publish_payload(
+    match publish_payload(
         &publish_url,
         &body,
         &token,
@@ -259,18 +259,31 @@ pub(crate) fn publish_with_registry(
         log,
         &server.name,
         registry_url,
-    )?;
-
-    // Only construct the target on the success path so rollback evidence
-    // tracks exactly what landed on the registry. `server.name` is the
-    // rendered name; `registry_url` is the resolved endpoint.
-    Ok(Some(McpTarget {
-        target: server.name.clone(),
-        server_name: server.name,
-        registry_url: registry_url.to_string(),
-        version: ctx.version(),
-        auth_method: mcp_rendered.auth.method,
-    }))
+    )? {
+        McpPublishOutcome::Published => {
+            // Only construct the target on the freshly-published path so
+            // rollback evidence tracks exactly what landed on the registry
+            // THIS run. `server.name` is the rendered name; `registry_url` is
+            // the resolved endpoint.
+            Ok(Some(McpTarget {
+                target: server.name.clone(),
+                server_name: server.name,
+                registry_url: registry_url.to_string(),
+                version: ctx.version(),
+                auth_method: mcp_rendered.auth.method,
+            }))
+        }
+        McpPublishOutcome::AlreadyPublished => {
+            // Idempotent re-run: the version was published by a prior run.
+            // Record a SKIP and emit NO rollback target — deleting a version
+            // this run never published would destroy state an earlier run
+            // (or another actor) created.
+            ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
+                anodizer_core::SkipReason::AlreadyPublished,
+            ));
+            Ok(None)
+        }
+    }
 }
 
 /// Why the MCP publisher produced no document for this run — the single skip
@@ -741,6 +754,54 @@ fn oci_rejection_hint(response_body: &str, server_name: &str) -> String {
     }
 }
 
+/// Terminal state of a `/v0/publish` POST.
+///
+/// The registry rejects a re-POST of a version it already holds with HTTP 400
+/// `{"errors":[{"message":"...cannot publish duplicate version"}]}`. That is
+/// the desired end-state on an idempotent re-run, not a failure — so it is a
+/// distinct success-shaped outcome the caller maps to
+/// [`anodizer_core::SkipReason::AlreadyPublished`] rather than `Err`.
+pub(crate) enum McpPublishOutcome {
+    /// The POST returned 2xx; the version is now live on the registry.
+    Published,
+    /// The POST returned the registry's duplicate-version rejection; this
+    /// version was already published by a prior run.
+    AlreadyPublished,
+}
+
+/// Detect the registry's "this version already exists" rejection.
+///
+/// The registry returns HTTP 400 with a JSON `{"errors":[{"message":...}]}`
+/// envelope; the duplicate signal is the substring "duplicate version" inside
+/// any error message. Matching is done on the parsed message text (falling
+/// back to a whole-body substring scan when the envelope shape differs across
+/// registry versions) and is case-insensitive, so it survives the registry
+/// rewording "cannot publish duplicate version" without a brittle exact-string
+/// compare. Only a 400 status qualifies — a 409/422/500 carrying the same
+/// words is a different failure mode and must still surface as an error.
+fn is_duplicate_version_rejection(status: u16, body: &str) -> bool {
+    if status != 400 {
+        return false;
+    }
+    let mentions_duplicate_version = |s: &str| s.to_ascii_lowercase().contains("duplicate version");
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body)
+        && let Some(errors) = value.get("errors").and_then(|e| e.as_array())
+    {
+        let parsed_match = errors.iter().any(|e| {
+            e.get("message")
+                .and_then(|m| m.as_str())
+                .is_some_and(mentions_duplicate_version)
+        });
+        if parsed_match {
+            return true;
+        }
+    }
+    // Envelope shape drift (top-level string, `message` key, bare text):
+    // fall back to scanning the whole body so a reworded wrapper still
+    // resolves to the same idempotent SKIP.
+    mentions_duplicate_version(body)
+}
+
 fn publish_payload(
     publish_url: &str,
     body: &str,
@@ -749,13 +810,23 @@ fn publish_payload(
     log: &StageLogger,
     name: &str,
     registry_url: &str,
-) -> Result<()> {
+) -> Result<McpPublishOutcome> {
+    use std::cell::RefCell;
+
     let client = build_client(Duration::from_secs(60))?;
 
     let request_body_len = body.len();
 
+    // The duplicate-version 400 surfaces as `Err` from `retry_http_blocking`,
+    // and only the formatted message (which truncates the body) is carried on
+    // the error chain. Capture the raw rejection status + body here so the
+    // duplicate signal is matched against the full payload, not a 512-byte
+    // snippet. Single-threaded blocking call, so a `RefCell` is sufficient;
+    // 4xx fast-fails on the first attempt, so the last write is the verdict.
+    let last_error: RefCell<Option<(u16, String)>> = RefCell::new(None);
+
     // reqwest validates header values; CRLF in `token` surfaces as a send-error, not header injection.
-    let (_, response_body) = retry_http_blocking(
+    let result = retry_http_blocking(
         "mcp: POST /v0/publish",
         policy,
         SuccessClass::Strict,
@@ -768,6 +839,7 @@ fn publish_payload(
                 .send()
         },
         |status, response| {
+            *last_error.borrow_mut() = Some((status.as_u16(), response.to_string()));
             // Defense-in-depth: if the registry echoes our Authorization
             // header back in an error body, scrub the token before it
             // lands in the user-visible log. No evidence the registry
@@ -789,8 +861,27 @@ fn publish_payload(
                 publish_url, status, request_body_len, snippet, truncated, hint
             )
         },
-    )
-    .with_context(|| format!("mcp: publish to {}", publish_url))?;
+    );
+
+    let response_body = match result {
+        Ok((_, body)) => body,
+        Err(err) => {
+            // Re-posting an existing version is the desired end-state on a
+            // re-run; classify it as an idempotent SKIP rather than a failure.
+            // Any other 4xx/5xx (auth, schema, server error) still propagates.
+            if let Some((status, raw_body)) = last_error.borrow().as_ref()
+                && is_duplicate_version_rejection(*status, raw_body)
+            {
+                log.status(&format!(
+                    "mcp: skipping '{}' on {} — version already published (registry \
+                     rejected duplicate version)",
+                    name, registry_url
+                ));
+                return Ok(McpPublishOutcome::AlreadyPublished);
+            }
+            return Err(err).with_context(|| format!("mcp: publish to {}", publish_url));
+        }
+    };
 
     // Best-effort response parse — a malformed body is logged but not fatal,
     // since the upstream already confirmed success via 2xx.
@@ -806,7 +897,7 @@ fn publish_payload(
             name, registry_url, status
         ));
     }
-    Ok(())
+    Ok(McpPublishOutcome::Published)
 }
 
 /// Reset the experimental-warning flag. **Test-only** — production code never

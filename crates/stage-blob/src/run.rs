@@ -99,6 +99,27 @@ struct BlobJob {
     client_kms: Option<(String, KmsProvider)>,
 }
 
+/// Outcome of [`BlobStage::run_report`]: the rollback targets, the upload
+/// execution result, and how many objects were skipped because an identical
+/// copy already existed (drives the idempotent-skip outcome).
+struct BlobRunReport {
+    targets: Vec<BlobTarget>,
+    exec: Option<Result<()>>,
+    skipped_identical: usize,
+}
+
+impl BlobRunReport {
+    /// No upload work was attempted (snapshot-skip / no configured crates /
+    /// every job disabled). `Stage::run` records no `PublisherResult`.
+    fn no_work() -> Self {
+        Self {
+            targets: Vec::new(),
+            exec: None,
+            skipped_identical: 0,
+        }
+    }
+}
+
 impl Stage for BlobStage {
     fn name(&self) -> &str {
         "blob"
@@ -139,8 +160,8 @@ impl Stage for BlobStage {
             return Ok(());
         }
 
-        let (uploaded, exec_result) = self.run_report(ctx)?;
-        if let Some(exec_result) = exec_result {
+        let report = self.run_report(ctx)?;
+        if let Some(exec_result) = report.exec {
             // Aggregated `required` across every blob config on every
             // selected crate: when ANY blob config opts in
             // (`required: true`), the recorded outcome carries
@@ -149,7 +170,17 @@ impl Stage for BlobStage {
             // CLI's required-failures exit-code gate. See
             // `BlobConfig.required` rustdoc for the semantics.
             let derived_required = derive_blob_required(ctx);
-            record_blob_result(ctx, &uploaded, &exec_result, derived_required);
+            // Every object was already present byte-identical and nothing new
+            // was uploaded: an idempotent re-run, recorded as a SKIP.
+            let fully_idempotent_skip =
+                exec_result.is_ok() && report.targets.is_empty() && report.skipped_identical > 0;
+            record_blob_result(
+                ctx,
+                &report.targets,
+                &exec_result,
+                derived_required,
+                fully_idempotent_skip,
+            );
         }
         // Per-target upload errors are reported via PublisherResult;
         // they must NOT bail the pipeline because the same gate that
@@ -179,8 +210,10 @@ pub(crate) fn record_blob_result(
     uploaded: &[BlobTarget],
     exec_result: &Result<()>,
     required: bool,
+    fully_idempotent_skip: bool,
 ) {
     let outcome = match exec_result {
+        Ok(()) if fully_idempotent_skip => PublisherOutcome::Skipped(SkipReason::AlreadyPublished),
         Ok(()) => PublisherOutcome::Succeeded,
         Err(e) => PublisherOutcome::Failed(format!("{e:#}")),
     };
@@ -272,11 +305,11 @@ impl BlobStage {
     /// implementation runs the upload phase atomically per job; partial
     /// success is captured up to the failing job's boundary.
     pub(crate) fn run_with_evidence(&self, ctx: &mut Context) -> Result<Vec<BlobTarget>> {
-        let (targets, exec) = self.run_report(ctx)?;
-        if let Some(r) = exec {
+        let report = self.run_report(ctx)?;
+        if let Some(r) = report.exec {
             r?;
         }
-        Ok(targets)
+        Ok(report.targets)
     }
 
     /// Like [`Self::run_with_evidence`] but splits the catastrophic
@@ -284,25 +317,27 @@ impl BlobStage {
     /// matching the public `run_with_evidence` contract) from the
     /// upload-phase outcome.
     ///
-    /// Return shape:
+    /// Return shape (see [`BlobRunReport`]):
     /// - `Err(_)`: catastrophic — config validation failed, runtime
     ///   construction failed, etc. Bubbled out of `Stage::run` as the
     ///   pipeline-failing error.
-    /// - `Ok((keys, None))`: no work was attempted (snapshot-skip, no
+    /// - `exec == None`: no work was attempted (snapshot-skip, no
     ///   configured crates, every job was disabled or had no files).
     ///   `Stage::run` does NOT append a `PublisherResult` in this case.
-    /// - `Ok((keys, Some(Ok(()))))`: at least one job ran and every
-    ///   upload succeeded.
-    /// - `Ok((keys, Some(Err(_))))`: at least one job ran and at least
-    ///   one upload failed; `keys` carries the partial-success list
+    /// - `exec == Some(Ok(()))`: at least one job ran and every
+    ///   upload succeeded (some may have been idempotent skips —
+    ///   `skipped_identical` counts those).
+    /// - `exec == Some(Err(_))`: at least one job ran and at least
+    ///   one upload failed; `targets` carries the partial-success list
     ///   captured up to the failure.
     ///
-    /// `Stage::run` consumes the `Option<Result<()>>` to decide whether
-    /// to record a `PublisherOutcome::Succeeded` / `Failed(_)` entry.
-    fn run_report(&self, ctx: &mut Context) -> Result<(Vec<BlobTarget>, Option<Result<()>>)> {
+    /// `Stage::run` consumes `exec` to decide whether to record a
+    /// `PublisherOutcome::Succeeded` / `Failed(_)` / `Skipped(AlreadyPublished)`
+    /// entry.
+    fn run_report(&self, ctx: &mut Context) -> Result<BlobRunReport> {
         let log = ctx.logger("blob");
         if ctx.skip_in_snapshot(&log, "blob") {
-            return Ok((Vec::new(), None));
+            return Ok(BlobRunReport::no_work());
         }
 
         let selected = ctx.options.selected_crates.clone();
@@ -320,7 +355,7 @@ impl BlobStage {
             .collect();
 
         if crates.is_empty() {
-            return Ok((Vec::new(), None));
+            return Ok(BlobRunReport::no_work());
         }
 
         // Pre-flight: when `provider` is a literal (no template syntax),
@@ -582,7 +617,7 @@ impl BlobStage {
         }
 
         if jobs.is_empty() {
-            return Ok((Vec::new(), None));
+            return Ok(BlobRunReport::no_work());
         }
 
         // Parallel across configs: each worker runs its own upload loop
@@ -608,6 +643,10 @@ impl BlobStage {
         // the structured shape needed for the rollback DELETE path.
         let uploaded_targets: std::sync::Arc<std::sync::Mutex<Vec<BlobTarget>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        // Count of objects skipped because an identical copy already existed.
+        // Drives the idempotent-skip outcome when nothing new was uploaded.
+        let skipped_identical: std::sync::Arc<std::sync::atomic::AtomicUsize> =
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let job_log = log.clone();
         let run_job = |job: &BlobJob| -> Result<()> {
             match upload_files_owned(
@@ -620,13 +659,20 @@ impl BlobStage {
                 job.client_kms.clone(),
                 &job_log,
             ) {
-                Ok(keys) => {
+                Ok(report) => {
+                    skipped_identical.fetch_add(
+                        report.skipped_identical.len(),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
                     let mut acc = anodizer_core::parallel::lock_recover(
                         &uploaded_targets,
                         &job_log,
                         "blob targets",
                     );
-                    for key in keys {
+                    // Only freshly-uploaded (or overwritten) keys become
+                    // rollback targets; skipped-identical objects predate
+                    // this run and must not be deleted on rollback.
+                    for key in report.uploaded {
                         acc.push(BlobTarget {
                             provider: job.provider_display.to_string(),
                             bucket: job.rendered_bucket.clone(),
@@ -672,7 +718,11 @@ impl BlobStage {
         // already been folded into the shared `uploaded_targets`
         // accumulator above.
         let exec = result.map(|_| ());
-        Ok((targets, Some(exec)))
+        Ok(BlobRunReport {
+            targets,
+            exec: Some(exec),
+            skipped_identical: skipped_identical.load(std::sync::atomic::Ordering::SeqCst),
+        })
     }
 }
 

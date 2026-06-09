@@ -147,6 +147,11 @@ trait Announcer: Sync {
 /// Run a single announcer: skip when disabled, capture per-provider
 /// errors into the shared `errors` vec, propagate `enabled:` template
 /// errors (matching the historical `?`-in-let-chain behavior).
+///
+/// When `marker` is `Some`, the announce is idempotent across re-runs: an
+/// announcer already recorded for this version is skipped, and a successful
+/// send records the announcer so a later re-run won't re-post. `marker` is
+/// `None` on dry-run paths (nothing is actually sent, so nothing is recorded).
 fn run_announcer(
     a: &dyn Announcer,
     ctx: &mut Context,
@@ -154,8 +159,20 @@ fn run_announcer(
     retry: &RetryPolicy,
     log: &StageLogger,
     errors: &mut Vec<String>,
+    marker: Option<&mut crate::sent_marker::AnnounceSentMarker>,
 ) -> Result<()> {
     if !a.enabled(ctx, announce)? {
+        return Ok(());
+    }
+    // Idempotency gate: a re-run at an already-announced version must not
+    // re-post to a channel that already fired.
+    if let Some(ref m) = marker
+        && m.already_sent(a.name())
+    {
+        log.status(&format!(
+            "announce: skipping {} — already announced this version",
+            a.name()
+        ));
         return Ok(());
     }
     if let Err(e) = a.send(ctx, announce, retry, log) {
@@ -164,20 +181,38 @@ fn run_announcer(
         // failure (e.g. a missing template variable or a wrapped tera
         // syntax error) instead of just the outermost wrapper.
         errors.push(format!("{}: {e:#}", a.name()));
+        return Ok(());
+    }
+    // Record the successful send so a re-run skips this channel. Flushed per
+    // announcer so a mid-dispatch crash still records what already posted.
+    if let Some(m) = marker {
+        m.mark_sent(a.name(), log);
     }
     Ok(())
 }
 
 /// Dispatch every registered announcer, collecting per-provider errors.
+///
+/// `marker` carries the per-version sent-marker on the live path (so re-runs
+/// are idempotent) and is `None` on dry-run.
 pub(crate) fn dispatch_all_announcers(
     ctx: &mut Context,
     announce: &AnnounceConfig,
     retry_policy: &RetryPolicy,
     log: &StageLogger,
     errors: &mut Vec<String>,
+    mut marker: Option<&mut crate::sent_marker::AnnounceSentMarker>,
 ) -> Result<()> {
     for announcer in announcer_registry() {
-        run_announcer(*announcer, ctx, announce, retry_policy, log, errors)?;
+        run_announcer(
+            *announcer,
+            ctx,
+            announce,
+            retry_policy,
+            log,
+            errors,
+            marker.as_deref_mut(),
+        )?;
     }
 
     Ok(())
@@ -1727,6 +1762,7 @@ mod tests {
             &no_retry(),
             &log,
             &mut errors,
+            None,
         )
         .unwrap();
         assert!(errors.is_empty(), "{errors:?}");
@@ -1760,10 +1796,112 @@ mod tests {
             &no_retry(),
             &log,
             &mut errors,
+            None,
         )
         .unwrap();
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(errors[0].starts_with("slack: "), "{}", errors[0]);
+    }
+
+    #[test]
+    fn run_announcer_skips_already_sent_on_rerun() {
+        // First run posts to slack; the marker records it. A second run with
+        // the SAME marker (simulating a re-run at the same version) must skip
+        // the post — the responder sees exactly one request.
+        let (addr, req_log) = spawn_scripted_responder(vec![ok_route("/hook")]);
+        let announce = AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some(format!("http://{addr}/hook")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let log = ctx.logger("announce");
+        let dist = tempfile::tempdir().unwrap();
+
+        let mut errors = vec![];
+        // First dispatch: posts and records the send.
+        {
+            let mut marker =
+                crate::sent_marker::AnnounceSentMarker::load(dist.path(), "1.0.0", &log);
+            run_announcer(
+                &SlackAnnouncer,
+                &mut ctx,
+                &announce,
+                &no_retry(),
+                &log,
+                &mut errors,
+                Some(&mut marker),
+            )
+            .unwrap();
+        }
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(req_log.lock().unwrap().len(), 1, "first run posts once");
+
+        // Second dispatch: a fresh marker loaded from the same dist/version
+        // sees the prior send and skips — no second POST.
+        {
+            let mut marker =
+                crate::sent_marker::AnnounceSentMarker::load(dist.path(), "1.0.0", &log);
+            run_announcer(
+                &SlackAnnouncer,
+                &mut ctx,
+                &announce,
+                &no_retry(),
+                &log,
+                &mut errors,
+                Some(&mut marker),
+            )
+            .unwrap();
+        }
+        assert!(errors.is_empty(), "re-run is a clean skip: {errors:?}");
+        assert_eq!(
+            req_log.lock().unwrap().len(),
+            1,
+            "re-run must NOT re-post — still exactly one request"
+        );
+    }
+
+    #[test]
+    fn run_announcer_failed_send_is_not_marked_sent() {
+        // A failed send must NOT be recorded — a subsequent re-run must retry
+        // it (a dropped announcement is worse than a duplicate).
+        let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/hook",
+            response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 4\r\n\r\nboom",
+            times: None,
+        }]);
+        let announce = AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some(format!("http://{addr}/hook")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let log = ctx.logger("announce");
+        let dist = tempfile::tempdir().unwrap();
+        let mut errors = vec![];
+        let mut marker = crate::sent_marker::AnnounceSentMarker::load(dist.path(), "1.0.0", &log);
+        run_announcer(
+            &SlackAnnouncer,
+            &mut ctx,
+            &announce,
+            &no_retry(),
+            &log,
+            &mut errors,
+            Some(&mut marker),
+        )
+        .unwrap();
+        assert_eq!(errors.len(), 1, "send failed: {errors:?}");
+        assert!(
+            !marker.already_sent("slack"),
+            "a failed send must NOT be recorded as sent"
+        );
     }
 
     #[test]
@@ -1788,7 +1926,8 @@ mod tests {
                 &announce,
                 &no_retry(),
                 &log,
-                &mut errors
+                &mut errors,
+                None,
             )
             .is_err()
         );
@@ -1829,7 +1968,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let log = ctx.logger("announce");
         let mut errors = vec![];
-        dispatch_all_announcers(&mut ctx, &announce, &no_retry(), &log, &mut errors).unwrap();
+        dispatch_all_announcers(&mut ctx, &announce, &no_retry(), &log, &mut errors, None).unwrap();
         assert_eq!(errors.len(), 2, "{errors:?}");
         assert!(errors[0].starts_with("slack: "), "{}", errors[0]);
         assert!(errors[1].starts_with("teams: "), "{}", errors[1]);

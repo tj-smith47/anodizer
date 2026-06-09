@@ -1395,7 +1395,7 @@ fn upload_files_owned_returns_successful_keys() {
         .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
         .collect();
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let keys = upload_files_owned(
+    let report = upload_files_owned(
         &rt,
         store,
         upload_items,
@@ -1407,7 +1407,68 @@ fn upload_files_owned_returns_successful_keys() {
     )
     .expect("upload should succeed");
     // Order is sorted (deterministic across runs) so evidence is stable.
-    assert_eq!(keys, vec!["drop/alpha.txt", "drop/bravo.txt"]);
+    assert_eq!(report.uploaded, vec!["drop/alpha.txt", "drop/bravo.txt"]);
+    // Fresh InMemory store → nothing was an idempotent skip.
+    assert!(report.skipped_identical.is_empty());
+}
+
+/// Re-running an upload of a byte-identical file against a store that already
+/// holds it is an idempotent no-op: the second run records the key as
+/// skipped-identical (NOT uploaded), so it never becomes a rollback target.
+#[test]
+fn upload_files_owned_skips_identical_object_on_rerun() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let tmp = tempfile::TempDir::new().unwrap();
+    let f = tmp.path().join("a.txt");
+    std::fs::write(&f, b"same-bytes").unwrap();
+
+    let config = BlobConfig::default();
+    let ctx = make_ctx();
+    let log = anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    let run = |path: &std::path::Path| {
+        let items = vec![(path.to_path_buf(), "a.txt".to_string())];
+        let opts: Vec<PutOptions> = items
+            .iter()
+            .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
+            .collect();
+        upload_files_owned(
+            &rt,
+            Arc::clone(&store),
+            items,
+            "drop".to_string(),
+            opts,
+            1,
+            None,
+            &log,
+        )
+        .expect("upload ok")
+    };
+
+    // First run: fresh object → uploaded.
+    let first = run(&f);
+    assert_eq!(first.uploaded, vec!["drop/a.txt"]);
+    assert!(first.skipped_identical.is_empty());
+
+    // Second run, identical bytes → skipped, NOT re-uploaded.
+    let second = run(&f);
+    assert!(
+        second.uploaded.is_empty(),
+        "identical re-run must not re-upload: {:?}",
+        second.uploaded
+    );
+    assert_eq!(second.skipped_identical, vec!["drop/a.txt"]);
+
+    // Third run, DIFFERENT bytes at the same key → overwrite (uploaded again).
+    std::fs::write(&f, b"different-content-now").unwrap();
+    let third = run(&f);
+    assert_eq!(
+        third.uploaded,
+        vec!["drop/a.txt"],
+        "content drift overwrites (blind-overwrite semantics)"
+    );
+    assert!(third.skipped_identical.is_empty());
 }
 
 #[test]
@@ -1512,7 +1573,13 @@ fn blob_stage_appends_succeeded_to_publish_report() {
 
     let mut ctx = make_ctx();
     let uploaded = vec![mk_target("proj/v1/a.tar.gz"), mk_target("proj/v1/b.tar.gz")];
-    record_blob_result(&mut ctx, &uploaded, &Ok(()), /* required = */ false);
+    record_blob_result(
+        &mut ctx,
+        &uploaded,
+        &Ok(()),
+        /* required = */ false,
+        false,
+    );
 
     let report = ctx
         .publish_report()
@@ -1554,7 +1621,13 @@ fn blob_stage_appends_failed_to_publish_report() {
     // artifact_paths snapshot.
     let partial = vec![mk_target("proj/v1/a.tar.gz")];
     let err = anyhow::anyhow!("upload failed: 503 Service Unavailable");
-    record_blob_result(&mut ctx, &partial, &Err(err), /* required = */ false);
+    record_blob_result(
+        &mut ctx,
+        &partial,
+        &Err(err),
+        /* required = */ false,
+        false,
+    );
 
     let report = ctx.publish_report().expect("publish_report initialized");
     assert_eq!(report.results.len(), 1);
@@ -1585,7 +1658,7 @@ fn blob_stage_initializes_publish_report_when_none() {
     let mut ctx = make_ctx();
     assert!(ctx.publish_report().is_none(), "fixture invariant");
 
-    record_blob_result(&mut ctx, &[], &Ok(()), /* required = */ false);
+    record_blob_result(&mut ctx, &[], &Ok(()), /* required = */ false, false);
 
     let report = ctx
         .publish_report()
@@ -1720,6 +1793,7 @@ fn record_blob_result_required_false_by_default() {
         &[mk_target("k")],
         &Ok(()),
         /* required = */ false,
+        /* fully_idempotent_skip = */ false,
     );
     let report = ctx.publish_report().expect("report initialized");
     assert!(
@@ -1738,6 +1812,7 @@ fn record_blob_result_required_true_when_set() {
         &[mk_target("k")],
         &Ok(()),
         /* required = */ true,
+        /* fully_idempotent_skip = */ false,
     );
     let report = ctx.publish_report().expect("report initialized");
     assert!(
@@ -1823,7 +1898,7 @@ fn record_blob_result_failed_required_blob_trips_assets_required_gate() {
     // submitter gate consults to skip-with-`Skipped(SubmitterGated)`.
     let mut ctx = make_ctx();
     let err = anyhow::anyhow!("upload failed: 503 Service Unavailable");
-    record_blob_result(&mut ctx, &[], &Err(err), /* required = */ true);
+    record_blob_result(&mut ctx, &[], &Err(err), /* required = */ true, false);
     let report = ctx.publish_report().expect("report initialized");
     assert!(
         report.any_failed(

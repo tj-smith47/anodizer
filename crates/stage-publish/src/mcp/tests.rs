@@ -24,9 +24,9 @@ use anodizer_core::context::{Context, ContextOptions};
 use super::{
     DEFAULT_REGISTRY_URL, MAX_RESPONSE_SNIPPET_BYTES, apply_inferred_repository,
     fill_from_project_metadata, image_repo, infer_repository_from_release,
-    mcp_image_owned_by_selected, oci_rejection_hint, publish_with_registry,
-    reset_experimental_warned_for_test, resolve_registry_url, truncate_response_snippet,
-    warn_experimental_once, warn_once_lock,
+    is_duplicate_version_rejection, mcp_image_owned_by_selected, oci_rejection_hint,
+    publish_with_registry, reset_experimental_warned_for_test, resolve_registry_url,
+    truncate_response_snippet, warn_experimental_once, warn_once_lock,
 };
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
@@ -273,6 +273,73 @@ fn publish_unrecoverable_on_400() {
         1,
         "4xx must NOT retry — exactly one call"
     );
+}
+
+#[test]
+fn duplicate_version_400_is_idempotent_skip() {
+    // Re-running a release at an already-published version: the registry
+    // rejects the re-POST with 400 `cannot publish duplicate version`. That
+    // is the desired end-state on a re-run, so the publisher must record a
+    // SKIP (success), return Ok(None) (NO rollback target), and NOT surface
+    // an error.
+    let _g = warn_once_lock();
+    // Body is 76 bytes; Content-Length pins it so the responder frames it.
+    const RESPONSE: &str = "HTTP/1.1 400 Bad Request\r\nContent-Length: 76\r\n\r\n\
+        {\"errors\":[{\"message\":\"invalid version: cannot publish duplicate version\"}]}";
+    let (addr, calls) = spawn_oneshot_http_responder(vec![RESPONSE]);
+    let registry = format!("http://{addr}");
+
+    let mut ctx = mcp_ctx(|_| {});
+    let log = ctx.logger("mcp-test");
+    let result = publish_with_registry(&mut ctx, &log, &registry);
+    let target = result.expect("duplicate version must be a clean skip, not an error");
+    assert!(
+        target.is_none(),
+        "already-published must record NO rollback target"
+    );
+    assert!(
+        matches!(
+            ctx.take_pending_outcome(),
+            Some(anodizer_core::PublisherOutcome::Skipped(
+                anodizer_core::SkipReason::AlreadyPublished
+            ))
+        ),
+        "duplicate version must record Skipped(AlreadyPublished)"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "duplicate-version 400 must NOT retry"
+    );
+}
+
+#[test]
+fn is_duplicate_version_rejection_matches_signal_not_other_400s() {
+    // Parsed envelope match.
+    assert!(is_duplicate_version_rejection(
+        400,
+        r#"{"errors":[{"message":"invalid version: cannot publish duplicate version"}]}"#
+    ));
+    // Case-insensitive / reworded wrapper, whole-body fallback.
+    assert!(is_duplicate_version_rejection(
+        400,
+        "Duplicate Version already exists"
+    ));
+    // A different 400 (schema rejection) must NOT be classified as a skip.
+    assert!(!is_duplicate_version_rejection(
+        400,
+        r#"{"errors":[{"message":"body.packages[0].version: minLength"}]}"#
+    ));
+    // The same words on a non-400 status are a different failure mode and
+    // must still surface as an error.
+    assert!(!is_duplicate_version_rejection(
+        409,
+        "cannot publish duplicate version"
+    ));
+    assert!(!is_duplicate_version_rejection(
+        500,
+        "cannot publish duplicate version"
+    ));
 }
 
 #[test]

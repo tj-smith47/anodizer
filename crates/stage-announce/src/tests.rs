@@ -17,8 +17,22 @@ use serial_test::serial;
 use crate::AnnounceStage;
 use crate::helpers::{render_json_template, resolve_smtp_port, resolve_webhook_headers};
 
+/// A process-unique dist directory so the per-version announce sent-marker
+/// (`<dist>/.announce-sent-<version>.json`) written by one test can never leak
+/// into another. The default `./dist` is shared across the whole crate, so
+/// without this a successful announce in one test would mark a channel "sent"
+/// and silently skip it in a later test that expects it to fire. The tempdir
+/// is intentionally leaked: tests are short-lived and the OS reclaims it.
+fn isolated_test_dist() -> std::path::PathBuf {
+    let dir = tempfile::tempdir().expect("create isolated dist tempdir");
+    let path = dir.path().to_path_buf();
+    std::mem::forget(dir);
+    path
+}
+
 fn make_ctx(announce: Option<AnnounceConfig>) -> Context {
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = announce;
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -120,6 +134,7 @@ fn test_dry_run_discord_does_not_send() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -146,6 +161,7 @@ fn test_dry_run_slack_does_not_send() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -180,6 +196,7 @@ fn test_slack_blocks_template_rendering() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -208,6 +225,7 @@ fn test_slack_blocks_template_vars_are_expanded() {
     }];
     let blocks_json = serde_json::to_value(&blocks).unwrap();
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.template_vars_mut().set("Tag", "v2.0.0");
@@ -235,6 +253,7 @@ fn test_dry_run_webhook_does_not_send() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -260,6 +279,7 @@ fn test_missing_webhook_url_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: missing webhook_url only hard-errors in strict
@@ -290,6 +310,7 @@ fn test_missing_discord_webhook_url_warn_and_skip() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -337,6 +358,7 @@ fn test_dry_run_telegram_does_not_send() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -360,6 +382,7 @@ fn test_missing_telegram_bot_token_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: hard error in strict mode only.
@@ -385,6 +408,7 @@ fn test_missing_telegram_bot_token_warn_and_skip() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -407,6 +431,7 @@ fn test_missing_telegram_chat_id_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: hard error in strict mode only.
@@ -431,6 +456,7 @@ fn test_missing_telegram_chat_id_warn_and_skip() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -470,6 +496,7 @@ fn test_dry_run_teams_does_not_send() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -492,6 +519,7 @@ fn test_missing_teams_webhook_url_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: missing webhook_url is a hard error only in
@@ -540,6 +568,7 @@ fn test_dry_run_mattermost_does_not_send() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -562,6 +591,7 @@ fn test_missing_mattermost_webhook_url_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: hard error in strict mode only.
@@ -607,6 +637,7 @@ fn test_dry_run_email_does_not_send() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -630,6 +661,7 @@ fn test_missing_email_from_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: hard error in strict mode only.
@@ -654,6 +686,7 @@ fn test_missing_email_to_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: hard error in strict mode only.
@@ -678,6 +711,7 @@ fn test_invalid_email_from_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -775,6 +809,7 @@ fn test_dry_run_telegram_defaults_parse_mode_to_markdownv2() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -831,6 +866,7 @@ fn test_announce_skip_template_evaluated() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -908,6 +944,7 @@ fn test_dry_run_reddit() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -944,6 +981,7 @@ fn test_missing_reddit_application_id_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: hard error in strict mode only.
@@ -1013,6 +1051,7 @@ fn test_missing_reddit_username_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: hard error in strict mode only.
@@ -1063,6 +1102,7 @@ fn test_missing_reddit_sub_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: hard error in strict mode only.
@@ -1111,6 +1151,7 @@ fn test_dry_run_twitter() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -1146,6 +1187,7 @@ fn test_twitter_missing_env_var_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -1210,6 +1252,7 @@ fn test_dry_run_mastodon() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -1237,6 +1280,7 @@ fn test_mastodon_missing_server_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: hard error in strict mode only.
@@ -1265,6 +1309,7 @@ fn test_mastodon_missing_server_warn_and_skip() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -1286,6 +1331,7 @@ fn test_mastodon_missing_env_var_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -1332,6 +1378,7 @@ fn test_mastodon_missing_client_id_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -1367,6 +1414,7 @@ fn test_mastodon_missing_client_secret_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -1410,6 +1458,7 @@ fn test_telegram_default_template_renders_without_tilde() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -1485,6 +1534,7 @@ fn test_dry_run_bluesky() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -1513,6 +1563,7 @@ fn test_bluesky_missing_username_errors() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: hard error in strict mode only.
@@ -1617,6 +1668,7 @@ fn test_dry_run_linkedin() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -1649,6 +1701,7 @@ fn test_linkedin_missing_env_var_errors() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -1713,6 +1766,7 @@ fn test_dry_run_opencollective() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -1746,6 +1800,7 @@ fn test_opencollective_missing_slug_errors() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: hard error in strict mode only.
@@ -1804,6 +1859,7 @@ fn test_opencollective_missing_env_var_errors() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -1875,6 +1931,7 @@ fn test_dry_run_discourse() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {
@@ -1903,6 +1960,7 @@ fn test_missing_discourse_server_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: hard error in strict mode only.
@@ -1950,6 +2008,7 @@ fn test_missing_discourse_category_id_returns_error() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Skip-when-empty UX: hard error in strict mode only.
@@ -2017,6 +2076,7 @@ fn test_discourse_missing_env_var_errors() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -2112,6 +2172,7 @@ fn test_mattermost_renders_channel_template() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     // Strict mode so the per-announcer error surfaces as a stage-level
@@ -2164,6 +2225,7 @@ fn test_mattermost_channel_template_resolves_on_dry_run() {
         ..Default::default()
     };
     let mut config = Config::default();
+    config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let opts = ContextOptions {

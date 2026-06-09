@@ -50,6 +50,18 @@ pub struct ArtifactoryConfig {
     pub extra_files_only: Option<bool>,
     /// HTTP method to use for uploads (default: "PUT").
     pub method: Option<String>,
+    /// Re-upload an artifact even when an identical one already exists at the
+    /// target path (default: `false`).
+    ///
+    /// With the default, a re-run that finds the same version's artifact
+    /// already uploaded with a matching SHA-256 records an idempotent SKIP
+    /// rather than re-PUTting it — so re-running a partially-failed release is
+    /// safe. A path that already holds a *different* artifact for the same
+    /// version still hard-errors (immutable-version drift) unless `overwrite`
+    /// is set. With `overwrite: true`, every artifact is PUT unconditionally
+    /// (Artifactory replaces the stored copy), restoring blind-overwrite
+    /// behaviour for repos configured to allow it.
+    pub overwrite: Option<bool>,
     /// PEM-encoded trusted CA certificates for TLS verification.
     /// Appended to the system certificate pool.
     pub trusted_certificates: Option<String>,

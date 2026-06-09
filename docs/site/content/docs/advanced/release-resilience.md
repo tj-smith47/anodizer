@@ -420,16 +420,31 @@ Assets / Manager DELETEs, PR closes, blob removes); use `tag rollback` to
 delete the tag itself and revert the bump commit so the next `anodizer tag`
 can cut a fresh version from the fixed code.
 
+Most publishers are idempotent on re-run: they detect that the current
+version was already published and record a `skipped-already-published`
+outcome instead of duplicating work. This covers cargo (crates.io index
+check), chocolatey (feed hash), the MCP registry (duplicate-version
+rejection → skip), snapcraft (existing Snap Store revision for the version →
+skip), artifactory (matching sha256 already at the path → skip; a *differing*
+artifact errors unless `overwrite: true`), blob (byte-identical object already
+present → skip), and announce (per-version sent-marker so each channel posts
+at most once).
+
+PR-based publishers that open a pull request (homebrew, scoop, nix, krew) are
+the remaining exception — re-running them can open a second PR against the
+same tag, so they have no runtime duplicate guard.
+
 Only use `--allow-rerun` when:
 
 1. The recovery flow above has completed (or you've confirmed by hand
    that nothing got published on the failed run).
-2. No PR-based publisher (homebrew, scoop, nix, krew, MCP) is
-   configured — re-running them DUPLICATES the PR with no safeguard.
-3. You've explicitly accepted the risk that any publisher that DID
-   succeed on the failed run may be re-published (cargo crates are
-   immutable; chocolatey, winget, and most container registries
-   reject duplicate versions, but the rejection is per-publisher).
+2. No PR-opening publisher (homebrew, scoop, nix, krew) is configured —
+   re-running them can DUPLICATE the PR with no safeguard. (MCP is a
+   registry POST, not a PR, and is idempotent — re-running skips an
+   already-published version.)
+3. You understand that an idempotent publisher will SKIP (not re-publish)
+   any version it already landed on the failed run, while the PR-opening
+   publishers above remain the only duplicate-publish risk.
 
 ```bash
 # Escape hatch — duplicate-publish risk, see warnings above:

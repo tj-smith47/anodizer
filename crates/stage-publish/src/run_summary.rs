@@ -154,6 +154,7 @@ fn outcome_to_status_string(outcome: &PublisherOutcome) -> String {
             SkipReason::DryRun => "skipped-dry-run".into(),
             SkipReason::Nightly => "skipped-nightly".into(),
             SkipReason::NotApplicable => "skipped-not-applicable".into(),
+            SkipReason::AlreadyPublished => "skipped-already-published".into(),
         },
         PublisherOutcome::Failed(_) => "failed".into(),
         PublisherOutcome::RolledBack => "rolled-back".into(),

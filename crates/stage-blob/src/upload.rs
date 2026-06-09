@@ -10,7 +10,7 @@ use anodizer_core::extrafiles;
 use anodizer_core::template;
 
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, PutOptions};
+use object_store::{ObjectStore, ObjectStoreExt, PutOptions};
 
 use crate::kms::{KmsProvider, encrypt_with_kms};
 use crate::provider::Provider;
@@ -205,6 +205,58 @@ pub(crate) fn collect_artifacts<'a>(
 // inside an async block + tokio task graph, where bundling args into a
 // struct adds clone/lifetime noise without simplifying the call shape.
 #[allow(clippy::too_many_arguments)]
+/// Result of a per-config blob upload batch.
+///
+/// `uploaded` holds object keys this run actually PUT (fresh or overwritten) —
+/// these become rollback targets. `skipped_identical` holds keys that were
+/// already present in the store with byte-identical content, so the PUT was a
+/// no-op (idempotent re-run). Skipped keys are deliberately NOT rollback
+/// targets: the object predates this run, and deleting it on rollback would
+/// destroy state this run never created.
+#[derive(Debug, Default)]
+pub(crate) struct UploadReport {
+    pub uploaded: Vec<String>,
+    pub skipped_identical: Vec<String>,
+}
+
+/// Probe whether `object_path` already holds byte-identical content to
+/// `upload_data`, so an idempotent re-run can skip the PUT.
+///
+/// Tri-state, mirroring cargo's `is_already_published`:
+/// - `Some(true)`  → present AND identical → skip the upload.
+/// - `Some(false)` → present but differs in size/bytes → overwrite (PUT).
+/// - `None`        → absent, or existence/content couldn't be proven (head /
+///   get error) → upload normally so a real conflict is never masked.
+///
+/// A size mismatch short-circuits before the (potentially large) GET; only an
+/// equal-size existing object is downloaded for the byte comparison. KMS-
+/// encrypted payloads are compared post-encryption — a non-deterministic
+/// ciphertext simply never matches and falls through to overwrite, which is
+/// safe.
+async fn object_is_identical(
+    store: &Arc<dyn ObjectStore>,
+    object_path: &ObjectPath,
+    upload_data: &[u8],
+) -> Option<bool> {
+    let meta = match store.head(object_path).await {
+        Ok(m) => m,
+        // NotFound → absent; any other head error → can't prove, so upload.
+        Err(_) => return None,
+    };
+    if meta.size as usize != upload_data.len() {
+        return Some(false);
+    }
+    let existing = match store.get(object_path).await {
+        Ok(r) => match r.bytes().await {
+            Ok(b) => b,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+    Some(existing.as_ref() == upload_data)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn upload_files_owned(
     runtime: &tokio::runtime::Runtime,
     store: Arc<dyn ObjectStore>,
@@ -214,10 +266,12 @@ pub(crate) fn upload_files_owned(
     parallelism: usize,
     client_kms: Option<(String, KmsProvider)>,
     log: &anodizer_core::log::StageLogger,
-) -> Result<Vec<String>> {
+) -> Result<UploadReport> {
     runtime.block_on(async move {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism.max(1)));
         let uploaded: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let skipped: Arc<std::sync::Mutex<Vec<String>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut handles = Vec::new();
 
@@ -234,6 +288,7 @@ pub(crate) fn upload_files_owned(
             let store = Arc::clone(&store);
             let sem = Arc::clone(&semaphore);
             let uploaded = Arc::clone(&uploaded);
+            let skipped = Arc::clone(&skipped);
             let path_display = local_path.display().to_string();
             let local = local_path;
             let key_display = object_key.clone();
@@ -256,6 +311,21 @@ pub(crate) fn upload_files_owned(
                 } else {
                     data
                 };
+
+                // Idempotency gate: when the store already holds a
+                // byte-identical object at this key, the PUT is a no-op —
+                // record a skip instead of blindly overwriting. A differing
+                // (or unprovable) object falls through to the overwrite PUT,
+                // preserving the historical blind-overwrite semantics.
+                if let Some(true) = object_is_identical(&store, &object_path, &upload_data).await {
+                    task_log.status(&format!(
+                        "blobs: skipping {} — identical object already present",
+                        key_display
+                    ));
+                    anodizer_core::parallel::lock_recover(&skipped, &task_log, "blob upload")
+                        .push(object_key);
+                    return Ok::<(), anyhow::Error>(());
+                }
 
                 store
                     .put_opts(&object_path, upload_data.into(), put_opts)
@@ -288,12 +358,19 @@ pub(crate) fn upload_files_owned(
                 }
             }
         }
-        let mut keys = anodizer_core::parallel::lock_recover(&uploaded, log, "blob upload").clone();
+        let mut uploaded_keys =
+            anodizer_core::parallel::lock_recover(&uploaded, log, "blob upload").clone();
+        let mut skipped_keys =
+            anodizer_core::parallel::lock_recover(&skipped, log, "blob upload").clone();
         // Deterministic order so evidence is reproducible across runs.
-        keys.sort();
+        uploaded_keys.sort();
+        skipped_keys.sort();
         match first_err {
             Some(e) => Err(e),
-            None => Ok(keys),
+            None => Ok(UploadReport {
+                uploaded: uploaded_keys,
+                skipped_identical: skipped_keys,
+            }),
         }
     })
 }

@@ -30,6 +30,7 @@ mod dispatch;
 mod helpers;
 pub mod render_check;
 mod run;
+mod sent_marker;
 
 #[cfg(test)]
 mod tests;

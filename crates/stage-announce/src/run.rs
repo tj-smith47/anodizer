@@ -41,6 +41,7 @@ pub(crate) fn evaluate_gate(report: Option<&PublishReport>, gate: AnnounceGate) 
                 | PublisherOutcome::Skipped(SkipReason::DryRun)
                 | PublisherOutcome::Skipped(SkipReason::Nightly)
                 | PublisherOutcome::Skipped(SkipReason::NotApplicable)
+                | PublisherOutcome::Skipped(SkipReason::AlreadyPublished)
                 | PublisherOutcome::RolledBack
                 | PublisherOutcome::RollbackSkippedNoScope
                 | PublisherOutcome::PendingModeration
@@ -213,7 +214,21 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     let mut errors: Vec<String> = vec![];
     let retry_policy = ctx.retry_policy();
 
-    dispatch_all_announcers(ctx, &announce, &retry_policy, &log, &mut errors)?;
+    // Per-version sent-marker makes a re-run idempotent: an announcer that
+    // already posted for this version is skipped. Only on the live path — a
+    // dry-run sends nothing, so it neither consults nor writes the marker.
+    let mut sent_marker = (!ctx.is_dry_run()).then(|| {
+        crate::sent_marker::AnnounceSentMarker::load(&ctx.config.dist, &ctx.version(), &log)
+    });
+
+    dispatch_all_announcers(
+        ctx,
+        &announce,
+        &retry_policy,
+        &log,
+        &mut errors,
+        sent_marker.as_mut(),
+    )?;
 
     if !errors.is_empty() {
         anyhow::bail!("announce errors:\n{}", errors.join("\n"));

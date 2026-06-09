@@ -273,22 +273,108 @@ pub(crate) struct UploadAuth<'a> {
     pub(crate) password: &'a str,
 }
 
+/// Whether the target path already holds an artifact, and (when present)
+/// whether its stored SHA-256 matches what we are about to upload.
+///
+/// The tri-state mirrors cargo's `is_already_published` and chocolatey's
+/// `FeedHashResult`: the `Unknown` arm exists so a probe that can't prove
+/// either presence or content-match never causes a false skip — the upload
+/// proceeds and any true conflict surfaces from the PUT itself.
+enum ArtifactPresence {
+    /// The path holds an artifact whose SHA-256 equals the local file's —
+    /// re-uploading is a no-op, so the upload is skipped (idempotent re-run).
+    PresentMatching,
+    /// The path holds an artifact whose SHA-256 differs from the local file's
+    /// (immutable-version drift): a re-release would overwrite published bytes.
+    PresentDiffering { remote_checksum: String },
+    /// The path holds no artifact (404) — upload normally.
+    Absent,
+    /// Existence/content could not be determined (probe error, missing
+    /// checksum header). Upload normally so a real conflict isn't masked.
+    Unknown,
+}
+
+/// Probe whether `url` already holds this artifact by issuing a HEAD and
+/// reading Artifactory's `X-Checksum-Sha256` response header.
+///
+/// Artifactory returns the stored artifact's SHA-256 in that header on a HEAD
+/// of an existing path. A 404 means the path is empty (`Absent`); a 2xx with a
+/// matching checksum is `PresentMatching`; a 2xx with a differing checksum is
+/// `PresentDiffering`. Any transport error, non-404 error status, or absent
+/// checksum header degrades to `Unknown` so the caller uploads rather than
+/// risking a false skip. The probe is best-effort and is NOT retried — a flaky
+/// HEAD must not block a release; the upstream PUT carries the retry budget and
+/// remains the source of truth for genuine conflicts.
+fn probe_artifact_presence(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    auth: &UploadAuth<'_>,
+    local_checksum: &str,
+) -> ArtifactPresence {
+    let UploadAuth { username, password } = *auth;
+    let mut req = client.head(url);
+    if !username.is_empty() && !password.is_empty() {
+        req = req.basic_auth(username, Some(password));
+    }
+    let resp = match req.send() {
+        Ok(r) => r,
+        Err(_) => return ArtifactPresence::Unknown,
+    };
+    let status = resp.status();
+    if status.as_u16() == 404 {
+        return ArtifactPresence::Absent;
+    }
+    if !status.is_success() {
+        // 401/403/5xx: can't determine presence; let the PUT decide.
+        return ArtifactPresence::Unknown;
+    }
+    match resp
+        .headers()
+        .get("X-Checksum-Sha256")
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(remote) if remote.eq_ignore_ascii_case(local_checksum) => {
+            ArtifactPresence::PresentMatching
+        }
+        Some(remote) => ArtifactPresence::PresentDiffering {
+            remote_checksum: remote.to_string(),
+        },
+        // Path exists but no checksum header to compare against.
+        None => ArtifactPresence::Unknown,
+    }
+}
+
+/// Outcome of [`upload_single_artifact`]: whether bytes were PUT or the
+/// upload was an idempotent no-op.
+#[derive(Debug)]
+pub(crate) enum UploadOutcome {
+    Uploaded,
+    AlreadyPresent,
+}
+
 /// Upload a single artifact to the target URL.
+///
+/// When `overwrite` is false (the default), the path is first probed: an
+/// identical artifact already present yields an idempotent skip, and a
+/// *differing* artifact at the same path hard-errors (immutable-version
+/// drift). When `overwrite` is true, the artifact is PUT unconditionally.
 ///
 /// Drives the per-attempt request through [`retry_http_blocking`], which
 /// applies the shared `retry_sync` machinery: transport errors, 5xx
 /// responses, and 429s retry per the user's `retry:` config (mirrors
 /// per-artifact upload); 4xx responses
 /// fast-fail.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn upload_single_artifact(
     client: &reqwest::blocking::Client,
     headers: &UploadHeaders<'_>,
     auth: &UploadAuth<'_>,
     artifact: &Artifact,
+    overwrite: bool,
     ctx: &Context,
     policy: &RetryPolicy,
     log: &StageLogger,
-) -> Result<()> {
+) -> Result<UploadOutcome> {
     let UploadHeaders {
         method,
         url,
@@ -309,6 +395,34 @@ pub(crate) fn upload_single_artifact(
 
     // Compute SHA-256 checksum
     let checksum = sha256_file(path)?;
+
+    // Idempotency gate: skip when an identical artifact is already at the
+    // path; bail on content drift. `overwrite: true` opts out and always PUTs.
+    if !overwrite {
+        match probe_artifact_presence(client, url, auth, &checksum) {
+            ArtifactPresence::PresentMatching => {
+                log.status(&format!(
+                    "artifactory: skipping {} — already uploaded at {} (sha256 match)",
+                    artifact.name(),
+                    url
+                ));
+                return Ok(UploadOutcome::AlreadyPresent);
+            }
+            ArtifactPresence::PresentDiffering { remote_checksum } => {
+                bail!(
+                    "artifactory: '{}' already exists at {} with a different sha256 \
+                     (remote {}, local {}). Artifact paths are immutable per release; \
+                     bump the version or set `overwrite: true` to replace it.",
+                    artifact.name(),
+                    url,
+                    remote_checksum,
+                    checksum
+                );
+            }
+            // Absent / Unknown both fall through to the upload below.
+            ArtifactPresence::Absent | ArtifactPresence::Unknown => {}
+        }
+    }
 
     // Read file body
     let body = fs::read(path)
@@ -403,7 +517,7 @@ pub(crate) fn upload_single_artifact(
     )?;
 
     log.status(&format!("uploaded {} ({})", artifact.name(), status));
-    Ok(())
+    Ok(UploadOutcome::Uploaded)
 }
 
 /// Decode Artifactory's `{"errors":[{"status":N,"message":"..."}]}` error
@@ -454,15 +568,39 @@ fn decode_artifactory_error_body(body: &str) -> String {
 // publish_to_artifactory
 // ---------------------------------------------------------------------------
 
+/// Tally of what an Artifactory publish run did, so the caller can decide
+/// whether the whole run was an idempotent no-op (everything skipped) versus a
+/// real publish (at least one upload).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ArtifactoryUploadSummary {
+    /// Artifacts PUT this run (freshly uploaded or overwritten).
+    pub uploaded: usize,
+    /// Artifacts skipped because an identical copy already existed.
+    pub already_present: usize,
+}
+
+impl ArtifactoryUploadSummary {
+    /// True when at least one artifact was considered AND every one was an
+    /// idempotent skip — the signal the publisher uses to record
+    /// `Skipped(AlreadyPublished)` instead of `Succeeded`.
+    pub fn is_fully_idempotent_skip(&self) -> bool {
+        self.uploaded == 0 && self.already_present > 0
+    }
+}
+
 /// Upload artifacts to Artifactory via HTTP PUT.
 ///
 /// This is a top-level publisher: it reads from `ctx.config.artifactories`
 /// rather than from per-crate publish configs.  Each entry specifies a target
 /// URL template, credentials, and optional filters.
-pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
+pub fn publish_to_artifactory(
+    ctx: &Context,
+    log: &StageLogger,
+) -> Result<ArtifactoryUploadSummary> {
+    let mut summary = ArtifactoryUploadSummary::default();
     let entries = match ctx.config.artifactories {
         Some(ref v) if !v.is_empty() => v,
-        _ => return Ok(()),
+        _ => return Ok(summary),
     };
 
     // Single retry policy resolved from the top-level `retry:` block; reused
@@ -662,10 +800,12 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             mode
         ));
 
+        let overwrite = entry.overwrite.unwrap_or(false);
+
         // Upload each artifact
         for artifact in &artifacts {
             let url = render_artifact_url(ctx, target_template, artifact, custom_artifact_name)?;
-            upload_single_artifact(
+            match upload_single_artifact(
                 &client,
                 &UploadHeaders {
                     method,
@@ -678,16 +818,20 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
                     password: &password,
                 },
                 artifact,
+                overwrite,
                 ctx,
                 &policy,
                 log,
-            )?;
+            )? {
+                UploadOutcome::Uploaded => summary.uploaded += 1,
+                UploadOutcome::AlreadyPresent => summary.already_present += 1,
+            }
         }
 
         log.status(&format!("artifactory: upload complete for '{}'", name));
     }
 
-    Ok(())
+    Ok(summary)
 }
 
 // ---------------------------------------------------------------------------
@@ -898,7 +1042,14 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
-        publish_to_artifactory(ctx, &log)?;
+        let summary = publish_to_artifactory(ctx, &log)?;
+        // Every matched artifact was already present at its target path (an
+        // idempotent re-run): record a SKIP, not a fresh publish.
+        if summary.is_fully_idempotent_skip() {
+            ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
+                anodizer_core::SkipReason::AlreadyPublished,
+            ));
+        }
         let mut evidence = anodizer_core::PublishEvidence::new("artifactory");
         let targets = collect_artifactory_targets(ctx);
         if let Some(first) = targets.first() {
@@ -1768,6 +1919,7 @@ mod tests {
     use anodizer_core::test_helpers::scripted_responder::{
         ScriptedRoute, spawn_scripted_responder,
     };
+    use std::net::SocketAddr;
     use std::time::Duration;
 
     fn fast_policy(max_attempts: u32) -> RetryPolicy {
@@ -1835,6 +1987,7 @@ mod tests {
                 password: "",
             },
             &art,
+            true,
             &ctx,
             &fast_policy(3),
             &log,
@@ -1880,6 +2033,7 @@ mod tests {
                 password: "",
             },
             &art,
+            true,
             &ctx,
             &fast_policy(1),
             &log,
@@ -1927,6 +2081,7 @@ mod tests {
                 password: "",
             },
             &art,
+            true,
             &ctx,
             &fast_policy(3),
             &log,
@@ -1966,6 +2121,7 @@ mod tests {
                 password: "",
             },
             &art,
+            true,
             &ctx,
             &fast_policy(3),
             &log,
@@ -2017,6 +2173,7 @@ mod tests {
                 password: "",
             },
             &art,
+            true,
             &ctx,
             &fast_policy(5),
             &log,
@@ -2066,6 +2223,7 @@ mod tests {
                 password: "",
             },
             &art,
+            true,
             &ctx,
             &fast_policy(3),
             &log,
@@ -2110,6 +2268,7 @@ mod tests {
                 password: "",
             },
             &art,
+            true,
             &ctx,
             &fast_policy(1),
             &log,
@@ -2152,6 +2311,7 @@ mod tests {
                 password: "",
             },
             &art,
+            true,
             &ctx,
             &fast_policy(1),
             &log,
@@ -2198,6 +2358,7 @@ mod tests {
                 password: "",
             },
             &art,
+            true,
             &ctx,
             &fast_policy(3),
             &log,
@@ -2219,12 +2380,21 @@ mod tests {
     /// upload in one flow. Credentials come from config (so no env race).
     #[test]
     fn publish_live_uploads_artifact_to_responder() {
-        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
-            method: "PUT",
-            path_pattern: "/repo/live-app.tar.gz",
-            response: "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
-            times: None,
-        }]);
+        let (addr, log_recorder) = spawn_scripted_responder(vec![
+            // Idempotency probe: path is empty (404) → upload proceeds.
+            ScriptedRoute {
+                method: "HEAD",
+                path_pattern: "/repo/live-app.tar.gz",
+                response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PUT",
+                path_pattern: "/repo/live-app.tar.gz",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]);
         let dir = tempfile::tempdir().unwrap();
         let art_path = dir.path().join("live-app.tar.gz");
         fs::write(&art_path, b"live-bytes").unwrap();
@@ -2263,10 +2433,143 @@ mod tests {
         publish_to_artifactory(&ctx, &log).expect("live publish succeeds");
 
         let entries = log_recorder.lock().unwrap();
-        assert_eq!(entries.len(), 1, "{entries:?}");
-        assert_eq!(entries[0].method, "PUT");
+        assert_eq!(entries.len(), 2, "HEAD probe + PUT upload: {entries:?}");
+        assert_eq!(entries[0].method, "HEAD", "presence probe first");
         assert_eq!(entries[0].path, "/repo/live-app.tar.gz");
-        assert_eq!(entries[0].body, "live-bytes");
+        assert_eq!(entries[1].method, "PUT");
+        assert_eq!(entries[1].path, "/repo/live-app.tar.gz");
+        assert_eq!(entries[1].body, "live-bytes");
+    }
+
+    /// Build a single-artifact live publish context against `addr`, with the
+    /// given `overwrite` setting. Returns the context and the on-disk bytes'
+    /// hex SHA-256 so the test can script a matching / differing HEAD probe.
+    fn live_publish_ctx(addr: SocketAddr, overwrite: Option<bool>) -> (Context, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let art_path = dir.path().join("idem-app.tar.gz");
+        fs::write(&art_path, b"idem-bytes").unwrap();
+        let checksum = sha256_file(&art_path).unwrap();
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.retry = Some(anodizer_core::config::RetryConfig {
+            attempts: 2,
+            delay: anodizer_core::config::HumanDuration(Duration::from_millis(1)),
+            max_delay: anodizer_core::config::HumanDuration(Duration::from_millis(2)),
+        });
+        config.artifactories = Some(vec![ArtifactoryConfig {
+            name: Some("prod".to_string()),
+            target: Some(format!("http://{addr}/repo/")),
+            username: Some("deployer".to_string()),
+            password: Some("hunter2".to_string()),
+            overwrite,
+            ..Default::default()
+        }]);
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: "idem-app.tar.gz".to_string(),
+            path: art_path,
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        // Keep the tempdir alive for the duration of the test by leaking it;
+        // the file must outlive the upload read. Tests are short-lived.
+        std::mem::forget(dir);
+        (ctx, checksum)
+    }
+
+    /// Idempotent re-run: the path already holds an artifact whose sha256
+    /// matches the local file → HEAD probe returns the match, the PUT is
+    /// skipped entirely, and the run is a no-op upload.
+    #[test]
+    fn publish_skips_when_identical_artifact_already_present() {
+        // Bind first so the responder can echo back the right checksum header.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (ctx, checksum) = live_publish_ctx(addr, None);
+        let head_resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nX-Checksum-Sha256: {checksum}\r\nContent-Length: 0\r\n\r\n"
+            )
+            .into_boxed_str(),
+        );
+        let (_addr, log_recorder) =
+            anodizer_core::test_helpers::scripted_responder::spawn_scripted_responder_on(
+                listener,
+                move |_| {
+                    vec![ScriptedRoute {
+                        method: "HEAD",
+                        path_pattern: "/repo/idem-app.tar.gz",
+                        response: head_resp,
+                        times: None,
+                    }]
+                },
+            );
+
+        let log = ctx.logger("artifactory");
+        let summary = publish_to_artifactory(&ctx, &log).expect("idempotent re-run is ok");
+        assert_eq!(summary.uploaded, 0, "nothing uploaded");
+        assert_eq!(summary.already_present, 1, "one artifact skipped");
+        assert!(summary.is_fully_idempotent_skip());
+
+        let entries = log_recorder.lock().unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "only the HEAD probe — no PUT: {entries:?}"
+        );
+        assert_eq!(entries[0].method, "HEAD");
+    }
+
+    /// A path already holding a *different* artifact for the same version is
+    /// immutable-version drift: the publish must hard-error, NOT silently
+    /// overwrite, when `overwrite` is unset.
+    #[test]
+    fn publish_bails_on_content_drift_without_overwrite() {
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "HEAD",
+            path_pattern: "/repo/idem-app.tar.gz",
+            response: "HTTP/1.1 200 OK\r\nX-Checksum-Sha256: \
+                       0000000000000000000000000000000000000000000000000000000000000000\
+                       \r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let (ctx, _checksum) = live_publish_ctx(addr, None);
+        let log = ctx.logger("artifactory");
+        let err = publish_to_artifactory(&ctx, &log).expect_err("content drift must error");
+        let chain = format!("{err:#}");
+        assert!(chain.contains("different sha256"), "{chain}");
+        assert!(chain.contains("overwrite: true"), "{chain}");
+    }
+
+    /// `overwrite: true` skips the existence probe and PUTs unconditionally —
+    /// restoring blind-overwrite for repos that allow it.
+    #[test]
+    fn publish_overwrite_true_skips_probe_and_puts() {
+        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/repo/idem-app.tar.gz",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let (ctx, _checksum) = live_publish_ctx(addr, Some(true));
+        let log = ctx.logger("artifactory");
+        let summary = publish_to_artifactory(&ctx, &log).expect("overwrite publish ok");
+        assert_eq!(summary.uploaded, 1);
+        assert_eq!(summary.already_present, 0);
+
+        let entries = log_recorder.lock().unwrap();
+        assert_eq!(entries.len(), 1, "no HEAD probe, just the PUT: {entries:?}");
+        assert_eq!(entries[0].method, "PUT");
     }
 
     /// Live mode with no matching artifacts short-circuits without firing

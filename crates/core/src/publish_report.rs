@@ -93,6 +93,16 @@ pub enum SkipReason {
     /// nothing to roll back, and the absence of applicable artifacts
     /// is not a publish failure.
     NotApplicable,
+    /// This version was already published to the target registry/store on a
+    /// prior run, so the publisher detected it and skipped re-publishing
+    /// (idempotent re-run). Distinct from `PublisherOutcome::Succeeded`
+    /// because nothing was published THIS run — and distinct from
+    /// `PublisherOutcome::Failed` because an already-published version is the
+    /// desired end-state, not an error. A publisher reporting
+    /// `AlreadyPublished` records NO rollback evidence: the version it found
+    /// was published by an earlier run (or another actor), and deleting it on
+    /// rollback would destroy state this run never created.
+    AlreadyPublished,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

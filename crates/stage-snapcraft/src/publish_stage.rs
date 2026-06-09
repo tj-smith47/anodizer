@@ -14,7 +14,8 @@ use anodizer_core::{
 };
 
 use crate::command::{
-    is_retriable_snap_push, resolve_effective_channels, snapcraft_upload_command,
+    is_retriable_snap_push, resolve_effective_channels, snap_revision_exists_in_output,
+    snapcraft_list_revisions_command, snapcraft_upload_command,
 };
 use crate::targets::{SnapcraftTarget, collect_snapcraft_targets};
 
@@ -129,7 +130,11 @@ impl Stage for SnapcraftPublishStage {
         // shape.
         let targets = collect_snapcraft_targets(ctx);
 
-        let (attempted, exec_result) = run_uploads(
+        let SnapUploadOutcome {
+            attempted,
+            skipped_already_published,
+            result: exec_result,
+        } = run_uploads(
             ctx,
             &crates,
             &snap_artifacts,
@@ -140,14 +145,26 @@ impl Stage for SnapcraftPublishStage {
         );
 
         if !attempted {
-            // Either every config was `publish: false`, or every snap
-            // entry was disabled via `skip:`, or every run was dry-run.
-            // Mirror BlobStage's "no work, no record" contract. The
-            // closure cannot have failed (skip-templates pre-rendered;
-            // upload errors flip `attempted=true` first), so
-            // `exec_result` is `Ok(())` on this branch — but pass it
-            // through for forward-compat in case a future error site is
-            // introduced upstream of the first attempted upload.
+            // Nothing was uploaded this run. Two shapes land here:
+            //
+            // 1. Every applicable snap's version was already published (the
+            //    idempotency probe skipped them) — record an
+            //    AlreadyPublished SKIP so a re-run reports the true state
+            //    instead of defaulting to Succeeded with no evidence.
+            // 2. Genuinely no work (every config `publish: false`, every
+            //    entry `skip:`, or dry-run) — mirror BlobStage's "no work,
+            //    no record" contract and bubble `exec_result`.
+            //
+            // The closure cannot have failed before flipping `attempted`
+            // (skip-templates pre-rendered; upload errors set `attempted`
+            // first), so `exec_result` is `Ok(())` here.
+            if exec_result.is_ok() && skipped_already_published > 0 {
+                record_snapcraft_result(
+                    ctx,
+                    None,
+                    PublisherOutcome::Skipped(SkipReason::AlreadyPublished),
+                );
+            }
             return exec_result;
         }
 
@@ -205,6 +222,64 @@ fn render_skip_decisions(ctx: &Context, crates: &[CrateConfig]) -> Result<Vec<bo
     Ok(decisions)
 }
 
+/// Resolve the Snap Store name for a config, mirroring
+/// [`crate::generate::generate_snap_yaml`]: explicit `name`, else the project
+/// name, else the primary binary. Used to address the `list-revisions` probe.
+fn resolve_snap_name(
+    snap_cfg: &anodizer_core::config::SnapcraftConfig,
+    project_name: &str,
+    primary_binary: &str,
+) -> String {
+    snap_cfg.name.clone().unwrap_or_else(|| {
+        if project_name.is_empty() {
+            primary_binary.to_string()
+        } else {
+            project_name.to_string()
+        }
+    })
+}
+
+/// Tri-state idempotency probe for a snap version, mirroring cargo's
+/// `is_already_published` shape.
+///
+/// Runs `snapcraft list-revisions <name>` and parses its tabular output:
+/// - `Some(true)`  → a revision for `version` already exists → skip the upload
+///   (re-uploading would mint a duplicate Snap Store revision).
+/// - `Some(false)` → the snap is listed but has no revision at `version` →
+///   upload.
+/// - `None`        → the probe itself failed (snapcraft missing, not logged in,
+///   snap not registered, network error) → upload. Never falsely skip a
+///   genuine first publish just because the existence check couldn't run; a
+///   true auth/network problem will resurface from the upload itself.
+fn snap_revision_already_published(
+    snap_name: &str,
+    version: &str,
+    log: &StageLogger,
+) -> Option<bool> {
+    let args = snapcraft_list_revisions_command(snap_name);
+    let output = match Command::new(&args[0]).args(&args[1..]).output() {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            // Non-zero exit: snap not registered, not logged in, etc. Can't
+            // prove the revision exists, so let the upload proceed.
+            log.debug(&format!(
+                "snapcraft list-revisions for '{}' exited non-zero ({}); proceeding with upload",
+                snap_name, o.status
+            ));
+            return None;
+        }
+        Err(e) => {
+            log.debug(&format!(
+                "snapcraft list-revisions for '{}' could not run ({}); proceeding with upload",
+                snap_name, e
+            ));
+            return None;
+        }
+    };
+    let combined = log.redact(&String::from_utf8_lossy(&output.stdout));
+    Some(snap_revision_exists_in_output(&combined, version))
+}
+
 // ---------------------------------------------------------------------------
 // Upload loop, extracted from `Stage::run` so the
 // (attempted, exec_result) seam is testable in isolation.
@@ -232,8 +307,11 @@ fn run_uploads(
     retry_policy: &RetryPolicy,
     dry_run: bool,
     log: &StageLogger,
-) -> (bool, Result<()>) {
+) -> SnapUploadOutcome {
     let mut attempted_upload = false;
+    let mut skipped_already_published = 0usize;
+    let version = ctx.version();
+    let project_name = ctx.config.project_name.clone();
     // IIFE captures `attempted_upload` by mutable reference so the
     // `?`-early-exit on per-target failure preserves the "anything
     // attempted before this point?" answer for the caller.
@@ -303,6 +381,22 @@ fn run_uploads(
 
                     if dry_run {
                         log.status(&format!("(dry-run) would run: {}", upload_args.join(" "),));
+                        continue;
+                    }
+
+                    // Idempotency probe: the Snap Store mints a fresh revision
+                    // on every upload, so re-running a release at an
+                    // already-published version would create a duplicate
+                    // revision. Skip the upload when a revision for this
+                    // version already exists. `None` (probe couldn't run) and
+                    // `Some(false)` (no such revision) both proceed to upload.
+                    let snap_name = resolve_snap_name(snap_cfg, &project_name, &krate.name);
+                    if let Some(true) = snap_revision_already_published(&snap_name, &version, log) {
+                        log.status(&format!(
+                            "snapcraft: skipping '{}' {} — revision already published in the Snap Store",
+                            snap_name, version
+                        ));
+                        skipped_already_published += 1;
                         continue;
                     }
 
@@ -380,7 +474,20 @@ fn run_uploads(
         Ok(())
     })();
 
-    (attempted_upload, result)
+    SnapUploadOutcome {
+        attempted: attempted_upload,
+        skipped_already_published,
+        result,
+    }
+}
+
+/// Result of [`run_uploads`]: whether any upload was attempted, how many snaps
+/// were skipped because their version was already published, and the
+/// upload-phase result.
+struct SnapUploadOutcome {
+    attempted: bool,
+    skipped_already_published: usize,
+    result: Result<()>,
 }
 
 // ---------------------------------------------------------------------------
@@ -913,7 +1020,7 @@ mod publish_stage_tests {
         let crates = vec![krate];
         let skip_decisions = vec![false];
         let retry_policy = ctx.retry_policy();
-        let (attempted, result) = run_uploads(
+        let outcome = run_uploads(
             &ctx,
             &crates,
             &[],
@@ -922,7 +1029,11 @@ mod publish_stage_tests {
             false,
             &log,
         );
-        assert!(!attempted, "publish:false → no attempted upload");
-        assert!(result.is_ok(), "no work done → Ok(())");
+        assert!(!outcome.attempted, "publish:false → no attempted upload");
+        assert_eq!(
+            outcome.skipped_already_published, 0,
+            "no snaps → nothing skipped"
+        );
+        assert!(outcome.result.is_ok(), "no work done → Ok(())");
     }
 }

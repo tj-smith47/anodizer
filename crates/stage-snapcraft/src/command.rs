@@ -18,6 +18,47 @@ pub fn snapcraft_command(prime_dir: &str, output_path: &str) -> Vec<String> {
     ]
 }
 
+/// Construct the `snapcraft list-revisions <name>` command used to probe
+/// whether a given version already has a revision in the Snap Store.
+///
+/// The Snap Store mints a brand-new revision on every `snapcraft upload`, even
+/// for an identical `.snap` at the same version — uploads are NOT idempotent.
+/// Listing the snap's revisions before uploading lets the publisher detect a
+/// re-run at an already-published version and skip the duplicate upload.
+pub fn snapcraft_list_revisions_command(snap_name: &str) -> Vec<String> {
+    vec![
+        "snapcraft".to_string(),
+        "list-revisions".to_string(),
+        snap_name.to_string(),
+    ]
+}
+
+/// Parse `snapcraft list-revisions` tabular output and report whether any
+/// listed revision carries `version`.
+///
+/// The command prints a header row (`Rev  Uploaded  Arches  Version  ...`)
+/// followed by one row per revision; the `Version` value is a whitespace-
+/// delimited column. We match on an exact, whitespace-bounded token equal to
+/// `version` so `1.0.0` does not match `1.0.0-rc1` or `11.0.0`. The header
+/// line is skipped (it never contains a value equal to a real version, but we
+/// skip it explicitly so a snap literally named after its version can't false-
+/// positive on the header). An empty / unparseable body yields `false` — the
+/// caller treats "couldn't prove the revision exists" as "upload" so a
+/// genuine first publish is never skipped.
+pub fn snap_revision_exists_in_output(output: &str, version: &str) -> bool {
+    output
+        .lines()
+        .skip_while(|line| {
+            // Skip everything up to and including the header row so a column
+            // label can never be mistaken for a version token.
+            !line
+                .split_whitespace()
+                .any(|c| c.eq_ignore_ascii_case("Rev"))
+        })
+        .skip(1)
+        .any(|line| line.split_whitespace().any(|tok| tok == version))
+}
+
 /// Construct the snapcraft upload CLI command arguments.
 /// When `channels` is non-empty, adds `--release=<comma-separated channels>`.
 pub fn snapcraft_upload_command(snap_path: &str, channels: Option<&[String]>) -> Vec<String> {

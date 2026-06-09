@@ -15,7 +15,8 @@ use tempfile::TempDir;
 
 use crate::build_stage::copy_snap_icon;
 use crate::command::{
-    is_retriable_snap_push, resolve_effective_channels, snapcraft_command, snapcraft_upload_command,
+    is_retriable_snap_push, resolve_effective_channels, snap_revision_exists_in_output,
+    snapcraft_command, snapcraft_list_revisions_command, snapcraft_upload_command,
 };
 use crate::generate::generate_snap_yaml;
 use crate::{SnapcraftPublishStage, SnapcraftStage};
@@ -777,6 +778,47 @@ fn test_snapcraft_upload_command_with_channels() {
     assert_eq!(cmd[2], "/tmp/out.snap");
     assert_eq!(cmd[3], "--release=edge,beta");
     assert_eq!(cmd.len(), 4);
+}
+
+#[test]
+fn test_snapcraft_list_revisions_command() {
+    let cmd = snapcraft_list_revisions_command("mytool");
+    assert_eq!(cmd, vec!["snapcraft", "list-revisions", "mytool"]);
+}
+
+#[test]
+fn snap_revision_exists_matches_published_version_only() {
+    // Real-ish `snapcraft list-revisions` table.
+    let output = "\
+Rev    Uploaded              Arches  Version  Channels
+3      2024-06-01T10:00:00Z  amd64   1.2.0    stable*
+2      2024-05-01T10:00:00Z  amd64   1.1.0    -
+1      2024-04-01T10:00:00Z  amd64   1.0.0    -
+";
+    // A version with an existing revision → present.
+    assert!(snap_revision_exists_in_output(output, "1.1.0"));
+    assert!(snap_revision_exists_in_output(output, "1.2.0"));
+    // A never-published version → absent (genuine first publish).
+    assert!(!snap_revision_exists_in_output(output, "1.3.0"));
+    // Substring guard: "1.0.0" must not match "1.0.0-rc1" or vice-versa.
+    assert!(!snap_revision_exists_in_output(output, "1.0"));
+    assert!(!snap_revision_exists_in_output(output, "1.0.0-rc1"));
+}
+
+#[test]
+fn snap_revision_exists_empty_output_is_absent() {
+    // No body / header-only → never falsely report present.
+    assert!(!snap_revision_exists_in_output("", "1.0.0"));
+    assert!(!snap_revision_exists_in_output(
+        "Rev  Uploaded  Arches  Version  Channels\n",
+        "1.0.0"
+    ));
+    // A snap literally named like a version must not false-positive on a
+    // header/label row — only data rows are scanned.
+    assert!(!snap_revision_exists_in_output(
+        "No revisions available for this snap.\n",
+        "1.0.0"
+    ));
 }
 
 // -----------------------------------------------------------------------

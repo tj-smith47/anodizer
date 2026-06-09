@@ -150,6 +150,9 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 | `method` | string | — | HTTP method to use for uploads (default: "PUT"). |
 | `mode` | string | — | Upload mode: "archive" (upload archives) or "binary" (upload binaries). |
 | `name` | string | — | Human-readable name for this publisher (used in logs). |
+| `overwrite` | bool | — | Re-upload an artifact even when an identical one already exists at the target path (default: `false`).
+
+With the default, a re-run that finds the same version's artifact already uploaded with a matching SHA-256 records an idempotent SKIP rather than re-PUTting it — so re-running a partially-failed release is safe. A path that already holds a *different* artifact for the same version still hard-errors (immutable-version drift) unless `overwrite` is set. With `overwrite: true`, every artifact is PUT unconditionally (Artifactory replaces the stored copy), restoring blind-overwrite behaviour for repos configured to allow it. |
 | `password` | string | — | Artifactory password or API key (or env var reference). |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
