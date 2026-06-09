@@ -3,18 +3,27 @@
 //! [`dispatch`] iterates the registry's publishers in
 //! [`crate::registry::group_dispatch_order`] order (Assets → Manager →
 //! Submitter), recording a [`PublisherResult`] per publisher in the
-//! returned [`PublishReport`]. Before dispatching the Submitter group the
-//! submitter gate fires when:
+//! returned [`PublishReport`]. The submitter gate is re-evaluated before
+//! each Submitter-group publisher (not once at group entry) and fires when:
 //!
 //! 1. `opts.gate_submitter` is `true` (default), AND
-//! 2. any **required** Assets or Manager publisher already failed.
+//! 2. any **required** publisher in an already-run group failed — Assets,
+//!    Manager, **or a required Submitter that already ran earlier in the
+//!    sequential Submitter loop** (cargo runs first; a required cargo
+//!    failure must stop the later irreversible submitters).
 //!
-//! When gated, every Submitter publisher records
+//! Both conditions are folded into the single authoritative
+//! [`PublishReport::submitter_gate_closed`] predicate so the gate rule
+//! cannot drift between the in-dispatch loop and the snapcraft stage that
+//! runs as its own Submitter surface.
+//!
+//! When gated, the remaining Submitter publishers record
 //! `Skipped(SubmitterGated)` instead of running and
 //! `report.submitter_gated` is set to `true`. This is the load-bearing
 //! protection against the "chocolatey moderation got submitted, then
 //! winget validation failed and we can't undo the choco upload" failure
-//! mode.
+//! mode — and against the "cargo published crate A, failed on crate B,
+//! yet winget still submitted" intra-Submitter variant.
 //!
 //! `opts.fail_fast` stops iteration at the first publisher failure within
 //! the current group; the partial report is still returned via `Ok`.
@@ -65,15 +74,21 @@ pub fn dispatch(
     let group_order = crate::registry::group_dispatch_order();
 
     'outer: for group in group_order {
-        // Submitter-gate check: fire only when entering the Submitter
-        // group, gating is enabled, and a required publisher from an
-        // earlier reversible group failed.
-        if group == PublisherGroup::Submitter
-            && opts.gate_submitter
-            && (report.any_failed(PublisherGroup::Assets, true)
-                || report.any_failed(PublisherGroup::Manager, true))
-        {
-            for p in publishers.iter().filter(|p| p.group() == group) {
+        for p in publishers.iter().filter(|p| p.group() == group) {
+            // Submitter gate, re-checked per publisher. The gate closes when
+            // a required publisher in ANY already-run group failed —
+            // including a required Submitter that failed earlier in THIS
+            // loop (submitters run sequentially, cargo first, so a required
+            // cargo failure must stop the later irreversible submitters).
+            // Re-checking per publisher (rather than once at group entry)
+            // is what makes the intra-Submitter ordering safe: each
+            // remaining irreversible submitter consults the live "any
+            // required publish already broke" state via the single
+            // authoritative `submitter_gate_closed` predicate.
+            if group == PublisherGroup::Submitter
+                && opts.gate_submitter
+                && report.submitter_gate_closed()
+            {
                 report.results.push(PublisherResult {
                     name: p.name().into(),
                     group,
@@ -81,14 +96,10 @@ pub fn dispatch(
                     outcome: PublisherOutcome::Skipped(SkipReason::SubmitterGated),
                     evidence: None,
                 });
+                report.submitter_gated = true;
+                continue;
             }
-            report.submitter_gated = true;
-            // Skip the inner per-publisher loop; gate already recorded
-            // Skipped(SubmitterGated) for every Submitter publisher.
-            continue;
-        }
 
-        for p in publishers.iter().filter(|p| p.group() == group) {
             // Nightly skip-list: publishers that opt out of `--nightly`
             // record `Skipped(Nightly)` and never invoke `run`. Matches
             // The documented nightlies skip set
@@ -247,6 +258,198 @@ mod tests {
             PublisherOutcome::Skipped(SkipReason::SubmitterGated)
         ));
         assert!(submitter.evidence.is_none());
+    }
+
+    #[test]
+    fn required_submitter_failure_gates_later_irreversible_submitter() {
+        // The intra-Submitter gate: submitters run sequentially. cargo
+        // (Submitter, required) fails; the later irreversible submitter
+        // (winget) must be skipped via the gate, NOT run against a release
+        // whose required cargo publish already broke. fail_fast stays false
+        // (the default) so the gate — not fail-fast — is what stops winget.
+        let mut ctx = Context::test_fixture();
+        let publishers = vec![
+            fake(
+                "cargo",
+                PublisherGroup::Submitter,
+                true,
+                FakeOutcome::Fail("cargo crate-b failed after crate-a published".into()),
+            ),
+            fake(
+                "winget",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+        ];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        assert!(report.submitter_gated, "the gate must have closed");
+
+        let cargo = report
+            .results
+            .iter()
+            .find(|r| r.name == "cargo")
+            .expect("cargo entry present");
+        assert!(
+            matches!(cargo.outcome, PublisherOutcome::Failed(_)),
+            "cargo ran and failed, got {:?}",
+            cargo.outcome
+        );
+
+        let winget = report
+            .results
+            .iter()
+            .find(|r| r.name == "winget")
+            .expect("winget entry present");
+        assert!(
+            matches!(
+                winget.outcome,
+                PublisherOutcome::Skipped(SkipReason::SubmitterGated)
+            ),
+            "winget must be gated by the earlier required-cargo failure, got {:?}",
+            winget.outcome
+        );
+    }
+
+    #[test]
+    fn optional_submitter_failure_does_not_gate_later_submitter() {
+        // Continue-on-error preserved at the intra-Submitter level: an
+        // OPTIONAL submitter failure must NOT close the gate, so the later
+        // submitter still runs.
+        let mut ctx = Context::test_fixture();
+        let publishers = vec![
+            fake(
+                "cargo",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Fail("optional cargo boom".into()),
+            ),
+            fake(
+                "winget",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+        ];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        assert!(
+            !report.submitter_gated,
+            "an optional submitter failure must not close the gate"
+        );
+
+        let winget = report
+            .results
+            .iter()
+            .find(|r| r.name == "winget")
+            .expect("winget entry present");
+        assert!(
+            matches!(winget.outcome, PublisherOutcome::Succeeded),
+            "winget must still run after an optional cargo failure, got {:?}",
+            winget.outcome
+        );
+    }
+
+    #[test]
+    fn gate_is_scoped_per_crate_run_in_per_crate_mode() {
+        // Per-crate workspace mode runs the publish pipeline once per
+        // published crate, each invocation building a FRESH report scoped to
+        // that crate's `selected_crates`. The gate reads only the live report
+        // for the current run, so a required-Submitter failure while scoped
+        // to one crate gates the remaining irreversible submitters in THAT
+        // run — and a separate, clean run for a different crate is unaffected
+        // (fresh report ⇒ open gate). This pins the recurring per-crate-mode
+        // failure family: the gate must never bleed state across crate runs.
+        let mut ctx = Context::test_fixture();
+        ctx.options.selected_crates = vec!["cfgd-core".to_string()];
+        let failing_run = vec![
+            fake(
+                "cargo",
+                PublisherGroup::Submitter,
+                true,
+                FakeOutcome::Fail("cfgd-core cargo publish failed".into()),
+            ),
+            fake(
+                "winget",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+        ];
+        let report = dispatch(&failing_run, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        assert!(report.submitter_gated, "this crate's run must be gated");
+        let winget = report
+            .results
+            .iter()
+            .find(|r| r.name == "winget")
+            .expect("winget entry present");
+        assert!(matches!(
+            winget.outcome,
+            PublisherOutcome::Skipped(SkipReason::SubmitterGated)
+        ));
+
+        // A subsequent crate's run gets a brand-new report ⇒ the gate is
+        // open again; no cross-run state leaks.
+        let mut ctx2 = Context::test_fixture();
+        ctx2.options.selected_crates = vec!["cfgd".to_string()];
+        let clean_run = vec![fake(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            FakeOutcome::Succeed,
+        )];
+        let report2 = dispatch(&clean_run, &mut ctx2, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        assert!(
+            !report2.submitter_gated,
+            "a clean per-crate run must not inherit the prior run's closed gate"
+        );
+    }
+
+    #[test]
+    fn all_success_runs_every_publisher_ungated() {
+        // The happy path: nothing failed, the gate stays open, every group
+        // member runs.
+        let mut ctx = Context::test_fixture();
+        let publishers = vec![
+            fake(
+                "github-release",
+                PublisherGroup::Assets,
+                true,
+                FakeOutcome::Succeed,
+            ),
+            fake(
+                "homebrew",
+                PublisherGroup::Manager,
+                true,
+                FakeOutcome::Succeed,
+            ),
+            fake(
+                "cargo",
+                PublisherGroup::Submitter,
+                true,
+                FakeOutcome::Succeed,
+            ),
+            fake(
+                "winget",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+        ];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        assert!(!report.submitter_gated);
+        assert!(
+            report
+                .results
+                .iter()
+                .all(|r| matches!(r.outcome, PublisherOutcome::Succeeded)),
+            "every publisher should have run and succeeded: {:?}",
+            report.results
+        );
     }
 
     #[test]

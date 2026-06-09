@@ -133,6 +133,29 @@ impl PublishReport {
                 && matches!(r.outcome, PublisherOutcome::Failed(_))
         })
     }
+
+    /// The single authoritative submitter-gate predicate: `true` when any
+    /// already-run **required** publisher failed and a downstream
+    /// irreversible Submitter must therefore be skipped.
+    ///
+    /// A required failure in Assets, Manager, **or the Submitter group
+    /// itself** closes the gate. The intra-Submitter check is load-bearing:
+    /// submitters run sequentially (cargo first), and a required cargo
+    /// failure must stop the later irreversible submitters (winget,
+    /// chocolatey, snapcraft) from pushing against an incomplete release —
+    /// the gate is not just an Assets/Manager → Submitter boundary, it is a
+    /// running "any required publish already broke" check that every
+    /// remaining irreversible submitter consults.
+    ///
+    /// Every gate site — the in-dispatch Submitter loop, the
+    /// `SnapcraftPublishStage` (a Submitter that runs as its own stage after
+    /// the trait dispatch) — calls this one predicate so the rule cannot
+    /// drift between copies.
+    pub fn submitter_gate_closed(&self) -> bool {
+        self.any_failed(PublisherGroup::Assets, true)
+            || self.any_failed(PublisherGroup::Manager, true)
+            || self.any_failed(PublisherGroup::Submitter, true)
+    }
 }
 
 #[cfg(test)]
@@ -220,5 +243,68 @@ mod tests {
         });
         assert!(!r.any_failed(PublisherGroup::Manager, true));
         assert!(r.any_failed(PublisherGroup::Manager, false));
+    }
+
+    fn failed(name: &str, group: PublisherGroup, required: bool) -> PublisherResult {
+        PublisherResult {
+            name: name.to_string(),
+            group,
+            required,
+            outcome: PublisherOutcome::Failed("boom".to_string()),
+            evidence: None,
+        }
+    }
+
+    #[test]
+    fn submitter_gate_closes_on_required_failure_in_any_group() {
+        for group in [
+            PublisherGroup::Assets,
+            PublisherGroup::Manager,
+            PublisherGroup::Submitter,
+        ] {
+            let mut r = PublishReport::default();
+            r.results.push(failed("p", group, true));
+            assert!(
+                r.submitter_gate_closed(),
+                "a required failure in {group:?} must close the submitter gate"
+            );
+        }
+    }
+
+    #[test]
+    fn submitter_gate_closes_on_required_intra_submitter_failure() {
+        // The load-bearing case for the v0.8.0 fix: a required cargo
+        // (Submitter) failure must close the gate so later irreversible
+        // submitters (winget, snapcraft) are skipped.
+        let mut r = PublishReport::default();
+        r.results
+            .push(failed("cargo", PublisherGroup::Submitter, true));
+        assert!(r.submitter_gate_closed());
+    }
+
+    #[test]
+    fn submitter_gate_stays_open_on_optional_failures_only() {
+        let mut r = PublishReport::default();
+        r.results.push(failed("a", PublisherGroup::Assets, false));
+        r.results.push(failed("m", PublisherGroup::Manager, false));
+        r.results
+            .push(failed("cargo", PublisherGroup::Submitter, false));
+        assert!(
+            !r.submitter_gate_closed(),
+            "optional failures must not close the gate (continue-on-error)"
+        );
+    }
+
+    #[test]
+    fn submitter_gate_stays_open_on_all_success() {
+        let mut r = PublishReport::default();
+        r.results.push(PublisherResult {
+            name: "github-release".to_string(),
+            group: PublisherGroup::Assets,
+            required: true,
+            outcome: PublisherOutcome::Succeeded,
+            evidence: None,
+        });
+        assert!(!r.submitter_gate_closed());
     }
 }

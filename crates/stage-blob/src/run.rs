@@ -5,7 +5,7 @@ use anyhow::{Context as _, Result};
 
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
-use anodizer_core::{PublishReport, PublisherGroup, PublisherOutcome, PublisherResult};
+use anodizer_core::{PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason};
 
 use object_store::{ObjectStore, PutOptions};
 
@@ -119,6 +119,26 @@ impl Stage for BlobStage {
         // Catastrophic errors (missing required config, malformed
         // provider, IO impossible at the stage boundary) still bubble up
         // via the `?` operator in `run_with_evidence` -> `prepare_jobs`.
+
+        // Gate check: BlobStage runs after the trait-based publisher
+        // dispatch, so a required failure from any earlier publisher is
+        // already recorded in `ctx.publish_report`. Skip the upload when the
+        // authoritative gate predicate has closed — uploading more bytes to
+        // an already-broken release just leaves orphaned assets pointing at
+        // a release that will not complete. Uses the same
+        // `submitter_gate_closed` predicate as every other gate site so the
+        // rule has a single source of truth.
+        let gate_submitter = ctx.options.gate_submitter.unwrap_or(true);
+        if gate_submitter
+            && let Some(report) = ctx.publish_report()
+            && report.submitter_gate_closed()
+        {
+            let log = ctx.logger("blob");
+            log.status("blob skipped via submitter-gate");
+            record_blob_gated(ctx);
+            return Ok(());
+        }
+
         let (uploaded, exec_result) = self.run_report(ctx)?;
         if let Some(exec_result) = exec_result {
             // Aggregated `required` across every blob config on every
@@ -190,6 +210,32 @@ pub(crate) fn record_blob_result(
         required,
         outcome,
         evidence,
+    });
+}
+
+/// Record a `Skipped(SubmitterGated)` row for the blob stage when an
+/// upstream required publisher failed and the gate closed before BlobStage
+/// could upload. Mirrors `record_blob_result`'s report-init discipline.
+///
+/// The recorded `required` flag carries `derive_blob_required(ctx)` so the
+/// row reflects the operator's configured intent even though no upload was
+/// attempted — a gated skip is not a failure, so it never trips the
+/// required-failures exit gate, but the flag keeps the report row honest.
+pub(crate) fn record_blob_gated(ctx: &mut Context) {
+    let required = derive_blob_required(ctx);
+    if ctx.publish_report.is_none() {
+        ctx.publish_report = Some(PublishReport::default());
+    }
+    let report = ctx
+        .publish_report
+        .as_mut()
+        .expect("publish_report initialized above");
+    report.results.push(PublisherResult {
+        name: "blob".to_string(),
+        group: PublisherGroup::Assets,
+        required,
+        outcome: PublisherOutcome::Skipped(SkipReason::SubmitterGated),
+        evidence: None,
     });
 }
 

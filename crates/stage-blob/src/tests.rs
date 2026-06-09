@@ -1595,6 +1595,83 @@ fn blob_stage_initializes_publish_report_when_none() {
 }
 
 #[test]
+fn blob_stage_skips_via_gate_on_required_upstream_failure() {
+    use anodizer_core::{PublisherGroup, PublisherOutcome, PublisherResult, SkipReason};
+
+    // v0.8.0: BlobStage runs after the trait dispatch. A required upstream
+    // failure (here a required Manager publisher) must close the gate and
+    // skip the blob upload — uploading more reversible bytes to an
+    // already-broken release just orphans assets. The gate fires at the top
+    // of `run`, before the no-work check, so a pre-seeded report alone trips
+    // it deterministically without staging real artifacts.
+    let mut ctx = make_ctx();
+    let mut report = anodizer_core::PublishReport::default();
+    report.results.push(PublisherResult {
+        name: "homebrew".to_string(),
+        group: PublisherGroup::Manager,
+        required: true,
+        outcome: PublisherOutcome::Failed("tap push rejected".to_string()),
+        evidence: None,
+    });
+    ctx.publish_report = Some(report);
+
+    BlobStage.run(&mut ctx).expect("gate path returns Ok");
+
+    let blob = ctx
+        .publish_report()
+        .expect("report present")
+        .results
+        .iter()
+        .find(|r| r.name == "blob")
+        .expect("blob entry recorded");
+    assert_eq!(
+        blob.outcome,
+        PublisherOutcome::Skipped(SkipReason::SubmitterGated),
+        "a required upstream failure must gate the blob upload"
+    );
+    assert_eq!(blob.group, PublisherGroup::Assets);
+}
+
+#[test]
+fn blob_stage_not_gated_on_optional_upstream_failure() {
+    use anodizer_core::{PublisherGroup, PublisherOutcome, PublisherResult, SkipReason};
+
+    // Continue-on-error preserved: an OPTIONAL upstream failure must NOT
+    // gate blob. With no blob-configured crates the stage takes the no-work
+    // path and records nothing — the tell that it passed the gate rather
+    // than short-circuiting to Skipped(SubmitterGated).
+    let mut ctx = make_ctx();
+    let mut report = anodizer_core::PublishReport::default();
+    report.results.push(PublisherResult {
+        name: "cargo".to_string(),
+        group: PublisherGroup::Submitter,
+        required: false,
+        outcome: PublisherOutcome::Failed("optional cargo boom".to_string()),
+        evidence: None,
+    });
+    ctx.publish_report = Some(report);
+
+    BlobStage.run(&mut ctx).expect("ungated path returns Ok");
+
+    let gated = ctx
+        .publish_report()
+        .expect("report present")
+        .results
+        .iter()
+        .any(|r| {
+            r.name == "blob"
+                && matches!(
+                    r.outcome,
+                    PublisherOutcome::Skipped(SkipReason::SubmitterGated)
+                )
+        });
+    assert!(
+        !gated,
+        "an optional upstream failure must not gate the blob upload"
+    );
+}
+
+#[test]
 fn blob_stage_does_not_touch_publish_report_when_no_work() {
     // No blob configs → no jobs → no PublisherResult appended. The
     // submitter gate that follows BlobStage must NOT see a fabricated

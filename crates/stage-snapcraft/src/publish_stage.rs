@@ -51,15 +51,19 @@ impl Stage for SnapcraftPublishStage {
 
         // Submitter-gate check: SnapcraftPublishStage is a Submitter-group
         // surface (irreversible snap-store upload — once a revision is
-        // pushed there is no programmatic rollback). When the trait-based
-        // dispatch in PublishStage flagged a required Assets/Manager
-        // publisher failure, skip the snapcraft upload to avoid the
-        // "released to one half-broken surface" failure mode.
+        // pushed there is no programmatic rollback). It runs as its own
+        // stage AFTER the trait-based publisher dispatch, so the report it
+        // consults already carries every Assets/Manager outcome AND every
+        // earlier Submitter outcome (cargo, winget, chocolatey). Consult the
+        // single authoritative `submitter_gate_closed` predicate — the same
+        // one the in-dispatch Submitter loop uses — so a required failure in
+        // ANY upstream group, including a required cargo (Submitter) failure,
+        // skips the snapcraft upload. Without the intra-Submitter arm a
+        // failed required cargo publish would still let snapcraft push.
         let gate_submitter = ctx.options.gate_submitter.unwrap_or(true);
         if gate_submitter
             && let Some(report) = ctx.publish_report()
-            && (report.any_failed(PublisherGroup::Assets, true)
-                || report.any_failed(PublisherGroup::Manager, true))
+            && report.submitter_gate_closed()
         {
             log.status("snapcraft-publish skipped via submitter-gate");
             record_snapcraft_result(
@@ -569,6 +573,84 @@ mod publish_stage_tests {
             PublisherOutcome::Skipped(SkipReason::SubmitterGated)
         );
         assert!(r.evidence.is_none(), "gated skip records no evidence");
+    }
+
+    #[test]
+    fn submitter_gate_fires_on_required_cargo_submitter_failure() {
+        // v0.8.0 intra-Submitter fix: snapcraft runs as its own Submitter
+        // stage AFTER the trait dispatch. A required cargo (Submitter)
+        // failure recorded by that dispatch must close the gate here too —
+        // before the fix, snapcraft only consulted Assets/Manager and would
+        // have pushed against a half-published crates.io release.
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![snap_crate("demo", None, Some("stable"))])
+            .build();
+        let mut report = PublishReport::default();
+        report.results.push(PublisherResult {
+            name: "cargo".to_string(),
+            group: PublisherGroup::Submitter,
+            required: true,
+            outcome: PublisherOutcome::Failed("crate-b failed after crate-a published".to_string()),
+            evidence: None,
+        });
+        ctx.publish_report = Some(report);
+
+        let stage = SnapcraftPublishStage;
+        stage.run(&mut ctx).expect("gate path returns Ok");
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry present");
+        assert_eq!(
+            snap.outcome,
+            PublisherOutcome::Skipped(SkipReason::SubmitterGated),
+            "a required cargo (Submitter) failure must gate snapcraft"
+        );
+    }
+
+    #[test]
+    fn submitter_gate_stays_open_on_optional_upstream_failure() {
+        // Continue-on-error preserved: an OPTIONAL upstream failure must NOT
+        // gate snapcraft. With no snap artifacts staged the stage records
+        // nothing (no work attempted), which is the tell that it passed the
+        // gate and proceeded into the upload path rather than short-circuiting
+        // to Skipped(SubmitterGated).
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![snap_crate("demo", None, Some("stable"))])
+            .build();
+        let mut report = PublishReport::default();
+        report.results.push(PublisherResult {
+            name: "blob".to_string(),
+            group: PublisherGroup::Assets,
+            required: false,
+            outcome: PublisherOutcome::Failed("optional blob boom".to_string()),
+            evidence: None,
+        });
+        ctx.publish_report = Some(report);
+
+        let stage = SnapcraftPublishStage;
+        stage.run(&mut ctx).expect("ungated path returns Ok");
+
+        let gated = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .any(|r| {
+                r.name == "snapcraft"
+                    && matches!(
+                        r.outcome,
+                        PublisherOutcome::Skipped(SkipReason::SubmitterGated)
+                    )
+            });
+        assert!(
+            !gated,
+            "an optional upstream failure must not gate snapcraft (continue-on-error)"
+        );
     }
 
     #[test]
