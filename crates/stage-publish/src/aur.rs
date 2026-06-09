@@ -3504,7 +3504,13 @@ mod tests {
     fn aur_publisher_run_pushes_and_rollback_reverts() {
         use anodizer_core::Publisher;
         let (bare_url, bare) = make_bare_aur_repo();
+        // Point project_root at a hermetic `v0.1.0`-tagged repo so the per-crate
+        // scope resolves "mytool"'s tag (`v{{ .Version }}`) deterministically
+        // rather than from the process cwd's tags, which a checkout with no
+        // fetched tags (CI) leaves empty — starving the resolution.
+        let scope_repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = live_ctx(&bare_url, None);
+        ctx.options.project_root = Some(scope_repo.path().to_path_buf());
         ctx.options.selected_crates = vec!["mytool".to_string()];
         let p = AurOurPublisher::new();
 

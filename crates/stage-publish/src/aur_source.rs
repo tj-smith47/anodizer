@@ -2438,10 +2438,16 @@ crates:
                 ..Default::default()
             },
         )];
+        // Point project_root at a hermetic `v0.1.0`-tagged repo so the per-crate
+        // scope resolves "demo"'s tag (`v{{ .Version }}`) deterministically
+        // rather than from the process cwd's tags, which a checkout with no
+        // fetched tags (CI) leaves empty — starving the resolution.
+        let scope_repo = crate::testing::hermetic_tagged_repo();
         let mut ctx = Context::new(
             config,
             ContextOptions {
                 dry_run: true,
+                project_root: Some(scope_repo.path().to_path_buf()),
                 ..Default::default()
             },
         );
