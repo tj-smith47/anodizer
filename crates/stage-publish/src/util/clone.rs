@@ -152,28 +152,44 @@ pub(crate) fn clone_repo_ssh(
 /// the key sits at the umask default (commonly `0o644`, world-readable) on a
 /// shared CI runner. `create_new` also rejects an already-present path so a
 /// stale key left by an earlier run cannot be silently reused.
+///
+/// The content is written with a guaranteed trailing newline (see below): an
+/// OpenSSH-format private key without one is rejected by `ssh` at parse time.
 fn write_ssh_key_secure(path: &Path, key_content: &str) -> std::io::Result<()> {
     use std::io::Write as _;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)?;
-        f.write_all(key_content.as_bytes())?;
-        f.flush()
+    let mut f = open_secure_key_file(path)?;
+    f.write_all(key_content.as_bytes())?;
+    // OpenSSH-format private keys (always the case for ed25519) require a
+    // trailing newline. Secret/env round-trips routinely strip it — e.g.
+    // `gh secret set -b "$(cat key)"`, where command substitution drops the
+    // final newline — after which `ssh` rejects the key with "error in
+    // libcrypto" → "Permission denied (publickey)". Append exactly one when
+    // the content lacks it; an existing trailing newline is left untouched so
+    // a correctly-formed key is never double-terminated.
+    if !key_content.ends_with('\n') {
+        f.write_all(b"\n")?;
     }
-    #[cfg(not(unix))]
-    {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)?;
-        f.write_all(key_content.as_bytes())?;
-        f.flush()
-    }
+    f.flush()
+}
+
+/// Open `path` for writing a private key with `0o600` perms from creation
+/// (unix) and `create_new` semantics so a stale key can't be silently reused.
+#[cfg(unix)]
+fn open_secure_key_file(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_secure_key_file(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
 }
 
 /// Smart clone: decide between HTTPS and SSH based on RepositoryConfig.
@@ -496,6 +512,38 @@ mod tests {
         let err = write_ssh_key_secure(&key_path, "second\n")
             .expect_err("second write must fail on an existing path");
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+    }
+
+    /// A key content lacking a trailing newline (the shape a secret left by
+    /// `$(cat key)` command substitution arrives in) must be written back with
+    /// exactly one appended — an OpenSSH-format key without it fails `ssh` parse
+    /// with "error in libcrypto".
+    #[test]
+    fn write_ssh_key_secure_appends_missing_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join(".anodizer_ssh_key");
+        write_ssh_key_secure(&key_path, "-----END OPENSSH PRIVATE KEY-----")
+            .expect("write succeeds");
+        assert_eq!(
+            std::fs::read_to_string(&key_path).unwrap(),
+            "-----END OPENSSH PRIVATE KEY-----\n",
+            "a missing trailing newline must be appended exactly once"
+        );
+    }
+
+    /// A correctly-terminated key is left byte-for-byte intact — the helper
+    /// must not double-terminate a key that already ends in a newline.
+    #[test]
+    fn write_ssh_key_secure_preserves_existing_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join(".anodizer_ssh_key");
+        write_ssh_key_secure(&key_path, "-----END OPENSSH PRIVATE KEY-----\n")
+            .expect("write succeeds");
+        assert_eq!(
+            std::fs::read_to_string(&key_path).unwrap(),
+            "-----END OPENSSH PRIVATE KEY-----\n",
+            "an existing trailing newline must not be doubled"
+        );
     }
 
     // ------------------------------------------------------------------
