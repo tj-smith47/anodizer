@@ -218,7 +218,9 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         // dry-run.
         let username_env = ctx.env_var("DOCKER_USERNAME");
         let username = match entry.username.as_deref() {
-            Some(u) if !u.is_empty() => u.to_string(),
+            Some(u) if !u.is_empty() => ctx
+                .render_template(u)
+                .with_context(|| format!("dockerhub: render username template {u:?}"))?,
             _ => match username_env.as_deref() {
                 Some(u) if !u.is_empty() => u.to_string(),
                 _ => bail!(

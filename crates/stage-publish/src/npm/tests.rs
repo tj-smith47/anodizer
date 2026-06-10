@@ -169,9 +169,13 @@ fn npm_config_defaults_resolve_correctly() {
     let cfg = NpmConfig::default();
     assert_eq!(cfg.mode, NpmMode::OptionalDeps);
     assert!(cfg.libc_aware);
-    assert_eq!(resolve_tag(&cfg), "latest");
+    let ctx = anodizer_core::test_helpers::TestContextBuilder::new().build();
+    assert_eq!(resolve_tag(&ctx, &cfg).unwrap(), "latest");
     assert_eq!(resolve_format(&cfg), "tgz");
-    assert_eq!(resolve_registry(&cfg), "https://registry.npmjs.org");
+    assert_eq!(
+        resolve_registry(&ctx, &cfg).unwrap(),
+        "https://registry.npmjs.org"
+    );
     assert!(resolve_access(&cfg).is_none());
     assert_eq!(
         resolve_extra_files(&cfg),

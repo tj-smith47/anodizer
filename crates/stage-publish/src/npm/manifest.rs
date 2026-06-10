@@ -145,12 +145,15 @@ pub(crate) fn warn_excluded_targets(log: &StageLogger, excluded: &[String]) {
 }
 
 /// Resolve the effective dist-tag (configured value or [`DEFAULT_TAG`]).
-pub(crate) fn resolve_tag(cfg: &NpmConfig) -> &str {
-    cfg.tag
+pub(crate) fn resolve_tag(ctx: &Context, cfg: &NpmConfig) -> anyhow::Result<String> {
+    let raw = cfg
+        .tag
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or(DEFAULT_TAG)
+        .unwrap_or(DEFAULT_TAG);
+    ctx.render_template(raw)
+        .with_context(|| format!("npm: render tag template {raw:?}"))
 }
 
 /// Resolve the effective format (configured value or [`DEFAULT_FORMAT`]).
@@ -164,14 +167,17 @@ pub(crate) fn resolve_format(cfg: &NpmConfig) -> &str {
 
 /// Resolve the effective registry endpoint, trimming trailing slashes so
 /// the publish URL constructor can append `/<path>` without doubling up.
-pub(crate) fn resolve_registry(cfg: &NpmConfig) -> String {
+pub(crate) fn resolve_registry(ctx: &Context, cfg: &NpmConfig) -> anyhow::Result<String> {
     let raw = cfg
         .registry
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(DEFAULT_REGISTRY);
-    raw.trim_end_matches('/').to_string()
+    let rendered = ctx
+        .render_template(raw)
+        .with_context(|| format!("npm: render registry template {raw:?}"))?;
+    Ok(rendered.trim_end_matches('/').to_string())
 }
 
 /// Resolve the effective access value. Scoped packages on the public npm
@@ -294,10 +300,12 @@ pub(crate) fn insert_common_metadata(
     ctx: &Context,
     cfg: &NpmConfig,
 ) {
+    let render = |s: &str| ctx.render_template(s).unwrap_or_else(|_| s.to_string());
+
     let description = cfg
         .description
         .as_deref()
-        .map(|s| s.to_string())
+        .map(&render)
         .or_else(|| ctx.config.meta_description().map(|s| s.to_string()));
     if let Some(d) = description {
         root.insert("description".into(), serde_json::Value::String(d));
@@ -306,7 +314,7 @@ pub(crate) fn insert_common_metadata(
     let homepage = cfg
         .homepage
         .as_deref()
-        .map(|s| s.to_string())
+        .map(&render)
         .or_else(|| ctx.config.meta_homepage().map(|s| s.to_string()));
     if let Some(h) = homepage {
         root.insert("homepage".into(), serde_json::Value::String(h));
@@ -315,17 +323,14 @@ pub(crate) fn insert_common_metadata(
     let license = cfg
         .license
         .as_deref()
-        .map(|s| s.to_string())
+        .map(&render)
         .or_else(|| ctx.config.meta_license().map(|s| s.to_string()));
     if let Some(l) = license {
         root.insert("license".into(), serde_json::Value::String(l));
     }
 
     if let Some(author) = cfg.author.as_deref() {
-        root.insert(
-            "author".into(),
-            serde_json::Value::String(author.to_string()),
-        );
+        root.insert("author".into(), serde_json::Value::String(render(author)));
     }
 
     if let Some(keywords) = cfg.keywords.as_ref() {
@@ -343,16 +348,13 @@ pub(crate) fn insert_common_metadata(
     if let Some(repo_url) = cfg.repository.as_deref() {
         let mut obj = serde_json::Map::new();
         obj.insert("type".into(), serde_json::Value::String("git".into()));
-        obj.insert(
-            "url".into(),
-            serde_json::Value::String(repo_url.to_string()),
-        );
+        obj.insert("url".into(), serde_json::Value::String(render(repo_url)));
         root.insert("repository".into(), serde_json::Value::Object(obj));
     }
 
     if let Some(bugs) = cfg.bugs.as_deref() {
         let mut obj = serde_json::Map::new();
-        obj.insert("url".into(), serde_json::Value::String(bugs.to_string()));
+        obj.insert("url".into(), serde_json::Value::String(render(bugs)));
         root.insert("bugs".into(), serde_json::Value::Object(obj));
     }
 }

@@ -582,8 +582,8 @@ fn publish_optional_deps(
     targets: &mut Vec<NpmTarget>,
 ) -> Result<()> {
     let version = ctx.version();
-    let registry = resolve_registry(cfg);
-    let dist_tag = resolve_tag(cfg).to_string();
+    let registry = resolve_registry(ctx, cfg)?;
+    let dist_tag = resolve_tag(ctx, cfg)?;
     let access = resolve_access(cfg);
 
     let layout = generate_layout(ctx, cfg, crate_name, &version, log)?;
@@ -684,8 +684,8 @@ fn publish_postinstall(
 
     let version = ctx.version();
     let pkg_name = resolve_name(cfg, crate_name).to_string();
-    let registry = resolve_registry(cfg);
-    let dist_tag = resolve_tag(cfg).to_string();
+    let registry = resolve_registry(ctx, cfg)?;
+    let dist_tag = resolve_tag(ctx, cfg)?;
     let access = resolve_access(cfg);
 
     let binaries = super::manifest::collect_platform_binaries(ctx, cfg, &pkg_name, &version, log)?;
