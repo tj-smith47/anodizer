@@ -511,4 +511,61 @@ mod tests {
             other => panic!("expected RollbackFailed, got {:?}", other),
         }
     }
+
+    #[test]
+    fn rollback_skips_publisher_with_retain_on_rollback() {
+        // A publisher with retain_on_rollback() = true must not have its
+        // rollback() invoked, even if it has succeeded. Its outcome must
+        // remain Succeeded after the rollback dispatcher runs.
+        struct RetainPublisher;
+
+        impl Publisher for RetainPublisher {
+            fn name(&self) -> &str {
+                "retain-pub"
+            }
+
+            fn group(&self) -> PublisherGroup {
+                PublisherGroup::Assets
+            }
+
+            fn required(&self) -> bool {
+                false
+            }
+
+            fn skips_on_nightly(&self) -> bool {
+                false
+            }
+
+            fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
+                Ok(PublishEvidence::new("retain-pub"))
+            }
+
+            fn rollback(
+                &self,
+                _ctx: &mut Context,
+                _evidence: &PublishEvidence,
+            ) -> anyhow::Result<()> {
+                panic!("rollback() was called on a publisher with retain_on_rollback=true")
+            }
+
+            fn retain_on_rollback(&self) -> bool {
+                true
+            }
+        }
+
+        let mut ctx = Context::test_fixture();
+        let publishers: Vec<Box<dyn Publisher>> = vec![Box::new(RetainPublisher)];
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded("retain-pub", PublisherGroup::Assets, false));
+
+        run(&publishers, &mut report, &mut ctx, RollbackMode::BestEffort);
+
+        // Outcome must remain Succeeded — rollback was skipped.
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::Succeeded
+        ));
+    }
 }
