@@ -56,10 +56,9 @@ None.
   rendering the registry URL before use. Source: `crates/stage-publish/src/publishers/mcp/mod.rs`.
   Surfaced: 2026-06-06. Fixed: 2026-06-10.
 
-  CommitOptions.signing fields not rendered.** `CommitOptions.signing` changed from `Option<&CommitSigningConfig>`
+  **CommitOptions.signing fields not rendered.** `CommitOptions.signing` changed from `Option<&CommitSigningConfig>`
   (raw reference) to `Option<CommitSigningConfig>` (owned), but the signing config fields (gpg_sign, key_id, etc.)
-  carry template strings and were not being rendered before use in `git -c` args.** `CommitOptions.signing` changed
-  from `Option<&CommitSigningConfig>` (raw reference) to `Option<CommitSigningConfig>` (owned). FIX:
+  carry template strings and were not being rendered before use in `git -c` args. FIX:
   `resolve_commit_opts` now renders each field via `render_or_warn` before storing in the owned struct, so
   `git -c user.signingkey=…` receives the resolved value. **FIXED:** `commit.rs` now renders all
   signing fields (key_id, gpg_program, etc.) via `render_or_warn` before storing them in `CommitSigningConfig`.
@@ -67,7 +66,7 @@ None.
 
 
 
-  token") instead of treating snapshot as non-publishing.** Fix: `crates/stage-release/src/run.rs`
+  **Snapshot dispatches live GitHub release backend (receives "release: no GitHub token") instead of treating snapshot as non-publishing.** Fix: `crates/stage-release/src/run.rs`
   now computes `let dry_run = ctx.is_dry_run() || ctx.is_snapshot();` so snapshot takes the
   "would create …" telemetry path. Regression test `test_snapshot_without_dry_run_does_not_reach_live_backend`
   (`crates/stage-release/src/tests.rs`), proven red→green (revert → FAILED exit 101; restore →
