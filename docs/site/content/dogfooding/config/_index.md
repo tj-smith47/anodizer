@@ -87,6 +87,7 @@ partial:
 | `metadata.description` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`metadata.description`) |
 | `metadata.maintainers` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`metadata.maintainers`) |
 | `metadata.mod_timestamp` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`metadata.mod_timestamp: "{{ CommitTimestamp }}"`; applied as mtime of `dist/metadata.json` and `dist/artifacts.json`) |
+| `report_sizes` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`report_sizes: true`; prints per-artifact and total sizes in the release summary) |
 
 ## Templates
 
@@ -119,20 +120,14 @@ config is rendered.
 | `monorepo.dir` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`path: crates/cfgd-core`, `crates/cfgd`, `crates/cfgd-operator`, `crates/cfgd-csi`) |
 | `cargo_workspace` detection | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (4 workspaces: cfgd-core, cfgd, cfgd-operator, cfgd-csi) |
 | `depends_on` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`depends_on: [cfgd-core]` on the three downstream crates) |
-| `git.tag_sort` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`git.tag_sort: "-version:refname"`) |
-| `git.prerelease_suffix` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`git.prerelease_suffix: "-"`) |
-| `git.ignore_tags` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`git.ignore_tags: ["nightly"]`) |
-| `partial.by` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`partial.by: os` at file end) |
-| `report_sizes` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`report_sizes: true`; prints per-artifact and total sizes in the release summary) |
-| `version_files` | ⏳ Pending | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`version_files: [docs/installation.md, chart/cfgd/Chart.yaml]`; version string rewritten in-place at tag time). Wired in config; awaits the next cfgd release for live proof |
-| `changelog.files.per_crate` | ⏳ Pending | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`changelog.files.per_crate: true`; each crate gets its own CHANGELOG.md). Wired in config; awaits the next cfgd release for live proof |
 
 ## Publisher resilience
 
 | Key | Status | Notes |
 |---|---|---|
 | `publish.on_error` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`defaults.publish.on_error: [{cmd: "echo 'anodizer: publisher {{ .Publisher }} failed for {{ .Tag }}: {{ .Error }}'"}]`). Fires per failed publisher before rollback. Template vars: `.Publisher`, `.Error`, `.Version`, `.Tag`, `.Group`, `.Required`, `.RolledBack`. Declared under `defaults.publish.on_error` to apply workspace-wide; per-crate entries append before defaults. Awaits a real publisher failure to prove live |
-| `publish.<name>.retain_on_rollback` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`cargo.retain_on_rollback: true`, `schemastore.retain_on_rollback: true`, `mcp.retain_on_rollback: true`). Wired in config; proves only when a rollback is triggered in production |
+| `defaults.publish.cargo.retain_on_rollback` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`retain_on_rollback: true` under `defaults.publish.cargo` — crates.io publishes are permanent; retain even if a downstream publisher rolls back) |
+| `schemastore.retain_on_rollback` / `mcp.retain_on_rollback` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`retain_on_rollback: true` on the top-level `schemastore` and `mcp` keys — external catalogs; retain even if downstream publishers roll back) |
 
 ## Tag configuration
 
@@ -145,6 +140,9 @@ config is rendered.
 | `tag.initial_version` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`initial_version: "0.3.5"`) |
 | `git.tag_sort` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`tag_sort: smartsemver`) |
 | `git.ignore_tag_prefixes` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`ignore_tag_prefixes: ["draft-"]`) |
+| `git.prerelease_suffix` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) + [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`prerelease_suffix: "-"` — strips trailing pre-release suffixes from version strings) |
+| `git.ignore_tags` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) + [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`ignore_tags: ["nightly"]` — excludes transient tags from version resolution) |
+| `version_files` | ⏳ Pending | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`version_files: [docs/installation.md, chart/cfgd/Chart.yaml]`; version string rewritten in-place at tag time). Wired in config; awaits next cfgd release for live proof |
 
 ## Defaults
 
@@ -158,6 +156,7 @@ config is rendered.
 | `defaults.checksum.algorithm` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`algorithm: sha256`) |
 | `defaults.publish.cargo` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`cargo: {}` — presence opts every crate into crates.io) |
 | `defaults.publish.on_error` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`on_error: [{cmd: "echo ..."}]`) |
+| `partial.by` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) + [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`partial.by: os` — shards the CI matrix by OS; enables the determinism fan-out build strategy) |
 
 ## Changelog
 
@@ -229,12 +228,12 @@ config is rendered.
 | `nfpm[].deb.signature.key_file` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`"{{ .Env.GPG_KEY_PATH }}"`, type: origin) |
 | `nfpm[].rpm.signature.key_file` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (same GPG key; also sets `group` + `packager`) |
 | `nfpm[].apk.signature.key_file` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`"{{ .Env.APK_PRIVATE_KEY_PATH }}"` — RSA-PSS, not OpenPGP) |
-| `snapcrafts[].name/title/summary/description` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (re-enabled this session; awaits next release for live proof) |
-| `snapcrafts[].base` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`base: core24`) |
-| `snapcrafts[].grade/confinement` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`grade: stable`, `confinement: strict`) |
-| `snapcrafts[].publish` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`publish: true`) |
-| `snapcrafts[].channel_templates` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`["latest/stable"]`) |
-| `snapcrafts[].apps` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (app with `home`, `network`, `network-bind` plugs) |
+| `snapcrafts[].name/title/summary/description` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (live in v0.7.0 — 2026-06-09; amd64 + arm64 revisions published to Snap Store) |
+| `snapcrafts[].base` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`base: core24`; live in v0.7.0) |
+| `snapcrafts[].grade/confinement` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`grade: stable`, `confinement: strict`; live in v0.7.0) |
+| `snapcrafts[].publish` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`publish: true`; live in v0.7.0) |
+| `snapcrafts[].channel_templates` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`["latest/stable"]`; live in v0.7.0) |
+| `snapcrafts[].apps` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (app with `home`, `network`, `network-bind` plugs; live in v0.7.0) |
 | `appimages[].desktop` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`assets/anodizer.desktop`) |
 | `appimages[].icon` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`assets/logo.png`) |
 | `appimages[].filename` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`"{{ ProjectName }}-{{ Version }}-{{ Arch }}.AppImage"`) |
