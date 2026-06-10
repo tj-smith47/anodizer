@@ -12,7 +12,29 @@ cold without re-investigating.
 
 ## Open
 
-None.
+- [ ] **Test-suite PATH race: global-PATH-clobbering tests vs spawn-via-PATH tests
+  (intermittent `No such file or directory` flakes).** Observed 2026-06-10: in 2 of
+  5 full `-p anodizer-stage-publish --lib` runs,
+  `schema_validation::aur::tests::workspace_lockstep_every_option_validates` failed
+  with `aur: run bash — No such file or directory (os error 2)`; passed in isolation
+  and in the other full runs. Root cause: tests that simulate missing tools set the
+  process-global `PATH` to an empty tempdir (`cargo.rs`
+  `cargo_yank_dry_run_path_clobber` block near `unsafe { set_var("PATH", empty.path()) }`,
+  `preflight.rs` equivalent, plus `npm/tests.rs` PATH prepends) while holding
+  `anodizer_core::test_helpers::env::env_mutex()`. The mutex serialises MUTATORS
+  against each other only — tests that SPAWN via PATH lookup (every
+  `schema_validation` external validator: bash/xmllint/dpkg-deb/rpm; any `git`/`gh`
+  fixture spawn) never take it, so a spawn racing the clobber window gets ENOENT.
+  Affects any crate using the pattern, not just stage-publish. Two candidate fixes:
+  (a) `env_mutex` → `RwLock` (mutators=write, spawners=read) — mechanical but every
+  spawning test must remember the read guard, so the bug regrows by drift;
+  (b) eliminate global PATH mutation: rewrite missing-tool/no-spawn tests against the
+  existing `test_helpers::fake_tool` / argv-log seam so "tool absent" and "must not
+  spawn" are representable without touching `PATH` — unrepresentable-by-construction,
+  preferred. Needs its own pass: inventory `set_var("PATH"` sites across crates,
+  pick (b) where the production seam allows, fall back to (a) read-guards only where
+  it doesn't. NOT addressed by the 2026-06-10 rename-resolution commits (e236fb17,
+  17bc6953, this session's review fix) — discovered while validating them.
 
 ## Resolved
 
