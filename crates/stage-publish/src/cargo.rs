@@ -670,12 +670,17 @@ fn dep_value_is_workspace_inherit(item: &toml_edit::Item) -> bool {
 }
 
 /// Parse a workspace-root manifest's `[workspace.dependencies]` table into a
-/// `name -> version` map (entries without a literal `version` key are
-/// skipped). Used to resolve the version of a leaf crate's
-/// `<dep>.workspace = true` inherit. Returns an empty map when the manifest
-/// can't be read/parsed or declares no `[workspace.dependencies]`.
-fn workspace_dependency_versions(workspace_manifest: &std::path::Path) -> HashMap<String, String> {
-    let mut out: HashMap<String, String> = HashMap::new();
+/// `key -> (effective_package_name, version)` map. The effective name comes
+/// from a `package = "..."` rename on the entry (cargo only accepts the
+/// rename at the root for inherited deps), falling back to the key; the
+/// version is empty when the entry has no literal `version` pin. Used to
+/// resolve a leaf crate's `<dep>.workspace = true` inherit. Returns an empty
+/// map when the manifest can't be read/parsed or declares no
+/// `[workspace.dependencies]`.
+fn workspace_dependency_entries(
+    workspace_manifest: &std::path::Path,
+) -> HashMap<String, (String, String)> {
+    let mut out: HashMap<String, (String, String)> = HashMap::new();
     let Ok(content) = std::fs::read_to_string(workspace_manifest) else {
         return out;
     };
@@ -691,9 +696,14 @@ fn workspace_dependency_versions(workspace_manifest: &std::path::Path) -> HashMa
         return out;
     };
     for (name, value) in ws_deps.iter() {
-        if let Some(ver) = extract_version_pin(value) {
-            out.insert(name.to_string(), ver);
-        }
+        let package = value
+            .as_table_like()
+            .and_then(|t| t.get("package"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(name)
+            .to_string();
+        let version = extract_version_pin(value).unwrap_or_default();
+        out.insert(name.to_string(), (package, version));
     }
     out
 }
@@ -721,15 +731,15 @@ fn publish_required_workspace_deps(
         return Vec::new();
     };
 
-    // Resolve inherited versions lazily — only read the workspace root when a
+    // Resolve inherited entries lazily — only read the workspace root when a
     // crate actually has at least one `workspace = true` workspace-dep edge.
-    let mut ws_versions: Option<HashMap<String, String>> = None;
-    let mut resolve_ws_version = |dep: &str| -> Option<String> {
-        let map = ws_versions.get_or_insert_with(|| {
+    let mut ws_entries: Option<HashMap<String, (String, String)>> = None;
+    let mut resolve_ws_entry = |dep: &str| -> Option<(String, String)> {
+        let map = ws_entries.get_or_insert_with(|| {
             find_workspace_root_manifest(
                 manifest_path.parent().unwrap_or(std::path::Path::new(".")),
             )
-            .map(|m| workspace_dependency_versions(&m))
+            .map(|m| workspace_dependency_entries(&m))
             .unwrap_or_default()
         });
         map.get(dep).cloned()
@@ -738,40 +748,45 @@ fn publish_required_workspace_deps(
     let mut out: Vec<(String, String)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    let mut visit =
-        |item: &toml_edit::Item, out: &mut Vec<(String, String)>, seen: &mut HashSet<String>| {
-            let Some(table) = item.as_table_like() else {
-                return;
-            };
-            for (key, value) in table.iter() {
-                // A renamed dep uses the TOML key as an alias:
-                //   core = { package = "anodizer-core", version = "…" }
-                // The crate that must be on the index is `anodizer-core`, not `core`.
-                // Resolve the effective package name from the `package` field when present.
-                let effective_name = value
-                    .as_table_like()
-                    .and_then(|t| t.get("package"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(key);
-                if !workspace_crate_names.contains(effective_name)
-                    || !seen.insert(effective_name.to_string())
-                {
-                    continue;
-                }
-                // Literal leaf pin first, then a workspace inherit resolved from
-                // the root; an unresolved version stays empty (set-membership-only).
-                let version = extract_version_pin(value)
-                    .or_else(|| {
-                        if dep_value_is_workspace_inherit(value) {
-                            resolve_ws_version(effective_name)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default();
-                out.push((effective_name.to_string(), version));
-            }
+    let mut visit = |item: &toml_edit::Item,
+                     out: &mut Vec<(String, String)>,
+                     seen: &mut HashSet<String>| {
+        let Some(table) = item.as_table_like() else {
+            return;
         };
+        for (key, value) in table.iter() {
+            // A renamed dep uses the TOML key as an alias:
+            //   core = { package = "anodizer-core", version = "…" }
+            // The crate that must be on the index is `anodizer-core`, not `core`.
+            // The rename lives on the leaf entry for a literal dep, or on the
+            // workspace-root entry for a `workspace = true` inherit (cargo only
+            // accepts `package =` at the root for inherited deps).
+            let leaf_package = value
+                .as_table_like()
+                .and_then(|t| t.get("package"))
+                .and_then(|v| v.as_str());
+            let root_entry = if leaf_package.is_none() && dep_value_is_workspace_inherit(value) {
+                resolve_ws_entry(key)
+            } else {
+                None
+            };
+            let effective_name = leaf_package
+                .map(str::to_string)
+                .or_else(|| root_entry.as_ref().map(|(pkg, _)| pkg.clone()))
+                .unwrap_or_else(|| key.to_string());
+            if !workspace_crate_names.contains(effective_name.as_str())
+                || !seen.insert(effective_name.clone())
+            {
+                continue;
+            }
+            // Literal leaf pin first, then the workspace-root pin for an
+            // inherit; an unresolved version stays empty (set-membership-only).
+            let version = extract_version_pin(value)
+                .or_else(|| root_entry.map(|(_, ver)| ver).filter(|ver| !ver.is_empty()))
+                .unwrap_or_default();
+            out.push((effective_name, version));
+        }
+    };
 
     // Normal + build deps require registry resolution at publish; dev-deps do
     // not (cargo publish drops them), so they are excluded.
@@ -5375,6 +5390,116 @@ mod dep_guard_tests {
         assert!(
             format!("{err:#}").contains("anodizer-core"),
             "error must name the real package, not the alias: {err:#}"
+        );
+    }
+
+    /// The alias key of a renamed dep must NOT be treated as a crate name.
+    /// With a workspace member literally named after the alias ("core") AND in
+    /// the publish set, matching the alias would satisfy the in-set check and
+    /// silently pass — even though the dep actually points at
+    /// "anodizer-core", which is absent from both the set and the index.
+    #[test]
+    fn guard_does_not_match_alias_key_as_crate_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_dir = tmp.path().join("app");
+        std::fs::create_dir_all(&app_dir).expect("mkdir app");
+        std::fs::write(
+            app_dir.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.8.0\"\n\n\
+             [dependencies]\ncore = { package = \"anodizer-core\", version = \"0.8.0\" }\n",
+        )
+        .expect("write app manifest");
+
+        // A workspace member that shares the alias's name, plus the real dep.
+        let alias_twin_path = write_crate(tmp.path(), "core", "0.8.0", &[], &[]);
+        let real_path = write_crate(tmp.path(), "anodizer-core", "0.8.0", &[], &[]);
+        let all = vec![
+            crate_cfg("app", &app_dir.display().to_string(), &[]),
+            crate_cfg("core", &alias_twin_path, &[]),
+            crate_cfg("anodizer-core", &real_path, &[]),
+        ];
+        // The alias-named member IS in the set; the real dep is NOT.
+        let order = vec!["app".to_string(), "core".to_string()];
+        let versions: HashMap<String, String> = [
+            ("app".to_string(), "0.8.0".to_string()),
+            ("core".to_string(), "0.8.0".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let probe = |n: &str, _v: &str| {
+            if n == "anodizer-core" {
+                DepIndexState::Absent
+            } else {
+                DepIndexState::Present
+            }
+        };
+        let err = check_publish_set_completeness(&order, &all, &versions, &probe, &quiet_log())
+            .expect_err("alias in set must not satisfy the check for the real package");
+        assert!(
+            format!("{err:#}").contains("anodizer-core"),
+            "error must name the real package: {err:#}"
+        );
+    }
+
+    /// A rename declared on the workspace root entry — the only place cargo
+    /// accepts `package =` for an inherited dep:
+    ///
+    ///   [workspace.dependencies]
+    ///   core = { path = "core", version = "0.8.0", package = "anodizer-core" }
+    ///
+    /// with the leaf inheriting via `core.workspace = true`. The leaf value
+    /// carries no `package` key, so the effective name must be resolved from
+    /// the root entry; matching the alias would silently skip the dep.
+    #[test]
+    fn guard_resolves_workspace_inherited_renamed_dep() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"app\", \"core\"]\n\n\
+             [workspace.dependencies]\n\
+             core = { path = \"core\", version = \"0.8.0\", package = \"anodizer-core\" }\n",
+        )
+        .expect("write workspace root");
+        let app_dir = tmp.path().join("app");
+        std::fs::create_dir_all(&app_dir).expect("mkdir app");
+        std::fs::write(
+            app_dir.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.8.0\"\n\n\
+             [dependencies]\ncore.workspace = true\n",
+        )
+        .expect("write app manifest");
+        let core_dir = tmp.path().join("core");
+        std::fs::create_dir_all(&core_dir).expect("mkdir core");
+        std::fs::write(
+            core_dir.join("Cargo.toml"),
+            "[package]\nname = \"anodizer-core\"\nversion = \"0.8.0\"\n",
+        )
+        .expect("write core manifest");
+        let all = vec![
+            crate_cfg("app", &app_dir.display().to_string(), &[]),
+            crate_cfg("anodizer-core", &core_dir.display().to_string(), &[]),
+        ];
+        let order = vec!["app".to_string()]; // anodizer-core NOT in publish set
+        let versions: HashMap<String, String> = [("app".to_string(), "0.8.0".to_string())]
+            .into_iter()
+            .collect();
+
+        let seen: std::cell::RefCell<Vec<(String, String)>> = std::cell::RefCell::new(Vec::new());
+        let probe = |n: &str, v: &str| {
+            seen.borrow_mut().push((n.to_string(), v.to_string()));
+            DepIndexState::Absent
+        };
+        let err = check_publish_set_completeness(&order, &all, &versions, &probe, &quiet_log())
+            .expect_err("inherited renamed dep absent from set and index must fail guard");
+        assert!(
+            format!("{err:#}").contains("anodizer-core"),
+            "error must name the real package, not the alias: {err:#}"
+        );
+        assert_eq!(
+            *seen.borrow(),
+            vec![("anodizer-core".to_string(), "0.8.0".to_string())],
+            "probe must target the real package at the root-pinned version"
         );
     }
 }
