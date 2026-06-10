@@ -1520,12 +1520,12 @@ where
 /// Emit a `tracing::warn!` for each publisher configured with `required: true`
 /// whose group is Submitter (chocolatey, winget, aur_source).
 ///
-/// Submitter publishers push to external moderation queues that do not resolve
-/// within a release window, so `required: true` never has the desired effect
-/// of blocking the release on approval. The warning is non-fatal — the user
-/// may have private-registry semantics where resolution is fast. Cargo is
-/// excluded: its default is already `required: true` and the warning would
-/// be noise.
+/// `required: true` on a submitter still fails the release when the
+/// submission itself fails (it feeds `required_failures()`), but the
+/// external moderation outcome resolves after the release run and cannot
+/// be gated on. The warning is non-fatal and clarifies which half of the
+/// semantics applies. Cargo is excluded: its default is already
+/// `required: true` and the warning would be noise.
 ///
 /// Covers all three publish axes — `crates[].publish`,
 /// `workspaces[].crates[].publish`, and `defaults.publish` (via
@@ -1541,9 +1541,10 @@ pub fn warn_on_submitter_required(config: &Config) {
 pub(crate) fn submitter_required_warnings(config: &Config) -> Vec<String> {
     fn submitter_warning(location: &str, name: &str) -> String {
         format!(
-            "{location}: publisher '{name}' is a submitter (external moderation queue); \
-             `required: true` has no meaningful effect — the submitter gate \
-             evaluates at push time, not at approval time."
+            "{location}: publisher '{name}' submits to an external moderation queue; \
+             `required: true` fails the release when the submission itself fails, \
+             but the eventual moderation outcome happens outside the release run \
+             and cannot be gated."
         )
     }
 

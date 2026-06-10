@@ -7655,10 +7655,10 @@ crates:
     let msg = &warnings[0];
     for clause in [
         "chocolatey",
-        "submitter",
-        "external moderation queue",
-        "no meaningful effect",
-        "push time",
+        "submits to an external moderation queue",
+        "fails the release when the submission itself fails",
+        "moderation outcome happens outside the release run",
+        "cannot be gated",
         "crate 'myapp'",
     ] {
         assert!(
