@@ -105,11 +105,18 @@ pub(crate) fn clone_repo_ssh(
         cmd.env("GIT_SSH_COMMAND", ssh_cmd);
         ssh_cmd_for_config = Some(ssh_cmd.to_string());
     } else if let Some(key_content) = private_key {
-        // Write the private key to a file inside the clone target directory's
-        // parent so it lives as long as the caller's tempdir.  We use a
-        // sibling directory to avoid conflicts with the clone itself.
+        // Write the private key to a sibling of the clone target directory
+        // (inside the caller's unique tempdir) so it lives as long as the
+        // tempdir but never inside the git worktree. The filename is derived
+        // from the clone target's unique name, guaranteeing a different path
+        // on every run and preventing EEXIST when a prior failed run left the
+        // key file behind.
         let key_dir = tmp_dir.parent().unwrap_or(tmp_dir);
-        let key_path = key_dir.join(".anodizer_ssh_key");
+        let key_name = tmp_dir
+            .file_name()
+            .map(|n| format!(".anodizer_ssh_{}", n.to_string_lossy()))
+            .unwrap_or_else(|| ".anodizer_ssh_key".to_string());
+        let key_path = key_dir.join(&key_name);
         write_ssh_key_secure(&key_path, key_content)
             .with_context(|| format!("{label}: write SSH private key"))?;
         let built_ssh_cmd = format!(
@@ -459,10 +466,11 @@ mod tests {
     }
 
     /// When `private_key` is provided, the helper writes the key to a
-    /// sibling `.anodizer_ssh_key` file with 0o600 perms (Unix). We can
-    /// observe the side-effect even if the clone itself fails downstream,
-    /// because the key write happens BEFORE the spawn. Use a parent dir
-    /// with a not-yet-existing child so the sibling-write logic kicks in.
+    /// sibling of the clone target (named `.anodizer_ssh_<target>`) with
+    /// 0o600 perms (Unix). We can observe the side-effect even if the clone
+    /// itself fails downstream, because the key write happens BEFORE the
+    /// spawn. Use a parent dir with a not-yet-existing child so the
+    /// sibling-write logic kicks in.
     #[cfg(unix)]
     #[test]
     fn clone_repo_ssh_private_key_writes_keyfile_with_0600_perms() {
@@ -484,7 +492,11 @@ mod tests {
         // The keyfile lives in the parent of `dest` (see source). Clone
         // will fail (the SSH URL is fake) but the key write happens
         // first, so the file should exist.
-        let key_path = dest.parent().unwrap().join(".anodizer_ssh_key");
+        let key_name = format!(
+            ".anodizer_ssh_{}",
+            dest.file_name().unwrap().to_string_lossy()
+        );
+        let key_path = dest.parent().unwrap().join(&key_name);
         assert!(
             key_path.exists(),
             "expected SSH private key sidecar to be written at {}",
@@ -673,7 +685,11 @@ mod tests {
             ..Default::default()
         };
         let _ = clone_repo(&ctx, Some(&repo), "o", "n", None, &dest, "key-render", &log);
-        let key_path = dest.parent().unwrap().join(".anodizer_ssh_key");
+        let key_name = format!(
+            ".anodizer_ssh_{}",
+            dest.file_name().unwrap().to_string_lossy()
+        );
+        let key_path = dest.parent().unwrap().join(&key_name);
         let body = std::fs::read_to_string(&key_path).expect("key sidecar must be written");
         assert_eq!(
             body, "RENDERED-KEY-MATERIAL\n",

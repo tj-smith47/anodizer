@@ -2501,7 +2501,11 @@ crates:
         let dest = parent.path().join("clone");
         util::clone_repo_ssh(&bare_url, Some(&rendered), None, &dest, "aur_source", &log)
             .expect("clone with rendered key must succeed");
-        let key_path = parent.path().join(".anodizer_ssh_key");
+        let key_name = format!(
+            ".anodizer_ssh_{}",
+            dest.file_name().unwrap().to_string_lossy()
+        );
+        let key_path = parent.path().join(&key_name);
         let written = std::fs::read_to_string(&key_path).expect("key sidecar must be written");
         assert_eq!(
             written.trim_end_matches('\n'),

@@ -3631,7 +3631,11 @@ mod tests {
         let parent = tempfile::tempdir().expect("parent");
         let dest = parent.path().join("clone-target");
         aur_clone_repo(&ctx, &aur_cfg, &bare_url, &dest, &log).expect("ssh clone ok");
-        let key_path = dest.parent().unwrap().join(".anodizer_ssh_key");
+        let key_name = format!(
+            ".anodizer_ssh_{}",
+            dest.file_name().unwrap().to_string_lossy()
+        );
+        let key_path = dest.parent().unwrap().join(&key_name);
         let body = std::fs::read_to_string(&key_path).expect("key sidecar written");
         assert_eq!(
             body, "RENDERED-AUR-KEY\n",
