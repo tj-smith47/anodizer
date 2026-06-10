@@ -669,10 +669,18 @@ fn aur_build_sources(
             };
             if seen_arches.insert(pkgbuild_arch.clone()) {
                 let download_url = if let Some(tmpl) = url_template {
-                    util::render_url_template_with_ctx(
+                    // Extract the archive filename from the artifact URL (or
+                    // path fallback) so {{ .ArtifactName }} resolves to the
+                    // actual archive filename, not the crate name (which has
+                    // no extension and would leave ArtifactName unset).
+                    let artifact_filename = std::path::Path::new(&a.url)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned());
+                    util::render_url_template_with_ctx_and_artifact(
                         ctx,
                         tmpl,
                         crate_name,
+                        artifact_filename.as_deref(),
                         version,
                         &pkgbuild_arch,
                         "linux",
@@ -3113,6 +3121,40 @@ mod tests {
                 .pkgbuild
                 .contains("example.com/mytool-linux-amd64.tar.gz"),
             "the original metadata.url must not appear when url_template is set:\n{}",
+            rendered.pkgbuild
+        );
+    }
+
+    /// `url_template` with `{{ .ArtifactName }}` must resolve to the archive
+    /// filename (e.g. `mytool-linux-amd64.tar.gz`), not the crate name
+    /// (`mytool`). The crate name has no extension, so `ArtifactName` was
+    /// never set under the old code path — the template rendered as the
+    /// literal `{{ .ArtifactName }}` instead of the real filename.
+    #[test]
+    fn url_template_artifact_name_resolves_to_archive_filename() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            url_template: Some("https://dl/v{{ .Version }}/{{ .ArtifactName }}".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = render_ctx("mytool", aur, false);
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        let rendered =
+            render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+                .expect("render ok")
+                .expect("not skipped");
+        assert!(
+            rendered
+                .pkgbuild
+                .contains("https://dl/v${pkgver}/mytool-linux-amd64.tar.gz"),
+            "ArtifactName must resolve to archive filename, not crate name:\n{}",
+            rendered.pkgbuild
+        );
+        assert!(
+            !rendered.pkgbuild.contains("ArtifactName"),
+            "literal ArtifactName template must not appear in output:\n{}",
             rendered.pkgbuild
         );
     }

@@ -51,6 +51,26 @@ pub(crate) fn render_url_template_with_ctx(
     arch: &str,
     os: &str,
 ) -> String {
+    render_url_template_with_ctx_and_artifact(ctx, url_template, name, None, version, arch, os)
+}
+
+/// Like [`render_url_template_with_ctx`] but also sets `ArtifactName`
+/// unconditionally from an explicit artifact filename.
+///
+/// Use this variant when the caller has a project/crate `name` (no extension)
+/// AND a separate `artifact_name` (the archive filename, e.g.
+/// `tool-1.2.0-linux-amd64.tar.gz`). The `name` project token and the
+/// `ArtifactName` archive filename are then independently available in the
+/// template.
+pub(crate) fn render_url_template_with_ctx_and_artifact(
+    ctx: &Context,
+    url_template: &str,
+    name: &str,
+    artifact_name: Option<&str>,
+    version: &str,
+    arch: &str,
+    os: &str,
+) -> String {
     // Start from the full project template-vars surface and overlay the
     // per-artifact pieces. The clone is cheap (small string maps) and keeps
     // the original `ctx.template_vars()` immutable for sibling calls.
@@ -64,12 +84,17 @@ pub(crate) fn render_url_template_with_ctx(
     vars.set("os", os);
     vars.set("Os", os);
     vars.set("Arch", arch);
-    // Only set ArtifactName if the caller's `name` looks like an artifact
-    // filename (has an extension). Otherwise leave whatever the context
-    // already populated. This preserves callers that pass a project/cask
-    // token rather than an artifact filename.
-    if name.contains('.') {
-        vars.set("ArtifactName", name);
+    match artifact_name {
+        // Explicit artifact filename takes precedence.
+        Some(af) => vars.set("ArtifactName", af),
+        // When no explicit artifact filename is given, fall back: set
+        // ArtifactName only if `name` itself looks like a filename (has an
+        // extension). This preserves callers that pass a project/cask token.
+        None => {
+            if name.contains('.') {
+                vars.set("ArtifactName", name);
+            }
+        }
     }
     template::render(url_template, &vars).unwrap_or_else(|_| url_template.to_string())
 }
