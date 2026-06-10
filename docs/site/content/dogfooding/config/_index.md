@@ -330,14 +330,14 @@ config is rendered.
 |---|---|---|
 | `verify_release.enabled` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`enabled: true`) |
 | `verify_release.assert_assets` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`assert_assets: true` — every produced artifact must appear as an uploaded release asset) |
-| `verify_release.install_smoke` | ⏳ Pending | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`install_smoke: {}` — installs each nfpm package in a container and runs `<bin> --version`). Auto-detects the Docker topology (bind-mount, or `docker cp` under a separate-filesystem dind). Disabled in anodizer's own config for now |
+| `verify_release.install_smoke` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`install_smoke: {}` — installs each nfpm package in a container and runs `<bin> --version`). Auto-detects the Docker topology (bind-mount, or `docker cp` under a separate-filesystem dind). Also configured in [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) |
 | `verify_release.glibc_ceiling` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`glibc_ceiling: "2.36"` — fails if any `.deb` requires glibc > 2.36) |
 | `attestations.enabled` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`enabled: true`) |
 | `attestations.mode` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`mode: subjects` — writes `dist/attestation-subjects.json`; anodizer-action feeds it to `actions/attest-build-provenance`) |
 | `attestations.artifacts` | 🤝 Help wanted | Not configured — defaults to all artifact kinds when `mode: subjects` |
 | `milestones[].repo` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`tj-smith47/anodizer`) |
 | `milestones[].close` | 🤝 Help wanted | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`close: false` — wired but disabled; no milestones configured) |
-| `milestones[].fail_on_error` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`fail_on_error: false`) |
+| `milestones[].fail_on_error` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`fail_on_error: true` — milestone errors fail the release instead of vanishing) |
 | `milestones[].name_template` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`name_template: "{{ Tag }}"`) |
 
 ## Announce

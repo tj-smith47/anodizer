@@ -505,6 +505,52 @@ fn test_collect_extra_files_no_matches() {
 }
 
 #[test]
+fn test_collect_extra_files_no_matches_dry_run_downgrades_to_warning() {
+    // Dry-run never executes before/after hooks, so hook-produced files
+    // cannot exist; the zero-match must warn instead of hard-erroring.
+    let ctx = TestContextBuilder::new().dry_run(true).build();
+    let result = collect_extra_files(
+        &[ExtraFileSpec::Glob(
+            "/tmp/anodizer_test_nonexistent_dir_12345/*.xyz".to_string(),
+        )],
+        &ctx,
+    )
+    .unwrap();
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_collect_extra_files_detailed_no_matches_dry_run_downgrades_to_warning() {
+    let ctx = TestContextBuilder::new().dry_run(true).build();
+    let result = collect_extra_files(
+        &[ExtraFileSpec::Detailed {
+            glob: "/tmp/anodizer_test_nonexistent_dir_12345/*.xyz".to_string(),
+            name_template: None,
+            allow_empty: false,
+        }],
+        &ctx,
+    )
+    .unwrap();
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_collect_extra_files_detailed_no_matches_snapshot_still_errors() {
+    // Snapshot (without --dry-run) DOES execute hooks, so a zero-match
+    // stays a hard error there — only dry-run downgrades.
+    let ctx = TestContextBuilder::new().snapshot(true).build();
+    let result = collect_extra_files(
+        &[ExtraFileSpec::Detailed {
+            glob: "/tmp/anodizer_test_nonexistent_dir_12345/*.xyz".to_string(),
+            name_template: None,
+            allow_empty: false,
+        }],
+        &ctx,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_collect_extra_files_with_real_file() {
     let ctx = TestContextBuilder::new().build();
     // Create a temp file and collect it

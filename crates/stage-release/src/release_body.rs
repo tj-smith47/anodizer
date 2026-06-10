@@ -98,7 +98,9 @@ pub(crate) fn render_nondeterministic_exemptions_block(entries: &[(String, Strin
 /// a `name_template`, the template is rendered using the provided `Context` and
 /// returned as the second element; the upload loop should use this as the
 /// upload filename instead of the filesystem name. Invalid glob patterns and
-/// patterns that match zero files are hard errors, not silent skips.
+/// patterns that match zero files are hard errors, not silent skips — except
+/// under `--dry-run`, where a zero-match downgrades to a warning (see
+/// [`extra_files_zero_match`]).
 pub(crate) fn collect_extra_files(
     specs: &[ExtraFileSpec],
     ctx: &Context,
@@ -123,7 +125,7 @@ pub(crate) fn collect_extra_files(
                     }
                 }
                 if results.len() == before {
-                    anyhow::bail!("release: extra_files glob '{}' matched no files", pattern);
+                    extra_files_zero_match(pattern, ctx)?;
                 }
             }
             ExtraFileSpec::Detailed {
@@ -171,12 +173,30 @@ pub(crate) fn collect_extra_files(
                     }
                 }
                 if results.len() == before && !*allow_empty {
-                    anyhow::bail!("release: extra_files glob '{}' matched no files", pattern);
+                    extra_files_zero_match(pattern, ctx)?;
                 }
             }
         }
     }
     Ok(results)
+}
+
+/// Handle an `extra_files` glob that matched nothing. In a live or snapshot
+/// run this is a hard error: a missing extra file means an upstream step
+/// (e.g. a `before:` hook generating a man page) silently broke, and the
+/// release must not proceed without the asset. Under `--dry-run` the hooks
+/// are printed instead of executed, so hook-produced files legitimately
+/// cannot exist yet — downgrade to a warning so dry-run gates stay usable
+/// without forcing `allow_empty` (which would also mute the live-run check).
+fn extra_files_zero_match(pattern: &str, ctx: &Context) -> Result<()> {
+    if ctx.is_dry_run() {
+        ctx.logger("release").warn(&format!(
+            "extra_files glob '{pattern}' matched no files \
+             (dry-run: hooks were not executed; a live release fails here)"
+        ));
+        return Ok(());
+    }
+    anyhow::bail!("release: extra_files glob '{pattern}' matched no files")
 }
 
 /// Convert our config's `MakeLatestConfig` into octocrab's `MakeLatest` enum.

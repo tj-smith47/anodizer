@@ -101,9 +101,16 @@ defaults:
   # publishing. Per-crate `publish.cargo: { skip: true }` suppresses inheritance
   # for that crate (DEC-9). `index_timeout` defaults to 300s in the publisher,
   # so it is omitted here (keeping the empty `{}` is the explicit opt-in).
+  # Every live publisher carries `required: true`: a failed publisher must
+  # block the release instead of vanishing into a green run — re-runs are
+  # idempotent and the workflow_dispatch republish lever recovers a partial
+  # release safely. `required` also arms the irreversible-publisher
+  # (submitter) gate and the `announce.gate_on: required_publishers` gate,
+  # both of which are inert when nothing is required.
   publish:
     cargo:
       retain_on_rollback: true
+      required: true
     on_error:
       - cmd: "echo 'anodizer: publisher {{ .Publisher }} failed for {{ .Tag }}: {{ .Error }}'"
 
@@ -360,20 +367,21 @@ crates:
       # anodizer-action's `apk-private-key` input derives the pub key from
       # the private key and drops it into ./dist/. apk verifiers install
       # this file under /etc/apk/keys/ before `apk add`-ing a signed
-      # package. `allow_empty: true` skips the glob silently when the
-      # file is absent (local snapshot / dry-run flows where no secret
-      # was provisioned).
+      # package. `allow_empty: true` skips the key glob silently when no
+      # secret was provisioned (local snapshot / dry-run flows). The man
+      # page glob deliberately has no `allow_empty`: before.hooks always
+      # generates dist/anodizer.1, so its absence is a pipeline defect
+      # that must fail the release.
       extra_files:
         - glob: "dist/*-apk-signing-key.rsa.pub"
           allow_empty: true
         - glob: "dist/anodizer.1"
-          allow_empty: true
     publish:
       # `cargo:` inherits from defaults.publish.cargo (= {} → presence-as-opt-in).
       # Other publishers below are CLI-only, so they live per-crate.
       # Homebrew is handled exclusively via the top-level `homebrew_casks:` block.
       scoop:
-        required: false
+        required: true
         repository:
           owner: tj-smith47
           name: scoop-bucket
@@ -391,7 +399,7 @@ crates:
           name: TJ Smith
           email: tj@jarvispro.io
       chocolatey:
-        required: false
+        required: true
         repository:
           owner: tj-smith47
           name: anodizer
@@ -415,7 +423,7 @@ crates:
           - rust
         republish_in_moderation: true
       winget:
-        required: false
+        required: true
         repository:
           owner: tj-smith47
           name: winget-pkgs
@@ -448,7 +456,7 @@ crates:
           email: tj@jarvispro.io
         update_existing_pr: true
       aur:
-        required: false
+        required: true
         git_url: "ssh://aur@aur.archlinux.org/anodizer-bin.git"
         name: anodizer-bin
         description: "A Rust-native release automation tool"
@@ -463,7 +471,7 @@ crates:
           name: TJ Smith
           email: tj@jarvispro.io
       nix:
-        required: false
+        required: true
         name: anodizer
         repository:
           owner: tj-smith47
@@ -596,7 +604,8 @@ crates:
       - skip: true  # disabled — no NSIS script created
         name: anodizer
     blobs:
-      - provider: s3
+      - required: true
+        provider: s3
         bucket: anodizer-releases
         endpoint: "{{ Env.MINIO_ENDPOINT }}"
         region: us-east-1
@@ -610,7 +619,7 @@ crates:
 # binaries, caveats, uninstall, and zap as first-class fields instead of raw
 # Ruby strings in post_install.
 homebrew_casks:
-  - required: false
+  - required: true
     repository:
       owner: tj-smith47
       name: homebrew-tap
@@ -656,6 +665,7 @@ schemastore:
     name: schemastore
   schemas:
     - name: anodizer
+      required: true
       description: "Anodizer Rust release-automation configuration file"
       file_match: [".anodizer.yaml", ".anodizer.yml"]
       url: "https://tj-smith47.github.io/anodizer/schema.json"
@@ -804,8 +814,8 @@ milestones:
   - repo:
       owner: tj-smith47
       name: anodizer
-    close: false  # disabled — no milestones configured yet
-    fail_on_error: false
+    close: false  # no milestones exist yet; flip once one is created
+    fail_on_error: true
     name_template: "{{ Tag }}"
 
 # DockerHub description sync — NOT image publishing (images go to ghcr.io via
@@ -827,7 +837,8 @@ artifactories:
 
 # CloudSmith publisher
 cloudsmiths:
-  - organization: jarvispro
+  - required: true
+    organization: jarvispro
     repository: anodizer
     formats: [deb, rpm, alpine]
     distributions:
@@ -854,6 +865,7 @@ npms:
 # job already grants this.
 #
 mcp:
+  required: true
   retain_on_rollback: true  # external registry — retain even if a downstream publisher fails
   name: io.github.tj-smith47/anodizer
   title: anodizer
@@ -893,6 +905,7 @@ attestations:
 verify_release:
   enabled: true
   assert_assets: true
+  install_smoke: {}
   glibc_ceiling: "2.36"
 
 # Source RPM configuration
