@@ -252,6 +252,10 @@ impl anodizer_core::Publisher for McpPublisher {
         // MCP registries accept version overwrites; nightly publishes are allowed.
         false
     }
+
+    fn retain_on_rollback(&self) -> bool {
+        Self::resolved_retain_on_rollback(self)
+    }
 }
 
 #[cfg(test)]

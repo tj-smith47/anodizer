@@ -59,6 +59,10 @@ impl anodizer_core::Publisher for SchemastorePublisher {
         true
     }
 
+    fn retain_on_rollback(&self) -> bool {
+        Self::resolved_retain_on_rollback(self)
+    }
+
     fn preflight(&self, ctx: &Context) -> anyhow::Result<PreflightCheck> {
         preflight::preflight_checks(ctx)
     }

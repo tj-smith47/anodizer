@@ -174,6 +174,9 @@ pub struct NpmConfig {
     /// skipped. Render failure hard-errors.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
+    /// When `true`, a triggered rollback leaves this publisher's work in
+    /// place rather than attempting to undo it. Default `false`.
+    pub retain_on_rollback: Option<bool>,
 }
 
 /// Default for [`NpmConfig::libc_aware`] — emit musl and glibc linux
@@ -212,6 +215,7 @@ impl Default for NpmConfig {
             skip: None,
             required: None,
             if_condition: None,
+            retain_on_rollback: None,
         }
     }
 }

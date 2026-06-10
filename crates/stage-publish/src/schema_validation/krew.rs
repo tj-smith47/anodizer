@@ -141,6 +141,7 @@ mod tests {
             required: Some(true),
             if_condition: None,
             mode: None,
+            retain_on_rollback: None,
         }
     }
 

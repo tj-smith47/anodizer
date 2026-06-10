@@ -137,6 +137,7 @@ mod tests {
             amd64_variant: Some("v1".to_string()),
             required: Some(true),
             if_condition: None,
+            retain_on_rollback: None,
         }
     }
 

@@ -31,6 +31,9 @@ pub struct SchemastoreConfig {
     pub if_condition: Option<String>,
     /// The schema entries to register/refresh.
     pub schemas: Vec<SchemaEntry>,
+    /// When `true`, a triggered rollback leaves this publisher's work in
+    /// place rather than attempting to undo it. Default `false`.
+    pub retain_on_rollback: Option<bool>,
 }
 
 /// One schema registration. `url` XOR `schema_file` selects the mode.

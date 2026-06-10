@@ -890,6 +890,10 @@ impl anodizer_core::Publisher for ScoopPublisher {
         true
     }
 
+    fn retain_on_rollback(&self) -> bool {
+        Self::resolved_retain_on_rollback(self)
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let selected =

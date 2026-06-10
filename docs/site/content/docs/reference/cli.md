@@ -299,3 +299,16 @@ Run only the announce stage from a completed dist/
 | `--skip` | — | — | Skip stages (comma-separated) |
 | `--merge` | — | — | Merge artifact lists from `release --split` workers (dist/<subdir>/context.json) before announcing. Mirrors `goreleaser announce --merge`. |
 
+
+### `anodizer notify`
+
+Send a notification through configured announce integrations
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `<message>` | — | — | Message template to send. Supports standard Tera template vars (e.g. `{{ ProjectName }}`, `{{ Tag }}`, `{{ Version }}`) |
+| `--publishers` | — | — | Comma-separated list of integration names to fire (default: all). Valid names: discord, discourse, slack, webhook, telegram, teams, mattermost, reddit, twitter, mastodon, bluesky, linkedin |
+| `--skip` | — | — | Comma-separated list of integration names to omit |
+| `--dry-run` | — | — | Run without sending (dry-run mode) |
+

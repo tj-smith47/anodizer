@@ -140,6 +140,51 @@ krew            list open PRs by head=<fork>:<branch>, PATCH state=closed per ma
 mcp / chocolatey / winget / snapcraft / upstream-AUR  warn-only (no programmatic path)
 ```
 
+### `retain_on_rollback` — skip rollback for a specific publisher
+
+Any publisher can opt out of rollback via a per-block flag:
+
+```yaml
+publish:
+  homebrew:
+    retain_on_rollback: true   # homebrew tap survives a triggered rollback
+  cargo:
+    retain_on_rollback: false  # (default) cargo yank runs on rollback
+```
+
+When `retain_on_rollback: true` and a rollback triggers, anodizer logs a
+`rollback: skipping '<name>' — retain_on_rollback is set` line and moves on.
+Use this when the cost of undoing a publisher is higher than the cost of
+leaving it in place (e.g. a Homebrew tap PR that has already been merged
+upstream).
+
+## `on_error` hooks
+
+Shell hooks that fire once per FAILED publisher, after rollback has run (so
+`{{ .RolledBack }}` reflects the final outcome):
+
+```yaml
+publish:
+  on_error:
+    - cmd: >-
+        notify 'anodizer: {{ .Publisher }} failed @ {{ .Version }}: {{ .Error }}'
+```
+
+Available template variables:
+
+| Variable | Value |
+|---|---|
+| `{{ .Publisher }}` | Publisher name (e.g. `homebrew`) |
+| `{{ .Error }}` | Error message string |
+| `{{ .Version }}` | Release version (e.g. `0.8.0`) |
+| `{{ .Tag }}` | Release tag (e.g. `v0.8.0`) |
+| `{{ .Group }}` | Publisher group: `Assets`, `Manager`, or `Submitter` |
+| `{{ .Required }}` | `true` / `false` |
+| `{{ .RolledBack }}` | `true` if any publisher was rolled back during this run |
+
+Hook failures are logged as warnings and never change the release outcome.
+For ad-hoc notifications (outside a release), use `anodizer notify`.
+
 ### Rollback scope preflight
 
 Each publisher declares a `rollback_scope_needed` label (the bullet list
@@ -475,6 +520,31 @@ anodizer release \
 | `--from-run=<id>` | Run id whose `dist/run-<id>/report.json` to load when using `--rollback-only`. | n/a |
 | `--allow-rerun` | DANGEROUS: force `release` to re-run publish even when a prior `dist/run-<id>/report.json` exists. PR-based publishers (homebrew/scoop/nix/krew/MCP) will open duplicate PRs. Prefer `--rollback-only --from-run=<id>` first. | off |
 | `--summary-json=<path>` | Write the per-publisher run summary JSON to this path. | unset |
+
+## `anodizer notify`
+
+Send a message through configured announce integrations without running a release:
+
+```bash
+# Fire all configured integrations:
+anodizer notify "hotfix deployed: v0.8.1"
+
+# Fire only specific integrations:
+anodizer notify "deploy started" --publishers=slack,discord
+
+# Omit an integration:
+anodizer notify "v0.8.1 is live" --skip=webhook
+```
+
+| Flag | Semantics |
+|---|---|
+| `<message>` (positional) | Message body. Supports Tera templates — `{{ .Version }}`, `{{ .ProjectName }}`, etc. |
+| `--publishers=<list>` | Comma-separated integration names to fire. Default: all configured. |
+| `--skip=<list>` | Comma-separated integration names to omit. |
+| `--dry-run` | Print what would be sent; do not call external APIs. |
+
+`anodizer notify` reads the same `announce:` config block as `anodizer release`.
+No idempotency sent-marker is written — repeated `notify` calls fire every time.
 
 See also:
 

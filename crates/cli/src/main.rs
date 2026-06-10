@@ -719,6 +719,25 @@ fn run() {
             quiet: cli.quiet,
             merge,
         }),
+        Commands::Notify {
+            message,
+            publishers,
+            skip,
+            dry_run,
+        } => commands::notify::run(commands::notify::NotifyOpts {
+            message,
+            publishers: if publishers.is_empty() {
+                None
+            } else {
+                Some(publishers)
+            },
+            skip,
+            config_override: cli.config.clone(),
+            verbose: cli.verbose,
+            debug: cli.debug,
+            quiet: cli.quiet,
+            dry_run,
+        }),
     };
     if let Err(e) = result {
         eprintln!("{}", anodizer_core::log::render_error(&e.to_string()));

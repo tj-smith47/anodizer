@@ -576,6 +576,39 @@ fn has_failed_submitter_with_programmatic_rollback(
     })
 }
 
+/// Fire `on_error` hooks for every failed publisher in `ctx.publish_report`,
+/// now that rollback outcomes are final. `rolled_back` is `true` when at
+/// least one publisher transitioned to `RolledBack` or `RollbackFailed` —
+/// i.e. the failure triggered the rollback path.
+fn fire_on_error_hooks(ctx: &Context, log: &StageLogger) {
+    let Some(report) = ctx.publish_report() else {
+        return;
+    };
+    let rollback_happened = report.results.iter().any(|r| {
+        matches!(
+            r.outcome,
+            PublisherOutcome::RolledBack | PublisherOutcome::RollbackFailed(_)
+        )
+    });
+    // Clone targets to release the borrow on `report` before calling
+    // `fire_on_error`, which itself needs to walk `ctx`.
+    let targets: Vec<(anodizer_core::PublisherResult, String)> = report
+        .results
+        .iter()
+        .filter_map(|r| {
+            if let PublisherOutcome::Failed(ref err) = r.outcome {
+                Some((r.clone(), err.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let _ = report;
+    for (result, err) in targets {
+        failure_hooks::fire_on_error(ctx, &result, &err, rollback_happened, log);
+    }
+}
+
 fn run_rollback_if_needed(ctx: &mut Context, publishers: &[Box<dyn Publisher>], log: &StageLogger) {
     let mode = ctx
         .options
@@ -894,6 +927,9 @@ impl Stage for PublishStage {
         // dispatch-time submitter gate).
         run_rollback_if_needed(ctx, &publishers, &log);
 
+        // ---- Fire on_error hooks (post-rollback, so .RolledBack is known) ----
+        fire_on_error_hooks(ctx, &log);
+
         // ---- Persist end-of-pipeline state to dist/run-<id>/report.json ----
         //
         // Writer half of the `--rollback-only --from-run=<id>` contract
@@ -1132,7 +1168,47 @@ mod tests {
         let log = ctx.logger("publish-test");
         PublishStage::run_with_publishers(ctx, &log, publishers)?;
         run_rollback_if_needed(ctx, publishers, &log);
+        fire_on_error_hooks(ctx, &log);
         Ok(())
+    }
+
+    #[test]
+    fn on_error_hook_fires_through_stage_failure_path() {
+        use crate::testing::*;
+        use anodizer_core::PublisherGroup;
+        use anodizer_core::config::{CrateConfig, HookEntry, PublishConfig, StructuredHook};
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("fired.txt").display().to_string();
+        let publish = PublishConfig {
+            on_error: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: format!("printf '%s\\n' '{{{{ .Publisher }}}}:{{{{ .Error }}}}' >> {out}"),
+                ..Default::default()
+            })]),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![CrateConfig {
+                name: "app".into(),
+                path: ".".into(),
+                publish: Some(publish),
+                ..Default::default()
+            }])
+            .build();
+        let publishers: Vec<Box<dyn anodizer_core::Publisher>> = vec![fake(
+            "homebrew",
+            PublisherGroup::Manager,
+            true,
+            FakeOutcome::Fail("tap rejected".into()),
+        )];
+        run_dispatch_and_rollback(&mut ctx, &publishers)
+            .expect("stage run returns Ok even when publisher fails");
+
+        let body = std::fs::read_to_string(dir.path().join("fired.txt"))
+            .expect("on_error hook must have fired after run_dispatch_and_rollback");
+        assert_eq!(body.trim(), "homebrew:tap rejected");
     }
 
     #[test]

@@ -46,7 +46,7 @@ List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Orde
 | `homebrew_casks` | list of HomebrewCaskConfig | — | Top-level Homebrew Cask configurations. `homebrew_casks` is a top-level array with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, completions, manpages, structured uninstall/zap, etc. |
 | `includes` | list of IncludeSpec | — | Additional config files to merge into this config. Supports plain string paths, `from_file:` for structured file paths, and `from_url:` for fetching configs from URLs with optional headers. |
 | `makeselfs` | list of MakeselfConfig | `[]` | Makeself self-extracting archive configurations. |
-| `mcp` | McpConfig | `{"name":null,"title":null,"description":null,"homepage":null,"packages":[],"transports":[],"skip":null,"repository":{"url":"","source":"","id":"","subfolder":""},"auth":{"type":"none"},"registry":null,"if":null}` | MCP (Model Context Protocol) server registry publishing configuration. When `name` is empty (the default), the publisher is skipped. The `mcp:` publisher block. |
+| `mcp` | McpConfig | `{"name":null,"title":null,"description":null,"homepage":null,"packages":[],"transports":[],"skip":null,"repository":{"url":"","source":"","id":"","subfolder":""},"auth":{"type":"none"},"registry":null,"if":null,"retain_on_rollback":null}` | MCP (Model Context Protocol) server registry publishing configuration. When `name` is empty (the default), the publisher is skipped. The `mcp:` publisher block. |
 | `metadata` | MetadataConfig | — | Project metadata configuration (applied to metadata.json output files). |
 | `milestones` | list of MilestoneConfig | — | Milestone closing configurations. |
 | `monorepo` | MonorepoConfig | — | Monorepo configuration. When configured, tag discovery filters by tag_prefix and the working directory is scoped to dir. |
@@ -60,7 +60,7 @@ List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Orde
 | `report_sizes` | bool | — | When true, log artifact file sizes after building. |
 | `retry` | RetryConfig | — | Top-level retry configuration applied to network-bound operations (announcers, git providers, HTTP uploads, docker pipes). When omitted, `RetryConfig::default()` is used (10 attempts, 10s base, 5m cap — the project-level retry policy). |
 | `sboms` | list of SbomConfig | `[]` | Software bill of materials (SBOM) generation configurations. |
-| `schemastore` | SchemastoreConfig | `{"repository":null,"commit_author":null,"versioned":null,"skip":null,"if":null,"schemas":[]}` | SchemaStore publisher. Registers the project's JSON Schema(s) on SchemaStore at release time. When `schemas` is empty (the default), the publisher is skipped. The `schemastore:` publisher block. |
+| `schemastore` | SchemastoreConfig | `{"repository":null,"commit_author":null,"versioned":null,"skip":null,"if":null,"schemas":[],"retain_on_rollback":null}` | SchemaStore publisher. Registers the project's JSON Schema(s) on SchemaStore at release time. When `schemas` is empty (the default), the publisher is skipped. The `schemastore:` publisher block. |
 | `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
 | `snapshot` | SnapshotConfig | — | Snapshot release configuration (local/non-tag builds). |
 | `source` | SourceConfig | — | Source archive configuration. |
@@ -157,6 +157,7 @@ With the default, a re-run that finds the same version's artifact already upload
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `signature` | bool | — | Include signatures in uploaded artifacts. |
 | `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. |
 | `target` | string | — | Target URL template for uploads (supports template variables). |
@@ -213,6 +214,7 @@ Defaults to `[archive, binary, checksum]` when omitted. |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip this config. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. |
 | `url_template` | string | — | Custom URL template for download URLs. |
@@ -289,6 +291,7 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `secret_name` | string | — | Environment variable name containing the CloudSmith API key. |
 | `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. |
 
@@ -386,6 +389,7 @@ DockerHub description sync configuration. Pushes image descriptions and README c
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `secret_name` | string | — | Environment variable name containing the DockerHub token. |
 | `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs (the legacy `disable:` spelling). |
 | `username` | string | — | DockerHub username for authentication. |
@@ -406,6 +410,7 @@ Pushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`. Authentica
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `true` — GemFury is a Manager-group publisher (mutable but reversible via the delete API), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `secret_name` | string | — | Environment variable name carrying the push token. Default `FURY_TOKEN`. The actual token VALUE is read from this env var at publish/rollback time. |
 | `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher entry. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported `gemfury[].disable:` configs. |
 | `token` | string | — | Push token used as the HTTP Basic auth username (empty password). When unset, the env var named by `secret_name` (default `FURY_TOKEN`) is consulted at publish time. NEVER logged. |
@@ -486,6 +491,7 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `service` | string | — | Homebrew service definition. |
 | `skip_upload` | StringOrBool | — | Skip publishing the cask. `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
 | `uninstall` | HomebrewCaskUninstall | — | Structured uninstall stanza configuration. |
@@ -533,6 +539,7 @@ Publishes an `apiv0.ServerJSON` document to the MCP registry (`https://registry.
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip this publisher when the expression evaluates truthy. Accepts a bool or a Tera template that renders to `"true"`/`"false"` (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`). Accepts the legacy `disable:` spelling via serde alias for back-compat with imported imported configs (the MCP config field `MCP.Disable string`). |
 | `title` | string | — | Optional human-readable title shown in registry UIs (max 100 chars). Templated; supports `{{ ProjectName \| title }}`, `{{ Version }}`, etc. |
 | `transports` | list of McpTransport | `[]` | Top-level transports list. Intentional config-portability shim: `McpConfig` carries `deny_unknown_fields`, so a migrated an imported config containing `transports:` would fail to parse if the field were absent. The list is accepted and discarded — the current MCP server schema derives transports per-package via `packages[].transport`, so the top-level list is never read after deserialization and is intentionally not emitted to the registry. |
@@ -628,6 +635,7 @@ In the default `optional-deps` mode anodizer emits one thin npm package per buil
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `true` — NPM is a Manager-group publisher (one-way 72-hour unpublish window), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `scope` | string | — | npm scope for the per-platform packages emitted in `optional-deps` mode (e.g. `@biomejs`). The per-platform packages are named `<scope>/<bin>-<os>-<cpu>[-<libc>]`. Required for `optional-deps` mode; ignored in `postinstall` mode. |
 | `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `tag` | string | — | NPM dist-tag for the publish (default `latest`). Templated. |
@@ -689,6 +697,7 @@ Use this for **cross-platform publishing** pattern: source repo on one provider 
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `true` — a failure here aborts the release. Set to `false` to log failures but continue. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip the release stage. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip). Template strings are supported here. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs (the legacy `disable:` spelling). |
 | `skip_upload` | StringOrBool | — | Skip uploading artifacts: true, false, or "auto" (skip for snapshots). Accepts bool or template string. |
 | `tag` | string | — | Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `"{{ Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`). A cross-platform publishing feature provided for free by anodizer. |
@@ -730,6 +739,7 @@ Top-level `schemastore:` block. Shared fields here are defaults for every entry 
 | `commit_author` | CommitAuthorConfig | — | Commit author for the SchemaStore commit (defaults to git config). |
 | `if` | string | — | Tera condition; when it renders falsy the publisher is skipped. |
 | `repository` | RepositoryConfig | — | Fork of `SchemaStore/schemastore` to push branches to and open the PR from. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `schemas` | list of SchemaEntry | `[]` | The schema entries to register/refresh. |
 | `skip` | StringOrBool | — | Skip the whole publisher. Alias: `disable`. |
 | `versioned` | bool | — | Default for `SchemaEntry::versioned`. |
@@ -972,18 +982,9 @@ After each docker image push, a digest file (containing the sha256 digest) is wr
 Uses the unified `HomebrewCaskConfig` which carries all fields from both the per-crate cask config and the top-level `homebrew_casks:` config. |
 | `krew` | KrewConfig | — | Krew (kubectl plugin manager) manifest publishing configuration. |
 | `nix` | NixConfig | — | Nix derivation publishing configuration. |
-| `on_error` | list of HookEntry | — | Hooks that fire once per FAILED publisher, before that publisher is rolled back. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), and `{{ .Required }}`. A hook's own failure is logged as a warning and never changes the release outcome.
-
-This is the publish-wide default; a per-publisher entry under [`PublishConfig::on_error_per_publisher`] REPLACES it for that publisher (most-specific wins — no double-fire).
+| `on_error` | list of HookEntry | — | Hooks that fire once per FAILED publisher, before that publisher is rolled back. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), `{{ .Required }}`, and `{{ .RolledBack }}` (whether the failed publisher was subsequently rolled back). A hook's own failure is logged as a warning and never changes the release outcome.
 
 ```yaml publish: on_error: - cmd: "notify 'anodizer: {{ .Publisher }} failed @ {{ .Version }}: {{ .Error }}'" ``` |
-| `on_error_per_publisher` | map | — | Per-publisher `on_error` overrides, keyed by publisher name (e.g. `homebrew`, `cargo`, `github-release`). When present for a publisher, this REPLACES [`PublishConfig::on_error`] for that publisher rather than appending to it. Keyed by name (not nested under each publisher block) so the override surface uniformly covers every publisher, including the Assets-group ones (github-release, dockerhub, ...) that are not declared inside `publish:`.
-
-```yaml publish: on_error_per_publisher: homebrew: - cmd: "page-oncall {{ .Error }}" ``` |
-| `on_rollback` | list of HookEntry | — | Hooks that fire once per publisher that is actually rolled back, in the rollback path. Same template surface and same warn-don't-cascade semantics as [`PublishConfig::on_error`]. Publish-wide default; overridable per publisher via [`PublishConfig::on_rollback_per_publisher`].
-
-```yaml publish: on_rollback: - cmd: "log-rollback {{ .Publisher }} {{ .Tag }}" ``` |
-| `on_rollback_per_publisher` | map | — | Per-publisher `on_rollback` overrides, keyed by publisher name. Same replace-not-append semantics as [`PublishConfig::on_error_per_publisher`]. |
 | `scoop` | ScoopConfig | — | Scoop manifest publishing configuration. |
 | `winget` | WingetConfig | — | WinGet manifest publishing configuration. |
 
@@ -1013,6 +1014,7 @@ Fields intentionally omitted because anodizer owns them: - `--package` / `--work
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `true` — a failure here aborts the release. Set to `false` to log failures but continue. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip this publisher; supports template strings or bool. Truthy renders disable the publisher without removing the block. |
 | `target` | string | — | Build target triple for the verification step (`--target`). |
 | `target_dir` | string | — | Override the cargo target directory (`--target-dir`). |
@@ -1049,6 +1051,7 @@ Single-crate workspaces and lockstep-bumped monorepos (anodizer itself) leave th
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `service` | string | — | Homebrew service block content (alternative to plist). |
 | `skip_upload` | StringOrBool | — | Skip publishing the formula.  `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
 | `test` | string | — | Ruby `test` block content for the formula (run by `brew test`). |
@@ -1091,6 +1094,7 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `service` | string | — | Homebrew service definition. |
 | `skip_upload` | StringOrBool | — | Skip publishing the cask. `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
 | `uninstall` | HomebrewCaskUninstall | — | Structured uninstall stanza configuration. |
@@ -1122,6 +1126,7 @@ Cannot be combined with `url.template:` — set one or the other. If both are pr
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `shortcuts` | list of list of string | — | Start menu shortcuts as `[executable, label]` pairs. |
 | `skip_upload` | StringOrBool | — | Skip publishing the manifest.  `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
 | `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
@@ -1156,6 +1161,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip pushing to the Chocolatey community repository. Bool, string, or template expression (e.g. `"{{ IsSnapshot }}"`). Accepts the legacy `skip_publish:` spelling for back-compat with configs; canonical name is `skip:` to align with every other publisher. |
 | `source_repo` | string | — | Push source URL (default: "https://push.chocolatey.org/"). |
 | `summary` | string | — | Short summary of the package. |
@@ -1197,6 +1203,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `short_description` | string | — | Short description (required, max 256 chars). |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. Accepts bool or template string. |
 | `tags` | list of string | — | Tags for package discovery (lowercased, spaces→hyphens). |
@@ -1234,6 +1241,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip this AUR config. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip). Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. Accepts bool or template string. |
 | `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
@@ -1271,6 +1279,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip this config. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. |
 | `url_template` | string | — | Custom URL template for download URLs. |
@@ -1295,6 +1304,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `short_description` | string | — | One-line summary of the kubectl plugin (max 255 chars). |
 | `skip` | StringOrBool | — | Skip this Krew config. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip). Distinct from `skip_upload` so users can opt out of generating the manifest entirely (common when a project is not a kubectl plugin and has no krew channel). |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. Accepts bool or template string. |
@@ -1324,6 +1334,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip this Nix config. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip). Distinct from `skip_upload` so users can model both intents — disable means "don't generate at all", skip_upload means "generate but don't push". Without this field, `nix: { skip: true }` was silently dropped by the serde unknown-field default. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. Accepts bool or template string. |
 | `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |

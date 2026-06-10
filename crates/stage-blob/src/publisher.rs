@@ -96,11 +96,26 @@ pub(crate) fn decode_blob_targets(extra: &anodizer_core::PublishEvidenceExtra) -
 /// that never existed when a mid-stream upload failed; the post-upload
 /// snapshot is the safer end state — fewer rollback items, no phantom
 /// targets.
-pub struct BlobPublisher;
+pub struct BlobPublisher {
+    /// Config-level override for `retain_on_rollback()`. `None` means
+    /// the publisher participates in rollback (the default); `Some(true)`
+    /// opts this publisher out of rollback so its successful uploads are
+    /// left in place even when the pipeline rolls back.
+    retain_on_rollback_override: Option<bool>,
+}
 
 impl BlobPublisher {
     pub fn new() -> Self {
-        Self
+        Self {
+            retain_on_rollback_override: None,
+        }
+    }
+
+    /// Construct with a config-supplied `retain_on_rollback` override.
+    pub fn with_retain_on_rollback(retain_on_rollback_override: Option<bool>) -> Self {
+        Self {
+            retain_on_rollback_override,
+        }
     }
 }
 
@@ -229,6 +244,10 @@ impl anodizer_core::Publisher for BlobPublisher {
         // (`keep_single_release` is a GitHub-release retention knob and does
         // NOT govern the blob layer.)
         false
+    }
+
+    fn retain_on_rollback(&self) -> bool {
+        self.retain_on_rollback_override.unwrap_or(false)
     }
 }
 

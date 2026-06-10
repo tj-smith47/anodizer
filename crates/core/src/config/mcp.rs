@@ -88,6 +88,9 @@ pub struct McpConfig {
     /// Render failure hard-errors. The `mcp.if:` conditional gate.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
+    /// When `true`, a triggered rollback leaves this publisher's work in
+    /// place rather than attempting to undo it. Default `false`.
+    pub retain_on_rollback: Option<bool>,
 }
 
 /// Repository metadata for the MCP registry payload.

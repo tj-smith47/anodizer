@@ -218,6 +218,47 @@ pub(crate) fn dispatch_all_announcers(
     Ok(())
 }
 
+/// Filter descriptor for [`dispatch_filtered_announcers`].
+pub(crate) struct AnnounceFilter<'a> {
+    /// When `Some`, only announcers whose `name()` appears here are fired.
+    /// `None` means all announcers are eligible.
+    pub include: Option<&'a [&'a str]>,
+    /// Announcers whose `name()` appears here are skipped regardless of
+    /// `include`.
+    pub skip: &'a [&'a str],
+}
+
+/// Like [`dispatch_all_announcers`] but filters by integration name.
+pub(crate) fn dispatch_filtered_announcers(
+    ctx: &mut Context,
+    announce: &AnnounceConfig,
+    retry_policy: &RetryPolicy,
+    log: &StageLogger,
+    errors: &mut Vec<String>,
+    mut marker: Option<&mut crate::sent_marker::AnnounceSentMarker>,
+    filter: AnnounceFilter<'_>,
+) -> Result<()> {
+    for announcer in announcer_registry() {
+        let name = announcer.name();
+        if filter.include.is_some_and(|inc| !inc.contains(&name)) {
+            continue;
+        }
+        if filter.skip.contains(&name) {
+            continue;
+        }
+        run_announcer(
+            *announcer,
+            ctx,
+            announce,
+            retry_policy,
+            log,
+            errors,
+            marker.as_deref_mut(),
+        )?;
+    }
+    Ok(())
+}
+
 /// The registered announcer set, in dispatch order. Single source of truth for
 /// both [`dispatch_all_announcers`] (which sends) and [`render_all_announcers`]
 /// (which only renders), so the pre-publish guard exercises exactly the set the

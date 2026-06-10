@@ -1119,6 +1119,10 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         // clobber stable content and are allowed.
         false
     }
+
+    fn retain_on_rollback(&self) -> bool {
+        Self::resolved_retain_on_rollback(self)
+    }
 }
 
 // ---------------------------------------------------------------------------

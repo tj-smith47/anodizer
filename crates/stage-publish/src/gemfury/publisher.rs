@@ -239,4 +239,8 @@ impl anodizer_core::Publisher for GemFuryPublisher {
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
     }
+
+    fn retain_on_rollback(&self) -> bool {
+        Self::resolved_retain_on_rollback(self)
+    }
 }

@@ -176,6 +176,7 @@ mod tests {
             update_existing_pr: None,
             required: Some(true),
             if_condition: None,
+            retain_on_rollback: None,
         }
     }
 

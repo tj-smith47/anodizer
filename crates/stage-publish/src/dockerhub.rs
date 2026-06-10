@@ -755,6 +755,10 @@ impl anodizer_core::Publisher for DockerhubPublisher {
         // Docker registries accept tag rewrites; nightly clobber is intentional.
         false
     }
+
+    fn retain_on_rollback(&self) -> bool {
+        Self::resolved_retain_on_rollback(self)
+    }
 }
 
 // ---------------------------------------------------------------------------

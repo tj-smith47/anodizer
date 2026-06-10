@@ -678,9 +678,9 @@ fn npm_publisher_classification() {
 
 #[test]
 fn npm_publisher_required_override_honored() {
-    let p = NpmPublisher::with_required(Some(false));
+    let p = NpmPublisher::with_overrides(Some(false), None);
     assert!(!p.required(), "required: false override must win");
-    let p = NpmPublisher::with_required(None);
+    let p = NpmPublisher::with_overrides(None, None);
     assert!(p.required(), "None falls through to the built-in default");
 }
 

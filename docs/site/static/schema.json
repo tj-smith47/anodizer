@@ -316,7 +316,8 @@
           "type": "none"
         },
         "registry": null,
-        "if": null
+        "if": null,
+        "retain_on_rollback": null
       },
       "allOf": [
         {
@@ -470,7 +471,8 @@
         "versioned": null,
         "skip": null,
         "if": null,
-        "schemas": []
+        "schemas": [],
+        "retain_on_rollback": null
       },
       "allOf": [
         {
@@ -1504,6 +1506,14 @@
             "null"
           ]
         },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "signature": {
           "description": "Include signatures in uploaded artifacts.",
           "default": null,
@@ -1904,6 +1914,14 @@
             "null"
           ]
         },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "skip": {
           "description": "Skip this AUR config. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"` for conditional skip). Accepts the legacy `disable:` spelling via serde alias for back-compat.",
           "default": null,
@@ -2203,6 +2221,14 @@
             "null"
           ]
         },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "skip": {
           "description": "Skip this config. Accepts the legacy `disable:` spelling via serde alias for back-compat.",
           "default": null,
@@ -2479,6 +2505,14 @@
         },
         "required": {
           "description": "When `true`, a failed blob upload counts as a required-publisher failure: trips the submitter gate (chocolatey/winget/snapcraft/aur don't run if blob failed) and surfaces in `report.required_failures()` so the CLI exits non-zero.\n\nDefault: `false`. Snapshot release pipelines typically don't require blobs; production pipelines that ship binaries via S3/GCS often do.\n\nWhen multiple blob configs exist, the blob stage records ONE aggregated `PublisherResult`: `required = true` if ANY config opted in. Same semantics as \"any required blob target failing should fail the release.\"",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
           "default": null,
           "type": [
             "boolean",
@@ -3016,6 +3050,14 @@
         },
         "required": {
           "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `true` — a failure here aborts the release. Set to `false` to log failures but continue.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
           "type": [
             "boolean",
             "null"
@@ -3694,6 +3736,14 @@
             "null"
           ]
         },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "skip": {
           "description": "Skip pushing to the Chocolatey community repository. Bool, string, or template expression (e.g. `\"{{ IsSnapshot }}\"`). Accepts the legacy `skip_publish:` spelling for back-compat with configs; canonical name is `skip:` to align with every other publisher.",
           "default": null,
@@ -3882,6 +3932,14 @@
         },
         "required": {
           "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
           "type": [
             "boolean",
             "null"
@@ -5106,6 +5164,14 @@
             "null"
           ]
         },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "secret_name": {
           "description": "Environment variable name containing the DockerHub token.",
           "default": null,
@@ -6105,6 +6171,14 @@
             "null"
           ]
         },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "secret_name": {
           "description": "Environment variable name carrying the push token. Default `FURY_TOKEN`. The actual token VALUE is read from this env var at publish/rollback time.",
           "default": null,
@@ -6617,6 +6691,14 @@
         },
         "required": {
           "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
           "type": [
             "boolean",
             "null"
@@ -7211,6 +7293,14 @@
             "null"
           ]
         },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "service": {
           "description": "Homebrew service block content (alternative to plist).",
           "default": null,
@@ -7591,6 +7681,14 @@
         },
         "required": {
           "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
           "type": [
             "boolean",
             "null"
@@ -8485,6 +8583,14 @@
         },
         "required": {
           "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
           "type": [
             "boolean",
             "null"
@@ -10284,6 +10390,14 @@
             "null"
           ]
         },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "skip": {
           "description": "Skip this Nix config. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"` for conditional skip). Distinct from `skip_upload` so users can model both intents — disable means \"don't generate at all\", skip_upload means \"generate but don't push\". Without this field, `nix: { skip: true }` was silently dropped by the serde unknown-field default.",
           "default": null,
@@ -10554,6 +10668,14 @@
         },
         "required": {
           "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `true` — NPM is a Manager-group publisher (one-way 72-hour unpublish window), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
           "type": [
             "boolean",
             "null"
@@ -11089,7 +11211,7 @@
           ]
         },
         "on_error": {
-          "description": "Hooks that fire once per FAILED publisher, before that publisher is rolled back. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), and `{{ .Required }}`. A hook's own failure is logged as a warning and never changes the release outcome.\n\nThis is the publish-wide default; a per-publisher entry under [`PublishConfig::on_error_per_publisher`] REPLACES it for that publisher (most-specific wins — no double-fire).\n\n```yaml publish: on_error: - cmd: \"notify 'anodizer: {{ .Publisher }} failed @ {{ .Version }}: {{ .Error }}'\" ```",
+          "description": "Hooks that fire once per FAILED publisher, before that publisher is rolled back. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), `{{ .Required }}`, and `{{ .RolledBack }}` (whether the failed publisher was subsequently rolled back). A hook's own failure is logged as a warning and never changes the release outcome.\n\n```yaml publish: on_error: - cmd: \"notify 'anodizer: {{ .Publisher }} failed @ {{ .Version }}: {{ .Error }}'\" ```",
           "default": null,
           "type": [
             "array",
@@ -11097,45 +11219,6 @@
           ],
           "items": {
             "$ref": "#/definitions/HookEntry"
-          }
-        },
-        "on_error_per_publisher": {
-          "description": "Per-publisher `on_error` overrides, keyed by publisher name (e.g. `homebrew`, `cargo`, `github-release`). When present for a publisher, this REPLACES [`PublishConfig::on_error`] for that publisher rather than appending to it. Keyed by name (not nested under each publisher block) so the override surface uniformly covers every publisher, including the Assets-group ones (github-release, dockerhub, ...) that are not declared inside `publish:`.\n\n```yaml publish: on_error_per_publisher: homebrew: - cmd: \"page-oncall {{ .Error }}\" ```",
-          "default": null,
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": {
-            "type": "array",
-            "items": {
-              "$ref": "#/definitions/HookEntry"
-            }
-          }
-        },
-        "on_rollback": {
-          "description": "Hooks that fire once per publisher that is actually rolled back, in the rollback path. Same template surface and same warn-don't-cascade semantics as [`PublishConfig::on_error`]. Publish-wide default; overridable per publisher via [`PublishConfig::on_rollback_per_publisher`].\n\n```yaml publish: on_rollback: - cmd: \"log-rollback {{ .Publisher }} {{ .Tag }}\" ```",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$ref": "#/definitions/HookEntry"
-          }
-        },
-        "on_rollback_per_publisher": {
-          "description": "Per-publisher `on_rollback` overrides, keyed by publisher name. Same replace-not-append semantics as [`PublishConfig::on_error_per_publisher`].",
-          "default": null,
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": {
-            "type": "array",
-            "items": {
-              "$ref": "#/definitions/HookEntry"
-            }
           }
         },
         "scoop": {
@@ -11750,6 +11833,14 @@
             "null"
           ]
         },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "skip": {
           "description": "Skip the release stage. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional skip). Template strings are supported here. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs (the legacy `disable:` spelling).",
           "default": null,
@@ -12203,6 +12294,14 @@
             }
           ]
         },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "schemas": {
           "description": "The schema entries to register/refresh.",
           "default": [],
@@ -12400,6 +12499,14 @@
         },
         "required": {
           "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
           "type": [
             "boolean",
             "null"
@@ -14986,6 +15093,14 @@
         },
         "required": {
           "description": "Override whether this publisher failing should fail the overall release.\n\nDefault: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "retain_on_rollback": {
+          "description": "When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`.",
+          "default": null,
           "type": [
             "boolean",
             "null"

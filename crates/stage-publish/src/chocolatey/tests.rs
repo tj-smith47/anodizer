@@ -765,14 +765,24 @@ fn classify_moderation_approved_and_unknown() {
     assert!(label.contains("on feed"));
 }
 
-/// `classify_moderation` flags Submitted / Rejected / Exempted / Unknown
-/// as in-moderation (a blocker for unattended publish).
+/// `classify_moderation` flags Submitted / Rejected / Unknown as in-moderation
+/// (blockers for unattended publish). Exempted is approved and live — not
+/// in-moderation.
 #[test]
 fn classify_moderation_in_queue_variants() {
-    for s in ["Submitted", "Rejected", "Exempted", "Unknown"] {
+    for s in ["Submitted", "Rejected", "Unknown"] {
         let (label, in_mod) = classify_moderation(Some(s), None);
         assert!(in_mod, "{s} must be flagged in-moderation; label={label}");
     }
+    let (label, in_mod) = classify_moderation(Some("Exempted"), None);
+    assert!(
+        !in_mod,
+        "Exempted is approved (not in-moderation); label={label}"
+    );
+    assert!(
+        label.contains("exempted"),
+        "label should mention exempted; got={label}"
+    );
 }
 
 /// `classify_moderation` matches Rejected case-insensitively (the OData

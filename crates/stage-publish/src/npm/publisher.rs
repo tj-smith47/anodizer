@@ -62,6 +62,10 @@ impl anodizer_core::Publisher for NpmPublisher {
         true
     }
 
+    fn retain_on_rollback(&self) -> bool {
+        Self::resolved_retain_on_rollback(self)
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let entries = ctx.config.npms.clone().unwrap_or_default();

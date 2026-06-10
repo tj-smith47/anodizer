@@ -153,8 +153,8 @@ pub(crate) fn rollback_failure_warning_msg(
     )
 }
 
-/// Emit the boilerplate for a top-level publisher struct: a struct with an
-/// `Option<bool>` override field, `new()` / `Default`, `with_required()`,
+/// Emit the boilerplate for a top-level publisher struct: a struct with
+/// `Option<bool>` override fields, `new()` / `Default`, `with_overrides()`,
 /// and an **inherent impl** carrying associated constants for `name`, `group`,
 /// `required`, and `rollback_scope_needed` plus a `resolved_required()`
 /// helper that combines the config override with `PUBLISHER_REQUIRED`.
@@ -167,13 +167,11 @@ pub(crate) fn rollback_failure_warning_msg(
 /// and each publisher's `impl Publisher for $struct { ... }` block just
 /// forwards to them.
 ///
-/// `with_required(override)` passes a config-level `Option<bool>` into the
-/// struct. `None` falls through to `PUBLISHER_REQUIRED`; `Some(v)` overrides
-/// it. `resolved_required(&self)` performs the resolution so per-publisher
-/// trait impls forward via a single `Self::resolved_required(self)` call —
-/// the override logic lives in exactly one place and a future publisher
-/// author cannot silently drop the override by forgetting the `unwrap_or`
-/// expression.
+/// `with_overrides(required, retain)` passes config-level `Option<bool>`
+/// values into the struct. `None` falls through to the built-in defaults;
+/// `Some(v)` overrides. `resolved_required(&self)` and
+/// `resolved_retain_on_rollback(&self)` perform the resolution so the override
+/// logic lives in exactly one place.
 ///
 /// Usage:
 /// ```ignore
@@ -200,22 +198,34 @@ macro_rules! simple_publisher {
             /// Config-level override for `required()`. `None` falls through to
             /// `PUBLISHER_REQUIRED`; `Some(v)` overrides it.
             required_override: Option<bool>,
+            /// Config-level override for `retain_on_rollback()`. `None` means
+            /// the publisher participates in rollback (the default); `Some(true)`
+            /// opts this publisher out of rollback so its successful work is left
+            /// in place even when the pipeline rolls back.
+            retain_on_rollback_override: Option<bool>,
         }
 
         impl $struct_name {
             pub fn new() -> Self {
                 Self {
                     required_override: None,
+                    retain_on_rollback_override: None,
                 }
             }
 
-            /// Construct with a config-supplied `required` override.
+            /// Construct with both config-supplied overrides.
             ///
-            /// Pass the `Option<bool>` read from the publisher's config struct
-            /// (e.g. `ctx.config.crates[].publish.homebrew.required`). `None`
-            /// keeps the built-in default; `Some(v)` overrides it for this run.
-            pub fn with_required(required_override: Option<bool>) -> Self {
-                Self { required_override }
+            /// Convenience constructor for dispatch sites that read both
+            /// `required` and `retain_on_rollback` from the publisher's config
+            /// struct in a single call.
+            pub fn with_overrides(
+                required_override: Option<bool>,
+                retain_on_rollback_override: Option<bool>,
+            ) -> Self {
+                Self {
+                    required_override,
+                    retain_on_rollback_override,
+                }
             }
 
             /// Combine the config-supplied override with `PUBLISHER_REQUIRED`.
@@ -225,6 +235,14 @@ macro_rules! simple_publisher {
             /// publisher cannot silently lose the override.
             pub fn resolved_required(&self) -> bool {
                 self.required_override.unwrap_or(Self::PUBLISHER_REQUIRED)
+            }
+
+            /// Resolve `retain_on_rollback` from the config-supplied override.
+            ///
+            /// Returns `true` when the config sets `retain_on_rollback: true`,
+            /// `false` otherwise (the default — rollback runs normally).
+            pub fn resolved_retain_on_rollback(&self) -> bool {
+                self.retain_on_rollback_override.unwrap_or(false)
             }
 
             /// Stable lowercase publisher identifier (see [`anodizer_core::Publisher::name`]).

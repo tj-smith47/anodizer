@@ -140,6 +140,7 @@ fn classify_delete_err(err: &anyhow::Error) -> ReleaseDeleteOutcome {
 pub struct GithubReleasePublisher {
     client: Arc<dyn GitHubClient + Send + Sync>,
     required_override: Option<bool>,
+    retain_on_rollback_override: Option<bool>,
 }
 
 impl GithubReleasePublisher {
@@ -160,6 +161,7 @@ impl GithubReleasePublisher {
         Self {
             client: Arc::new(gh_cli_client::GhCliGitHubClient),
             required_override: None,
+            retain_on_rollback_override: None,
         }
     }
 
@@ -171,6 +173,19 @@ impl GithubReleasePublisher {
         Self {
             client: Arc::new(gh_cli_client::GhCliGitHubClient),
             required_override,
+            retain_on_rollback_override: None,
+        }
+    }
+
+    /// Construct with config-supplied `required` and `retain_on_rollback` overrides.
+    pub fn with_overrides(
+        required_override: Option<bool>,
+        retain_on_rollback_override: Option<bool>,
+    ) -> Self {
+        Self {
+            client: Arc::new(gh_cli_client::GhCliGitHubClient),
+            required_override,
+            retain_on_rollback_override,
         }
     }
 
@@ -180,6 +195,7 @@ impl GithubReleasePublisher {
         Self {
             client,
             required_override: None,
+            retain_on_rollback_override: None,
         }
     }
 }
@@ -504,6 +520,10 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         // GitHub Releases accepts overwrites; nightly re-cuts are the primary
         // use-case for keep_single_release, so nightly runs are allowed.
         false
+    }
+
+    fn retain_on_rollback(&self) -> bool {
+        self.retain_on_rollback_override.unwrap_or(false)
     }
 }
 

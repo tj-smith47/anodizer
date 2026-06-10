@@ -604,6 +604,28 @@ pub enum Commands {
         )]
         merge: bool,
     },
+    /// Send a notification through configured announce integrations.
+    ///
+    /// Fires configured announce integrations (slack, discord, webhook, …) with
+    /// a Tera-rendered message. Unlike `announce`, this command does not require
+    /// a `dist/` directory — it is intended for ad-hoc notifications outside the
+    /// release pipeline (e.g. CI status alerts, deployment notices).
+    Notify {
+        /// Message template to send. Supports standard Tera template vars
+        /// (e.g. `{{ ProjectName }}`, `{{ Tag }}`, `{{ Version }}`).
+        message: String,
+        /// Comma-separated list of integration names to fire (default: all).
+        /// Valid names: discord, discourse, slack, webhook, telegram, teams,
+        /// mattermost, reddit, twitter, mastodon, bluesky, linkedin.
+        #[arg(long = "publishers", value_delimiter = ',')]
+        publishers: Vec<String>,
+        /// Comma-separated list of integration names to omit.
+        #[arg(long = "skip", value_delimiter = ',')]
+        skip: Vec<String>,
+        /// Run without sending (dry-run mode).
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Output format for `anodizer changelog`.

@@ -1700,6 +1700,10 @@ impl anodizer_core::Publisher for CargoPublisher {
         !decode_cargo_yank_targets(&evidence.extra).is_empty()
     }
 
+    fn retain_on_rollback(&self) -> bool {
+        Self::resolved_retain_on_rollback(self)
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let selected = ctx.options.selected_crates.clone();

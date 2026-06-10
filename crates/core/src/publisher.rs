@@ -133,6 +133,13 @@ pub trait Publisher: Send + Sync {
     fn programmatic_rollback_on_failure(&self, _evidence: &PublishEvidence) -> bool {
         false
     }
+
+    /// When `true`, this publisher's successful work is left in place even
+    /// when a rollback is triggered — it is never passed to `rollback()`.
+    /// Default `false` (rollback runs if the publisher implements it).
+    fn retain_on_rollback(&self) -> bool {
+        false
+    }
 }
 
 /// The exact warn message a publisher emits when `rollback()` is invoked

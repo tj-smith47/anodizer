@@ -88,6 +88,9 @@ pub struct HomebrewConfig {
     /// skipped. Render failure hard-errors. Config key: `brews[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
+    /// When `true`, a triggered rollback leaves this publisher's work in
+    /// place rather than attempting to undo it. Default `false`.
+    pub retain_on_rollback: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
@@ -278,6 +281,9 @@ pub struct HomebrewCaskConfig {
     /// skipped. Render failure hard-errors. Config key: `homebrew_casks[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
+    /// When `true`, a triggered rollback leaves this publisher's work in
+    /// place rather than attempting to undo it. Default `false`.
+    pub retain_on_rollback: Option<bool>,
 }
 
 /// Structured URL configuration for Homebrew Cask downloads.
@@ -487,6 +493,9 @@ pub struct ScoopConfig {
     /// skipped. Render failure hard-errors. Config key: `scoop[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
+    /// When `true`, a triggered rollback leaves this publisher's work in
+    /// place rather than attempting to undo it. Default `false`.
+    pub retain_on_rollback: Option<bool>,
 }
 
 // `TapConfig` / `BucketConfig` (legacy {owner, name}-only repo types) live

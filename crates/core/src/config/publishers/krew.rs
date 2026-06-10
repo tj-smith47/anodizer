@@ -87,6 +87,9 @@ pub struct KrewConfig {
     ///   hosted bot can't reach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<KrewMode>,
+    /// When `true`, a triggered rollback leaves this publisher's work in
+    /// place rather than attempting to undo it. Default `false`.
+    pub retain_on_rollback: Option<bool>,
 }
 
 /// Which krew-index submission path the krew publisher takes.

@@ -37,3 +37,32 @@ mod tests;
 
 pub use render_check::validate_announce_templates;
 pub use run::{AnnounceStage, emit_summary};
+
+/// Dispatch a filtered subset of configured announcers without an idempotency
+/// sent-marker (suitable for ad-hoc notifications outside the release pipeline).
+///
+/// Fire a filtered subset of announce integrations.
+///
+/// `include` — when `Some`, only fire announcers whose name appears in the
+/// slice. `skip` — omit these integration names regardless of `include`.
+/// Per-provider errors are collected into `errors` rather than short-circuiting,
+/// so one failing integration does not block the others.
+pub fn dispatch_filtered_announcers(
+    ctx: &mut anodizer_core::context::Context,
+    announce: &anodizer_core::config::AnnounceConfig,
+    retry_policy: &anodizer_core::retry::RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
+    errors: &mut Vec<String>,
+    include: Option<&[&str]>,
+    skip: &[&str],
+) -> anyhow::Result<()> {
+    announcers::dispatch_filtered_announcers(
+        ctx,
+        announce,
+        retry_policy,
+        log,
+        errors,
+        None,
+        announcers::AnnounceFilter { include, skip },
+    )
+}

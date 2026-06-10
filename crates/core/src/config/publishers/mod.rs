@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use schemars::JsonSchema;
@@ -184,12 +183,10 @@ pub struct PublishConfig {
     /// rolled back. Each entry is a standard hook (`cmd` / `dir` / `env` /
     /// `output`); the template surface adds `{{ .Publisher }}`,
     /// `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}`
-    /// (Assets/Manager/Submitter), and `{{ .Required }}`. A hook's own
-    /// failure is logged as a warning and never changes the release outcome.
-    ///
-    /// This is the publish-wide default; a per-publisher entry under
-    /// [`PublishConfig::on_error_per_publisher`] REPLACES it for that
-    /// publisher (most-specific wins — no double-fire).
+    /// (Assets/Manager/Submitter), `{{ .Required }}`, and
+    /// `{{ .RolledBack }}` (whether the failed publisher was subsequently
+    /// rolled back). A hook's own failure is logged as a warning and never
+    /// changes the release outcome.
     ///
     /// ```yaml
     /// publish:
@@ -197,65 +194,6 @@ pub struct PublishConfig {
     ///     - cmd: "notify 'anodizer: {{ .Publisher }} failed @ {{ .Version }}: {{ .Error }}'"
     /// ```
     pub on_error: Option<Vec<HookEntry>>,
-
-    /// Hooks that fire once per publisher that is actually rolled back, in
-    /// the rollback path. Same template surface and same warn-don't-cascade
-    /// semantics as [`PublishConfig::on_error`]. Publish-wide default;
-    /// overridable per publisher via
-    /// [`PublishConfig::on_rollback_per_publisher`].
-    ///
-    /// ```yaml
-    /// publish:
-    ///   on_rollback:
-    ///     - cmd: "log-rollback {{ .Publisher }} {{ .Tag }}"
-    /// ```
-    pub on_rollback: Option<Vec<HookEntry>>,
-
-    /// Per-publisher `on_error` overrides, keyed by publisher name (e.g.
-    /// `homebrew`, `cargo`, `github-release`). When present for a publisher,
-    /// this REPLACES [`PublishConfig::on_error`] for that publisher rather
-    /// than appending to it. Keyed by name (not nested under each publisher
-    /// block) so the override surface uniformly covers every publisher,
-    /// including the Assets-group ones (github-release, dockerhub, ...) that
-    /// are not declared inside `publish:`.
-    ///
-    /// ```yaml
-    /// publish:
-    ///   on_error_per_publisher:
-    ///     homebrew:
-    ///       - cmd: "page-oncall {{ .Error }}"
-    /// ```
-    pub on_error_per_publisher: Option<BTreeMap<String, Vec<HookEntry>>>,
-
-    /// Per-publisher `on_rollback` overrides, keyed by publisher name. Same
-    /// replace-not-append semantics as
-    /// [`PublishConfig::on_error_per_publisher`].
-    pub on_rollback_per_publisher: Option<BTreeMap<String, Vec<HookEntry>>>,
-}
-
-impl PublishConfig {
-    /// Resolve the effective `on_error` hooks for a publisher: the
-    /// per-publisher override under
-    /// [`PublishConfig::on_error_per_publisher`] if present (replacing the
-    /// default), otherwise the publish-wide [`PublishConfig::on_error`].
-    /// `None` (absent) means no hooks fire — the pre-v0.8 behavior.
-    pub fn effective_on_error(&self, publisher: &str) -> Option<&[HookEntry]> {
-        self.on_error_per_publisher
-            .as_ref()
-            .and_then(|m| m.get(publisher))
-            .map(Vec::as_slice)
-            .or(self.on_error.as_deref())
-    }
-
-    /// Resolve the effective `on_rollback` hooks for a publisher, mirroring
-    /// [`PublishConfig::effective_on_error`].
-    pub fn effective_on_rollback(&self, publisher: &str) -> Option<&[HookEntry]> {
-        self.on_rollback_per_publisher
-            .as_ref()
-            .and_then(|m| m.get(publisher))
-            .map(Vec::as_slice)
-            .or(self.on_rollback.as_deref())
-    }
 }
 
 /// `cargo publish` flag surface.
@@ -343,6 +281,9 @@ pub struct CargoPublishConfig {
     /// skipped. Render failure hard-errors. Config key: the publisher's `if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
+    /// When `true`, a triggered rollback leaves this publisher's work in
+    /// place rather than attempting to undo it. Default `false`.
+    pub retain_on_rollback: Option<bool>,
 }
 
 /// Pre-publish polling gate for `cargo publish`. When `enabled`, the cargo

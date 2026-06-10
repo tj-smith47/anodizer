@@ -117,6 +117,9 @@ pub struct ReleaseConfig {
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<ForceTokenKind>,
+    /// When `true`, a triggered rollback leaves this publisher's work in
+    /// place rather than attempting to undo it. Default `false`.
+    pub retain_on_rollback: Option<bool>,
 }
 
 impl ReleaseConfig {

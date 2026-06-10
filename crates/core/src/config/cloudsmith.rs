@@ -73,4 +73,7 @@ pub struct CloudSmithConfig {
     /// skipped. Render failure hard-errors. Config key: `cloudsmiths[].if:`.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
+    /// When `true`, a triggered rollback leaves this publisher's work in
+    /// place rather than attempting to undo it. Default `false`.
+    pub retain_on_rollback: Option<bool>,
 }

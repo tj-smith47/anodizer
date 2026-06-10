@@ -69,7 +69,14 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
                 .iter()
                 .map(|c| c.publish.as_ref().and_then(|p| p.cargo.as_ref()?.required)),
         );
-        v.push(Box::new(crate::cargo::CargoPublisher::with_required(req)));
+        let retain = collapse_required(ctx.config.crates.iter().map(|c| {
+            c.publish
+                .as_ref()
+                .and_then(|p| p.cargo.as_ref()?.retain_on_rollback)
+        }));
+        v.push(Box::new(crate::cargo::CargoPublisher::with_overrides(
+            req, retain,
+        )));
     }
     // Assets group: dockerhub, artifactory, cloudsmith.
     // `blob` is also Assets-group but runs as its own `BlobStage` (see
@@ -77,8 +84,15 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     if is_dockerhub_configured(ctx) {
         // Escalate-to-true across `dockerhub:` entries.
         let req = collapse_required(ctx.config.dockerhub.iter().flatten().map(|c| c.required));
+        let retain = collapse_required(
+            ctx.config
+                .dockerhub
+                .iter()
+                .flatten()
+                .map(|c| c.retain_on_rollback),
+        );
         v.push(Box::new(
-            crate::dockerhub::DockerhubPublisher::with_required(req),
+            crate::dockerhub::DockerhubPublisher::with_overrides(req, retain),
         ));
     }
     if is_artifactory_configured(ctx) {
@@ -90,15 +104,29 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
                 .flatten()
                 .map(|c| c.required),
         );
+        let retain = collapse_required(
+            ctx.config
+                .artifactories
+                .iter()
+                .flatten()
+                .map(|c| c.retain_on_rollback),
+        );
         v.push(Box::new(
-            crate::artifactory::ArtifactoryPublisher::with_required(req),
+            crate::artifactory::ArtifactoryPublisher::with_overrides(req, retain),
         ));
     }
     if is_cloudsmith_configured(ctx) {
         // Escalate-to-true across `cloudsmiths:` entries.
         let req = collapse_required(ctx.config.cloudsmiths.iter().flatten().map(|c| c.required));
+        let retain = collapse_required(
+            ctx.config
+                .cloudsmiths
+                .iter()
+                .flatten()
+                .map(|c| c.retain_on_rollback),
+        );
         v.push(Box::new(
-            crate::cloudsmith::CloudsmithPublisher::with_required(req),
+            crate::cloudsmith::CloudsmithPublisher::with_overrides(req, retain),
         ));
     }
     if is_github_release_configured(ctx) {
@@ -109,8 +137,14 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
                 .iter()
                 .map(|c| c.release.as_ref().and_then(|r| r.required)),
         );
+        let retain = collapse_required(
+            ctx.config
+                .crates
+                .iter()
+                .map(|c| c.release.as_ref().and_then(|r| r.retain_on_rollback)),
+        );
         v.push(Box::new(
-            anodizer_stage_release::publisher::GithubReleasePublisher::with_required(req),
+            anodizer_stage_release::publisher::GithubReleasePublisher::with_overrides(req, retain),
         ));
     }
     // Manager group — git-revert rollback against publisher-owned repo.
@@ -119,20 +153,32 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
         // top-level `homebrew_casks:` entries: a `required: true` anywhere
         // (formula or cask config) wins, so a cask-only setup with no per-crate
         // publish block can still escalate the gate.
-        let per_crate = ctx.config.crates.iter().map(|c| {
+        let per_crate_req = ctx.config.crates.iter().map(|c| {
             c.publish
                 .as_ref()
                 .and_then(|p| p.homebrew.as_ref()?.required)
         });
-        let casks = ctx
+        let casks_req = ctx
             .config
             .homebrew_casks
             .iter()
             .flatten()
             .map(|c| c.required);
-        let req = collapse_required(per_crate.chain(casks));
+        let req = collapse_required(per_crate_req.chain(casks_req));
+        let per_crate_retain = ctx.config.crates.iter().map(|c| {
+            c.publish
+                .as_ref()
+                .and_then(|p| p.homebrew.as_ref()?.retain_on_rollback)
+        });
+        let casks_retain = ctx
+            .config
+            .homebrew_casks
+            .iter()
+            .flatten()
+            .map(|c| c.retain_on_rollback);
+        let retain = collapse_required(per_crate_retain.chain(casks_retain));
         v.push(Box::new(
-            crate::homebrew::publisher::HomebrewPublisher::with_required(req),
+            crate::homebrew::publisher::HomebrewPublisher::with_overrides(req, retain),
         ));
     }
     if is_scoop_configured(ctx) {
@@ -143,7 +189,14 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
                 .iter()
                 .map(|c| c.publish.as_ref().and_then(|p| p.scoop.as_ref()?.required)),
         );
-        v.push(Box::new(crate::scoop::ScoopPublisher::with_required(req)));
+        let retain = collapse_required(ctx.config.crates.iter().map(|c| {
+            c.publish
+                .as_ref()
+                .and_then(|p| p.scoop.as_ref()?.retain_on_rollback)
+        }));
+        v.push(Box::new(crate::scoop::ScoopPublisher::with_overrides(
+            req, retain,
+        )));
     }
     if is_nix_configured(ctx) {
         // Escalate-to-true across crates.
@@ -153,8 +206,13 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
                 .iter()
                 .map(|c| c.publish.as_ref().and_then(|p| p.nix.as_ref()?.required)),
         );
+        let retain = collapse_required(ctx.config.crates.iter().map(|c| {
+            c.publish
+                .as_ref()
+                .and_then(|p| p.nix.as_ref()?.retain_on_rollback)
+        }));
         v.push(Box::new(
-            crate::nix::publisher::NixPublisher::with_required(req),
+            crate::nix::publisher::NixPublisher::with_overrides(req, retain),
         ));
     }
     if is_aur_configured(ctx) {
@@ -165,7 +223,14 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
                 .iter()
                 .map(|c| c.publish.as_ref().and_then(|p| p.aur.as_ref()?.required)),
         );
-        v.push(Box::new(crate::aur::AurOurPublisher::with_required(req)));
+        let retain = collapse_required(ctx.config.crates.iter().map(|c| {
+            c.publish
+                .as_ref()
+                .and_then(|p| p.aur.as_ref()?.retain_on_rollback)
+        }));
+        v.push(Box::new(crate::aur::AurOurPublisher::with_overrides(
+            req, retain,
+        )));
     }
     // Manager group — close-PR / registry rollback.
     if is_krew_configured(ctx) {
@@ -176,33 +241,58 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
                 .iter()
                 .map(|c| c.publish.as_ref().and_then(|p| p.krew.as_ref()?.required)),
         );
-        v.push(Box::new(crate::krew::KrewPublisher::with_required(req)));
+        let retain = collapse_required(ctx.config.crates.iter().map(|c| {
+            c.publish
+                .as_ref()
+                .and_then(|p| p.krew.as_ref()?.retain_on_rollback)
+        }));
+        v.push(Box::new(crate::krew::KrewPublisher::with_overrides(
+            req, retain,
+        )));
     }
     if is_mcp_configured(ctx) {
         // mcp is single top-level config — no precedence to resolve.
         let req = ctx.config.mcp.required;
+        let retain = ctx.config.mcp.retain_on_rollback;
         v.push(Box::new(
-            crate::mcp::publisher::McpPublisher::with_required(req),
+            crate::mcp::publisher::McpPublisher::with_overrides(req, retain),
         ));
     }
     if is_schemastore_configured(ctx) {
         // Escalate-to-true across `schemastore.schemas[]` entries. One block →
         // one publisher; it iterates its own schemas internally.
         let req = collapse_required(ctx.config.schemastore.schemas.iter().map(|s| s.required));
+        let retain = ctx.config.schemastore.retain_on_rollback;
         v.push(Box::new(
-            crate::schemastore::SchemastorePublisher::with_required(req),
+            crate::schemastore::SchemastorePublisher::with_overrides(req, retain),
         ));
     }
     if is_npm_configured(ctx) {
         // Escalate-to-true across `npms:` entries.
         let req = collapse_required(ctx.config.npms.iter().flatten().map(|c| c.required));
-        v.push(Box::new(crate::npm::NpmPublisher::with_required(req)));
+        let retain = collapse_required(
+            ctx.config
+                .npms
+                .iter()
+                .flatten()
+                .map(|c| c.retain_on_rollback),
+        );
+        v.push(Box::new(crate::npm::NpmPublisher::with_overrides(
+            req, retain,
+        )));
     }
     if is_gemfury_configured(ctx) {
         // Escalate-to-true across `gemfury:` entries.
         let req = collapse_required(ctx.config.gemfury.iter().flatten().map(|c| c.required));
-        v.push(Box::new(crate::gemfury::GemFuryPublisher::with_required(
-            req,
+        let retain = collapse_required(
+            ctx.config
+                .gemfury
+                .iter()
+                .flatten()
+                .map(|c| c.retain_on_rollback),
+        );
+        v.push(Box::new(crate::gemfury::GemFuryPublisher::with_overrides(
+            req, retain,
         )));
     }
     // Submitter group (no programmatic rollback — warn-only).
@@ -213,8 +303,13 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
                 .as_ref()
                 .and_then(|p| p.chocolatey.as_ref()?.required)
         }));
+        let retain = collapse_required(ctx.config.crates.iter().map(|c| {
+            c.publish
+                .as_ref()
+                .and_then(|p| p.chocolatey.as_ref()?.retain_on_rollback)
+        }));
         v.push(Box::new(
-            crate::chocolatey::ChocolateyPublisher::with_required(req),
+            crate::chocolatey::ChocolateyPublisher::with_overrides(req, retain),
         ));
     }
     if is_winget_configured(ctx) {
@@ -225,20 +320,39 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
                 .iter()
                 .map(|c| c.publish.as_ref().and_then(|p| p.winget.as_ref()?.required)),
         );
-        v.push(Box::new(crate::winget::WingetPublisher::with_required(req)));
+        let retain = collapse_required(ctx.config.crates.iter().map(|c| {
+            c.publish
+                .as_ref()
+                .and_then(|p| p.winget.as_ref()?.retain_on_rollback)
+        }));
+        v.push(Box::new(crate::winget::WingetPublisher::with_overrides(
+            req, retain,
+        )));
     }
     if crate::aur_source::is_aur_source_configured(ctx) {
         // Escalate-to-true across per-crate `publish.aur_source.required` AND
         // top-level `aur_sources:` entries: a `required: true` anywhere wins.
-        let per_crate = ctx.config.crates.iter().map(|c| {
+        let per_crate_req = ctx.config.crates.iter().map(|c| {
             c.publish
                 .as_ref()
                 .and_then(|p| p.aur_source.as_ref()?.required)
         });
-        let top = ctx.config.aur_sources.iter().flatten().map(|c| c.required);
-        let req = collapse_required(per_crate.chain(top));
+        let top_req = ctx.config.aur_sources.iter().flatten().map(|c| c.required);
+        let req = collapse_required(per_crate_req.chain(top_req));
+        let per_crate_retain = ctx.config.crates.iter().map(|c| {
+            c.publish
+                .as_ref()
+                .and_then(|p| p.aur_source.as_ref()?.retain_on_rollback)
+        });
+        let top_retain = ctx
+            .config
+            .aur_sources
+            .iter()
+            .flatten()
+            .map(|c| c.retain_on_rollback);
+        let retain = collapse_required(per_crate_retain.chain(top_retain));
         v.push(Box::new(
-            crate::aur_source::AurSourcePublisher::with_required(req),
+            crate::aur_source::AurSourcePublisher::with_overrides(req, retain),
         ));
     }
     // Snapcraft is intentionally NOT registered here — see the

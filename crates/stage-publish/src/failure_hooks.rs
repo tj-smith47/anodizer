@@ -1,50 +1,37 @@
-//! Config-declarable `on_error` / `on_rollback` hook firing.
+//! Config-declarable `on_error` hook firing.
 //!
-//! Two firing points, both reusing the standard hook machinery
+//! One firing point, reusing the standard hook machinery
 //! ([`anodizer_core::hooks::run_hooks`] over [`HookEntry`]):
 //!
 //! - [`fire_on_error`] runs once per FAILED publisher in the dispatch
-//!   failure path, BEFORE that publisher is rolled back.
-//! - [`fire_on_rollback`] runs once per publisher that is actually rolled
-//!   back, in the rollback path.
+//!   failure path, AFTER rollback has been attempted. The `rolled_back`
+//!   flag indicates whether the publisher was successfully reverted and is
+//!   exposed as `{{ .RolledBack }}` in the hook template surface.
 //!
 //! Effective hooks are resolved per publisher from the in-scope crates'
-//! `publish:` blocks via [`PublishConfig::effective_on_error`] /
-//! [`PublishConfig::effective_on_rollback`]: a per-publisher override
-//! REPLACES the publish-wide default (most-specific wins, no double-fire).
+//! `publish:` blocks via `publish.on_error`.
 //!
 //! These are notification / cleanup hooks. A hook's OWN failure must never
 //! cascade: it is logged as a warning via [`StageLogger`] and execution
 //! continues, so a broken notifier cannot change the release exit status or
 //! abort the remaining rollbacks.
 
-use anodizer_core::config::{HookEntry, PublishConfig};
+use anodizer_core::config::HookEntry;
 use anodizer_core::context::Context;
 use anodizer_core::hooks::{HookRunContext, run_hooks};
 use anodizer_core::log::StageLogger;
 use anodizer_core::template::TemplateVars;
 use anodizer_core::{PublisherGroup, PublisherResult};
 
-/// Which failure-hook surface to resolve for a publisher.
-#[derive(Clone, Copy)]
-enum HookKind {
-    OnError,
-    OnRollback,
-}
-
-/// Walk the in-scope crates' `publish:` blocks and return the first crate
-/// whose effective hook list (per `kind`) is non-empty for `publisher`.
+/// Walk the in-scope crates' `publish:` blocks and return the `on_error`
+/// hooks for the first crate that declares them.
 ///
 /// Scope follows the active per-crate run: when `selected_crates` is set
 /// (workspace per-crate mode), only those crates are consulted; otherwise
-/// (single-crate / lockstep) every crate is. The first match wins — in
-/// lockstep mode a release fires one publish pipeline, so a single declaring
-/// crate is the intended source; per-crate mode runs one pipeline per crate,
-/// so each run sees only its own crate's hooks. Returned hooks are cloned so
+/// (single-crate / lockstep) every crate is. Returned hooks are cloned so
 /// the borrow on `ctx.config` does not outlive the subsequent `run_hooks`
-/// call, which needs `&StageLogger` (and, at the rollback site, leaves `ctx`
-/// free for other rollback steps).
-fn resolve_hooks(ctx: &Context, publisher: &str, kind: HookKind) -> Vec<HookEntry> {
+/// call.
+fn resolve_on_error_hooks(ctx: &Context) -> Vec<HookEntry> {
     let selected = &ctx.options.selected_crates;
     for c in &ctx.config.crates {
         if !selected.is_empty() && !selected.iter().any(|s| s == &c.name) {
@@ -53,25 +40,11 @@ fn resolve_hooks(ctx: &Context, publisher: &str, kind: HookKind) -> Vec<HookEntr
         let Some(publish) = c.publish.as_ref() else {
             continue;
         };
-        // Return on the first Some, even when it's an empty list — an empty
-        // override is a deliberate suppression of a sibling crate's default
-        // hooks and must not be skipped in lockstep mode.
-        if let Some(hooks) = effective(publish, publisher, kind) {
+        if let Some(hooks) = publish.on_error.as_deref() {
             return hooks.to_vec();
         }
     }
     Vec::new()
-}
-
-fn effective<'a>(
-    publish: &'a PublishConfig,
-    publisher: &str,
-    kind: HookKind,
-) -> Option<&'a [HookEntry]> {
-    match kind {
-        HookKind::OnError => publish.effective_on_error(publisher),
-        HookKind::OnRollback => publish.effective_on_rollback(publisher),
-    }
 }
 
 /// Map a [`PublisherGroup`] to the `{{ .Group }}` template value.
@@ -85,15 +58,22 @@ fn group_label(group: PublisherGroup) -> &'static str {
 
 /// Bind the failure-hook template surface on top of the standard per-crate
 /// vars: `{{ .Publisher }}`, `{{ .Error }}`, `{{ .Group }}`,
-/// `{{ .Required }}`. `{{ .Version }}` / `{{ .Tag }}` are already bound on
-/// `ctx.template_vars()` for the current crate scope, so they resolve
-/// per-crate correctly in every config mode without re-binding here.
-fn bind_failure_vars(base: &TemplateVars, result: &PublisherResult, error: &str) -> TemplateVars {
+/// `{{ .Required }}`, `{{ .RolledBack }}`. `{{ .Version }}` / `{{ .Tag }}`
+/// are already bound on `ctx.template_vars()` for the current crate scope,
+/// so they resolve per-crate correctly in every config mode without
+/// re-binding here.
+fn bind_failure_vars(
+    base: &TemplateVars,
+    result: &PublisherResult,
+    error: &str,
+    rolled_back: bool,
+) -> TemplateVars {
     let mut vars = base.clone();
     vars.set("Publisher", &result.name);
     vars.set("Error", error);
     vars.set("Group", group_label(result.group));
     vars.set("Required", if result.required { "true" } else { "false" });
+    vars.set("RolledBack", if rolled_back { "true" } else { "false" });
     vars
 }
 
@@ -115,44 +95,23 @@ fn run_warn_only(
 }
 
 /// Fire `on_error` hooks for a single FAILED publisher. Called from the
-/// dispatch failure path BEFORE the publisher is rolled back. `error` is the
-/// publisher's failure message (the `{{ .Error }}` value).
+/// dispatch failure path AFTER rollback has been attempted. `error` is the
+/// publisher's failure message (the `{{ .Error }}` value). `rolled_back`
+/// indicates whether the publisher was successfully reverted and is exposed
+/// as `{{ .RolledBack }}` in the template surface.
 pub(crate) fn fire_on_error(
     ctx: &Context,
     result: &PublisherResult,
     error: &str,
+    rolled_back: bool,
     log: &StageLogger,
 ) {
-    let hooks = resolve_hooks(ctx, &result.name, HookKind::OnError);
+    let hooks = resolve_on_error_hooks(ctx);
     if hooks.is_empty() {
         return;
     }
-    let vars = bind_failure_vars(ctx.template_vars(), result, error);
+    let vars = bind_failure_vars(ctx.template_vars(), result, error, rolled_back);
     run_warn_only(&hooks, "on-error", ctx.is_dry_run(), log, &vars);
-}
-
-/// Fire `on_rollback` hooks for a single publisher whose rollback step ran.
-/// Called from the rollback path once the rollback action has been attempted
-/// — for BOTH a successful revert (`RolledBack`) and a failed one
-/// (`RollbackFailed`), since a failed rollback (a live artifact that could
-/// not be pulled) is the MORE important signal for the operator's
-/// notification/cleanup hook. Rows that were never attempted (no-scope,
-/// publisher-not-in-registry) do not reach this call. `error` carries the
-/// originating failure message when the rolled-back row was a `Failed`
-/// submitter (cargo); for a reverted `Succeeded` Assets/Manager publisher it
-/// is empty.
-pub(crate) fn fire_on_rollback(
-    ctx: &Context,
-    result: &PublisherResult,
-    error: &str,
-    log: &StageLogger,
-) {
-    let hooks = resolve_hooks(ctx, &result.name, HookKind::OnRollback);
-    if hooks.is_empty() {
-        return;
-    }
-    let vars = bind_failure_vars(ctx.template_vars(), result, error);
-    run_warn_only(&hooks, "on-rollback", ctx.is_dry_run(), log, &vars);
 }
 
 #[cfg(test)]
@@ -162,7 +121,6 @@ mod tests {
     use anodizer_core::log::{StageLogger, Verbosity};
     use anodizer_core::test_helpers::TestContextBuilder;
     use anodizer_core::{PublisherGroup, PublisherOutcome, PublisherResult};
-    use std::collections::BTreeMap;
     use std::path::Path;
 
     fn log() -> StageLogger {
@@ -212,7 +170,7 @@ mod tests {
         let publish = PublishConfig {
             on_error: Some(vec![probe_hook(
                 &out,
-                "P={{ .Publisher }} E={{ .Error }} V={{ .Version }} G={{ .Group }} R={{ .Required }}",
+                "P={{ .Publisher }} E={{ .Error }} V={{ .Version }} G={{ .Group }} R={{ .Required }} RB={{ .RolledBack }}",
             )]),
             ..Default::default()
         };
@@ -222,92 +180,38 @@ mod tests {
             .build();
         let res = result("homebrew", PublisherGroup::Manager, true);
 
-        fire_on_error(&ctx, &res, "tap push rejected", &log());
+        fire_on_error(&ctx, &res, "tap push rejected", true, &log());
 
         let body = std::fs::read_to_string(&out).expect("hook must have written output");
         assert_eq!(
             body.trim(),
-            "P=homebrew E=tap push rejected V=1.2.3 G=Manager R=true",
-            "on_error must bind .Publisher/.Error/.Version/.Group/.Required"
+            "P=homebrew E=tap push rejected V=1.2.3 G=Manager R=true RB=true",
+            "on_error must bind .Publisher/.Error/.Version/.Group/.Required/.RolledBack"
         );
     }
 
     #[test]
-    fn on_rollback_fires_for_rolled_back_publisher() {
+    fn rolled_back_false_when_not_reverted() {
         let dir = tempfile::tempdir().expect("tempdir");
         let out = dir.path().join("fired.txt");
         let publish = PublishConfig {
-            on_rollback: Some(vec![probe_hook(&out, "rb {{ .Publisher }} {{ .Tag }}")]),
-            ..Default::default()
-        };
-        let ctx = TestContextBuilder::new()
-            .tag("v9.9.9")
-            .crates(vec![crate_with_publish("app", publish)])
-            .build();
-        let mut res = result("github-release", PublisherGroup::Assets, true);
-        res.outcome = PublisherOutcome::RolledBack;
-
-        fire_on_rollback(&ctx, &res, "", &log());
-
-        let body = std::fs::read_to_string(&out).expect("on_rollback hook must have run");
-        assert_eq!(body.trim(), "rb github-release v9.9.9");
-    }
-
-    #[test]
-    fn per_publisher_override_replaces_default_no_double_fire() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let out = dir.path().join("fired.txt");
-        let mut overrides = BTreeMap::new();
-        overrides.insert(
-            "homebrew".to_string(),
-            vec![probe_hook(&out, "override {{ .Publisher }}")],
-        );
-        let publish = PublishConfig {
-            // The default would also write — if it fired we'd see two lines.
-            on_error: Some(vec![probe_hook(&out, "default {{ .Publisher }}")]),
-            on_error_per_publisher: Some(overrides),
+            on_error: Some(vec![probe_hook(&out, "RB={{ .RolledBack }}")]),
             ..Default::default()
         };
         let ctx = TestContextBuilder::new()
             .tag("v1.0.0")
             .crates(vec![crate_with_publish("app", publish)])
             .build();
-        let res = result("homebrew", PublisherGroup::Manager, true);
+        let res = result("cargo", PublisherGroup::Submitter, true);
 
-        fire_on_error(&ctx, &res, "boom", &log());
+        fire_on_error(&ctx, &res, "publish failed", false, &log());
 
-        let body = std::fs::read_to_string(&out).expect("override hook must run");
-        let lines: Vec<&str> = body.lines().filter(|l| !l.trim().is_empty()).collect();
+        let body = std::fs::read_to_string(&out).expect("hook must have written output");
         assert_eq!(
-            lines,
-            vec!["override homebrew"],
-            "per-publisher override must REPLACE the default (no double-fire)"
+            body.trim(),
+            "RB=false",
+            ".RolledBack must be false when rolled_back=false"
         );
-    }
-
-    #[test]
-    fn default_applies_when_no_override_for_publisher() {
-        // A per-publisher override for a DIFFERENT publisher must not
-        // suppress the top-level default for this one.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let out = dir.path().join("fired.txt");
-        let mut overrides = BTreeMap::new();
-        overrides.insert("scoop".to_string(), vec![cmd_hook("true")]);
-        let publish = PublishConfig {
-            on_error: Some(vec![probe_hook(&out, "default {{ .Publisher }}")]),
-            on_error_per_publisher: Some(overrides),
-            ..Default::default()
-        };
-        let ctx = TestContextBuilder::new()
-            .tag("v1.0.0")
-            .crates(vec![crate_with_publish("app", publish)])
-            .build();
-        let res = result("homebrew", PublisherGroup::Manager, true);
-
-        fire_on_error(&ctx, &res, "boom", &log());
-
-        let body = std::fs::read_to_string(&out).expect("default hook must run");
-        assert_eq!(body.trim(), "default homebrew");
     }
 
     #[test]
@@ -327,7 +231,7 @@ mod tests {
 
         // Must not panic / propagate — the function has no Result to inspect;
         // reaching the assert proves it returned after warn-only handling.
-        fire_on_error(&ctx, &res, "boom", &log());
+        fire_on_error(&ctx, &res, "boom", false, &log());
     }
 
     #[test]
@@ -345,52 +249,11 @@ mod tests {
             .build();
         let res = result("homebrew", PublisherGroup::Manager, true);
 
-        fire_on_error(&ctx, &res, "boom", &log());
+        fire_on_error(&ctx, &res, "boom", false, &log());
 
         assert!(
             !out.exists(),
             "dry-run must log the hook without executing it"
-        );
-    }
-
-    /// An empty per-publisher override (intent: suppress default hooks for
-    /// that publisher) must NOT be treated as "no override" in lockstep mode.
-    /// `resolve_hooks` must return on the first `Some`, even when it is empty
-    /// — `Some([])` is a deliberate suppression signal, not an absent override.
-    #[test]
-    fn lockstep_empty_override_suppresses_sibling_default() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let should_not_fire = dir.path().join("should_not_fire.txt");
-
-        // First crate: empty per-publisher override for "homebrew" (suppression).
-        let mut overrides_suppress = BTreeMap::new();
-        overrides_suppress.insert("homebrew".to_string(), vec![]);
-        let suppress_publish = PublishConfig {
-            on_error_per_publisher: Some(overrides_suppress),
-            ..Default::default()
-        };
-
-        // Second crate: has a default hook that would fire if suppress is skipped.
-        let sibling_publish = PublishConfig {
-            on_error: Some(vec![probe_hook(&should_not_fire, "sibling-fired")]),
-            ..Default::default()
-        };
-
-        // Lockstep: both crates are in scope (no selected_crates filter).
-        let ctx = TestContextBuilder::new()
-            .tag("v1.0.0")
-            .crates(vec![
-                crate_with_publish("core", suppress_publish),
-                crate_with_publish("cli", sibling_publish),
-            ])
-            .build();
-        let res = result("homebrew", PublisherGroup::Manager, true);
-
-        fire_on_error(&ctx, &res, "boom", &log());
-
-        assert!(
-            !should_not_fire.exists(),
-            "sibling's default hook must NOT fire when first crate carries an empty override"
         );
     }
 
@@ -420,7 +283,7 @@ mod tests {
             .build();
         let res = result("cargo", PublisherGroup::Submitter, true);
 
-        fire_on_error(&ctx, &res, "boom", &log());
+        fire_on_error(&ctx, &res, "boom", false, &log());
 
         let body = std::fs::read_to_string(&out).expect("scoped crate hook must run");
         assert_eq!(
