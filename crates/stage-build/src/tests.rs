@@ -1379,6 +1379,7 @@ fn test_per_target_build_env_reaches_only_its_targets_hook() {
                 log: &log,
                 template_vars: Some(&vars),
                 build_env: Some(&resolved),
+                extra_env: None,
             },
         )
         .unwrap();

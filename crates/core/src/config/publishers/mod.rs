@@ -185,13 +185,22 @@ pub struct PublishConfig {
     /// `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}`
     /// (Assets/Manager/Submitter), `{{ .Required }}`, and
     /// `{{ .RolledBack }}` (whether the failed publisher was subsequently
-    /// rolled back). A hook's own failure is logged as a warning and never
-    /// changes the release outcome.
+    /// rolled back). The same values are also exported to the hook process
+    /// as environment variables: `ANODIZER_PUBLISHER`, `ANODIZER_ERROR`,
+    /// `ANODIZER_TAG`, `ANODIZER_VERSION`, `ANODIZER_GROUP`,
+    /// `ANODIZER_REQUIRED`, `ANODIZER_ROLLED_BACK`. A hook's own failure is
+    /// logged as a warning and never changes the release outcome.
+    ///
+    /// Security: the rendered `cmd` string is parsed by `sh -c`, and
+    /// `{{ .Error }}` carries untrusted remote text (HTTP error bodies, git
+    /// stderr) — interpolating it into `cmd` lets crafted error content
+    /// break quoting and execute. Read untrusted values from the env vars
+    /// instead:
     ///
     /// ```yaml
     /// publish:
     ///   on_error:
-    ///     - cmd: "notify 'anodizer: {{ .Publisher }} failed @ {{ .Version }}: {{ .Error }}'"
+    ///     - cmd: 'notify "anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR"'
     /// ```
     pub on_error: Option<Vec<HookEntry>>,
 }

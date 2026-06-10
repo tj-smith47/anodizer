@@ -166,21 +166,42 @@ Shell hooks that fire once per FAILED publisher, after rollback has run (so
 ```yaml
 publish:
   on_error:
-    - cmd: >-
-        notify 'anodizer: {{ .Publisher }} failed @ {{ .Version }}: {{ .Error }}'
+    - cmd: 'notify "anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR"'
 ```
 
-Available template variables:
+The failure context is available on two channels — environment variables on
+the hook process, and template variables rendered into `cmd`:
 
-| Variable | Value |
-|---|---|
-| `{{ .Publisher }}` | Publisher name (e.g. `homebrew`) |
-| `{{ .Error }}` | Error message string |
-| `{{ .Version }}` | Release version (e.g. `0.8.0`) |
-| `{{ .Tag }}` | Release tag (e.g. `v0.8.0`) |
-| `{{ .Group }}` | Publisher group: `Assets`, `Manager`, or `Submitter` |
-| `{{ .Required }}` | `true` / `false` |
-| `{{ .RolledBack }}` | `true` if any publisher was rolled back during this run |
+| Env var | Template variable | Value |
+|---|---|---|
+| `ANODIZER_PUBLISHER` | `{{ .Publisher }}` | Publisher name (e.g. `homebrew`) |
+| `ANODIZER_ERROR` | `{{ .Error }}` | Error message string |
+| `ANODIZER_VERSION` | `{{ .Version }}` | Release version (e.g. `0.8.0`) |
+| `ANODIZER_TAG` | `{{ .Tag }}` | Release tag (e.g. `v0.8.0`) |
+| `ANODIZER_GROUP` | `{{ .Group }}` | Publisher group: `Assets`, `Manager`, or `Submitter` |
+| `ANODIZER_REQUIRED` | `{{ .Required }}` | `true` / `false` |
+| `ANODIZER_ROLLED_BACK` | `{{ .RolledBack }}` | `true` if any publisher was rolled back during this run |
+
+In workspace per-crate mode both channels carry the per-crate-scoped
+`Version` / `Tag` of the crate being published.
+
+**Security — prefer the env vars for untrusted values.** The rendered `cmd`
+string is parsed by `sh -c`, and `{{ .Error }}` carries remote-controlled
+text (HTTP error bodies, registry responses, git stderr). Interpolating it
+into `cmd` lets crafted error content break your quoting and execute as
+shell code:
+
+```yaml
+# UNSAFE: a single quote in the error body breaks out of the quoting
+- cmd: "notify 'failed: {{ .Error }}'"
+
+# SAFE: the shell expands $ANODIZER_ERROR at run time; the value is
+# never parsed as shell code
+- cmd: 'notify "failed: $ANODIZER_ERROR"'
+```
+
+Template interpolation remains fine for values anodizer controls
+(`{{ .Publisher }}`, `{{ .Version }}`, `{{ .Tag }}`, ...).
 
 Hook failures are logged as warnings and never change the release outcome.
 For ad-hoc notifications (outside a release), use `anodizer notify`.

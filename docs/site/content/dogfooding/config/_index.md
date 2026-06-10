@@ -125,7 +125,7 @@ config is rendered.
 
 | Key | Status | Notes |
 |---|---|---|
-| `publish.on_error` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`defaults.publish.on_error` runs a `cmd` per failed publisher before rollback; template vars `.Publisher`/`.Error`/`.Version`/`.Tag`/`.Group`/`.Required`/`.RolledBack`). Workspace-wide; per-crate entries append before defaults. Awaits a real failure to prove live |
+| `publish.on_error` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`defaults.publish.on_error` runs a `cmd` per failed publisher before rollback; failure context arrives as `ANODIZER_PUBLISHER`/`ANODIZER_ERROR`/`ANODIZER_VERSION`/`ANODIZER_TAG`/`ANODIZER_GROUP`/`ANODIZER_REQUIRED`/`ANODIZER_ROLLED_BACK` env vars on the hook process — read these instead of interpolating untrusted error text into the shell string — with matching template vars for trusted values). Workspace-wide; per-crate entries append before defaults. Awaits a real failure to prove live |
 | `defaults.publish.cargo.retain_on_rollback` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`retain_on_rollback: true` under `defaults.publish.cargo` — crates.io publishes are permanent; retain even if a downstream publisher rolls back) |
 | `schemastore.retain_on_rollback` / `mcp.retain_on_rollback` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`retain_on_rollback: true` on the top-level `schemastore` and `mcp` keys — external catalogs; retain even if downstream publishers roll back) |
 

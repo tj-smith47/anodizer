@@ -11,6 +11,11 @@
 //! Effective hooks are resolved per publisher from the in-scope crates'
 //! `publish:` blocks via `publish.on_error`.
 //!
+//! Every template var is ALSO exported to the hook process as an
+//! `ANODIZER_*` environment variable (see [`FAILURE_ENV_VARS`]) so hooks can
+//! consume untrusted values (`.Error` carries remote-controlled text) without
+//! interpolating them into the shell command string.
+//!
 //! These are notification / cleanup hooks. A hook's OWN failure must never
 //! cascade: it is logged as a warning via [`StageLogger`] and execution
 //! continues, so a broken notifier cannot change the release exit status or
@@ -77,6 +82,36 @@ fn bind_failure_vars(
     vars
 }
 
+/// `ANODIZER_*` env var → template var pairs exported to the hook process.
+/// The env channel carries the SAME values as the template surface but
+/// reaches the hook without passing through `sh -c` parsing — `.Error`
+/// holds remote-controlled text (HTTP error bodies, git stderr), so
+/// interpolating it into the command string is a shell-injection vector,
+/// while an env var read (`"$ANODIZER_ERROR"`) is not.
+const FAILURE_ENV_VARS: [(&str, &str); 7] = [
+    ("ANODIZER_PUBLISHER", "Publisher"),
+    ("ANODIZER_ERROR", "Error"),
+    ("ANODIZER_TAG", "Tag"),
+    ("ANODIZER_VERSION", "Version"),
+    ("ANODIZER_GROUP", "Group"),
+    ("ANODIZER_REQUIRED", "Required"),
+    ("ANODIZER_ROLLED_BACK", "RolledBack"),
+];
+
+/// Project the bound failure vars into `ANODIZER_*` env pairs. Reading back
+/// from `vars` (rather than re-deriving from the publisher result) keeps the
+/// env channel equal to the template surface by construction — including the
+/// per-crate-scoped `Version` / `Tag` already bound on the context.
+fn failure_env(vars: &TemplateVars) -> Vec<(String, String)> {
+    FAILURE_ENV_VARS
+        .iter()
+        .map(|(env_key, var_key)| {
+            let value = vars.get(var_key).cloned().unwrap_or_default();
+            ((*env_key).to_string(), value)
+        })
+        .collect()
+}
+
 /// Execute the resolved hook list, downgrading any hook failure to a warning
 /// so it cannot cascade into the release outcome or abort sibling steps.
 fn run_warn_only(
@@ -86,7 +121,8 @@ fn run_warn_only(
     log: &StageLogger,
     vars: &TemplateVars,
 ) {
-    let ctx = HookRunContext::new(dry_run, log, Some(vars));
+    let env = failure_env(vars);
+    let ctx = HookRunContext::new(dry_run, log, Some(vars)).with_extra_env(&env);
     if let Err(err) = run_hooks(hooks, label, ctx) {
         log.warn(&format!(
             "{label} hook failed (ignored — notification/cleanup hooks never fail the release): {err:#}"
@@ -140,6 +176,23 @@ mod tests {
     fn cmd_hook(cmd: &str) -> HookEntry {
         HookEntry::Structured(StructuredHook {
             cmd: cmd.to_string(),
+            ..Default::default()
+        })
+    }
+
+    /// A hook that dumps `KEY=$KEY` lines for each requested env var so the
+    /// test can assert the hook's process environment. The command contains
+    /// no template syntax: values must arrive via the environment, never via
+    /// string interpolation into the shell command.
+    fn env_probe_hook(out: &Path, keys: &[&str]) -> HookEntry {
+        let out = out.display().to_string().replace('\\', "/");
+        let cmd = keys
+            .iter()
+            .map(|k| format!("printf '%s\\n' \"{k}=${k}\" >> {out}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        HookEntry::Structured(StructuredHook {
+            cmd,
             ..Default::default()
         })
     }
@@ -254,6 +307,121 @@ mod tests {
         assert!(
             !out.exists(),
             "dry-run must log the hook without executing it"
+        );
+    }
+
+    const ALL_ENV_KEYS: [&str; 7] = [
+        "ANODIZER_PUBLISHER",
+        "ANODIZER_ERROR",
+        "ANODIZER_TAG",
+        "ANODIZER_VERSION",
+        "ANODIZER_GROUP",
+        "ANODIZER_REQUIRED",
+        "ANODIZER_ROLLED_BACK",
+    ];
+
+    #[test]
+    fn on_error_exports_failure_context_env_vars() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("env.txt");
+        let publish = PublishConfig {
+            on_error: Some(vec![env_probe_hook(&out, &ALL_ENV_KEYS)]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .tag("v1.2.3")
+            .crates(vec![crate_with_publish("app", publish)])
+            .build();
+        let res = result("homebrew", PublisherGroup::Manager, true);
+
+        fire_on_error(&ctx, &res, "tap push rejected", true, &log());
+
+        let body = std::fs::read_to_string(&out).expect("hook must have written output");
+        for expected in [
+            "ANODIZER_PUBLISHER=homebrew",
+            "ANODIZER_ERROR=tap push rejected",
+            "ANODIZER_TAG=v1.2.3",
+            "ANODIZER_VERSION=1.2.3",
+            "ANODIZER_GROUP=Manager",
+            "ANODIZER_REQUIRED=true",
+            "ANODIZER_ROLLED_BACK=true",
+        ] {
+            assert!(
+                body.lines().any(|l| l == expected),
+                "hook env must carry {expected}; got: {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn error_with_shell_metacharacters_arrives_verbatim_and_does_not_execute() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("captured.txt");
+        let pwned = dir.path().join("pwned.txt");
+        let pwned_sh = pwned.display().to_string().replace('\\', "/");
+        // Remote-controlled error text (HTTP body / git stderr shape) carrying
+        // every classic shell-injection vector: quote-break, command
+        // substitution, backticks.
+        let error = format!("'; echo INJECTED > {pwned_sh}; ' `echo BACKTICK` $(echo SUBSHELL)");
+        let out_sh = out.display().to_string().replace('\\', "/");
+        let publish = PublishConfig {
+            on_error: Some(vec![cmd_hook(&format!(
+                "printf '%s\\n' \"$ANODIZER_ERROR\" > {out_sh}"
+            ))]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![crate_with_publish("app", publish)])
+            .build();
+        let res = result("mcp-registry", PublisherGroup::Submitter, true);
+
+        fire_on_error(&ctx, &res, &error, false, &log());
+
+        assert!(
+            !pwned.exists(),
+            "error text must never execute as shell code"
+        );
+        let body = std::fs::read_to_string(&out).expect("hook must have written output");
+        assert_eq!(
+            body.trim_end_matches('\n'),
+            error,
+            "the error must arrive in $ANODIZER_ERROR verbatim, unexpanded"
+        );
+    }
+
+    #[test]
+    fn per_crate_mode_env_vars_carry_scoped_version_and_tag() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("env.txt");
+        let out_sh = out.display().to_string().replace('\\', "/");
+        let scoped = PublishConfig {
+            on_error: Some(vec![cmd_hook(&format!(
+                "printf '%s\\n' \"$ANODIZER_PUBLISHER@$ANODIZER_VERSION/$ANODIZER_TAG\" >> {out_sh}"
+            ))]),
+            ..Default::default()
+        };
+        let other = PublishConfig {
+            on_error: Some(vec![probe_hook(&out, "WRONG-CRATE")]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .tag("v2.0.0")
+            .crates(vec![
+                crate_with_publish("app-core", scoped),
+                crate_with_publish("app-cli", other),
+            ])
+            .selected_crates(vec!["app-core".to_string()])
+            .build();
+        let res = result("cargo", PublisherGroup::Submitter, true);
+
+        fire_on_error(&ctx, &res, "boom", false, &log());
+
+        let body = std::fs::read_to_string(&out).expect("scoped crate hook must run");
+        assert_eq!(
+            body.trim(),
+            "cargo@2.0.0/v2.0.0",
+            "env vars must carry the per-crate-scoped Version/Tag"
         );
     }
 

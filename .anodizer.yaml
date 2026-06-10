@@ -113,7 +113,10 @@ defaults:
       required: true
       retain_on_rollback: true
     on_error:
-      - cmd: "echo 'anodizer: publisher {{ .Publisher }} failed for {{ .Tag }}: {{ .Error }}'"
+      # ANODIZER_* env vars (not template interpolation): the error text is
+      # remote-controlled (HTTP bodies, git stderr) and must never be spliced
+      # into the sh -c command string.
+      - cmd: 'echo "anodizer: publisher $ANODIZER_PUBLISHER failed for $ANODIZER_TAG: $ANODIZER_ERROR"'
 
 before:
   hooks:

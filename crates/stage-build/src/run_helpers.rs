@@ -327,6 +327,7 @@ pub(crate) fn run_dry_run(
                     log: exec.log,
                     template_vars: Some(exec.template_vars),
                     build_env: Some(&job.build_env),
+                    extra_env: None,
                 },
             )?;
         }
@@ -349,6 +350,7 @@ pub(crate) fn run_dry_run(
                     log: exec.log,
                     template_vars: Some(exec.template_vars),
                     build_env: Some(&job.build_env),
+                    extra_env: None,
                 },
             )?;
         }
@@ -395,6 +397,7 @@ pub(crate) fn run_sequential(
                     log: exec.log,
                     template_vars: Some(exec.template_vars),
                     build_env: Some(&job.build_env),
+                    extra_env: None,
                 },
             )?;
         }
@@ -459,6 +462,7 @@ pub(crate) fn run_sequential(
                     log: exec.log,
                     template_vars: Some(exec.template_vars),
                     build_env: Some(&job.build_env),
+                    extra_env: None,
                 },
             )?;
         }
@@ -567,6 +571,7 @@ pub(crate) fn run_parallel(
                                     log: &thread_log,
                                     template_vars: Some(&thread_tvars),
                                     build_env: Some(&build_env),
+                                    extra_env: None,
                                 },
                             )?;
                         }
@@ -647,6 +652,7 @@ pub(crate) fn run_parallel(
                                     log: &thread_log,
                                     template_vars: Some(&thread_tvars),
                                     build_env: Some(&build_env),
+                                    extra_env: None,
                                 },
                             )?;
                         }

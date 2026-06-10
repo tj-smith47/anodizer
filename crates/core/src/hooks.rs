@@ -49,6 +49,14 @@ pub struct HookRunContext<'a> {
     /// [`HookRunContext::new`]) at non-build hook sites — they have no
     /// build env.
     pub build_env: Option<&'a std::collections::HashMap<String, String>>,
+    /// Extra environment variables the hook site injects into the hook
+    /// process (e.g. the `ANODIZER_*` failure-context vars set by publish
+    /// `on_error` hooks). The env channel exists so untrusted values (error
+    /// bodies, remote stderr) reach hooks WITHOUT being interpolated into
+    /// the `sh -c` command string, where shell metacharacters would be
+    /// command injection. Layered after `build_env` and before each hook's
+    /// own `env:` entries, so hook `env:` still wins on key conflicts.
+    pub extra_env: Option<&'a [(String, String)]>,
 }
 
 impl<'a> HookRunContext<'a> {
@@ -65,7 +73,14 @@ impl<'a> HookRunContext<'a> {
             log,
             template_vars,
             build_env: None,
+            extra_env: None,
         }
+    }
+
+    /// Attach site-injected env vars (see [`HookRunContext::extra_env`]).
+    pub fn with_extra_env(mut self, extra_env: &'a [(String, String)]) -> Self {
+        self.extra_env = Some(extra_env);
+        self
     }
 }
 
@@ -84,6 +99,7 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
         log,
         template_vars,
         build_env,
+        extra_env,
     } = ctx;
     for hook in hooks {
         let (raw_cmd, raw_dir, env, output_flag, if_cond) = match hook {
@@ -169,11 +185,16 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
                 command.current_dir(d);
             }
             // Precedence: process env (inherited, base) < build env
-            // < hook env. Apply the per-target build env first so a same-key
-            // hook `env:` entry below overrides it (the
+            // < extra env < hook env. Apply the per-target build env first so
+            // a same-key hook `env:` entry below overrides it (the
             // `append(buildEnv, hook.Env...)`).
             if let Some(be) = build_env {
                 for (k, v) in be {
+                    command.env(k, v);
+                }
+            }
+            if let Some(ee) = extra_env {
+                for (k, v) in ee {
                     command.env(k, v);
                 }
             }
@@ -473,6 +494,7 @@ mod tests {
                 log: &log,
                 template_vars: Some(&vars),
                 build_env,
+                extra_env: None,
             },
         )
     }
@@ -523,6 +545,75 @@ mod tests {
         assert!(
             !contents.contains("SHARED=build-loses"),
             "build env value must not survive a hook-env override; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// Like [`run_env_probe_hook`] but exercises the `extra_env` channel.
+    fn run_extra_env_probe_hook(
+        out_file: &std::path::Path,
+        keys: &[&str],
+        hook_env: Option<Vec<String>>,
+        extra_env: &[(String, String)],
+    ) -> Result<()> {
+        let log = test_logger();
+        let out = out_file.display().to_string().replace('\\', "/");
+        let probe = keys
+            .iter()
+            .map(|k| format!("echo {k}=${k} >> {out}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let hooks = vec![HookEntry::Structured(StructuredHook {
+            cmd: probe,
+            env: hook_env,
+            ..Default::default()
+        })];
+        let vars = TemplateVars::new();
+        run_hooks(
+            &hooks,
+            "test",
+            HookRunContext::new(false, &log, Some(&vars)).with_extra_env(extra_env),
+        )
+    }
+
+    #[test]
+    fn extra_env_reaches_hook() {
+        let dir = std::env::temp_dir().join(format!("anodizer-ee-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("reaches.txt");
+        let _ = std::fs::remove_file(&out);
+
+        let extra = vec![("MY_EXTRA_VAR".to_string(), "from-extra-env".to_string())];
+        run_extra_env_probe_hook(&out, &["MY_EXTRA_VAR"], None, &extra).expect("hook must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            contents.contains("MY_EXTRA_VAR=from-extra-env"),
+            "extra env var must reach the hook; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn hook_env_overrides_extra_env_on_key_conflict() {
+        let dir = std::env::temp_dir().join(format!("anodizer-ee-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("precedence.txt");
+        let _ = std::fs::remove_file(&out);
+
+        let extra = vec![("SHARED".to_string(), "extra-loses".to_string())];
+        run_extra_env_probe_hook(
+            &out,
+            &["SHARED"],
+            Some(vec!["SHARED=hook-wins".to_string()]),
+            &extra,
+        )
+        .expect("hook must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            contents.contains("SHARED=hook-wins"),
+            "hook env must override extra env on key conflict; got: {contents:?}"
         );
         let _ = std::fs::remove_file(&out);
     }
