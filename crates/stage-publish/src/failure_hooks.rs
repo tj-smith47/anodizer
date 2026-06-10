@@ -61,12 +61,32 @@ fn group_label(group: PublisherGroup) -> &'static str {
     }
 }
 
-/// Bind the failure-hook template surface on top of the standard per-crate
-/// vars: `{{ .Publisher }}`, `{{ .Error }}`, `{{ .Group }}`,
-/// `{{ .Required }}`, `{{ .RolledBack }}`. `{{ .Version }}` / `{{ .Tag }}`
-/// are already bound on `ctx.template_vars()` for the current crate scope,
-/// so they resolve per-crate correctly in every config mode without
-/// re-binding here.
+/// The failure-context key/value pairs bound on top of the standard
+/// per-crate vars — the single source of truth for the template binding
+/// ([`bind_failure_vars`]). Every key here must have a matching
+/// [`FAILURE_ENV_VARS`] entry so the env channel never silently lags the
+/// template surface; the exhaustiveness test pins that invariant.
+/// `Version` / `Tag` are deliberately absent: they are already bound on
+/// `ctx.template_vars()` for the current crate scope, so they resolve
+/// per-crate correctly in every config mode without re-binding here.
+fn failure_var_values(
+    result: &PublisherResult,
+    error: &str,
+    rolled_back: bool,
+) -> [(&'static str, String); 5] {
+    let bool_str = |b: bool| (if b { "true" } else { "false" }).to_string();
+    [
+        ("Publisher", result.name.clone()),
+        ("Error", error.to_string()),
+        ("Group", group_label(result.group).to_string()),
+        ("Required", bool_str(result.required)),
+        ("RolledBack", bool_str(rolled_back)),
+    ]
+}
+
+/// Bind the failure-hook template surface ([`failure_var_values`]) on top
+/// of the standard per-crate vars: `{{ .Publisher }}`, `{{ .Error }}`,
+/// `{{ .Group }}`, `{{ .Required }}`, `{{ .RolledBack }}`.
 fn bind_failure_vars(
     base: &TemplateVars,
     result: &PublisherResult,
@@ -74,11 +94,9 @@ fn bind_failure_vars(
     rolled_back: bool,
 ) -> TemplateVars {
     let mut vars = base.clone();
-    vars.set("Publisher", &result.name);
-    vars.set("Error", error);
-    vars.set("Group", group_label(result.group));
-    vars.set("Required", if result.required { "true" } else { "false" });
-    vars.set("RolledBack", if rolled_back { "true" } else { "false" });
+    for (key, value) in failure_var_values(result, error, rolled_back) {
+        vars.set(key, &value);
+    }
     vars
 }
 
@@ -319,6 +337,48 @@ mod tests {
         "ANODIZER_REQUIRED",
         "ANODIZER_ROLLED_BACK",
     ];
+
+    #[test]
+    fn env_channel_mirrors_failure_var_surface_exactly() {
+        use std::collections::BTreeSet;
+        let res = result("homebrew", PublisherGroup::Manager, true);
+        let bound: BTreeSet<&str> = failure_var_values(&res, "boom", true)
+            .iter()
+            .map(|(key, _)| *key)
+            .collect();
+        // Ambient per-crate vars exported on the env channel but bound by
+        // the context (per-crate scoping), not by bind_failure_vars.
+        let ambient: BTreeSet<&str> = BTreeSet::from(["Tag", "Version"]);
+        assert!(
+            bound.is_disjoint(&ambient),
+            "failure_var_values must not re-bind the ambient per-crate vars"
+        );
+
+        let env_side: BTreeSet<&str> = FAILURE_ENV_VARS.iter().map(|(_, var)| *var).collect();
+        assert_eq!(
+            env_side.len(),
+            FAILURE_ENV_VARS.len(),
+            "FAILURE_ENV_VARS must not map the same template var twice"
+        );
+        let expected: BTreeSet<&str> = bound.union(&ambient).copied().collect();
+        assert_eq!(
+            env_side, expected,
+            "FAILURE_ENV_VARS must mirror failure_var_values plus the ambient \
+             Tag/Version exactly — adding a var on either side without the \
+             matching entry on the other silently drops it from one channel"
+        );
+
+        let env_keys: BTreeSet<&str> = FAILURE_ENV_VARS.iter().map(|(key, _)| *key).collect();
+        assert_eq!(
+            env_keys.len(),
+            FAILURE_ENV_VARS.len(),
+            "env var names must be unique"
+        );
+        assert!(
+            env_keys.iter().all(|k| k.starts_with("ANODIZER_")),
+            "every exported env var must carry the ANODIZER_ prefix"
+        );
+    }
 
     #[test]
     fn on_error_exports_failure_context_env_vars() {
