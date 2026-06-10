@@ -83,12 +83,33 @@ pub(crate) struct OsArtifact {
 ///
 /// `os_fallback` is used when the OS cannot be determined from the target
 /// triple (e.g. when calling with a known OS needle).
-fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> Result<OsArtifact> {
-    let url = a
-        .metadata
-        .get("url")
-        .cloned()
-        .unwrap_or_else(|| a.path.to_string_lossy().into_owned());
+///
+/// `require_url` controls behaviour when `metadata["url"]` is absent:
+/// - `true` (production publish): errors loudly — a publisher that proceeds
+///   without a URL would embed a local path in a manifest it then submits.
+/// - `false` (snapshot / dry-run validation): falls back to `a.name` (just the
+///   archive filename, not the local `./dist/…` path). Snapshot cross-checks
+///   compare asset filenames, not full URLs, so the placeholder is correct there
+///   and is obviously not a real download URL if anything inspects it.
+fn artifact_to_os_artifact(
+    a: &Artifact,
+    os_fallback: &str,
+    require_url: bool,
+) -> Result<OsArtifact> {
+    let url = match a.metadata.get("url").cloned() {
+        Some(u) => u,
+        None if !require_url => a.name.clone(),
+        None => {
+            return Err(anyhow::anyhow!(
+                "artifact '{}' (target={}) has no download URL in metadata \
+                 — ensure the release stage ran and uploaded artifacts before \
+                 the publish stage, or pass --dist pointing to a dist with \
+                 uploaded artifacts",
+                a.path.display(),
+                a.target.as_deref().unwrap_or("<none>"),
+            ));
+        }
+    };
     let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
     if sha256.is_empty() {
         bail!(
@@ -146,6 +167,7 @@ pub(crate) fn find_artifacts_by_os_with_variant(
     amd64_variant: Option<&str>,
     arm_variant: Option<&str>,
 ) -> Result<Vec<OsArtifact>> {
+    let require_url = !ctx.is_snapshot() && !ctx.is_dry_run();
     // Include both Archive and UploadableBinary artifacts — both
     // supports both UploadableArchive and UploadableBinary types for publisher
     // packages. Use UploadableBinary (not Binary) so raw build outputs
@@ -176,7 +198,7 @@ pub(crate) fn find_artifacts_by_os_with_variant(
                     .to_ascii_lowercase()
                     .contains(os_needle)
         })
-        .map(|a| artifact_to_os_artifact(a, os_needle))
+        .map(|a| artifact_to_os_artifact(a, os_needle, require_url))
         .collect::<Result<Vec<_>>>()?;
     Ok(filter_by_variant(os_artifacts, amd64_variant, arm_variant))
 }
@@ -194,6 +216,7 @@ pub(crate) fn find_all_platform_artifacts_with_variant(
     amd64_variant: Option<&str>,
     arm_variant: Option<&str>,
 ) -> Result<Vec<OsArtifact>> {
+    let require_url = !ctx.is_snapshot() && !ctx.is_dry_run();
     let mut all = ctx
         .artifacts
         .by_kind_and_crate(ArtifactKind::Archive, crate_name);
@@ -210,7 +233,7 @@ pub(crate) fn find_all_platform_artifacts_with_variant(
     let filtered = filter_by_ids(all, ids);
     let os_artifacts: Vec<OsArtifact> = filtered
         .into_iter()
-        .map(|a| artifact_to_os_artifact(a, "unknown"))
+        .map(|a| artifact_to_os_artifact(a, "unknown", require_url))
         .collect::<Result<Vec<_>>>()?;
     Ok(filter_by_variant(os_artifacts, amd64_variant, arm_variant))
 }
@@ -250,4 +273,84 @@ pub(super) fn filter_by_variant(
             true
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn bare_archive(target: &str) -> Artifact {
+        Artifact {
+            path: PathBuf::from(format!("dist/tool-1.0.0-{target}.tar.gz")),
+            name: format!("tool-1.0.0-{target}.tar.gz"),
+            crate_name: "tool".to_string(),
+            kind: ArtifactKind::Archive,
+            target: Some(target.to_string()),
+            metadata: HashMap::new(),
+            size: None,
+        }
+    }
+
+    fn archive_with_url(target: &str, url: &str, sha256: &str) -> Artifact {
+        let mut a = bare_archive(target);
+        a.metadata.insert("url".to_string(), url.to_string());
+        a.metadata.insert("sha256".to_string(), sha256.to_string());
+        a
+    }
+
+    /// Missing `metadata["url"]` must produce a descriptive error rather than
+    /// silently using the local path (which produces broken PKGBUILD source
+    /// entries that AUR / homebrew / etc. reject at submission time).
+    #[test]
+    fn artifact_to_os_artifact_errors_when_url_absent() {
+        let mut a = bare_archive("x86_64-unknown-linux-gnu");
+        a.metadata
+            .insert("sha256".to_string(), "abc123".to_string());
+        let err = artifact_to_os_artifact(&a, "linux", true).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("no download URL"),
+            "error must mention missing URL: {msg}"
+        );
+        assert!(
+            msg.contains("release stage"),
+            "error must point at the release stage: {msg}"
+        );
+    }
+
+    /// Both `metadata["url"]` and `metadata["sha256"]` present — conversion
+    /// succeeds and the URL field carries the download URL.
+    #[test]
+    fn artifact_to_os_artifact_succeeds_with_url_and_sha256() {
+        let a = archive_with_url(
+            "x86_64-unknown-linux-gnu",
+            "https://example.com/tool-1.0.0-linux-amd64.tar.gz",
+            "deadbeef",
+        );
+        let osa = artifact_to_os_artifact(&a, "linux", true).expect("must succeed");
+        assert_eq!(osa.url, "https://example.com/tool-1.0.0-linux-amd64.tar.gz");
+        assert_eq!(osa.sha256, "deadbeef");
+        assert_eq!(osa.arch, "amd64");
+        assert_eq!(osa.os, "linux");
+    }
+
+    /// In snapshot / dry-run mode (`require_url = false`) a missing URL falls
+    /// back to the artifact filename (not the full local `./dist/…` path).
+    /// Snapshot cross-checks compare asset filenames, so the placeholder is
+    /// correct there and is obviously not a real URL if anything else inspects it.
+    #[test]
+    fn artifact_to_os_artifact_lenient_uses_name_when_url_absent() {
+        let mut a = bare_archive("x86_64-unknown-linux-gnu");
+        a.metadata
+            .insert("sha256".to_string(), "abc123".to_string());
+        let osa = artifact_to_os_artifact(&a, "linux", false).expect("lenient must succeed");
+        assert_eq!(
+            osa.url, "tool-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
+            "placeholder URL must be the artifact filename, not the local path"
+        );
+        assert_eq!(osa.sha256, "abc123");
+    }
 }
