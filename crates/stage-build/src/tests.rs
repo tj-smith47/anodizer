@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 use super::BuildStage;
 use super::command::{
     BuildContext, build_command, build_lib_command, crate_has_binary_target, detect_crate_type,
-    detect_cross_strategy, resolve_build_program, same_apple_family, same_windows_family,
+    detect_cross_strategy, detect_cross_strategy_for_target_impl, resolve_build_program,
+    same_apple_family, same_windows_family,
 };
 
 /// Test helper — assembles a [`BuildContext`] from the varying parts most
@@ -1744,16 +1745,21 @@ fn test_resolve_build_program_cross_tool_overrides() {
 }
 
 #[test]
-fn test_resolve_build_program_auto_native_uses_cargo() {
-    // Target == host should always resolve to cargo, even if
-    // cargo-zigbuild/cross are installed.
+fn test_resolve_build_program_auto_native() {
+    // Target == host resolves to plain cargo, except on a linux-gnu host
+    // with cargo-zigbuild installed, where the hermetic-glibc routing
+    // sends even the host triple through zigbuild.
     let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
     if host.is_empty() {
         return;
     }
     let (prog, sub) = resolve_build_program(&CrossStrategy::Auto, None, None, Some(&host));
-    assert_eq!(prog, "cargo", "native target should use cargo");
-    assert_eq!(sub, "build", "native target should use plain build");
+    assert_eq!(prog, "cargo", "native target should use the cargo binary");
+    if host.contains("-linux-gnu") && anodizer_core::util::find_binary("cargo-zigbuild") {
+        assert_eq!(sub, "zigbuild", "linux-gnu host with zigbuild on PATH");
+    } else {
+        assert_eq!(sub, "build", "native target should use plain build");
+    }
 }
 
 #[test]
@@ -1803,13 +1809,22 @@ fn test_same_windows_family() {
 #[test]
 fn test_detect_cross_strategy_for_target_apple_cross_arch() {
     // On any apple host, building a different apple arch should still
-    // use cargo (clang handles apple targets universally).
-    let strategy =
-        detect_cross_strategy_for_target_with_host("aarch64-apple-darwin", "x86_64-apple-darwin");
+    // use cargo (clang handles apple targets universally) — even with
+    // zigbuild installed (zig mis-links large apple framework lines).
+    let strategy = detect_cross_strategy_for_target_impl(
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        true,
+        true,
+    );
     assert_eq!(strategy, CrossStrategy::Cargo);
 
-    let strategy =
-        detect_cross_strategy_for_target_with_host("x86_64-apple-darwin", "aarch64-apple-darwin");
+    let strategy = detect_cross_strategy_for_target_impl(
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        true,
+        true,
+    );
     assert_eq!(strategy, CrossStrategy::Cargo);
 }
 
@@ -1817,35 +1832,113 @@ fn test_detect_cross_strategy_for_target_apple_cross_arch() {
 fn test_detect_cross_strategy_for_target_linux_cross_arch_uses_auto() {
     // On a Linux host, building a different Linux arch does NOT get the
     // same-family exemption — it requires cross tooling (multilib gcc
-    // or cross/zigbuild). We delegate to detect_cross_strategy().
-    let strategy = detect_cross_strategy_for_target_with_host(
+    // or cross/zigbuild).
+    let strategy = detect_cross_strategy_for_target_impl(
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
+        true,
+        false,
     );
-    // The result depends on which cross tools are installed on the test
-    // host; we only assert it's NOT the premature Cargo shortcut.
-    assert!(
-        strategy == CrossStrategy::Zigbuild
-            || strategy == CrossStrategy::Cross
-            || strategy == CrossStrategy::Cargo,
-        "linux cross-arch should go through the detect path; got {:?}",
-        strategy
+    assert_eq!(strategy, CrossStrategy::Zigbuild);
+
+    let strategy = detect_cross_strategy_for_target_impl(
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        false,
+        true,
     );
+    assert_eq!(strategy, CrossStrategy::Cross);
 }
 
-// Test helper — same as detect_cross_strategy_for_target but lets the
-// test pin the host triple instead of reading the real machine's target.
-fn detect_cross_strategy_for_target_with_host(host: &str, target: &str) -> CrossStrategy {
-    if !host.is_empty() && target == host {
-        return CrossStrategy::Cargo;
-    }
-    if !host.is_empty() && same_apple_family(host, target) {
-        return CrossStrategy::Cargo;
-    }
-    if !host.is_empty() && same_windows_family(host, target) {
-        return CrossStrategy::Cargo;
-    }
-    detect_cross_strategy()
+#[test]
+fn test_detect_cross_strategy_host_linux_gnu_prefers_zigbuild() {
+    // Regression: the v0.7.0 x86_64-linux release binary required GLIBC_2.39
+    // because the host-triple build short-circuited to native cargo and
+    // linked the ubuntu-24.04 runner's ambient glibc. With zigbuild
+    // available, even the exact-host linux-gnu target must go through
+    // zigbuild so the glibc floor stays hermetic.
+    let strategy = detect_cross_strategy_for_target_impl(
+        "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+        true,
+        false,
+    );
+    assert_eq!(strategy, CrossStrategy::Zigbuild);
+
+    // Same for an aarch64 host building its own triple.
+    let strategy = detect_cross_strategy_for_target_impl(
+        "aarch64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        true,
+        false,
+    );
+    assert_eq!(strategy, CrossStrategy::Zigbuild);
+
+    // glibc-pinned target spelling (`<triple>.<ver>`) also routes through
+    // zigbuild — it is the only tool that understands the suffix.
+    let strategy = detect_cross_strategy_for_target_impl(
+        "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu.2.17",
+        true,
+        false,
+    );
+    assert_eq!(strategy, CrossStrategy::Zigbuild);
+}
+
+#[test]
+fn test_detect_cross_strategy_host_linux_gnu_without_zigbuild_uses_cargo() {
+    // Local-dev fallback: no cargo-zigbuild on PATH → native cargo for the
+    // host triple, even when `cross` is installed (the host needs no
+    // container build, and cross would change the produced glibc anyway).
+    let strategy = detect_cross_strategy_for_target_impl(
+        "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+        false,
+        false,
+    );
+    assert_eq!(strategy, CrossStrategy::Cargo);
+
+    let strategy = detect_cross_strategy_for_target_impl(
+        "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+        false,
+        true,
+    );
+    assert_eq!(strategy, CrossStrategy::Cargo);
+}
+
+#[test]
+fn test_detect_cross_strategy_host_musl_keeps_cargo() {
+    // musl triples link libc statically — no glibc floor to protect — so a
+    // host-triple musl build keeps the native-cargo short-circuit.
+    let strategy = detect_cross_strategy_for_target_impl(
+        "x86_64-unknown-linux-musl",
+        "x86_64-unknown-linux-musl",
+        true,
+        true,
+    );
+    assert_eq!(strategy, CrossStrategy::Cargo);
+
+    // Cross-compiled musl still goes through the tool-detect path
+    // (unchanged behaviour).
+    let strategy = detect_cross_strategy_for_target_impl(
+        "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        true,
+        false,
+    );
+    assert_eq!(strategy, CrossStrategy::Zigbuild);
+}
+
+#[test]
+fn test_detect_cross_strategy_host_windows_keeps_cargo() {
+    let strategy = detect_cross_strategy_for_target_impl(
+        "x86_64-pc-windows-msvc",
+        "x86_64-pc-windows-msvc",
+        true,
+        true,
+    );
+    assert_eq!(strategy, CrossStrategy::Cargo);
 }
 
 // ---- Fix 5: resolve_reproducible_epoch tests ----

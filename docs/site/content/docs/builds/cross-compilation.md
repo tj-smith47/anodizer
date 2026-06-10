@@ -35,10 +35,18 @@ crates:
 
 When `cross: auto` (the default):
 
-1. If the target matches the host triple → use native `cargo build`
-2. If `cargo-zigbuild` is installed → use it
-3. If `cross` is installed → use it
-4. Fall back to native `cargo build` (may fail for cross-platform targets)
+1. If the target is glibc-linked Linux (`*-linux-gnu*`) and `cargo-zigbuild`
+   is installed → use zigbuild, **even when the target matches the host
+   triple**. zig links against its own bundled libc, so the binary's glibc
+   floor stays hermetic instead of tracking the build machine — a CI runner
+   image upgrade can't silently raise the glibc requirement of your
+   releases. (musl targets are exempt: static libc, no glibc floor.)
+2. If the target matches the host triple → use native `cargo build`
+3. If host and target are both Apple, or both Windows → use native
+   `cargo build` (clang / MSVC cross-compile across their own arches)
+4. If `cargo-zigbuild` is installed → use it
+5. If `cross` is installed → use it
+6. Fall back to native `cargo build` (may fail for cross-platform targets)
 
 Run `anodizer healthcheck` to see which tools are available.
 

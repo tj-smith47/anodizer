@@ -22,10 +22,19 @@ pub struct BuildCommand {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn detect_cross_strategy() -> CrossStrategy {
-    if find_binary("cargo-zigbuild") {
+    detect_cross_strategy_impl(find_binary("cargo-zigbuild"), find_binary("cross"))
+}
+
+/// Tool-availability core of [`detect_cross_strategy`], with the PATH probes
+/// injected so the preference order is testable without touching PATH.
+pub(crate) fn detect_cross_strategy_impl(
+    zigbuild_available: bool,
+    cross_available: bool,
+) -> CrossStrategy {
+    if zigbuild_available {
         return CrossStrategy::Zigbuild;
     }
-    if find_binary("cross") {
+    if cross_available {
         return CrossStrategy::Cross;
     }
     CrossStrategy::Cargo
@@ -33,9 +42,10 @@ pub(crate) fn detect_cross_strategy() -> CrossStrategy {
 
 /// Target-aware variant of [`detect_cross_strategy`].
 ///
-/// `cargo` is the right choice whenever the target's OS is the same as the
-/// host's OS, because the host's native compiler already knows how to
-/// emit binaries for that OS on every supported arch:
+/// `cargo` is the right choice when the target's OS is the same as the
+/// host's OS and the produced binary has no glibc floor to protect,
+/// because the host's native compiler already knows how to emit binaries
+/// for that OS on every supported arch:
 ///
 /// - **macOS host → any apple-darwin target**: clang is a universal
 ///   cross-compiler across Apple architectures (x86_64, aarch64) and the
@@ -43,10 +53,13 @@ pub(crate) fn detect_cross_strategy() -> CrossStrategy {
 ///   works natively. zigbuild on macOS historically mis-handles the
 ///   framework paths in large link lines and fails on x86_64-apple-darwin
 ///   when run from an arm64 runner.
-/// - **Linux host → any *-linux-gnu target with matching libc**: cargo
-///   links with the host's gcc; cross-arch Linux needs a multilib package
-///   or the `cross` container, so same-OS-different-arch Linux still
-///   benefits from zigbuild/cross. Keep the existing auto behaviour.
+/// - **Any host → *-linux-gnu target**: zigbuild whenever cargo-zigbuild
+///   is available, including for the exact host triple — zig's bundled
+///   libc keeps the binary's glibc floor independent of the build
+///   machine's glibc, so a CI runner image upgrade cannot silently raise
+///   the released binary's glibc requirement. Without zigbuild, the host
+///   triple falls back to native cargo (local dev) and cross-arch falls
+///   back to `cross`/cargo.
 /// - **Windows host → any *-pc-windows-* target**: MSVC cl/link handles
 ///   both msvc x86_64 and aarch64 via the VS install, no zig needed.
 ///
@@ -54,8 +67,37 @@ pub(crate) fn detect_cross_strategy() -> CrossStrategy {
 /// (Linux → Windows, Linux → darwin, etc.).
 pub(crate) fn detect_cross_strategy_for_target(target: &str) -> CrossStrategy {
     let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
+    detect_cross_strategy_for_target_impl(
+        &host,
+        target,
+        find_binary("cargo-zigbuild"),
+        find_binary("cross"),
+    )
+}
 
-    // Exact host match — always cargo.
+/// Decision core of [`detect_cross_strategy_for_target`], with the host
+/// triple and tool-availability probes injected so every host/target/tool
+/// combination is testable on any machine.
+pub(crate) fn detect_cross_strategy_for_target_impl(
+    host: &str,
+    target: &str,
+    zigbuild_available: bool,
+    cross_available: bool,
+) -> CrossStrategy {
+    // glibc-linked Linux targets route through zigbuild whenever it is
+    // available — even when the target is the exact host triple. Native
+    // cargo links the build machine's ambient glibc, so the binary's glibc
+    // floor silently tracks the CI runner image (ubuntu-24.04 produces a
+    // GLIBC_2.39 requirement, uninstallable on Debian 12 / Ubuntu 22.04).
+    // zig ships its own libc headers, keeping the floor hermetic and
+    // independent of runner upgrades. musl triples are unaffected: they
+    // link libc statically and carry no glibc floor.
+    if is_linux_gnu(target) && zigbuild_available {
+        return CrossStrategy::Zigbuild;
+    }
+
+    // Exact host match (only non-glibc targets reach this point, plus
+    // linux-gnu without zigbuild installed) — native cargo.
     if !host.is_empty() && target == host {
         return CrossStrategy::Cargo;
     }
@@ -65,14 +107,21 @@ pub(crate) fn detect_cross_strategy_for_target(target: &str) -> CrossStrategy {
     // Apple (clang is universal across apple arches) and Windows (MSVC
     // handles every windows arch). Linux stays on the cross tooling
     // because same-OS cross-arch still needs a gcc multilib or similar.
-    if !host.is_empty() && same_apple_family(&host, target) {
+    if !host.is_empty() && same_apple_family(host, target) {
         return CrossStrategy::Cargo;
     }
-    if !host.is_empty() && same_windows_family(&host, target) {
+    if !host.is_empty() && same_windows_family(host, target) {
         return CrossStrategy::Cargo;
     }
 
-    detect_cross_strategy()
+    detect_cross_strategy_impl(zigbuild_available, cross_available)
+}
+
+/// True for glibc-linked Linux triples: `*-linux-gnu`, ABI-suffixed forms
+/// like `*-linux-gnueabihf`, and glibc-pinned spellings like
+/// `x86_64-unknown-linux-gnu.2.17`. musl triples return false.
+pub(crate) fn is_linux_gnu(target: &str) -> bool {
+    target.contains("-linux-gnu")
 }
 
 /// True when both triples target Apple's Darwin kernel. Matches
@@ -109,9 +158,10 @@ pub(crate) fn resolve_build_program(
     }
 
     // Resolve Auto strategy at runtime. Target-aware when the caller
-    // supplied one, so native targets always use cargo even if
-    // cargo-zigbuild or cross are available (zig has known issues
-    // linking for Apple hosts, cross can't cross to the same host).
+    // supplied one: native darwin/windows/musl targets use cargo even if
+    // cargo-zigbuild or cross are available (zig has known issues linking
+    // for Apple hosts, cross can't cross to the same host), while
+    // linux-gnu targets prefer zigbuild for a hermetic glibc floor.
     let resolved = if *strategy == CrossStrategy::Auto {
         match target {
             Some(t) => detect_cross_strategy_for_target(t),
