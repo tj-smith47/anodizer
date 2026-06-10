@@ -69,3 +69,35 @@ Three excerpts from [cfgd's `release.yml`](https://github.com/tj-smith47/cfgd/bl
 | `upload-dist` | ✅ Verified | [cfgd `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml) (`upload-dist: 'true'` in split build job) |
 | `download-dist` | ✅ Verified | [cfgd `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml) (`download-dist: ${{ needs.resolve.outputs.has-builds }}`) |
 | `resolve-workspace` | ✅ Verified | [cfgd `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml) (`resolve-workspace: 'true'` in resolve job) |
+| `version` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (default `"latest"` used in installations not specifying `from-artifact`; accepts exact tag, `"latest"`, or `"nightly"`) |
+| `from-branch` | ✅ Verified | [cfgd `nightly.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/nightly.yml) (`from-branch: publisher-required-config` — builds anodizer from an in-progress branch before the features ship) |
+| `auto-install` | ✅ Verified | [cfgd `determinism-shards.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/determinism-shards.yml) and [cfgd `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml) (`auto-install: 'true'`) |
+| `docker-username` | 🤝 Help wanted | [`action.yml`](https://github.com/tj-smith47/anodizer-action/blob/main/action.yml) (registry username; defaults to `github.actor`). All live workflows rely on the default; explicit override unexercised |
+| `apk-private-key` | ✅ Verified | [cfgd `nightly.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/nightly.yml) (`apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}` — signs nfpm apk packages on every nightly build) |
+| `cosign-key` | 🤝 Help wanted | [`action.yml`](https://github.com/tj-smith47/anodizer-action/blob/main/action.yml) (cosign private key for keyful signing; `COSIGN_KEY` / `COSIGN_PASSWORD` env). All live workflows use keyless OIDC signing; keyful path unexercised |
+| `workdir` | 🤝 Help wanted | [`action.yml`](https://github.com/tj-smith47/anodizer-action/blob/main/action.yml) (working directory below repo root; default `.`). All live workflows use the default; non-root workdir unexercised |
+| `install-only` | ✅ Verified | [cfgd `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml) (`install-only: 'true'` in the resolve job) |
+| `determinism` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) and [cfgd `determinism-shards.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/determinism-shards.yml) (`determinism: 'true'` per shard) |
+| `determinism-runs` | ⏳ Pending | Live shards run with the default `"2"`; explicit `--runs=N` override unexercised |
+| `determinism-stages` | ⏳ Pending | Live shards use platform-derived stage defaults; explicit CSV override unexercised |
+| `determinism-targets` | ✅ Verified | [cfgd `determinism-shards.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/determinism-shards.yml) (`determinism-targets: ${{ matrix.shard.targets }}` — explicit target CSV from the shard matrix) |
+| `determinism-crate` | ✅ Verified | [cfgd `determinism-shards.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/determinism-shards.yml) (`determinism-crate: ${{ inputs.crate }}` — scopes each shard to one workspace crate) |
+
+## Outputs
+
+| Output | Status | Notes |
+|---|---|---|
+| `artifacts` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (contents of `dist/artifacts.json`) |
+| `metadata` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (contents of `dist/metadata.json`) |
+| `release-url` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (GitHub release URL extracted from metadata) |
+| `workspace` | ✅ Verified | [cfgd `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml) (crate name resolved from triggering tag; requires `resolve-workspace: true`) |
+| `crate-path` | ✅ Verified | [cfgd `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml) (path to resolved crate directory; requires `resolve-workspace: true`) |
+| `has-builds` | ✅ Verified | [cfgd `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml) (`download-dist: ${{ needs.resolve.outputs.has-builds }}` — gates the merge job on whether the crate has binary builds) |
+| `split-matrix` | ✅ Verified | [cfgd `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml) (JSON `strategy.matrix` for split build jobs; each entry has `os`, `target`, `artifact`; produced when `install-only: true`) |
+| `crates` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (JSON array of crate names tagged this run; drives per-crate downstream matrix strategies) |
+| `versions` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (JSON object mapping crate name → bumped version) |
+| `new-tag` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (tag cut this run, e.g. `v1.2.3`; empty on no-op) |
+| `old-tag` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (previous tag bumped from; empty on first release) |
+| `part` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (semver part bumped: `major` \| `minor` \| `patch` \| `none` \| `custom`) |
+| `tagged` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (`'true'` when a new tag was cut; gate downstream release jobs on this) |
+| `head-sha` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (commit SHA at HEAD after `tag --push`; check this out in downstream jobs so the tree matches the tag) |

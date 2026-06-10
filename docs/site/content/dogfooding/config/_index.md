@@ -81,7 +81,7 @@ partial:
 | `build.hooks.post` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (archive `hooks.after`) |
 | `snapshot.name_template` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`snapshot.version_template`) |
 | `--auto-snapshot` | ✅ Verified | [anodizer `ci.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/ci.yml) (snapshot build on every master push) |
-| `nightly.*` | 🤝 Help wanted | Wired; no scheduled nightly workflow yet |
+| `nightly.*` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`nightly: {name_template: "cfgd-nightly", tag_name: nightly}`) + [cfgd `nightly.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/nightly.yml) (fired by `cron: '0 4 * * *'`) |
 | `metadata.homepage` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`metadata.homepage: https://github.com/tj-smith47/cfgd`) |
 | `metadata.license` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`metadata.license: MIT`) |
 | `metadata.description` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`metadata.description`) |
@@ -123,3 +123,13 @@ config is rendered.
 | `git.prerelease_suffix` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`git.prerelease_suffix: "-"`) |
 | `git.ignore_tags` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`git.ignore_tags: ["nightly"]`) |
 | `partial.by` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`partial.by: os` at file end) |
+| `report_sizes` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`report_sizes: true`; prints per-artifact and total sizes in the release summary) |
+| `version_files` | ⏳ Pending | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`version_files: [docs/installation.md, chart/cfgd/Chart.yaml]`; version string rewritten in-place at tag time). Wired in config; awaits the next cfgd release for live proof |
+| `changelog.files.per_crate` | ⏳ Pending | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`changelog.files.per_crate: true`; each crate gets its own CHANGELOG.md). Wired in config; awaits the next cfgd release for live proof |
+
+## Publisher resilience
+
+| Key | Status | Notes |
+|---|---|---|
+| `publish.on_error` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`defaults.publish.on_error: [{cmd: "echo 'anodizer: publisher {{ .Publisher }} failed for {{ .Tag }}: {{ .Error }}'"}]`). Fires per failed publisher before rollback. Template vars: `.Publisher`, `.Error`, `.Version`, `.Tag`, `.Group`, `.Required`, `.RolledBack`. Declared under `defaults.publish.on_error` to apply workspace-wide; per-crate entries append before defaults. Awaits a real publisher failure to prove live |
+| `publish.<name>.retain_on_rollback` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`cargo.retain_on_rollback: true`, `schemastore.retain_on_rollback: true`, `mcp.retain_on_rollback: true`). Wired in config; proves only when a rollback is triggered in production |
