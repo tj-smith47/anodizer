@@ -304,6 +304,8 @@ pub(crate) fn upload_files_owned(
                     anyhow::anyhow!("blobs: read file for upload: {}: {}", path_display, e)
                 })?;
 
+                // Capture before the Option is consumed by the if-let below.
+                let kms_in_use = client_kms.is_some();
                 let upload_data = if let Some((kms_key, provider)) = client_kms {
                     tokio::task::spawn_blocking(move || encrypt_with_kms(&data, &kms_key, provider))
                         .await
@@ -317,7 +319,15 @@ pub(crate) fn upload_files_owned(
                 // record a skip instead of blindly overwriting. A differing
                 // (or unprovable) object falls through to the overwrite PUT,
                 // preserving the historical blind-overwrite semantics.
-                if let Some(true) = object_is_identical(&store, &object_path, &upload_data).await {
+                //
+                // KMS-encrypted uploads skip this check: each encryption call
+                // produces a different ciphertext for the same plaintext
+                // (non-deterministic), so the byte comparison can never match
+                // and would waste a full-object GET on every re-run.
+                if !kms_in_use
+                    && let Some(true) =
+                        object_is_identical(&store, &object_path, &upload_data).await
+                {
                     task_log.status(&format!(
                         "blobs: skipping {} — identical object already present",
                         key_display

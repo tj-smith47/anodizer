@@ -53,9 +53,10 @@ fn resolve_hooks(ctx: &Context, publisher: &str, kind: HookKind) -> Vec<HookEntr
         let Some(publish) = c.publish.as_ref() else {
             continue;
         };
-        if let Some(hooks) = effective(publish, publisher, kind)
-            && !hooks.is_empty()
-        {
+        // Return on the first Some, even when it's an empty list — an empty
+        // override is a deliberate suppression of a sibling crate's default
+        // hooks and must not be skipped in lockstep mode.
+        if let Some(hooks) = effective(publish, publisher, kind) {
             return hooks.to_vec();
         }
     }
@@ -349,6 +350,47 @@ mod tests {
         assert!(
             !out.exists(),
             "dry-run must log the hook without executing it"
+        );
+    }
+
+    /// An empty per-publisher override (intent: suppress default hooks for
+    /// that publisher) must NOT be treated as "no override" in lockstep mode.
+    /// `resolve_hooks` must return on the first `Some`, even when it is empty
+    /// — `Some([])` is a deliberate suppression signal, not an absent override.
+    #[test]
+    fn lockstep_empty_override_suppresses_sibling_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let should_not_fire = dir.path().join("should_not_fire.txt");
+
+        // First crate: empty per-publisher override for "homebrew" (suppression).
+        let mut overrides_suppress = BTreeMap::new();
+        overrides_suppress.insert("homebrew".to_string(), vec![]);
+        let suppress_publish = PublishConfig {
+            on_error_per_publisher: Some(overrides_suppress),
+            ..Default::default()
+        };
+
+        // Second crate: has a default hook that would fire if suppress is skipped.
+        let sibling_publish = PublishConfig {
+            on_error: Some(vec![probe_hook(&should_not_fire, "sibling-fired")]),
+            ..Default::default()
+        };
+
+        // Lockstep: both crates are in scope (no selected_crates filter).
+        let ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![
+                crate_with_publish("core", suppress_publish),
+                crate_with_publish("cli", sibling_publish),
+            ])
+            .build();
+        let res = result("homebrew", PublisherGroup::Manager, true);
+
+        fire_on_error(&ctx, &res, "boom", &log());
+
+        assert!(
+            !should_not_fire.exists(),
+            "sibling's default hook must NOT fire when first crate carries an empty override"
         );
     }
 

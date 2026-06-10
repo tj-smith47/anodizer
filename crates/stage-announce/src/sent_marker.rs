@@ -18,6 +18,12 @@
 //! recorded yet" (the announcer sends, exactly as it would have without the
 //! marker), and a write failure is logged but never fails the release, because
 //! a missing dedup record must not abort a publish.
+//!
+//! **Cross-run scope:** dedup is effective only when the same dist directory is
+//! reused across re-runs (e.g. via `skip-determinism: true`). If the dist tree
+//! is rebuilt from scratch in a fresh CI run, the marker file is absent and all
+//! announcers fire again. This is intentional: a rebuilt dist might contain
+//! different release notes or assets, so re-announcing is the safe default.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

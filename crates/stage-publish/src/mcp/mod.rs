@@ -97,7 +97,9 @@ pub(crate) fn publish_to_mcp(ctx: &mut Context, log: &StageLogger) -> Result<Opt
         ));
         return Ok(None);
     }
-    let registry_url = resolve_registry_url(&ctx.config.mcp).to_string();
+    let registry_url = ctx
+        .render_template(resolve_registry_url(&ctx.config.mcp))
+        .context("mcp: render mcp.registry")?;
     publish_with_registry(ctx, log, &registry_url)
 }
 

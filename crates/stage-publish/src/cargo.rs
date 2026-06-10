@@ -744,7 +744,18 @@ fn publish_required_workspace_deps(
                 return;
             };
             for (key, value) in table.iter() {
-                if !workspace_crate_names.contains(key) || !seen.insert(key.to_string()) {
+                // A renamed dep uses the TOML key as an alias:
+                //   core = { package = "anodizer-core", version = "…" }
+                // The crate that must be on the index is `anodizer-core`, not `core`.
+                // Resolve the effective package name from the `package` field when present.
+                let effective_name = value
+                    .as_table_like()
+                    .and_then(|t| t.get("package"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(key);
+                if !workspace_crate_names.contains(effective_name)
+                    || !seen.insert(effective_name.to_string())
+                {
                     continue;
                 }
                 // Literal leaf pin first, then a workspace inherit resolved from
@@ -752,13 +763,13 @@ fn publish_required_workspace_deps(
                 let version = extract_version_pin(value)
                     .or_else(|| {
                         if dep_value_is_workspace_inherit(value) {
-                            resolve_ws_version(key)
+                            resolve_ws_version(effective_name)
                         } else {
                             None
                         }
                     })
                     .unwrap_or_default();
-                out.push((key.to_string(), version));
+                out.push((effective_name.to_string(), version));
             }
         };
 
@@ -875,8 +886,15 @@ pub(crate) fn check_publish_set_completeness(
                          publish set nor already on crates.io; `cargo publish -p {publishing}` \
                          would fail with `no matching package named '{dep_name}' found` because \
                          cargo strips path deps and resolves the version against the crates.io \
-                         index. Add '{dep_name}' to the crates: publish set (give it a \
-                         publish.cargo block), or make the dependency non-publish."
+                         index.\n\
+                         Remediation:\n\
+                         1. Add '{dep_name}' to the crates: publish set (give it a publish.cargo \
+                         block).\n\
+                         2. If '{dep_name}' was intentionally excluded via `skip: true` or an \
+                         `if:` condition, verify that the required version was published in a prior \
+                         release and is live on crates.io.\n\
+                         3. Make the dependency non-publish (feature-gate it or use an external \
+                         crate)."
                     );
                 }
                 DepIndexState::Unknown => {
@@ -1289,12 +1307,16 @@ pub(crate) fn cargo_publish_plan(
 
     let order = topological_sort(&publishable);
 
-    let release_version = ctx.version();
     let versions: HashMap<String, String> = all_crates
         .iter()
         .filter(|c| order.iter().any(|n| n == &c.name))
         .map(|c| {
-            let v = read_cargo_toml_version(&c.path).unwrap_or_else(|| release_version.clone());
+            // Use an empty string when the per-crate manifest is unreadable so
+            // the skip-decision treats the crate as "not yet published" (safe
+            // path). Falling back to the global release version here would key
+            // the idempotency probe on the WRONG version in per-crate workspaces
+            // and cause the crate's real version to be silently skipped.
+            let v = read_cargo_toml_version(&c.path).unwrap_or_default();
             (c.name.clone(), v)
         })
         .collect();
@@ -1527,13 +1549,18 @@ fn publish_to_cargo_with(
         // version is the per-crate resolved version (workspaces with mixed
         // cadences publish different versions per crate).
         //
-        // An empty resolved version (manifest unparseable AND the release
-        // version blank) cannot be yanked: `cargo yank --version "" <name>`
-        // is rejected by cargo, so recording it would manufacture a yank
-        // that always fails. Skip the record and warn loudly — better an
-        // explicit "you must yank this by hand" than a silent under-yank
-        // that masquerades as a successful rollback.
-        if crate_version.is_empty() {
+        // When the per-crate manifest was unreadable, crate_version is empty
+        // (the skip-decision treats it as "not yet published" to avoid a
+        // false-skip). For the yank record we fall back to the global release
+        // version so rollback can still attempt a yank. If even that is
+        // empty, warn: `cargo yank --version ""` is rejected and a silent
+        // under-yank is worse than an explicit manual-cleanup message.
+        let yank_version = if !crate_version.is_empty() {
+            crate_version.clone()
+        } else {
+            ctx.version()
+        };
+        if yank_version.is_empty() {
             log.warn(&format!(
                 "cargo: published '{name}' with no resolvable version; it CANNOT be \
                  auto-yanked on rollback — verify and `cargo yank` it manually if a \
@@ -1542,7 +1569,7 @@ fn publish_to_cargo_with(
         } else {
             record.push(CargoYankTarget {
                 name: name.clone(),
-                version: crate_version.clone(),
+                version: yank_version,
                 registry: cargo_cfg.and_then(|c| c.registry.clone()),
                 index: cargo_cfg.and_then(|c| c.index.clone()),
             });
@@ -4978,6 +5005,89 @@ mod partial_rollback_tests {
         assert_eq!(targets[0].name, "crate-a");
         assert_eq!(targets[0].version, "1.0.0");
     }
+
+    /// When a crate's Cargo.toml has no resolvable version, the skip-decision
+    /// must treat it as "not yet published" (attempt publish) — NOT key the
+    /// idempotency probe on the global release version.
+    ///
+    /// The old code used `unwrap_or_else(|| release_version.clone())` which
+    /// caused `already_published_check("my-crate", "1.0.0")` to return
+    /// `Some(cksum)` → the crate was silently skipped even though its real
+    /// version had never been published.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn manifest_read_failure_does_not_skip_publish() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Write a Cargo.toml WITHOUT a version field — simulates the case
+        // where `read_cargo_toml_version` returns None.
+        let crate_dir = tmp.path().join("my-crate");
+        std::fs::create_dir_all(&crate_dir).expect("mkdir");
+        std::fs::write(
+            crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"my-crate\"\n# no version field\n",
+        )
+        .expect("write Cargo.toml");
+        let argv_log = tmp.path().join("argv.log");
+
+        let crate_cfg = cargo_crate(
+            "my-crate",
+            &crate_dir.display().to_string(),
+            &[],
+            CargoPublishConfig {
+                index_timeout: Some(0),
+                ..Default::default()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![crate_cfg])
+            .build();
+
+        // The "1.0.0" release version IS already on crates.io — if we
+        // incorrectly keyed the skip-decision on it, the crate would be
+        // skipped. The correct behaviour is to attempt publish anyway because
+        // the per-crate version is unresolvable.
+        let always_published_1_0_0 =
+            |_name: &str,
+             _version: &str,
+             _policy: &anodizer_core::retry::RetryPolicy|
+             -> Result<Option<String>> { Ok(Some("deadbeef".to_string())) };
+
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "none");
+        let prev_path = std::env::var("PATH").ok();
+        // SAFETY: single-threaded within this #[serial] group.
+        unsafe { std::env::set_var("PATH", &new_path) };
+
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Normal);
+        let result = publish_to_cargo_with(
+            &mut ctx,
+            &["my-crate".to_string()],
+            &log,
+            &mut record,
+            always_published_1_0_0,
+        );
+
+        // SAFETY: restore PATH.
+        unsafe {
+            match prev_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+
+        result.expect("publish must succeed");
+        let invocations = read_argv_log(&argv_log);
+        let published: Vec<&String> = invocations
+            .iter()
+            .filter(|l| l.starts_with("publish"))
+            .collect();
+        assert_eq!(
+            published.len(),
+            1,
+            "cargo publish must be invoked despite unresolvable manifest version: {invocations:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -5211,6 +5321,56 @@ mod dep_guard_tests {
             *seen.borrow(),
             vec![("lib".to_string(), "0.7.0".to_string())],
             "inherited version resolved from the workspace root"
+        );
+    }
+
+    /// A dep declared with `package = "real-name"` under an alias key must be
+    /// matched by its real package name, not the alias.
+    ///
+    ///   [dependencies]
+    ///   core = { package = "anodizer-core", version = "0.8.0" }
+    ///
+    /// Before the fix, the guard compared key `"core"` against
+    /// workspace_crate_names (which contains `"anodizer-core"`) — the match
+    /// failed and the dep was silently ignored, so a genuinely-absent
+    /// `anodizer-core` slipped through the guard.
+    #[test]
+    fn guard_resolves_package_renamed_dep() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Crate with a renamed dep: key is "core", real name is "anodizer-core".
+        let app_dir = tmp.path().join("app");
+        std::fs::create_dir_all(&app_dir).expect("mkdir app");
+        std::fs::write(
+            app_dir.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.8.0\"\n\n\
+             [dependencies]\ncore = { package = \"anodizer-core\", version = \"0.8.0\" }\n",
+        )
+        .expect("write app manifest");
+
+        let core_path = write_crate(tmp.path(), "anodizer-core", "0.8.0", &[], &[]);
+        let all = vec![
+            crate_cfg("app", &app_dir.display().to_string(), &[]),
+            crate_cfg("anodizer-core", &core_path, &[]),
+        ];
+        let order = vec!["app".to_string()]; // anodizer-core NOT in publish set
+
+        let versions: HashMap<String, String> = [("app".to_string(), "0.8.0".to_string())]
+            .into_iter()
+            .collect();
+
+        let probe = |n: &str, _v: &str| {
+            // anodizer-core is absent from the index, triggering the guard.
+            if n == "anodizer-core" {
+                DepIndexState::Absent
+            } else {
+                DepIndexState::Present
+            }
+        };
+        let err = check_publish_set_completeness(&order, &all, &versions, &probe, &quiet_log())
+            .expect_err("renamed dep absent from set and index must fail guard");
+        assert!(
+            format!("{err:#}").contains("anodizer-core"),
+            "error must name the real package, not the alias: {err:#}"
         );
     }
 }

@@ -262,9 +262,11 @@ pub(crate) fn classify_moderation(
     // rows that exist, but stay conservative.
     match status.map(|s| s.to_ascii_lowercase()) {
         Some(ref s) if s == "rejected" => ("package rejected by moderator", true),
-        Some(ref s) if s == "submitted" || s == "unknown" || s == "exempted" => {
-            ("package in moderation queue", true)
-        }
+        Some(ref s) if s == "submitted" || s == "unknown" => ("package in moderation queue", true),
+        // Exempted = package is exempt from the standard moderation queue
+        // (typically a trusted publisher or pre-approved package); the version
+        // is immutable and live, not pending approval.
+        Some(ref s) if s == "exempted" => ("package approved (exempted from moderation)", false),
         Some(ref s) if s == "approved" => ("package approved", false),
         _ => match is_approved {
             Some(false) => ("package in moderation queue", true),
@@ -650,5 +652,34 @@ mod tests {
             chain.contains("<redacted>"),
             "expected `<redacted>` marker in error chain: {chain}"
         );
+    }
+
+    #[test]
+    fn classify_moderation_submitted_and_unknown_are_in_moderation() {
+        let (_, in_mod) = classify_moderation(Some("Submitted"), None);
+        assert!(in_mod, "Submitted must be in_moderation=true");
+        let (_, in_mod) = classify_moderation(Some("Unknown"), None);
+        assert!(in_mod, "Unknown must be in_moderation=true");
+    }
+
+    #[test]
+    fn classify_moderation_exempted_is_live_not_in_moderation() {
+        // "Exempted" means the package is exempt from the moderation queue —
+        // the version is immutable and live, not pending review.
+        let (label, in_mod) = classify_moderation(Some("Exempted"), None);
+        assert!(
+            !in_mod,
+            "Exempted must be in_moderation=false (live package): label={label}"
+        );
+        assert!(
+            label.contains("exempted"),
+            "label must mention exemption: {label}"
+        );
+    }
+
+    #[test]
+    fn classify_moderation_approved_is_live() {
+        let (_, in_mod) = classify_moderation(Some("Approved"), None);
+        assert!(!in_mod, "Approved must be in_moderation=false");
     }
 }

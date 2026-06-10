@@ -87,7 +87,7 @@ fn test_generate_snap_yaml_with_apps() {
     let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
     assert!(yaml.contains("apps:"), "missing apps section");
     assert!(yaml.contains("myapp:"), "missing app name");
-    // S4: args should be appended to command, not a separate field
+    // args must be appended to command (same field), not a separate `args:` key
     assert!(
         yaml.contains("command: myapp --verbose"),
         "args should be appended to command, got:\n{yaml}"
@@ -819,6 +819,27 @@ fn snap_revision_exists_empty_output_is_absent() {
         "No revisions available for this snap.\n",
         "1.0.0"
     ));
+}
+
+/// Version-column isolation: tokens in the Rev, Arches, and Channels columns
+/// must never trigger a false-positive when they happen to equal the version
+/// string being searched for (e.g. version "3" matching revision "3", or
+/// version "amd64" matching the Arches column).
+#[test]
+fn snap_revision_exists_checks_version_column_only() {
+    // Revision numbers are small integers; a bare-integer version collides.
+    let output = "\
+Rev    Uploaded              Arches  Version  Channels
+3      2024-06-01T10:00:00Z  amd64   1.2.0    stable*
+2      2024-05-01T10:00:00Z  amd64   1.1.0    -
+1      2024-04-01T10:00:00Z  amd64   1.0.0    -
+";
+    // Rev "3" must not match version "3" — "3" is not in the Version column.
+    assert!(!snap_revision_exists_in_output(output, "3"));
+    // Arch string must not match — "amd64" appears in Arches, not Version.
+    assert!(!snap_revision_exists_in_output(output, "amd64"));
+    // A real version still resolves correctly through the column filter.
+    assert!(snap_revision_exists_in_output(output, "1.2.0"));
 }
 
 // -----------------------------------------------------------------------

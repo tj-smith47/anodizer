@@ -33,7 +33,7 @@ impl CommitOutcome {
 
 /// Optional overrides for the git commit step.
 #[derive(Debug, Default)]
-pub(crate) struct CommitOptions<'a> {
+pub(crate) struct CommitOptions {
     /// Git commit author name, applied as `GIT_AUTHOR_NAME` /
     /// `GIT_COMMITTER_NAME` on the commit child so it overrides both an
     /// ambient `GIT_AUTHOR_NAME` env var and the repo's `user.name` config
@@ -45,8 +45,10 @@ pub(crate) struct CommitOptions<'a> {
     /// `GIT_COMMITTER_EMAIL` on the commit child (same override rationale as
     /// `author_name`).
     pub author_email: Option<String>,
-    /// Enable GPG/SSH signing for the commit.
-    pub signing: Option<&'a anodizer_core::config::CommitSigningConfig>,
+    /// Enable GPG/SSH signing for the commit. Owned (not a config reference)
+    /// so that `key`, `program`, and `format` can be template-rendered before
+    /// being passed to `git -c` args.
+    pub signing: Option<anodizer_core::config::CommitSigningConfig>,
     /// When true, suppress the `GIT_AUTHOR_*` / `GIT_COMMITTER_*` identity
     /// overrides so the running git client uses the GitHub App's identity
     /// (already configured in the repo's local git config by the Actions
@@ -86,12 +88,12 @@ const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodizer.dev";
 /// `commit_and_push_with_opts` skips the `GIT_AUTHOR_*` / `GIT_COMMITTER_*`
 /// identity overrides so the local git config (configured by the Actions
 /// checkout step) wins.
-pub(crate) fn resolve_commit_opts<'a>(
+pub(crate) fn resolve_commit_opts(
     ctx: &Context,
-    commit_author: Option<&'a anodizer_core::config::CommitAuthorConfig>,
+    commit_author: Option<&anodizer_core::config::CommitAuthorConfig>,
     log: &StageLogger,
-) -> Result<CommitOptions<'a>> {
-    let (cfg_name, cfg_email, signing, use_github_app_token) = if let Some(ca) = commit_author {
+) -> Result<CommitOptions> {
+    let (cfg_name, cfg_email, signing_raw, use_github_app_token) = if let Some(ca) = commit_author {
         (
             ca.name.as_deref(),
             ca.email.as_deref(),
@@ -112,6 +114,39 @@ pub(crate) fn resolve_commit_opts<'a>(
         None => anodizer_core::git::local_git_user_email()
             .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_EMAIL.to_string()),
     };
+
+    // Render template variables in signing config fields so that e.g.
+    // `key: "{{ .Env.GPG_KEY_ID }}"` resolves before being passed to
+    // `git -c user.signingkey=...`.
+    let signing = signing_raw
+        .map(|s| {
+            let key = s
+                .key
+                .as_deref()
+                .map(|v| super::template::render_or_warn(ctx, log, "commit_author.signing.key", v))
+                .transpose()?;
+            let program = s
+                .program
+                .as_deref()
+                .map(|v| {
+                    super::template::render_or_warn(ctx, log, "commit_author.signing.program", v)
+                })
+                .transpose()?;
+            let format = s
+                .format
+                .as_deref()
+                .map(|v| {
+                    super::template::render_or_warn(ctx, log, "commit_author.signing.format", v)
+                })
+                .transpose()?;
+            Ok::<_, anyhow::Error>(anodizer_core::config::CommitSigningConfig {
+                enabled: s.enabled,
+                key,
+                program,
+                format,
+            })
+        })
+        .transpose()?;
 
     Ok(CommitOptions {
         author_name: Some(name),
@@ -158,7 +193,7 @@ pub(crate) fn commit_and_push_with_opts(
     message: &str,
     branch: Option<&str>,
     label: &str,
-    opts: &CommitOptions<'_>,
+    opts: &CommitOptions,
 ) -> Result<CommitOutcome> {
     // Pre-fetch the target branch (if any) so `origin/<branch>` is populated
     // in the local ref store. We must use an explicit refspec: `clone
@@ -283,25 +318,28 @@ pub(crate) fn commit_and_push_with_opts(
     let sign_key_cfg;
     let sign_program_cfg;
     let sign_format_cfg;
-    // Handle commit signing config
-    let do_sign = opts.signing.and_then(|s| s.enabled).unwrap_or(false);
+    let do_sign = opts
+        .signing
+        .as_ref()
+        .and_then(|s| s.enabled)
+        .unwrap_or(false);
     if do_sign {
         sign_cfg = "commit.gpgsign=true".to_string();
         commit_args.extend_from_slice(&["-c", &sign_cfg]);
-        if let Some(key) = opts.signing.and_then(|s| s.key.as_deref()) {
+        if let Some(key) = opts.signing.as_ref().and_then(|s| s.key.as_deref()) {
             sign_key_cfg = format!("user.signingkey={}", key);
             commit_args.extend_from_slice(&["-c", &sign_key_cfg]);
         }
-        if let Some(program) = opts.signing.and_then(|s| s.program.as_deref()) {
+        if let Some(program) = opts.signing.as_ref().and_then(|s| s.program.as_deref()) {
             sign_program_cfg = format!("gpg.program={}", program);
             commit_args.extend_from_slice(&["-c", &sign_program_cfg]);
         }
-        // signing.format defaults to
-        // "openpgp" when signing is enabled but format is unset — otherwise
-        // users inherit the system's `gpg.format` (ssh/x509) which isn't what
-        // they asked for.
+        // signing.format defaults to "openpgp" when signing is enabled but
+        // format is unset — otherwise users inherit the system's `gpg.format`
+        // (ssh/x509) which isn't what they asked for.
         let fmt = opts
             .signing
+            .as_ref()
             .and_then(|s| s.format.as_deref())
             .unwrap_or("openpgp");
         sign_format_cfg = format!("gpg.format={}", fmt);

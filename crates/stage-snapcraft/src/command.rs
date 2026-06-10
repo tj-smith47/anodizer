@@ -37,26 +37,42 @@ pub fn snapcraft_list_revisions_command(snap_name: &str) -> Vec<String> {
 /// listed revision carries `version`.
 ///
 /// The command prints a header row (`Rev  Uploaded  Arches  Version  ...`)
-/// followed by one row per revision; the `Version` value is a whitespace-
-/// delimited column. We match on an exact, whitespace-bounded token equal to
-/// `version` so `1.0.0` does not match `1.0.0-rc1` or `11.0.0`. The header
-/// line is skipped (it never contains a value equal to a real version, but we
-/// skip it explicitly so a snap literally named after its version can't false-
-/// positive on the header). An empty / unparseable body yields `false` — the
-/// caller treats "couldn't prove the revision exists" as "upload" so a
-/// genuine first publish is never skipped.
+/// followed by one row per revision. We locate the `Version` column index
+/// from the header row, then compare only that column in each data row so
+/// tokens in other columns (Rev, Arches, Channels) cannot cause a false
+/// positive for versions that happen to look like revision numbers or arch
+/// strings (e.g. version `3` matching revision `3`). An empty / unparseable
+/// body or a missing `Version` header yields `false` — the caller treats
+/// "couldn't prove the revision exists" as "upload" so a genuine first
+/// publish is never skipped.
 pub fn snap_revision_exists_in_output(output: &str, version: &str) -> bool {
-    output
-        .lines()
-        .skip_while(|line| {
-            // Skip everything up to and including the header row so a column
-            // label can never be mistaken for a version token.
-            !line
-                .split_whitespace()
-                .any(|c| c.eq_ignore_ascii_case("Rev"))
-        })
-        .skip(1)
-        .any(|line| line.split_whitespace().any(|tok| tok == version))
+    let mut lines = output.lines();
+    // Advance to the header row (contains "Rev").
+    let header = loop {
+        let Some(line) = lines.next() else {
+            return false;
+        };
+        if line
+            .split_whitespace()
+            .any(|c| c.eq_ignore_ascii_case("Rev"))
+        {
+            break line;
+        }
+    };
+    // Determine the 0-based column index for "Version".
+    let Some(version_col) = header
+        .split_whitespace()
+        .position(|h| h.eq_ignore_ascii_case("Version"))
+    else {
+        return false;
+    };
+    // Check data rows: only the Version column must equal the target version.
+    lines.any(|line| {
+        line.split_whitespace()
+            .nth(version_col)
+            .map(|v| v == version)
+            .unwrap_or(false)
+    })
 }
 
 /// Construct the snapcraft upload CLI command arguments.

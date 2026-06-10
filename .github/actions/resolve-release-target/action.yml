@@ -76,9 +76,22 @@ runs:
 
         dist_run_id=""
         if [ "$run_determinism" = "false" ]; then
-          dist_run_id="$DIST_RUN_ID_INPUT"
-          if [ -z "$dist_run_id" ]; then
-            dist_run_id="$(gh run list --workflow=Release --json databaseId,headSha -L 100 \
+          if [ -n "$DIST_RUN_ID_INPUT" ]; then
+            dist_run_id="$DIST_RUN_ID_INPUT"
+            # Cross-check: the caller-supplied run must have built the target
+            # sha.  An ID from an unrelated commit would publish that run's
+            # binaries while tag/checkout/rollback point to a different sha —
+            # producing a valid-looking but wrong publish to one-way registries.
+            run_sha="$(gh run view "$dist_run_id" --json headSha --jq '.headSha' 2>/dev/null || true)"
+            if [ "$run_sha" != "$sha" ]; then
+              echo "::error::dist-run-id $dist_run_id built sha $run_sha, not the target $sha; aborting"
+              exit 1
+            fi
+          else
+            # -L 200 gives enough headroom for busy repos; for republishing
+            # a very old tag where the build run falls outside this window,
+            # supply dist-run-id explicitly.
+            dist_run_id="$(gh run list --workflow=Release --json databaseId,headSha -L 200 \
               --jq "[.[] | select(.headSha==\"$sha\")][0].databaseId // empty" || true)"
           fi
           if [ -z "$dist_run_id" ]; then
