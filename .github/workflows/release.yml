@@ -12,12 +12,12 @@ on:
         required: false
         default: ""
       skip_determinism:
-        description: "Reuse a prior run's byte-proven dist instead of rebuilding it. Re-publishes the identical artifacts, so winget/homebrew hashes stay valid."
+        description: "Reuse a prior run's byte-proven dist instead of rebuilding it. Re-publishes the identical artifacts, so winget/homebrew hashes stay valid. Only works while the prior run's dist-* artifacts survive (90-day retention)."
         type: boolean
         required: false
         default: false
       dist_run_id:
-        description: "Release run id whose preserved dist-* artifacts to reuse when skip_determinism is set. Empty auto-resolves to the latest Release run for the target commit."
+        description: "Release run id whose preserved dist-* artifacts to reuse when skip_determinism is set. Empty auto-resolves to the latest Release run for the target commit. Artifacts expire after 90 days; tags older than that cannot be re-published from preserved dist."
         required: false
         default: ""
       anodizer_version:
@@ -53,9 +53,10 @@ jobs:
       publish_from_artifact: ${{ steps.resolve.outputs.publish_from_artifact }}
       publish_version: ${{ steps.resolve.outputs.publish_version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
+          # GITHUB_TOKEN: same-repo checkout and tag push; no cross-repo access needed here.
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ inputs.tag || github.event.workflow_run.head_sha || github.sha }}
       - name: Configure git identity
@@ -72,6 +73,7 @@ jobs:
           artifact-run-id: auto
           args: tag --push --changelog
         env:
+          # GITHUB_TOKEN deliberately: its pushes do NOT retrigger CI, so the tag push cannot loop the pipeline.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Resolve release target
         id: resolve
@@ -83,6 +85,7 @@ jobs:
           anodizer-version: ${{ inputs.anodizer_version }}
           autotag-sha: ${{ steps.autotag.outputs.head-sha }}
           autotag-tagged: ${{ steps.autotag.outputs.tagged }}
+          # GITHUB_TOKEN: only lists/inspects runs in this repo.
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   # Sharded byte-for-byte reproducibility gate, one shard per host/target.
@@ -109,28 +112,33 @@ jobs:
       packages: write
       attestations: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
           ref: ${{ needs.tag.outputs.sha }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable branch, pinned 2026-06-10
+        with:
+          # Explicit because the pinned SHA cannot carry the channel in the ref.
+          toolchain: stable
 
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+      - uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
+          # GITHUB_TOKEN: pushes images to this repo's own ghcr namespace (packages: write).
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download preserved dist artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist/
           pattern: dist-*
           merge-multiple: true
           run-id: ${{ needs.tag.outputs.dist_run_id != '' && needs.tag.outputs.dist_run_id || github.run_id }}
+          # GITHUB_TOKEN: dist_run_id is always a Release run in this repo, so same-repo actions:read suffices.
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify preserved dist
@@ -177,6 +185,7 @@ jobs:
           CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          # GH_PAT: publishers push to external repos (tap/bucket/AUR/krew-index) and read artifacts across workflows.
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
@@ -191,14 +200,15 @@ jobs:
           artifact-workflow: ci.yml
           args: tag rollback ${{ needs.tag.outputs.sha }}
         env:
+          # GH_PAT: rollback reverts publisher pushes in external repos, beyond GITHUB_TOKEN's same-repo scope.
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
       - name: Upload run summary
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: run-summary-${{ needs.tag.outputs.sha }}
           path: |
             dist/run-*/summary.json
             dist/run-*/determinism.json
-          if-no-files-found: warn
+          if-no-files-found: error

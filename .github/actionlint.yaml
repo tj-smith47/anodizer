@@ -1,0 +1,4 @@
+# Self-hosted runner labels actionlint cannot know about.
+self-hosted-runner:
+  labels:
+    - arc-anodizer
