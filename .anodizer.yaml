@@ -15,7 +15,11 @@ dist: ./dist
 # Show artifact file sizes after build (confirms report_sizes wiring)
 report_sizes: true
 
-# Top-level env vars available to all template expressions
+# Non-secret config loaded from a tracked file; overridable per-environment.
+env_files:
+  - .env.release
+
+# Top-level env vars that must be resolved at runtime (override .env.release if set)
 env:
   - RELEASE_TYPE=stable
 
@@ -540,10 +544,6 @@ crates:
     snapcrafts:
       - id: default
         name: anodizer
-        # 0.7.0 was already uploaded to the Snap Store; re-publishing the same
-        # version mints a duplicate store revision (snapcraft upload is not
-        # idempotent), so the upload is suppressed for this version.
-        skip: true
         title: "anodizer"
         # icon: omitted intentionally — Snap Store snap.json validation
         # rejects the `icon` field with "Additional properties are not
@@ -596,9 +596,12 @@ crates:
       - skip: true  # disabled — no NSIS script created
         name: anodizer
     blobs:
-      - skip: true  # disabled — no cloud storage configured
-        provider: s3
+      - provider: s3
         bucket: anodizer-releases
+        endpoint: "{{ Env.MINIO_ENDPOINT }}"
+        region: us-east-1
+        s3_force_path_style: true
+        directory: "{{ Tag }}"
 
 # Top-level Homebrew Cask publisher — GR v2.16+ supported path.
 # GoReleaser v2.16 fully deprecated `brews:` (Formula). This block uses the
@@ -804,9 +807,13 @@ milestones:
     fail_on_error: false
     name_template: "{{ Tag }}"
 
-# DockerHub description sync
+# DockerHub description sync — NOT image publishing (images go to ghcr.io via
+# docker_v2:). This syncs the repo description/README to hub.docker.com so
+# users who find the image there see accurate docs. Requires a DockerHub repo
+# at tj-smith47/anodizer and DOCKERHUB_PASSWORD secret. Disabled until the
+# DockerHub repo is created.
 dockerhub:
-  - skip: true  # disabled — no DockerHub image for anodizer
+  - skip: true
     username: "{{ Env.DOCKERHUB_USERNAME }}"
     description: "A Rust-native release automation tool"
 
@@ -828,9 +835,15 @@ cloudsmiths:
       alpine: alpine/any-version
     republish: true  # prevents MD5 conflict when re-cutting a version
 
-# Note: the `npms:` publisher was removed (npm targets the Node.js
-# registry, which a Rust crate cannot populate). For deb/rpm/apk uploads
-# use the `gemfury:`, `cloudsmiths:`, or `artifactories:` publishers.
+# NPM registry publisher — ships a metapackage + per-platform packages so
+# `npm install -g anodizer` works for JS toolchain users (biome / git-cliff
+# pattern). Requires NPM_TOKEN. Disabled until a token is provisioned.
+npms:
+  - skip: true
+    scope: "@tj-smith47"
+    metapackage: anodizer
+    bin: anodizer
+    mode: optional-deps
 
 # MCP (Model Context Protocol) server registry publisher.
 #
@@ -855,6 +868,32 @@ mcp:
         type: stdio
   auth:
     type: github-oidc
+
+# AppImage — self-contained Linux binary bundle via linuxdeploy.
+# Produces one .AppImage per Linux target architecture.
+# linuxdeploy is auto-installed by anodizer-action when auto-install: true.
+appimages:
+  - desktop: "assets/anodizer.desktop"
+    icon: "assets/logo.png"
+    filename: "{{ ProjectName }}-{{ Version }}-{{ Arch }}.AppImage"
+    update_information: "gh-releases-zsync|tj-smith47|anodizer|latest|*.AppImage.zsync"
+
+# SLSA build provenance — subjects mode writes dist/attestation-subjects.json;
+# anodizer-action feeds it to actions/attest-build-provenance (OIDC).
+# Requires attestations: write permission on the release job (see release.yml).
+attestations:
+  enabled: true
+  mode: subjects
+
+# Post-release verification gate — runs AFTER publish, reports defects.
+# assert_assets: every produced artifact must appear as an uploaded release asset.
+# install_smoke: installs each nfpm package in a container and runs anodizer --version.
+# glibc_ceiling: fails if any glibc-linked .deb requires glibc > 2.36.
+verify_release:
+  enabled: true
+  assert_assets: true
+  install_smoke: {}
+  glibc_ceiling: "2.36"
 
 # Source RPM configuration
 srpm:

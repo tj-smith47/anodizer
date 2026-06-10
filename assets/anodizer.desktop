@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=anodizer
+Comment=Rust-native release automation
+Exec=anodizer
+Icon=anodizer
+Type=Application
+Categories=Development;
+Terminal=true
