@@ -22,7 +22,40 @@ pub struct BuildCommand {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn detect_cross_strategy() -> CrossStrategy {
-    detect_cross_strategy_impl(find_binary("cargo-zigbuild"), find_binary("cross"))
+    detect_cross_strategy_impl(zigbuild_available(), find_binary("cross"))
+}
+
+/// True when a zigbuild invocation can actually run: `cargo-zigbuild` on
+/// PATH AND a reachable zig toolchain behind it. Probing only the cargo
+/// subcommand would select a strategy that fails at spawn time on hosts
+/// where zig itself is missing.
+pub(crate) fn zigbuild_available() -> bool {
+    find_binary("cargo-zigbuild") && zig_available()
+}
+
+/// Whether the zig toolchain cargo-zigbuild shells out to is reachable.
+/// cargo-zigbuild resolves zig as the `zig` binary on PATH or, failing
+/// that, the pip-installed `ziglang` wheel driven via `python3 -m ziglang`
+/// (`python` on hosts without a `python3` shim); both probes are mirrored
+/// here so zigbuild is only chosen when an invocation would succeed.
+/// Cached for the process lifetime: strategy resolution runs per build
+/// job and the wheel probe spawns an interpreter.
+fn zig_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        if find_binary("zig") {
+            return true;
+        }
+        ["python3", "python"].iter().any(|py| {
+            std::process::Command::new(py)
+                .args(["-c", "import ziglang"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        })
+    })
 }
 
 /// Tool-availability core of [`detect_cross_strategy`], with the PATH probes
@@ -42,10 +75,8 @@ pub(crate) fn detect_cross_strategy_impl(
 
 /// Target-aware variant of [`detect_cross_strategy`].
 ///
-/// `cargo` is the right choice when the target's OS is the same as the
-/// host's OS and the produced binary has no glibc floor to protect,
-/// because the host's native compiler already knows how to emit binaries
-/// for that OS on every supported arch:
+/// Strategy choice depends on the host/target family, not just on which
+/// tools are installed:
 ///
 /// - **macOS host → any apple-darwin target**: clang is a universal
 ///   cross-compiler across Apple architectures (x86_64, aarch64) and the
@@ -67,12 +98,7 @@ pub(crate) fn detect_cross_strategy_impl(
 /// (Linux → Windows, Linux → darwin, etc.).
 pub(crate) fn detect_cross_strategy_for_target(target: &str) -> CrossStrategy {
     let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
-    detect_cross_strategy_for_target_impl(
-        &host,
-        target,
-        find_binary("cargo-zigbuild"),
-        find_binary("cross"),
-    )
+    detect_cross_strategy_for_target_impl(&host, target, zigbuild_available(), find_binary("cross"))
 }
 
 /// Decision core of [`detect_cross_strategy_for_target`], with the host

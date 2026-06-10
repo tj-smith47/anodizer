@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use super::BuildStage;
 use super::command::{
     BuildContext, build_command, build_lib_command, crate_has_binary_target, detect_crate_type,
-    detect_cross_strategy, detect_cross_strategy_for_target_impl, resolve_build_program,
-    same_apple_family, same_windows_family,
+    detect_cross_strategy, detect_cross_strategy_for_target_impl, is_linux_gnu,
+    resolve_build_program, same_apple_family, same_windows_family, zigbuild_available,
 };
 
 /// Test helper — assembles a [`BuildContext`] from the varying parts most
@@ -1755,7 +1755,7 @@ fn test_resolve_build_program_auto_native() {
     }
     let (prog, sub) = resolve_build_program(&CrossStrategy::Auto, None, None, Some(&host));
     assert_eq!(prog, "cargo", "native target should use the cargo binary");
-    if host.contains("-linux-gnu") && anodizer_core::util::find_binary("cargo-zigbuild") {
+    if is_linux_gnu(&host) && zigbuild_available() {
         assert_eq!(sub, "zigbuild", "linux-gnu host with zigbuild on PATH");
     } else {
         assert_eq!(sub, "build", "native target should use plain build");
@@ -1926,6 +1926,32 @@ fn test_detect_cross_strategy_host_musl_keeps_cargo() {
         "x86_64-unknown-linux-musl",
         true,
         false,
+    );
+    assert_eq!(strategy, CrossStrategy::Zigbuild);
+}
+
+#[test]
+fn test_detect_cross_strategy_linux_gnu_rule_beats_apple_host_shortcut() {
+    // An apple host crossing to linux-gnu must hit the hermetic-glibc rule,
+    // not any same-host shortcut: zigbuild when available.
+    let strategy = detect_cross_strategy_for_target_impl(
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        true,
+        false,
+    );
+    assert_eq!(strategy, CrossStrategy::Zigbuild);
+}
+
+#[test]
+fn test_detect_cross_strategy_host_linux_gnu_zigbuild_beats_cross() {
+    // With BOTH tools installed, the host linux-gnu triple picks zigbuild
+    // (hermetic glibc), never cross.
+    let strategy = detect_cross_strategy_for_target_impl(
+        "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+        true,
+        true,
     );
     assert_eq!(strategy, CrossStrategy::Zigbuild);
 }

@@ -34,6 +34,10 @@ const TOOLS: &[ToolCheck] = &[
         description: "Cross-compilation via Zig",
     },
     ToolCheck {
+        name: "zig",
+        description: "Zig toolchain (linker/libc behind cargo-zigbuild)",
+    },
+    ToolCheck {
         name: "cross",
         description: "Cross-compilation via Docker",
     },
