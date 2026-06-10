@@ -103,6 +103,10 @@ impl Stage for VerifyReleaseStage {
         }
 
         let mut issues: Vec<String> = Vec::new();
+        // Emit the resolved install-smoke strategy once, the first time a smoke job
+        // runs, so a CI operator can tell a slow copy path (dind without a shared
+        // work dir) from a fast bind-mount path.
+        let mut smoke_strategy_logged = false;
 
         // Resolve Docker availability once (smoke-test only).
         let smoke_enabled = cfg.install_smoke.is_some();
@@ -131,6 +135,7 @@ impl Stage for VerifyReleaseStage {
                 smoke_enabled,
                 docker_ok,
                 &mut issues,
+                &mut smoke_strategy_logged,
             )?;
         }
 
@@ -200,6 +205,7 @@ fn verify_one_crate(
     smoke_enabled: bool,
     docker_ok: bool,
     issues: &mut Vec<String>,
+    smoke_strategy_logged: &mut bool,
 ) -> Result<()> {
     // The caller filters to crates carrying a release block; if absent there
     // is no published release to verify, so skip this crate rather than panic.
@@ -299,6 +305,13 @@ fn verify_one_crate(
                 pkg_name: name.clone(),
                 binary: binary.clone(),
             };
+            if !*smoke_strategy_logged {
+                log.verbose(&format!(
+                    "verify-release: install-smoke strategy: {}",
+                    smoke::strategy_label(&job.image)
+                ));
+                *smoke_strategy_logged = true;
+            }
             match smoke::run_smoke(&job) {
                 Ok(SmokeOutcome::Passed) => {
                     log.verbose(&format!(

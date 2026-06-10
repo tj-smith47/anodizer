@@ -302,6 +302,7 @@ config is rendered.
 | `blobs[].endpoint` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`"{{ Env.MINIO_ENDPOINT }}"` → `http://minio.jarvispro.svc.cluster.local:9003`) |
 | `blobs[].region` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`region: us-east-1` — compatibility placeholder; MinIO ignores region) |
 | `blobs[].s3_force_path_style` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`s3_force_path_style: true` — required for MinIO path-style addressing) |
+| `blobs[].disable_ssl` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`disable_ssl: true` — the in-cluster MinIO endpoint is plain http; without it the S3 client rejects the non-https endpoint) |
 | `blobs[].directory` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`directory: "{{ Tag }}"`) |
 | `cloudsmiths[].organization` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`organization: jarvispro`) |
 | `cloudsmiths[].repository` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`repository: anodizer`) |
@@ -329,7 +330,7 @@ config is rendered.
 |---|---|---|
 | `verify_release.enabled` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`enabled: true`) |
 | `verify_release.assert_assets` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`assert_assets: true` — every produced artifact must appear as an uploaded release asset) |
-| `verify_release.install_smoke` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`install_smoke: {}` — installs each nfpm package in a container and runs `anodizer --version`) |
+| `verify_release.install_smoke` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`install_smoke: {}` — installs each nfpm package in a container and runs `anodizer --version`; auto-detects the Docker topology and uses `docker cp` instead of a bind mount when the daemon's filesystem is separate, e.g. a dind sidecar) |
 | `verify_release.glibc_ceiling` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`glibc_ceiling: "2.36"` — fails if any `.deb` requires glibc > 2.36) |
 | `attestations.enabled` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`enabled: true`) |
 | `attestations.mode` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`mode: subjects` — writes `dist/attestation-subjects.json`; anodizer-action feeds it to `actions/attest-build-provenance`) |

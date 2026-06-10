@@ -601,6 +601,7 @@ crates:
         endpoint: "{{ Env.MINIO_ENDPOINT }}"
         region: us-east-1
         s3_force_path_style: true
+        disable_ssl: true
         directory: "{{ Tag }}"
 
 # Top-level Homebrew Cask publisher — GR v2.16+ supported path.
