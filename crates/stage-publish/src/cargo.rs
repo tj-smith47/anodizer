@@ -380,12 +380,14 @@ fn poll_crates_io_index(
 ///
 /// Scans `[dependencies]`, `[dev-dependencies]`, and `[build-dependencies]`
 /// (plus their target-specific variants under `[target.*.dependencies]`,
-/// etc.). For each entry whose key is in `workspace_crate_names`, the
-/// extracted `(name, version)` pair captures the version cargo will
-/// resolve against the crates.io index at publish time. Entries without a
-/// literal `version` string (workspace-inherited inherits, git deps, or
-/// path-only inline tables) are skipped — there is nothing for the gate
-/// to poll for.
+/// etc.). Each `(name, version)` pair captures the package name and version
+/// cargo will resolve against the crates.io index at publish time: the name
+/// honours `package = "..."` renames (leaf entry, or the workspace-root
+/// entry for a `workspace = true` inherit) and the version comes from the
+/// literal leaf pin or the workspace root's pin for an inherit. Entries
+/// without any resolvable version (git deps, path-only entries, inherits
+/// with no root pin) are skipped — there is nothing for the gate to poll
+/// for.
 ///
 /// Returns an empty Vec if the manifest can't be read or parsed; the
 /// caller logs the case via [`wait_for_workspace_deps`] so the gate
@@ -395,66 +397,14 @@ fn workspace_deps_for_crate(
     manifest_path: &std::path::Path,
     workspace_crate_names: &HashSet<&str>,
 ) -> Vec<(String, String)> {
-    let content = match std::fs::read_to_string(manifest_path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    let doc = match content.parse::<toml_edit::DocumentMut>() {
-        Ok(d) => d,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-
-    // Visit a `[<section>]` table at any depth and append matching deps.
-    // Honours `target.*.dependencies` variants by recursing into table
-    // values whose key matches one of the three section names.
-    fn visit(
-        item: &toml_edit::Item,
-        workspace_crate_names: &HashSet<&str>,
-        out: &mut Vec<(String, String)>,
-        seen: &mut HashSet<String>,
-    ) {
-        let Some(table) = item.as_table_like() else {
-            return;
-        };
-        for (key, value) in table.iter() {
-            // dep_key inside [dependencies] / [dev-dependencies] /
-            // [build-dependencies] — `key` is the dep name, `value`
-            // is its spec (literal string or inline-table).
-            if !workspace_crate_names.contains(key) {
-                continue;
-            }
-            if let Some(ver) = extract_version_pin(value)
-                && seen.insert(key.to_string())
-            {
-                out.push((key.to_string(), ver));
-            }
-        }
-    }
-
-    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        if let Some(item) = doc.get(section) {
-            visit(item, workspace_crate_names, &mut out, &mut seen);
-        }
-    }
-    // `[target.'cfg(...)'.dependencies]` and friends.
-    if let Some(target_item) = doc.get("target")
-        && let Some(target_tbl) = target_item.as_table_like()
-    {
-        for (_cfg, target_value) in target_tbl.iter() {
-            let Some(target_table) = target_value.as_table_like() else {
-                continue;
-            };
-            for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-                if let Some(item) = target_table.get(section) {
-                    visit(item, workspace_crate_names, &mut out, &mut seen);
-                }
-            }
-        }
-    }
-    out
+    collect_workspace_dep_entries(
+        manifest_path,
+        workspace_crate_names,
+        &["dependencies", "dev-dependencies", "build-dependencies"],
+    )
+    .into_iter()
+    .filter(|(_, version)| !version.is_empty())
+    .collect()
 }
 
 /// Extract a literal `version = "X.Y.Z"` from a dep value, handling the
@@ -724,6 +674,35 @@ fn publish_required_workspace_deps(
     manifest_path: &std::path::Path,
     workspace_crate_names: &HashSet<&str>,
 ) -> Vec<(String, String)> {
+    collect_workspace_dep_entries(
+        manifest_path,
+        workspace_crate_names,
+        &["dependencies", "build-dependencies"],
+    )
+}
+
+/// Walk the given dependency `sections` of one crate manifest (plus their
+/// `[target.*.<section>]` variants) and collect
+/// `(effective_package_name, version_or_empty)` for every entry whose
+/// effective name is a workspace crate.
+///
+/// The effective name honours `package = "..."` renames: the leaf entry's
+/// field for a literal dep, or the workspace-root `[workspace.dependencies]`
+/// entry for a `workspace = true` inherit (cargo only accepts the rename at
+/// the root for inherited deps), falling back to the declaration key. The
+/// version comes from a literal leaf pin, then the root entry's pin for an
+/// inherit; entries with no resolvable version are kept with an empty
+/// version string so callers can decide between skipping (the wait gate) and
+/// membership-only checks (the completeness guard).
+///
+/// Duplicate names across sections collapse to one entry; a later occurrence
+/// only contributes its version when the first had none. Returns an empty
+/// Vec when the manifest can't be read or parsed.
+fn collect_workspace_dep_entries(
+    manifest_path: &std::path::Path,
+    workspace_crate_names: &HashSet<&str>,
+    sections: &[&str],
+) -> Vec<(String, String)> {
     let Ok(content) = std::fs::read_to_string(manifest_path) else {
         return Vec::new();
     };
@@ -746,11 +725,11 @@ fn publish_required_workspace_deps(
     };
 
     let mut out: Vec<(String, String)> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
 
     let mut visit = |item: &toml_edit::Item,
                      out: &mut Vec<(String, String)>,
-                     seen: &mut HashSet<String>| {
+                     seen: &mut HashMap<String, usize>| {
         let Some(table) = item.as_table_like() else {
             return;
         };
@@ -774,27 +753,37 @@ fn publish_required_workspace_deps(
                 .map(str::to_string)
                 .or_else(|| root_entry.as_ref().map(|(pkg, _)| pkg.clone()))
                 .unwrap_or_else(|| key.to_string());
-            if !workspace_crate_names.contains(effective_name.as_str())
-                || !seen.insert(effective_name.clone())
-            {
+            if !workspace_crate_names.contains(effective_name.as_str()) {
                 continue;
             }
             // Literal leaf pin first, then the workspace-root pin for an
-            // inherit; an unresolved version stays empty (set-membership-only).
+            // inherit; an unresolved version stays empty.
             let version = extract_version_pin(value)
                 .or_else(|| root_entry.map(|(_, ver)| ver).filter(|ver| !ver.is_empty()))
                 .unwrap_or_default();
-            out.push((effective_name, version));
+            match seen.get(effective_name.as_str()) {
+                Some(&idx) => {
+                    // The same package can appear in several sections with
+                    // different specs; a version-less first sighting must not
+                    // shadow a later pinned one.
+                    if out[idx].1.is_empty() && !version.is_empty() {
+                        out[idx].1 = version;
+                    }
+                }
+                None => {
+                    seen.insert(effective_name.clone(), out.len());
+                    out.push((effective_name, version));
+                }
+            }
         }
     };
 
-    // Normal + build deps require registry resolution at publish; dev-deps do
-    // not (cargo publish drops them), so they are excluded.
-    for section in ["dependencies", "build-dependencies"] {
+    for section in sections {
         if let Some(item) = doc.get(section) {
             visit(item, &mut out, &mut seen);
         }
     }
+    // `[target.'cfg(...)'.dependencies]` and friends.
     if let Some(target_item) = doc.get("target")
         && let Some(target_tbl) = target_item.as_table_like()
     {
@@ -802,7 +791,7 @@ fn publish_required_workspace_deps(
             let Some(target_table) = target_value.as_table_like() else {
                 continue;
             };
-            for section in ["dependencies", "build-dependencies"] {
+            for section in sections {
                 if let Some(item) = target_table.get(section) {
                     visit(item, &mut out, &mut seen);
                 }
@@ -3107,6 +3096,103 @@ features = ["extra"]
         let ws_names: HashSet<&str> = ["cfgd-core", "leaf"].iter().copied().collect();
         let deps = workspace_deps_for_crate(&manifest, &ws_names);
         assert_eq!(deps, vec![("cfgd-core".to_string(), "0.4.0".to_string())]);
+    }
+
+    /// A renamed dep (`alias = { package = "real", ... }`) must be waited on
+    /// under its real package name — that is the name cargo resolves against
+    /// the index. The alias key must NOT be matched, even when a workspace
+    /// member shares the alias's name ("core" below).
+    #[test]
+    fn workspace_deps_for_crate_resolves_package_renamed_dep() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manifest = write_manifest(
+            tmp.path(),
+            r#"
+[package]
+name = "leaf"
+version = "1.0.0"
+
+[dependencies]
+core = { package = "anodizer-core", path = "../core", version = "0.8.0" }
+"#,
+        );
+        let ws_names: HashSet<&str> = ["anodizer-core", "core", "leaf"].iter().copied().collect();
+        let deps = workspace_deps_for_crate(&manifest, &ws_names);
+        assert_eq!(
+            deps,
+            vec![("anodizer-core".to_string(), "0.8.0".to_string())],
+            "wait set must carry the real package name, not the alias"
+        );
+    }
+
+    /// A rename declared on the workspace root entry — the only place cargo
+    /// accepts `package =` for an inherited dep — with the leaf inheriting
+    /// via `core.workspace = true`. The wait set must carry the real package
+    /// name at the root-pinned version.
+    #[test]
+    fn workspace_deps_for_crate_resolves_inherited_renamed_dep() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"app\", \"core\"]\n\n\
+             [workspace.dependencies]\n\
+             core = { path = \"core\", version = \"0.8.0\", package = \"anodizer-core\" }\n",
+        )
+        .expect("write workspace root");
+        let app_dir = tmp.path().join("app");
+        std::fs::create_dir_all(&app_dir).expect("mkdir app");
+        let manifest = write_manifest(
+            &app_dir,
+            r#"
+[package]
+name = "app"
+version = "0.8.0"
+
+[dependencies]
+core.workspace = true
+"#,
+        );
+        let ws_names: HashSet<&str> = ["anodizer-core", "app"].iter().copied().collect();
+        let deps = workspace_deps_for_crate(&manifest, &ws_names);
+        assert_eq!(
+            deps,
+            vec![("anodizer-core".to_string(), "0.8.0".to_string())],
+            "inherited rename must be waited on under its real package name"
+        );
+    }
+
+    /// A plain `<dep>.workspace = true` inherit whose version pin lives on
+    /// the workspace root entry must be waited on at that version — the same
+    /// propagation race exists whether the pin is on the leaf or the root.
+    #[test]
+    fn workspace_deps_for_crate_resolves_inherited_dep_version_from_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"app\", \"lib\"]\n\n\
+             [workspace.dependencies]\nlib = { path = \"lib\", version = \"0.7.0\" }\n",
+        )
+        .expect("write workspace root");
+        let app_dir = tmp.path().join("app");
+        std::fs::create_dir_all(&app_dir).expect("mkdir app");
+        let manifest = write_manifest(
+            &app_dir,
+            r#"
+[package]
+name = "app"
+version = "0.7.0"
+
+[dependencies]
+lib.workspace = true
+"#,
+        );
+        let ws_names: HashSet<&str> = ["lib", "app"].iter().copied().collect();
+        let deps = workspace_deps_for_crate(&manifest, &ws_names);
+        assert_eq!(
+            deps,
+            vec![("lib".to_string(), "0.7.0".to_string())],
+            "root-pinned inherit must be waited on at the root version"
+        );
     }
 
     /// Disabled gate is a no-op even when deps are present — the master
