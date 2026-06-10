@@ -633,11 +633,13 @@ struct RootDepPin {
     version: String,
 }
 
-/// Lazily-populated `[workspace.dependencies]` map, shared across the
-/// per-crate manifest walks of one publish run so the workspace root is
-/// parsed once, not once per crate. `None` until the first inherit edge
-/// forces a parse.
-type RootDepCache = Option<HashMap<String, RootDepPin>>;
+/// Lazily-populated `[workspace.dependencies]` maps, keyed by resolved
+/// workspace-root manifest path and shared across the per-crate manifest
+/// walks of one publish run: each distinct root is parsed once, and a crate
+/// living under a different root (a nested standalone `[workspace]`) can
+/// never resolve its inherits against another crate's root. Empty until the
+/// first inherit edge forces a parse.
+type RootDepCache = HashMap<std::path::PathBuf, HashMap<String, RootDepPin>>;
 
 /// Parse a workspace-root manifest's `[workspace.dependencies]` table into a
 /// `key -> RootDepPin` map. The effective name comes from a `package = "..."`
@@ -729,9 +731,8 @@ fn publish_required_workspace_deps(
 /// Duplicate package names across sections collapse to one entry; a later
 /// occurrence only contributes its version when the first had none. Returns
 /// an empty Vec when the manifest can't be read or parsed. `root_cache`
-/// shares the parsed workspace root across the per-crate calls of one run —
-/// every crate of a run lives in the same workspace, so the first parse
-/// serves all of them.
+/// shares the parsed `[workspace.dependencies]` maps across the per-crate
+/// calls of one run, keyed by each crate's own resolved workspace root.
 fn collect_workspace_dep_entries(
     manifest_path: &std::path::Path,
     workspace_crate_names: &HashSet<&str>,
@@ -745,16 +746,21 @@ fn collect_workspace_dep_entries(
         return Vec::new();
     };
 
-    // Resolve inherited entries lazily — only read the workspace root when
-    // some crate actually has a `workspace = true` workspace-dep edge.
+    // Resolve inherited entries lazily — the root manifest walk happens at
+    // most once per crate (memoized below), and the parse at most once per
+    // distinct root across the whole run (keyed cache).
+    let mut crate_root: Option<Option<std::path::PathBuf>> = None;
     let mut resolve_ws_entry = |dep: &str| -> Option<RootDepPin> {
-        let map = root_cache.get_or_insert_with(|| {
-            find_workspace_root_manifest(
-                manifest_path.parent().unwrap_or(std::path::Path::new(".")),
-            )
-            .map(|m| workspace_dependency_entries(&m))
-            .unwrap_or_default()
-        });
+        let root = crate_root
+            .get_or_insert_with(|| {
+                find_workspace_root_manifest(
+                    manifest_path.parent().unwrap_or(std::path::Path::new(".")),
+                )
+            })
+            .clone()?;
+        let map = root_cache
+            .entry(root)
+            .or_insert_with_key(|m| workspace_dependency_entries(m));
         map.get(dep).cloned()
     };
 
@@ -882,7 +888,7 @@ pub(crate) fn check_publish_set_completeness(
         .map(|c| (c.name.as_str(), c.path.as_str()))
         .collect();
 
-    let mut root_cache: RootDepCache = None;
+    let mut root_cache = RootDepCache::new();
     for publishing in order {
         let path = crate_paths.get(publishing.as_str()).copied().unwrap_or(".");
         let manifest_path = std::path::Path::new(path).join("Cargo.toml");
@@ -1511,7 +1517,7 @@ fn publish_to_cargo_with(
 
     // Workspace-root dep map shared across the per-crate manifest scans —
     // parsed at most once per run.
-    let mut ws_root_cache: RootDepCache = None;
+    let mut ws_root_cache = RootDepCache::new();
 
     for (i, name) in sorted_names.iter().enumerate() {
         log.status(&run_per_crate_start_message(name));
@@ -3024,7 +3030,7 @@ tokio = { version = "1.0", features = ["full"] }
             .iter()
             .copied()
             .collect();
-        let mut deps = workspace_deps_for_crate(&manifest, &ws_names, &mut None);
+        let mut deps = workspace_deps_for_crate(&manifest, &ws_names, &mut RootDepCache::new());
         deps.sort();
         assert_eq!(
             deps,
@@ -3062,7 +3068,7 @@ build-tools = { path = "../build", version = "0.3.0" }
             .iter()
             .copied()
             .collect();
-        let mut deps = workspace_deps_for_crate(&manifest, &ws_names, &mut None);
+        let mut deps = workspace_deps_for_crate(&manifest, &ws_names, &mut RootDepCache::new());
         deps.sort();
         assert_eq!(
             deps,
@@ -3098,7 +3104,7 @@ win-build = { path = "../win", version = "0.2.0" }
             .iter()
             .copied()
             .collect();
-        let mut deps = workspace_deps_for_crate(&manifest, &ws_names, &mut None);
+        let mut deps = workspace_deps_for_crate(&manifest, &ws_names, &mut RootDepCache::new());
         deps.sort();
         assert_eq!(
             deps,
@@ -3152,7 +3158,7 @@ pinned = { path = "../bar", version = "0.5.0" }
         .iter()
         .copied()
         .collect();
-        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut None);
+        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut RootDepCache::new());
         assert_eq!(deps, vec![("pinned".to_string(), "0.5.0".to_string())]);
     }
 
@@ -3185,7 +3191,7 @@ lib = { path = "../lib", version = "0.3.0" }
 "#,
         );
         let ws_names: HashSet<&str> = ["lib", "leaf"].iter().copied().collect();
-        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut None);
+        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut RootDepCache::new());
         assert_eq!(
             deps,
             vec![("lib".to_string(), "0.3.0".to_string())],
@@ -3213,11 +3219,62 @@ lib = { path = "../lib", version = "0.9.9" }
 "#,
         );
         let ws_names: HashSet<&str> = ["lib", "leaf"].iter().copied().collect();
-        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut None);
+        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut RootDepCache::new());
         assert_eq!(
             deps,
             vec![("lib".to_string(), "0.4.0".to_string())],
             "duplicate pins collapse to one entry, first pin wins"
+        );
+    }
+
+    /// One run can touch crates from two distinct cargo workspaces (a nested
+    /// standalone `[workspace]`); a shared cache must resolve each crate's
+    /// inherits against its OWN root, not whichever root was parsed first.
+    #[test]
+    fn workspace_deps_root_cache_is_keyed_per_workspace_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Outer workspace: pins shared@1.1.1.
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"app\"]\n\n\
+             [workspace.dependencies]\nshared = { path = \"shared\", version = \"1.1.1\" }\n",
+        )
+        .expect("write outer root");
+        let app_dir = tmp.path().join("app");
+        std::fs::create_dir_all(&app_dir).expect("mkdir app");
+        let app_manifest = write_manifest(
+            &app_dir,
+            "[package]\nname = \"app\"\nversion = \"1.0.0\"\n\n\
+             [dependencies]\nshared.workspace = true\n",
+        );
+        // Nested standalone workspace: pins shared@2.2.2.
+        let nested = tmp.path().join("nested");
+        std::fs::create_dir_all(&nested).expect("mkdir nested");
+        std::fs::write(
+            nested.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"app2\"]\n\n\
+             [workspace.dependencies]\nshared = { path = \"shared\", version = \"2.2.2\" }\n",
+        )
+        .expect("write nested root");
+        let app2_dir = nested.join("app2");
+        std::fs::create_dir_all(&app2_dir).expect("mkdir app2");
+        let app2_manifest = write_manifest(
+            &app2_dir,
+            "[package]\nname = \"app2\"\nversion = \"1.0.0\"\n\n\
+             [dependencies]\nshared.workspace = true\n",
+        );
+
+        let ws_names: HashSet<&str> = ["shared", "app", "app2"].iter().copied().collect();
+        let mut cache = RootDepCache::new();
+        assert_eq!(
+            workspace_deps_for_crate(&app_manifest, &ws_names, &mut cache),
+            vec![("shared".to_string(), "1.1.1".to_string())],
+            "outer crate resolves against the outer root"
+        );
+        assert_eq!(
+            workspace_deps_for_crate(&app2_manifest, &ws_names, &mut cache),
+            vec![("shared".to_string(), "2.2.2".to_string())],
+            "nested crate must resolve against its own root, not the cached outer one"
         );
     }
 
@@ -3240,7 +3297,7 @@ version = "0.8.0"
 "#,
         );
         let ws_names: HashSet<&str> = ["anodizer-core", "core", "leaf"].iter().copied().collect();
-        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut None);
+        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut RootDepCache::new());
         assert_eq!(
             deps,
             vec![("anodizer-core".to_string(), "0.8.0".to_string())],
@@ -3267,7 +3324,7 @@ features = ["extra"]
 "#,
         );
         let ws_names: HashSet<&str> = ["cfgd-core", "leaf"].iter().copied().collect();
-        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut None);
+        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut RootDepCache::new());
         assert_eq!(deps, vec![("cfgd-core".to_string(), "0.4.0".to_string())]);
     }
 
@@ -3290,7 +3347,7 @@ core = { package = "anodizer-core", path = "../core", version = "0.8.0" }
 "#,
         );
         let ws_names: HashSet<&str> = ["anodizer-core", "core", "leaf"].iter().copied().collect();
-        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut None);
+        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut RootDepCache::new());
         assert_eq!(
             deps,
             vec![("anodizer-core".to_string(), "0.8.0".to_string())],
@@ -3326,7 +3383,7 @@ core.workspace = true
 "#,
         );
         let ws_names: HashSet<&str> = ["anodizer-core", "app"].iter().copied().collect();
-        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut None);
+        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut RootDepCache::new());
         assert_eq!(
             deps,
             vec![("anodizer-core".to_string(), "0.8.0".to_string())],
@@ -3360,7 +3417,7 @@ lib.workspace = true
 "#,
         );
         let ws_names: HashSet<&str> = ["lib", "app"].iter().copied().collect();
-        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut None);
+        let deps = workspace_deps_for_crate(&manifest, &ws_names, &mut RootDepCache::new());
         assert_eq!(
             deps,
             vec![("lib".to_string(), "0.7.0".to_string())],
@@ -4410,7 +4467,7 @@ lib.workspace = true
     fn workspace_deps_for_crate_missing_manifest_returns_empty() {
         let ws: HashSet<&str> = ["a"].iter().copied().collect();
         let nonexistent = std::path::Path::new("/nonexistent/dir/does/not/exist/Cargo.toml");
-        assert!(workspace_deps_for_crate(nonexistent, &ws, &mut None).is_empty());
+        assert!(workspace_deps_for_crate(nonexistent, &ws, &mut RootDepCache::new()).is_empty());
     }
 
     #[test]
@@ -4418,7 +4475,7 @@ lib.workspace = true
         let tmp = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(tmp.path(), "this is = = not valid toml [[[");
         let ws: HashSet<&str> = ["a"].iter().copied().collect();
-        assert!(workspace_deps_for_crate(&manifest, &ws, &mut None).is_empty());
+        assert!(workspace_deps_for_crate(&manifest, &ws, &mut RootDepCache::new()).is_empty());
     }
 
     /// A `[target.<cfg>]` whose value is not a dependency table (e.g. a
@@ -4444,7 +4501,7 @@ real = { path = "../real", version = "1.0.0" }
         let ws: HashSet<&str> = ["real", "leaf"].iter().copied().collect();
         // The malformed target scalar is skipped; the normal dep is still found.
         assert_eq!(
-            workspace_deps_for_crate(&manifest, &ws, &mut None),
+            workspace_deps_for_crate(&manifest, &ws, &mut RootDepCache::new()),
             vec![("real".to_string(), "1.0.0".to_string())]
         );
     }
