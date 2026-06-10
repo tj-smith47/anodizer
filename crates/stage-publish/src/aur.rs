@@ -1159,7 +1159,7 @@ struct AurOurTarget {
 fn resolve_aur_credentials_from_config(
     ctx: &Context,
     git_url: &str,
-) -> (Option<String>, Option<String>) {
+) -> anyhow::Result<(Option<String>, Option<String>)> {
     for c in &ctx.config.crates {
         let Some(ac) = c.publish.as_ref().and_then(|p| p.aur.as_ref()) else {
             continue;
@@ -1167,21 +1167,27 @@ fn resolve_aur_credentials_from_config(
         if ac.git_url.as_deref() == Some(git_url) {
             // Render the SSH credentials before they reach the rollback
             // clone, or a templated `{{ .Env.AUR_SSH_KEY }}` lands as the
-            // literal string in the key file and ssh fails. A malformed
-            // template falls back to the raw value (matching the lenient
-            // render path), surfaced downstream by the clone failure.
+            // literal string in the key file and ssh fails.
             let pk = ac
                 .private_key
                 .as_deref()
-                .map(|v| ctx.render_template(v).unwrap_or_else(|_| v.to_string()));
+                .map(|v| {
+                    ctx.render_template(v)
+                        .with_context(|| format!("aur: render private_key template {v:?}"))
+                })
+                .transpose()?;
             let ssh = ac
                 .git_ssh_command
                 .as_deref()
-                .map(|v| ctx.render_template(v).unwrap_or_else(|_| v.to_string()));
-            return (pk, ssh);
+                .map(|v| {
+                    ctx.render_template(v)
+                        .with_context(|| format!("aur: render git_ssh_command template {v:?}"))
+                })
+                .transpose()?;
+            return Ok((pk, ssh));
         }
     }
-    (None, None)
+    Ok((None, None))
 }
 
 /// Collapse the recorded rollback targets to a unique set keyed by
@@ -1441,18 +1447,18 @@ impl anodizer_core::Publisher for AurOurPublisher {
         // credential bundle.
         let prepared: Vec<RevertTarget> = unique
             .iter()
-            .map(|t| {
-                let (pk, ssh_cmd) = resolve_aur_credentials_from_config(ctx, &t.git_url);
-                RevertTarget {
+            .map(|t| -> anyhow::Result<RevertTarget> {
+                let (pk, ssh_cmd) = resolve_aur_credentials_from_config(ctx, &t.git_url)?;
+                Ok(RevertTarget {
                     target: t.target.clone(),
                     repo_url: t.git_url.clone(),
                     branch: Some(AUR_REPO_BRANCH.to_string()),
                     token: None,
                     private_key: pk,
                     ssh_command: ssh_cmd,
-                }
+                })
             })
-            .collect();
+            .collect::<anyhow::Result<Vec<_>>>()?;
         let (reverted, failed) = run_revert_targets_parallel(&prepared, "aur", None, &log);
         log.status(&format!(
             "aur: reverted {} repo(s), {} failure(s)",
@@ -1650,13 +1656,14 @@ mod publisher_tests {
         }
         let ctx = TestContextBuilder::new().crates(vec![c]).build();
         let (pk, ssh) =
-            resolve_aur_credentials_from_config(&ctx, "ssh://aur@aur.archlinux.org/demo-bin.git");
+            resolve_aur_credentials_from_config(&ctx, "ssh://aur@aur.archlinux.org/demo-bin.git")
+                .unwrap();
         assert_eq!(pk.as_deref(), Some("ROTATED-KEY"));
         assert_eq!(ssh.as_deref(), Some("ssh -i /tmp/rotated"));
 
         // Unknown URL: returns (None, None) so the warn helper fires
         // and points the operator at publish.aur.private_key.
-        let (pk, ssh) = resolve_aur_credentials_from_config(&ctx, "ssh://aur@x/y.git");
+        let (pk, ssh) = resolve_aur_credentials_from_config(&ctx, "ssh://aur@x/y.git").unwrap();
         assert!(pk.is_none());
         assert!(ssh.is_none());
     }
@@ -3266,10 +3273,12 @@ mod tests {
         ];
         let ctx = Context::new(config, ContextOptions::default());
         let (pk, _) =
-            resolve_aur_credentials_from_config(&ctx, "ssh://aur@aur.archlinux.org/withkey.git");
+            resolve_aur_credentials_from_config(&ctx, "ssh://aur@aur.archlinux.org/withkey.git")
+                .unwrap();
         assert_eq!(pk.as_deref(), Some("KEYBYTES"));
         // Unknown url → (None, None) after walking past the skipped crate.
-        let (pk_none, ssh_none) = resolve_aur_credentials_from_config(&ctx, "ssh://aur@x/y.git");
+        let (pk_none, ssh_none) =
+            resolve_aur_credentials_from_config(&ctx, "ssh://aur@x/y.git").unwrap();
         assert!(pk_none.is_none() && ssh_none.is_none());
     }
 
@@ -3660,7 +3669,8 @@ mod tests {
         ctx.template_vars_mut().set_env("AUR_SSH_KEY", "REAL-KEY");
         ctx.template_vars_mut().set_env("KEYFILE", "/run/k");
         let (pk, ssh) =
-            resolve_aur_credentials_from_config(&ctx, "ssh://aur@aur.archlinux.org/mytool-bin.git");
+            resolve_aur_credentials_from_config(&ctx, "ssh://aur@aur.archlinux.org/mytool-bin.git")
+                .unwrap();
         assert_eq!(pk.as_deref(), Some("REAL-KEY"));
         assert_eq!(ssh.as_deref(), Some("ssh -i /run/k"));
         assert!(!pk.unwrap().contains("{{"));

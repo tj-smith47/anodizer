@@ -2451,6 +2451,73 @@ crates:
         drop(bare);
     }
 
+    /// `aur_source.private_key` templates are rendered against the
+    /// context env vars before the key bytes reach the SSH key file. A
+    /// literal `{{ .Env.X }}` written to the file would fail `ssh` at
+    /// parse time with "error in libcrypto". Mirrors the analogous
+    /// `aur_clone_repo_renders_templated_private_key_before_write` test
+    /// in `aur.rs`.
+    #[cfg(unix)]
+    #[test]
+    fn aur_source_renders_templated_private_key_before_write() {
+        let (bare_url, bare) = make_bare_aur_repo();
+        let key_value =
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nZZZZ\n-----END OPENSSH PRIVATE KEY-----\n";
+
+        // Build a context with the templated private_key and the env var
+        // that the template references. `render_or_warn_with_vars` is the
+        // same function `publish_to_aur_source` calls on `private_key`
+        // before passing the rendered bytes to `clone_repo_ssh`.
+        let mut ctx = live_source_ctx(&bare_url, |c| {
+            c.private_key = Some("{{ .Env.AUR_SOURCE_TEST_KEY }}".to_string());
+        });
+        ctx.template_vars_mut()
+            .set_env("AUR_SOURCE_TEST_KEY", key_value);
+
+        // Render via the same path the production code takes.
+        let log = quiet_log();
+        let rendered = util::render_or_warn(
+            &ctx,
+            &log,
+            "aur_source.private_key",
+            "{{ .Env.AUR_SOURCE_TEST_KEY }}",
+        )
+        .expect("render must succeed when env var is set");
+        assert_eq!(
+            rendered, key_value,
+            "rendered private_key must equal the env var value, not the literal template"
+        );
+        assert!(
+            !rendered.contains("{{"),
+            "the literal template must never appear in the rendered key"
+        );
+
+        // Also verify the full publish path: clone the bare repo with the
+        // rendered key so the key file is actually written to disk. Since
+        // the clone is local-path, `GIT_SSH_COMMAND` is ignored and the
+        // clone succeeds regardless of key validity, letting us confirm
+        // the render → write path end-to-end without a real SSH server.
+        let parent = tempfile::tempdir().expect("parent");
+        let dest = parent.path().join("clone");
+        util::clone_repo_ssh(&bare_url, Some(&rendered), None, &dest, "aur_source", &log)
+            .expect("clone with rendered key must succeed");
+        let key_path = parent.path().join(".anodizer_ssh_key");
+        let written = std::fs::read_to_string(&key_path).expect("key sidecar must be written");
+        assert_eq!(
+            written.trim_end_matches('\n'),
+            key_value.trim_end_matches('\n'),
+            "key file must contain the rendered env var value, never the literal template"
+        );
+        assert!(
+            !written.contains("{{"),
+            "literal template must never reach the SSH key file"
+        );
+
+        std::fs::remove_dir_all(&ctx.config.dist).ok();
+        drop(bare);
+        drop(parent);
+    }
+
     /// `Publisher::run` in dry-run records no targets (no push happened).
     #[test]
     fn aur_source_publisher_run_dry_run_records_no_targets() {

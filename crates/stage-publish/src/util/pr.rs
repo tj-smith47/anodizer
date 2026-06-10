@@ -1950,4 +1950,91 @@ mod tests {
         assert_eq!(payload["draft"], false, "draft=false must serialise");
         assert_eq!(payload["base"], "main");
     }
+
+    /// `maybe_submit_pr` renders `body`, `base.owner`, `base.name`, and
+    /// `base.branch` through the caller-supplied render closure before they
+    /// reach the upstream slug and the API payload. Pins that the PR
+    /// request carries the expanded values, never the literal template strings.
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn pr_body_and_base_fields_are_rendered_before_submission() {
+        let (_tools, _guard) = gh_absent_path();
+        let (_origin_url, _bare, work) = init_origin_with_work();
+        git_ok(work.path(), &["checkout", "-b", "release/v1.0.0"]);
+        write_commit(work.path(), "formula.rb", "formula\n", "add formula");
+
+        // The render closure expands `{{ .ProjectName }}` → `"mytool"`.
+        let render = |s: &str| s.replace("{{ .ProjectName }}", "mytool");
+
+        // Responder accepts the PR at the RENDERED upstream slug
+        // (`mytool-org/index`), not the literal template slug.
+        let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/mytool-org/index/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: Some(1),
+        }]);
+
+        let log = quiet_log();
+        let repo = RepositoryConfig {
+            owner: Some("fork-owner".into()),
+            name: Some("fork-repo".into()),
+            token: Some("ghp_test".into()),
+            pull_request: Some(PullRequestConfig {
+                enabled: Some(true),
+                body: Some("PR for {{ .ProjectName }}".into()),
+                base: Some(PullRequestBaseConfig {
+                    owner: Some("{{ .ProjectName }}-org".into()),
+                    name: Some("index".into()),
+                    branch: Some("main".into()),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let origin = PrOrigin {
+            repo_owner: "fork-owner",
+            repo_name: "fork-repo",
+            branch_name: "release/v1.0.0",
+            update_existing_pr: false,
+        };
+        let env = MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
+        let outcome = maybe_submit_pr_with_env(
+            work.path(),
+            Some(&repo),
+            &origin,
+            "title",
+            "caller body — must be overridden",
+            "homebrew",
+            &log,
+            &render,
+            &env,
+        );
+        assert!(
+            outcome.is_none(),
+            "201 is the success path; got {outcome:?}"
+        );
+
+        let entries = req_log.lock().unwrap();
+        assert_eq!(entries.len(), 1, "exactly one POST expected");
+        let payload: serde_json::Value =
+            serde_json::from_str(&entries[0].body).expect("request body must be JSON");
+        assert_eq!(
+            payload["body"], "PR for mytool",
+            "pull_request.body must be rendered, not literal template"
+        );
+        assert_eq!(
+            payload["base"], "main",
+            "base.branch must reach the payload as its rendered value"
+        );
+        // The POST endpoint path itself confirms base.owner + base.name rendered
+        // (the responder only matches `/repos/mytool-org/index/pulls`).
+        assert!(
+            entries[0].path.contains("mytool-org"),
+            "upstream owner must be rendered before use in the API slug: {}",
+            entries[0].path
+        );
+        drop(work);
+    }
 }
