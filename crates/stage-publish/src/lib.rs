@@ -1180,7 +1180,12 @@ mod tests {
         use anodizer_core::test_helpers::TestContextBuilder;
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let out = dir.path().join("fired.txt").display().to_string();
+        let out = dir
+            .path()
+            .join("fired.txt")
+            .display()
+            .to_string()
+            .replace('\\', "/");
         let publish = PublishConfig {
             on_error: Some(vec![HookEntry::Structured(StructuredHook {
                 cmd: format!("printf '%s\\n' '{{{{ .Publisher }}}}:{{{{ .Error }}}}' >> {out}"),
