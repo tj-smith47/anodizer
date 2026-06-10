@@ -125,7 +125,7 @@ config is rendered.
 
 | Key | Status | Notes |
 |---|---|---|
-| `publish.on_error` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`defaults.publish.on_error: [{cmd: "echo 'anodizer: publisher {{ .Publisher }} failed for {{ .Tag }}: {{ .Error }}'"}]`). Fires per failed publisher before rollback. Template vars: `.Publisher`, `.Error`, `.Version`, `.Tag`, `.Group`, `.Required`, `.RolledBack`. Declared under `defaults.publish.on_error` to apply workspace-wide; per-crate entries append before defaults. Awaits a real publisher failure to prove live |
+| `publish.on_error` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`defaults.publish.on_error` runs a `cmd` per failed publisher before rollback; template vars `.Publisher`/`.Error`/`.Version`/`.Tag`/`.Group`/`.Required`/`.RolledBack`). Workspace-wide; per-crate entries append before defaults. Awaits a real failure to prove live |
 | `defaults.publish.cargo.retain_on_rollback` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`retain_on_rollback: true` under `defaults.publish.cargo` — crates.io publishes are permanent; retain even if a downstream publisher rolls back) |
 | `schemastore.retain_on_rollback` / `mcp.retain_on_rollback` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`retain_on_rollback: true` on the top-level `schemastore` and `mcp` keys — external catalogs; retain even if downstream publishers roll back) |
 
@@ -330,7 +330,7 @@ config is rendered.
 |---|---|---|
 | `verify_release.enabled` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`enabled: true`) |
 | `verify_release.assert_assets` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`assert_assets: true` — every produced artifact must appear as an uploaded release asset) |
-| `verify_release.install_smoke` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`install_smoke: {}` — installs each nfpm package in a container and runs `anodizer --version`; auto-detects the Docker topology and uses `docker cp` instead of a bind mount when the daemon's filesystem is separate, e.g. a dind sidecar) |
+| `verify_release.install_smoke` | ⏳ Pending | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`install_smoke: {}` — installs each nfpm package in a container and runs `<bin> --version`). Auto-detects the Docker topology (bind-mount, or `docker cp` under a separate-filesystem dind). Disabled in anodizer's own config for now |
 | `verify_release.glibc_ceiling` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`glibc_ceiling: "2.36"` — fails if any `.deb` requires glibc > 2.36) |
 | `attestations.enabled` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`enabled: true`) |
 | `attestations.mode` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`mode: subjects` — writes `dist/attestation-subjects.json`; anodizer-action feeds it to `actions/attest-build-provenance`) |

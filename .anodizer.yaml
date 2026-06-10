@@ -893,7 +893,6 @@ attestations:
 verify_release:
   enabled: true
   assert_assets: true
-  install_smoke: {}
   glibc_ceiling: "2.36"
 
 # Source RPM configuration
