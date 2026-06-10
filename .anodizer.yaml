@@ -103,14 +103,15 @@ defaults:
   # so it is omitted here (keeping the empty `{}` is the explicit opt-in).
   # Every live publisher carries `required: true`: a failed publisher must
   # block the release instead of vanishing into a green run — re-runs are
-  # idempotent and the workflow_dispatch republish lever recovers a partial
+  # idempotent for the publishers configured here (republish levers set
+  # below), and the workflow_dispatch republish path recovers a partial
   # release safely. `required` also arms the irreversible-publisher
   # (submitter) gate and the `announce.gate_on: required_publishers` gate,
   # both of which are inert when nothing is required.
   publish:
     cargo:
-      retain_on_rollback: true
       required: true
+      retain_on_rollback: true
     on_error:
       - cmd: "echo 'anodizer: publisher {{ .Publisher }} failed for {{ .Tag }}: {{ .Error }}'"
 

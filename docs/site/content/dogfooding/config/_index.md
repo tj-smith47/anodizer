@@ -337,7 +337,7 @@ config is rendered.
 | `attestations.artifacts` | 🤝 Help wanted | Not configured — defaults to all artifact kinds when `mode: subjects` |
 | `milestones[].repo` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`tj-smith47/anodizer`) |
 | `milestones[].close` | 🤝 Help wanted | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`close: false` — wired but disabled; no milestones configured) |
-| `milestones[].fail_on_error` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`fail_on_error: true` — milestone errors fail the release instead of vanishing) |
+| `milestones[].fail_on_error` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`fail_on_error: true` — milestone errors fail the release instead of vanishing; the flip from `false` awaits a live release, and `close: false` means the publisher currently does nothing) |
 | `milestones[].name_template` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`name_template: "{{ Tag }}"`) |
 
 ## Announce
