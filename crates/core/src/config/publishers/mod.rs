@@ -179,17 +179,18 @@ pub struct PublishConfig {
     /// Nix derivation publishing configuration.
     pub nix: Option<NixConfig>,
 
-    /// Hooks that fire once per FAILED publisher, before that publisher is
-    /// rolled back. Each entry is a standard hook (`cmd` / `dir` / `env` /
+    /// Hooks that fire once per FAILED publisher, after rollback has been
+    /// attempted. Each entry is a standard hook (`cmd` / `dir` / `env` /
     /// `output`); the template surface adds `{{ .Publisher }}`,
     /// `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}`
     /// (Assets/Manager/Submitter), `{{ .Required }}`, and
-    /// `{{ .RolledBack }}` (whether the failed publisher was subsequently
-    /// rolled back). The same values are also exported to the hook process
-    /// as environment variables: `ANODIZER_PUBLISHER`, `ANODIZER_ERROR`,
-    /// `ANODIZER_TAG`, `ANODIZER_VERSION`, `ANODIZER_GROUP`,
-    /// `ANODIZER_REQUIRED`, `ANODIZER_ROLLED_BACK`. A hook's own failure is
-    /// logged as a warning and never changes the release outcome.
+    /// `{{ .RolledBack }}` — true if any publisher was rolled back (or
+    /// rollback was attempted and failed) during this run. The same values
+    /// are also exported to the hook process as environment variables:
+    /// `ANODIZER_PUBLISHER`, `ANODIZER_ERROR`, `ANODIZER_VERSION`,
+    /// `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`,
+    /// `ANODIZER_ROLLED_BACK`. A hook's own failure is logged as a warning
+    /// and never changes the release outcome.
     ///
     /// Security: the rendered `cmd` string is parsed by `sh -c`, and
     /// `{{ .Error }}` carries untrusted remote text (HTTP error bodies, git

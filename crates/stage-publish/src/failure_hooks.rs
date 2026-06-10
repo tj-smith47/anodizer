@@ -4,9 +4,10 @@
 //! ([`anodizer_core::hooks::run_hooks`] over [`HookEntry`]):
 //!
 //! - [`fire_on_error`] runs once per FAILED publisher in the dispatch
-//!   failure path, AFTER rollback has been attempted. The `rolled_back`
-//!   flag indicates whether the publisher was successfully reverted and is
-//!   exposed as `{{ .RolledBack }}` in the hook template surface.
+//!   failure path, AFTER rollback has been attempted. The
+//!   `rollback_happened` flag is RUN-WIDE — true if any publisher was
+//!   rolled back (or rollback was attempted and failed) during this run —
+//!   and is exposed as `{{ .RolledBack }}` in the hook template surface.
 //!
 //! Effective hooks are resolved per publisher from the in-scope crates'
 //! `publish:` blocks via `publish.on_error`.
@@ -72,7 +73,7 @@ fn group_label(group: PublisherGroup) -> &'static str {
 fn failure_var_values(
     result: &PublisherResult,
     error: &str,
-    rolled_back: bool,
+    rollback_happened: bool,
 ) -> [(&'static str, String); 5] {
     let bool_str = |b: bool| (if b { "true" } else { "false" }).to_string();
     [
@@ -80,7 +81,7 @@ fn failure_var_values(
         ("Error", error.to_string()),
         ("Group", group_label(result.group).to_string()),
         ("Required", bool_str(result.required)),
-        ("RolledBack", bool_str(rolled_back)),
+        ("RolledBack", bool_str(rollback_happened)),
     ]
 }
 
@@ -91,10 +92,10 @@ fn bind_failure_vars(
     base: &TemplateVars,
     result: &PublisherResult,
     error: &str,
-    rolled_back: bool,
+    rollback_happened: bool,
 ) -> TemplateVars {
     let mut vars = base.clone();
-    for (key, value) in failure_var_values(result, error, rolled_back) {
+    for (key, value) in failure_var_values(result, error, rollback_happened) {
         vars.set(key, &value);
     }
     vars
@@ -109,8 +110,8 @@ fn bind_failure_vars(
 const FAILURE_ENV_VARS: [(&str, &str); 7] = [
     ("ANODIZER_PUBLISHER", "Publisher"),
     ("ANODIZER_ERROR", "Error"),
-    ("ANODIZER_TAG", "Tag"),
     ("ANODIZER_VERSION", "Version"),
+    ("ANODIZER_TAG", "Tag"),
     ("ANODIZER_GROUP", "Group"),
     ("ANODIZER_REQUIRED", "Required"),
     ("ANODIZER_ROLLED_BACK", "RolledBack"),
@@ -150,21 +151,22 @@ fn run_warn_only(
 
 /// Fire `on_error` hooks for a single FAILED publisher. Called from the
 /// dispatch failure path AFTER rollback has been attempted. `error` is the
-/// publisher's failure message (the `{{ .Error }}` value). `rolled_back`
-/// indicates whether the publisher was successfully reverted and is exposed
+/// publisher's failure message (the `{{ .Error }}` value).
+/// `rollback_happened` is RUN-WIDE — true if any publisher was rolled back
+/// (or rollback was attempted and failed) during this run — and is exposed
 /// as `{{ .RolledBack }}` in the template surface.
 pub(crate) fn fire_on_error(
     ctx: &Context,
     result: &PublisherResult,
     error: &str,
-    rolled_back: bool,
+    rollback_happened: bool,
     log: &StageLogger,
 ) {
     let hooks = resolve_on_error_hooks(ctx);
     if hooks.is_empty() {
         return;
     }
-    let vars = bind_failure_vars(ctx.template_vars(), result, error, rolled_back);
+    let vars = bind_failure_vars(ctx.template_vars(), result, error, rollback_happened);
     run_warn_only(&hooks, "on-error", ctx.is_dry_run(), log, &vars);
 }
 
@@ -262,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn rolled_back_false_when_not_reverted() {
+    fn rolled_back_false_when_no_rollback_happened() {
         let dir = tempfile::tempdir().expect("tempdir");
         let out = dir.path().join("fired.txt");
         let publish = PublishConfig {
@@ -281,7 +283,7 @@ mod tests {
         assert_eq!(
             body.trim(),
             "RB=false",
-            ".RolledBack must be false when rolled_back=false"
+            ".RolledBack must be false when rollback_happened=false"
         );
     }
 
@@ -331,8 +333,8 @@ mod tests {
     const ALL_ENV_KEYS: [&str; 7] = [
         "ANODIZER_PUBLISHER",
         "ANODIZER_ERROR",
-        "ANODIZER_TAG",
         "ANODIZER_VERSION",
+        "ANODIZER_TAG",
         "ANODIZER_GROUP",
         "ANODIZER_REQUIRED",
         "ANODIZER_ROLLED_BACK",
@@ -400,8 +402,8 @@ mod tests {
         for expected in [
             "ANODIZER_PUBLISHER=homebrew",
             "ANODIZER_ERROR=tap push rejected",
-            "ANODIZER_TAG=v1.2.3",
             "ANODIZER_VERSION=1.2.3",
+            "ANODIZER_TAG=v1.2.3",
             "ANODIZER_GROUP=Manager",
             "ANODIZER_REQUIRED=true",
             "ANODIZER_ROLLED_BACK=true",

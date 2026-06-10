@@ -54,15 +54,15 @@ publish:
 ## Publisher resilience
 
 Every publisher carries explicit rollback semantics. When a publisher fails, `on_error` hooks
-fire with structured context — `ANODIZER_PUBLISHER`, `ANODIZER_ERROR`, `ANODIZER_TAG`,
-`ANODIZER_REQUIRED`, and `ANODIZER_ROLLED_BACK` env vars on the hook process, plus matching
-template variables.
+fire after rollback has been attempted, with structured context — `ANODIZER_PUBLISHER`,
+`ANODIZER_ERROR`, `ANODIZER_VERSION`, `ANODIZER_TAG`, `ANODIZER_REQUIRED`, and
+`ANODIZER_ROLLED_BACK` env vars on the hook process, plus matching template variables.
 
 ```yaml
 defaults:
   publish:
     on_error:
-      - cmd: 'echo "$ANODIZER_PUBLISHER failed on $ANODIZER_TAG: $ANODIZER_ERROR"'
+      - cmd: 'printf ''%s\n'' "$ANODIZER_PUBLISHER failed on $ANODIZER_TAG: $ANODIZER_ERROR"'
 
 publish:
   cargo:

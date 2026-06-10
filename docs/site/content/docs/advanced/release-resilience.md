@@ -180,7 +180,7 @@ the hook process, and template variables rendered into `cmd`:
 | `ANODIZER_TAG` | `{{ .Tag }}` | Release tag (e.g. `v0.8.0`) |
 | `ANODIZER_GROUP` | `{{ .Group }}` | Publisher group: `Assets`, `Manager`, or `Submitter` |
 | `ANODIZER_REQUIRED` | `{{ .Required }}` | `true` / `false` |
-| `ANODIZER_ROLLED_BACK` | `{{ .RolledBack }}` | `true` if any publisher was rolled back during this run |
+| `ANODIZER_ROLLED_BACK` | `{{ .RolledBack }}` | `true` if any publisher was rolled back (or rollback was attempted and failed) during this run |
 
 In workspace per-crate mode both channels carry the per-crate-scoped
 `Version` / `Tag` of the crate being published.
