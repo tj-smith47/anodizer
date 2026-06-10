@@ -55,8 +55,8 @@ publish:
 
 Every publisher carries explicit rollback semantics. When a publisher fails, `on_error` hooks
 fire after rollback has been attempted, with structured context — `ANODIZER_PUBLISHER`,
-`ANODIZER_ERROR`, `ANODIZER_VERSION`, `ANODIZER_TAG`, `ANODIZER_REQUIRED`, and
-`ANODIZER_ROLLED_BACK` env vars on the hook process, plus matching template variables.
+`ANODIZER_ERROR`, `ANODIZER_VERSION`, `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`,
+and `ANODIZER_ROLLED_BACK` env vars on the hook process, plus matching template variables.
 
 ```yaml
 defaults:
