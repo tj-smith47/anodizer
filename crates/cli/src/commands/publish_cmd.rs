@@ -23,6 +23,8 @@ pub struct PublishOpts {
     /// step into smaller pieces (one machine merges + signs, another
     /// publishes).
     pub merge: bool,
+    /// Force re-publish even when a prior `dist/run-<id>/report.json` exists.
+    pub allow_rerun: bool,
 }
 
 pub fn run(opts: PublishOpts) -> Result<()> {
@@ -38,6 +40,7 @@ pub fn run(opts: PublishOpts) -> Result<()> {
         debug: opts.debug,
         token: opts.token,
         merge: opts.merge,
+        allow_rerun: opts.allow_rerun,
         ..Default::default()
     };
 
@@ -100,6 +103,7 @@ crates:
             debug: false,
             quiet: true,
             merge: false,
+            allow_rerun: false,
         })
         .unwrap_err()
         .to_string();
@@ -130,6 +134,7 @@ crates:
             debug: false,
             quiet: true,
             merge: false,
+            allow_rerun: false,
         });
         assert!(result.is_err(), "must fail with no manifest / no git");
     }
@@ -149,6 +154,7 @@ crates:
             debug: false,
             quiet: true,
             merge: true,
+            allow_rerun: false,
         })
         .unwrap_err()
         .to_string();
@@ -168,11 +174,13 @@ crates:
             debug: false,
             quiet: true,
             merge: false,
+            allow_rerun: false,
         };
         assert!(opts.dry_run);
         assert!(opts.quiet);
         assert_eq!(opts.token.as_deref(), Some("tok"));
         assert!(!opts.merge);
+        assert!(!opts.allow_rerun);
     }
 
     #[test]
@@ -186,6 +194,7 @@ crates:
             debug: false,
             quiet: true,
             merge: true,
+            allow_rerun: false,
         };
         assert!(opts.merge);
     }

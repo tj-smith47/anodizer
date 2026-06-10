@@ -260,6 +260,7 @@ Run only the publish stages (release, publish, blob) from a completed dist/
 | `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
 | `--dist` | — | — | Custom dist directory (overrides config) |
 | `--merge` | — | — | Merge artifacts from `release --split` workers (dist/<subdir>/context.json) before running the publish-only pipeline. Mirrors `goreleaser publish --merge`. |
+| `--allow-rerun` | — | — | Force re-publish even when a prior report.json exists. WARNING: PR-based publishers will open duplicate pull requests. |
 
 
 ### `anodizer bump`

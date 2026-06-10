@@ -506,6 +506,12 @@ pub enum Commands {
             help = "Merge artifacts from `release --split` workers (dist/<subdir>/context.json) before running the publish-only pipeline. Mirrors `goreleaser publish --merge`."
         )]
         merge: bool,
+        #[arg(
+            long,
+            help = "Force re-publish even when a prior report.json exists. \
+                    WARNING: PR-based publishers will open duplicate pull requests."
+        )]
+        allow_rerun: bool,
     },
     /// Bump crate versions (Conventional Commits → semver level)
     ///

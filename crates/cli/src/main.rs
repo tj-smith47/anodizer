@@ -654,6 +654,7 @@ fn run() {
             token,
             dist,
             merge,
+            allow_rerun,
         } => commands::publish_cmd::run(commands::publish_cmd::PublishOpts {
             dry_run,
             token,
@@ -663,6 +664,7 @@ fn run() {
             debug: cli.debug,
             quiet: cli.quiet,
             merge,
+            allow_rerun,
         }),
         Commands::Bump {
             level_or_version,
