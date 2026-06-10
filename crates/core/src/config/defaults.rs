@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use super::archives::ArchiveConfig;
 use super::aur_source::AurSourceConfig;
 use super::build::BuildConfig;
+use super::hooks::HookEntry;
 use super::installers::{
     AppBundleConfig, DmgConfig, FlatpakConfig, MsiConfig, NsisConfig, PkgConfig,
 };
@@ -148,6 +149,10 @@ pub struct PublishDefaults {
     pub aur: Option<AurConfig>,
     /// Default AUR (source) settings.
     pub aur_source: Option<AurSourceConfig>,
+    /// Hooks fired once per failed publisher — same surface as
+    /// `publish.on_error` on individual crate configs. Merged into
+    /// every crate's resolved publish config.
+    pub on_error: Option<Vec<HookEntry>>,
 }
 
 /// Marker block under `defaults.crates:` that signals crate-axis defaults

@@ -403,8 +403,20 @@ fn archive_identity(a: &ArchiveConfig) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// List merge: generic "single defaults entry → Vec<T> per-crate" path
+// List merge helpers
 // ---------------------------------------------------------------------------
+
+/// Append-merge: extend `target` with every item from `defaults`.
+/// Used for Vec fields (e.g. `on_error`) where both the per-crate list and the
+/// defaults list must fire — per-crate entries first, defaults appended after.
+fn merge_append_list<T: Clone>(target: &mut Option<Vec<T>>, defaults: Option<&Vec<T>>) {
+    if let Some(default_items) = defaults {
+        match target {
+            Some(existing) => existing.extend(default_items.iter().cloned()),
+            None => *target = Some(default_items.clone()),
+        }
+    }
+}
 
 fn merge_list_by_identity<T, F>(target: &mut Option<Vec<T>>, defaults: Option<&T>, identity: F)
 where
@@ -540,6 +552,7 @@ fn merge_publish_defaults(target: &mut PublishConfig, defaults: &PublishDefaults
     deep_merge_option(&mut target.nix, defaults.nix.as_ref());
     deep_merge_option(&mut target.aur, defaults.aur.as_ref());
     deep_merge_option(&mut target.aur_source, defaults.aur_source.as_ref());
+    merge_append_list(&mut target.on_error, defaults.on_error.as_ref());
 }
 
 // ---------------------------------------------------------------------------

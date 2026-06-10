@@ -11348,6 +11348,17 @@
             }
           ]
         },
+        "on_error": {
+          "description": "Hooks fired once per failed publisher — same surface as `publish.on_error` on individual crate configs. Merged into every crate's resolved publish config.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/HookEntry"
+          }
+        },
         "scoop": {
           "description": "Default Scoop manifest settings.",
           "default": null,

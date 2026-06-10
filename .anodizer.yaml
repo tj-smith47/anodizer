@@ -98,7 +98,10 @@ defaults:
   # for that crate (DEC-9). `index_timeout` defaults to 300s in the publisher,
   # so it is omitted here (keeping the empty `{}` is the explicit opt-in).
   publish:
-    cargo: {}
+    cargo:
+      retain_on_rollback: true
+    on_error:
+      - cmd: "echo 'anodizer: publisher {{ .Publisher }} failed for {{ .Tag }}: {{ .Error }}'"
 
 before:
   hooks:
@@ -643,6 +646,7 @@ homebrew_casks:
       email: tj@jarvispro.io
 
 schemastore:
+  retain_on_rollback: true  # external catalog — retain even if a downstream publisher fails
   repository:
     owner: tj-smith47
     name: schemastore
@@ -836,6 +840,7 @@ cloudsmiths:
 # job already grants this.
 #
 mcp:
+  retain_on_rollback: true  # external registry — retain even if a downstream publisher fails
   name: io.github.tj-smith47/anodizer
   title: anodizer
   description: "Rust release tooling — drop-in GoReleaser parity + Rust extras."
