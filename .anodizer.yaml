@@ -388,7 +388,7 @@ crates:
         repository:
           owner: tj-smith47
           name: anodizer
-        title: "Anodizer"
+        title: "anodizer"
         summary: "A Rust-native release automation tool"
         description: "A Rust-native release automation tool"
         authors: "TJ Smith"
@@ -541,7 +541,7 @@ crates:
         # version mints a duplicate store revision (snapcraft upload is not
         # idempotent), so the upload is suppressed for this version.
         skip: true
-        title: "Anodizer"
+        title: "anodizer"
         # icon: omitted intentionally — Snap Store snap.json validation
         # rejects the `icon` field with "Additional properties are not
         # allowed". snapcraft pack still emits a valid snap, but upload
@@ -579,19 +579,19 @@ crates:
     app_bundles:
       - skip: true  # disabled — no macOS app bundle identity configured
         bundle: io.github.tj-smith47.anodizer
-        name: Anodizer
+        name: anodizer
     dmgs:
       - skip: true  # disabled — no macOS DMG configured (needs app_bundle first)
-        name: Anodizer
+        name: anodizer
     pkgs:
       - skip: true  # disabled — no macOS PKG signing identity configured
         identifier: io.github.tj-smith47.anodizer
     msis:
       - skip: true  # disabled — no WiX source file (.wxs) created
-        name: Anodizer
+        name: anodizer
     nsis:
       - skip: true  # disabled — no NSIS script created
-        name: Anodizer
+        name: anodizer
     blobs:
       - skip: true  # disabled — no cloud storage configured
         provider: s3
@@ -647,7 +647,7 @@ schemastore:
     owner: tj-smith47
     name: schemastore
   schemas:
-    - name: Anodizer
+    - name: anodizer
       description: "Anodizer Rust release-automation configuration file"
       file_match: [".anodizer.yaml", ".anodizer.yml"]
       url: "https://tj-smith47.github.io/anodizer/schema.json"
@@ -837,7 +837,7 @@ cloudsmiths:
 #
 mcp:
   name: io.github.tj-smith47/anodizer
-  title: Anodizer
+  title: anodizer
   description: "Rust release tooling — drop-in GoReleaser parity + Rust extras."
   homepage: https://github.com/tj-smith47/anodizer
   repository:
@@ -861,7 +861,7 @@ srpm:
 # Makeself self-extracting archives
 makeselfs:
   - id: default
-    name: "Anodizer Installer"
+    name: "anodizer Installer"
     script: scripts/makeself-install.sh
     filename: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-installer.run"
 
