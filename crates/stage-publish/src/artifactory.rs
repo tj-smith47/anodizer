@@ -688,20 +688,24 @@ pub fn publish_to_artifactory(
             })?;
             log.status(&format!(
                 "(dry-run) would upload artifacts to Artifactory '{}' at {} (mode={}, method={}, user={})",
-                name, target_url, mode, method, username
+                name, log.redact(&target_url), mode, method, username
             ));
             if !custom_headers.is_empty() {
                 for (k, v) in custom_headers {
                     let rendered_v =
                         crate::util::render_or_warn(ctx, log, "artifactory.headers", v)?;
-                    log.status(&format!("(dry-run) custom header: {}={}", k, rendered_v));
+                    log.status(&format!(
+                        "(dry-run) custom header: {}={}",
+                        k,
+                        log.redact(&rendered_v)
+                    ));
                 }
             }
-            if let Some(ref cert) = entry.client_x509_cert {
-                log.status(&format!("(dry-run) using client cert: {}", cert));
+            if entry.client_x509_cert.is_some() {
+                log.status("(dry-run) using client cert: yes");
             }
-            if let Some(ref key) = entry.client_x509_key {
-                log.status(&format!("(dry-run) using client key: {}", key));
+            if entry.client_x509_key.is_some() {
+                log.status("(dry-run) using client key: yes");
             }
             if entry.trusted_certificates.is_some() {
                 log.status("(dry-run) using custom trusted certificates");
@@ -1389,6 +1393,52 @@ mod tests {
         let ctx = dry_run_ctx(config);
         let log = ctx.logger("artifactory");
         assert!(publish_to_artifactory(&ctx, &log).is_ok());
+    }
+
+    /// Defense-in-depth: a custom header whose value is a rendered env-var
+    /// secret (e.g. `X-Api-Key: {{ .Env.JFROG_TOKEN }}`) must NOT leak the
+    /// actual token value into dry-run log output. The fix wraps the rendered
+    /// value in `log.redact()` before the status call.
+    #[test]
+    fn test_artifactory_dry_run_custom_header_token_is_redacted() {
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut headers = HashMap::new();
+        // Literal header value (not a template) — simulates the rendered output
+        // of `{{ .Env.JFROG_TOKEN }}` after template expansion.
+        headers.insert(
+            "X-Api-Key".to_string(),
+            "ghp_ARTIFACTORY_FAKE_SECRET_TOKEN".to_string(),
+        );
+        let mut config = Config::default();
+        config.artifactories = Some(vec![ArtifactoryConfig {
+            name: Some("prod".to_string()),
+            target: Some("https://art.example.com/repo/".to_string()),
+            custom_headers: Some(headers),
+            ..Default::default()
+        }]);
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        // Inject the secret into the template-vars env so the logger's
+        // redaction engine knows to replace its value.
+        ctx.template_vars_mut()
+            .set_env("JFROG_TOKEN", "ghp_ARTIFACTORY_FAKE_SECRET_TOKEN");
+        let log = ctx
+            .logger("artifactory")
+            .with_capture_handle(capture.clone());
+        assert!(publish_to_artifactory(&ctx, &log).is_ok());
+
+        let all_msgs: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        for msg in &all_msgs {
+            assert!(
+                !msg.contains("ghp_ARTIFACTORY_FAKE_SECRET_TOKEN"),
+                "secret token must not appear in dry-run log output: {msg}"
+            );
+        }
     }
 
     #[test]
