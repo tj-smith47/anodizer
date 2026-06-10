@@ -1090,6 +1090,7 @@ fn submit_winget_pr(
     version: &str,
     update_existing_pr: bool,
     log: &StageLogger,
+    render: &dyn Fn(&str) -> String,
 ) -> Option<anodizer_core::PublisherOutcome> {
     let has_pr_config = repo_for_pr
         .and_then(|r| r.pull_request.as_ref())
@@ -1116,14 +1117,17 @@ fn submit_winget_pr(
             &body,
             "winget",
             log,
+            render,
         )
     } else {
+        // A templated `base.owner` / `base.name` must render before it forms
+        // the upstream PR slug sent to the GitHub API.
         let upstream_slug = repo_for_pr
             .and_then(|r| r.pull_request.as_ref())
             .and_then(|pr| pr.base.as_ref())
             .and_then(|base| {
-                let owner = base.owner.as_deref()?;
-                let name = base.name.as_deref()?;
+                let owner = render(base.owner.as_deref()?);
+                let name = render(base.name.as_deref()?);
                 Some(format!("{}/{}", owner, name))
             })
             .unwrap_or_else(|| "microsoft/winget-pkgs".to_string());
@@ -1394,6 +1398,7 @@ fn submit_winget_manifests(
     let tmp_dir = tempfile::tempdir().context("winget: create temp dir")?;
     let repo_path = tmp_dir.path();
     util::clone_repo(
+        ctx,
         winget_cfg.repository.as_ref(),
         repo_owner,
         repo_name,
@@ -1427,7 +1432,9 @@ fn submit_winget_manifests(
     )?;
 
     let auto_branch = format!("{}-{}", package_id, version);
-    let branch_name = util::resolve_branch(winget_cfg.repository.as_ref()).unwrap_or(&auto_branch);
+    let branch_name =
+        util::resolve_branch(ctx, winget_cfg.repository.as_ref()).unwrap_or(auto_branch);
+    let branch_name = branch_name.as_str();
     let commit_opts = util::resolve_commit_opts(ctx, winget_cfg.commit_author.as_ref(), log)?;
     let outcome = util::commit_and_push_with_opts(
         repo_path,
@@ -1471,6 +1478,7 @@ fn submit_winget_manifests(
         &version,
         update_existing_pr,
         log,
+        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
     );
 
     if let Some(outcome) = pr_outcome {
@@ -1594,9 +1602,7 @@ fn collect_winget_target(
 
     let version = ctx.version();
     let auto_branch = format!("{}-{}", package_id, version);
-    let branch = crate::util::resolve_branch(cfg.repository.as_ref())
-        .map(|b| b.to_string())
-        .unwrap_or(auto_branch);
+    let branch = crate::util::resolve_branch(ctx, cfg.repository.as_ref()).unwrap_or(auto_branch);
 
     let (upstream_owner, upstream_repo) = resolve_winget_upstream(cfg);
 

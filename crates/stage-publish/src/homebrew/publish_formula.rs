@@ -391,6 +391,7 @@ fn clone_tap_and_write_formula(
         Some("HOMEBREW_TAP_TOKEN"),
     );
     crate::util::clone_repo(
+        ctx,
         hb_cfg.repository.as_ref(),
         tap.repo_owner,
         tap.repo_name,
@@ -657,6 +658,7 @@ fn submit_homebrew_pr(
         &pr_body,
         "homebrew",
         log,
+        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
     );
 
     if let Some(pr_outcome) = pr_outcome {
@@ -903,7 +905,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
 
     let cask = maybe_write_cask_into_tap(ctx, &hb_cfg_owned, crate_name, tap.repo_path, log)?;
 
-    let branch = crate::util::resolve_branch(hb_cfg_owned.repository.as_ref());
+    let branch = crate::util::resolve_branch(ctx, hb_cfg_owned.repository.as_ref());
 
     let outcome = commit_files_to_tap(
         ctx,
@@ -912,11 +914,11 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         &tap,
         &formula_path,
         &cask,
-        branch,
+        branch.as_deref(),
         log,
     )?;
 
-    let pr_branch = branch.unwrap_or("main");
+    let pr_branch = branch.as_deref().unwrap_or("main");
     submit_homebrew_pr(
         ctx,
         hb_cfg_owned.repository.clone(),

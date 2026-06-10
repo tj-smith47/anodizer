@@ -601,6 +601,7 @@ fn run_real(
     let tmp_dir = tempfile::tempdir().context("schemastore: create temp dir")?;
     let repo_path = tmp_dir.path();
     crate::util::clone_repo(
+        ctx,
         Some(repo),
         &fork_owner,
         &fork_name,

@@ -101,7 +101,7 @@ fn collect_run_targets(ctx: &Context) -> Vec<HomebrewTarget> {
             out.push(HomebrewTarget {
                 target: c.name.clone(),
                 repo_url: format!("https://github.com/{}/{}.git", owner, name),
-                branch: crate::util::resolve_branch(hb.repository.as_ref()).map(str::to_string),
+                branch: crate::util::resolve_branch(ctx, hb.repository.as_ref()),
                 token_env_var: Some("HOMEBREW_TAP_TOKEN".to_string()),
             });
         }
@@ -119,8 +119,7 @@ fn collect_run_targets(ctx: &Context) -> Vec<HomebrewTarget> {
                 out.push(HomebrewTarget {
                     target: label,
                     repo_url: format!("https://github.com/{}/{}.git", owner, name),
-                    branch: crate::util::resolve_branch(cask.repository.as_ref())
-                        .map(str::to_string),
+                    branch: crate::util::resolve_branch(ctx, cask.repository.as_ref()),
                     token_env_var: Some("HOMEBREW_TAP_TOKEN".to_string()),
                 });
             }

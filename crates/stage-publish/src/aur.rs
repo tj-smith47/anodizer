@@ -695,16 +695,29 @@ fn aur_build_sources(
 /// falls back to a plain (no-auth-header) clone. AUR has no bearer-token
 /// flow so the auth-aware variant is never invoked with credentials.
 fn aur_clone_repo(
+    ctx: &Context,
     aur_cfg: &anodizer_core::config::AurConfig,
     git_url: &str,
     repo_path: &std::path::Path,
     log: &StageLogger,
 ) -> Result<()> {
     if aur_cfg.private_key.is_some() || aur_cfg.git_ssh_command.is_some() {
+        // `private_key` / `git_ssh_command` may be templated
+        // (`{{ .Env.AUR_SSH_KEY }}`). Render before the SSH clone, or the
+        // literal template text is written to the key file and ssh fails
+        // with "error in libcrypto".
+        let rendered_key = match aur_cfg.private_key.as_deref() {
+            Some(pk) => Some(util::render_or_warn(ctx, log, "aur.private_key", pk)?),
+            None => None,
+        };
+        let rendered_ssh = match aur_cfg.git_ssh_command.as_deref() {
+            Some(sc) => Some(util::render_or_warn(ctx, log, "aur.git_ssh_command", sc)?),
+            None => None,
+        };
         util::clone_repo_ssh(
             git_url,
-            aur_cfg.private_key.as_deref(),
-            aur_cfg.git_ssh_command.as_deref(),
+            rendered_key.as_deref(),
+            rendered_ssh.as_deref(),
             repo_path,
             "aur",
             log,
@@ -1036,7 +1049,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     // Clone AUR repo, write PKGBUILD, commit, push.
     let tmp_dir = tempfile::tempdir().context("aur: create temp dir")?;
     let repo_path = tmp_dir.path();
-    aur_clone_repo(aur_cfg, &git_url, repo_path, log)?;
+    aur_clone_repo(ctx, aur_cfg, &git_url, repo_path, log)?;
 
     let output_dir = aur_resolve_output_dir(ctx, aur_cfg, repo_path, log)?;
     aur_write_package_files(
@@ -1152,7 +1165,20 @@ fn resolve_aur_credentials_from_config(
             continue;
         };
         if ac.git_url.as_deref() == Some(git_url) {
-            return (ac.private_key.clone(), ac.git_ssh_command.clone());
+            // Render the SSH credentials before they reach the rollback
+            // clone, or a templated `{{ .Env.AUR_SSH_KEY }}` lands as the
+            // literal string in the key file and ssh fails. A malformed
+            // template falls back to the raw value (matching the lenient
+            // render path), surfaced downstream by the clone failure.
+            let pk = ac
+                .private_key
+                .as_deref()
+                .map(|v| ctx.render_template(v).unwrap_or_else(|_| v.to_string()));
+            let ssh = ac
+                .git_ssh_command
+                .as_deref()
+                .map(|v| ctx.render_template(v).unwrap_or_else(|_| v.to_string()));
+            return (pk, ssh);
         }
     }
     (None, None)
@@ -1230,11 +1256,22 @@ fn collect_aur_our_run_targets(ctx: &Context, log: &StageLogger) -> Result<Vec<A
         // as the human label so log lines say what was rolled back.
         let raw_pkg = aur_default_package_name(ac, &c.name);
         let label = util::render_or_warn(ctx, log, "aur.name", &raw_pkg)?;
+        // Render the SSH credentials at collect-time so the recorded
+        // rollback target carries the resolved secret, never a literal
+        // `{{ .Env.AUR_SSH_KEY }}` that would fail ssh at revert time.
+        let private_key = match ac.private_key.as_deref() {
+            Some(pk) => Some(util::render_or_warn(ctx, log, "aur.private_key", pk)?),
+            None => None,
+        };
+        let git_ssh_command = match ac.git_ssh_command.as_deref() {
+            Some(sc) => Some(util::render_or_warn(ctx, log, "aur.git_ssh_command", sc)?),
+            None => None,
+        };
         out.push(AurOurTarget {
             target: label,
             git_url,
-            private_key: ac.private_key.clone(),
-            git_ssh_command: ac.git_ssh_command.clone(),
+            private_key,
+            git_ssh_command,
         });
     }
     Ok(out)
@@ -3561,5 +3598,71 @@ mod tests {
         let pkgbuild = aur_show(std::path::Path::new(&bare_url), "PKGBUILD");
         assert!(pkgbuild.contains("pkgname='mytool-bin'"), "{pkgbuild}");
         drop(bare);
+    }
+
+    /// A templated `aur.private_key` (`{{ .Env.AUR_SSH_KEY }}`) must be
+    /// rendered to the env value before `aur_clone_repo` writes it to the
+    /// SSH key sidecar — the literal `{{` reaching the key file is the
+    /// canonical `error in libcrypto` failure. The clone target is the local
+    /// bare repo (git ignores `GIT_SSH_COMMAND` for a filesystem path), so the
+    /// clone still succeeds while the key write happens first and is
+    /// inspectable.
+    #[cfg(unix)]
+    #[test]
+    fn aur_clone_repo_renders_templated_private_key_before_write() {
+        let (bare_url, bare) = make_bare_aur_repo();
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut()
+            .set_env("AUR_SSH_KEY", "RENDERED-AUR-KEY\n");
+        let aur_cfg = AurConfig {
+            private_key: Some("{{ .Env.AUR_SSH_KEY }}".to_string()),
+            ..Default::default()
+        };
+        let log = render_quiet_log();
+        let parent = tempfile::tempdir().expect("parent");
+        let dest = parent.path().join("clone-target");
+        aur_clone_repo(&ctx, &aur_cfg, &bare_url, &dest, &log).expect("ssh clone ok");
+        let key_path = dest.parent().unwrap().join(".anodizer_ssh_key");
+        let body = std::fs::read_to_string(&key_path).expect("key sidecar written");
+        assert_eq!(
+            body, "RENDERED-AUR-KEY\n",
+            "private_key must be the rendered env value, never the literal template"
+        );
+        assert!(
+            !body.contains("{{"),
+            "the literal template must never reach the SSH key file"
+        );
+        drop(bare);
+    }
+
+    /// The rollback credential resolver renders a templated `private_key` /
+    /// `git_ssh_command` so the recorded revert target carries the resolved
+    /// secret, not the literal `{{ .Env.X }}` that would fail ssh at revert.
+    #[test]
+    fn resolve_aur_credentials_renders_templates() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                aur: Some(AurConfig {
+                    git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+                    private_key: Some("{{ .Env.AUR_SSH_KEY }}".to_string()),
+                    git_ssh_command: Some("ssh -i {{ .Env.KEYFILE }}".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set_env("AUR_SSH_KEY", "REAL-KEY");
+        ctx.template_vars_mut().set_env("KEYFILE", "/run/k");
+        let (pk, ssh) =
+            resolve_aur_credentials_from_config(&ctx, "ssh://aur@aur.archlinux.org/mytool-bin.git");
+        assert_eq!(pk.as_deref(), Some("REAL-KEY"));
+        assert_eq!(ssh.as_deref(), Some("ssh -i /run/k"));
+        assert!(!pk.unwrap().contains("{{"));
     }
 }

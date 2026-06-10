@@ -6,11 +6,18 @@
 //! `pub(crate)` keeps the surface tight.
 
 use anodizer_core::config::RepositoryConfig;
+use anodizer_core::context::Context;
 use anodizer_core::{EnvSource, ProcessEnvSource};
 
-/// Resolve the branch to push to from RepositoryConfig.
-pub(crate) fn resolve_branch(repo: Option<&RepositoryConfig>) -> Option<&str> {
+/// Resolve the push branch from a RepositoryConfig, rendering its template.
+///
+/// Returns an owned, rendered branch name so a templated
+/// `branch: "{{ .Env.RELEASE_BRANCH }}"` resolves before it reaches the
+/// `git checkout -B` / `git push` argv; a malformed template falls back to
+/// the raw value (matching the lenient render path).
+pub(crate) fn resolve_branch(ctx: &Context, repo: Option<&RepositoryConfig>) -> Option<String> {
     repo.and_then(|r| r.branch.as_deref())
+        .map(|b| ctx.render_template(b).unwrap_or_else(|_| b.to_string()))
 }
 
 /// Resolve the GitHub REST API base URL through an injected env
@@ -67,37 +74,62 @@ pub(super) fn fetch_default_branch_with_env<E: EnvSource + ?Sized>(
 mod tests {
     use super::*;
     use anodizer_core::config::{GitRepoConfig, RepositoryConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
 
     /// `resolve_branch` returns `None` when the entire repo config is absent —
     /// callers must fall back to the upstream default-branch path rather than
     /// pushing to a fabricated branch name.
     #[test]
     fn resolve_branch_returns_none_when_repo_missing() {
-        assert!(resolve_branch(None).is_none());
+        let ctx = TestContextBuilder::new().build();
+        assert!(resolve_branch(&ctx, None).is_none());
     }
 
     /// A repo config with no explicit `branch:` also returns `None` so the
     /// caller defers to the GitHub default-branch lookup.
     #[test]
     fn resolve_branch_returns_none_when_branch_unset() {
+        let ctx = TestContextBuilder::new().build();
         let repo = RepositoryConfig {
             owner: Some("o".into()),
             name: Some("n".into()),
             branch: None,
             ..Default::default()
         };
-        assert!(resolve_branch(Some(&repo)).is_none());
+        assert!(resolve_branch(&ctx, Some(&repo)).is_none());
     }
 
     /// When `branch:` is explicitly set, that exact value is returned —
-    /// the function is a pure projection, no normalisation, no defaulting.
+    /// no normalisation, no defaulting (plain string, no template).
     #[test]
     fn resolve_branch_returns_configured_branch_verbatim() {
+        let ctx = TestContextBuilder::new().build();
         let repo = RepositoryConfig {
             branch: Some("release/v2".into()),
             ..Default::default()
         };
-        assert_eq!(resolve_branch(Some(&repo)), Some("release/v2"));
+        assert_eq!(
+            resolve_branch(&ctx, Some(&repo)).as_deref(),
+            Some("release/v2")
+        );
+    }
+
+    /// A templated `branch:` (`{{ .Env.X }}`) renders to the env value;
+    /// the literal template text must never reach the git argv.
+    #[test]
+    fn resolve_branch_renders_template() {
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.template_vars_mut()
+            .set_env("RELEASE_BRANCH", "release/v9");
+        let repo = RepositoryConfig {
+            branch: Some("{{ .Env.RELEASE_BRANCH }}".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_branch(&ctx, Some(&repo)).as_deref(),
+            Some("release/v9"),
+            "templated branch must render to the env value, not the literal"
+        );
     }
 
     /// Sister fields on the config (e.g. `git.url`) do not interfere — only
@@ -105,6 +137,7 @@ mod tests {
     /// accidentally swallows the SSH `git.url` into the branch slot.
     #[test]
     fn resolve_branch_ignores_unrelated_fields() {
+        let ctx = TestContextBuilder::new().build();
         let repo = RepositoryConfig {
             branch: Some("main".into()),
             git: Some(GitRepoConfig {
@@ -113,7 +146,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        assert_eq!(resolve_branch(Some(&repo)), Some("main"));
+        assert_eq!(resolve_branch(&ctx, Some(&repo)).as_deref(), Some("main"));
     }
 
     // -----------------------------------------------------------------

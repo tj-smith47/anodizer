@@ -997,6 +997,7 @@ pub fn publish_to_krew(
     let repo_path = tmp_dir.path();
 
     util::clone_repo(
+        ctx,
         krew_cfg.repository.as_ref(),
         &repo_owner,
         &repo_name,
@@ -1100,6 +1101,7 @@ pub fn publish_to_krew(
             ),
             "krew",
             log,
+            &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
         )
     } else {
         // No `repository.pull_request:` block — always submit a PR against the

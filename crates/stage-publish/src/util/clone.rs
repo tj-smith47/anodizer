@@ -3,12 +3,14 @@
 //! dispatcher that picks one based on `RepositoryConfig`.
 
 use anodizer_core::config::RepositoryConfig;
+use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use std::path::Path;
 use std::process::Command;
 
 use super::cmd::{redact_output_token, run_cmd_in, run_cmd_in_redacted};
+use super::template::render_or_warn;
 
 /// Clone a git repo into `tmp_dir` with token-based auth.
 ///
@@ -198,7 +200,9 @@ fn open_secure_key_file(path: &Path) -> std::io::Result<std::fs::File> {
 /// When `repo.git.url` is set, uses SSH-based cloning with optional
 /// `private_key` / `ssh_command`.  Otherwise falls back to HTTPS via
 /// `clone_repo_with_auth`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn clone_repo(
+    ctx: &Context,
     repo: Option<&RepositoryConfig>,
     fallback_owner: &str,
     fallback_name: &str,
@@ -225,10 +229,23 @@ pub(crate) fn clone_repo(
         && let Some(ref git) = r.git
         && let Some(ref url) = git.url
     {
+        // The url / private_key / ssh_command may be templated
+        // (`{{ .Env.X }}`). Render before they reach the git+ssh
+        // subprocess, or the literal template text is written to the
+        // SSH key file / used as the clone URL and ssh fails.
+        let rendered_url = render_or_warn(ctx, log, "repository.git.url", url)?;
+        let rendered_key = match git.private_key.as_deref() {
+            Some(pk) => Some(render_or_warn(ctx, log, "repository.git.private_key", pk)?),
+            None => None,
+        };
+        let rendered_ssh = match git.ssh_command.as_deref() {
+            Some(sc) => Some(render_or_warn(ctx, log, "repository.git.ssh_command", sc)?),
+            None => None,
+        };
         return clone_repo_ssh(
-            url,
-            git.private_key.as_deref(),
-            git.ssh_command.as_deref(),
+            &rendered_url,
+            rendered_key.as_deref(),
+            rendered_ssh.as_deref(),
             tmp_dir,
             label,
             log,
@@ -260,6 +277,7 @@ mod tests {
     use super::*;
     use anodizer_core::config::{GitRepoConfig, RepositoryConfig};
     use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::TestContextBuilder;
     use std::process::Command;
     use std::sync::OnceLock;
 
@@ -573,6 +591,7 @@ mod tests {
     #[test]
     fn clone_repo_dispatcher_uses_git_url_when_set() {
         let (url, _bare, _work) = make_bare_remote();
+        let ctx = TestContextBuilder::new().build();
         let log = StageLogger::new("test", Verbosity::Quiet);
         let dest = tempfile::tempdir().unwrap();
         let repo = RepositoryConfig {
@@ -583,6 +602,7 @@ mod tests {
             ..Default::default()
         };
         clone_repo(
+            &ctx,
             Some(&repo),
             "ignored-owner",
             "ignored-name",
@@ -593,6 +613,76 @@ mod tests {
         )
         .expect("dispatcher should clone via SSH path when git.url is set");
         assert!(dest.path().join("README").exists());
+    }
+
+    /// A templated `git.url` (`{{ .Env.X }}`) must be rendered to the env
+    /// value before it reaches `git clone`; the literal template text must
+    /// never be used as the clone target. Drives the SSH dispatch branch
+    /// with the real local bare remote injected through the env.
+    #[test]
+    fn clone_repo_renders_templated_git_url() {
+        let (url, _bare, _work) = make_bare_remote();
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.template_vars_mut().set_env("AUR_GIT_URL", &url);
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let dest = tempfile::tempdir().unwrap();
+        let repo = RepositoryConfig {
+            git: Some(GitRepoConfig {
+                url: Some("{{ .Env.AUR_GIT_URL }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        clone_repo(
+            &ctx,
+            Some(&repo),
+            "ignored-owner",
+            "ignored-name",
+            None,
+            dest.path(),
+            "dispatch",
+            &log,
+        )
+        .expect("templated git.url must render to the env value before clone");
+        assert!(
+            dest.path().join("README").exists(),
+            "clone must have used the rendered URL, not the literal template"
+        );
+    }
+
+    /// A templated `git.private_key` (`{{ .Env.X }}`) must be rendered
+    /// before the key bytes are written to disk; the literal `{{` must
+    /// never reach the SSH key file (the canonical `error in libcrypto`
+    /// failure). The clone target is fake so the spawn fails, but the key
+    /// write happens first and is inspectable.
+    #[cfg(unix)]
+    #[test]
+    fn clone_repo_renders_templated_private_key_before_write() {
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.template_vars_mut()
+            .set_env("AUR_SSH_KEY", "RENDERED-KEY-MATERIAL\n");
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let parent = tempfile::tempdir().unwrap();
+        let dest = parent.path().join("clone-target");
+        let repo = RepositoryConfig {
+            git: Some(GitRepoConfig {
+                url: Some("ssh://git@127.0.0.1:1/never.git".to_string()),
+                private_key: Some("{{ .Env.AUR_SSH_KEY }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let _ = clone_repo(&ctx, Some(&repo), "o", "n", None, &dest, "key-render", &log);
+        let key_path = dest.parent().unwrap().join(".anodizer_ssh_key");
+        let body = std::fs::read_to_string(&key_path).expect("key sidecar must be written");
+        assert_eq!(
+            body, "RENDERED-KEY-MATERIAL\n",
+            "the private key must be the rendered env value, never the literal template"
+        );
+        assert!(
+            !body.contains("{{"),
+            "the literal template `{{{{` must never reach the SSH key file"
+        );
     }
 
     // HTTPS fallback branch coverage is deferred — the production
@@ -610,6 +700,7 @@ mod tests {
     #[test]
     fn clone_repo_warns_on_non_github_token_type_but_proceeds() {
         let (url, _bare, _work) = make_bare_remote();
+        let ctx = TestContextBuilder::new().build();
         let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
         let dest = tempfile::tempdir().unwrap();
         let repo = RepositoryConfig {
@@ -620,8 +711,17 @@ mod tests {
             }),
             ..Default::default()
         };
-        clone_repo(Some(&repo), "o", "n", None, dest.path(), "warn-test", &log)
-            .expect("should proceed despite unsupported token_type");
+        clone_repo(
+            &ctx,
+            Some(&repo),
+            "o",
+            "n",
+            None,
+            dest.path(),
+            "warn-test",
+            &log,
+        )
+        .expect("should proceed despite unsupported token_type");
         assert_eq!(cap.warn_count(), 1, "expected one warn for token_type");
         let msgs = cap.all_messages();
         assert!(
@@ -637,6 +737,7 @@ mod tests {
     #[test]
     fn clone_repo_does_not_warn_for_github_token_type() {
         let (url, _bare, _work) = make_bare_remote();
+        let ctx = TestContextBuilder::new().build();
         for tt in ["github", "GitHub", "GITHUB", ""] {
             let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
             let dest = tempfile::tempdir().unwrap();
@@ -648,7 +749,7 @@ mod tests {
                 }),
                 ..Default::default()
             };
-            clone_repo(Some(&repo), "o", "n", None, dest.path(), "ok", &log)
+            clone_repo(&ctx, Some(&repo), "o", "n", None, dest.path(), "ok", &log)
                 .expect("should clone cleanly");
             assert_eq!(
                 cap.warn_count(),

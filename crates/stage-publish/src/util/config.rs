@@ -279,12 +279,18 @@ pub(crate) fn resolve_repo_token(
     repo: Option<&anodizer_core::config::RepositoryConfig>,
     env_var: Option<&str>,
 ) -> Option<String> {
-    // 1. Token from repository config
+    // 1. Token from repository config. May be templated
+    // (`token: "{{ .Env.GH_PAT }}"`); render before it is used as the
+    // bearer / x-access-token credential, or the literal template string
+    // is sent as the auth token.
     if let Some(r) = repo
         && let Some(ref tok) = r.token
         && !tok.is_empty()
     {
-        return Some(tok.clone());
+        let rendered = ctx.render_template(tok).unwrap_or_else(|_| tok.clone());
+        if !rendered.is_empty() {
+            return Some(rendered);
+        }
     }
     // 2. Fall back to context + env
     resolve_token(ctx, env_var)
@@ -294,10 +300,43 @@ pub(crate) fn resolve_repo_token(
 mod tests {
     use super::*;
     use anodizer_core::config::{
-        BinstallConfig, CrateConfig, NixConfig, PublishConfig, WorkspaceConfig,
+        BinstallConfig, CrateConfig, NixConfig, PublishConfig, RepositoryConfig, WorkspaceConfig,
     };
     use anodizer_core::log::LogCapture;
     use anodizer_core::test_helpers::TestContextBuilder;
+
+    /// A templated `repository.token` (`{{ .Env.GH_PAT }}`) must be rendered
+    /// to the env value before it is used as the auth credential — the
+    /// literal template string must never become the bearer token.
+    #[test]
+    fn resolve_repo_token_renders_templated_token() {
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.template_vars_mut().set_env("GH_PAT", "ghp_real_value");
+        let repo = RepositoryConfig {
+            token: Some("{{ .Env.GH_PAT }}".into()),
+            ..Default::default()
+        };
+        let tok = resolve_repo_token(&ctx, Some(&repo), None);
+        assert_eq!(tok.as_deref(), Some("ghp_real_value"));
+        assert!(
+            !tok.unwrap().contains("{{"),
+            "the literal template must never become the auth token"
+        );
+    }
+
+    /// A plain (non-templated) `repository.token` passes through unchanged.
+    #[test]
+    fn resolve_repo_token_returns_plain_token_verbatim() {
+        let ctx = TestContextBuilder::new().build();
+        let repo = RepositoryConfig {
+            token: Some("ghp_literal".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_repo_token(&ctx, Some(&repo), None).as_deref(),
+            Some("ghp_literal")
+        );
+    }
 
     fn crate_with(name: &str, path: &str) -> CrateConfig {
         CrateConfig {

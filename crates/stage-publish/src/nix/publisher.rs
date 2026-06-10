@@ -67,7 +67,7 @@ fn collect_nix_run_targets(ctx: &Context) -> Vec<NixTarget> {
             out.push(NixTarget {
                 target: c.name.clone(),
                 repo_url: format!("https://github.com/{}/{}.git", owner, name),
-                branch: crate::util::resolve_branch(nc.repository.as_ref()).map(str::to_string),
+                branch: crate::util::resolve_branch(ctx, nc.repository.as_ref()),
                 token_env_var: Some("NIX_PKGS_TOKEN".to_string()),
             });
         }

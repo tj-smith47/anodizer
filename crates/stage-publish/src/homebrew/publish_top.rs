@@ -499,6 +499,7 @@ pub fn publish_top_level_homebrew_casks(
 
         let token = crate::util::resolve_repo_token(ctx, repo_cfg, Some("HOMEBREW_TAP_TOKEN"));
         crate::util::clone_repo(
+            ctx,
             repo_cfg,
             &repo_owner,
             &repo_name,
@@ -549,12 +550,12 @@ pub fn publish_top_level_homebrew_casks(
         let path_refs: Vec<&str> = path_strings.iter().map(String::as_str).collect();
         let commit_opts =
             crate::util::resolve_commit_opts(ctx, cask_cfg.commit_author.as_ref(), log)?;
-        let branch = crate::util::resolve_branch(repo_cfg);
+        let branch = crate::util::resolve_branch(ctx, repo_cfg);
         let outcome = crate::util::commit_and_push_with_opts(
             repo_path,
             &path_refs,
             &commit_msg,
-            branch,
+            branch.as_deref(),
             "homebrew_casks",
             &commit_opts,
         )?;
@@ -575,7 +576,7 @@ pub fn publish_top_level_homebrew_casks(
         }
 
         // Submit a PR if pull_request.enabled is set.
-        let pr_branch = branch.unwrap_or("main");
+        let pr_branch = branch.as_deref().unwrap_or("main");
         let update_existing_pr = cask_cfg
             .update_existing_pr
             .as_ref()
@@ -600,6 +601,7 @@ pub fn publish_top_level_homebrew_casks(
             ),
             "homebrew_casks",
             log,
+            &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
         );
 
         // Sticky-pending: once any cask in this top-level group

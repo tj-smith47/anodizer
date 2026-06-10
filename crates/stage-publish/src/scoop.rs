@@ -611,6 +611,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     let repo_path = tmp_dir.path();
 
     util::clone_repo(
+        ctx,
         scoop_cfg.repository.as_ref(),
         &repo_owner,
         &repo_name,
@@ -656,12 +657,12 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
 
     let manifest_lossy = manifest_path.to_string_lossy();
     let commit_opts = util::resolve_commit_opts(ctx, scoop_cfg.commit_author.as_ref(), log)?;
-    let branch = util::resolve_branch(scoop_cfg.repository.as_ref());
+    let branch = util::resolve_branch(ctx, scoop_cfg.repository.as_ref());
     let outcome = util::commit_and_push_with_opts(
         repo_path,
         &[&manifest_lossy],
         &commit_msg,
-        branch,
+        branch.as_deref(),
         "scoop",
         &commit_opts,
     )?;
@@ -681,7 +682,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     }
 
     // Submit a PR if pull_request.enabled is set.
-    let pr_branch = branch.unwrap_or("main");
+    let pr_branch = branch.as_deref().unwrap_or("main");
     // Clone the repository config so the `maybe_submit_pr` call no
     // longer borrows from `ctx.config` (via `scoop_cfg`). NLL then
     // drops the immutable borrow, making the subsequent `&mut ctx`
@@ -708,6 +709,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         ),
         "scoop",
         log,
+        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
     );
 
     // Surface PR-already-exists skips to the dispatch summary table.
@@ -787,7 +789,7 @@ fn collect_scoop_run_targets(ctx: &Context) -> Vec<ScoopTarget> {
             out.push(ScoopTarget {
                 target: c.name.clone(),
                 repo_url: format!("https://github.com/{}/{}.git", owner, name),
-                branch: util::resolve_branch(sc.repository.as_ref()).map(str::to_string),
+                branch: util::resolve_branch(ctx, sc.repository.as_ref()),
                 token_env_var: Some("SCOOP_BUCKET_TOKEN".to_string()),
             });
         }

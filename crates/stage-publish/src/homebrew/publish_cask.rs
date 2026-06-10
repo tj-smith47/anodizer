@@ -133,6 +133,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         Some("HOMEBREW_TAP_TOKEN"),
     );
     crate::util::clone_repo(
+        ctx,
         hb_cfg.repository.as_ref(),
         &repo_owner,
         &repo_name,
@@ -193,12 +194,12 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         .collect();
     let path_refs: Vec<&str> = path_strings.iter().map(String::as_str).collect();
     let commit_opts = crate::util::resolve_commit_opts(ctx, hb_cfg.commit_author.as_ref(), log)?;
-    let branch = crate::util::resolve_branch(hb_cfg.repository.as_ref());
+    let branch = crate::util::resolve_branch(ctx, hb_cfg.repository.as_ref());
     let outcome = crate::util::commit_and_push_with_opts(
         repo_path,
         &path_refs,
         &commit_msg,
-        branch,
+        branch.as_deref(),
         "homebrew cask",
         &commit_opts,
     )?;
@@ -218,7 +219,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
     }
 
     // Submit a PR if pull_request.enabled is set.
-    let pr_branch = branch.unwrap_or("main");
+    let pr_branch = branch.as_deref().unwrap_or("main");
     let update_existing_pr = cask_cfg
         .update_existing_pr
         .as_ref()
@@ -248,6 +249,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         ),
         "homebrew cask",
         log,
+        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
     );
 
     // Surface PR-already-exists skips to the dispatch summary table.

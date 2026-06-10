@@ -429,10 +429,16 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
             else {
                 continue;
             };
+            // Render a configured `repository.token` before use — a
+            // templated `{{ .Env.GH_PAT }}` must become the resolved
+            // credential, not the literal template string, for the poll's
+            // GitHub API auth.
             let token = winget
                 .repository
                 .as_ref()
-                .and_then(|r| r.token.clone())
+                .and_then(|r| r.token.as_deref())
+                .map(|t| ctx.render_template(t).unwrap_or_else(|_| t.to_string()))
+                .filter(|t| !t.is_empty())
                 .or_else(|| ctx.env_var("ANODIZER_GITHUB_TOKEN"))
                 .or_else(|| ctx.env_var("GITHUB_TOKEN"));
             jobs.push(post_publish::PollJob::Winget {

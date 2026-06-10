@@ -73,6 +73,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
     let tmp_dir = tempfile::tempdir().context("nix: create temp dir")?;
     let repo_path = tmp_dir.path();
     util::clone_repo(
+        ctx,
         nix_cfg.repository.as_ref(),
         &repo_owner,
         &repo_name,
@@ -750,12 +751,12 @@ fn finalize_publish(
         ctx.render_is_strict(),
     )?;
     let commit_opts = util::resolve_commit_opts(ctx, nix_cfg.commit_author.as_ref(), log)?;
-    let branch = util::resolve_branch(nix_cfg.repository.as_ref());
+    let branch = util::resolve_branch(ctx, nix_cfg.repository.as_ref());
     let outcome = util::commit_and_push_with_opts(
         repo_path,
         files,
         &commit_msg,
-        branch,
+        branch.as_deref(),
         "nix",
         &commit_opts,
     )?;
@@ -764,7 +765,7 @@ fn finalize_publish(
     // borrows from `ctx.config` (via `nix_cfg`). NLL then drops the
     // immutable borrow, making the subsequent `&mut ctx` call legal.
     let repo_for_pr = nix_cfg.repository.clone();
-    let pr_branch = branch.unwrap_or("main").to_string();
+    let pr_branch = branch.as_deref().unwrap_or("main").to_string();
     let pr_outcome = util::maybe_submit_pr(
         repo_path,
         repo_for_pr.as_ref(),
@@ -786,6 +787,7 @@ fn finalize_publish(
         ),
         "nix",
         log,
+        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
     );
 
     match outcome {

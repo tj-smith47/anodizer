@@ -403,6 +403,7 @@ pub(crate) struct PrOrigin<'a> {
               Context::record_publisher_outcome — dropping it silently \
               misreports a PR-already-exists skip or a PR-creation failure \
               as `succeeded`"]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn maybe_submit_pr(
     repo_path: &Path,
     repo: Option<&RepositoryConfig>,
@@ -411,6 +412,7 @@ pub(crate) fn maybe_submit_pr(
     body: &str,
     label: &str,
     log: &StageLogger,
+    render: &dyn Fn(&str) -> String,
 ) -> Option<PublisherOutcome> {
     maybe_submit_pr_with_env(
         repo_path,
@@ -420,6 +422,7 @@ pub(crate) fn maybe_submit_pr(
         body,
         label,
         log,
+        render,
         &ProcessEnvSource,
     )
 }
@@ -441,6 +444,7 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
     body: &str,
     label: &str,
     log: &StageLogger,
+    render: &dyn Fn(&str) -> String,
     env: &E,
 ) -> Option<PublisherOutcome> {
     let PrOrigin {
@@ -453,25 +457,45 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
         Some(pr) if pr.enabled == Some(true) => pr,
         _ => return None,
     };
+    // `base.owner` / `base.name` / `base.branch` / `body` may be templated;
+    // render them before they reach the upstream slug / API payload, mirroring
+    // how the owner/name of the fork are already rendered upstream.
     let (upstream_owner, upstream_name) = if let Some(ref base) = pr_cfg.base {
         (
-            base.owner.as_deref().unwrap_or(repo_owner),
-            base.name.as_deref().unwrap_or(repo_name),
+            base.owner
+                .as_deref()
+                .map(render)
+                .unwrap_or_else(|| repo_owner.to_string()),
+            base.name
+                .as_deref()
+                .map(render)
+                .unwrap_or_else(|| repo_name.to_string()),
         )
     } else {
-        (repo_owner, repo_name)
+        (repo_owner.to_string(), repo_name.to_string())
     };
+    let upstream_owner = upstream_owner.as_str();
+    let upstream_name = upstream_name.as_str();
     let upstream_slug = format!("{}/{}", upstream_owner, upstream_name);
-    let pr_body = pr_cfg.body.as_deref().unwrap_or(body);
+    let pr_body = pr_cfg
+        .body
+        .as_deref()
+        .map(render)
+        .unwrap_or_else(|| body.to_string());
     let head = format!("{}:{}", repo_owner, branch_name);
     let is_draft = pr_cfg.draft == Some(true);
     let base_branch = pr_cfg
         .base
         .as_ref()
         .and_then(|b| b.branch.as_deref())
-        .unwrap_or("main");
+        .map(render)
+        .unwrap_or_else(|| "main".to_string());
+    // A configured `repository.token` may be templated; render it before it
+    // becomes the API bearer credential, or the literal template is sent.
     let token = repo
-        .and_then(|r| r.token.clone())
+        .and_then(|r| r.token.as_deref())
+        .map(render)
+        .filter(|t| !t.is_empty())
         .or_else(|| env.var("ANODIZER_GITHUB_TOKEN"))
         .or_else(|| env.var("GITHUB_TOKEN"));
 
@@ -482,7 +506,7 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
             "https://github.com/{}/{}.git",
             upstream_owner, upstream_name
         );
-        sync_fork(repo_path, &upstream_url, base_branch, label, log);
+        sync_fork(repo_path, &upstream_url, &base_branch, label, log);
         if let Err(e) = run_cmd_in(
             repo_path,
             "git",
@@ -497,9 +521,9 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
 
     let spec = PrSpec {
         title,
-        body: pr_body,
+        body: &pr_body,
         head: &head,
-        base_branch,
+        base_branch: &base_branch,
         draft: is_draft,
         update_existing_pr,
     };
@@ -721,6 +745,12 @@ mod tests {
         StageLogger::new("pr-test", Verbosity::Quiet)
     }
 
+    /// Identity renderer for the PR helpers' template pass — these tests
+    /// feed plain (non-templated) PR fields, so rendering is a no-op.
+    fn no_render(s: &str) -> String {
+        s.to_string()
+    }
+
     fn origin() -> PrOrigin<'static> {
         PrOrigin {
             repo_owner: "fork-owner",
@@ -847,6 +877,7 @@ mod tests {
             "body",
             "label",
             &log,
+            &no_render,
         );
         assert!(
             outcome.is_none(),
@@ -874,6 +905,7 @@ mod tests {
             "body",
             "label",
             &log,
+            &no_render,
         );
         assert!(
             outcome.is_none(),
@@ -904,6 +936,7 @@ mod tests {
             "body",
             "label",
             &log,
+            &no_render,
         );
         assert!(
             outcome.is_none(),
@@ -935,6 +968,7 @@ mod tests {
             "body",
             "label",
             &log,
+            &no_render,
         );
         assert!(
             outcome.is_none(),
@@ -1210,6 +1244,7 @@ mod tests {
             "body",
             "label",
             &log,
+            &no_render,
         );
         assert!(outcome.is_none());
     }
@@ -1531,6 +1566,7 @@ mod tests {
             "body",
             "homebrew",
             &log,
+            &no_render,
             &env,
         );
         // 201 from the responder is the success path.
@@ -1617,6 +1653,7 @@ mod tests {
             "body",
             "homebrew",
             &log,
+            &no_render,
             &env,
         );
         assert!(
@@ -1688,6 +1725,7 @@ mod tests {
             "caller-supplied body that must be overridden",
             "homebrew",
             &log,
+            &no_render,
             &env,
         );
         assert!(outcome.is_none(), "201 is success; got {outcome:?}");
@@ -1755,6 +1793,7 @@ mod tests {
             "body",
             "homebrew",
             &log,
+            &no_render,
             &env,
         );
         assert!(
@@ -1812,6 +1851,7 @@ mod tests {
             "body",
             "homebrew",
             &log,
+            &no_render,
             &env,
         );
         match outcome {

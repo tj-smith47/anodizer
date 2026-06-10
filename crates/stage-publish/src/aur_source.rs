@@ -366,10 +366,36 @@ fn publish_aur_source_entry(
     let repo_path = tmp_dir.path();
 
     if cfg.private_key.is_some() || cfg.git_ssh_command.is_some() {
+        // `private_key` / `git_ssh_command` may be templated
+        // (`{{ .Env.AUR_SSH_KEY }}`). Render against the same `Amd64`-scoped
+        // vars as the rest of this resource before they reach the SSH clone,
+        // or the literal template text is written to the key file and ssh
+        // fails with "error in libcrypto".
+        let strict = ctx.render_is_strict();
+        let rendered_key = match cfg.private_key.as_deref() {
+            Some(pk) => Some(util::render_or_warn_with_vars(
+                &scoped_vars,
+                log,
+                "aur_source.private_key",
+                pk,
+                strict,
+            )?),
+            None => None,
+        };
+        let rendered_ssh = match cfg.git_ssh_command.as_deref() {
+            Some(sc) => Some(util::render_or_warn_with_vars(
+                &scoped_vars,
+                log,
+                "aur_source.git_ssh_command",
+                sc,
+                strict,
+            )?),
+            None => None,
+        };
         util::clone_repo_ssh(
             &git_url,
-            cfg.private_key.as_deref(),
-            cfg.git_ssh_command.as_deref(),
+            rendered_key.as_deref(),
+            rendered_ssh.as_deref(),
             repo_path,
             label,
             log,
