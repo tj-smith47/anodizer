@@ -15,6 +15,9 @@ updates:
       # release (semantic-release + update-major-tag). Don't let Dependabot
       # track it; a v2 cutover is a deliberate manual bump.
       - dependency-name: "tj-smith47/anodizer-action"
+      # Branch pin (stable = master head); Dependabot would "bump" it to the older
+      # v1 tag SHA. Manual: gh api repos/dtolnay/rust-toolchain/branches/stable --jq .commit.sha
+      - dependency-name: "dtolnay/rust-toolchain"
   - package-ecosystem: "docker"
     directory: "/"
     schedule:

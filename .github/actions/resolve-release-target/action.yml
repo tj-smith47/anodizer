@@ -76,6 +76,10 @@ runs:
 
         dist_run_id=""
         if [ "$run_determinism" = "false" ]; then
+          # Auto-resolve scans this many recent Release runs; for republishing
+          # a very old tag whose build run falls outside the window, supply
+          # dist-run-id explicitly.
+          window=400
           if [ -n "$DIST_RUN_ID_INPUT" ]; then
             dist_run_id="$DIST_RUN_ID_INPUT"
             # Cross-check: the caller-supplied run must have built the target
@@ -88,14 +92,11 @@ runs:
               exit 1
             fi
           else
-            # -L 400 gives enough headroom for busy repos (gh caps --limit at
-            # 1000); for republishing a very old tag where the build run falls
-            # outside this window, supply dist-run-id explicitly.
-            dist_run_id="$(gh run list --workflow=Release --json databaseId,headSha -L 400 \
+            dist_run_id="$(gh run list --workflow=Release --json databaseId,headSha -L "$window" \
               --jq "[.[] | select(.headSha==\"$sha\")][0].databaseId // empty" || true)"
           fi
           if [ -z "$dist_run_id" ]; then
-            echo "::error::skip-determinism set but no prior Release run found for $sha in the last 400 Release runs; for very old tags pass dist-run-id explicitly (the run id whose dist-* artifacts to reuse)"
+            echo "::error::skip-determinism set but no prior Release run found for $sha in the last $window Release runs; for very old tags pass dist-run-id explicitly (the run id whose dist-* artifacts to reuse)"
             exit 1
           fi
           printf 'Reusing preserved dist from Release run %s\n' "$dist_run_id"

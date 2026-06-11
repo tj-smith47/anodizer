@@ -43,7 +43,6 @@ jobs:
           preserve-dist: 'true'
           shard-label: ${{ matrix.shard }}
         env:
-          # GH_PAT: the harness reads artifacts across workflows (CI-built binaries), which GITHUB_TOKEN cannot.
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
       - name: Upload dist artifacts
@@ -53,7 +52,6 @@ jobs:
           name: dist-${{ matrix.shard }}
           path: preserved-dist/
           if-no-files-found: error
-          # Re-publishing an old tag (skip_determinism) depends on these artifacts surviving; 90 is the repo max.
           retention-days: 90
 
       - name: Upload determinism report
@@ -65,5 +63,4 @@ jobs:
             dist/run-*/determinism.json
             dist/run-*/drift-bins/**
           if-no-files-found: warn
-          # Kept as long as the dist it explains; 90 is the repo max.
           retention-days: 90

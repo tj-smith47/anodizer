@@ -56,7 +56,6 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
-          # GITHUB_TOKEN: same-repo checkout and tag push; no cross-repo access needed here.
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ inputs.tag || github.event.workflow_run.head_sha || github.sha }}
       - name: Configure git identity
@@ -73,7 +72,7 @@ jobs:
           artifact-run-id: auto
           args: tag --push --changelog
         env:
-          # GITHUB_TOKEN deliberately: its pushes do NOT retrigger CI, so the tag push cannot loop the pipeline.
+          # GITHUB_TOKEN: its pushes do NOT retrigger CI, so the tag push cannot loop the pipeline.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Resolve release target
         id: resolve
@@ -85,7 +84,6 @@ jobs:
           anodizer-version: ${{ inputs.anodizer_version }}
           autotag-sha: ${{ steps.autotag.outputs.head-sha }}
           autotag-tagged: ${{ steps.autotag.outputs.tagged }}
-          # GITHUB_TOKEN: only lists/inspects runs in this repo.
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   # Sharded byte-for-byte reproducibility gate, one shard per host/target.
@@ -117,9 +115,8 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.tag.outputs.sha }}
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable branch, pinned 2026-06-10
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable branch
         with:
-          # Explicit because the pinned SHA cannot carry the channel in the ref.
           toolchain: stable
 
       - uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
@@ -128,7 +125,6 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          # GITHUB_TOKEN: pushes images to this repo's own ghcr namespace (packages: write).
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download preserved dist artifacts
@@ -138,7 +134,6 @@ jobs:
           pattern: dist-*
           merge-multiple: true
           run-id: ${{ needs.tag.outputs.dist_run_id != '' && needs.tag.outputs.dist_run_id || github.run_id }}
-          # GITHUB_TOKEN: dist_run_id is always a Release run in this repo, so same-repo actions:read suffices.
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify preserved dist
@@ -185,7 +180,6 @@ jobs:
           CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-          # GH_PAT: publishers push to external repos (tap/bucket/AUR/krew-index) and read artifacts across workflows.
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
@@ -200,7 +194,6 @@ jobs:
           artifact-workflow: ci.yml
           args: tag rollback ${{ needs.tag.outputs.sha }}
         env:
-          # GH_PAT: rollback reverts publisher pushes in external repos, beyond GITHUB_TOKEN's same-repo scope.
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
       - name: Upload run summary

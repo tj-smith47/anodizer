@@ -8,7 +8,6 @@ on:
 permissions:
   contents: write
 
-# Shares release.yml's group so a nightly publish never interleaves with a release run.
 concurrency:
   group: release-${{ github.repository }}
   cancel-in-progress: false
@@ -27,6 +26,5 @@ jobs:
         env:
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-          # GH_PAT: nightly publish pushes to external publisher repos, beyond GITHUB_TOKEN's same-repo scope.
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
