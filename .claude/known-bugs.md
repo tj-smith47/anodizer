@@ -12,7 +12,7 @@ cold without re-investigating.
 
 ## Open
 
-- [ ] **Test-suite PATH race: global-PATH-clobbering tests vs spawn-via-PATH tests
+- [ ] ⚠ autofix blocked — user-approved deferral at v0.8.0 ship (2026-06-11); needs its own multi-crate pass rewriting PATH-clobber tests onto the fake_tool seam. **Test-suite PATH race: global-PATH-clobbering tests vs spawn-via-PATH tests
   (intermittent `No such file or directory` flakes).** Observed 2026-06-10: in 2 of
   5 full `-p anodizer-stage-publish --lib` runs,
   `schema_validation::aur::tests::workspace_lockstep_every_option_validates` failed
