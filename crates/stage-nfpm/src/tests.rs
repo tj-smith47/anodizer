@@ -637,6 +637,49 @@ fn test_apk_yaml_drops_self_provides() {
     );
 }
 
+/// The self-provide filter must key on the RESOLVED package name (the
+/// `NfpmRenderTarget.pkg_name` the build threads through), not the raw
+/// `package_name` field — a config relying on the project/crate-name
+/// fallback must still emit that name AND have its self-provide dropped.
+#[test]
+fn test_apk_self_provide_filter_uses_resolved_name() {
+    let nfpm_cfg = NfpmConfig {
+        package_name: None,
+        formats: vec!["apk".to_string()],
+        provides: Some(vec!["myproj".to_string(), "other".to_string()]),
+        ..Default::default()
+    };
+    let render_target = super::NfpmRenderTarget {
+        pkg_name: "myproj",
+        os: "linux",
+        arch: "amd64",
+        target: None,
+        format: Some("apk"),
+        version: "1.0.0",
+        skip_sign: true,
+    };
+    let yaml = super::generate_nfpm_yaml_with_env(
+        &nfpm_cfg,
+        &render_target,
+        &["/dist/myproj".to_string()],
+        &NfpmLibraryPaths::default(),
+        &HashMap::new(),
+    )
+    .unwrap();
+    assert!(
+        yaml.contains("name: myproj"),
+        "resolved name reaches the YAML name: {yaml}"
+    );
+    assert!(
+        yaml.contains("provides:\n- other"),
+        "non-self provide survives: {yaml}"
+    );
+    assert!(
+        !yaml.contains("- myproj\n"),
+        "resolved-name self-provide dropped for apk: {yaml}"
+    );
+}
+
 /// dpkg/rpm treat an explicit self-provide as a redundant no-op, so non-apk
 /// formats must pass `provides` through untouched.
 #[test]

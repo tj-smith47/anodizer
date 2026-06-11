@@ -305,7 +305,7 @@ fn verify_one_crate(
                 host_pkg_path: path.to_string_lossy().to_string(),
                 pkg_name: name.clone(),
                 binary: binary.clone(),
-                platform: target.as_deref().and_then(docker_platform),
+                platform: smoke::job_platform(target.as_deref()),
             };
             if !*smoke_strategy_logged {
                 log.verbose(&format!(

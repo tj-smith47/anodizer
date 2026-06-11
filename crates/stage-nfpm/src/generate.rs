@@ -26,21 +26,21 @@ use crate::yaml::{NfpmYamlConfig, NfpmYamlContent, NfpmYamlFileInfo, NfpmYamlScr
 /// (`conflicts: <pkg>[<pkg>]`) — the package cannot be installed at all.
 /// dpkg and rpm treat a self-provide as a redundant no-op, so only the apk
 /// format filters it. The provide's name is the text before any version
-/// operator (`=`, `<`, `>`, `~`). A `None` package name never reaches a
+/// operator (`=`, `<`, `>`, `~`). An empty package name never reaches a
 /// built package (nfpm rejects a nameless config), so no filtering applies.
 fn filter_provides_for_format(
     provides: Vec<String>,
-    package_name: Option<&str>,
+    package_name: &str,
     format: Option<&str>,
 ) -> Vec<String> {
-    let (Some("apk"), Some(pkg)) = (format, package_name) else {
+    if format != Some("apk") || package_name.is_empty() {
         return provides;
-    };
+    }
     provides
         .into_iter()
         .filter(|p| {
             let name = p.split(['=', '<', '>', '~']).next().unwrap_or(p).trim();
-            name != pkg
+            name != package_name
         })
         .collect()
 }
@@ -64,6 +64,12 @@ pub struct NfpmLibraryPaths {
 /// Bundling them keeps the render entry points to a small, stable argument
 /// list as the per-target dimension grows.
 pub struct NfpmRenderTarget<'a> {
+    /// The RESOLVED package name (explicit `package_name`, then project
+    /// name, then crate name — `resolve_pkg_name`'s precedence). Emitted as
+    /// the YAML `name:` AND used to detect format-invalid self-provides, so
+    /// the two can never disagree. Empty when the caller has no name source
+    /// at all; the YAML then omits `name:` and nfpm rejects the config.
+    pub pkg_name: &'a str,
     /// Resolved OS in nfpm nomenclature (`linux`, `iphoneos-arm64`, …). Read
     /// by the per-target template vars on the build path; unused by the YAML
     /// generator itself.
@@ -113,6 +119,9 @@ pub fn generate_nfpm_yaml(
     // output; the production path threads the target-resolved arch instead.
     let empty_env = HashMap::new();
     let target = NfpmRenderTarget {
+        // No project/crate context here — explicit `package_name` is the
+        // only name source for non-stage callers, matching prior output.
+        pkg_name: config.package_name.as_deref().unwrap_or(""),
         os: "linux",
         arch: "amd64",
         target: None,
@@ -380,7 +389,7 @@ pub fn generate_nfpm_yaml_with_env(
         .map(build_yaml_ipk);
 
     let yaml_config = NfpmYamlConfig {
-        name: config.package_name.clone(),
+        name: (!target.pkg_name.is_empty()).then(|| target.pkg_name.to_string()),
         arch: arch.to_string(),
         version: version.to_string(),
         epoch: config.epoch.clone(),
@@ -407,7 +416,7 @@ pub fn generate_nfpm_yaml_with_env(
         replaces: config.replaces.clone().unwrap_or_default(),
         provides: filter_provides_for_format(
             config.provides.clone().unwrap_or_default(),
-            config.package_name.as_deref(),
+            target.pkg_name,
             format,
         ),
         contents,

@@ -722,6 +722,7 @@ pub(crate) fn render_and_generate_nfpm_yaml(
     setup_lintian_overrides(&mut rendered_cfg, format, pkg_name, arch, dist, dry_run)?;
 
     let render_target = crate::generate::NfpmRenderTarget {
+        pkg_name,
         os,
         arch,
         target,
@@ -1301,6 +1302,10 @@ pub fn nfpm_yaml_configs_for_crate(
             continue;
         };
 
+        // Same name resolution the live build threads to the YAML's `name:`,
+        // so the offline-validated config is byte-identical to the shipped one.
+        let pkg_name = resolve_pkg_name(nfpm_cfg, &ctx.config.project_name, crate_name);
+
         for (target, binary_paths, lib_paths) in &platform_groups {
             let (base_os, base_arch) = target
                 .as_deref()
@@ -1323,6 +1328,7 @@ pub fn nfpm_yaml_configs_for_crate(
                 }
 
                 let render_target = crate::generate::NfpmRenderTarget {
+                    pkg_name: &pkg_name,
                     os: &os,
                     arch: &arch,
                     target: target.as_deref(),

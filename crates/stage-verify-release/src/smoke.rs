@@ -169,6 +169,18 @@ fn platform_is_native(platform: &str) -> bool {
     host_docker_platform().is_some_and(|host| host == platform)
 }
 
+/// The platform a smoke job pins its container to: the package's build
+/// target when it maps to a Docker platform, otherwise the HOST platform.
+/// The host fallback matters because a prior cross-arch pull re-tags the
+/// shared image tag (e.g. `alpine:latest`) to the foreign variant — an
+/// unpinned job would inherit that poisoned tag. `None` only when neither
+/// the target nor the host CPU has a known Docker platform name.
+pub(crate) fn job_platform(target_triple: Option<&str>) -> Option<String> {
+    target_triple
+        .and_then(docker_platform)
+        .or_else(host_docker_platform)
+}
+
 /// `docker run` argv probing whether `platform` containers can execute on
 /// this daemon: runs the image's `true` binary under the requested platform.
 fn build_emulation_probe_argv(platform: &str, image: &str) -> Vec<String> {
@@ -182,43 +194,61 @@ fn build_emulation_probe_argv(platform: &str, image: &str) -> Vec<String> {
     ]
 }
 
-/// Whether the daemon can execute `platform` containers (cached per
-/// platform). On a non-`platform` host this is the qemu/binfmt emulation
-/// probe; a failed probe means every smoke job for that platform must FAIL
-/// loudly rather than report a misleading in-container arch error.
-fn emulation_available(platform: &str, image: &str) -> bool {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, bool>>> =
-        std::sync::OnceLock::new();
+/// Probe whether the daemon can execute `platform` containers of `image`:
+/// `None` when the probe run succeeds, `Some(probe output)` when it fails.
+///
+/// Cached per (platform, image): one image lacking a variant for an
+/// architecture (a pull failure, not missing emulation) must not poison the
+/// verdict for other images that do publish that variant. A failed probe
+/// means every smoke job for that (platform, image) must FAIL loudly rather
+/// than report a misleading in-container arch error or silently drop
+/// coverage.
+fn emulation_probe_failure(platform: &str, image: &str) -> Option<String> {
+    type ProbeCache = std::collections::HashMap<(String, String), Option<String>>;
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<ProbeCache>> = std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
-    if let Some(&known) = cache
-        .lock()
-        .expect("emulation probe cache poisoned")
-        .get(platform)
-    {
-        return known;
+    let key = (platform.to_string(), image.to_string());
+    if let Some(known) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return known.clone();
     }
-    let ok = Command::new("docker")
+    let failure = match Command::new("docker")
         .args(build_emulation_probe_argv(platform, image))
         .current_dir(anodizer_core::path_util::probe_dir())
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    {
+        Ok(out) if out.status.success() => None,
+        Ok(out) => Some(output_detail(&out)),
+        Err(e) => Some(format!(
+            "spawning the `docker run` platform probe failed: {e}"
+        )),
+    };
     cache
         .lock()
-        .expect("emulation probe cache poisoned")
-        .insert(platform.to_string(), ok);
-    ok
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, failure.clone());
+    failure
 }
 
-/// The loud, actionable failure detail for a smoke job whose platform cannot
-/// execute on this daemon.
-fn emulation_unavailable_detail(platform: &str) -> String {
+/// The loud, actionable failure detail for a smoke job whose platform probe
+/// failed. An `exec format error` in the probe output is the missing
+/// qemu/binfmt signature and gets the emulation remediation; any other
+/// failure (image pull, daemon error) is reported as a probe failure so the
+/// operator isn't sent chasing binfmt for a network problem. The raw probe
+/// output is always appended.
+fn emulation_unavailable_detail(platform: &str, probe_detail: &str) -> String {
     let host = host_docker_platform().unwrap_or_else(|| "unknown".to_string());
+    let cause = if probe_detail.contains("exec format error") {
+        format!(
+            "cross-arch emulation (qemu/binfmt) is unavailable. Install it (e.g. \
+             `docker run --privileged --rm tonistiigi/binfmt --install all`) or run \
+             install_smoke on a {platform} runner"
+        )
+    } else {
+        format!("the {platform} platform probe failed (image pull or daemon error)")
+    };
     format!(
-        "cannot run {platform} containers on this {host} host: cross-arch emulation \
-         (qemu/binfmt) is unavailable. Install it (e.g. `docker run --privileged --rm \
-         tonistiigi/binfmt --install all`) or run install_smoke on a {platform} runner. \
-         The package was NOT smoke-tested."
+        "cannot run {platform} containers on this {host} host: {cause}. \
+         The package was NOT smoke-tested. Probe output: {probe_detail}"
     )
 }
 
@@ -396,9 +426,15 @@ fn probe_mount_strategy(probe_image: &str) -> MountStrategy {
         return MountStrategy::Copy;
     }
     let abs = std::fs::canonicalize(&sentinel).unwrap_or_else(|_| sentinel.clone());
-    let argv = [
-        "run".to_string(),
-        "--rm".to_string(),
+    let mut argv = vec!["run".to_string(), "--rm".to_string()];
+    // Pin the probe to the host platform: a prior cross-arch pull may have
+    // re-tagged the shared image tag to a foreign variant, and an unpinned
+    // probe would then run (and fail on) the wrong-arch image.
+    if let Some(host) = host_docker_platform() {
+        argv.push("--platform".to_string());
+        argv.push(host);
+    }
+    argv.extend([
         "--mount".to_string(),
         format!(
             "type=bind,source={},destination=/probe,readonly",
@@ -407,7 +443,7 @@ fn probe_mount_strategy(probe_image: &str) -> MountStrategy {
         probe_image.to_string(),
         "cat".to_string(),
         "/probe".to_string(),
-    ];
+    ]);
     let out = Command::new("docker")
         .args(&argv)
         .current_dir(&dir)
@@ -437,10 +473,10 @@ pub fn strategy_label(probe_image: &str) -> &'static str {
 pub fn run_smoke(job: &SmokeJob) -> anyhow::Result<SmokeOutcome> {
     if let Some(platform) = &job.platform
         && !platform_is_native(platform)
-        && !emulation_available(platform, &job.image)
+        && let Some(probe_detail) = emulation_probe_failure(platform, &job.image)
     {
         return Ok(SmokeOutcome::Failed {
-            detail: emulation_unavailable_detail(platform),
+            detail: emulation_unavailable_detail(platform, &probe_detail),
         });
     }
     match mount_strategy(&job.image) {
@@ -861,11 +897,56 @@ mod tests {
 
     #[test]
     fn emulation_unavailable_detail_is_actionable() {
-        let detail = emulation_unavailable_detail("linux/arm64");
+        // The binfmt signature gets the emulation remediation.
+        let detail =
+            emulation_unavailable_detail("linux/arm64", "exec /bin/true: exec format error");
         assert!(detail.contains("linux/arm64"), "{detail}");
         assert!(detail.contains("qemu/binfmt"), "{detail}");
         assert!(detail.contains("tonistiigi/binfmt"), "{detail}");
         assert!(detail.contains("NOT smoke-tested"), "{detail}");
+        assert!(
+            detail.contains("exec /bin/true: exec format error"),
+            "raw probe output appended: {detail}"
+        );
+    }
+
+    #[test]
+    fn emulation_detail_distinguishes_pull_failures_from_missing_binfmt() {
+        // A pull/daemon error must NOT send the operator chasing binfmt.
+        let detail = emulation_unavailable_detail(
+            "linux/arm64",
+            "manifest for myimage:latest not found: manifest unknown",
+        );
+        assert!(
+            !detail.contains("qemu/binfmt"),
+            "no binfmt remediation for a pull failure: {detail}"
+        );
+        assert!(
+            detail.contains("image pull or daemon error"),
+            "names the real failure class: {detail}"
+        );
+        assert!(
+            detail.contains("manifest unknown"),
+            "raw probe output appended: {detail}"
+        );
+        assert!(detail.contains("NOT smoke-tested"), "{detail}");
+    }
+
+    #[test]
+    fn job_platform_prefers_target_then_host() {
+        // A mapped target wins over the host platform.
+        assert_eq!(
+            job_platform(Some("aarch64-unknown-linux-gnu")).as_deref(),
+            Some("linux/arm64")
+        );
+        // No target (host build) → the host platform, so the job never runs
+        // a foreign variant left behind on a shared tag by a cross-arch pull.
+        assert_eq!(job_platform(None), host_docker_platform());
+        // Unmappable target → host fallback too.
+        assert_eq!(
+            job_platform(Some("sparc64-unknown-linux-gnu")),
+            host_docker_platform()
+        );
     }
 
     #[test]
