@@ -1,6 +1,6 @@
 //! Per-attempt classifier for the GitHub release-asset upload loop.
 //!
-//! The upload loop in `run_github_backend` retries a single asset upload
+//! The per-asset upload loop in `upload.rs` retries a single asset upload
 //! through several distinct failure modes (server error, GitHub
 //! `already_exists` 422, secondary rate-limit, primary rate-limit, plain
 //! transport flake, ...). Each mode demands a different action (delete &
@@ -12,7 +12,7 @@
 //! `delete_release_asset_by_name`).
 //!
 //! [`classify_upload_attempt`] is that pure function. The loop body in
-//! `mod.rs` matches on the returned [`UploadAttemptOutcome`] and runs the
+//! `upload.rs` matches on the returned [`UploadAttemptOutcome`] and runs the
 //! appropriate stateful arm. Splitting the predicate out keeps the action
 //! arms readable (no nested `matches!` chains) and makes the classification
 //! rules unit-testable against synthesized `octocrab::Error` values.
@@ -55,11 +55,19 @@ pub(crate) enum UploadAttemptOutcome {
     /// stateful modes whose policy caps attempts at 1, so a genuinely
     /// missing release still fails once the floor is exhausted.
     ///
-    /// [`MIN_UPLOAD_TRANSIENT_ATTEMPTS`]: super::MIN_UPLOAD_TRANSIENT_ATTEMPTS
+    /// [`MIN_UPLOAD_TRANSIENT_ATTEMPTS`]: super::upload::MIN_UPLOAD_TRANSIENT_ATTEMPTS
     NotFound,
-    /// A 5xx response or a transport-layer failure
-    /// (`Hyper`, `Http`, `Service`, `Other`, `Serde`, `Json`). The loop
-    /// sleeps an exponential-backoff slot and retries.
+    /// A 5xx response, a `401` from the uploads endpoint, or a
+    /// transport-layer failure (`Hyper`, `Http`, `Service`, `Other`,
+    /// `Serde`, `Json`). The loop sleeps an exponential-backoff slot
+    /// and retries.
+    ///
+    /// `401` is transient HERE (upload path only): uploads.github.com
+    /// intermittently rejects a valid token with `401 Bad credentials`
+    /// — observed mid-release after the same token had just uploaded
+    /// dozens of assets. A genuinely bad token still fails after the
+    /// bounded attempts; it just costs a few backoff slots instead of
+    /// aborting a half-uploaded release on a flake.
     ///
     /// `Serde`/`Json` are classified as transient because GitHub will
     /// occasionally return an HTML 502/503 page from an upstream proxy
@@ -67,7 +75,7 @@ pub(crate) enum UploadAttemptOutcome {
     /// those as fatal would surface bogus parse errors on otherwise
     /// transient failures.
     TransientRetry,
-    /// Any other error — auth (401), validation 4xx other than 422
+    /// Any other error — validation 4xx other than 422
     /// already-exists, or an unrecognised variant. The loop surfaces
     /// the error immediately.
     Fatal,
@@ -89,7 +97,7 @@ pub(crate) enum UploadAttemptOutcome {
 ///      [`UploadAttemptOutcome::SecondaryRateLimited`]
 ///   5. Plain 403 or 429 →
 ///      [`UploadAttemptOutcome::PrimaryRateLimited`]
-///   6. 5xx, or `Hyper` / `Http` / `Service` / `Other` / `Serde` /
+///   6. 5xx, 401, or `Hyper` / `Http` / `Service` / `Other` / `Serde` /
 ///      `Json` variants → [`UploadAttemptOutcome::TransientRetry`]
 ///   7. Anything else → [`UploadAttemptOutcome::Fatal`]
 ///
@@ -147,12 +155,15 @@ pub(crate) fn classify_upload_attempt<T>(
         return UploadAttemptOutcome::PrimaryRateLimited;
     }
 
-    let is_server_error = matches!(
+    // 401 from the uploads endpoint is a known transient flake (see the
+    // TransientRetry variant doc); bounded retry, not fast-fail.
+    let is_transient_status = matches!(
         err,
         octocrab::Error::GitHub { source, .. }
             if source.status_code.is_server_error()
+                || source.status_code.as_u16() == 401
     );
-    if is_server_error
+    if is_transient_status
         || matches!(err, octocrab::Error::Hyper { .. })
         || matches!(err, octocrab::Error::Http { .. })
         || matches!(err, octocrab::Error::Service { .. })
@@ -303,9 +314,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn github_401_classifies_as_fatal() {
-        let body = r#"{"message":"Requires authentication"}"#;
+    async fn github_401_classifies_as_transient_retry() {
+        // The v0.9.0 incident: uploads.github.com returned a one-off
+        // `401 Bad credentials` after the same token had uploaded 84
+        // assets, and the fast-fail killed the whole release. 401 on
+        // the upload path is bounded-transient, never Fatal.
+        let body =
+            r#"{"message":"Bad credentials","documentation_url":"https://docs.github.com/rest"}"#;
         let err = synth_github_error(401, body).await;
+        let result: Result<serde_json::Value, octocrab::Error> = Err(err);
+        assert_eq!(
+            classify_upload_attempt(&result),
+            UploadAttemptOutcome::TransientRetry,
+        );
+    }
+
+    #[tokio::test]
+    async fn github_400_classifies_as_fatal() {
+        // Non-transient 4xx (not 401/403/404/422/429) must still
+        // fast-fail: there is no recovery path for a malformed request.
+        let body = r#"{"message":"Bad Request"}"#;
+        let err = synth_github_error(400, body).await;
         let result: Result<serde_json::Value, octocrab::Error> = Err(err);
         assert_eq!(
             classify_upload_attempt(&result),

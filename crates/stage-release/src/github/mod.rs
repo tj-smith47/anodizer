@@ -9,6 +9,7 @@
 //!   published-asset enumeration, readiness probing, retention listing).
 //! - [`spec`] — the backend's argument-cluster structs and the I/O-free
 //!   decision helpers.
+//! - [`upload`] — the per-asset upload retry/recovery loop.
 //!
 //! The per-tool helper modules (`assets`, `client`, `rate_limit`,
 //! `retry_call`, `secondary_rate_limit`, `upload_outcome`) host the
@@ -23,13 +24,14 @@ mod retry_call;
 mod retry_classify;
 mod secondary_rate_limit;
 mod spec;
+mod upload;
 mod upload_outcome;
 
-pub(crate) use assets::{delete_release_asset_by_name, find_release_asset_size};
+pub(crate) use assets::{delete_release_asset_by_name, find_release_asset_probe};
 pub(crate) use client::build_octocrab_client;
 pub(crate) use rate_limit::check_github_rate_limit_with_env;
 pub(crate) use retry_call::{format_retry_warn, is_octocrab_404, retry_octocrab_call};
-use secondary_rate_limit::{RetryAfterCapture, secondary_rl_delay};
+use secondary_rate_limit::RetryAfterCapture;
 
 pub(crate) use backend::run_github_backend;
 pub use lookup::fetch_published_asset_names;

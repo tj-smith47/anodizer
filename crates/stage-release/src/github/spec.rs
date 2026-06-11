@@ -130,16 +130,29 @@ pub(crate) fn check_existing_assets_block_upload(
 /// `422 already_exists`. Pure function so the
 /// `replace_existing_artifacts: false` guard can be tested without I/O.
 ///
-/// A `422 already_exists` means the asset definitively exists, so the shared
+/// A partial asset (`remote.uploaded == false` — GitHub registered the
+/// name but the upload never completed, e.g. a transient 401/5xx broke
+/// the transfer mid-flight) is ALWAYS `DeleteAndRetry`, regardless of
+/// `replace_existing_artifacts`: it is this release's own debris, not
+/// published content, and it blocks every same-name retry with
+/// `already_exists` until deleted. GoReleaser's upload path has the
+/// same delete-before-retry recovery.
+///
+/// For a fully-uploaded asset, a `422 already_exists` means the asset
+/// definitively exists, so the shared
 /// [`classify_asset_conflict`](crate::classify_asset_conflict) is consulted
-/// with `remote_present: true`; an unreadable `remote_size` (`None`) is
+/// with `remote_present: true`; an unreadable probe (`None`) is
 /// treated as a mismatch, matching the conservative size-compare rule. The
 /// byte-identical-skip invariant lives in that shared classifier, not here.
 pub(crate) fn classify_already_exists(
     replace_existing_artifacts: bool,
-    remote_size: Option<u64>,
+    remote: Option<super::assets::RemoteAssetProbe>,
     local_size: u64,
 ) -> AlreadyExistsAction {
+    if remote.is_some_and(|p| !p.uploaded) {
+        return AlreadyExistsAction::DeleteAndRetry;
+    }
+    let remote_size = remote.map(|p| p.size);
     match crate::classify_asset_conflict(replace_existing_artifacts, true, remote_size, local_size)
     {
         crate::AssetConflict::IdenticalSkip => AlreadyExistsAction::SkipIdempotent,
@@ -218,7 +231,22 @@ pub(crate) fn upload_retry_locals(
 
 #[cfg(test)]
 mod already_exists_tests {
+    use super::super::assets::RemoteAssetProbe;
     use super::*;
+
+    fn uploaded(size: u64) -> Option<RemoteAssetProbe> {
+        Some(RemoteAssetProbe {
+            size,
+            uploaded: true,
+        })
+    }
+
+    fn partial(size: u64) -> Option<RemoteAssetProbe> {
+        Some(RemoteAssetProbe {
+            size,
+            uploaded: false,
+        })
+    }
 
     #[test]
     fn idempotent_when_remote_matches_local_regardless_of_flag() {
@@ -226,11 +254,11 @@ mod already_exists_tests {
         // remote asset is a no-op: the user's guard rail is "don't
         // overwrite different bytes", not "don't probe the API".
         assert_eq!(
-            classify_already_exists(false, Some(100), 100),
+            classify_already_exists(false, uploaded(100), 100),
             AlreadyExistsAction::SkipIdempotent,
         );
         assert_eq!(
-            classify_already_exists(true, Some(100), 100),
+            classify_already_exists(true, uploaded(100), 100),
             AlreadyExistsAction::SkipIdempotent,
         );
     }
@@ -240,11 +268,12 @@ mod already_exists_tests {
         // `if !replace_existing_artifacts { return unrecoverable }`.
         // Surfaces the conflict instead of silently overwriting.
         assert_eq!(
-            classify_already_exists(false, Some(100), 200),
+            classify_already_exists(false, uploaded(100), 200),
             AlreadyExistsAction::BailReplaceForbidden,
         );
-        // `remote_size: None` (asset present but size unknown) is treated
-        // as a size-mismatch: better to bail than silently overwrite.
+        // Probe `None` (422 says the asset exists but the list could not
+        // see it) is treated as a size-mismatch: better to bail than
+        // silently overwrite.
         assert_eq!(
             classify_already_exists(false, None, 200),
             AlreadyExistsAction::BailReplaceForbidden,
@@ -254,12 +283,33 @@ mod already_exists_tests {
     #[test]
     fn deletes_and_retries_when_replace_allowed_and_sizes_differ() {
         assert_eq!(
-            classify_already_exists(true, Some(100), 200),
+            classify_already_exists(true, uploaded(100), 200),
             AlreadyExistsAction::DeleteAndRetry,
         );
         assert_eq!(
             classify_already_exists(true, None, 200),
             AlreadyExistsAction::DeleteAndRetry,
+        );
+    }
+
+    #[test]
+    fn partial_asset_deletes_and_retries_regardless_of_replace_flag() {
+        // An interrupted upload leaves the asset in a non-"uploaded"
+        // state. It is never published content, so it must be deleted
+        // and re-uploaded even when overwrites are forbidden — and even
+        // when its registered size happens to equal the local size.
+        assert_eq!(
+            classify_already_exists(false, partial(100), 200),
+            AlreadyExistsAction::DeleteAndRetry,
+        );
+        assert_eq!(
+            classify_already_exists(true, partial(100), 200),
+            AlreadyExistsAction::DeleteAndRetry,
+        );
+        assert_eq!(
+            classify_already_exists(false, partial(200), 200),
+            AlreadyExistsAction::DeleteAndRetry,
+            "size-equal partial must NOT be treated as idempotent",
         );
     }
 }

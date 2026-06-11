@@ -91,18 +91,37 @@ pub(crate) async fn delete_release_asset_by_name(
     Ok(false)
 }
 
-/// Look up an existing release asset by name and return its byte size.
+/// What the remote already holds for an asset name, as probed after a
+/// `422 already_exists` rejection.
+///
+/// `uploaded` is GitHub's asset `state == "uploaded"`. An interrupted
+/// upload (network drop, transient 401/5xx mid-transfer) can leave the
+/// asset registered in a non-`uploaded` state (`"starter"`) — a partial
+/// that blocks same-name re-uploads with `already_exists` while never
+/// being downloadable. The upload retry loop treats `uploaded: false`
+/// as "delete and retry" regardless of `replace_existing_artifacts`,
+/// because a partial is this run's own debris, not published content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RemoteAssetProbe {
+    pub(crate) size: u64,
+    pub(crate) uploaded: bool,
+}
+
+/// Look up an existing release asset by name and return its byte size +
+/// upload state.
 ///
 /// Used by the idempotent-upload path: when GitHub rejects an upload with
 /// `422 already_exists`, comparing the existing asset's size to the local
 /// file size lets us decide whether a prior attempt successfully uploaded
 /// the same bytes (outer-retry recovery) or whether the names collided with
 /// different content (real conflict that needs `replace_existing_artifacts`).
+/// The `state` field distinguishes a fully-published asset from a partial
+/// left behind by an interrupted upload.
 ///
 /// Wrapped in [`retry_octocrab_call`] for the same reason as
 /// `delete_release_asset_by_name`: this runs inside the upload retry loop,
 /// so a transient 5xx here must not abort the outer recovery path.
-pub(crate) async fn find_release_asset_size(
+pub(crate) async fn find_release_asset_probe(
     octo: &Arc<octocrab::Octocrab>,
     owner: &str,
     repo: &str,
@@ -110,7 +129,7 @@ pub(crate) async fn find_release_asset_size(
     asset_name: &str,
     policy: &RetryPolicy,
     retry_after: Option<&RetryAfterCapture>,
-) -> Result<Option<u64>> {
+) -> Result<Option<RemoteAssetProbe>> {
     const MAX_PAGES: u32 = 50;
     let mut page: u32 = 1;
     loop {
@@ -134,7 +153,10 @@ pub(crate) async fn find_release_asset_size(
 
         for asset in &assets {
             if asset.name == asset_name {
-                return Ok(Some(asset.size as u64));
+                return Ok(Some(RemoteAssetProbe {
+                    size: asset.size as u64,
+                    uploaded: asset.state == "uploaded",
+                }));
             }
         }
 
@@ -164,9 +186,14 @@ mod tests {
 
     /// JSON for a single Asset matching octocrab's `models::repos::Asset`
     /// shape. The struct requires every field (no `#[serde(default)]`), so
-    /// the fixture has to populate all of them — only `name` and `size` are
-    /// load-bearing for the function under test; the rest are stub values.
+    /// the fixture has to populate all of them — only `name`, `size`, and
+    /// `state` are load-bearing for the function under test; the rest are
+    /// stub values.
     fn asset_json(name: &str, size: u64, id: u64) -> String {
+        asset_json_with_state(name, size, id, "uploaded")
+    }
+
+    fn asset_json_with_state(name: &str, size: u64, id: u64, state: &str) -> String {
         format!(
             r#"{{
                 "url": "https://api.github.com/repos/o/r/releases/assets/{id}",
@@ -175,7 +202,7 @@ mod tests {
                 "node_id": "RA_kwDO",
                 "name": "{name}",
                 "label": null,
-                "state": "uploaded",
+                "state": "{state}",
                 "content_type": "application/gzip",
                 "size": {size},
                 "download_count": 0,
@@ -214,7 +241,7 @@ mod tests {
     const RESP_503: &str = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
 
     // ------------------------------------------------------------------
-    // find_release_asset_size
+    // find_release_asset_probe
     // ------------------------------------------------------------------
 
     #[tokio::test]
@@ -224,15 +251,50 @@ mod tests {
         let octo = build_test_octocrab(addr);
         let policy = test_retry_policy();
 
-        let got = find_release_asset_size(&octo, "o", "r", 1, "anodize-v1.tar.gz", &policy, None)
+        let got = find_release_asset_probe(&octo, "o", "r", 1, "anodize-v1.tar.gz", &policy, None)
             .await
             .expect("call succeeds");
 
-        assert_eq!(got, Some(4242), "must surface the matching asset's size");
+        assert_eq!(
+            got,
+            Some(RemoteAssetProbe {
+                size: 4242,
+                uploaded: true
+            }),
+            "must surface the matching asset's size and uploaded state"
+        );
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
             "single page with a match must NOT paginate further"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_reports_partial_state_for_interrupted_upload() {
+        // An interrupted upload leaves the asset registered with
+        // state "starter" (not "uploaded"). The probe must surface
+        // `uploaded: false` so the retry loop deletes the partial
+        // instead of treating it as published content.
+        let body = format!(
+            "[{}]",
+            asset_json_with_state("broken.tar.gz", 5, 13, "starter")
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![ok_json(body)]);
+        let octo = build_test_octocrab(addr);
+        let policy = test_retry_policy();
+
+        let got = find_release_asset_probe(&octo, "o", "r", 1, "broken.tar.gz", &policy, None)
+            .await
+            .expect("call succeeds");
+
+        assert_eq!(
+            got,
+            Some(RemoteAssetProbe {
+                size: 5,
+                uploaded: false
+            }),
+            "non-'uploaded' state must probe as uploaded: false"
         );
     }
 
@@ -242,7 +304,7 @@ mod tests {
         let octo = build_test_octocrab(addr);
         let policy = test_retry_policy();
 
-        let got = find_release_asset_size(&octo, "o", "r", 1, "missing.tar.gz", &policy, None)
+        let got = find_release_asset_probe(&octo, "o", "r", 1, "missing.tar.gz", &policy, None)
             .await
             .expect("call succeeds");
 
@@ -257,18 +319,22 @@ mod tests {
     #[tokio::test]
     async fn find_paginates_to_page_two_when_page_one_is_full() {
         // Page 1: 100 non-matching entries -> loop must fetch page 2.
-        // Page 2: one match -> Some(size).
+        // Page 2: one match -> Some(probe).
         let page1 = ok_json(full_page_no_match(100));
         let page2 = ok_json(format!("[{}]", asset_json("target.zip", 999, 7)));
         let (addr, calls) = spawn_oneshot_http_responder(vec![page1, page2]);
         let octo = build_test_octocrab(addr);
         let policy = test_retry_policy();
 
-        let got = find_release_asset_size(&octo, "o", "r", 1, "target.zip", &policy, None)
+        let got = find_release_asset_probe(&octo, "o", "r", 1, "target.zip", &policy, None)
             .await
             .expect("call succeeds");
 
-        assert_eq!(got, Some(999), "must find the match on page 2");
+        assert_eq!(
+            got.map(|p| p.size),
+            Some(999),
+            "must find the match on page 2"
+        );
         assert_eq!(
             calls.load(Ordering::SeqCst),
             2,
@@ -285,11 +351,11 @@ mod tests {
         let octo = build_test_octocrab(addr);
         let policy = test_retry_policy();
 
-        let got = find_release_asset_size(&octo, "o", "r", 1, "retry-me.tar.gz", &policy, None)
+        let got = find_release_asset_probe(&octo, "o", "r", 1, "retry-me.tar.gz", &policy, None)
             .await
             .expect("must retry past 503 to success");
 
-        assert_eq!(got, Some(7));
+        assert_eq!(got.map(|p| p.size), Some(7));
         assert_eq!(
             calls.load(Ordering::SeqCst),
             2,

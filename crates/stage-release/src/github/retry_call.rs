@@ -41,7 +41,7 @@
 //!
 //! ## Divergence with the upload-asset loop
 //!
-//! The bespoke `upload_asset` retry loop in `mod.rs` cannot route through
+//! The bespoke `upload_asset` retry loop in `upload.rs` cannot route through
 //! `retry_octocrab_call` because it carries upload-specific state (the
 //! resume-stream re-read of the artifact, the 422-`already_exists`
 //! delete+retry dance, the one-shot overwrite guard). It re-uses
@@ -57,10 +57,11 @@ use super::secondary_rate_limit::{RetryAfterCapture, is_secondary_rate_limit, se
 use crate::release_log;
 
 /// Per-attempt warning line shared by every retry-wrapped octocrab call site
-/// (the helper here AND the bespoke upload-asset loop in `mod.rs`).
+/// (the helper here AND the bespoke upload-asset loop in `upload.rs`).
 ///
-/// Extracted so the two retry pathways can't drift on label format. A test
-/// in `mod.rs` pins the exact format string against the upload loop's call.
+/// Extracted so the two retry pathways can't drift on label format. The
+/// `format_retry_warn_shape_pins_shared_format` test below pins the exact
+/// format string both pathways emit.
 pub(crate) fn format_retry_warn(label: &str, attempt: u32, max: u32, status: u16) -> String {
     format!("release: {label} failed (retriable, attempt {attempt}/{max}, status={status})")
 }
