@@ -360,6 +360,29 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         }
     }
 
+    // Config-derived environment preflight: every enabled stage/publisher
+    // declares its tools / env vars / endpoints / key material, and all
+    // failures are reported in one pass BEFORE any stage runs. Snapshot,
+    // dry-run, split, and announce-only modes skip it (no side effects to
+    // guard); `--publish-only` runs it — that mode is exactly the one whose
+    // missing secrets used to surface mid-publish.
+    if !opts.no_preflight && !opts.dry_run && !opts.snapshot && !opts.split && !opts.announce_only {
+        let scope = if opts.publish_only {
+            crate::commands::preflight::PreflightScope::PublishOnly
+        } else {
+            crate::commands::preflight::PreflightScope::Full
+        };
+        let report = crate::commands::preflight::run_env_preflight(&ctx, scope, &log);
+        if !report.ok() {
+            anyhow::bail!(
+                "preflight: {} environment failure(s) across {} check(s); \
+                 fix the issues above or re-run with --no-preflight to override",
+                report.failures.len(),
+                report.checks
+            );
+        }
+    }
+
     if run_publisher_preflight(&mut ctx, &opts, &log)? {
         return Ok(());
     }

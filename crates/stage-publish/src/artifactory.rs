@@ -1050,6 +1050,14 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
         // value or the `ARTIFACTORY_<NAME>_{USERNAME,SECRET}` env pair.
         let mut out = Vec::new();
         for entry in ctx.config.artifactories.iter().flatten() {
+            if crate::publisher_helpers::entry_inactive(
+                ctx,
+                entry.skip.as_ref(),
+                None,
+                entry.if_condition.as_deref(),
+            ) {
+                continue;
+            }
             let name_upper = entry
                 .name
                 .as_deref()

@@ -805,6 +805,26 @@ fn resolve_extra_file_pairs(
         .collect()
 }
 
+/// Environment requirements for the makeself stage: the `makeself` binary
+/// whenever any `makeselfs:` entry is active (entries whose `skip`
+/// evaluates true are inert).
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    let any = ctx.config.makeselfs.iter().any(|cfg| {
+        !cfg.skip.as_ref().is_some_and(|s| {
+            s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .unwrap_or(false)
+        })
+    });
+    if !any {
+        return Vec::new();
+    }
+    vec![anodizer_core::EnvRequirement::Tool {
+        name: "makeself".to_string(),
+    }]
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

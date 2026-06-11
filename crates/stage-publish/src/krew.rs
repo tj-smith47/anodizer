@@ -3204,6 +3204,14 @@ impl anodizer_core::Publisher for KrewPublisher {
         anodizer_core::env_preflight::crate_universe(&ctx.config)
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.krew.as_ref())
+            .filter(|k| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    k.skip.as_ref(),
+                    k.skip_upload.as_ref(),
+                    k.if_condition.as_deref(),
+                )
+            })
             .flat_map(|k| {
                 crate::publisher_helpers::git_repo_requirements(
                     ctx,

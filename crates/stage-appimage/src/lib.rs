@@ -890,3 +890,23 @@ fn collect_config_jobs(
 
 #[cfg(test)]
 mod tests;
+
+/// Environment requirements for the appimage stage: the `linuxdeploy`
+/// binary whenever any `appimages:` entry is active (entries whose `skip`
+/// evaluates true are inert).
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    let any = ctx.config.appimages.iter().any(|cfg| {
+        !cfg.skip.as_ref().is_some_and(|s| {
+            s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .unwrap_or(false)
+        })
+    });
+    if !any {
+        return Vec::new();
+    }
+    vec![anodizer_core::EnvRequirement::Tool {
+        name: "linuxdeploy".to_string(),
+    }]
+}

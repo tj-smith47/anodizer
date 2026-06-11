@@ -35,3 +35,65 @@ pub(crate) use run::{format_extension, setup_lintian_overrides};
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests;
+
+/// Key-material requirements for one nfpm package-signature block: env vars
+/// referenced by templated fields, plus loadable PGP key material when
+/// `key_file` is a literal path. rpm/deb signatures use PGP keys; apk keys
+/// are RSA PEM, so only their env references are required (`pgp: false`).
+fn signature_env_requirements(
+    sig: &anodizer_core::config::NfpmSignatureConfig,
+    pgp: bool,
+    out: &mut Vec<anodizer_core::EnvRequirement>,
+) {
+    use anodizer_core::env_preflight::template_env_refs;
+    if let Some(key_file) = sig.key_file.as_deref() {
+        let refs = template_env_refs(key_file);
+        if !refs.is_empty() {
+            out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+        } else if pgp {
+            out.push(anodizer_core::EnvRequirement::KeyFile {
+                kind: anodizer_core::KeyKind::PgpPrivate,
+                path: key_file.to_string(),
+            });
+        }
+    }
+    if let Some(passphrase) = sig.key_passphrase.as_deref() {
+        let refs = template_env_refs(passphrase);
+        if !refs.is_empty() {
+            out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+        }
+    }
+}
+
+/// Environment requirements for the nfpm stage, derived from the same config
+/// `run` reads: the `nfpm` binary whenever any crate declares `nfpms:`, plus
+/// signing-key material for each configured package signature.
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    let mut out = Vec::new();
+    let mut any = false;
+    for c in anodizer_core::env_preflight::crate_universe(&ctx.config) {
+        for n in c.nfpms.iter().flatten() {
+            any = true;
+            if let Some(sig) = n.rpm.as_ref().and_then(|f| f.signature.as_ref()) {
+                signature_env_requirements(sig, true, &mut out);
+            }
+            if let Some(sig) = n.deb.as_ref().and_then(|f| f.signature.as_ref()) {
+                signature_env_requirements(sig, true, &mut out);
+            }
+            if let Some(sig) = n.apk.as_ref().and_then(|f| f.signature.as_ref()) {
+                signature_env_requirements(sig, false, &mut out);
+            }
+        }
+    }
+    if any {
+        out.insert(
+            0,
+            anodizer_core::EnvRequirement::Tool {
+                name: "nfpm".to_string(),
+            },
+        );
+    }
+    out
+}

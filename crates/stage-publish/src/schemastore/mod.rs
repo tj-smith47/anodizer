@@ -64,6 +64,24 @@ impl anodizer_core::Publisher for SchemastorePublisher {
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        let cfg = &ctx.config.schemastore;
+        let globally_inactive = crate::publisher_helpers::entry_inactive(
+            ctx,
+            cfg.skip.as_ref(),
+            None,
+            cfg.if_condition.as_deref(),
+        );
+        let any_schema_active = cfg.schemas.iter().any(|s| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                s.skip.as_ref(),
+                None,
+                s.if_condition.as_deref(),
+            )
+        });
+        if globally_inactive || !any_schema_active {
+            return Vec::new();
+        }
         crate::publisher_helpers::git_repo_requirements(
             ctx,
             ctx.config.schemastore.repository.as_ref(),

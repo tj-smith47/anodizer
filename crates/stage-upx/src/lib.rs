@@ -298,6 +298,30 @@ impl Stage for UpxStage {
     }
 }
 
+/// Environment requirements for the upx stage: each enabled `upx:` entry's
+/// binary (default `upx`). `enabled` defaults to false, matching `run`;
+/// a template that fails to render is treated as enabled so a broken
+/// expression surfaces in the stage, not as a silently skipped preflight.
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    let mut out = Vec::new();
+    for cfg in &ctx.config.upx {
+        let enabled = match cfg.enabled.as_ref() {
+            Some(v) => v
+                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .unwrap_or(true),
+            None => false,
+        };
+        if enabled {
+            out.push(anodizer_core::EnvRequirement::Tool {
+                name: cfg.binary.clone(),
+            });
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

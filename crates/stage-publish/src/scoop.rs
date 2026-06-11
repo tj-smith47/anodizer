@@ -898,6 +898,14 @@ impl anodizer_core::Publisher for ScoopPublisher {
         anodizer_core::env_preflight::crate_universe(&ctx.config)
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.scoop.as_ref())
+            .filter(|s| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    None,
+                    s.skip_upload.as_ref(),
+                    s.if_condition.as_deref(),
+                )
+            })
             .flat_map(|s| {
                 crate::publisher_helpers::git_repo_requirements(
                     ctx,

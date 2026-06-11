@@ -169,6 +169,19 @@ Generate shell completions
 Check availability of required external tools
 
 
+### `anodizer preflight`
+
+Verify the environment can run the configured release: required tools, env vars/secrets (presence only — values are never printed), endpoint reachability, docker daemon, and loadable key material, all derived from the resolved config. Every failure is reported in one pass and the exit code is non-zero when anything is missing. The same checks run automatically at the start of `anodizer release`
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--json` | — | — | Output the report as JSON |
+| `--publish-only` | — | — | Check only the publish-time surface (the stages `release --publish-only` runs), not artifact-producing stages |
+| `--skip` | — | — | Skip requirement collection for these stages (comma-separated, same names as release --skip) |
+| `--token` | — | — | GitHub token override; when set, GitHub token env-var requirements are treated as satisfied |
+
+
 ### `anodizer man`
 
 Generate man pages to stdout

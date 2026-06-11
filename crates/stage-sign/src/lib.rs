@@ -13,7 +13,7 @@ mod process;
 
 pub use expected::expected_signature_assets;
 
-use helpers::{prepare_stdin_from, resolve_sign_args, validate_sign_config_ids};
+use helpers::{default_sign_cmd, prepare_stdin_from, resolve_sign_args, validate_sign_config_ids};
 use process::{ArtifactFilter, process_sign_configs};
 
 // Helpers (should_sign_artifact, resolve_signature_path, prepare_stdin_from,
@@ -401,3 +401,118 @@ impl Stage for DockerSignStage {
 
 #[cfg(test)]
 mod tests;
+
+/// Requirements shared by one active sign-config entry: the signing command
+/// itself plus every env var its templated args/env/stdin reference. cosign
+/// `env://VAR` key refs are declared as loadable cosign key material; for any
+/// other command only presence of the referenced vars can be required.
+fn entry_env_requirements(
+    cmd: &str,
+    strings: impl Iterator<Item = String>,
+    out: &mut Vec<anodizer_core::EnvRequirement>,
+) {
+    use anodizer_core::env_preflight::{env_scheme_refs, template_env_refs};
+    out.push(anodizer_core::EnvRequirement::Tool {
+        name: cmd.to_string(),
+    });
+    let is_cosign = std::path::Path::new(cmd)
+        .file_name()
+        .and_then(|b| b.to_str())
+        .is_some_and(|b| b.starts_with("cosign"));
+    for s in strings {
+        let refs = template_env_refs(&s);
+        if !refs.is_empty() {
+            out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+        }
+        for var in env_scheme_refs(&s) {
+            if is_cosign {
+                out.push(anodizer_core::EnvRequirement::KeyEnv {
+                    kind: anodizer_core::KeyKind::Cosign,
+                    var,
+                });
+            } else {
+                out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: vec![var] });
+            }
+        }
+    }
+}
+
+/// Requirements for a `signs:` / `binary_signs:` slice given its
+/// `artifacts` fallback (`"none"` for `signs`, `"binary"` for
+/// `binary_signs`) — entries whose resolved filter is `"none"` are inert
+/// and declare nothing.
+fn sign_slice_requirements(
+    configs: &[anodizer_core::config::SignConfig],
+    fallback_artifacts: &str,
+) -> Vec<anodizer_core::EnvRequirement> {
+    let mut out = Vec::new();
+    for cfg in configs {
+        if cfg.resolved_artifacts(fallback_artifacts) == "none" {
+            continue;
+        }
+        let cmd = cfg.cmd.clone().unwrap_or_else(default_sign_cmd);
+        let strings = cfg
+            .args
+            .iter()
+            .flatten()
+            .chain(cfg.env.iter().flatten())
+            .chain(cfg.stdin.iter())
+            .chain(cfg.certificate.iter())
+            .cloned();
+        entry_env_requirements(&cmd, strings, &mut out);
+    }
+    out
+}
+
+/// Environment requirements for the sign stage (`signs:` entries).
+pub fn sign_env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    sign_slice_requirements(
+        &ctx.config.signs,
+        anodizer_core::config::SignConfig::DEFAULT_ARTIFACTS,
+    )
+}
+
+/// Environment requirements for the binary-sign stage (`binary_signs:`).
+pub fn binary_sign_env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    sign_slice_requirements(
+        &ctx.config.binary_signs,
+        anodizer_core::config::SignConfig::DEFAULT_ARTIFACTS_BINARY,
+    )
+}
+
+/// Environment requirements for the docker-sign stage (`docker_signs:`):
+/// active only when some crate builds docker images, since the stage no-ops
+/// without `DockerImageV2` artifacts.
+pub fn docker_sign_env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    let any_images = anodizer_core::env_preflight::crate_universe(&ctx.config)
+        .into_iter()
+        .flat_map(|c| c.dockers_v2.iter().flatten())
+        .any(|d| {
+            !d.skip.as_ref().is_some_and(|v| {
+                v.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                    .unwrap_or(false)
+            })
+        });
+    if !any_images {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for cfg in ctx.config.docker_signs.iter().flatten() {
+        if cfg.resolved_artifacts() == "none" {
+            continue;
+        }
+        let strings = cfg
+            .resolved_args()
+            .into_iter()
+            .chain(cfg.env.iter().flatten().cloned())
+            .chain(cfg.stdin.clone());
+        entry_env_requirements(cfg.resolved_cmd(), strings, &mut out);
+    }
+    out
+}

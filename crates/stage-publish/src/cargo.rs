@@ -1765,10 +1765,24 @@ impl anodizer_core::Publisher for CargoPublisher {
         true
     }
 
-    fn requirements(&self, _ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         // `cargo publish` resolves the crates.io token from
         // CARGO_REGISTRY_TOKEN; the cargo binary itself honors the same
         // CARGO env override `run()` uses before falling back to PATH.
+        let configured = anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.cargo.as_ref())
+            .any(|cargo| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    cargo.skip.as_ref(),
+                    None,
+                    cargo.if_condition.as_deref(),
+                )
+            });
+        if !configured {
+            return Vec::new();
+        }
         let cargo_bin = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
         vec![
             anodizer_core::EnvRequirement::Tool { name: cargo_bin },

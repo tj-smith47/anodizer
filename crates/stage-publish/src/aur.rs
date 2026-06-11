@@ -1386,6 +1386,14 @@ impl anodizer_core::Publisher for AurOurPublisher {
         anodizer_core::env_preflight::crate_universe(&ctx.config)
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.aur.as_ref())
+            .filter(|a| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    a.skip.as_ref(),
+                    a.skip_upload.as_ref(),
+                    a.if_condition.as_deref(),
+                )
+            })
             .flat_map(|a| {
                 crate::publisher_helpers::aur_ssh_requirements(
                     a.private_key.as_deref(),

@@ -979,6 +979,14 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
             .cloudsmiths
             .iter()
             .flatten()
+            .filter(|entry| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    entry.skip.as_ref(),
+                    None,
+                    entry.if_condition.as_deref(),
+                )
+            })
             .map(|entry| {
                 let var = crate::util::resolve_secret_name(
                     ctx,

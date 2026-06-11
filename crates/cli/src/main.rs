@@ -535,6 +535,21 @@ fn run() {
         }),
         Commands::Completion { shell } => commands::completion::run(shell),
         Commands::Healthcheck => commands::healthcheck::run(),
+        Commands::Preflight {
+            json,
+            skip,
+            publish_only,
+            token,
+        } => commands::preflight::run(commands::preflight::PreflightOpts {
+            config_override: cli.config.clone(),
+            json,
+            skip,
+            publish_only,
+            token,
+            quiet: cli.quiet,
+            verbose: cli.verbose,
+            debug: cli.debug,
+        }),
         Commands::Man => {
             let cmd = anodizer_cli::build_cli();
             let man = clap_mangen::Man::new(cmd);

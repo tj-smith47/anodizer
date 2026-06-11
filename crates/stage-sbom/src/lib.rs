@@ -1038,6 +1038,35 @@ fn run_sbom_builtin(
     Ok(())
 }
 
+/// Environment requirements for the sbom stage: each active `sboms:` entry's
+/// generator command (default `syft`) plus env vars referenced by its
+/// templated args/env. Entries whose `skip` evaluates true are inert.
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    use anodizer_core::env_preflight::template_env_refs;
+    let mut out = Vec::new();
+    for cfg in &ctx.config.sboms {
+        let skipped = cfg.skip.as_ref().is_some_and(|s| {
+            s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .unwrap_or(false)
+        });
+        if skipped {
+            continue;
+        }
+        out.push(anodizer_core::EnvRequirement::Tool {
+            name: cfg.resolved_cmd().to_string(),
+        });
+        for s in cfg.args.iter().flatten().chain(cfg.env.iter().flatten()) {
+            let refs = template_env_refs(s);
+            if !refs.is_empty() {
+                out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

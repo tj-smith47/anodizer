@@ -652,6 +652,14 @@ impl anodizer_core::Publisher for DockerhubPublisher {
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         let mut out = Vec::new();
         for entry in ctx.config.dockerhub.iter().flatten() {
+            if crate::publisher_helpers::entry_inactive(
+                ctx,
+                entry.skip.as_ref(),
+                None,
+                entry.if_condition.as_deref(),
+            ) {
+                continue;
+            }
             // Same resolution `run()` uses: password from `secret_name`
             // (default DOCKER_PASSWORD); username from config (templated)
             // with DOCKER_USERNAME as env fallback.

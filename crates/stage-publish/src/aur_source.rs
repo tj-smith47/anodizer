@@ -981,16 +981,46 @@ impl anodizer_core::Publisher for AurSourcePublisher {
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        anodizer_core::env_preflight::crate_universe(&ctx.config)
+        // Both config homes: per-crate `publish.aur_source` and the
+        // top-level `aur_sources:` block (the same union
+        // `is_aur_source_configured` gates dispatch on).
+        let per_crate = anodizer_core::env_preflight::crate_universe(&ctx.config)
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.aur_source.as_ref())
+            .filter(|a| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    a.skip.as_ref(),
+                    a.skip_upload.as_ref(),
+                    a.if_condition.as_deref(),
+                )
+            })
             .flat_map(|a| {
                 crate::publisher_helpers::aur_ssh_requirements(
                     a.private_key.as_deref(),
                     a.git_ssh_command.as_deref(),
                 )
+            });
+        let top_level = ctx
+            .config
+            .aur_sources
+            .iter()
+            .flatten()
+            .filter(|a| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    a.skip.as_ref(),
+                    a.skip_upload.as_ref(),
+                    a.if_condition.as_deref(),
+                )
             })
-            .collect()
+            .flat_map(|a| {
+                crate::publisher_helpers::aur_ssh_requirements(
+                    a.private_key.as_deref(),
+                    a.git_ssh_command.as_deref(),
+                )
+            });
+        per_crate.chain(top_level).collect()
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {

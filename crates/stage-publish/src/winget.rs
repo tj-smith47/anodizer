@@ -1704,6 +1704,14 @@ impl anodizer_core::Publisher for WingetPublisher {
         anodizer_core::env_preflight::crate_universe(&ctx.config)
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.winget.as_ref())
+            .filter(|w| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    None,
+                    w.skip_upload.as_ref(),
+                    w.if_condition.as_deref(),
+                )
+            })
             .flat_map(|w| {
                 crate::publisher_helpers::git_repo_requirements(
                     ctx,

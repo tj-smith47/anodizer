@@ -394,6 +394,34 @@ pub(crate) fn secret_requirement(
     }
 }
 
+/// True when a publisher entry is statically inactive for this run: its
+/// `skip:` / `skip_upload:` evaluates truthy, or its `if:` condition
+/// renders falsy. Mirrors the run-path gating for requirement derivation —
+/// a `skip: true` entry must not demand credentials from preflight.
+/// Anything unrenderable is treated as ACTIVE so preflight over-collects
+/// rather than silently under-collecting.
+pub(crate) fn entry_inactive(
+    ctx: &anodizer_core::context::Context,
+    skip: Option<&anodizer_core::config::StringOrBool>,
+    skip_upload: Option<&anodizer_core::config::StringOrBool>,
+    if_condition: Option<&str>,
+) -> bool {
+    let truthy = |v: &anodizer_core::config::StringOrBool| {
+        v.try_evaluates_to_true(|t| ctx.render_template(t))
+            .unwrap_or(false)
+    };
+    if skip.is_some_and(truthy) || skip_upload.is_some_and(truthy) {
+        return true;
+    }
+    if_condition.is_some_and(|cond| {
+        matches!(
+            anodizer_core::config::evaluate_if_condition(Some(cond), "preflight", |t| ctx
+                .render_template(t)),
+            Ok(false)
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

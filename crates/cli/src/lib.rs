@@ -359,6 +359,33 @@ pub enum Commands {
     },
     /// Check availability of required external tools
     Healthcheck,
+    /// Verify the environment can run the configured release: required
+    /// tools, env vars/secrets (presence only — values are never printed),
+    /// endpoint reachability, docker daemon, and loadable key material,
+    /// all derived from the resolved config. Every failure is reported in
+    /// one pass and the exit code is non-zero when anything is missing.
+    /// The same checks run automatically at the start of `anodizer release`.
+    Preflight {
+        #[arg(long, help = "Output the report as JSON")]
+        json: bool,
+        #[arg(
+            long,
+            help = "Check only the publish-time surface (the stages `release --publish-only` runs), not artifact-producing stages"
+        )]
+        publish_only: bool,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Skip requirement collection for these stages (comma-separated, same names as release --skip)"
+        )]
+        skip: Vec<String>,
+        #[arg(
+            long,
+            hide_env_values = true,
+            help = "GitHub token override; when set, GitHub token env-var requirements are treated as satisfied"
+        )]
+        token: Option<String>,
+    },
     /// Generate man pages to stdout
     Man,
     /// Output JSON Schema for .anodizer.yaml

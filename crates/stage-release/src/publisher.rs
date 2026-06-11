@@ -319,8 +319,14 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         // GitHub release creation + asset upload authenticate via the
         // same ladder the stage uses: explicit `--token` option, else
-        // ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN.
-        if ctx.options.token.as_deref().is_some_and(|t| !t.is_empty()) {
+        // ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN. Self-gates on a `release:`
+        // block existing anywhere in the crate universe so ungated
+        // requirement collection never demands a token from a config that
+        // creates no release.
+        let configured = anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .any(|c| c.release.is_some());
+        if !configured || ctx.options.token.as_deref().is_some_and(|t| !t.is_empty()) {
             return Vec::new();
         }
         vec![anodizer_core::EnvRequirement::EnvAnyOf {

@@ -174,6 +174,14 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         anodizer_core::env_preflight::crate_universe(&ctx.config)
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.chocolatey.as_ref())
+            .filter(|ch| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    ch.skip.as_ref(),
+                    None,
+                    ch.if_condition.as_deref(),
+                )
+            })
             .filter_map(|ch| {
                 crate::publisher_helpers::secret_requirement(
                     ch.api_key.as_deref(),

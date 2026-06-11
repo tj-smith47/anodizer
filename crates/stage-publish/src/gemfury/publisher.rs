@@ -176,6 +176,14 @@ impl anodizer_core::Publisher for GemFuryPublisher {
             .gemfury
             .iter()
             .flatten()
+            .filter(|entry| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    entry.skip.as_ref(),
+                    None,
+                    entry.if_condition.as_deref(),
+                )
+            })
             .map(|entry| anodizer_core::EnvRequirement::EnvAllOf {
                 vars: vec![crate::gemfury::publish::push_token_env_var(entry).to_string()],
             })

@@ -718,6 +718,40 @@ Source0:        {source_name}
     )
 }
 
+/// Environment requirements for the srpm stage, derived from the same config
+/// `run` reads: `rpmbuild` whenever `srpms:` is enabled, plus `gpg` and
+/// key/passphrase env references when a signature block is configured
+/// (rpmbuild signs through gpg via the `_gpg_name` macro).
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    use anodizer_core::env_preflight::template_env_refs;
+    let Some(cfg) = ctx.config.srpms.as_ref() else {
+        return Vec::new();
+    };
+    if !cfg.enabled.unwrap_or(false) {
+        return Vec::new();
+    }
+    let mut out = vec![anodizer_core::EnvRequirement::Tool {
+        name: "rpmbuild".to_string(),
+    }];
+    if let Some(sig) = cfg.signature.as_ref() {
+        out.push(anodizer_core::EnvRequirement::Tool {
+            name: "gpg".to_string(),
+        });
+        for field in [sig.key_file.as_deref(), sig.key_passphrase.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            let refs = template_env_refs(field);
+            if !refs.is_empty() {
+                out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

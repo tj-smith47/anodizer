@@ -69,10 +69,27 @@ impl anodizer_core::Publisher for NpmPublisher {
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         // Mirrors `resolve_token`: templated `token` from config, else the
         // NPM_TOKEN env var. The publish spawns the npm CLI.
+        let active: Vec<_> = ctx
+            .config
+            .npms
+            .iter()
+            .flatten()
+            .filter(|entry| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    entry.skip.as_ref(),
+                    None,
+                    entry.if_condition.as_deref(),
+                )
+            })
+            .collect();
+        if active.is_empty() {
+            return Vec::new();
+        }
         let mut out = vec![anodizer_core::EnvRequirement::Tool {
             name: "npm".to_string(),
         }];
-        for entry in ctx.config.npms.iter().flatten() {
+        for entry in active {
             if let Some(req) = crate::publisher_helpers::secret_requirement(
                 entry.token.as_deref(),
                 crate::npm::manifest::token_env_var(entry),

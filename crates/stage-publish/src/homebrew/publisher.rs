@@ -235,12 +235,28 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         let formula_repos = anodizer_core::env_preflight::crate_universe(&ctx.config)
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.homebrew.as_ref())
+            .filter(|h| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    None,
+                    h.skip_upload.as_ref(),
+                    h.if_condition.as_deref(),
+                )
+            })
             .map(|h| h.repository.as_ref());
         let cask_repos = ctx
             .config
             .homebrew_casks
             .iter()
             .flatten()
+            .filter(|c| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    None,
+                    c.skip_upload.as_ref(),
+                    c.if_condition.as_deref(),
+                )
+            })
             .map(|c| c.repository.as_ref());
         for repo in formula_repos.chain(cask_repos) {
             out.extend(crate::publisher_helpers::git_repo_requirements(

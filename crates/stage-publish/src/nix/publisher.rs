@@ -174,6 +174,14 @@ impl anodizer_core::Publisher for NixPublisher {
         anodizer_core::env_preflight::crate_universe(&ctx.config)
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.nix.as_ref())
+            .filter(|n| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    n.skip.as_ref(),
+                    n.skip_upload.as_ref(),
+                    n.if_condition.as_deref(),
+                )
+            })
             .flat_map(|n| {
                 crate::publisher_helpers::git_repo_requirements(
                     ctx,

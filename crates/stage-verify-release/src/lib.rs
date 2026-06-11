@@ -532,3 +532,21 @@ mod deb;
 
 #[cfg(test)]
 mod tests;
+
+/// Environment requirements for the verify-release stage: the `docker` CLI
+/// plus a reachable daemon when the install smoke-test is configured (the
+/// only part of the gate that shells out).
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    let vr = &ctx.config.verify_release;
+    if !vr.enabled || vr.install_smoke.is_none() {
+        return Vec::new();
+    }
+    vec![
+        anodizer_core::EnvRequirement::Tool {
+            name: "docker".to_string(),
+        },
+        anodizer_core::EnvRequirement::DockerDaemon,
+    ]
+}
