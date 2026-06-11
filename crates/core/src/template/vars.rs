@@ -56,20 +56,27 @@ impl TemplateVars {
         self.set_structured(key, Value::Bool(value));
     }
 
-    /// Remove a regular template variable. Returns `true` if the key was
-    /// present. Use when a value is logically *undefined* for downstream
-    /// renders — distinct from `set(key, "")` which keeps the key with an
-    /// empty string. Strict-mode template rendering can distinguish defined-
+    /// Remove a template variable. Returns `true` if the key was present.
+    /// Use when a value is logically *undefined* for downstream renders —
+    /// distinct from `set(key, "")` which keeps the key with an empty
+    /// string. Strict-mode template rendering can distinguish defined-
     /// empty from undefined; the latter is the correct shape for per-config
     /// vars (e.g. `BaseImage`) that should not bleed across iterations.
+    ///
+    /// Removes from both the string and structured maps so "unset" means
+    /// gone regardless of which setter last owned the key — same
+    /// one-map-per-key invariant the setters enforce.
     pub fn unset(&mut self, key: &str) -> bool {
-        self.vars.remove(key).is_some()
+        let in_vars = self.vars.remove(key).is_some();
+        let in_structured = self.structured.remove(key).is_some();
+        in_vars || in_structured
     }
 
-    /// Remove a structured (non-string) template variable. Mirrors `unset`
-    /// for the structured map. Returns `true` if the key was present.
+    /// Remove a structured (non-string) template variable. Alias of
+    /// [`unset`](Self::unset) kept for call-site clarity; both removers
+    /// clear the key from every map.
     pub fn unset_structured(&mut self, key: &str) -> bool {
-        self.structured.remove(key).is_some()
+        self.unset(key)
     }
 
     pub fn get(&self, key: &str) -> Option<&String> {

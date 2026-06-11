@@ -2782,7 +2782,10 @@ mod tests {
         let mut ctx = Context::new(config.clone(), ContextOptions::default());
         ctx.template_vars_mut().set("Version", "0.103.0");
         ctx.template_vars_mut().set("Base", "0.103.0");
-        ctx.template_vars_mut().set("NightlyBuild", "42");
+        // serde_json::Value IS tera::Value (re-export), matching production's
+        // Value::Number injection in populate_git_vars.
+        ctx.template_vars_mut()
+            .set_structured("NightlyBuild", serde_json::Value::from(42u64));
         ctx.template_vars_mut().set("ProjectName", "myproj");
         ctx.template_vars_mut().set("ShortCommit", "a1b2c3");
         apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();

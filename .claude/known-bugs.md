@@ -12,6 +12,8 @@ cold without re-investigating.
 
 ## Open
 
+## Resolved
+
 - [x] **Test-suite PATH race — RESOLVED 2026-06-11 (bc2e553e + review
   pass).** Originally: tests simulating missing tools
   replaced the process-global `PATH` with an empty tempdir under `env_mutex`,
@@ -43,7 +45,6 @@ cold without re-investigating.
   requirement).
   Moved to Resolved 2026-06-11.
 
-## Resolved
 
 - [x] **`if:` boolean context vars are injected as strings, so `not IsSnapshot` /
   bare `{% if IsSnapshot %}` silently misbehave (GoReleaser-migration footgun).** A

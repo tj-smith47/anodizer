@@ -4028,3 +4028,25 @@ fn test_find_stale_typed_compare_ignores_namespaced_user_vars() {
         Some(r#"IsSnapshot == "false""#)
     );
 }
+
+#[test]
+fn test_unset_clears_key_from_both_maps() {
+    let mut vars = TemplateVars::new();
+
+    // Structured-owned key: unset must remove it and report presence.
+    vars.set_bool("IsSnapshot", true);
+    assert!(vars.unset("IsSnapshot"));
+    assert!(vars.get("IsSnapshot").is_none());
+    assert!(vars.get_structured("IsSnapshot").is_none());
+
+    // String-owned key: unset_structured clears it too (both removers
+    // uphold the one-map-per-key invariant).
+    vars.set("Tag", "v1.0.0");
+    assert!(vars.unset_structured("Tag"));
+    assert!(vars.get("Tag").is_none());
+    assert!(vars.get_structured("Tag").is_none());
+
+    // Absent key: both report false.
+    assert!(!vars.unset("Missing"));
+    assert!(!vars.unset_structured("Missing"));
+}
