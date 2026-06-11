@@ -30,7 +30,16 @@ use crate::{builtin_format_and_extension, typed_artifact_kind};
 /// `run_sbom_builtin`), so in workspace modes the expectations attach to the
 /// crate whose name matches the project and every other crate gets none —
 /// mirroring exactly which crate's release the upload path attaches SBOMs to.
-pub fn expected_sbom_assets(ctx: &Context, crate_name: &str) -> Result<Vec<String>> {
+///
+/// `release_ids` is the release block's `ids:` upload filter: an SBOM
+/// inherits its SUBJECT artifact's upload verdict (see `matches_id_filter`),
+/// so a subject the release stage filters out contributes no expectation.
+/// Project-wide `artifacts: any` SBOMs have no subject and always upload.
+pub fn expected_sbom_assets(
+    ctx: &Context,
+    crate_name: &str,
+    release_ids: Option<&[String]>,
+) -> Result<Vec<String>> {
     if ctx.should_skip("sbom") {
         return Ok(Vec::new());
     }
@@ -64,25 +73,33 @@ pub fn expected_sbom_assets(ctx: &Context, crate_name: &str) -> Result<Vec<Strin
                 let (_, extension) = builtin_format_and_extension(&documents);
                 expected.push(format!("{project_name}-{version}.{extension}"));
             } else {
-                for doc in &documents {
-                    let rendered = ctx.render_template(doc).with_context(|| {
-                        format!("sbom[{id}]: failed to render document template '{doc}'")
-                    })?;
+                // The external `any` path renders documents once against a
+                // synthetic empty-path artifact tuple — bind the same
+                // synthetic vars the stage binds (ArtifactName "artifact",
+                // empty ArtifactID, no target).
+                let vars = crate::artifact_template_vars(
+                    ctx,
+                    Path::new(""),
+                    &std::collections::HashMap::new(),
+                    None,
+                );
+                for doc_tpl in &documents {
+                    let rendered =
+                        anodizer_core::template::render(doc_tpl, &vars).with_context(|| {
+                            format!("sbom[{id}]: failed to render document template '{doc_tpl}'")
+                        })?;
                     push_predictable_basename(&mut expected, &rendered);
                 }
             }
             continue;
         }
 
-        let Some(doc_tpl) = documents.first() else {
-            continue;
-        };
-
         let matching: Vec<&Artifact> = if artifacts_type == "binary" {
             ctx.artifacts
                 .binary_like_dedup()
                 .into_iter()
                 .filter(|a| matches_id_filter(a, cfg.ids.as_deref()))
+                .filter(|a| matches_id_filter(a, release_ids))
                 .collect()
         } else {
             let kind = typed_artifact_kind(artifacts_type, id)?;
@@ -91,68 +108,40 @@ pub fn expected_sbom_assets(ctx: &Context, crate_name: &str) -> Result<Vec<Strin
                 .iter()
                 .filter(|a| a.kind == kind)
                 .filter(|a| matches_id_filter(a, cfg.ids.as_deref()))
+                .filter(|a| matches_id_filter(a, release_ids))
                 .collect()
         };
 
         for artifact in matching {
-            let rendered = render_document_for_artifact(ctx, doc_tpl, artifact, id)?;
-            push_predictable_basename(&mut expected, &rendered);
+            let vars = crate::artifact_template_vars(
+                ctx,
+                &artifact.path,
+                &artifact.metadata,
+                artifact.target.as_deref(),
+            );
+            // Built-in mode renders documents[0] only; the external command
+            // path renders and registers EVERY documents entry per artifact.
+            let doc_templates: &[String] = if use_builtin {
+                match documents.first() {
+                    Some(first) => std::slice::from_ref(first),
+                    None => continue,
+                }
+            } else {
+                &documents
+            };
+            for doc_tpl in doc_templates {
+                let rendered =
+                    anodizer_core::template::render(doc_tpl, &vars).with_context(|| {
+                        format!("sbom[{id}]: failed to render document template '{doc_tpl}'")
+                    })?;
+                push_predictable_basename(&mut expected, &rendered);
+            }
         }
     }
 
     expected.sort();
     expected.dedup();
     Ok(expected)
-}
-
-/// Render a `documents:` template for one matched artifact with the same
-/// per-artifact template variables the SBOM stage binds (`ArtifactName`,
-/// `ArtifactExt`, `ArtifactID`, `Os`/`Arch`/`Target`), without mutating the
-/// shared context — the derivation runs read-only at verify time.
-fn render_document_for_artifact(
-    ctx: &Context,
-    doc_tpl: &str,
-    artifact: &Artifact,
-    id: &str,
-) -> Result<String> {
-    let artifact_name = artifact
-        .path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("artifact");
-
-    let mut vars = ctx.template_vars().clone();
-    vars.set("ArtifactName", artifact_name);
-    vars.set(
-        "ArtifactExt",
-        artifact
-            .metadata
-            .get("ext")
-            .filter(|s| !s.is_empty())
-            .map(|s| s.as_str())
-            .unwrap_or_else(|| anodizer_core::template::extract_artifact_ext(artifact_name)),
-    );
-    vars.set(
-        "ArtifactID",
-        artifact
-            .metadata
-            .get("id")
-            .map(|s| s.as_str())
-            .unwrap_or(""),
-    );
-    let target = artifact
-        .target
-        .as_deref()
-        .or_else(|| artifact.metadata.get("target").map(|s| s.as_str()));
-    if let Some(target) = target {
-        let (os, arch) = anodizer_core::target::map_target(target);
-        vars.set("Os", &os);
-        vars.set("Arch", &arch);
-        vars.set("Target", target);
-    }
-
-    anodizer_core::template::render(doc_tpl, &vars)
-        .with_context(|| format!("sbom[{id}]: failed to render document template '{doc_tpl}'"))
 }
 
 /// Append the asset basename of a rendered document path when it is
@@ -213,7 +202,7 @@ mod tests {
         ctx.artifacts
             .add(archive("app-1.0-darwin-arm64.tar.gz", "app", None));
 
-        let expected = expected_sbom_assets(&ctx, "app").expect("derivation");
+        let expected = expected_sbom_assets(&ctx, "app", None).expect("derivation");
         assert_eq!(
             expected,
             vec![
@@ -234,7 +223,7 @@ mod tests {
             .add_sbom(cfg)
             .build();
         ctx.artifacts.add(archive("app.tar.gz", "app", None));
-        let expected = expected_sbom_assets(&ctx, "app").expect("derivation");
+        let expected = expected_sbom_assets(&ctx, "app", None).expect("derivation");
         assert!(expected.is_empty());
     }
 
@@ -246,7 +235,7 @@ mod tests {
             .skip_stages(vec!["sbom".to_string()])
             .build();
         ctx.artifacts.add(archive("app.tar.gz", "app", None));
-        let expected = expected_sbom_assets(&ctx, "app").expect("derivation");
+        let expected = expected_sbom_assets(&ctx, "app", None).expect("derivation");
         assert!(expected.is_empty());
     }
 
@@ -260,7 +249,7 @@ mod tests {
             .build();
         ctx.artifacts
             .add(archive("other.tar.gz", "other-crate", None));
-        let expected = expected_sbom_assets(&ctx, "other-crate").expect("derivation");
+        let expected = expected_sbom_assets(&ctx, "other-crate", None).expect("derivation");
         assert!(expected.is_empty());
     }
 
@@ -276,7 +265,7 @@ mod tests {
             .add_sbom(cfg)
             .build();
         ctx.artifacts.add(archive("app.tar.gz", "app", None));
-        let expected = expected_sbom_assets(&ctx, "app").expect("derivation");
+        let expected = expected_sbom_assets(&ctx, "app", None).expect("derivation");
         assert!(
             expected.is_empty(),
             "glob document names are not predictable from config; no expectations"
@@ -296,8 +285,201 @@ mod tests {
             .add_sbom(cfg)
             .build();
         ctx.template_vars_mut().set("Version", "1.2.3");
-        let expected = expected_sbom_assets(&ctx, "app").expect("derivation");
+        let expected = expected_sbom_assets(&ctx, "app", None).expect("derivation");
         assert_eq!(expected, vec!["app-1.2.3.cdx.json".to_string()]);
+    }
+
+    #[test]
+    fn expected_sbom_assets_match_external_typed_stage_registrations() {
+        // Equivalence pin for the external-command TYPED path: the stage
+        // renders the documents template per matched artifact and registers
+        // the on-disk outputs; the derivation must predict the same names.
+        let dist = tempfile::tempdir().expect("tempdir");
+        let cfg = SbomConfig {
+            id: Some("ext".to_string()),
+            cmd: Some("sh".to_string()),
+            args: Some(vec!["-c".to_string(), "echo x > \"$document\"".to_string()]),
+            documents: Some(vec!["{{ .ArtifactName }}.spdx.json".to_string()]),
+            artifacts: Some("archive".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .tag("v1.0.0")
+            .dist(dist.path().to_path_buf())
+            .add_sbom(cfg)
+            .build();
+        ctx.artifacts.add(archive("app-one.tar.gz", "app", None));
+        ctx.artifacts.add(archive("app-two.tar.gz", "app", None));
+
+        let predicted = expected_sbom_assets(&ctx, "app", None).expect("derivation");
+
+        crate::SbomStage.run(&mut ctx).expect("sbom stage run");
+
+        let mut registered: Vec<String> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::Sbom)
+            .map(|a| a.name.clone())
+            .collect();
+        registered.sort();
+        registered.dedup();
+        assert_eq!(
+            predicted, registered,
+            "external typed derivation must equal what the stage registers"
+        );
+        assert_eq!(predicted.len(), 2, "one SBOM per matched archive");
+    }
+
+    #[test]
+    fn expected_sbom_assets_match_external_any_stage_registrations() {
+        // Equivalence pin for the external-command `artifacts: any` path:
+        // EVERY documents entry is rendered once against the synthetic
+        // empty-path artifact (ArtifactName "artifact"), and the derivation
+        // must bind the same synthetic vars the stage binds.
+        let dist = tempfile::tempdir().expect("tempdir");
+        let cfg = SbomConfig {
+            id: Some("ext-any".to_string()),
+            cmd: Some("sh".to_string()),
+            args: Some(vec![
+                "-c".to_string(),
+                "echo x > \"$document0\"; echo x > \"$document1\"".to_string(),
+            ]),
+            documents: Some(vec![
+                "{{ .ArtifactName }}-one.spdx.json".to_string(),
+                "{{ .ArtifactName }}-two.spdx.json".to_string(),
+            ]),
+            artifacts: Some("any".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .tag("v1.0.0")
+            .dist(dist.path().to_path_buf())
+            .add_sbom(cfg)
+            .build();
+
+        let predicted = expected_sbom_assets(&ctx, "app", None).expect("derivation");
+        assert_eq!(
+            predicted,
+            vec![
+                "artifact-one.spdx.json".to_string(),
+                "artifact-two.spdx.json".to_string()
+            ],
+            "synthetic ArtifactName binding must match the stage's"
+        );
+
+        crate::SbomStage.run(&mut ctx).expect("sbom stage run");
+
+        let mut registered: Vec<String> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::Sbom)
+            .map(|a| a.name.clone())
+            .collect();
+        registered.sort();
+        registered.dedup();
+        assert_eq!(
+            predicted, registered,
+            "external `any` derivation must equal what the stage registers"
+        );
+    }
+
+    #[test]
+    fn mixed_target_artifacts_render_hermetically_on_both_sides() {
+        // A targeted artifact processed FIRST must not leak its Os/Arch into
+        // the rendering of a later no-target artifact: the stage binds
+        // per-artifact vars on a clone, never on the shared context. The
+        // conditional template makes a leak visible: under leaky binding the
+        // no-target archive would render "...-linux.cdx.json".
+        let dist = tempfile::tempdir().expect("tempdir");
+        let cfg = SbomConfig {
+            id: Some("default".to_string()),
+            documents: Some(vec![
+                "{{ .ArtifactName }}{% if Os %}-{{ Os }}{% endif %}.cdx.json".to_string(),
+            ]),
+            artifacts: Some("archive".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .tag("v1.0.0")
+            .dist(dist.path().to_path_buf())
+            .add_sbom(cfg)
+            .build();
+        ctx.artifacts.add(archive(
+            "with-target.tar.gz",
+            "app",
+            Some("x86_64-unknown-linux-gnu"),
+        ));
+        ctx.artifacts.add(archive("no-target.tar.gz", "app", None));
+
+        let predicted = expected_sbom_assets(&ctx, "app", None).expect("derivation");
+
+        crate::SbomStage.run(&mut ctx).expect("sbom stage run");
+
+        let mut registered: Vec<String> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::Sbom)
+            .map(|a| a.name.clone())
+            .collect();
+        registered.sort();
+        registered.dedup();
+
+        assert_eq!(predicted, registered, "derivation and stage must agree");
+        assert!(
+            registered.contains(&"with-target.tar.gz-linux.cdx.json".to_string()),
+            "targeted artifact renders its own Os: {registered:?}"
+        );
+        assert!(
+            registered.contains(&"no-target.tar.gz.cdx.json".to_string()),
+            "no-target artifact must NOT inherit the previous artifact's Os: {registered:?}"
+        );
+    }
+
+    #[test]
+    fn zero_match_ids_filter_warns_loudly() {
+        // An sboms config whose ids filter eliminates every kind-matched
+        // artifact silently produces nothing — the stage must warn.
+        let dist = tempfile::tempdir().expect("tempdir");
+        let cfg = SbomConfig {
+            ids: Some(vec!["no-such-id".to_string()]),
+            ..per_archive_cfg()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .tag("v1.0.0")
+            .dist(dist.path().to_path_buf())
+            .add_sbom(cfg)
+            .build();
+        let mut meta = HashMap::new();
+        meta.insert("id".to_string(), "real-id".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: "app.tar.gz".to_string(),
+            path: std::path::PathBuf::from("app.tar.gz"),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: meta,
+            size: None,
+        });
+        let capture = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+
+        crate::SbomStage.run(&mut ctx).expect("sbom stage run");
+
+        assert!(
+            capture
+                .warn_messages()
+                .iter()
+                .any(|m| m.contains("matched no artifacts")),
+            "zero-match ids filter must warn: {:?}",
+            capture.all_messages()
+        );
     }
 
     #[test]
@@ -324,7 +506,7 @@ mod tests {
             Some("aarch64-apple-darwin"),
         ));
 
-        let predicted = expected_sbom_assets(&ctx, "app").expect("derivation");
+        let predicted = expected_sbom_assets(&ctx, "app", None).expect("derivation");
 
         crate::SbomStage.run(&mut ctx).expect("sbom stage run");
 

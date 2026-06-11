@@ -184,8 +184,7 @@ fn crate_binary_name(crate_cfg: &CrateConfig) -> String {
 /// and cannot drift: an artifact the release stage filtered OUT by `ids` is
 /// not reported as a missing asset here. The asset name is resolved exactly as
 /// the upload path resolves it — the custom destination name when set,
-/// otherwise the file's basename. Rule #11: zero new config, no hand-maintained
-/// list.
+/// otherwise the file's basename.
 fn produced_asset_names(ctx: &Context, crate_name: &str, ids: Option<&[String]>) -> Vec<String> {
     let mut names: Vec<String> = anodizer_stage_release::collect_release_upload_candidates(
         ctx, crate_name, ids,
@@ -223,15 +222,16 @@ fn config_expected_asset_names(
     crate_name: &str,
     release_ids: Option<&[String]>,
 ) -> Result<Vec<String>> {
-    // Mirror the upload path's id-filter semantics: Signature, Certificate,
-    // and Sbom artifacts carry no `id` metadata, so a non-empty `release.ids`
-    // filter excludes them from upload (`matches_id_filter`); demanding them
-    // here would fail the gate over assets the release stage never sends.
-    if release_ids.is_some_and(|ids| !ids.is_empty()) {
-        return Ok(Vec::new());
-    }
-    let mut names = anodizer_stage_sign::expected_signature_assets(ctx, crate_name)?;
-    names.extend(anodizer_stage_sbom::expected_sbom_assets(ctx, crate_name)?);
+    // `release_ids` mirrors the upload path's id-filter semantics: derived
+    // artifacts inherit their SUBJECT's verdict (`matches_id_filter`), so a
+    // signature/SBOM is expected exactly when the artifact it derives from
+    // is uploaded.
+    let mut names = anodizer_stage_sign::expected_signature_assets(ctx, crate_name, release_ids)?;
+    names.extend(anodizer_stage_sbom::expected_sbom_assets(
+        ctx,
+        crate_name,
+        release_ids,
+    )?);
     names.sort();
     names.dedup();
     Ok(names)

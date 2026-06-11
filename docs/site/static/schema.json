@@ -11746,7 +11746,7 @@
           ]
         },
         "ids": {
-          "description": "Artifact IDs filter for uploads.",
+          "description": "Artifact IDs filter for uploads. Release-wide artifacts (checksums, source archive, extra files, metadata) always upload regardless of the filter, and derived artifacts (signatures, certificates, SBOMs) inherit the verdict of the artifact they derive from — a signature uploads iff the artifact it signs uploads.",
           "default": null,
           "type": [
             "array",

@@ -4765,10 +4765,12 @@ mod partial_rollback_tests {
         let mut record: Vec<CargoYankTarget> = Vec::new();
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "crate-b");
-        let prev_path = std::env::var("PATH").ok();
         let _env = anodizer_core::test_helpers::env::env_mutex()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // Read the previous PATH under the lock so a concurrent mutator
+        // cannot interleave between the read and the set below.
+        let prev_path = std::env::var("PATH").ok();
         // SAFETY: serialised by env_mutex above (shared with every other
         // PATH mutator) plus this test's serial group; paired restore below.
         unsafe { std::env::set_var("PATH", &new_path) };
@@ -4851,10 +4853,12 @@ mod partial_rollback_tests {
         // and encoding whatever it recorded before the bail.
         let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "crate-b");
-        let prev_path = std::env::var("PATH").ok();
         let _env = anodizer_core::test_helpers::env::env_mutex()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // Read the previous PATH under the lock so a concurrent mutator
+        // cannot interleave between the read and the set below.
+        let prev_path = std::env::var("PATH").ok();
         // SAFETY: serialised by env_mutex above (shared with every other
         // PATH mutator) plus this test's serial group; paired restore below.
         unsafe { std::env::set_var("PATH", &new_path) };
@@ -4923,10 +4927,12 @@ mod partial_rollback_tests {
         evidence.extra = encode_cargo_yank_targets(&[]);
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "none");
-        let prev_path = std::env::var("PATH").ok();
         let _env = anodizer_core::test_helpers::env::env_mutex()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // Read the previous PATH under the lock so a concurrent mutator
+        // cannot interleave between the read and the set below.
+        let prev_path = std::env::var("PATH").ok();
         // SAFETY: serialised by env_mutex above (shared with every other
         // PATH mutator) plus this test's serial group; paired restore below.
         unsafe { std::env::set_var("PATH", &new_path) };
@@ -5414,10 +5420,12 @@ mod partial_rollback_tests {
              -> Result<Option<String>> { Ok(Some("deadbeef".to_string())) };
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "none");
-        let prev_path = std::env::var("PATH").ok();
         let _env = anodizer_core::test_helpers::env::env_mutex()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // Read the previous PATH under the lock so a concurrent mutator
+        // cannot interleave between the read and the set below.
+        let prev_path = std::env::var("PATH").ok();
         // SAFETY: serialised by env_mutex above (shared with every other
         // PATH mutator) plus this test's serial group; paired restore below.
         unsafe { std::env::set_var("PATH", &new_path) };

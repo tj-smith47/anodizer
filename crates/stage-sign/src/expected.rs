@@ -43,13 +43,21 @@ use crate::helpers::{
 
 /// Derive the signature / certificate asset names the `signs:` config demands
 /// for `crate_name`'s published release, from config + the produced artifact
-/// set only (rule: derive from context the tool already has; no new config).
+/// set only — no extra configuration is required or consulted.
 ///
 /// Returns a sorted, de-duplicated list of expected asset basenames. Empty
 /// when signing is not configured, the sign stage was explicitly skipped, or
 /// every sign config was intentionally waived for this run (see module docs
 /// for the waiver order).
-pub fn expected_signature_assets(ctx: &Context, crate_name: &str) -> Result<Vec<String>> {
+///
+/// `release_ids` is the release block's `ids:` upload filter: a signature
+/// inherits its SUBJECT's upload verdict (see `matches_id_filter`), so a
+/// subject the release stage filters out contributes no expectation.
+pub fn expected_signature_assets(
+    ctx: &Context,
+    crate_name: &str,
+    release_ids: Option<&[String]>,
+) -> Result<Vec<String>> {
     if ctx.should_skip("sign") {
         return Ok(Vec::new());
     }
@@ -91,6 +99,9 @@ pub fn expected_signature_assets(ctx: &Context, crate_name: &str) -> Result<Vec<
                 continue;
             }
             if !sign_ids_match(&artifact.metadata, cfg.ids.as_ref()) {
+                continue;
+            }
+            if !anodizer_core::artifact::matches_id_filter(artifact, release_ids) {
                 continue;
             }
             let (sig_name, cert_name) =
@@ -248,7 +259,7 @@ mod tests {
         ctx.artifacts
             .add(artifact(ArtifactKind::Archive, "app.tar.gz", "app", None));
 
-        let expected = expected_signature_assets(&ctx, "app").expect("derivation");
+        let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
         // `artifacts: checksum` signs only the Checksum artifact.
         assert_eq!(expected, vec!["app_checksums.txt.sig".to_string()]);
     }
@@ -263,7 +274,7 @@ mod tests {
         ctx.artifacts
             .add(artifact(ArtifactKind::Archive, "app.tar.gz", "app", None));
 
-        let expected = expected_signature_assets(&ctx, "app").expect("derivation");
+        let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
         assert_eq!(
             expected,
             vec!["app.tar.gz.pem".to_string(), "app.tar.gz.sig".to_string()]
@@ -280,7 +291,7 @@ mod tests {
         ctx.artifacts
             .add(artifact(ArtifactKind::Checksum, "sums.txt", "app", None));
 
-        let expected = expected_signature_assets(&ctx, "app").expect("derivation");
+        let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
         assert_eq!(expected, vec!["sums.txt.asc".to_string()]);
     }
 
@@ -289,7 +300,7 @@ mod tests {
         let mut ctx = TestContextBuilder::new().build();
         ctx.artifacts
             .add(artifact(ArtifactKind::Checksum, "sums.txt", "app", None));
-        let expected = expected_signature_assets(&ctx, "app").expect("derivation");
+        let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
         assert!(expected.is_empty());
     }
 
@@ -300,7 +311,7 @@ mod tests {
             .build();
         ctx.artifacts
             .add(artifact(ArtifactKind::Checksum, "sums.txt", "app", None));
-        let expected = expected_signature_assets(&ctx, "app").expect("derivation");
+        let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
         assert!(expected.is_empty());
     }
 
@@ -313,7 +324,7 @@ mod tests {
         let mut ctx = TestContextBuilder::new().signs(vec![cfg]).build();
         ctx.artifacts
             .add(artifact(ArtifactKind::Checksum, "sums.txt", "app", None));
-        let expected = expected_signature_assets(&ctx, "app").expect("derivation");
+        let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
         assert!(
             expected.is_empty(),
             "a sign config whose if: evaluated falsy must create no expectations"
@@ -331,7 +342,7 @@ mod tests {
         ctx.artifacts
             .add(artifact(ArtifactKind::Checksum, "sums.txt", "app", None));
         ctx.remember_skip("sign", "default", "`if` condition evaluated falsy");
-        let expected = expected_signature_assets(&ctx, "app").expect("derivation");
+        let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
         assert!(expected.is_empty());
     }
 
@@ -343,7 +354,7 @@ mod tests {
         ctx.artifacts
             .add(artifact(ArtifactKind::Checksum, "sums.txt", "app", None));
         ctx.remember_skip("sign", "some-other-config", "artifacts: none");
-        let expected = expected_signature_assets(&ctx, "app").expect("derivation");
+        let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
         assert_eq!(expected, vec!["sums.txt.sig".to_string()]);
     }
 
@@ -355,7 +366,7 @@ mod tests {
             .build();
         ctx.artifacts
             .add(artifact(ArtifactKind::Checksum, "sums.txt", "app", None));
-        let expected = expected_signature_assets(&ctx, "app").expect("derivation");
+        let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
         assert!(
             expected.is_empty(),
             "--skip=sign is explicit operator intent; no expectations"
@@ -381,7 +392,7 @@ mod tests {
             "app",
             Some("drop"),
         ));
-        let expected = expected_signature_assets(&ctx, "app").expect("derivation");
+        let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
         assert_eq!(expected, vec!["keep.tar.gz.sig".to_string()]);
     }
 
@@ -405,8 +416,8 @@ mod tests {
             None,
         ));
 
-        let a = expected_signature_assets(&ctx, "crate-a").expect("derivation");
-        let b = expected_signature_assets(&ctx, "crate-b").expect("derivation");
+        let a = expected_signature_assets(&ctx, "crate-a", None).expect("derivation");
+        let b = expected_signature_assets(&ctx, "crate-b", None).expect("derivation");
         assert_eq!(a, vec!["a_checksums.txt.sig".to_string()]);
         assert_eq!(b, vec!["b_checksums.txt.sig".to_string()]);
     }
@@ -426,7 +437,7 @@ mod tests {
             "app",
             None,
         ));
-        let expected = expected_signature_assets(&ctx, "app").expect("derivation");
+        let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
         assert!(expected.is_empty());
     }
 
@@ -467,7 +478,7 @@ mod tests {
             None,
         ));
 
-        let predicted = expected_signature_assets(&ctx, "app").expect("derivation");
+        let predicted = expected_signature_assets(&ctx, "app", None).expect("derivation");
 
         let log = ctx.logger("sign");
         let sign_cfgs = ctx.config.signs.clone();
@@ -494,5 +505,166 @@ mod tests {
             predicted, registered,
             "config-derived expectations must equal what the sign stage registers"
         );
+    }
+}
+
+#[cfg(test)]
+mod subject_provenance_tests {
+    use super::*;
+    use crate::process::{ArtifactFilter, process_sign_configs};
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    fn id_archive(name: &str, id: &str) -> Artifact {
+        let mut metadata = HashMap::new();
+        metadata.insert("id".to_string(), id.to_string());
+        Artifact {
+            kind: ArtifactKind::Archive,
+            name: name.to_string(),
+            path: std::path::PathBuf::from(name),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata,
+            size: None,
+        }
+    }
+
+    fn archive_sign() -> SignConfig {
+        SignConfig {
+            id: Some("default".to_string()),
+            artifacts: Some("archive".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sign_registrations_carry_subject_provenance() {
+        // The registered Signature/Certificate artifacts must record the
+        // signed artifact's kind and build id so the release `ids:` filter
+        // gives them the same upload verdict as their subject.
+        let cfg = SignConfig {
+            certificate: Some("{{ .Artifact }}.pem".to_string()),
+            ..archive_sign()
+        };
+        let mut ctx = TestContextBuilder::new().signs(vec![cfg]).build();
+        ctx.artifacts.add(id_archive("keep.tar.gz", "keep"));
+
+        let log = ctx.logger("sign");
+        let cfgs = ctx.config.signs.clone();
+        process_sign_configs(&cfgs, &mut ctx, &log, ArtifactFilter::FromConfig, "sign")
+            .expect("sign run");
+
+        for kind in [ArtifactKind::Signature, ArtifactKind::Certificate] {
+            let arts = ctx.artifacts.by_kind(kind);
+            assert_eq!(arts.len(), 1, "{kind:?} registered");
+            assert_eq!(
+                arts[0].metadata.get("subject_kind").map(String::as_str),
+                Some("archive"),
+                "{kind:?} records its subject's kind"
+            );
+            assert_eq!(
+                arts[0].metadata.get("id").map(String::as_str),
+                Some("keep"),
+                "{kind:?} inherits its subject's build id"
+            );
+        }
+    }
+
+    #[test]
+    fn release_ids_subject_verdict_filters_expectations() {
+        let mut ctx = TestContextBuilder::new()
+            .signs(vec![archive_sign()])
+            .build();
+        ctx.artifacts.add(id_archive("keep.tar.gz", "keep"));
+        ctx.artifacts.add(id_archive("drop.tar.gz", "drop"));
+
+        let ids = vec!["keep".to_string()];
+        let expected = expected_signature_assets(&ctx, "app", Some(&ids)).expect("derivation");
+        assert_eq!(
+            expected,
+            vec!["keep.tar.gz.sig".to_string()],
+            "only the ids-included subject contributes a signature expectation"
+        );
+    }
+
+    #[test]
+    fn zero_match_ids_filter_warns_loudly() {
+        // A sign config whose ids filter eliminates every kind-matched
+        // artifact silently signs nothing — the stage must warn.
+        let cfg = SignConfig {
+            ids: Some(vec!["no-such-id".to_string()]),
+            ..archive_sign()
+        };
+        let mut ctx = TestContextBuilder::new().signs(vec![cfg]).build();
+        ctx.artifacts.add(id_archive("app.tar.gz", "real-id"));
+
+        let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+            "sign",
+            anodizer_core::log::Verbosity::Quiet,
+        );
+        let cfgs = ctx.config.signs.clone();
+        process_sign_configs(&cfgs, &mut ctx, &log, ArtifactFilter::FromConfig, "sign")
+            .expect("sign run");
+
+        assert!(
+            capture
+                .warn_messages()
+                .iter()
+                .any(|m| m.contains("matched no artifacts")),
+            "zero-match ids filter must warn: {:?}",
+            capture.all_messages()
+        );
+    }
+
+    #[test]
+    fn explicit_id_matching_fallback_label_rejected() {
+        use anodizer_core::stage::Stage;
+        let cfg = SignConfig {
+            id: Some("sign[0]".to_string()),
+            ..archive_sign()
+        };
+        let mut ctx = TestContextBuilder::new().signs(vec![cfg]).build();
+        let err = crate::SignStage
+            .run(&mut ctx)
+            .expect_err("reserved positional id must be rejected");
+        assert!(
+            format!("{err:#}").contains("reserved positional label pattern"),
+            "error explains the collision: {err:#}"
+        );
+    }
+
+    #[test]
+    fn binary_signs_explicit_fallback_id_rejected() {
+        use anodizer_core::stage::Stage;
+        let cfg = SignConfig {
+            id: Some("binary-sign[2]".to_string()),
+            ..archive_sign()
+        };
+        let mut ctx = TestContextBuilder::new().binary_signs(vec![cfg]).build();
+        let err = crate::BinarySignStage
+            .run(&mut ctx)
+            .expect_err("reserved positional id must be rejected");
+        assert!(format!("{err:#}").contains("reserved positional label pattern"));
+    }
+
+    #[test]
+    fn normal_explicit_ids_accepted_and_cross_label_ids_allowed() {
+        use anodizer_core::stage::Stage;
+        // "binary-sign[0]" in the SIGNS list is not that list's fallback
+        // shape ("sign[N]"), so it does not alias any signs skip record.
+        let cfgs = vec![
+            SignConfig {
+                id: Some("gpg-checksums".to_string()),
+                ..archive_sign()
+            },
+            SignConfig {
+                id: Some("binary-sign[0]".to_string()),
+                ..archive_sign()
+            },
+        ];
+        let mut ctx = TestContextBuilder::new().signs(cfgs).build();
+        assert!(crate::SignStage.run(&mut ctx).is_ok());
     }
 }

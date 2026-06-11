@@ -638,17 +638,39 @@ pub fn is_binary_sign_output(artifact: &Artifact) -> bool {
         .is_some_and(|v| v == "true")
 }
 
+/// Metadata key recording the artifact kind a derived artifact (signature,
+/// certificate, SBOM) was produced FROM. Written at registration by the
+/// sign / SBOM stages; read by [`matches_id_filter`] so a derived artifact
+/// inherits its subject's id-filter verdict.
+pub const SUBJECT_KIND_META: &str = "subject_kind";
+
+/// Artifact kinds the `ids:` filter always keeps — these are emitted for
+/// every release, not per-build, so a build-id filter has nothing to say
+/// about them.
+const ID_FILTER_ALWAYS_PASS: [ArtifactKind; 4] = [
+    ArtifactKind::Checksum,
+    ArtifactKind::SourceArchive,
+    ArtifactKind::UploadableFile,
+    ArtifactKind::Metadata,
+];
+
 /// Filter an artifact by the `id` metadata field.
 ///
 /// Artifact `id`-filter semantic:
 /// - When `ids` is `None` or empty, every artifact passes.
 /// - Artifact kinds `Checksum`, `SourceArchive`, `UploadableFile`, `Metadata`
 ///   always pass regardless of filter (these are emitted for every release).
+/// - Derived kinds (`Signature`, `Certificate`, `Sbom`) inherit their
+///   SUBJECT's verdict: a signature uploads iff the artifact it signs
+///   uploads. The subject kind is read from the `subject_kind` metadata
+///   written at registration, and the subject's build id is inherited into
+///   the derived artifact's `id` metadata. A derived artifact with no
+///   recorded subject (a project-wide `artifacts: any` SBOM, or one loaded
+///   from a pre-`subject_kind` metadata.json in merge mode) always passes —
+///   silently dropping a signature is worse than uploading an extra one.
 /// - For all other kinds, the artifact's `metadata["id"]` must match one of
 ///   the supplied ids. An artifact missing an `id` metadata value does not
 ///   match a non-empty filter.
-///
-/// Filters artifacts by their `id` metadata extra.
 pub fn matches_id_filter(artifact: &Artifact, ids: Option<&[String]>) -> bool {
     let Some(id_list) = ids else { return true };
     if id_list.is_empty() {
@@ -656,11 +678,18 @@ pub fn matches_id_filter(artifact: &Artifact, ids: Option<&[String]>) -> bool {
     }
     if matches!(
         artifact.kind,
-        ArtifactKind::Checksum
-            | ArtifactKind::SourceArchive
-            | ArtifactKind::UploadableFile
-            | ArtifactKind::Metadata
+        ArtifactKind::Signature | ArtifactKind::Certificate | ArtifactKind::Sbom
     ) {
+        match artifact.metadata.get(SUBJECT_KIND_META) {
+            None => return true,
+            Some(subject) => {
+                if ID_FILTER_ALWAYS_PASS.iter().any(|k| k.as_str() == subject) {
+                    return true;
+                }
+                // Fall through: judge by the inherited subject id below.
+            }
+        }
+    } else if ID_FILTER_ALWAYS_PASS.contains(&artifact.kind) {
         return true;
     }
     let artifact_id = artifact
@@ -669,6 +698,18 @@ pub fn matches_id_filter(artifact: &Artifact, ids: Option<&[String]>) -> bool {
         .map(|s| s.as_str())
         .unwrap_or("");
     id_list.iter().any(|id| id == artifact_id)
+}
+
+/// `true` when a non-empty `ids:` filter reduced a non-empty candidate set
+/// to zero — the signal for stages to warn that the FILTER (not the artifact
+/// set) is why a config matched nothing. Without the warning a typo'd build
+/// id silently no-ops the config.
+pub fn ids_filter_eliminated_all(
+    ids: Option<&[String]>,
+    pre_filter: usize,
+    post_filter: usize,
+) -> bool {
+    post_filter == 0 && pre_filter > 0 && ids.is_some_and(|i| !i.is_empty())
 }
 
 /// Format a byte count into a human-readable string (e.g. "4.2 MB").
@@ -744,6 +785,75 @@ pub fn print_size_report(registry: &mut ArtifactRegistry, log: &crate::log::Stag
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn derived(kind: ArtifactKind, meta: &[(&str, &str)]) -> Artifact {
+        Artifact {
+            kind,
+            name: "x".to_string(),
+            path: PathBuf::from("x"),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: meta
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            size: None,
+        }
+    }
+
+    #[test]
+    fn id_filter_signature_inherits_included_subject_verdict() {
+        let sig = derived(
+            ArtifactKind::Signature,
+            &[("subject_kind", "archive"), ("id", "keep")],
+        );
+        let ids = vec!["keep".to_string()];
+        assert!(matches_id_filter(&sig, Some(&ids)));
+    }
+
+    #[test]
+    fn id_filter_signature_inherits_excluded_subject_verdict() {
+        let sig = derived(
+            ArtifactKind::Signature,
+            &[("subject_kind", "archive"), ("id", "drop")],
+        );
+        let ids = vec!["keep".to_string()];
+        assert!(!matches_id_filter(&sig, Some(&ids)));
+    }
+
+    #[test]
+    fn id_filter_signature_of_checksum_always_passes() {
+        // Checksum subjects always upload, so their signatures do too — even
+        // though neither carries a build id.
+        let sig = derived(ArtifactKind::Signature, &[("subject_kind", "checksum")]);
+        let ids = vec!["keep".to_string()];
+        assert!(matches_id_filter(&sig, Some(&ids)));
+    }
+
+    #[test]
+    fn id_filter_derived_without_subject_record_passes() {
+        // Project-wide `artifacts: any` SBOMs and pre-subject_kind artifacts
+        // (merge mode) have no recorded subject; dropping them silently is
+        // worse than uploading an extra asset.
+        let sbom = derived(ArtifactKind::Sbom, &[("sbom_id", "default")]);
+        let ids = vec!["keep".to_string()];
+        assert!(matches_id_filter(&sbom, Some(&ids)));
+    }
+
+    #[test]
+    fn id_filter_sbom_inherits_subject_verdict() {
+        let kept = derived(
+            ArtifactKind::Sbom,
+            &[("subject_kind", "archive"), ("id", "keep")],
+        );
+        let dropped = derived(
+            ArtifactKind::Sbom,
+            &[("subject_kind", "archive"), ("id", "drop")],
+        );
+        let ids = vec!["keep".to_string()];
+        assert!(matches_id_filter(&kept, Some(&ids)));
+        assert!(!matches_id_filter(&dropped, Some(&ids)));
+    }
 
     #[test]
     fn test_add_and_query_artifacts() {

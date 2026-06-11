@@ -12,25 +12,29 @@ cold without re-investigating.
 
 ## Open
 
-- [ ] **`release.ids` silently drops signature/certificate/SBOM uploads.**
-  Found 2026-06-11 while building the verify-release signature-expectation
-  derivation. `collect_release_upload_candidates` applies
-  `matches_id_filter` to every candidate; `Signature`/`Certificate` artifacts
-  (registered by `stage-sign/process.rs` with only `type`/`binary_sign`
-  metadata) and `Sbom` artifacts (only `format`/`sbom_id`) carry no `id`
-  metadata and are not in the filter's always-pass list — so any non-empty
-  `release.ids` excludes ALL of them from upload and the release ships
-  without its signatures/SBOMs, silently. Correct semantic: a signature/SBOM
-  uploads iff its subject artifact uploads (propagate the subject's `id`
-  metadata onto the derived artifact at registration, or filter on the
-  recorded subject). The new expectation derivation deliberately mirrors
-  today's behavior (`config_expected_asset_names` returns empty when
-  `release.ids` is non-empty — see the comment there) so the gate stays
-  truthful to what upload sends; when the upload semantics are fixed, that
-  mirror must be updated in the same change. Repo's own config sets no
-  `release.ids`, so anodizer's releases are unaffected.
-
 ## Resolved
+
+- [x] **`release.ids` silently drops signature/certificate/SBOM uploads —
+  RESOLVED 2026-06-11 (review-fix pass on fb7e5a16).** Found while building
+  the verify-release signature-expectation derivation:
+  `collect_release_upload_candidates` applied `matches_id_filter` to every
+  candidate, and `Signature`/`Certificate`/`Sbom` artifacts carried no `id`
+  metadata and were not in the always-pass list — any non-empty
+  `release.ids` excluded ALL of them and the release shipped unsigned,
+  silently. **Fixed:** derived artifacts now inherit their SUBJECT's verdict
+  — the sign/SBOM stages record `subject_kind` plus the subject's build `id`
+  on every Signature/Certificate/Sbom registration, and `matches_id_filter`
+  judges that record (always-pass subject → pass; otherwise the inherited id
+  must match; no record — project-wide `any` SBOMs, pre-fix metadata.json in
+  merge mode — passes rather than silently dropping). The verify-release
+  expectation derivation applies the same per-subject verdict (its previous
+  blanket "no expectations when ids set" mirror removed in the same change).
+  **Evidence:** core `artifact::tests::id_filter_*` (5 tests); upload-side
+  `test_release_upload_candidates_ids_filter_signatures_inherit_subject_verdict`
+  (subject-included sig+sbom upload, subject-excluded don't, checksum sigs
+  always do); stage-sign `sign_registrations_carry_subject_provenance` +
+  `release_ids_subject_verdict_filters_expectations`; verify-release
+  `derived_expectations_follow_subject_verdict_under_release_ids`.
 
 - [x] **Test-suite PATH race — RESOLVED 2026-06-11 (bc2e553e + review
   pass).** Originally: tests simulating missing tools

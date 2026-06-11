@@ -239,7 +239,9 @@ pub(crate) fn process_sign_configs(
             String,
             std::collections::HashMap<String, String>,
             Option<String>,
+            ArtifactKind,
         );
+        let mut kind_matched = 0usize;
         let artifact_paths: Vec<ArtifactEntry> = {
             let mut matched = Vec::new();
             for a in ctx.artifacts.all().iter() {
@@ -255,6 +257,7 @@ pub(crate) fn process_sign_configs(
                         }
                     }
                 }
+                kind_matched += 1;
                 if !crate::helpers::sign_ids_match(&a.metadata, sign_cfg.ids.as_ref()) {
                     continue;
                 }
@@ -263,10 +266,25 @@ pub(crate) fn process_sign_configs(
                     a.crate_name.clone(),
                     a.metadata.clone(),
                     a.target.clone(),
+                    a.kind,
                 ));
             }
             matched
         };
+
+        if anodizer_core::artifact::ids_filter_eliminated_all(
+            sign_cfg.ids.as_deref(),
+            kind_matched,
+            artifact_paths.len(),
+        ) {
+            log.warn(&format!(
+                "{} config '{}': ids filter {:?} matched no artifacts — \
+                 this config will sign NOTHING",
+                label,
+                sub_label,
+                sign_cfg.ids.as_deref().unwrap_or(&[])
+            ));
+        }
 
         let mut sign_jobs: Vec<SignJob> = Vec::new();
 
@@ -275,8 +293,13 @@ pub(crate) fn process_sign_configs(
             ArtifactFilter::FromConfig => SignConfig::DEFAULT_SIGNATURE_TEMPLATE,
         };
 
-        for (artifact_path, artifact_crate_name, artifact_metadata, artifact_target) in
-            &artifact_paths
+        for (
+            artifact_path,
+            artifact_crate_name,
+            artifact_metadata,
+            artifact_target,
+            artifact_kind,
+        ) in &artifact_paths
         {
             let artifact_str = artifact_path.to_string_lossy();
             let artifact_name = artifact_path
@@ -415,6 +438,16 @@ pub(crate) fn process_sign_configs(
             let is_binary_sign = matches!(filter_mode, ArtifactFilter::BinaryOnly);
             let mut sig_metadata = std::collections::HashMap::new();
             sig_metadata.insert("type".to_string(), "Signature".to_string());
+            // Subject provenance: the signature inherits the signed
+            // artifact's kind and build id, so the release `ids:` filter
+            // gives it the same upload verdict as its subject.
+            sig_metadata.insert(
+                anodizer_core::artifact::SUBJECT_KIND_META.to_string(),
+                artifact_kind.as_str().to_string(),
+            );
+            if let Some(subject_id) = artifact_metadata.get("id") {
+                sig_metadata.insert("id".to_string(), subject_id.clone());
+            }
             if is_binary_sign {
                 sig_metadata.insert("binary_sign".to_string(), "true".to_string());
             }
@@ -445,6 +478,13 @@ pub(crate) fn process_sign_configs(
                     .unwrap_or_else(|| cert_path.display().to_string());
                 let mut cert_metadata = std::collections::HashMap::new();
                 cert_metadata.insert("type".to_string(), "Certificate".to_string());
+                cert_metadata.insert(
+                    anodizer_core::artifact::SUBJECT_KIND_META.to_string(),
+                    artifact_kind.as_str().to_string(),
+                );
+                if let Some(subject_id) = artifact_metadata.get("id") {
+                    cert_metadata.insert("id".to_string(), subject_id.clone());
+                }
                 if is_binary_sign {
                     cert_metadata.insert("binary_sign".to_string(), "true".to_string());
                 }

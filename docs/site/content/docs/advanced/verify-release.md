@@ -105,6 +105,9 @@ record is consulted first as the authoritative account of what this run
 decided), an SBOM config whose `skip:` evaluated truthy, or a whole stage
 skipped via `--skip=sign` / `--skip=sbom`. SBOM `documents:` containing glob
 patterns are not predictable from config and create no expectations either.
+Under a `release.ids` upload filter, expectations follow the SUBJECT's
+verdict — a signature or SBOM is expected exactly when the artifact it
+derives from is uploaded.
 
 ## (b) install smoke-test
 

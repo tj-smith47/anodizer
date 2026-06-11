@@ -681,7 +681,7 @@ Paths / globs are resolved relative to the project root. `..` segments are accep
 | `github` | ScmRepoConfig | — | GitHub repository to release to (owner and name). |
 | `gitlab` | ScmRepoConfig | — | GitLab repository to release to (owner and name). |
 | `header` | ContentSource | — | Text prepended to the release body (inline string, from_file, or from_url). |
-| `ids` | list of string | — | Artifact IDs filter for uploads. |
+| `ids` | list of string | — | Artifact IDs filter for uploads. Release-wide artifacts (checksums, source archive, extra files, metadata) always upload regardless of the filter, and derived artifacts (signatures, certificates, SBOMs) inherit the verdict of the artifact they derive from — a signature uploads iff the artifact it signs uploads. |
 | `include_meta` | bool | — | Upload metadata.json and artifacts.json as release assets. |
 | `make_latest` | object | — | Mark release as latest: true, false, or "auto" (latest non-prerelease). |
 | `mode` | string | — | Release mode: "keep-existing", "append", "prepend", or "replace". |

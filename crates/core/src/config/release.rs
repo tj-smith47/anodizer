@@ -67,7 +67,11 @@ pub struct ReleaseConfig {
     pub skip: Option<StringOrBool>,
     /// Release mode: "keep-existing", "append", "prepend", or "replace".
     pub mode: Option<String>,
-    /// Artifact IDs filter for uploads.
+    /// Artifact IDs filter for uploads. Release-wide artifacts (checksums,
+    /// source archive, extra files, metadata) always upload regardless of
+    /// the filter, and derived artifacts (signatures, certificates, SBOMs)
+    /// inherit the verdict of the artifact they derive from — a signature
+    /// uploads iff the artifact it signs uploads.
     pub ids: Option<Vec<String>>,
     /// Target branch or SHA for the release tag.
     pub target_commitish: Option<String>,

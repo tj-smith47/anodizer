@@ -1068,18 +1068,52 @@ fn derived_expectations_empty_when_run_recorded_intentional_skip() {
 }
 
 #[test]
-fn derived_expectations_suppressed_by_release_ids_filter() {
-    // A non-empty release.ids filter excludes id-less Signature/Sbom
-    // artifacts from upload; expectations must mirror that.
+fn derived_expectations_follow_subject_verdict_under_release_ids() {
+    // A signature inherits its SUBJECT's release.ids verdict: a sig of an
+    // ids-excluded archive is not expected, a sig of an ids-included archive
+    // is, and checksum-file sigs (always-pass subjects) are always expected.
     let mut ctx = TestContextBuilder::new()
         .tag("v1.0.0")
         .crates(vec![published_crate("app", None)])
         .build();
-    ctx.config.signs = vec![checksum_gpg_sign()];
+    ctx.config.signs = vec![anodizer_core::config::SignConfig {
+        artifacts: Some("all".to_string()),
+        ..checksum_gpg_sign()
+    }];
     add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
-    let ids = vec!["some-id".to_string()];
+    let mut keep = HashMap::new();
+    keep.insert("id".to_string(), "keep".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        name: "keep.tar.gz".to_string(),
+        path: std::path::PathBuf::from("keep.tar.gz"),
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: keep,
+        size: None,
+    });
+    let mut drop_meta = HashMap::new();
+    drop_meta.insert("id".to_string(), "drop".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        name: "drop.tar.gz".to_string(),
+        path: std::path::PathBuf::from("drop.tar.gz"),
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: drop_meta,
+        size: None,
+    });
+
+    let ids = vec!["keep".to_string()];
     let derived = config_expected_asset_names(&ctx, "app", Some(&ids)).expect("derivation");
-    assert!(derived.is_empty());
+    assert_eq!(
+        derived,
+        vec![
+            "app_checksums.txt.sig".to_string(),
+            "keep.tar.gz.sig".to_string()
+        ],
+        "checksum + ids-included subjects expected; ids-excluded subject not"
+    );
 }
 
 #[test]

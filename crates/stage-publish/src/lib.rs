@@ -1353,15 +1353,17 @@ mod tests {
             inner: CargoPublisher::new(),
         })];
 
+        let _env = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Read the previous PATH under the lock so a concurrent mutator
+        // cannot interleave between the read and the set below.
         let prev_path = std::env::var("PATH").ok();
         let new_path = format!(
             "{}:{}",
             tmp.path().display(),
             prev_path.clone().unwrap_or_default()
         );
-        let _env = anodizer_core::test_helpers::env::env_mutex()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         // SAFETY: serialised by env_mutex above (shared with every other
         // PATH mutator) plus this test's serial group; paired restore below.
         unsafe { std::env::set_var("PATH", &new_path) };

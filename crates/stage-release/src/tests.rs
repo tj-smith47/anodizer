@@ -4439,6 +4439,82 @@ fn test_release_upload_candidates_ids_filter_selects_matching() {
 }
 
 #[test]
+fn test_release_upload_candidates_ids_filter_signatures_inherit_subject_verdict() {
+    // A signature/SBOM uploads iff the artifact it derives from uploads:
+    // the sign/SBOM stages record the subject's kind and build id on the
+    // derived artifact, and matches_id_filter judges that record instead of
+    // excluding the (id-less) derived kind wholesale.
+    let mut ctx = TestContextBuilder::new().build();
+    let mut add = |kind: ArtifactKind, name: &str, meta: &[(&str, &str)]| {
+        ctx.artifacts.add(Artifact {
+            kind,
+            path: format!("dist/{name}").into(),
+            name: name.to_string(),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: meta
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            size: None,
+        });
+    };
+    add(ArtifactKind::Archive, "keep.tar.gz", &[("id", "keep")]);
+    add(
+        ArtifactKind::Signature,
+        "keep.tar.gz.sig",
+        &[("subject_kind", "archive"), ("id", "keep")],
+    );
+    add(ArtifactKind::Archive, "drop.zip", &[("id", "drop")]);
+    add(
+        ArtifactKind::Signature,
+        "drop.zip.sig",
+        &[("subject_kind", "archive"), ("id", "drop")],
+    );
+    add(ArtifactKind::Checksum, "checksums.txt", &[]);
+    add(
+        ArtifactKind::Signature,
+        "checksums.txt.sig",
+        &[("subject_kind", "checksum")],
+    );
+    add(
+        ArtifactKind::Sbom,
+        "keep.tar.gz.cdx.json",
+        &[("subject_kind", "archive"), ("id", "keep")],
+    );
+    add(
+        ArtifactKind::Sbom,
+        "drop.zip.cdx.json",
+        &[("subject_kind", "archive"), ("id", "drop")],
+    );
+
+    let ids = vec!["keep".to_string()];
+    let selected = super::run::collect_release_upload_candidates(&ctx, "myapp", Some(&ids), false);
+    let names: Vec<String> = selected
+        .iter()
+        .map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    for kept in [
+        "keep.tar.gz",
+        "keep.tar.gz.sig",
+        "keep.tar.gz.cdx.json",
+        "checksums.txt",
+        "checksums.txt.sig",
+    ] {
+        assert!(
+            names.contains(&kept.to_string()),
+            "{kept} must upload: {names:?}"
+        );
+    }
+    for dropped in ["drop.zip", "drop.zip.sig", "drop.zip.cdx.json"] {
+        assert!(
+            !names.contains(&dropped.to_string()),
+            "{dropped} must NOT upload: {names:?}"
+        );
+    }
+}
+
+#[test]
 fn test_release_upload_candidates_filters_by_crate_name() {
     let mut ctx = TestContextBuilder::new().build();
     ctx.artifacts.add(Artifact {

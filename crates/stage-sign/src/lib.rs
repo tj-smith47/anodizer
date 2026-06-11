@@ -13,7 +13,7 @@ mod process;
 
 pub use expected::expected_signature_assets;
 
-use helpers::{prepare_stdin_from, resolve_sign_args};
+use helpers::{prepare_stdin_from, resolve_sign_args, validate_sign_config_ids};
 use process::{ArtifactFilter, process_sign_configs};
 
 // Helpers (should_sign_artifact, resolve_signature_path, prepare_stdin_from,
@@ -47,14 +47,8 @@ impl Stage for BinarySignStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("binary-sign");
-        // Validate binary_signs IDs unique — same check SignStage does.
-        let mut seen = std::collections::HashSet::new();
-        for cfg in &ctx.config.binary_signs {
-            let id = cfg.resolved_id();
-            if !seen.insert(id.to_string()) {
-                anyhow::bail!("found 2 binary_signs with the ID '{}'", id);
-            }
-        }
+        // Validate binary_signs IDs — same check SignStage does.
+        validate_sign_config_ids(&ctx.config.binary_signs, "binary-sign", "binary_signs")?;
         let binary_sign_configs = ctx.config.binary_signs.clone();
         process_sign_configs(
             &binary_sign_configs,
@@ -76,23 +70,9 @@ impl Stage for SignStage {
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("sign");
 
-        // Validate sign config IDs are unique.
-        {
-            let mut seen = std::collections::HashSet::new();
-            for cfg in &ctx.config.signs {
-                let id = cfg.resolved_id();
-                if !seen.insert(id.to_string()) {
-                    anyhow::bail!("found 2 signs with the ID '{}'", id);
-                }
-            }
-            let mut seen_bin = std::collections::HashSet::new();
-            for cfg in &ctx.config.binary_signs {
-                let id = cfg.resolved_id();
-                if !seen_bin.insert(id.to_string()) {
-                    anyhow::bail!("found 2 binary_signs with the ID '{}'", id);
-                }
-            }
-        }
+        // Validate sign config IDs (uniqueness + reserved-label collision).
+        validate_sign_config_ids(&ctx.config.signs, "sign", "signs")?;
+        validate_sign_config_ids(&ctx.config.binary_signs, "binary-sign", "binary_signs")?;
 
         // ----------------------------------------------------------------
         // GPG / generic signing via `signs` config (supports multiple)
