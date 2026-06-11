@@ -7,28 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.0] - 2026-06-11
-
-### Bug Fixes
-
-* 9ae4ed392be8 inject Is* template vars and NightlyBuild as typed bools/number (TJ Smith)
-* decfe86b6618 review fixes — unset eviction, NightlyBuild truthiness note, test typing fidelity (TJ Smith)
-* a6be5873b787 always write run summary; gate rollback on publish state (TJ Smith)
-* ad49ce3fb5c7 review fixes — summary clobber guard, probe fail-closed, kms PATH seam (TJ Smith)
-* 859e2f5860cf reject multi-document typed configs in builtin mode too (TJ Smith)
-* bc2e553ead8c stop replacing PATH wholesale in spawn-failure tests (TJ Smith)
-* fb7e5a166ad1 fail on missing expected signature/SBOM assets (TJ Smith)
-* 9157a4919ff1 pin install-smoke containers to the package arch; drop apk self-provides (TJ Smith)
-* 7634ac80354a re-review fixes — transitive ids verdict for derived subjects, typed multi-doc pin, docker_signs warning (TJ Smith)
-* f79b7ebc5089 review fixes — resolved-name filter keying, probe pinning, probe diagnostics, lock recovery (TJ Smith)
-* 727284f7957e review fixes — sbom derivation equivalence, release.ids sig inheritance (TJ Smith)
-
----
-### Others
-
-* cf02d17fcae2 rollback v0.8.0 [skip ci] (anodize-rollback)
-* b73a16855234 "chore(release): rollback v0.8.0 [skip ci]" (TJ Smith)
-
 ## [0.8.0] - 2026-06-11
 
 ### Features
@@ -208,7 +186,6 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.9.0...HEAD
-[0.9.0]: https://github.com/tj-smith47/anodizer/compare/v0.8.0...v0.9.0
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.8.0...HEAD
 [0.8.0]: https://github.com/tj-smith47/anodizer/compare/v0.6.0...v0.8.0
 [0.6.0]: https://github.com/tj-smith47/anodizer/compare/v0.5.0...v0.6.0
