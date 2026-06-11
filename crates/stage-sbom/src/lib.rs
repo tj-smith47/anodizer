@@ -459,6 +459,23 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     // Determine if this is a built-in (no external command) or subprocess model
     let use_builtin = sbom_cfg.cmd.is_none() && sbom_cfg.args.is_none();
 
+    // When artifacts != "any", multiple SBOM output documents are
+    // unsupported in BOTH modes: each document name is rendered per-artifact
+    // and would clobber on collision (and built-in mode would silently
+    // truncate to documents[0]). Rejected before the mode dispatch so the
+    // built-in path cannot silently ignore explicit user config.
+    {
+        let artifacts_type = sbom_cfg.resolved_artifacts();
+        let documents = sbom_cfg.resolved_documents(artifacts_type);
+        if artifacts_type != "any" && documents.len() > 1 {
+            anyhow::bail!(
+                "sbom[{}]: multiple SBOM outputs when artifacts={:?} is unsupported",
+                id,
+                artifacts_type
+            );
+        }
+    }
+
     if use_builtin {
         return run_sbom_builtin(ctx, dist, sbom_cfg, &project_name, &version);
     }
@@ -468,17 +485,6 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     let artifacts_type = sbom_cfg.resolved_artifacts();
 
     let documents = sbom_cfg.resolved_documents(artifacts_type);
-
-    // when artifacts != "any", multiple
-    // SBOM output documents are unsupported because each document name is
-    // rendered per-artifact and would clobber on collision.
-    if artifacts_type != "any" && documents.len() > 1 {
-        anyhow::bail!(
-            "sbom[{}]: multiple SBOM outputs when artifacts={:?} is unsupported",
-            id,
-            artifacts_type
-        );
-    }
 
     let args = sbom_cfg.resolved_args(cmd);
 
