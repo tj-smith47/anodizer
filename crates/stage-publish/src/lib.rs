@@ -789,7 +789,8 @@ pub struct PublishStage;
 impl PublishStage {
     /// Core of `Stage::run`, factored out so tests can substitute an
     /// arbitrary `&[Box<dyn Publisher>]` registry. `Stage::run` calls
-    /// this with `registry::configured_publishers(ctx)`.
+    /// this (via [`Self::run_publish_pipeline`]) with
+    /// `registry::configured_publishers(ctx)`.
     ///
     /// The body invokes the group-aware dispatcher (Assets -> Manager
     /// -> Submitter, with Submitter gating), writes the resulting
@@ -860,6 +861,112 @@ impl PublishStage {
         ctx.set_publish_report(report);
         Ok(())
     }
+
+    /// Everything `Stage::run` does after the publisher registry is built:
+    /// dispatch, rollback, `on_error` hooks, report/summary persistence,
+    /// post-publish polling, and the in-stage required-failure gate.
+    /// Factored out of `Stage::run` so tests can drive the FULL stage
+    /// sequence with a synthetic publisher slice and observe the gate's
+    /// `Err` alongside the persisted report.
+    fn run_publish_pipeline(
+        ctx: &mut Context,
+        log: &StageLogger,
+        publishers: &[Box<dyn anodizer_core::Publisher>],
+    ) -> Result<()> {
+        Self::run_with_publishers(ctx, log, publishers)?;
+
+        // ---- Best-effort rollback dispatch ----
+        //
+        // Runs (unless `--rollback=none`) when a required Assets/Manager
+        // publisher failed, OR a required Submitter that opts into a
+        // programmatic rollback failed with live state recorded (cargo:
+        // crate A published, crate B failed). Reversible Assets/Manager
+        // publishers that recorded `Succeeded` get their
+        // `Publisher::rollback` invoked and flip to `RolledBack` /
+        // `RollbackFailed` / `RollbackSkippedNoScope`; a failed cargo
+        // Submitter gets its recorded crates yanked while KEEPING its
+        // `Failed` outcome on a successful yank. Every other Submitter has
+        // no programmatic rollback and is left untouched (protected by the
+        // dispatch-time submitter gate).
+        run_rollback_if_needed(ctx, publishers, log);
+
+        // ---- Fire on_error hooks (post-rollback, so .RolledBack is known) ----
+        fire_on_error_hooks(ctx, log);
+
+        // ---- Persist end-of-pipeline state to dist/run-<id>/report.json ----
+        //
+        // Writer half of the `--rollback-only --from-run=<id>` contract
+        // (`rollback_only::run` is the reader). Runs AFTER
+        // `run_rollback_if_needed` so per-publisher rollback outcomes
+        // (`RolledBack` / `RollbackFailed`) are captured — the file
+        // represents END-OF-PIPELINE state, not mid-pipeline. Snapshot /
+        // dry-run modes and empty-result reports are no-ops; IO failure
+        // is best-effort (warn + continue, never fail the pipeline).
+        write_report_to_run_dir(ctx, log);
+
+        // ---- Post-publish polling fan-out (Chocolatey moderation + WinGet PR) ----
+        //
+        // Runs AFTER every publisher has completed so polling isn't gated
+        // on a failed unrelated publisher (e.g. krew). The fan-out is
+        // gated by `--no-post-publish-poll` and by each publisher's
+        // `post_publish_poll.enabled` block. Skipping `choco` /
+        // `winget` skips their poll automatically (no submission =
+        // nothing to poll for).
+        if !ctx.is_dry_run() && !ctx.is_snapshot() {
+            let selected = ctx.options.selected_crates.clone();
+            run_post_publish_pollers(ctx, &selected, log);
+        }
+
+        // ---- In-stage required-failure gate ----
+        //
+        // Last, AFTER every dispatch / rollback / persistence / polling
+        // obligation above has observed final state: the stage itself
+        // fails when any required publisher landed in a failure state.
+        // The CLI's end-of-pipeline `gate_required_failures` remains as
+        // the outer layer of the same defense — this inner gate ensures
+        // any embedding of the stage (publish-only, per-crate loops,
+        // future pipelines) cannot report a green publish stage over a
+        // failed required publisher.
+        bail_on_required_failures(ctx)
+    }
+}
+
+/// Bail when any *required* publisher finished in a failure state —
+/// `Failed(_)` (publish itself failed) or `RollbackFailed(_)` (publish ran,
+/// rollback was attempted, and the rollback also failed). Mirrors the CLI's
+/// `gate_required_failures` semantics, including the snapshot / dry-run
+/// skip: publishers don't actually publish in those modes, so a recorded
+/// failure there must not abort the preview pipeline.
+fn bail_on_required_failures(ctx: &Context) -> Result<()> {
+    if ctx.is_snapshot() || ctx.is_dry_run() {
+        return Ok(());
+    }
+    let Some(report) = ctx.publish_report() else {
+        return Ok(());
+    };
+    let failed: Vec<&str> = report
+        .results
+        .iter()
+        .filter(|r| {
+            r.required
+                && matches!(
+                    r.outcome,
+                    PublisherOutcome::Failed(_) | PublisherOutcome::RollbackFailed(_)
+                )
+        })
+        .map(|r| r.name.as_str())
+        .collect();
+    if failed.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "publish: {} required publisher(s) failed: {}. All publishers were \
+         dispatched and rollback / report / summary bookkeeping completed \
+         before this error; inspect dist/run-<id>/report.json for details \
+         and use --rollback-only --from-run=<id> to retry rollback.",
+        failed.len(),
+        failed.join(", ")
+    );
 }
 
 impl Stage for PublishStage {
@@ -903,7 +1010,7 @@ impl Stage for PublishStage {
         validate_runtime_allowlist(ctx)?;
 
         // Build the publisher list from the active context and hand off
-        // to the group-aware dispatcher via `run_with_publishers`.
+        // to the group-aware dispatcher via `run_publish_pipeline`.
         // `configured_publishers` is the single source of truth for
         // which publishers run.
         let publishers = registry::configured_publishers(ctx);
@@ -911,51 +1018,7 @@ impl Stage for PublishStage {
         // before any publisher fires (a manifest pointing at a 404 release URL
         // ships silently otherwise).
         registry::warn_release_optional_with_dependent_publisher(ctx, &log);
-        Self::run_with_publishers(ctx, &log, &publishers)?;
-
-        // ---- Best-effort rollback dispatch ----
-        //
-        // Runs (unless `--rollback=none`) when a required Assets/Manager
-        // publisher failed, OR a required Submitter that opts into a
-        // programmatic rollback failed with live state recorded (cargo:
-        // crate A published, crate B failed). Reversible Assets/Manager
-        // publishers that recorded `Succeeded` get their
-        // `Publisher::rollback` invoked and flip to `RolledBack` /
-        // `RollbackFailed` / `RollbackSkippedNoScope`; a failed cargo
-        // Submitter gets its recorded crates yanked while KEEPING its
-        // `Failed` outcome on a successful yank. Every other Submitter has
-        // no programmatic rollback and is left untouched (protected by the
-        // dispatch-time submitter gate).
-        run_rollback_if_needed(ctx, &publishers, &log);
-
-        // ---- Fire on_error hooks (post-rollback, so .RolledBack is known) ----
-        fire_on_error_hooks(ctx, &log);
-
-        // ---- Persist end-of-pipeline state to dist/run-<id>/report.json ----
-        //
-        // Writer half of the `--rollback-only --from-run=<id>` contract
-        // (`rollback_only::run` is the reader). Runs AFTER
-        // `run_rollback_if_needed` so per-publisher rollback outcomes
-        // (`RolledBack` / `RollbackFailed`) are captured — the file
-        // represents END-OF-PIPELINE state, not mid-pipeline. Snapshot /
-        // dry-run modes and empty-result reports are no-ops; IO failure
-        // is best-effort (warn + continue, never fail the pipeline).
-        write_report_to_run_dir(ctx, &log);
-
-        // ---- Post-publish polling fan-out (Chocolatey moderation + WinGet PR) ----
-        //
-        // Runs AFTER every publisher has completed so polling isn't gated
-        // on a failed unrelated publisher (e.g. krew). The fan-out is
-        // gated by `--no-post-publish-poll` and by each publisher's
-        // `post_publish_poll.enabled` block. Skipping `choco` /
-        // `winget` skips their poll automatically (no submission =
-        // nothing to poll for).
-        if !ctx.is_dry_run() && !ctx.is_snapshot() {
-            let selected = ctx.options.selected_crates.clone();
-            run_post_publish_pollers(ctx, &selected, &log);
-        }
-
-        Ok(())
+        Self::run_publish_pipeline(ctx, &log, &publishers)
     }
 }
 
@@ -1210,7 +1273,7 @@ mod tests {
             FakeOutcome::Fail("tap rejected".into()),
         )];
         run_dispatch_and_rollback(&mut ctx, &publishers)
-            .expect("stage run returns Ok even when publisher fails");
+            .expect("dispatch+rollback helper returns Ok; the stage-level gate errors separately");
 
         let body = std::fs::read_to_string(dir.path().join("fired.txt"))
             .expect("on_error hook must have fired after run_dispatch_and_rollback");
@@ -1240,7 +1303,7 @@ mod tests {
             ),
         ];
         run_dispatch_and_rollback(&mut ctx, &publishers)
-            .expect("stage run returns Ok even when required publisher fails");
+            .expect("dispatch+rollback helper returns Ok; the stage-level gate errors separately");
 
         let report = ctx.publish_report().expect("publish_report set");
         let assets = report
@@ -1263,6 +1326,107 @@ mod tests {
             manager.outcome,
             anodizer_core::PublisherOutcome::Failed(_)
         ));
+    }
+
+    /// A required publisher failure makes the STAGE itself return Err — the
+    /// in-stage defense-in-depth gate — while every bookkeeping obligation
+    /// still completes first: all publishers dispatch (no early abort of
+    /// siblings), rollback runs, and report.json + summary.json land on
+    /// disk. The error must name the failed required publisher.
+    #[test]
+    fn publish_stage_errs_on_required_failure_after_persisting_state() {
+        use crate::testing::*;
+        use anodizer_core::PublisherGroup;
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = TestContextBuilder::new()
+            .tag("v0.0.0-gate")
+            .dist(tmp.path().to_path_buf())
+            .build();
+        let publishers = vec![
+            fake(
+                "assets",
+                PublisherGroup::Assets,
+                false,
+                FakeOutcome::Succeed,
+            ),
+            fake(
+                "manager",
+                PublisherGroup::Manager,
+                true,
+                FakeOutcome::Fail("manager boom".into()),
+            ),
+        ];
+        let log = ctx.logger("publish-test");
+        let err = PublishStage::run_publish_pipeline(&mut ctx, &log, &publishers)
+            .expect_err("a failed required publisher must fail the stage");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("required publisher"),
+            "error names the failure class: {msg}"
+        );
+        assert!(
+            msg.contains("manager"),
+            "error must name the failed required publisher: {msg}"
+        );
+
+        // Bookkeeping completed BEFORE the Err: both publishers dispatched,
+        // rollback flipped the succeeded Assets row, and the run dir carries
+        // report.json + summary.json.
+        let report = ctx.publish_report().expect("publish_report set");
+        assert_eq!(report.results.len(), 2, "all publishers dispatched");
+        assert!(
+            report.results.iter().any(|r| r.name == "assets"
+                && matches!(r.outcome, anodizer_core::PublisherOutcome::RolledBack)),
+            "rollback bookkeeping must run before the gate errors"
+        );
+        let run_dir = tmp.path().join("run-v0.0.0-gate");
+        assert!(
+            run_dir.join("report.json").exists(),
+            "report.json must be written despite the required failure"
+        );
+        assert!(
+            run_dir.join("summary.json").exists(),
+            "summary.json must be written despite the required failure"
+        );
+    }
+
+    /// A NON-required publisher failure keeps the stage Ok: the failure is
+    /// recorded in the report for the operator (and the summary), but must
+    /// not abort the pipeline.
+    #[test]
+    fn publish_stage_ok_on_non_required_failure() {
+        use crate::testing::*;
+        use anodizer_core::PublisherGroup;
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = TestContextBuilder::new()
+            .tag("v0.0.0-soft")
+            .dist(tmp.path().to_path_buf())
+            .build();
+        let publishers = vec![fake(
+            "krew",
+            PublisherGroup::Manager,
+            false,
+            FakeOutcome::Fail("index push rejected".into()),
+        )];
+        let log = ctx.logger("publish-test");
+        PublishStage::run_publish_pipeline(&mut ctx, &log, &publishers)
+            .expect("a non-required failure must keep the stage Ok");
+
+        let report = ctx.publish_report().expect("publish_report set");
+        let krew = report
+            .results
+            .iter()
+            .find(|r| r.name == "krew")
+            .expect("krew entry present");
+        assert!(
+            matches!(krew.outcome, anodizer_core::PublisherOutcome::Failed(_)),
+            "the failure must still be recorded, got {:?}",
+            krew.outcome
+        );
     }
 
     /// END-TO-END partial cargo failure: a required Submitter named
