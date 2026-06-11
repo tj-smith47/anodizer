@@ -33,6 +33,22 @@ pub(crate) enum ArtifactFilter {
     BinaryOnly,
 }
 
+/// Append a target triple to a basename while keeping its extension
+/// suffix: `anodizer.sig` + `aarch64-apple-darwin` →
+/// `anodizer-aarch64-apple-darwin.sig`, `anodizer.exe.sig` →
+/// `anodizer.exe-aarch64-pc-windows-msvc.sig`. A basename with no
+/// extension gets a plain `-<target>` suffix.
+fn qualify_basename_with_target(name: &str, target: &str) -> String {
+    let path = std::path::Path::new(name);
+    match (
+        path.file_stem().and_then(|s| s.to_str()),
+        path.extension().and_then(|e| e.to_str()),
+    ) {
+        (Some(stem), Some(ext)) => format!("{stem}-{target}.{ext}"),
+        _ => format!("{name}-{target}"),
+    }
+}
+
 /// A fully-prepared sign job ready for parallel execution.
 ///
 /// All template rendering and path resolution is done up-front so that the
@@ -460,11 +476,25 @@ pub(crate) fn process_sign_configs(
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| sig_path.display().to_string());
+            // Per-target binary signatures live in per-target directories
+            // (the preserved-bin layout keys on the directory, not the
+            // basename), so their bare basenames collide across targets in
+            // the registry. Register them under a target-qualified name —
+            // the same way per-target archives embed their target — and
+            // carry the triple on the artifact. The on-disk path is
+            // untouched.
+            let (sig_name, registered_target) = match artifact_target {
+                Some(target) if is_binary_sign => (
+                    qualify_basename_with_target(&sig_name, target),
+                    Some(target.clone()),
+                ),
+                _ => (sig_name, None),
+            };
             let mut job_artifacts = vec![anodizer_core::artifact::Artifact {
                 kind: ArtifactKind::Signature,
                 name: sig_name,
                 path: sig_path,
-                target: None,
+                target: registered_target.clone(),
                 crate_name: artifact_crate_name.clone(),
                 metadata: sig_metadata,
                 size: None,
@@ -481,6 +511,10 @@ pub(crate) fn process_sign_configs(
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| cert_path.display().to_string());
+                let cert_name = match registered_target.as_deref() {
+                    Some(target) => qualify_basename_with_target(&cert_name, target),
+                    None => cert_name,
+                };
                 let mut cert_metadata = std::collections::HashMap::new();
                 cert_metadata.insert("type".to_string(), "Certificate".to_string());
                 if let Some(ref subject_kind) = subject_kind_value {
@@ -499,7 +533,7 @@ pub(crate) fn process_sign_configs(
                     kind: ArtifactKind::Certificate,
                     name: cert_name,
                     path: cert_path,
-                    target: None,
+                    target: registered_target.clone(),
                     crate_name: artifact_crate_name.clone(),
                     metadata: cert_metadata,
                     size: None,

@@ -2269,6 +2269,117 @@ fn test_binary_signs_arm_target_splits_arch_correctly() {
     );
 }
 
+#[test]
+fn test_binary_signs_register_target_qualified_names_per_target() {
+    use anodizer_core::artifact::Artifact;
+
+    // Per-target binaries share a basename and differ only by directory
+    // (the preserved-bin layout), so without target qualification every
+    // target's signature would register under the same name.
+    let binary_sign_cfg = SignConfig {
+        id: None,
+        artifacts: Some("binary".to_string()),
+        cmd: Some("true".to_string()),
+        args: Some(vec![]),
+        signature: None,
+        stdin: None,
+        stdin_file: None,
+        ids: None,
+        env: None,
+        certificate: Some("{{ .Artifact }}.pem".to_string()),
+        output: None,
+        if_condition: None,
+    };
+    let mut ctx = TestContextBuilder::new()
+        .binary_signs(vec![binary_sign_cfg])
+        .dry_run(true)
+        .build();
+
+    let binary = |triple: &str, basename: &str| Artifact {
+        kind: ArtifactKind::Binary,
+        name: basename.to_string(),
+        path: std::path::PathBuf::from(format!("/dist/_preserved-bin/{triple}/{basename}")),
+        target: Some(triple.to_string()),
+        crate_name: "test".to_string(),
+        metadata: Default::default(),
+        size: None,
+    };
+    ctx.artifacts
+        .add(binary("x86_64-unknown-linux-gnu", "anodizer"));
+    ctx.artifacts
+        .add(binary("aarch64-apple-darwin", "anodizer"));
+    ctx.artifacts
+        .add(binary("x86_64-pc-windows-msvc", "anodizer.exe"));
+
+    let log = ctx.logger("binary-sign");
+    let binary_sign_configs = ctx.config.binary_signs.clone();
+    process_sign_configs(
+        &binary_sign_configs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .expect("binary-sign run");
+
+    let mut sig_names: Vec<String> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::Signature)
+        .iter()
+        .map(|a| a.name.clone())
+        .collect();
+    sig_names.sort();
+    assert_eq!(
+        sig_names,
+        vec![
+            "anodizer-aarch64-apple-darwin.sig",
+            "anodizer-x86_64-unknown-linux-gnu.sig",
+            "anodizer.exe-x86_64-pc-windows-msvc.sig",
+        ],
+        "each target's signature must register under a distinct name"
+    );
+
+    let mut cert_names: Vec<String> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::Certificate)
+        .iter()
+        .map(|a| a.name.clone())
+        .collect();
+    cert_names.sort();
+    assert_eq!(
+        cert_names,
+        vec![
+            "anodizer-aarch64-apple-darwin.pem",
+            "anodizer-x86_64-unknown-linux-gnu.pem",
+            "anodizer.exe-x86_64-pc-windows-msvc.pem",
+        ],
+        "each target's certificate must register under a distinct name"
+    );
+
+    for kind in [ArtifactKind::Signature, ArtifactKind::Certificate] {
+        for art in ctx.artifacts.by_kind(kind) {
+            assert!(
+                art.target.is_some(),
+                "{kind:?} '{}' must carry its subject binary's target",
+                art.name
+            );
+            assert!(
+                art.name.contains(art.target.as_deref().unwrap_or_default()),
+                "{kind:?} name '{}' must embed its target '{}'",
+                art.name,
+                art.target.as_deref().unwrap_or_default()
+            );
+            // The on-disk path keeps the bare basename: only the registry
+            // name is qualified, the signer wrote next to the binary.
+            assert!(
+                art.path.to_string_lossy().contains("_preserved-bin"),
+                "{kind:?} path '{}' must stay inside the per-target directory",
+                art.path.display()
+            );
+        }
+    }
+}
+
 // -----------------------------------------------------------------------
 // Gap E: Docker sign ID defaults to "default"
 // -----------------------------------------------------------------------
