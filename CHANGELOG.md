@@ -7,53 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-06-11
-
-### Features
-
-* 6a628185b1ba add --allow-rerun flag to anodizer publish (TJ Smith)
-* cece142186c7 config-declarable on_error/on_rollback hooks (TJ Smith)
-* 9e27a01471c9 expose failure-hook context as ANODIZER_* env vars (TJ Smith)
-* 3eca978cea09 gate all irreversible publishers on any required failure (TJ Smith)
-* 8f17ca07b47d preflight guard for publish-set dependency completeness (TJ Smith)
-* e1c4c083e2de retain_on_rollback, on_error hooks, anodizer notify (TJ Smith)
-* bdef8a2f957c universal publisher idempotency for safe re-runs (TJ Smith)
-* a6665ddb2daf explicit --version override for autotag (TJ Smith)
-* ca8155a6fef5 auto-detect dind for install_smoke; wire blobs to MinIO (TJ Smith)
-
----
-### Bug Fixes
-
-* c4031cd1a757 set ArtifactName from archive filename in url_template render (TJ Smith)
-* 6e2b2387e422 unique SSH key filename per clone to prevent EEXIST on retry (TJ Smith)
-* 39523204f1fb gate zigbuild routing on a reachable zig toolchain (TJ Smith)
-* 173d8b4318b4 route host linux-gnu builds through zigbuild for a hermetic glibc floor (TJ Smith)
-* ecc74f794f74 make republish_in_moderation actually re-push (TJ Smith)
-* 3beec78e7866 add on_error to PublishDefaults with append-merge semantics; wire retain_on_rollback on cargo, schemastore, mcp (TJ Smith)
-* 83da4f3add02 correct submitter required-gating warning text (TJ Smith)
-* c0e19c2df6da durability fixes W1-W3, F1-F2, S1-S2, F3, GHA#1-2, #58-59 (TJ Smith)
-* 532096abd458 error loudly when artifact URL absent in publish mode; tolerate in snapshot (TJ Smith)
-* a29bb53a6a91 guarantee trailing newline on written SSH key (TJ Smith)
-* cef07f0a4861 key the workspace-root dep cache by resolved root path (TJ Smith)
-* 6e1980a40a5e propagate render errors in AUR rollback creds + add render tests (TJ Smith)
-* 7e63afe5b5c5 redact custom header values and target URL in artifactory dry-run log (TJ Smith)
-* 2a22c30de1f9 rehydrate sha256 via ChecksumStage in publish/continue pipeline (TJ Smith)
-* 4de628a767e3 render npm registry/tag/metadata and dockerhub username templates (TJ Smith)
-* 84f84dd40efd render secret/url/branch/token config templates before use (TJ Smith)
-* e236fb1782ac resolve package renames in publish-set preflight (TJ Smith)
-* 17bc6953a4dc resolve renames in the dependency wait gate (TJ Smith)
-* 343d4f6c2a2b require all live publishers and restore install_smoke (TJ Smith)
-
----
-### Others
-
-* 4bd2c68379cd correct on_error timing and RolledBack semantics (TJ Smith)
-* 099797b072ae DepEntry struct, alias in guard errors, shared root cache (TJ Smith)
-* e1f5b88d14bd single-source failure vars; pin env-channel exhaustiveness (TJ Smith)
-* 5c24cb2dfdc7 normalize hook output path for Windows in on_error test (TJ Smith)
-* b9ad18ff3708 verify retain_on_rollback skips rollback dispatch (TJ Smith)
-* 14d788e6014c test+fix: address v0.8.0 review findings (TJ Smith)
-
 ## [0.6.0] - 2026-06-08
 
 Changes since `v0.5.0`. Will be cut as the next release.
@@ -186,6 +139,5 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.8.0...HEAD
-[0.8.0]: https://github.com/tj-smith47/anodizer/compare/v0.6.0...v0.8.0
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.6.0...HEAD
 [0.6.0]: https://github.com/tj-smith47/anodizer/compare/v0.5.0...v0.6.0
