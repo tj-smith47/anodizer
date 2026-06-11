@@ -590,6 +590,98 @@ mod subject_provenance_tests {
     }
 
     #[test]
+    fn sign_of_sbom_inherits_transitive_verdict() {
+        // Signing SBOMs (artifacts: sbom or all): the signature must carry
+        // its subject SBOM's own verdict record, transitively — a sig of a
+        // subject-less `any` SBOM carries no record (always uploads), and a
+        // sig of a per-archive SBOM answers to the archive's build id.
+        let cfg = SignConfig {
+            artifacts: Some("sbom".to_string()),
+            ..archive_sign()
+        };
+        let mut ctx = TestContextBuilder::new().signs(vec![cfg]).build();
+        let sbom = |name: &str, meta: &[(&str, &str)]| Artifact {
+            kind: ArtifactKind::Sbom,
+            name: name.to_string(),
+            path: std::path::PathBuf::from(name),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: meta
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            size: None,
+        };
+        ctx.artifacts
+            .add(sbom("project.cdx.json", &[("sbom_id", "default")]));
+        ctx.artifacts.add(sbom(
+            "keep.tar.gz.cdx.json",
+            &[("subject_kind", "archive"), ("id", "keep")],
+        ));
+        ctx.artifacts.add(sbom(
+            "drop.tar.gz.cdx.json",
+            &[("subject_kind", "archive"), ("id", "drop")],
+        ));
+
+        // Derivation under the ids filter: the subject-less SBOM's sig and
+        // the kept archive's SBOM sig are expected; the dropped one is not.
+        let ids = vec!["keep".to_string()];
+        let expected = expected_signature_assets(&ctx, "app", Some(&ids)).expect("derivation");
+        assert_eq!(
+            expected,
+            vec![
+                "keep.tar.gz.cdx.json.sig".to_string(),
+                "project.cdx.json.sig".to_string()
+            ]
+        );
+
+        let log = ctx.logger("sign");
+        let cfgs = ctx.config.signs.clone();
+        process_sign_configs(&cfgs, &mut ctx, &log, ArtifactFilter::FromConfig, "sign")
+            .expect("sign run");
+
+        let by_name = |n: &str| -> anodizer_core::artifact::Artifact {
+            ctx.artifacts
+                .by_kind(ArtifactKind::Signature)
+                .into_iter()
+                .find(|a| a.name == n)
+                .unwrap_or_else(|| panic!("signature '{n}' registered"))
+                .clone()
+        };
+        let any_sig = by_name("project.cdx.json.sig");
+        assert!(
+            !any_sig.metadata.contains_key("subject_kind"),
+            "sig of a subject-less SBOM carries no record: {:?}",
+            any_sig.metadata
+        );
+        let keep_sig = by_name("keep.tar.gz.cdx.json.sig");
+        assert_eq!(
+            keep_sig.metadata.get("subject_kind").map(String::as_str),
+            Some("archive")
+        );
+        assert_eq!(
+            keep_sig.metadata.get("id").map(String::as_str),
+            Some("keep")
+        );
+        let drop_sig = by_name("drop.tar.gz.cdx.json.sig");
+
+        // Upload verdicts under the ids filter must match the derivation.
+        use anodizer_core::artifact::matches_id_filter;
+        assert!(
+            matches_id_filter(&any_sig, Some(&ids)),
+            "any-sbom sig uploads"
+        );
+        assert!(
+            matches_id_filter(&keep_sig, Some(&ids)),
+            "kept-subject sig uploads"
+        );
+        assert!(
+            !matches_id_filter(&drop_sig, Some(&ids)),
+            "excluded-subject sig must not upload"
+        );
+    }
+
+    #[test]
     fn zero_match_ids_filter_warns_loudly() {
         // A sign config whose ids filter eliminates every kind-matched
         // artifact silently signs nothing — the stage must warn.

@@ -436,16 +436,21 @@ pub(crate) fn process_sign_configs(
                 }
             };
             let is_binary_sign = matches!(filter_mode, ArtifactFilter::BinaryOnly);
+            // Subject provenance: the signature inherits the signed
+            // artifact's verdict record — transitively when the subject is
+            // itself derived (signing an SBOM) — so the release `ids:`
+            // filter gives it the same upload verdict as its subject.
+            let (subject_kind_value, inherited_id) =
+                anodizer_core::artifact::subject_verdict_record(*artifact_kind, artifact_metadata);
             let mut sig_metadata = std::collections::HashMap::new();
             sig_metadata.insert("type".to_string(), "Signature".to_string());
-            // Subject provenance: the signature inherits the signed
-            // artifact's kind and build id, so the release `ids:` filter
-            // gives it the same upload verdict as its subject.
-            sig_metadata.insert(
-                anodizer_core::artifact::SUBJECT_KIND_META.to_string(),
-                artifact_kind.as_str().to_string(),
-            );
-            if let Some(subject_id) = artifact_metadata.get("id") {
+            if let Some(ref subject_kind) = subject_kind_value {
+                sig_metadata.insert(
+                    anodizer_core::artifact::SUBJECT_KIND_META.to_string(),
+                    subject_kind.clone(),
+                );
+            }
+            if let Some(ref subject_id) = inherited_id {
                 sig_metadata.insert("id".to_string(), subject_id.clone());
             }
             if is_binary_sign {
@@ -478,11 +483,13 @@ pub(crate) fn process_sign_configs(
                     .unwrap_or_else(|| cert_path.display().to_string());
                 let mut cert_metadata = std::collections::HashMap::new();
                 cert_metadata.insert("type".to_string(), "Certificate".to_string());
-                cert_metadata.insert(
-                    anodizer_core::artifact::SUBJECT_KIND_META.to_string(),
-                    artifact_kind.as_str().to_string(),
-                );
-                if let Some(subject_id) = artifact_metadata.get("id") {
+                if let Some(ref subject_kind) = subject_kind_value {
+                    cert_metadata.insert(
+                        anodizer_core::artifact::SUBJECT_KIND_META.to_string(),
+                        subject_kind.clone(),
+                    );
+                }
+                if let Some(ref subject_id) = inherited_id {
                     cert_metadata.insert("id".to_string(), subject_id.clone());
                 }
                 if is_binary_sign {

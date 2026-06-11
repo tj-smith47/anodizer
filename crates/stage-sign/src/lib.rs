@@ -197,30 +197,30 @@ impl Stage for DockerSignStage {
                     ),
                 };
 
+                let pre_ids = docker_artifacts.len();
                 let image_paths: Vec<(
                     std::path::PathBuf,
                     std::collections::HashMap<String, String>,
                 )> = docker_artifacts
                     .into_iter()
                     .filter(|a| {
-                        // Apply ids filter if set on docker sign config.
-                        if let Some(ref ids) = docker_sign_cfg.ids {
-                            let matches_id = a
-                                .metadata
-                                .get("id")
-                                .map(|id| ids.contains(id))
-                                .unwrap_or(false);
-                            let matches_name = a
-                                .metadata
-                                .get("name")
-                                .map(|name| ids.contains(name))
-                                .unwrap_or(false);
-                            return matches_id || matches_name;
-                        }
-                        true
+                        crate::helpers::sign_ids_match(&a.metadata, docker_sign_cfg.ids.as_ref())
                     })
                     .map(|a| (a.path.clone(), a.metadata.clone()))
                     .collect();
+
+                if anodizer_core::artifact::ids_filter_eliminated_all(
+                    docker_sign_cfg.ids.as_deref(),
+                    pre_ids,
+                    image_paths.len(),
+                ) {
+                    log.warn(&format!(
+                        "docker-sign config '{}': ids filter {:?} matched no docker \
+                         artifacts — this config will sign NOTHING",
+                        sign_id,
+                        docker_sign_cfg.ids.as_deref().unwrap_or(&[])
+                    ));
+                }
 
                 for (image_path, metadata) in &image_paths {
                     let image_str = image_path.to_string_lossy();

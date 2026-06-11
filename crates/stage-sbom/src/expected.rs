@@ -94,6 +94,14 @@ pub fn expected_sbom_assets(
             continue;
         }
 
+        // The stage rejects typed-mode external configs with more than one
+        // documents entry (per-artifact rendering would clobber on
+        // collision), so such a config can never have published a release —
+        // it creates no expectations.
+        if !use_builtin && documents.len() > 1 {
+            continue;
+        }
+
         let matching: Vec<&Artifact> = if artifacts_type == "binary" {
             ctx.artifacts
                 .binary_like_dedup()
@@ -384,6 +392,47 @@ mod tests {
         assert_eq!(
             predicted, registered,
             "external `any` derivation must equal what the stage registers"
+        );
+    }
+
+    #[test]
+    fn typed_external_multi_document_config_rejected_on_both_sides() {
+        // Typed-mode external configs with >1 documents are rejected by the
+        // stage (per-artifact rendering would clobber on collision), so the
+        // derivation mirrors the constraint by creating no expectations —
+        // such a config can never have published a release.
+        let dist = tempfile::tempdir().expect("tempdir");
+        let cfg = SbomConfig {
+            id: Some("ext".to_string()),
+            cmd: Some("sh".to_string()),
+            args: Some(vec!["-c".to_string(), "echo x > \"$document\"".to_string()]),
+            documents: Some(vec![
+                "{{ .ArtifactName }}.spdx.json".to_string(),
+                "{{ .ArtifactName }}.cdx.json".to_string(),
+            ]),
+            artifacts: Some("archive".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .tag("v1.0.0")
+            .dist(dist.path().to_path_buf())
+            .add_sbom(cfg)
+            .build();
+        ctx.artifacts.add(archive("app.tar.gz", "app", None));
+
+        let predicted = expected_sbom_assets(&ctx, "app", None).expect("derivation");
+        assert!(
+            predicted.is_empty(),
+            "rejected config shape must create no expectations: {predicted:?}"
+        );
+
+        let err = crate::SbomStage
+            .run(&mut ctx)
+            .expect_err("typed external multi-document config must be rejected");
+        assert!(
+            format!("{err:#}").contains("multiple SBOM outputs"),
+            "stage names the constraint: {err:#}"
         );
     }
 

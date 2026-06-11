@@ -2625,3 +2625,48 @@ fn gpg_signature_byte_stable_for_same_sde() {
     // Blocked on: a preflight that fails fast on gpg < 2.0.10 (no
     // `--faked-system-time` support).
 }
+
+#[test]
+fn docker_sign_zero_match_ids_filter_warns_loudly() {
+    // A docker_signs config whose ids filter eliminates every selected
+    // docker artifact silently signs nothing — the stage must warn.
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::DockerSignConfig;
+
+    let docker_signs = vec![DockerSignConfig {
+        cmd: Some("echo".to_string()),
+        args: Some(vec!["sign".to_string(), "{{ .Artifact }}".to_string()]),
+        artifacts: Some("all".to_string()),
+        ids: Some(vec!["no-such-id".to_string()]),
+        ..Default::default()
+    }];
+
+    let mut ctx = TestContextBuilder::new().dry_run(true).build();
+    ctx.config.docker_signs = Some(docker_signs);
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::DockerImage,
+        name: String::new(),
+        path: std::path::PathBuf::from("ghcr.io/myorg/prod:latest"),
+        target: None,
+        crate_name: "test".to_string(),
+        metadata: {
+            let mut m = std::collections::HashMap::new();
+            m.insert("id".to_string(), "prod-image".to_string());
+            m
+        },
+        size: None,
+    });
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+
+    DockerSignStage.run(&mut ctx).expect("docker-sign run");
+
+    assert!(
+        capture
+            .warn_messages()
+            .iter()
+            .any(|m| m.contains("matched no docker artifacts")),
+        "zero-match docker ids filter must warn: {:?}",
+        capture.all_messages()
+    );
+}

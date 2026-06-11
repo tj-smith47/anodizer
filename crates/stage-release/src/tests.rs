@@ -4487,6 +4487,26 @@ fn test_release_upload_candidates_ids_filter_signatures_inherit_subject_verdict(
         "drop.zip.cdx.json",
         &[("subject_kind", "archive"), ("id", "drop")],
     );
+    // Transitive chain: a project-wide `any` SBOM has no subject record and
+    // always uploads; its signature copies that absence and uploads too. A
+    // sig of an EXCLUDED archive's SBOM copies (archive, drop) and is
+    // dropped with its chain.
+    add(
+        ArtifactKind::Sbom,
+        "project.cdx.json",
+        &[("sbom_id", "default")],
+    );
+    add(ArtifactKind::Signature, "project.cdx.json.sig", &[]);
+    add(
+        ArtifactKind::Signature,
+        "drop.zip.cdx.json.sig",
+        &[("subject_kind", "archive"), ("id", "drop")],
+    );
+    add(
+        ArtifactKind::Signature,
+        "keep.tar.gz.cdx.json.sig",
+        &[("subject_kind", "archive"), ("id", "keep")],
+    );
 
     let ids = vec!["keep".to_string()];
     let selected = super::run::collect_release_upload_candidates(&ctx, "myapp", Some(&ids), false);
@@ -4498,15 +4518,23 @@ fn test_release_upload_candidates_ids_filter_signatures_inherit_subject_verdict(
         "keep.tar.gz",
         "keep.tar.gz.sig",
         "keep.tar.gz.cdx.json",
+        "keep.tar.gz.cdx.json.sig",
         "checksums.txt",
         "checksums.txt.sig",
+        "project.cdx.json",
+        "project.cdx.json.sig",
     ] {
         assert!(
             names.contains(&kept.to_string()),
             "{kept} must upload: {names:?}"
         );
     }
-    for dropped in ["drop.zip", "drop.zip.sig", "drop.zip.cdx.json"] {
+    for dropped in [
+        "drop.zip",
+        "drop.zip.sig",
+        "drop.zip.cdx.json",
+        "drop.zip.cdx.json.sig",
+    ] {
         assert!(
             !names.contains(&dropped.to_string()),
             "{dropped} must NOT upload: {names:?}"

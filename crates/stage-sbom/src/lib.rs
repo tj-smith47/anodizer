@@ -714,16 +714,20 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
 
                 let mut metadata = HashMap::new();
                 metadata.insert("sbom_id".to_string(), id.to_string());
-                // Subject provenance: the SBOM inherits its subject's kind
-                // and build id so the release `ids:` filter gives it the
+                // Subject provenance: the SBOM inherits its subject's
+                // verdict record so the release `ids:` filter gives it the
                 // same upload verdict as the artifact it catalogs.
                 if let Some(kind) = artifact_kind {
-                    metadata.insert(
-                        anodizer_core::artifact::SUBJECT_KIND_META.to_string(),
-                        kind.as_str().to_string(),
-                    );
-                    if let Some(subject_id) = artifact_meta.get("id") {
-                        metadata.insert("id".to_string(), subject_id.clone());
+                    let (subject_kind, inherited_id) =
+                        anodizer_core::artifact::subject_verdict_record(*kind, artifact_meta);
+                    if let Some(subject_kind) = subject_kind {
+                        metadata.insert(
+                            anodizer_core::artifact::SUBJECT_KIND_META.to_string(),
+                            subject_kind,
+                        );
+                    }
+                    if let Some(subject_id) = inherited_id {
+                        metadata.insert("id".to_string(), subject_id);
                     }
                 }
 
@@ -997,16 +1001,20 @@ fn run_sbom_builtin(
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), format.to_string());
         metadata.insert("sbom_id".to_string(), id.to_string());
-        // Subject provenance: the SBOM inherits its subject's kind and build
-        // id so the release `ids:` filter gives it the same upload verdict
-        // as the artifact it catalogs.
+        // Subject provenance: the SBOM inherits its subject's verdict
+        // record so the release `ids:` filter gives it the same upload
+        // verdict as the artifact it catalogs.
         if let Some(kind) = artifact_kind {
-            metadata.insert(
-                anodizer_core::artifact::SUBJECT_KIND_META.to_string(),
-                kind.as_str().to_string(),
-            );
-            if let Some(subject_id) = artifact_meta.get("id") {
-                metadata.insert("id".to_string(), subject_id.clone());
+            let (subject_kind, inherited_id) =
+                anodizer_core::artifact::subject_verdict_record(*kind, artifact_meta);
+            if let Some(subject_kind) = subject_kind {
+                metadata.insert(
+                    anodizer_core::artifact::SUBJECT_KIND_META.to_string(),
+                    subject_kind,
+                );
+            }
+            if let Some(subject_id) = inherited_id {
+                metadata.insert("id".to_string(), subject_id);
             }
         }
 

@@ -1470,3 +1470,62 @@ fn live_v080_real_release_fails_missing_signature_assets() {
         "live error names the missing sig assets: {msg}"
     );
 }
+
+#[test]
+fn gate_demands_sig_of_subjectless_sbom_under_release_ids() {
+    // release.ids + a project-wide (subject-less) SBOM + signs over sboms:
+    // the any-SBOM uploads regardless of the ids filter, so its signature
+    // must be expected — transitively record-less, never stranded behind a
+    // subject_kind:"sbom"/empty-id record. The sig of an ids-EXCLUDED
+    // archive's SBOM must NOT be expected.
+    let (addr, _log) = spawn_release_route(&["keep.tar.gz", "project.cdx.json"]);
+
+    let yaml = "name: app\npath: .\ntag_template: \"v{{ .Version }}\"\n\
+                release:\n  github: { owner: me, name: repo }\n  ids: [keep]\n";
+    let crate_cfg: CrateConfig = serde_yaml_ng::from_str(yaml).expect("valid crate yaml");
+    let mut ctx = asset_ctx(addr, vec![crate_cfg]);
+    ctx.config.signs = vec![anodizer_core::config::SignConfig {
+        artifacts: Some("sbom".to_string()),
+        ..checksum_gpg_sign()
+    }];
+
+    let mut add_with_meta = |kind: ArtifactKind, name: &str, meta: &[(&str, &str)]| {
+        ctx.artifacts.add(Artifact {
+            kind,
+            name: name.to_string(),
+            path: std::path::PathBuf::from(name),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: meta
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            size: None,
+        });
+    };
+    add_with_meta(ArtifactKind::Archive, "keep.tar.gz", &[("id", "keep")]);
+    add_with_meta(
+        ArtifactKind::Sbom,
+        "project.cdx.json",
+        &[("sbom_id", "default")],
+    );
+    add_with_meta(ArtifactKind::Archive, "drop.zip", &[("id", "drop")]);
+    add_with_meta(
+        ArtifactKind::Sbom,
+        "drop.zip.cdx.json",
+        &[("subject_kind", "archive"), ("id", "drop")],
+    );
+
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("missing sig of the uploaded any-SBOM must fail the gate");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("project.cdx.json.sig"),
+        "the subject-less SBOM's signature is demanded: {msg}"
+    );
+    assert!(
+        !msg.contains("drop.zip.cdx.json.sig"),
+        "the excluded archive's SBOM sig must NOT be demanded: {msg}"
+    );
+}
